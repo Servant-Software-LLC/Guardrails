@@ -234,8 +234,9 @@ The fragment is merged only after **all guardrails pass**.
 
 Deep merge into `state.json`: objects merge recursively; **scalars and arrays are
 last-writer-wins**. Merge order = task completion order, recorded as a monotonic
-`mergeSequence` in the journal. Every overwrite of an existing non-null value is
-appended to `state/merge-conflicts.log` (`seq, task, jsonPath, old, new`).
+`mergeSequence` in the journal. Every overwrite of an existing non-null value with a
+*different* value is appended to `state/merge-conflicts.log` — tab-separated columns
+`seq, task, jsonPath, old, new`, with values as compact JSON.
 
 ---
 
@@ -288,7 +289,8 @@ state/logs/<task-id>/attempt-N/
 ├── state-in.json            # the snapshot given to this attempt
 ├── action-stdout.log / action-stderr.log
 ├── action-result.json
-├── fragment.json            # copy of the fragment (if any) — audit trail
+├── action-out-fragment.json # the LIVE GUARDRAILS_STATE_OUT target the action writes
+├── fragment.json            # copy of the fragment made on successful merge — audit trail
 ├── composed-prompt.md       # prompt actions/guardrails: exactly what the runner got
 ├── claude-stream.jsonl      # raw runner output stream
 ├── guardrail-<name>.stdout.log / .stderr.log / .verdict.json
