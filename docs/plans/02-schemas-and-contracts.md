@@ -110,8 +110,13 @@ can't be verified has no business in the DAG).
 
 ## 4. Guardrails
 
-Files under `tasks/<id>/guardrails/`, executed in filename sort order. Convention:
-order cheapest-first (`01-exists`, `02-builds`, `03-tests`, `04-review`).
+Files under `tasks/<id>/guardrails/`, executed in filename sort order (**ordinal**,
+locale-independent — task folders sort the same way). Convention: order
+cheapest-first (`01-exists`, `02-builds`, `03-tests`, `04-review`).
+
+A guardrail's **name** (used in the journal, feedback, and UI) is its filename minus
+the extension, with `.prompt.md` stripped as a whole:
+`02-tone-is-friendly.prompt.md` → `02-tone-is-friendly`; `01-build.ps1` → `01-build`.
 Every guardrail file **opens with a `catches:` comment** stating what wrong
 implementation it catches (script comment or frontmatter field) — if you can't
 write that sentence, the guardrail is decorative and should be deleted.
