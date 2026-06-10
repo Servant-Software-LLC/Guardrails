@@ -112,5 +112,20 @@ always a **draft** until a human reviews it.
   with prompt actions/guardrails validates fine but `run` fails fast ("not supported
   until M5"). State/journal/log env vars are **not** set yet (only `GUARDRAILS_PLAN_DIR`,
   `_TASK_ID`, `_TASK_DIR`, `_ATTEMPT`="1").
-- M3–M7: not started. Reality Gate: not yet met (prompt execution + full example run
+- M3 State + journal + resume: **complete**. `JsonMerger` (pure deep-merge: objects
+  recurse, scalars/arrays last-writer-wins, conflicts reported) + `StateManager` (single
+  writer of `state/state.json`: seed/init, immutable `state-in.json` snapshots, fragment
+  merge after guardrails pass, `merge-conflicts.log`, atomic writes; invalid non-object
+  fragment → distinct `invalid-fragment` outcome, state unchanged). `RunJournal`
+  (`state/run.json` per §7: kebab-case status/outcome strings, attempt records, `planHash`
+  = SHA-256 over guardrails.json + all task.json, loud warning on resume mismatch) with the
+  §7 resume matrix — `succeeded` skipped, `needs-human`/`failed`/`blocked` → `pending`,
+  crashed `running` → `pending` with attempt numbering continuing. `SerialExecutor` now
+  threads snapshot → action (tee stdout/stderr + `action-result.json`) → guardrails
+  (with `GUARDRAILS_ACTION_*`/`STATE_FRAGMENT`) → merge, writes the §8 per-attempt log
+  layout, and skips journal-`succeeded` tasks on resume. Env contract §5.1 completed for
+  scripts (`STATE_IN`/`STATE_OUT`/`STATE_FRAGMENT`/`LOG_DIR`/`ACTION_STDOUT`/`_STDERR`/
+  `_RESULT`; `FEEDBACK` is M4). New CLI: `status` (read-only journal table), `reset
+  <folder> [task]`, and `run --fresh`. M4 still owns DAG/parallelism/retry/needs-human.
+- M4–M7: not started. Reality Gate: not yet met (prompt execution + full example run
   land in M5).

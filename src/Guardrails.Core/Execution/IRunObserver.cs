@@ -18,6 +18,13 @@ public interface IRunObserver
     /// <summary>A guardrail finished running.</summary>
     void GuardrailFinished(TaskNode task, GuardrailResult result);
 
+    /// <summary>
+    /// The resumed journal's plan hash differs from the current plan's — the manifests
+    /// changed since the journal was written. The run continues (SSOT §7); this is a loud
+    /// warning, not an error.
+    /// </summary>
+    void PlanHashMismatch(string previousPlanHash) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 
@@ -26,5 +33,6 @@ public interface IRunObserver
         public void TaskStarting(TaskNode task) { }
         public void TaskFinished(TaskResult result) { }
         public void GuardrailFinished(TaskNode task, GuardrailResult result) { }
+        public void PlanHashMismatch(string previousPlanHash) { }
     }
 }

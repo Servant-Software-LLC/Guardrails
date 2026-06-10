@@ -25,7 +25,14 @@ public sealed record TaskResult
     /// <summary>A short human-readable explanation of the outcome (for the summary and logs).</summary>
     public required string Summary { get; init; }
 
+    /// <summary>True only for a genuine success this run (not a resume skip).</summary>
     public bool Succeeded => Outcome == TaskOutcome.Succeeded;
+
+    /// <summary>
+    /// True when this task is "green" for the run's overall verdict: it succeeded this run
+    /// or was skipped because the journal already recorded it as succeeded (resume).
+    /// </summary>
+    public bool IsGreen => Outcome is TaskOutcome.Succeeded or TaskOutcome.Skipped;
 }
 
 /// <summary>The aggregate result of an entire serial run.</summary>
@@ -34,9 +41,9 @@ public sealed record RunReport
     /// <summary>Per-task results in execution order.</summary>
     public required IReadOnlyList<TaskResult> Tasks { get; init; }
 
-    /// <summary>True when every task succeeded.</summary>
-    public bool AllSucceeded => Tasks.All(t => t.Succeeded);
+    /// <summary>True when every task is green (succeeded this run or skipped as already-succeeded).</summary>
+    public bool AllSucceeded => Tasks.All(t => t.IsGreen);
 
     /// <summary>True when at least one task failed or was blocked.</summary>
-    public bool AnyFailed => Tasks.Any(t => !t.Succeeded);
+    public bool AnyFailed => Tasks.Any(t => !t.IsGreen);
 }

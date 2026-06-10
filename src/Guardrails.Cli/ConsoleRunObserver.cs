@@ -5,7 +5,7 @@ namespace Guardrails.Cli;
 
 /// <summary>
 /// Plain line-by-line console progress for a serial run (no Spectre until M4). Writes
-/// task starts, guardrail outcomes, and task results as they happen.
+/// task starts, guardrail outcomes, task results, and the loud plan-hash-mismatch warning.
 /// </summary>
 public sealed class ConsoleRunObserver : IRunObserver
 {
@@ -26,16 +26,20 @@ public sealed class ConsoleRunObserver : IRunObserver
 
     public void TaskFinished(TaskResult result)
     {
-        string label = result.Outcome switch
-        {
-            TaskOutcome.Succeeded => "OK",
-            TaskOutcome.ActionFailed => "ACTION FAILED",
-            TaskOutcome.GuardrailFailed => "GUARDRAIL FAILED",
-            TaskOutcome.Blocked => "BLOCKED",
-            _ => result.Outcome.ToString()
-        };
-
-        Console.WriteLine($"[{label}] {result.TaskId} — {result.Summary}");
+        Console.WriteLine($"[{RunCommandLabel(result.Outcome)}] {result.TaskId} — {result.Summary}");
         Console.WriteLine();
     }
+
+    public void PlanHashMismatch(string previousPlanHash)
+    {
+        Console.WriteLine("================================================================");
+        Console.WriteLine("WARNING: plan manifests changed since the last run.");
+        Console.WriteLine($"  previous planHash: {previousPlanHash}");
+        Console.WriteLine("  Resuming anyway — completed tasks are still treated as done.");
+        Console.WriteLine("  Run 'guardrails run --fresh' to re-run from a clean slate.");
+        Console.WriteLine("================================================================");
+        Console.WriteLine();
+    }
+
+    private static string RunCommandLabel(TaskOutcome outcome) => Commands.RunCommand.StatusLabel(outcome);
 }
