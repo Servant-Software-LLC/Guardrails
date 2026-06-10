@@ -58,6 +58,14 @@ public static class StatusCommand
             PrintRow(task.Id, entry);
         }
 
+        // Run-level cost (SSOT §7 costUsd) — omitted entirely when no attempt recorded a
+        // cost, so deterministic-only plans stay noise-free.
+        if (JournalCost.Total(document) is { } total)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"Total prompt cost: ${total:F4}");
+        }
+
         return ExitCodes.Success;
     }
 

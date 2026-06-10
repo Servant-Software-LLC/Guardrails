@@ -164,6 +164,65 @@ public sealed class PromptRunnerConfigTests : IDisposable
     }
 
     [Fact]
+    public void DeclaredRunnerCommandNotOnPath_IsGR2009Warning()
+    {
+        const string json =
+            """
+            {
+              "version": 1,
+              "promptRunners": { "default": "claude", "claude": { "command": "claude" } }
+            }
+            """;
+        PlanLoadResult result = new PlanLoader().Load(PlanWith(json, promptTask: true));
+
+        // bash resolves (for the .sh guardrail) but the runner command 'claude' does not.
+        IReadOnlyList<Diagnostic> diagnostics =
+            new PlanValidator(FakeExecutableProbe.With("bash")).Validate(result.Plan!);
+
+        Diagnostic warning = Assert.Single(diagnostics, d => d.Code == DiagnosticCodes.PromptRunnerNotOnPath);
+        Assert.Equal(DiagnosticSeverity.Warning, warning.Severity);
+        Assert.Contains("claude", warning.Message);
+    }
+
+    [Fact]
+    public void DeclaredRunnerCommandOnPath_ProducesNoGR2009()
+    {
+        const string json =
+            """
+            {
+              "version": 1,
+              "promptRunners": { "default": "claude", "claude": { "command": "claude" } }
+            }
+            """;
+        PlanLoadResult result = new PlanLoader().Load(PlanWith(json, promptTask: true));
+
+        // Everything resolves → no prompt-runner warning.
+        IReadOnlyList<Diagnostic> diagnostics =
+            new PlanValidator(FakeExecutableProbe.All).Validate(result.Plan!);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.PromptRunnerNotOnPath);
+    }
+
+    [Fact]
+    public void GR2009IsWarningOnly_PlanStillValidatesClean()
+    {
+        // A missing runner command must NOT fail validation (the plan may run elsewhere).
+        const string json =
+            """
+            {
+              "version": 1,
+              "promptRunners": { "default": "claude", "claude": { "command": "claude" } }
+            }
+            """;
+        PlanLoadResult result = new PlanLoader().Load(PlanWith(json, promptTask: true));
+
+        IReadOnlyList<Diagnostic> diagnostics =
+            new PlanValidator(FakeExecutableProbe.With("bash")).Validate(result.Plan!);
+
+        Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
     public void Registry_BuildsRunnersAndResolvesDefault()
     {
         const string json =

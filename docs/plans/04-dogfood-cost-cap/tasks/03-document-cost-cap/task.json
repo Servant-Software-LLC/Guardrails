@@ -1,0 +1,4 @@
+{
+  "description": "Document maxCostUsd in the SSOT (02-schemas-and-contracts.md §2) and in the guardrails-domain-knowledge skill",
+  "dependsOn": ["02-implement-cost-cap"]
+}

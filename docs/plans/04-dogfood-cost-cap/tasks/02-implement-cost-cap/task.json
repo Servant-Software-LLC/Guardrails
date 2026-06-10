@@ -1,0 +1,4 @@
+{
+  "description": "Implement the per-run cost cap: RunConfig.MaxCostUsd + maxCostUsd parsing, GR2010 (CostCapNonPositive) validation, and the scheduler launch-time halt that marks over-budget work needs-human 'cost cap reached'",
+  "dependsOn": ["01-author-cost-cap-tests"]
+}

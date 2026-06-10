@@ -1,0 +1,4 @@
+{
+  "description": "Author failing tests that encode the per-run cost cap: maxCostUsd parses; a non-positive cap is GR2010; the scheduler halts at the cap with needs-human 'cost cap reached'",
+  "dependsOn": []
+}

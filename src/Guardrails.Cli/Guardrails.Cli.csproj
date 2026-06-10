@@ -10,8 +10,19 @@
 
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>guardrails</ToolCommandName>
-    <PackageId>guardrails</PackageId>
-    <Version>0.4.0</Version>
+    <PackageId>ServantSoftware.Guardrails</PackageId>
+    <Version>1.0.0-preview.1</Version>
+
+    <Authors>Servant Software LLC</Authors>
+    <Company>Servant Software LLC</Company>
+    <Description>Guardrails turns a reviewed markdown plan into an executable task DAG where every task carries deterministic acceptance checks ("guardrails"), and a cross-platform harness runs the DAG to green — retrying failed tasks with the failure evidence fed back to the agent, and halting honestly (needs-human) when a task cannot converge.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Copyright>Copyright (c) Servant Software LLC</Copyright>
+    <RepositoryUrl>https://github.com/Servant-Software-LLC/Guardrails.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/Servant-Software-LLC/Guardrails</PackageProjectUrl>
+    <PackageTags>guardrails;agentic;llm;automation;dotnet-tool;cli;dag;verification;claude</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +32,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Guardrails.Core\Guardrails.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

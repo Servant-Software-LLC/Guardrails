@@ -28,6 +28,7 @@ public sealed class PlanValidator
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
+        ValidatePromptRunnerCommands(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
         return diagnostics;
@@ -149,6 +150,28 @@ public sealed class PlanValidator
     }
 
     /// <summary>
+    /// Probe each DECLARED prompt runner's <c>command</c> on PATH (reusing the same
+    /// <see cref="IExecutableProbe"/> as interpreter resolution). An unresolvable command is a
+    /// WARNING (GR2009), not an error: the plan may have been authored to run on another
+    /// machine where the runner is installed. Every declared runner is probed even if no task
+    /// currently references it — a stale runner config is worth surfacing. Runs only after the
+    /// GR2008 error path (no runners at all) has been handled by <see cref="ValidatePromptRunners"/>.
+    /// </summary>
+    private void ValidatePromptRunnerCommands(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values
+                     .OrderBy(r => r.Name, StringComparer.Ordinal))
+        {
+            if (!_probe.Exists(runner.Command))
+            {
+                diagnostics.Add(Warning(DiagnosticCodes.PromptRunnerNotOnPath, plan.PlanDirectory,
+                    $"Prompt runner '{runner.Name}' command '{runner.Command}' is not resolvable on PATH. " +
+                    "Prompt tasks using this runner will fail unless it is installed on the machine that runs the plan."));
+            }
+        }
+    }
+
+    /// <summary>
     /// For every distinct extension used by a *script* action or guardrail, probe the
     /// interpreter. A used deterministic extension with no resolvable interpreter is an
     /// ERROR in M2 (we cannot run it). Prompt actions/guardrails validate fine here — they
@@ -209,6 +232,14 @@ public sealed class PlanValidator
     {
         Code = code,
         Severity = DiagnosticSeverity.Error,
+        Path = path,
+        Message = message
+    };
+
+    private static Diagnostic Warning(string code, string path, string message) => new()
+    {
+        Code = code,
+        Severity = DiagnosticSeverity.Warning,
         Path = path,
         Message = message
     };

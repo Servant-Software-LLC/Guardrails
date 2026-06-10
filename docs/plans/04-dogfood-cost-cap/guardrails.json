@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "maxParallelism": 1,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  // workspace = the Guardrails repo root, three levels up from this plan folder
+  // (docs/plans/04-dogfood-cost-cap/). All build/test guardrails run from there.
+  "workspace": "../../..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)", "Bash(git *)"],
+      "maxTurns": 60,
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 15
+      }
+    }
+  }
+}

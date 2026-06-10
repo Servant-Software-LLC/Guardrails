@@ -314,7 +314,13 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
   over"), verdict contract (guardrails: "you are a verifier — do NOT fix anything").
 - Semantic success for a prompt **action** = process completed AND result `is_error == false`.
   For a prompt **guardrail** = the verdict file, full stop.
-- Per-attempt `total_cost_usd` is recorded in the journal.
+- Per-attempt `total_cost_usd` is recorded in the journal. The `run` summary and
+  `guardrails status` print a final `Total prompt cost: $X.XXXX` line summing every
+  recorded attempt's `costUsd`; the line is omitted entirely when no attempt recorded a
+  cost (deterministic-only plans stay noise-free).
+- `guardrails validate` probes each DECLARED runner's `command` on PATH and emits a
+  **warning** (GR2009) if it does not resolve — not an error, since the plan may run on
+  another machine where the runner is installed.
 - A prompt action may signal an unresolvable decision by writing
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
   as needs-human immediately (no retry burn).

@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Journal;
 using Guardrails.Core.State;
 using Spectre.Console;
 
@@ -31,16 +32,29 @@ public static class RunCommand
             Description = "Plain line-by-line output instead of the live progress table."
         };
 
+        var dryRunOption = new Option<bool>("--dry-run")
+        {
+            Description = "Validate and preview waves + per-task resolution + resume skips, then exit 0 without running or touching state."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
         command.Add(noUiOption);
+        command.Add(dryRunOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
             string folder = parseResult.GetRequiredValue(folderArgument);
             bool fresh = parseResult.GetValue(freshOption);
             bool noUi = parseResult.GetValue(noUiOption);
+            bool dryRun = parseResult.GetValue(dryRunOption);
+
+            if (dryRun)
+            {
+                return DryRun.Execute(folder);
+            }
+
             return await RunAsync(folder, fresh, noUi, cancellationToken).ConfigureAwait(false);
         });
 
@@ -76,7 +90,7 @@ public static class RunCommand
             report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(), cancellationToken).ConfigureAwait(false);
         }
 
-        PrintSummary(report);
+        PrintSummary(report, probe.Plan.PlanDirectory);
 
         if (report.Cancelled)
         {
@@ -95,7 +109,7 @@ public static class RunCommand
         return scheduler.RunAsync(plan, cancellationToken);
     }
 
-    private static void PrintSummary(RunReport report)
+    private static void PrintSummary(RunReport report, string planDirectory)
     {
         Console.WriteLine("Summary");
         Console.WriteLine("-------");
@@ -110,6 +124,8 @@ public static class RunCommand
             ? $"Run CANCELLED — {green}/{report.Tasks.Count} task(s) green; in-flight tasks journaled pending. Re-run to resume."
             : $"{green}/{report.Tasks.Count} task(s) green (succeeded or skipped).");
 
+        PrintTotalCost(planDirectory);
+
         foreach (TaskResult needsHuman in report.Tasks.Where(t =>
                      t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed
                          or TaskOutcome.InvalidFragment or TaskOutcome.NeedsHuman))
@@ -118,6 +134,26 @@ public static class RunCommand
             Console.WriteLine($"NEEDS HUMAN: {needsHuman.TaskId} — {needsHuman.Summary}");
             Console.WriteLine($"  Inspect state/logs/{needsHuman.TaskId}/ (latest attempt's feedback.md has the full failure detail),");
             Console.WriteLine("  fix the action or guardrails, then re-run to resume.");
+        }
+    }
+
+    /// <summary>
+    /// Print the run-level cost line (SSOT §7 <c>costUsd</c>) from the freshly-persisted
+    /// journal. Omitted when no attempt recorded a cost, so deterministic-only plans stay
+    /// noise-free.
+    /// </summary>
+    private static void PrintTotalCost(string planDirectory)
+    {
+        string journalPath = RunJournal.PathFor(planDirectory);
+        if (!File.Exists(journalPath))
+        {
+            return;
+        }
+
+        JournalDocument document = JournalReader.Read(journalPath);
+        if (JournalCost.Total(document) is { } total)
+        {
+            Console.WriteLine($"Total prompt cost: ${total:F4}");
         }
     }
 

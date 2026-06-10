@@ -31,6 +31,28 @@ TFM `net8.0` everywhere; CLI has `<RollForward>LatestMajor</RollForward>`.
 `SetAction`/`GetRequiredValue`), Spectre.Console (CLI only, behind `IRunObserver`),
 YamlDotNet (Core, frontmatter), xunit.v3.
 
+## Packaging (dotnet tool)
+
+- **PackageId `ServantSoftware.Guardrails`** (org convention — NOT bare `guardrails`);
+  `ToolCommandName` stays `guardrails` (that is the invoked command). Package metadata
+  (Authors/Company `Servant Software LLC`, Description, `PackageLicenseExpression` MIT with
+  a root `LICENSE`, RepositoryUrl, PackageTags, README packed) lives in
+  `src/Guardrails.Cli/Guardrails.Cli.csproj`. Version: `1.0.0-preview.1`.
+- Local pack + acceptance (leaves the machine clean):
+  ```powershell
+  dotnet pack src/Guardrails.Cli -c Release -o nupkg          # nupkg/ is gitignored
+  dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails --version 1.0.0-preview.1
+  guardrails validate examples/hello-guardrails/hello-guardrails   # via the INSTALLED tool
+  guardrails plan     examples/hello-guardrails/hello-guardrails
+  dotnet tool uninstall -g ServantSoftware.Guardrails
+  ```
+  (Prerelease → pass `--version 1.0.0-preview.1` or `--prerelease`; use `dotnet tool
+  update` if a version is already installed.) Do NOT run the example's prompt tasks via the
+  installed tool — no token spend.
+- Publish pipeline: `.github/workflows/release.yml` — on a pushed tag `v*`, the 3-OS test
+  matrix gates, then `dotnet pack` + `dotnet nuget push` using repo secret `NUGET_API_KEY`
+  (must be configured in GitHub repo settings).
+
 ## Commands
 
 ```powershell
@@ -50,7 +72,8 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
 - **JSON manifests**: System.Text.Json with `ReadCommentHandling.Skip` +
   `AllowTrailingCommas` — committed examples use `//` comments; don't break this.
 - **Diagnostic codes**: GR10xx loading, GR20xx validation (`DiagnosticCodes.cs`);
-  tests assert codes; never renumber. Next free: GR1009 / GR2009.
+  tests assert codes; never renumber. GR2009 = prompt-runner `command` not on PATH
+  (WARNING, not error). Next free: GR1009 / GR2010.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;

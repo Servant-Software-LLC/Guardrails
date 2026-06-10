@@ -180,5 +180,20 @@ always a **draft** until a human reviews it.
   matches the golden folder's structure (same task split, same guardrail archetypes).
 - **Reality Gate: MET — all three booleans** (build+tests; end-to-end example run on
   real Claude, verified 2026-06-10 at ~$0.90; plan-breakdown round-trip).
-- M7 Polish + dogfood: not started (NuGet publish pipeline, run-level cost
-  aggregation, `--dry-run`, validation depth, first dogfooded plan).
+- M7 Polish + packaging: **complete except dogfood execution** (which awaits human
+  review — that is the workflow). Run-level cost aggregation: `JournalCost.Total` sums
+  every attempt's `costUsd`; the `run` summary and `status` print `Total prompt cost:
+  $X.XXXX`, omitted when no attempt recorded a cost (deterministic plans stay quiet).
+  `guardrails run --dry-run`: validates, prints the waves preview + per-task resolution
+  (kind/runner/exclusive/retry-budget) + journal-aware resume SKIPs, then exits 0 having
+  run nothing and touched no state (reads `run.json` read-only — no `LoadOrCreate`).
+  Validation depth: `validate` probes each DECLARED prompt runner's `command` on PATH as a
+  **warning** (GR2009, not an error — the plan may run elsewhere). Packaging: PackageId
+  `ServantSoftware.Guardrails` (ToolCommandName stays `guardrails`), version
+  `1.0.0-preview.1`, MIT `LICENSE` + full package metadata, README packed; release pipeline
+  `.github/workflows/release.yml` (tag `v*` → 3-OS matrix → pack + `dotnet nuget push` via
+  secret `NUGET_API_KEY`). Clean-machine pack/install acceptance passed (validate + plan via
+  the installed tool, then uninstalled). **Dogfood artifact authored, not executed**:
+  `docs/plans/04-dogfood-cost-cap.md` + its breakdown folder (validate-clean, 4 tasks:
+  inserted test-author → implement → document → terminal suite-green) await human review
+  before `guardrails run` — the first real v2 slice (per-run cost cap).

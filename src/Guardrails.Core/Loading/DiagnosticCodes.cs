@@ -56,4 +56,10 @@ public static class DiagnosticCodes
 
     /// <summary>The plan has prompt actions or prompt guardrails but no <c>promptRunners</c> config to run them.</summary>
     public const string NoPromptRunners = "GR2008";
+
+    /// <summary>
+    /// A declared prompt runner's <c>command</c> is not resolvable on PATH. WARNING, not
+    /// error — the plan may run on another machine where the runner is installed.
+    /// </summary>
+    public const string PromptRunnerNotOnPath = "GR2009";
 }

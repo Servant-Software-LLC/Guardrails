@@ -69,7 +69,7 @@ nothing but .NET.
 |---|---|
 | `guardrails validate <folder>` | Schema, DAG (cycles), file refs, interpreter/runner checks |
 | `guardrails plan <folder>` | Execution-wave preview — runs nothing |
-| `guardrails run <folder> [--fresh] [--no-ui]` | Run to green; resume-aware; live progress table |
+| `guardrails run <folder> [--fresh] [--no-ui] [--dry-run]` | Run to green; resume-aware; live progress table. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
 | `guardrails status <folder>` | Journal table: per-task status, attempts, last failure |
 | `guardrails reset <folder> [task]` | Re-arm one task, or wipe runtime state entirely |
 
@@ -102,8 +102,20 @@ into `~/.claude/skills/`:
 
 ## Status
 
-M1–M6 complete; the Reality Gate (build+tests, end-to-end example run on real
-Claude, plan-breakdown round-trip) is met. M7 (polish: NuGet publish pipeline,
-cost-report aggregation, `--dry-run`) is in flight — until it ships, run from
-source as shown above. v2 bets (worktree-per-task parallelism, CI mode, an
-executable guardrail template library, cost caps) are specified in the roadmap.
+M1–M7 complete; the Reality Gate (build+tests, end-to-end example run on real
+Claude, plan-breakdown round-trip) is met. M7 added run-level cost aggregation
+(`Total prompt cost` on `run`/`status`), `run --dry-run` (waves + per-task resolution
++ resume-skip preview, touches no state), prompt-runner PATH probing in `validate`
+(GR2009 warning), and packaging: the tool publishes to NuGet as
+**`ServantSoftware.Guardrails`** (installs as the `guardrails` command) via a tag-driven
+release pipeline.
+
+```bash
+dotnet tool install --global ServantSoftware.Guardrails --prerelease
+guardrails validate <plan-folder>
+```
+
+The first **dogfood** plan — a per-run cost cap (`docs/plans/04-dogfood-cost-cap.md` and
+its validate-clean task folder) — is authored and awaiting human review before the
+harness runs it on itself. v2 bets (worktree-per-task parallelism, CI mode, an executable
+guardrail template library, cost caps) are specified in the roadmap.

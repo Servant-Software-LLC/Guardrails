@@ -1,0 +1,70 @@
+# Release pipeline for the `ServantSoftware.Guardrails` dotnet tool.
+#
+# Trigger: pushing a tag of the form `v*` (e.g. `v1.0.0-preview.1`). The package
+# Version comes from src/Guardrails.Cli/Guardrails.Cli.csproj, NOT from the tag — keep the
+# two in sync when cutting a release.
+#
+# Flow: the 3-OS test matrix must pass on the tagged commit; only then does the `publish`
+# job pack and push to NuGet.org.
+#
+# REQUIRED SECRET — configure once in the GitHub repo (Settings → Secrets and variables →
+# Actions → New repository secret):
+#   NUGET_API_KEY  — a NuGet.org API key scoped to push the ServantSoftware.Guardrails
+#                    package. Without it, the publish step fails. It is referenced only by
+#                    the `publish` job below.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore Guardrails.sln
+
+      - name: Build
+        run: dotnet build Guardrails.sln --configuration Release --no-restore
+
+      - name: Test (Core)
+        run: dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --configuration Release --no-build
+
+      - name: Test (Integration)
+        run: dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --configuration Release --no-build
+
+  publish:
+    name: pack and publish to NuGet.org
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Pack
+        run: dotnet pack src/Guardrails.Cli -c Release -o nupkg
+
+      - name: Push to NuGet.org
+        # NUGET_API_KEY must be configured as a repository secret (see header comment).
+        run: dotnet nuget push "nupkg/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
