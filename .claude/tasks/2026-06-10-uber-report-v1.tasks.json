@@ -1,0 +1,65 @@
+[
+  {
+    "slug": "p1-dogfood-fix-guardrail",
+    "kind": "bug",
+    "priority": "P1",
+    "effort": "S",
+    "status": "open",
+    "dependsOn": [],
+    "notes": "Fix 03-tests-untouched.ps1 in docs/plans/04-dogfood-cost-cap: replace git diff HEAD with task-01 commit SHA stored in state, or diff against content hash. Also close Bash(git commit) timing exploit. BLOCKER for dogfood execution."
+  },
+  {
+    "slug": "p1-dogfood-execute",
+    "kind": "milestone",
+    "priority": "P1",
+    "effort": "M",
+    "status": "open",
+    "dependsOn": ["p1-dogfood-fix-guardrail"],
+    "notes": "guardrails run docs/plans/04-dogfood-cost-cap --fresh. Completes M7 exit criterion and implements maxCostUsd feature via the harness itself."
+  },
+  {
+    "slug": "p1-nuget-release",
+    "kind": "release",
+    "priority": "P1",
+    "effort": "S",
+    "status": "open",
+    "dependsOn": [],
+    "notes": "Configure NUGET_API_KEY secret on Servant-Software-LLC/Guardrails (Settings > Secrets > Actions), then git tag v1.0.0-preview.1 and push. Release pipeline handles the rest."
+  },
+  {
+    "slug": "p2-reality-gate-verify",
+    "kind": "verification",
+    "priority": "P2",
+    "effort": "S",
+    "status": "open",
+    "dependsOn": [],
+    "notes": "Run: guardrails run examples/hello-guardrails/hello-guardrails --fresh --no-ui on real Claude. Costs ~$1 in tokens. Flips Reality Gate item 2 to PASS."
+  },
+  {
+    "slug": "p2-ssot-guardrail-artifacts",
+    "kind": "docs",
+    "priority": "P2",
+    "effort": "S",
+    "status": "open",
+    "dependsOn": [],
+    "notes": "Update docs/plans/02-schemas-and-contracts.md §8 to document per-guardrail guardrail-<name>.stream.jsonl and composed-prompt.<name>.md artifacts. Fix §2 interpreter example to include {script} token."
+  },
+  {
+    "slug": "p3-task-executor-split",
+    "kind": "refactor",
+    "priority": "P3",
+    "effort": "M",
+    "status": "open",
+    "dependsOn": [],
+    "notes": "Extract action dispatch, prompt execution, and guardrail execution from TaskExecutor.cs (845 lines) into focused collaborator classes. Bring under 300 lines."
+  },
+  {
+    "slug": "p3-prompt-state-integration-test",
+    "kind": "test",
+    "priority": "P3",
+    "effort": "S",
+    "status": "open",
+    "dependsOn": [],
+    "notes": "Add FakeClaudePlanBuilder multi-task fixture: task B reads task A's fragment from GUARDRAILS_STATE_IN and asserts the merged value. Closes the prompt-pipeline state-passing test gap."
+  }
+]
