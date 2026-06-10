@@ -1,0 +1,15 @@
+# .NET build output
+bin/
+obj/
+nupkg/
+*.user
+.vs/
+
+# Runtime artifacts of plan-folder runs (the committed parts of a plan folder are
+# guardrails.json, tasks/**, and state/seed.json — everything the harness writes
+# at runtime is ignored). docs/, .claude/, and examples/ sources stay tracked.
+**/state/state.json
+**/state/run.json
+**/state/logs/
+**/state/merge-conflicts.log
+examples/**/out/

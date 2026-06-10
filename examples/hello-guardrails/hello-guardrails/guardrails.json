@@ -1,0 +1,23 @@
+{
+  // Run configuration — see docs/plans/02-schemas-and-contracts.md §2
+  "version": 1,
+  "maxParallelism": 2,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 600,
+  "guardrailMode": "failFast",
+  "workspace": "..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Write", "Grep", "Glob", "Bash(pwsh *)", "Bash(powershell *)"],
+      "maxTurns": 25,
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 10
+      }
+    }
+  }
+}

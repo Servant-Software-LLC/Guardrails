@@ -1,0 +1,4 @@
+{
+  "description": "Create out/greet.ps1, a script that prints 'Hello, <name>!' for a given name",
+  "dependsOn": []
+}

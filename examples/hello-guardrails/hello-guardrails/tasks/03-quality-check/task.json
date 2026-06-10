@@ -1,0 +1,4 @@
+{
+  "description": "Write out/report.md quoting the greeting and assessing its tone",
+  "dependsOn": ["02-generate-greeting"]
+}

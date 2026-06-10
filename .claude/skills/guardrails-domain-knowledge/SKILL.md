@@ -1,0 +1,106 @@
+---
+name: guardrails-domain-knowledge
+description: |
+  Guardrails product knowledge for all agents working in this repo. Use when working
+  on anything related to Guardrails:
+  - The task/guardrail/state conceptual model and the four-stage workflow
+  - Plan-folder layout, schemas, or child-process contracts
+  - Harness execution semantics (retry, needs-human, resume, merge)
+  - Authoring or reviewing the plan-breakdown / guardrail-review skills
+  - Roadmap, v2 bets, or scope questions
+
+  Provides: the mental model, execution semantics, contract quick-reference, and
+  pointers to the single-source-of-truth documents.
+
+  SELF-UPDATING: When your work changes the domain model, schemas, contracts,
+  execution semantics, or roadmap in ways that affect this knowledge, you MUST update
+  this skill (and docs/plans/02-schemas-and-contracts.md if a contract moved) before
+  completing your task. Update the affected section(s) only.
+---
+
+# Guardrails Domain Knowledge
+
+## Quick Reference
+
+**What is Guardrails?** A system that turns a reviewed markdown plan into an
+executable, file-system task DAG where every task carries executable acceptance
+checks ("guardrails"), plus a cross-platform .NET harness (`guardrails` dotnet tool)
+that runs the DAG to green — retrying failed tasks with guardrail feedback, and
+halting honestly (`needs-human`) when a task can't converge.
+
+**The bet:** in agentic engineering, verification is the bottleneck, not generation.
+Humans review the *checks* once instead of reviewing *every agent output* forever.
+
+## The model
+
+- **Plan folder** `<plan-name>/` generated next to `<plan-name>.md`:
+  `guardrails.json` (run config) + `state/` (seed, merged state, journal, logs) +
+  `tasks/<NN-verb-object>/` (one folder per task).
+- **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
+  `exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
+  Zero guardrails = validation error.
+- **Action kinds**: `.prompt.md` → LLM (via pluggable `IPromptRunner`; v1 = Claude Code
+  CLI headless); anything else → process via the interpreter map.
+- **Guardrails**: deterministic (exit 0 = pass; failure reason on stdout) or prompt
+  (MUST write `{pass, reason}` verdict JSON to `GUARDRAILS_VERDICT_OUT` — CLI exit
+  codes are never semantic). Ordered by filename, cheapest first. ALL must pass.
+  Every guardrail opens with a `catches:` comment naming the wrong implementation
+  it would catch.
+- **State**: snapshot-in / fragment-out. Attempt gets an immutable snapshot
+  (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment
+  (`GUARDRAILS_STATE_OUT`); harness (single writer) deep-merges fragments into
+  `state/state.json` in completion order after guardrails pass. Scalars/arrays
+  last-writer-wins; overwrites logged. `state/seed.json` (committed) seeds the
+  runtime state.
+
+## Execution semantics
+
+- Attempt = snapshot → run action (failed action skips guardrails) → run guardrails
+  (`failFast` default) → all pass: merge fragment + `succeeded` → else compose
+  `feedback.md` and retry (prompt actions get the feedback injected: "fix these
+  specific problems; do not start over").
+- Retry budget exhausted → `needs-human`; transitive dependents → `blocked`;
+  **independent branches keep running**.
+- Prompt actions default `exclusive: true` (sole workspace access) — two agents
+  editing one repo concurrently is the #1 real-world failure mode. Deterministic
+  actions default shared.
+- Resume: `succeeded` is terminal (use `guardrails reset` to force);
+  `needs-human`/`failed`/`blocked` → fresh budget; crashed `running` → `pending`.
+- Harness exit codes: 0 green · 1 error · 2 needs-human · 3 cancelled.
+- A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its
+  fragment — no retry burn on a genuine human decision.
+
+## The four-stage workflow
+
+PLAN (human+agents write/review the .md) → BREAK (`/plan-breakdown` generates the
+folder, **inserting guardrail-enabling tasks** like authoring the unit tests an
+implementation task's guardrails will run — with tests-fail-on-current-code proving
+non-tautology) → REVIEW (human edits; `/guardrail-review` adversarial pass: "what
+wrong implementation passes these?") → RUN (`guardrails run`). Generated output is
+always a **draft** until a human reviews it.
+
+## Load-bearing invariants
+
+1. **Deterministic over prompts** — prompt-judges are last resort, never alone, and
+   must pass the demotion gate in the guardrail catalogue.
+2. **Harness is the single writer of merged state**; children only ever get
+   snapshots and write fragments.
+3. **Verdicts come from files, never CLI exit codes** (prompt guardrails).
+4. **`docs/plans/02-schemas-and-contracts.md` is the schema SSOT** — C# serializers,
+   skills, and examples implement it; never fork it.
+5. **Honest halts** — the harness never marks unverified work done.
+
+## Where truth lives
+
+| Question | Document |
+|---|---|
+| Any schema / env var / contract | `docs/plans/02-schemas-and-contracts.md` (SSOT) |
+| Mental model, principles, out-of-scope | `docs/plans/01-overview.md` |
+| Milestones, exit criteria, v2 bets, risk register | `docs/plans/03-roadmap.md` |
+| Founding plan (history) | `docs/plans/00-initial-plan.md` |
+| Golden example (runnable + skill reference) | `examples/hello-guardrails/` |
+
+## Status (update as milestones complete)
+
+- M1 Foundations: **in progress** (docs + example landing)
+- M2–M7: not started. Reality Gate: not met (no harness yet).
