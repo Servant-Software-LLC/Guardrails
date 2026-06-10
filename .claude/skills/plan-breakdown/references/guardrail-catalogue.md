@@ -22,6 +22,15 @@ write the sentence, the guardrail is decorative — delete it.
 | 6 | **schema-validates** | script | Task emits structured data and a schema exists (or you inserted a schema-author task) | Structurally invalid output |
 | 7 | **port/endpoint-answers** | script (probe + curl, owns process start/stop, with timeout) | Task delivers a running service behavior | Service that builds but doesn't actually serve |
 | 8 | **tests-fail-on-current-code** | script | THE distinctive one — for inserted test-author tasks; run the new tests against the pre-implementation code and require failure (or skipped-with-reason) | Tautological tests that pass against a stub and verify nothing |
+
+> **Compile-coupled tests:** when the new tests reference not-yet-existing symbols
+> (a new property, constant, or type), the test project won't even compile against
+> current code — so a separate tests-build guardrail would fail at the same moment
+> tests-fail-on-current-code requires failure. In that case DROP the tests-build
+> guardrail and let tests-fail-on-current-code carry both (non-zero exit = compile
+> failure OR test failure, either proves non-tautology). Keep tests-build only when
+> the tests compile against current code (e.g. they exercise a CLI flag or file
+> output rather than new API surface).
 | 9 | **prompt-judge** | `.prompt.md` (writes `{pass, reason}` verdict) | **LAST RESORT** — see the demotion gate | Genuinely subjective properties: tone, clarity, design taste |
 
 ## The prompt-judge demotion gate

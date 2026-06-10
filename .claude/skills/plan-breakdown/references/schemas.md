@@ -36,6 +36,12 @@ harness-owned runtime artifacts (and gitignored).
 }
 ```
 
+**Mind the workspace depth.** `".."` is right only when the plan folder sits directly
+in the workspace root. A plan nested deeper points further up — e.g. a plan at
+`docs/plans/my-plan/` operating on the repo root needs `"workspace": "../../.."`.
+Compute it from where the folder actually lives; `guardrails plan` + a dry-run of the
+first guardrail are cheap sanity checks.
+
 **If ANY task or guardrail is a `.prompt.md`, a `promptRunners` block is REQUIRED**
 (validation error GR2008 otherwise), with a resolvable default:
 
