@@ -25,11 +25,21 @@ public sealed class PlanValidator
 
         ValidateTaskIdsUnique(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
+        ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
         return diagnostics;
+    }
+
+    private static void ValidateNoCycles(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (new Graph.DependencyGraph(plan.Tasks).FindCycle() is { } cycle)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.DependencyCycle, plan.PlanDirectory,
+                $"Dependency cycle: {string.Join(" -> ", cycle)}."));
+        }
     }
 
     private static void ValidateTaskIdsUnique(PlanDefinition plan, List<Diagnostic> diagnostics)

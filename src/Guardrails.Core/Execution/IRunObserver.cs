@@ -3,14 +3,21 @@ using Guardrails.Core.Model;
 namespace Guardrails.Core.Execution;
 
 /// <summary>
-/// Receives line-by-line progress as a serial run proceeds. Keeps
-/// <see cref="SerialExecutor"/> free of any console/UI dependency; the CLI supplies a
-/// plain-text implementation. A no-op default is available via <see cref="Null"/>.
+/// Receives progress events as a run proceeds. Keeps the <see cref="Scheduler"/> and
+/// <see cref="TaskExecutor"/> free of any console/UI dependency; the CLI supplies a
+/// plain-text or live (Spectre) implementation. Implementations MUST be thread-safe —
+/// M4 workers emit events concurrently. A no-op default is available via <see cref="Null"/>.
 /// </summary>
 public interface IRunObserver
 {
     /// <summary>A task is about to run its action.</summary>
     void TaskStarting(TaskNode task);
+
+    /// <summary>
+    /// An attempt is starting: <paramref name="attempt"/> of <paramref name="budget"/>
+    /// for this run (1-based; budget = 1 + retries).
+    /// </summary>
+    void AttemptStarting(TaskNode task, int attempt, int budget) { }
 
     /// <summary>A task finished (succeeded, failed, or was blocked).</summary>
     void TaskFinished(TaskResult result);

@@ -19,5 +19,8 @@ public enum TaskOutcome
     Blocked,
 
     /// <summary>Resume skipped this task because the journal already records it as succeeded.</summary>
-    Skipped
+    Skipped,
+
+    /// <summary>The run was cancelled before this task could finish (or start). Journaled pending; resume re-runs it.</summary>
+    Cancelled
 }

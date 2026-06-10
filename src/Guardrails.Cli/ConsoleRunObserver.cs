@@ -4,42 +4,65 @@ using Guardrails.Core.Model;
 namespace Guardrails.Cli;
 
 /// <summary>
-/// Plain line-by-line console progress for a serial run (no Spectre until M4). Writes
-/// task starts, guardrail outcomes, task results, and the loud plan-hash-mismatch warning.
+/// Plain line-by-line console progress — the fallback when the terminal is not
+/// interactive (redirected output, CI) or <c>--no-ui</c> is passed. Thread-safe: M4
+/// workers emit events concurrently, so every write is serialized through one gate.
 /// </summary>
 public sealed class ConsoleRunObserver : IRunObserver
 {
-    public void TaskStarting(TaskNode task) =>
-        Console.WriteLine($"[task] {task.Id}: {task.Description}");
+    private readonly object _gate = new();
+
+    public void TaskStarting(TaskNode task)
+    {
+        lock (_gate)
+        {
+            Console.WriteLine($"[task] {task.Id}: {task.Description}");
+        }
+    }
+
+    public void AttemptStarting(TaskNode task, int attempt, int budget)
+    {
+        if (attempt == 1)
+        {
+            return; // first attempts are implied by TaskStarting; only retries are news
+        }
+
+        lock (_gate)
+        {
+            Console.WriteLine($"[retry] {task.Id}: attempt {attempt}/{budget}");
+        }
+    }
 
     public void GuardrailFinished(TaskNode task, GuardrailResult result)
     {
-        if (result.Passed)
+        lock (_gate)
         {
-            Console.WriteLine($"  [guardrail] {result.Name}: PASS");
-        }
-        else
-        {
-            Console.WriteLine($"  [guardrail] {result.Name}: FAIL — {result.Reason}");
+            Console.WriteLine(result.Passed
+                ? $"  [guardrail] {task.Id} / {result.Name}: PASS"
+                : $"  [guardrail] {task.Id} / {result.Name}: FAIL — {result.Reason}");
         }
     }
 
     public void TaskFinished(TaskResult result)
     {
-        Console.WriteLine($"[{RunCommandLabel(result.Outcome)}] {result.TaskId} — {result.Summary}");
-        Console.WriteLine();
+        lock (_gate)
+        {
+            Console.WriteLine($"[{Commands.RunCommand.StatusLabel(result.Outcome)}] {result.TaskId} — {result.Summary}");
+            Console.WriteLine();
+        }
     }
 
     public void PlanHashMismatch(string previousPlanHash)
     {
-        Console.WriteLine("================================================================");
-        Console.WriteLine("WARNING: plan manifests changed since the last run.");
-        Console.WriteLine($"  previous planHash: {previousPlanHash}");
-        Console.WriteLine("  Resuming anyway — completed tasks are still treated as done.");
-        Console.WriteLine("  Run 'guardrails run --fresh' to re-run from a clean slate.");
-        Console.WriteLine("================================================================");
-        Console.WriteLine();
+        lock (_gate)
+        {
+            Console.WriteLine("================================================================");
+            Console.WriteLine("WARNING: plan manifests changed since the last run.");
+            Console.WriteLine($"  previous planHash: {previousPlanHash}");
+            Console.WriteLine("  Resuming anyway — completed tasks are still treated as done.");
+            Console.WriteLine("  Run 'guardrails run --fresh' to re-run from a clean slate.");
+            Console.WriteLine("================================================================");
+            Console.WriteLine();
+        }
     }
-
-    private static string RunCommandLabel(TaskOutcome outcome) => Commands.RunCommand.StatusLabel(outcome);
 }

@@ -50,4 +50,7 @@ public static class DiagnosticCodes
 
     /// <summary>An extension is only valid on a different operating system (e.g. .cmd off Windows).</summary>
     public const string InterpreterWrongPlatform = "GR2006";
+
+    /// <summary>The <c>dependsOn</c> graph contains a cycle.</summary>
+    public const string DependencyCycle = "GR2007";
 }

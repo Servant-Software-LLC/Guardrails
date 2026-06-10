@@ -16,8 +16,9 @@ public sealed class SerialRunTests
         Assert.NotNull(load.Plan);
         Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
 
-        var executor = new SerialExecutor(new ProcessRunner(), new PathExecutableProbe());
-        return await executor.RunAsync(load.Plan!);
+        Scheduler scheduler = SchedulerFactory.Create(
+            load.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+        return await scheduler.RunAsync(load.Plan!);
     }
 
     [Fact]

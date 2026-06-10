@@ -14,7 +14,7 @@ namespace Guardrails.Core.Journal;
 /// Mutation is guarded by a lock so the M4 scheduler can record task completions from
 /// multiple worker loops without corrupting the file or double-issuing a merge sequence.
 /// </summary>
-public sealed class RunJournal
+public sealed class RunJournal : Execution.ISchedulerJournal
 {
     private readonly string _journalPath;
     private readonly object _gate = new();

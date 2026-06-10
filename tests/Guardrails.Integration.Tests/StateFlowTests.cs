@@ -20,8 +20,9 @@ public sealed class StateFlowTests
         Assert.NotNull(load.Plan);
         Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
 
-        var executor = new SerialExecutor(new ProcessRunner(), new PathExecutableProbe());
-        return await executor.RunAsync(load.Plan!);
+        Scheduler scheduler = SchedulerFactory.Create(
+            load.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+        return await scheduler.RunAsync(load.Plan!);
     }
 
     [Fact]
@@ -97,7 +98,8 @@ public sealed class StateFlowTests
 
         // The journal records the invalid-fragment outcome verbatim.
         JournalDocument journal = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
-        Assert.Equal(JournalTaskStatus.Failed, journal.Tasks["01-bad"].Status);
+        // M4: budget exhaustion (here: 0 retries, so the first attempt is final) → needs-human.
+        Assert.Equal(JournalTaskStatus.NeedsHuman, journal.Tasks["01-bad"].Status);
         Assert.Equal(AttemptOutcome.InvalidFragment, journal.Tasks["01-bad"].Attempts[^1].Outcome);
     }
 

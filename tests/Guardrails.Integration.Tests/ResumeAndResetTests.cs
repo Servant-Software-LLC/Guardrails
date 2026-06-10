@@ -20,8 +20,9 @@ public sealed class ResumeAndResetTests
         Assert.NotNull(load.Plan);
         Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
 
-        var executor = new SerialExecutor(new ProcessRunner(), new PathExecutableProbe());
-        return await executor.RunAsync(load.Plan!);
+        Scheduler scheduler = SchedulerFactory.Create(
+            load.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+        return await scheduler.RunAsync(load.Plan!);
     }
 
     /// <summary>An action body that appends a line to a counter file under the plan dir, then succeeds.</summary>
@@ -56,7 +57,8 @@ public sealed class ResumeAndResetTests
 
         JournalDocument afterFirst = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
         Assert.Equal(JournalTaskStatus.Succeeded, afterFirst.Tasks["01-first"].Status);
-        Assert.Equal(JournalTaskStatus.Failed, afterFirst.Tasks["02-second"].Status);
+        // M4: budget exhaustion (0 retries here) journals needs-human, the terminal failure state.
+        Assert.Equal(JournalTaskStatus.NeedsHuman, afterFirst.Tasks["02-second"].Status);
 
         Assert.Equal(1, RunCount(plan.PlanDir, "t1.count"));
         Assert.Equal(1, RunCount(plan.PlanDir, "t2.count"));

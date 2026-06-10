@@ -20,12 +20,15 @@ public sealed class ScriptPlanBuilder : IDisposable
     {
         _root = Path.Combine(Path.GetTempPath(), "guardrails-it-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_root);
+        // defaultRetries 0: these fixtures assert single-attempt semantics exactly.
         File.WriteAllText(Path.Combine(_root, "guardrails.json"),
             """
             {
               "version": 1,
               "guardrailMode": "failFast",
-              "workspace": "."
+              "workspace": ".",
+              "defaultRetries": 0,
+              "maxParallelism": 1
             }
             """);
         Directory.CreateDirectory(Path.Combine(_root, "tasks"));

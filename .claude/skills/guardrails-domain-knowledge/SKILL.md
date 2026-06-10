@@ -127,5 +127,17 @@ always a **draft** until a human reviews it.
   scripts (`STATE_IN`/`STATE_OUT`/`STATE_FRAGMENT`/`LOG_DIR`/`ACTION_STDOUT`/`_STDERR`/
   `_RESULT`; `FEEDBACK` is M4). New CLI: `status` (read-only journal table), `reset
   <folder> [task]`, and `run --fresh`. M4 still owns DAG/parallelism/retry/needs-human.
-- M4–M7: not started. Reality Gate: not yet met (prompt execution + full example run
+- M4 DAG + parallelism + retry: **complete**. `DependencyGraph` (cycle detection →
+  GR2007, waves, transitive-dependent closure), Channel-based `Scheduler`
+  (maxParallelism workers; failure blocks the transitive closure while independent
+  branches finish; resume pre-pass), `TaskExecutor` retry loop (budget = 1 + retries;
+  `feedback.md` written per failed attempt and delivered via `GUARDRAILS_FEEDBACK`
+  from attempt 2; budget exhaustion → `needs-human`; cancellation → attempt outcome
+  `cancelled`, task journaled `pending`), FIFO shared/exclusive `WorkspaceLock`
+  (prompt actions exclusive by default per §3), `guardrails plan` (waves preview),
+  Spectre live table UI (plain-line fallback when non-interactive or `--no-ui`),
+  exit code 3 on cancellation. `SerialExecutor` is gone — `Scheduler` with
+  maxParallelism 1 is serial mode; test fixtures pin `defaultRetries: 0` to keep
+  single-attempt assertions exact.
+- M5–M7: not started. Reality Gate: not yet met (prompt execution + full example run
   land in M5).

@@ -15,16 +15,20 @@ public sealed class StatePlanBuilder : IDisposable
 
     private readonly string _root;
 
-    public StatePlanBuilder(string? seedJson = null)
+    public StatePlanBuilder(string? seedJson = null, int defaultRetries = 0, int maxParallelism = 1)
     {
         _root = Path.Combine(Path.GetTempPath(), "gr-m3-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_root);
+        // defaultRetries defaults to 0 here so single-attempt test semantics stay exact;
+        // M4 retry tests opt in explicitly.
         File.WriteAllText(Path.Combine(_root, "guardrails.json"),
-            """
+            $$"""
             {
               "version": 1,
               "guardrailMode": "failFast",
-              "workspace": "."
+              "workspace": ".",
+              "defaultRetries": {{defaultRetries}},
+              "maxParallelism": {{maxParallelism}}
             }
             """);
         Directory.CreateDirectory(Path.Combine(_root, "tasks"));
@@ -51,6 +55,7 @@ public sealed class StatePlanBuilder : IDisposable
         string id,
         string? actionBody = null,
         string? guardrailBody = null,
+        bool? exclusive = null,
         params string[] dependsOn)
     {
         string taskDir = Path.Combine(_root, "tasks", id);
@@ -61,11 +66,15 @@ public sealed class StatePlanBuilder : IDisposable
             ? "[]"
             : "[" + string.Join(", ", dependsOn.Select(d => $"\"{d}\"")) + "]";
 
+        string exclusiveLine = exclusive is null
+            ? string.Empty
+            : $",\n  \"exclusive\": {(exclusive.Value ? "true" : "false")}";
+
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
-              "description": "M3 task {{id}}",
-              "dependsOn": {{dependsJson}}
+              "description": "fixture task {{id}}",
+              "dependsOn": {{dependsJson}}{{exclusiveLine}}
             }
             """);
 

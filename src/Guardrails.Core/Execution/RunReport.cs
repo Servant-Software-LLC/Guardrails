@@ -35,11 +35,14 @@ public sealed record TaskResult
     public bool IsGreen => Outcome is TaskOutcome.Succeeded or TaskOutcome.Skipped;
 }
 
-/// <summary>The aggregate result of an entire serial run.</summary>
+/// <summary>The aggregate result of an entire run.</summary>
 public sealed record RunReport
 {
-    /// <summary>Per-task results in execution order.</summary>
+    /// <summary>Per-task results in plan order.</summary>
     public required IReadOnlyList<TaskResult> Tasks { get; init; }
+
+    /// <summary>True when the run was cancelled (Ctrl+C) before quiescence.</summary>
+    public bool Cancelled { get; init; }
 
     /// <summary>True when every task is green (succeeded this run or skipped as already-succeeded).</summary>
     public bool AllSucceeded => Tasks.All(t => t.IsGreen);

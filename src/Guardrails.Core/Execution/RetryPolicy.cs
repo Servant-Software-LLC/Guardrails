@@ -1,0 +1,107 @@
+using System.Text;
+using Guardrails.Core.Model;
+
+namespace Guardrails.Core.Execution;
+
+/// <summary>
+/// Composes the <c>feedback.md</c> written after a failed attempt (SSOT §8). The text is
+/// the retry's input: deterministic actions just re-run, but prompt actions receive it
+/// verbatim via <c>GUARDRAILS_FEEDBACK</c> / the composed prompt, so it must be specific
+/// and actionable — guardrail names, their reasons, and output tails, never just "failed".
+/// </summary>
+public static class RetryPolicy
+{
+    private const int TailLines = 60;
+    private const int TailChars = 4000;
+
+    /// <summary>Compose feedback for an attempt whose ACTION failed (guardrails were skipped).</summary>
+    public static string ForActionFailure(TaskNode task, int attempt, ProcessResult action)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## What failed");
+        text.AppendLine(action.TimedOut
+            ? "The action timed out and was killed. Guardrails were skipped."
+            : $"The action exited with code {action.ExitCode}. Guardrails were skipped.");
+        AppendTail(text, "Action stderr (tail)", action.StandardError);
+        AppendTail(text, "Action stdout (tail)", action.StandardOutput);
+        return text.ToString();
+    }
+
+    /// <summary>Compose feedback for an attempt where one or more GUARDRAILS failed.</summary>
+    public static string ForGuardrailFailures(
+        TaskNode task,
+        int attempt,
+        IReadOnlyList<GuardrailResult> results)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## Failed guardrails");
+
+        foreach (GuardrailResult failed in results.Where(r => !r.Passed))
+        {
+            GuardrailDefinition? definition = task.Guardrails.FirstOrDefault(g => g.Name == failed.Name);
+            text.AppendLine($"### {failed.Name}");
+            if (!string.IsNullOrWhiteSpace(definition?.Description))
+            {
+                text.AppendLine($"Checks: {definition.Description}");
+            }
+
+            text.AppendLine($"Reason: {failed.Reason ?? "guardrail failed (no reason printed)"}");
+            text.AppendLine();
+        }
+
+        IReadOnlyList<string> passed = results.Where(r => r.Passed).Select(r => r.Name).ToList();
+        if (passed.Count > 0)
+        {
+            text.AppendLine($"Guardrails that PASSED (do not break these): {string.Join(", ", passed)}");
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>Compose feedback for an attempt rejected because its state fragment was invalid (SSOT §6.2).</summary>
+    public static string ForInvalidFragment(TaskNode task, int attempt, string reason)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## Invalid state fragment");
+        text.AppendLine(reason);
+        text.AppendLine();
+        text.AppendLine("The file written to GUARDRAILS_STATE_OUT must be a single JSON object, e.g.");
+        text.AppendLine($"`{{ \"{task.Id}\": {{ \"someKey\": \"someValue\" }} }}`.");
+        return text.ToString();
+    }
+
+    private static void AppendHeader(StringBuilder text, TaskNode task, int attempt)
+    {
+        text.AppendLine($"# Attempt {attempt} of task '{task.Id}' failed");
+        text.AppendLine();
+        text.AppendLine($"Task: {task.Description}");
+        text.AppendLine();
+        text.AppendLine("Fix the specific problems below. Do NOT start over from scratch — keep what");
+        text.AppendLine("already works and address only what failed.");
+        text.AppendLine();
+    }
+
+    private static void AppendTail(StringBuilder text, string title, string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return;
+        }
+
+        string[] lines = content.TrimEnd().Split('\n');
+        IEnumerable<string> tail = lines.Length > TailLines ? lines[^TailLines..] : lines;
+        string joined = string.Join('\n', tail);
+        if (joined.Length > TailChars)
+        {
+            joined = joined[^TailChars..];
+        }
+
+        text.AppendLine($"## {title}");
+        text.AppendLine("```");
+        text.AppendLine(joined.TrimEnd('\r', '\n'));
+        text.AppendLine("```");
+    }
+}

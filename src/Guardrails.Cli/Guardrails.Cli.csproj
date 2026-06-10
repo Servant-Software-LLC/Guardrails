@@ -11,11 +11,12 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>guardrails</ToolCommandName>
     <PackageId>guardrails</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.4.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="System.CommandLine" Version="2.0.9" />
+    <PackageReference Include="Spectre.Console" Version="0.51.1" />
   </ItemGroup>
 
   <ItemGroup>
