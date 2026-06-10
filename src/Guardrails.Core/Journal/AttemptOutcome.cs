@@ -25,5 +25,12 @@ public enum AttemptOutcome
     Cancelled,
 
     /// <summary>The action wrote a fragment that was not a parseable JSON object (SSOT §6.2).</summary>
-    InvalidFragment
+    InvalidFragment,
+
+    /// <summary>
+    /// A prompt action signalled an unresolvable decision by writing a root <c>needsHuman</c>
+    /// key to its fragment (SSOT §9). The attempt is recorded with this distinct outcome and
+    /// the task goes straight to <c>needs-human</c> — no retry burn, no guardrails. (M5.)
+    /// </summary>
+    NeedsHuman
 }

@@ -94,7 +94,17 @@ public sealed class PlanLoader
             return null;
         }
 
-        (IReadOnlySet<string> runnerNames, string? defaultRunner) = ReadPromptRunners(raw.PromptRunners);
+        PromptRunnersResult runners;
+        try
+        {
+            runners = ReadPromptRunners(raw.PromptRunners);
+        }
+        catch (JsonException ex)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.InvalidJson, configPath,
+                $"Could not parse promptRunners in {ConfigFileName}: {ex.Message}"));
+            return null;
+        }
 
         var interpreters = (raw.Interpreters ?? [])
             .ToDictionary(
@@ -111,8 +121,9 @@ public sealed class PlanLoader
             GuardrailMode = mode,
             Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,
             Interpreters = interpreters,
-            PromptRunnerNames = runnerNames,
-            DefaultPromptRunner = defaultRunner
+            PromptRunnerNames = runners.Names,
+            DefaultPromptRunner = runners.Default,
+            PromptRunners = runners.Runners
         };
     }
 
@@ -132,14 +143,20 @@ public sealed class PlanLoader
         }
     }
 
-    private static (IReadOnlySet<string> Names, string? Default) ReadPromptRunners(JsonElement? promptRunners)
+    /// <summary>
+    /// Parse the <c>promptRunners</c> map (SSOT §2/§9): a <c>"default"</c> string pointer plus
+    /// one config object per named runner. Each runner's settings get documented defaults; a
+    /// <c>guardrailOverrides</c> sub-block is a partial override (only present keys override).
+    /// </summary>
+    private static PromptRunnersResult ReadPromptRunners(JsonElement? promptRunners)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
+        var runners = new Dictionary<string, PromptRunnerConfig>(StringComparer.Ordinal);
         string? defaultRunner = null;
 
         if (promptRunners is not { ValueKind: JsonValueKind.Object } element)
         {
-            return (names, null);
+            return new PromptRunnersResult(names, defaultRunner, runners);
         }
 
         foreach (JsonProperty property in element.EnumerateObject())
@@ -151,9 +168,46 @@ public sealed class PlanLoader
             }
 
             names.Add(property.Name);
+
+            if (property.Value.ValueKind == JsonValueKind.Object)
+            {
+                RawPromptRunner raw = property.Value.Deserialize<RawPromptRunner>(PlanJson.Options)!;
+                runners[property.Name] = BuildRunnerConfig(property.Name, raw);
+            }
         }
 
-        return (names, defaultRunner);
+        return new PromptRunnersResult(names, defaultRunner, runners);
+    }
+
+    private static PromptRunnerConfig BuildRunnerConfig(string name, RawPromptRunner raw)
+    {
+        var settings = new PromptRunnerSettings
+        {
+            PermissionMode = string.IsNullOrWhiteSpace(raw.PermissionMode) ? "acceptEdits" : raw.PermissionMode,
+            AllowedTools = raw.AllowedTools is null ? [] : [.. raw.AllowedTools],
+            MaxTurns = raw.MaxTurns ?? 50,
+            Model = raw.Model,
+            ExtraArgs = raw.ExtraArgs is null ? [] : [.. raw.ExtraArgs]
+        };
+
+        PromptRunnerOverrides? overrides = raw.GuardrailOverrides is null
+            ? null
+            : new PromptRunnerOverrides
+            {
+                PermissionMode = raw.GuardrailOverrides.PermissionMode,
+                AllowedTools = raw.GuardrailOverrides.AllowedTools is null ? null : [.. raw.GuardrailOverrides.AllowedTools],
+                MaxTurns = raw.GuardrailOverrides.MaxTurns,
+                Model = raw.GuardrailOverrides.Model,
+                ExtraArgs = raw.GuardrailOverrides.ExtraArgs is null ? null : [.. raw.GuardrailOverrides.ExtraArgs]
+            };
+
+        return new PromptRunnerConfig
+        {
+            Name = name,
+            Command = string.IsNullOrWhiteSpace(raw.Command) ? name : raw.Command,
+            Settings = settings,
+            GuardrailOverrides = overrides
+        };
     }
 
     // --- tasks/* ----------------------------------------------------------------------
@@ -270,6 +324,7 @@ public sealed class PlanLoader
             Kind = KindFor(actionPath),
             Args = rawAction?.Args ?? [],
             Runner = rawAction?.Runner,
+            MaxTurns = rawAction?.MaxTurns,
             TimeoutSeconds = rawAction?.TimeoutSeconds,
             WorkingDirectory = rawAction?.WorkingDirectory,
             Env = (IReadOnlyDictionary<string, string>?)rawAction?.Env ?? new Dictionary<string, string>()
@@ -448,4 +503,10 @@ public sealed class PlanLoader
         Path = path,
         Message = message
     };
+
+    /// <summary>The parsed <c>promptRunners</c> map: names, the default pointer, and full configs.</summary>
+    private readonly record struct PromptRunnersResult(
+        IReadOnlySet<string> Names,
+        string? Default,
+        IReadOnlyDictionary<string, PromptRunnerConfig> Runners);
 }

@@ -1,5 +1,6 @@
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
+using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
 
 namespace Guardrails.Core.Execution;
@@ -29,7 +30,8 @@ public static class SchedulerFactory
         }
 
         var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
-        var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer);
+        PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
+        var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry);
 
         return new Scheduler(plan, executor, journal, observer);
     }

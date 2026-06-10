@@ -32,10 +32,19 @@ public sealed record RunConfig
 
     /// <summary>
     /// Names declared under <c>promptRunners</c> (excluding the "default" pointer).
-    /// Used to validate runner references on tasks. Full runner configs land in M5.
+    /// Used to validate runner references on tasks. Kept consistent with
+    /// <see cref="PromptRunners"/> (it is exactly its key set).
     /// </summary>
     public IReadOnlySet<string> PromptRunnerNames { get; init; } = new HashSet<string>();
 
     /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
     public string? DefaultPromptRunner { get; init; }
+
+    /// <summary>
+    /// The full prompt-runner configurations (SSOT §2/§9), keyed by runner name. Empty for a
+    /// script-only plan; a plan with prompt tasks but an empty map is a validation error
+    /// (GR2008). The key set equals <see cref="PromptRunnerNames"/>.
+    /// </summary>
+    public IReadOnlyDictionary<string, PromptRunnerConfig> PromptRunners { get; init; } =
+        new Dictionary<string, PromptRunnerConfig>();
 }

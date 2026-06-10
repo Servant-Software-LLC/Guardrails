@@ -15,9 +15,31 @@ internal sealed class RawRunConfig
     public Dictionary<string, List<string>>? Interpreters { get; set; }
 
     // promptRunners is a heterogeneous map: a "default" string pointer plus named
-    // runner-config objects. M2 only needs the declared names + the default pointer,
-    // so it is bound as raw JSON and inspected, not fully typed (full config = M5).
+    // runner-config objects (RawPromptRunner). Bound as raw JSON and walked property by
+    // property so the "default" pointer and the runner objects can be told apart.
     public JsonElement? PromptRunners { get; set; }
+}
+
+/// <summary>Raw shape of one <c>promptRunners.&lt;name&gt;</c> config object (SSOT §2/§9).</summary>
+internal sealed class RawPromptRunner
+{
+    public string? Command { get; set; }
+    public string? PermissionMode { get; set; }
+    public List<string>? AllowedTools { get; set; }
+    public int? MaxTurns { get; set; }
+    public string? Model { get; set; }
+    public List<string>? ExtraArgs { get; set; }
+    public RawPromptRunnerOverrides? GuardrailOverrides { get; set; }
+}
+
+/// <summary>Raw shape of a <c>guardrailOverrides</c> sub-block — every field optional (partial override).</summary>
+internal sealed class RawPromptRunnerOverrides
+{
+    public string? PermissionMode { get; set; }
+    public List<string>? AllowedTools { get; set; }
+    public int? MaxTurns { get; set; }
+    public string? Model { get; set; }
+    public List<string>? ExtraArgs { get; set; }
 }
 
 /// <summary>Raw shape of <c>tasks/&lt;id&gt;/task.json</c> for deserialization (SSOT §3).</summary>

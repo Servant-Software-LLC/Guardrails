@@ -33,6 +33,11 @@ public sealed class PlanValidator
         return diagnostics;
     }
 
+    private static bool HasAnyPrompt(PlanDefinition plan) =>
+        plan.Tasks.Any(t =>
+            t.Action.Kind == ActionKind.Prompt ||
+            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt));
+
     private static void ValidateNoCycles(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
         if (new Graph.DependencyGraph(plan.Tasks).FindCycle() is { } cycle)
@@ -83,21 +88,64 @@ public sealed class PlanValidator
         }
     }
 
+    /// <summary>
+    /// Prompt-runner integrity (SSOT §2/§9). A plan with ANY prompt action or prompt
+    /// guardrail must declare at least one runner under <c>promptRunners</c> (GR2008,
+    /// because nothing could run those prompts). A prompt action that names a runner
+    /// (<c>action.runner</c>) must name a declared one (GR2004). A prompt action/guardrail
+    /// that relies on the default must have a usable default — either <c>promptRunners.default</c>
+    /// resolves to a config, or there is exactly one declared runner to fall back to (GR2004).
+    /// </summary>
     private static void ValidatePromptRunners(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
+        bool hasPrompts = HasAnyPrompt(plan);
+        if (!hasPrompts)
+        {
+            return;
+        }
+
+        if (plan.Config.PromptRunners.Count == 0)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.NoPromptRunners, plan.PlanDirectory,
+                "Plan has prompt action(s)/guardrail(s) but no 'promptRunners' configuration to run them. " +
+                "Add a promptRunners block to guardrails.json (SSOT §2)."));
+            return;
+        }
+
+        // Explicit runner references on prompt actions must resolve.
         foreach (TaskNode task in plan.Tasks)
         {
-            if (task.Action.Kind != ActionKind.Prompt || task.Action.Runner is null)
-            {
-                continue;
-            }
-
-            if (!plan.Config.PromptRunnerNames.Contains(task.Action.Runner))
+            if (task.Action.Kind == ActionKind.Prompt && task.Action.Runner is not null &&
+                !plan.Config.PromptRunnerNames.Contains(task.Action.Runner))
             {
                 diagnostics.Add(Error(DiagnosticCodes.UnknownPromptRunner, task.Action.Path,
                     $"Task '{task.Id}' references prompt runner '{task.Action.Runner}', which is not declared in promptRunners."));
             }
         }
+
+        // A prompt that relies on the default needs a resolvable default. The default is
+        // promptRunners.default, falling back to the sole declared runner if exactly one.
+        bool anyReliesOnDefault = plan.Tasks.Any(t =>
+            (t.Action.Kind == ActionKind.Prompt && t.Action.Runner is null) ||
+            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt));
+
+        if (anyReliesOnDefault && ResolveDefaultRunner(plan.Config) is null)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.UnknownPromptRunner, plan.PlanDirectory,
+                "A prompt action/guardrail relies on the default prompt runner, but no default is resolvable. " +
+                "Set promptRunners.default to a declared runner (or declare exactly one runner)."));
+        }
+    }
+
+    /// <summary>The default runner name: <c>promptRunners.default</c> if it resolves, else the sole declared runner.</summary>
+    private static string? ResolveDefaultRunner(RunConfig config)
+    {
+        if (config.DefaultPromptRunner is { } named && config.PromptRunnerNames.Contains(named))
+        {
+            return named;
+        }
+
+        return config.PromptRunnerNames.Count == 1 ? config.PromptRunnerNames.Single() : null;
     }
 
     /// <summary>

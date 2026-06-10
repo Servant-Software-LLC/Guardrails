@@ -47,8 +47,6 @@ public sealed class Scheduler
     /// </summary>
     public async Task<RunReport> RunAsync(PlanDefinition plan, CancellationToken cancellationToken = default)
     {
-        EnsureNoPrompts(plan);
-
         var graph = new DependencyGraph(plan.Tasks);
         if (graph.FindCycle() is { } cycle)
         {
@@ -228,27 +226,6 @@ public sealed class Scheduler
         }
 
         return new RunReport { Tasks = results, Cancelled = cancelled };
-    }
-
-    private static void EnsureNoPrompts(PlanDefinition plan)
-    {
-        foreach (TaskNode task in plan.Tasks)
-        {
-            if (task.Action.Kind == ActionKind.Prompt)
-            {
-                throw new PromptNotSupportedException(
-                    $"Task '{task.Id}' has a prompt action; prompt actions are not supported until M5.");
-            }
-
-            foreach (GuardrailDefinition guardrail in task.Guardrails)
-            {
-                if (guardrail.Kind == ActionKind.Prompt)
-                {
-                    throw new PromptNotSupportedException(
-                        $"Task '{task.Id}' has a prompt guardrail '{guardrail.Name}'; prompt guardrails are not supported until M5.");
-                }
-            }
-        }
     }
 
     /// <summary>Mutable shared state of one run, guarded by the scheduler's gate.</summary>

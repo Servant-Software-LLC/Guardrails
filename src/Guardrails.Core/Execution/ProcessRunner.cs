@@ -18,11 +18,28 @@ public sealed class ProcessRunner
     /// Run <paramref name="command"/> in <paramref name="workingDirectory"/> with the given
     /// environment overlay and per-process timeout.
     /// </summary>
+    public Task<ProcessResult> RunAsync(
+        ResolvedCommand command,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string> environment,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(command, workingDirectory, environment, timeout, standardInput: null, stdoutLineSink: null, cancellationToken);
+
+    /// <summary>
+    /// Run <paramref name="command"/> with optional STDIN text and an optional per-stdout-line
+    /// sink (used by prompt runners to feed the prompt via stdin and tee the raw output stream
+    /// to a log). Existing callers use the simpler overload — behaviour there is unchanged.
+    /// </summary>
+    /// <param name="standardInput">Text written to the child's stdin (then closed); null = no stdin redirect.</param>
+    /// <param name="stdoutLineSink">Invoked for each stdout line as it arrives (line excludes the newline); null = no tee.</param>
     public async Task<ProcessResult> RunAsync(
         ResolvedCommand command,
         string workingDirectory,
         IReadOnlyDictionary<string, string> environment,
         TimeSpan timeout,
+        string? standardInput,
+        Action<string>? stdoutLineSink,
         CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
@@ -31,6 +48,7 @@ public sealed class ProcessRunner
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = standardInput is not null,
             UseShellExecute = false,
             CreateNoWindow = true
         };
@@ -52,13 +70,18 @@ public sealed class ProcessRunner
         using var stdoutDone = new SemaphoreSlim(0, 1);
         using var stderrDone = new SemaphoreSlim(0, 1);
 
-        process.OutputDataReceived += (_, e) => Collect(e.Data, stdout, stdoutDone);
-        process.ErrorDataReceived += (_, e) => Collect(e.Data, stderr, stderrDone);
+        process.OutputDataReceived += (_, e) => Collect(e.Data, stdout, stdoutDone, stdoutLineSink);
+        process.ErrorDataReceived += (_, e) => Collect(e.Data, stderr, stderrDone, lineSink: null);
 
         var stopwatch = Stopwatch.StartNew();
         process.Start();
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
+
+        if (standardInput is not null)
+        {
+            await WriteStandardInputAsync(process, standardInput).ConfigureAwait(false);
+        }
 
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
@@ -91,7 +114,7 @@ public sealed class ProcessRunner
         };
     }
 
-    private static void Collect(string? data, StringBuilder buffer, SemaphoreSlim done)
+    private static void Collect(string? data, StringBuilder buffer, SemaphoreSlim done, Action<string>? lineSink)
     {
         if (data is null)
         {
@@ -101,6 +124,21 @@ public sealed class ProcessRunner
         }
 
         buffer.AppendLine(data);
+        lineSink?.Invoke(data);
+    }
+
+    private static async Task WriteStandardInputAsync(Process process, string input)
+    {
+        try
+        {
+            await process.StandardInput.WriteAsync(input).ConfigureAwait(false);
+            await process.StandardInput.FlushAsync().ConfigureAwait(false);
+            process.StandardInput.Close();
+        }
+        catch (IOException)
+        {
+            // The child may close stdin early (e.g. it has all it needs); that is not a failure.
+        }
     }
 
     private static void KillTree(Process process)

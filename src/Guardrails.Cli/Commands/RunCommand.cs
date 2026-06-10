@@ -66,22 +66,14 @@ public static class RunCommand
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;
 
         RunReport report;
-        try
+        if (live)
         {
-            if (live)
-            {
-                await using var observer = new LiveRunObserver(probe.Plan.Tasks);
-                report = await ExecuteAsync(probe.Plan, observer, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(), cancellationToken).ConfigureAwait(false);
-            }
+            await using var observer = new LiveRunObserver(probe.Plan.Tasks);
+            report = await ExecuteAsync(probe.Plan, observer, cancellationToken).ConfigureAwait(false);
         }
-        catch (PromptNotSupportedException ex)
+        else
         {
-            Console.WriteLine($"ERROR: {ex.Message}");
-            return ExitCodes.HarnessError;
+            report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(), cancellationToken).ConfigureAwait(false);
         }
 
         PrintSummary(report);
@@ -119,7 +111,8 @@ public static class RunCommand
             : $"{green}/{report.Tasks.Count} task(s) green (succeeded or skipped).");
 
         foreach (TaskResult needsHuman in report.Tasks.Where(t =>
-                     t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed or TaskOutcome.InvalidFragment))
+                     t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed
+                         or TaskOutcome.InvalidFragment or TaskOutcome.NeedsHuman))
         {
             Console.WriteLine();
             Console.WriteLine($"NEEDS HUMAN: {needsHuman.TaskId} — {needsHuman.Summary}");
@@ -135,6 +128,7 @@ public static class RunCommand
         TaskOutcome.ActionFailed => "ACTION FAILED",
         TaskOutcome.GuardrailFailed => "GUARDRAIL FAILED",
         TaskOutcome.InvalidFragment => "INVALID FRAGMENT",
+        TaskOutcome.NeedsHuman => "NEEDS HUMAN",
         TaskOutcome.Blocked => "BLOCKED",
         TaskOutcome.Cancelled => "CANCELLED",
         _ => outcome.ToString()

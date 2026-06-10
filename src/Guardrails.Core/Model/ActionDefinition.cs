@@ -19,6 +19,9 @@ public sealed record ActionDefinition
     /// <summary>Prompt-runner name for prompt actions; null = use <c>promptRunners.default</c>. M5.</summary>
     public string? Runner { get; init; }
 
+    /// <summary>Turn ceiling override for prompt actions; null = inherit from the runner config / frontmatter.</summary>
+    public int? MaxTurns { get; init; }
+
     /// <summary>Per-action timeout ceiling in seconds; null = inherit from task/config.</summary>
     public int? TimeoutSeconds { get; init; }
 

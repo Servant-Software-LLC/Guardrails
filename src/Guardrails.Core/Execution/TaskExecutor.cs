@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
+using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
@@ -22,6 +24,7 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly StateManager _stateManager;
     private readonly RunJournal _journal;
     private readonly IRunObserver _observer;
+    private readonly PromptRunnerRegistry? _promptRunners;
 
     public TaskExecutor(
         PlanDefinition plan,
@@ -29,7 +32,8 @@ public sealed class TaskExecutor : ITaskExecutor
         InterpreterMap interpreterMap,
         StateManager stateManager,
         RunJournal journal,
-        IRunObserver observer)
+        IRunObserver observer,
+        PromptRunnerRegistry? promptRunners = null)
     {
         _plan = plan;
         _processRunner = processRunner;
@@ -37,6 +41,7 @@ public sealed class TaskExecutor : ITaskExecutor
         _stateManager = stateManager;
         _journal = journal;
         _observer = observer;
+        _promptRunners = promptRunners;
     }
 
     /// <inheritdoc />
@@ -59,7 +64,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 .ConfigureAwait(false);
             last = attempt.Result;
 
-            if (attempt.Result.Outcome is TaskOutcome.Succeeded or TaskOutcome.Cancelled)
+            // Terminal outcomes do not retry: success and cancellation, plus the prompt-action
+            // needsHuman short-circuit (SSOT §9) which escalates immediately with no retry burn.
+            if (attempt.Result.Outcome is TaskOutcome.Succeeded or TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 return attempt.Result;
             }
@@ -89,41 +96,49 @@ public sealed class TaskExecutor : ITaskExecutor
             task, attemptNumber, logDir, snapshotPath, fragmentOutPath, previousFeedbackPath);
         string workspace = ResolveWorkingDirectory(task);
 
-        // --- action ---------------------------------------------------------------------
-        ProcessResult actionResult = await RunUnitAsync(
-            task.Action.Path, task.Action.Args, workspace, env,
-            ResolveTimeout(task, task.Action.TimeoutSeconds), cancellationToken).ConfigureAwait(false);
+        // --- action (script or prompt) --------------------------------------------------
+        ActionRun action = await RunActionAsync(
+            task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
+            logDir, cancellationToken).ConfigureAwait(false);
 
-        AttemptArtifacts.WriteActionLogs(logDir, actionResult, ActionKindLabel(task));
+        AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return Cancelled(task, attemptNumber, startedAt, relativeLogDir, actionResult);
+            return Cancelled(task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(), action.CostUsd);
         }
 
-        if (!actionResult.Succeeded)
+        // --- needsHuman short-circuit (SSOT §9): record + escalate IMMEDIATELY -----------
+        if (action.NeedsHumanQuestion is { } question)
         {
-            string feedback = RetryPolicy.ForActionFailure(task, attemptNumber, actionResult);
+            return NeedsHuman(task, attemptNumber, startedAt, relativeLogDir, logDir, action, question);
+        }
+
+        if (!action.Succeeded)
+        {
+            string feedback = action.FailureFeedback
+                ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult());
             return FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
-                actionResult.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed,
+                action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed,
                 new TaskResult
                 {
                     TaskId = task.Id,
                     Outcome = TaskOutcome.ActionFailed,
-                    ActionExitCode = actionResult.ExitCode,
-                    Summary = $"{(actionResult.TimedOut ? "action timed out" : $"action exited {actionResult.ExitCode}")}; guardrails skipped"
-                });
+                    ActionExitCode = action.ExitCode,
+                    Summary = $"{action.FailureSummary}; guardrails skipped"
+                },
+                costUsd: action.CostUsd);
         }
 
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
         GuardrailRunResult guardrails = await RunGuardrailsAsync(
-            task, workspace, guardrailEnv, logDir, cancellationToken).ConfigureAwait(false);
+            task, workspace, guardrailEnv, snapshotPath, logDir, cancellationToken).ConfigureAwait(false);
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return Cancelled(task, attemptNumber, startedAt, relativeLogDir, actionResult);
+            return Cancelled(task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(), action.CostUsd);
         }
 
         if (guardrails.AnyFailed)
@@ -137,16 +152,91 @@ public sealed class TaskExecutor : ITaskExecutor
                 {
                     TaskId = task.Id,
                     Outcome = TaskOutcome.GuardrailFailed,
-                    ActionExitCode = actionResult.ExitCode,
+                    ActionExitCode = action.ExitCode,
                     Guardrails = guardrails.Results,
                     Summary = $"guardrail(s) failed: {string.Join(", ", failed.Select(g => g.Name))}"
                 },
-                failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList());
+                failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
+                costUsd: action.CostUsd);
         }
 
         // --- merge fragment (only after every guardrail passed) --------------------------
         return CompleteSucceededOrInvalidFragment(
-            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, actionResult, guardrails, isFinal);
+            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
+    }
+
+    // --- action dispatch (script or prompt) ----------------------------------------------
+
+    /// <summary>
+    /// Run a task's action. Script actions go through the interpreter map; prompt actions go
+    /// through the prompt pipeline (compose → runner → parse). The returned <see cref="ActionRun"/>
+    /// normalizes both into the disposition the attempt loop needs: success, exit code (for the
+    /// journal), timeout, cost, a needsHuman question (if any), and failure feedback/summary.
+    /// </summary>
+    private async Task<ActionRun> RunActionAsync(
+        TaskNode task,
+        int attemptNumber,
+        string workspace,
+        IReadOnlyDictionary<string, string> env,
+        string snapshotPath,
+        string fragmentOutPath,
+        string? previousFeedbackPath,
+        string logDir,
+        CancellationToken cancellationToken)
+    {
+        if (task.Action.Kind != ActionKind.Prompt)
+        {
+            ProcessResult script = await RunUnitAsync(
+                task.Action.Path, task.Action.Args, workspace, env,
+                ResolveTimeout(task, task.Action.TimeoutSeconds), cancellationToken).ConfigureAwait(false);
+            return ActionRun.FromScript(script, NeedsHumanFrom(fragmentOutPath));
+        }
+
+        return await RunPromptActionAsync(
+            task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
+            logDir, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<ActionRun> RunPromptActionAsync(
+        TaskNode task,
+        int attemptNumber,
+        string workspace,
+        IReadOnlyDictionary<string, string> env,
+        string snapshotPath,
+        string fragmentOutPath,
+        string? previousFeedbackPath,
+        string logDir,
+        CancellationToken cancellationToken)
+    {
+        PromptRunnerRegistry registry = RequireRegistry();
+        PromptFile promptFile = LoadPromptFile(task.Action.Path);
+        PromptRunnerConfig runnerConfig = registry.ResolveConfig(task.Action.Runner ?? promptFile.Frontmatter.Runner);
+
+        string composed = PromptComposer.ComposeAction(promptFile.Body, snapshotPath, fragmentOutPath, previousFeedbackPath);
+        AtomicFile.WriteAllText(Path.Combine(logDir, "composed-prompt.md"), composed);
+
+        PromptRunnerSettings settings = ApplyPromptOverrides(
+            runnerConfig.EffectiveSettings(isGuardrail: false),
+            task.Action.MaxTurns ?? promptFile.Frontmatter.MaxTurns);
+
+        var invocation = new PromptInvocation
+        {
+            ComposedPrompt = composed,
+            WorkingDirectory = workspace,
+            PlanDirectory = _plan.PlanDirectory,
+            Environment = env,
+            Settings = settings,
+            Timeout = ResolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
+            StreamLogPath = Path.Combine(logDir, "claude-stream.jsonl")
+        };
+
+        PromptResult result = await registry.Resolve(task.Action.Runner ?? promptFile.Frontmatter.Runner)
+            .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
+
+        // A prompt action's fragment may carry the needsHuman escape (SSOT §9).
+        string? needsHuman = NeedsHumanFrom(fragmentOutPath);
+
+        return ActionRun.FromPrompt(result, needsHuman);
     }
 
     private AttemptResult CompleteSucceededOrInvalidFragment(
@@ -156,7 +246,7 @@ public sealed class TaskExecutor : ITaskExecutor
         string relativeLogDir,
         string logDir,
         string fragmentOutPath,
-        ProcessResult actionResult,
+        ActionRun action,
         GuardrailRunResult guardrails,
         bool isFinal)
     {
@@ -178,10 +268,11 @@ public sealed class TaskExecutor : ITaskExecutor
                     {
                         TaskId = task.Id,
                         Outcome = TaskOutcome.InvalidFragment,
-                        ActionExitCode = actionResult.ExitCode,
+                        ActionExitCode = action.ExitCode,
                         Guardrails = guardrails.Results,
                         Summary = reason
-                    });
+                    },
+                    costUsd: action.CostUsd);
             }
 
             mergeSequence = reserved;
@@ -192,8 +283,9 @@ public sealed class TaskExecutor : ITaskExecutor
             Attempt = attemptNumber,
             StartedAt = startedAt,
             EndedAt = DateTimeOffset.UtcNow,
-            ActionExitCode = actionResult.ExitCode,
+            ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.Succeeded,
+            CostUsd = action.CostUsd,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence);
@@ -202,9 +294,10 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             TaskId = task.Id,
             Outcome = TaskOutcome.Succeeded,
-            ActionExitCode = actionResult.ExitCode,
+            ActionExitCode = action.ExitCode,
             Guardrails = guardrails.Results,
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed"
+                      + (action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "")
                       + (mergeSequence is null ? "" : $"; merged (seq {mergeSequence})")
         }, FeedbackPath: null);
     }
@@ -224,7 +317,8 @@ public sealed class TaskExecutor : ITaskExecutor
         bool isFinal,
         AttemptOutcome outcome,
         TaskResult result,
-        IReadOnlyList<FailedGuardrail>? failedGuardrails = null)
+        IReadOnlyList<FailedGuardrail>? failedGuardrails = null,
+        decimal? costUsd = null)
     {
         string feedbackPath = Path.Combine(logDir, "feedback.md");
         AtomicFile.WriteAllText(feedbackPath, feedback);
@@ -237,6 +331,7 @@ public sealed class TaskExecutor : ITaskExecutor
             ActionExitCode = result.ActionExitCode,
             Outcome = outcome,
             FailedGuardrails = failedGuardrails ?? [],
+            CostUsd = costUsd,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running);
@@ -244,12 +339,55 @@ public sealed class TaskExecutor : ITaskExecutor
         return new AttemptResult(result, feedbackPath);
     }
 
+    /// <summary>
+    /// The needsHuman short-circuit (SSOT §9): a prompt action wrote a root <c>needsHuman</c>
+    /// key to its fragment. Record the attempt with the <c>needs-human</c> outcome and journal
+    /// the task <c>needs-human</c> immediately — no retry, no guardrails. Returns a non-green
+    /// result so the scheduler blocks dependents.
+    /// </summary>
+    private AttemptResult NeedsHuman(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        ActionRun action,
+        string question)
+    {
+        string feedback =
+            $"# Task '{task.Id}' needs a human\n\n" +
+            $"Task: {task.Description}\n\n" +
+            $"The prompt action signalled it cannot proceed without a human decision:\n\n> {question}\n";
+        AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = action.ExitCode,
+            Outcome = AttemptOutcome.NeedsHuman,
+            CostUsd = action.CostUsd,
+            LogDir = relativeLogDir
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            ActionExitCode = action.ExitCode,
+            Summary = $"needs human: {question}"
+        }, FeedbackPath: null);
+    }
+
     private AttemptResult Cancelled(
         TaskNode task,
         int attemptNumber,
         DateTimeOffset startedAt,
         string relativeLogDir,
-        ProcessResult actionResult)
+        ProcessResult actionResult,
+        decimal? costUsd)
     {
         var record = new AttemptRecord
         {
@@ -258,6 +396,7 @@ public sealed class TaskExecutor : ITaskExecutor
             EndedAt = DateTimeOffset.UtcNow,
             ActionExitCode = actionResult.ExitCode,
             Outcome = AttemptOutcome.Cancelled,
+            CostUsd = costUsd,
             LogDir = relativeLogDir
         };
 
@@ -277,6 +416,7 @@ public sealed class TaskExecutor : ITaskExecutor
         TaskNode task,
         string workspace,
         IReadOnlyDictionary<string, string> env,
+        string snapshotPath,
         string logDir,
         CancellationToken cancellationToken)
     {
@@ -286,13 +426,10 @@ public sealed class TaskExecutor : ITaskExecutor
 
         foreach (GuardrailDefinition guardrail in task.Guardrails)
         {
-            ProcessResult processResult = await RunUnitAsync(
-                guardrail.Path, guardrail.Args, workspace, env,
-                ResolveTimeout(task, guardrail.TimeoutSeconds), cancellationToken).ConfigureAwait(false);
+            (GuardrailResult result, bool guardrailTimedOut) = guardrail.Kind == ActionKind.Prompt
+                ? await RunPromptGuardrailAsync(task, guardrail, workspace, env, snapshotPath, logDir, cancellationToken).ConfigureAwait(false)
+                : await RunScriptGuardrailAsync(task, guardrail, workspace, env, logDir, cancellationToken).ConfigureAwait(false);
 
-            AttemptArtifacts.WriteGuardrailLogs(logDir, guardrail.Name, processResult);
-
-            GuardrailResult result = ToGuardrailResult(guardrail, processResult);
             results.Add(result);
             _observer.GuardrailFinished(task, result);
 
@@ -304,7 +441,7 @@ public sealed class TaskExecutor : ITaskExecutor
             if (!result.Passed)
             {
                 anyFailed = true;
-                timedOut |= processResult.TimedOut;
+                timedOut |= guardrailTimedOut;
                 if (_plan.Config.GuardrailMode == GuardrailMode.FailFast)
                 {
                     break;
@@ -313,6 +450,91 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         return new GuardrailRunResult { Results = results, AnyFailed = anyFailed, TimedOut = timedOut };
+    }
+
+    private async Task<(GuardrailResult Result, bool TimedOut)> RunScriptGuardrailAsync(
+        TaskNode task,
+        GuardrailDefinition guardrail,
+        string workspace,
+        IReadOnlyDictionary<string, string> env,
+        string logDir,
+        CancellationToken cancellationToken)
+    {
+        ProcessResult processResult = await RunUnitAsync(
+            guardrail.Path, guardrail.Args, workspace, env,
+            ResolveTimeout(task, guardrail.TimeoutSeconds), cancellationToken).ConfigureAwait(false);
+
+        AttemptArtifacts.WriteGuardrailLogs(logDir, guardrail.Name, processResult);
+        return (ToGuardrailResult(guardrail, processResult), processResult.TimedOut);
+    }
+
+    /// <summary>
+    /// Run a PROMPT guardrail (SSOT §4.2/§9): compose the verifier prompt, set
+    /// <c>GUARDRAILS_VERDICT_OUT</c>, invoke the runner (guardrail-overrides profile), then
+    /// judge pass/fail SOLELY by the verdict file — never the runner's exit code. Missing or
+    /// invalid verdict ⇒ fail with the contractual reason.
+    /// </summary>
+    private async Task<(GuardrailResult Result, bool TimedOut)> RunPromptGuardrailAsync(
+        TaskNode task,
+        GuardrailDefinition guardrail,
+        string workspace,
+        IReadOnlyDictionary<string, string> env,
+        string snapshotPath,
+        string logDir,
+        CancellationToken cancellationToken)
+    {
+        PromptRunnerRegistry registry = RequireRegistry();
+        PromptFile promptFile = LoadPromptFile(guardrail.Path);
+        PromptRunnerConfig runnerConfig = registry.ResolveConfig(promptFile.Frontmatter.Runner);
+
+        string verdictPath = Path.Combine(logDir, $"guardrail-{Sanitize(guardrail.Name)}.verdict.json");
+        string actionStdoutPath = env.TryGetValue("GUARDRAILS_ACTION_STDOUT", out string? stdoutPath)
+            ? stdoutPath
+            : Path.Combine(logDir, "action-stdout.log");
+
+        string composed = PromptComposer.ComposeGuardrail(promptFile.Body, snapshotPath, verdictPath, actionStdoutPath);
+        AtomicFile.WriteAllText(Path.Combine(logDir, $"composed-prompt.{Sanitize(guardrail.Name)}.md"), composed);
+
+        var guardrailEnv = new Dictionary<string, string>(env, StringComparer.Ordinal)
+        {
+            ["GUARDRAILS_VERDICT_OUT"] = verdictPath
+        };
+
+        PromptRunnerSettings settings = ApplyPromptOverrides(
+            runnerConfig.EffectiveSettings(isGuardrail: true),
+            promptFile.Frontmatter.MaxTurns);
+
+        var invocation = new PromptInvocation
+        {
+            ComposedPrompt = composed,
+            WorkingDirectory = workspace,
+            PlanDirectory = _plan.PlanDirectory,
+            Environment = guardrailEnv,
+            Settings = settings,
+            Timeout = ResolveTimeout(task, guardrail.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
+            StreamLogPath = Path.Combine(logDir, $"guardrail-{Sanitize(guardrail.Name)}.stream.jsonl")
+        };
+
+        PromptResult promptResult = await registry.Resolve(promptFile.Frontmatter.Runner)
+            .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
+
+        // Pass/fail is the verdict file, full stop (NEVER the exit code).
+        GuardrailVerdict verdict = GuardrailVerdictReader.Read(verdictPath);
+        string reason = string.IsNullOrWhiteSpace(verdict.Reason)
+            ? (verdict.Pass ? "passed" : GuardrailVerdictReader.NoValidVerdictReason)
+            : verdict.Reason;
+
+        var result = new GuardrailResult
+        {
+            Name = guardrail.Name,
+            Passed = verdict.Pass,
+            Reason = verdict.Pass ? null : reason
+        };
+
+        // The prompt guardrail's stdout/stderr are not the verdict, but tee them for audit
+        // (the runner already teed its stream; capture nothing more here). Timeouts surface
+        // as "did not complete" → no verdict → fail, which the reader already handled.
+        return (result, !promptResult.Completed && promptResult.Summary.Contains("timed out", StringComparison.Ordinal));
     }
 
     private async Task<ProcessResult> RunUnitAsync(
@@ -468,6 +690,72 @@ public sealed class TaskExecutor : ITaskExecutor
         return null;
     }
 
+    // --- prompt helpers -------------------------------------------------------------------
+
+    private PromptRunnerRegistry RequireRegistry() =>
+        _promptRunners ?? throw new InvalidOperationException(
+            "This plan has prompt actions/guardrails but no prompt-runner registry was provided to the executor.");
+
+    /// <summary>
+    /// Load and parse a <c>*.prompt.md</c> file. Loading-time validation (GR10xx) should have
+    /// caught malformed frontmatter, but if parsing fails here we fall back to the raw text as
+    /// the body so the run surfaces a real prompt result rather than crashing.
+    /// </summary>
+    private static PromptFile LoadPromptFile(string path)
+    {
+        string content = File.ReadAllText(path);
+        PromptParseResult parsed = PromptFileParser.Parse(content);
+        return parsed.File ?? new PromptFile { Frontmatter = PromptFrontmatter.Empty, Body = content };
+    }
+
+    /// <summary>Apply a task/frontmatter <c>maxTurns</c> override over the runner-config settings.</summary>
+    private static PromptRunnerSettings ApplyPromptOverrides(PromptRunnerSettings settings, int? maxTurns) =>
+        maxTurns is { } turns ? settings with { MaxTurns = turns } : settings;
+
+    /// <summary>
+    /// Read the (already-written) action fragment and, if its root is an object with a string
+    /// <c>needsHuman</c> key, return the question (SSOT §9). Anything else returns null.
+    /// </summary>
+    private static string? NeedsHumanFrom(string fragmentOutPath)
+    {
+        if (!File.Exists(fragmentOutPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(
+                File.ReadAllText(fragmentOutPath),
+                new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("needsHuman", out JsonElement question) &&
+                question.ValueKind == JsonValueKind.String)
+            {
+                return question.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // Not parseable JSON → not a needsHuman signal; the merge step will reject it later.
+        }
+
+        return null;
+    }
+
+    private static string Sanitize(string name)
+    {
+        Span<char> buffer = stackalloc char[name.Length];
+        for (int i = 0; i < name.Length; i++)
+        {
+            char c = name[i];
+            buffer[i] = char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '_';
+        }
+
+        return new string(buffer);
+    }
+
     /// <summary>One attempt's terminal result plus the feedback file it left for the next attempt.</summary>
     private sealed record AttemptResult(TaskResult Result, string? FeedbackPath);
 
@@ -477,5 +765,81 @@ public sealed class TaskExecutor : ITaskExecutor
         public required IReadOnlyList<GuardrailResult> Results { get; init; }
         public required bool AnyFailed { get; init; }
         public required bool TimedOut { get; init; }
+    }
+
+    /// <summary>
+    /// A normalized view of an action run — script OR prompt — carrying exactly what the
+    /// attempt loop needs. Scripts map their exit code and timeout directly; prompts map
+    /// <c>Completed &amp;&amp; !is_error</c> to success (SSOT §9), with cost and the needsHuman escape.
+    /// </summary>
+    private sealed record ActionRun
+    {
+        public required bool Succeeded { get; init; }
+        public required int? ExitCode { get; init; }
+        public required bool TimedOut { get; init; }
+        public decimal? CostUsd { get; init; }
+        public string? NeedsHumanQuestion { get; init; }
+        public string? FailureFeedback { get; init; }
+        public string FailureSummary { get; init; } = "action failed";
+
+        // For log artifacts (action-result.json) we reuse the ProcessResult shape; prompt
+        // actions synthesize one with a 0/1 exit code reflecting success.
+        public ProcessResult AsProcessResult() => new()
+        {
+            ExitCode = ExitCode ?? (Succeeded ? 0 : 1),
+            StandardOutput = string.Empty,
+            StandardError = string.Empty,
+            TimedOut = TimedOut,
+            Duration = TimeSpan.Zero
+        };
+
+        public static ActionRun FromScript(ProcessResult result, string? needsHuman) => new()
+        {
+            Succeeded = result.Succeeded,
+            ExitCode = result.ExitCode,
+            TimedOut = result.TimedOut,
+            NeedsHumanQuestion = needsHuman,
+            FailureSummary = result.TimedOut ? "action timed out" : $"action exited {result.ExitCode}"
+        };
+
+        public static ActionRun FromPrompt(PromptResult result, string? needsHuman)
+        {
+            bool succeeded = result.Completed && !result.IsError;
+            string? feedback = succeeded ? null : BuildPromptFeedback(result);
+            return new ActionRun
+            {
+                Succeeded = succeeded,
+                // Synthesize an exit code for the journal: 0 on success, 1 otherwise.
+                ExitCode = succeeded ? 0 : 1,
+                TimedOut = result.Summary.Contains("timed out", StringComparison.Ordinal),
+                CostUsd = result.CostUsd,
+                NeedsHumanQuestion = needsHuman,
+                FailureFeedback = feedback,
+                FailureSummary = result.Summary
+            };
+        }
+
+        private static string BuildPromptFeedback(PromptResult result)
+        {
+            var text = new System.Text.StringBuilder();
+            text.AppendLine("# Prompt action did not succeed");
+            text.AppendLine();
+            text.AppendLine(result.Completed
+                ? "The runner completed but reported an error (is_error = true)."
+                : $"The runner did not complete cleanly: {result.Summary}.");
+            text.AppendLine();
+            if (!string.IsNullOrWhiteSpace(result.ResultText))
+            {
+                text.AppendLine("## Runner result (tail)");
+                text.AppendLine("```");
+                string tail = result.ResultText!.Length > 2000 ? result.ResultText[^2000..] : result.ResultText;
+                text.AppendLine(tail.TrimEnd());
+                text.AppendLine("```");
+            }
+
+            text.AppendLine();
+            text.AppendLine("Fix the specific problem above on retry; do not start over.");
+            return text.ToString();
+        }
     }
 }

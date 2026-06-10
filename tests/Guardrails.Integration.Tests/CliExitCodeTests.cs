@@ -60,13 +60,10 @@ public sealed class CliExitCodeTests
         Assert.Equal(ExitCodes.Success, exitCode);
     }
 
-    [Fact]
-    public async Task Run_PromptPlan_FailsFastWithHarnessError()
-    {
-        // The golden example contains prompt tasks → run must fail fast (exit 1) in M2.
-        int exitCode = await InvokeAsync("run", GoldenExamplePath);
-        Assert.Equal(ExitCodes.HarnessError, exitCode);
-    }
+    // NOTE: the M2/M4-era test "Run_PromptPlan_FailsFastWithHarnessError" was removed in M5.
+    // Prompt actions/guardrails are now executed (no fail-fast). The prompt pipeline is
+    // covered tokenlessly by the fake-CLI integration tests (FakeClaudeRunTests); a real run
+    // of the golden example is the opt-in Reality Gate, not a default test.
 
     [Fact]
     public async Task Validate_MissingFolder_ExitsOne()

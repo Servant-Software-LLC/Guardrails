@@ -74,6 +74,7 @@ public static class JournalJson
                 "timeout" => AttemptOutcome.Timeout,
                 "cancelled" => AttemptOutcome.Cancelled,
                 "invalid-fragment" => AttemptOutcome.InvalidFragment,
+                "needs-human" => AttemptOutcome.NeedsHuman,
                 _ => throw new JsonException($"Unknown attempt outcome '{value}'.")
             };
         }
@@ -87,6 +88,7 @@ public static class JournalJson
                 AttemptOutcome.Timeout => "timeout",
                 AttemptOutcome.Cancelled => "cancelled",
                 AttemptOutcome.InvalidFragment => "invalid-fragment",
+                AttemptOutcome.NeedsHuman => "needs-human",
                 _ => throw new JsonException($"Unhandled attempt outcome '{value}'.")
             });
     }

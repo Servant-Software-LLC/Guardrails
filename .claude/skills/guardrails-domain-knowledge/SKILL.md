@@ -139,5 +139,34 @@ always a **draft** until a human reviews it.
   exit code 3 on cancellation. `SerialExecutor` is gone — `Scheduler` with
   maxParallelism 1 is serial mode; test fixtures pin `defaultRetries: 0` to keep
   single-attempt assertions exact.
-- M5–M7: not started. Reality Gate: not yet met (prompt execution + full example run
-  land in M5).
+- M5 Prompts: **complete**. Full `promptRunners` config parsing (`PromptRunnerConfig`
+  with base `PromptRunnerSettings` + a partial `guardrailOverrides` block merged for
+  guardrail prompts; `command`/`permissionMode`/`allowedTools`/`maxTurns`/`model`/
+  `extraArgs`); a plan with prompt tasks but no `promptRunners` config is a validation
+  error (**GR2008**). YAML frontmatter (`PromptFileParser`, YamlDotNet) for `.prompt.md`
+  actions and guardrails — `description`/`runner`/`maxTurns`/`timeoutSeconds`, optional,
+  body stripped; malformed frontmatter is a loading error. Prompt pipeline under
+  `Prompts/`: `IPromptRunner` seam, `PromptInvocation`/`PromptResult`,
+  `PromptRunnerRegistry` (name → runner, default resolution), `ClaudePromptRunner` (the
+  ONLY place Claude flag spelling + `stream-json` parsing live — prompt via **stdin**,
+  cwd = workspace, `--add-dir <planDir>`, tolerant line-wise parse teed to
+  `claude-stream.jsonl`; non-zero exit OR no terminal `result` ⇒ not completed),
+  `PromptComposer` (`composed-prompt.md` = body + Shared state [inlined ≤ 16 KB else by
+  path] + Output contract/needsHuman [actions] + Previous-attempt feedback [actions,
+  attempt ≥ 2] + Verdict contract [guardrails]), `GuardrailVerdictReader` (verdict file
+  is the ONLY pass/fail authority; missing/invalid/missing-`pass` ⇒ fail "guardrail
+  produced no valid verdict (see logs)"). `TaskExecutor` routes `ActionKind.Prompt`:
+  action success = completed AND `is_error == false`; per-attempt `costUsd` recorded;
+  prompt guardrails set `GUARDRAILS_VERDICT_OUT` and use the `guardrailOverrides` profile.
+  **needsHuman short-circuit** (SSOT §9): a prompt action whose fragment has a root string
+  `needsHuman` key escalates IMMEDIATELY — new outcome `needs-human` (kebab-case;
+  `AttemptOutcome.NeedsHuman` / `TaskOutcome.NeedsHuman`), no retry burn, no guardrails,
+  no fragment merge. `Scheduler.EnsureNoPrompts` and `PromptNotSupportedException` removed
+  — prompts now run. Tested tokenlessly by a fake-CLI (`.cmd`→`.ps1` on Windows, `.sh`
+  elsewhere) across all four scenarios + an opt-in real-claude smoke test
+  (`GUARDRAILS_REAL_CLAUDE=1`).
+- **Reality Gate 1 + 2: MET.** `guardrails run examples/hello-guardrails/hello-guardrails`
+  completes end-to-end green with the real Claude CLI — script action, two prompt actions,
+  and the prompt verdict-contract guardrail all pass; costs journaled (~$1.00 total).
+- M6 (skills) and M7 (polish): not started. Reality Gate 3 (plan-breakdown round-trips
+  validate-clean) lands in M6.

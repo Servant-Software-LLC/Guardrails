@@ -53,4 +53,7 @@ public static class DiagnosticCodes
 
     /// <summary>The <c>dependsOn</c> graph contains a cycle.</summary>
     public const string DependencyCycle = "GR2007";
+
+    /// <summary>The plan has prompt actions or prompt guardrails but no <c>promptRunners</c> config to run them.</summary>
+    public const string NoPromptRunners = "GR2008";
 }

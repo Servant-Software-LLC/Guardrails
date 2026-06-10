@@ -15,6 +15,12 @@ public enum TaskOutcome
     /// <summary>The action and guardrails passed but the action's fragment was not a valid JSON object (SSOT §6.2).</summary>
     InvalidFragment,
 
+    /// <summary>
+    /// A prompt action signalled <c>needsHuman</c> in its fragment (SSOT §9): the harness
+    /// escalates to a human immediately, with no retry burn and no guardrails.
+    /// </summary>
+    NeedsHuman,
+
     /// <summary>A dependency did not succeed, so this task never ran.</summary>
     Blocked,
 

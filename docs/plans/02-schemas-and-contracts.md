@@ -257,7 +257,7 @@ last-writer-wins**. Merge order = task completion order, recorded as a monotonic
           "attempt": 1,
           "startedAt": "…", "endedAt": "…",
           "actionExitCode": 0,
-          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | cancelled | invalid-fragment
+          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | cancelled | invalid-fragment | needs-human
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
           "logDir": "state/logs/01-write-greeting-script/attempt-1"
