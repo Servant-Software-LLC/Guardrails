@@ -1,0 +1,6 @@
+{
+  // Sidecar metadata for 01-build.sh (SSOT §4.1).
+  "description": "Solution builds clean",
+  "args": ["--configuration", "Release"],
+  "timeoutSeconds": 600,
+}

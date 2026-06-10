@@ -1,0 +1,5 @@
+{
+  // A task manifest with comments and a trailing comma.
+  "description": "Task whose manifest uses comments and trailing commas",
+  "dependsOn": [],   // no dependencies yet
+}

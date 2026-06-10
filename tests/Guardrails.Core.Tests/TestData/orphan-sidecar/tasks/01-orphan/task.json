@@ -1,0 +1,4 @@
+{
+  "description": "Has a guardrails dir with a bare .json and no sibling script",
+  "dependsOn": []
+}

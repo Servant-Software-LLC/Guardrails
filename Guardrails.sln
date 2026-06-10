@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{438620DB-AFB7-4C55-97D1-CCF3970119DD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Guardrails.Core", "src\Guardrails.Core\Guardrails.Core.csproj", "{AEA8BFE2-52ED-4822-8B84-06153F4A9585}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Guardrails.Cli", "src\Guardrails.Cli\Guardrails.Cli.csproj", "{CC9F847A-E2E1-44F1-8E9A-5D2B6751F349}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{5C64B758-FAB7-474F-BEBA-5677E02D0635}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Guardrails.Core.Tests", "tests\Guardrails.Core.Tests\Guardrails.Core.Tests.csproj", "{35731F12-CE99-41EC-9C49-D0C30B591ABC}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Guardrails.Integration.Tests", "tests\Guardrails.Integration.Tests\Guardrails.Integration.Tests.csproj", "{12DC873A-A073-404F-B9ED-886070B5FC52}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AEA8BFE2-52ED-4822-8B84-06153F4A9585}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AEA8BFE2-52ED-4822-8B84-06153F4A9585}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AEA8BFE2-52ED-4822-8B84-06153F4A9585}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AEA8BFE2-52ED-4822-8B84-06153F4A9585}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CC9F847A-E2E1-44F1-8E9A-5D2B6751F349}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CC9F847A-E2E1-44F1-8E9A-5D2B6751F349}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CC9F847A-E2E1-44F1-8E9A-5D2B6751F349}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CC9F847A-E2E1-44F1-8E9A-5D2B6751F349}.Release|Any CPU.Build.0 = Release|Any CPU
+		{35731F12-CE99-41EC-9C49-D0C30B591ABC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{35731F12-CE99-41EC-9C49-D0C30B591ABC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{35731F12-CE99-41EC-9C49-D0C30B591ABC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{35731F12-CE99-41EC-9C49-D0C30B591ABC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{12DC873A-A073-404F-B9ED-886070B5FC52}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{12DC873A-A073-404F-B9ED-886070B5FC52}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{12DC873A-A073-404F-B9ED-886070B5FC52}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{12DC873A-A073-404F-B9ED-886070B5FC52}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{AEA8BFE2-52ED-4822-8B84-06153F4A9585} = {438620DB-AFB7-4C55-97D1-CCF3970119DD}
+		{CC9F847A-E2E1-44F1-8E9A-5D2B6751F349} = {438620DB-AFB7-4C55-97D1-CCF3970119DD}
+		{35731F12-CE99-41EC-9C49-D0C30B591ABC} = {5C64B758-FAB7-474F-BEBA-5677E02D0635}
+		{12DC873A-A073-404F-B9ED-886070B5FC52} = {5C64B758-FAB7-474F-BEBA-5677E02D0635}
+	EndGlobalSection
+EndGlobal

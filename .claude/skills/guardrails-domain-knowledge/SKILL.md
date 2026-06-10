@@ -102,5 +102,15 @@ always a **draft** until a human reviews it.
 
 ## Status (update as milestones complete)
 
-- M1 Foundations: **in progress** (docs + example landing)
-- M2–M7: not started. Reality Gate: not met (no harness yet).
+- M1 Foundations: **complete** (docs + golden example committed).
+- M2 Walking skeleton: **complete**. Solution (`Guardrails.Core`/`.Cli`, net8.0 dotnet
+  tool), `PlanLoader`/`PlanValidator` with precise diagnostic codes (GR10xx loading,
+  GR20xx validation), `InterpreterMap` (SSOT §5.2, injectable PATH probe),
+  `ProcessRunner` (ArgumentList, tree-kill timeout), `SerialExecutor` (serial, ordinal
+  folder order, dependency-failure → blocked, no retry), and `guardrails run`/`validate`.
+  3-OS CI matrix in `.github/workflows/ci.yml`. M2 runs **script actions only** — a plan
+  with prompt actions/guardrails validates fine but `run` fails fast ("not supported
+  until M5"). State/journal/log env vars are **not** set yet (only `GUARDRAILS_PLAN_DIR`,
+  `_TASK_ID`, `_TASK_DIR`, `_ATTEMPT`="1").
+- M3–M7: not started. Reality Gate: not yet met (prompt execution + full example run
+  land in M5).

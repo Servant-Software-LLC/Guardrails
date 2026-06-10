@@ -1,0 +1,41 @@
+namespace Guardrails.Core.Model;
+
+/// <summary>
+/// The plan's run configuration — the deserialized <c>guardrails.json</c> (SSOT §2),
+/// with documented defaults applied. Only the fields M2 exercises are modelled
+/// concretely; <see cref="Interpreters"/> and <see cref="PromptRunnerNames"/> carry
+/// enough to validate and run a script-only plan.
+/// </summary>
+public sealed record RunConfig
+{
+    /// <summary>Schema version of <c>guardrails.json</c> (required field; SSOT §2).</summary>
+    public required int Version { get; init; }
+
+    /// <summary>Worker count for the scheduler. Default 4. (Parallelism is M4; serial in M2.)</summary>
+    public int MaxParallelism { get; init; } = 4;
+
+    /// <summary>Retries after the first attempt. Default 2. (Retry is M4; not honored in M2.)</summary>
+    public int DefaultRetries { get; init; } = 2;
+
+    /// <summary>Per-attempt timeout ceiling when nothing narrower applies. Default 1800s.</summary>
+    public int DefaultTimeoutSeconds { get; init; } = 1800;
+
+    /// <summary>How guardrail failures are handled within an attempt. Default <see cref="GuardrailMode.FailFast"/>.</summary>
+    public GuardrailMode GuardrailMode { get; init; } = GuardrailMode.FailFast;
+
+    /// <summary>cwd for all child processes, relative to the plan dir. Default "..".</summary>
+    public string Workspace { get; init; } = "..";
+
+    /// <summary>Interpreter overrides/extensions from <c>guardrails.json</c> (SSOT §5.2). Keyed by extension (".ps1").</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> Interpreters { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>();
+
+    /// <summary>
+    /// Names declared under <c>promptRunners</c> (excluding the "default" pointer).
+    /// Used to validate runner references on tasks. Full runner configs land in M5.
+    /// </summary>
+    public IReadOnlySet<string> PromptRunnerNames { get; init; } = new HashSet<string>();
+
+    /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
+    public string? DefaultPromptRunner { get; init; }
+}

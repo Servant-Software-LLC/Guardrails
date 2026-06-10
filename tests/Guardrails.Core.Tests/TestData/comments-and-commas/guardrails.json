@@ -1,0 +1,9 @@
+{
+  // The version field — required.
+  "version": 1,
+  "maxParallelism": 2,   // trailing comma below is intentional
+  "guardrailMode": "runAll",
+  "interpreters": {
+    ".sh": ["bash", "{script}", "{args}"],
+  },
+}
