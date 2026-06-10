@@ -42,4 +42,21 @@ Reference the constant name `DiagnosticCodes.CostCapNonPositive` and the propert
 BUT these tests MUST NOT COMPILE OR MUST FAIL against the current code, because neither
 `MaxCostUsd` nor `CostCapNonPositive` nor the scheduler check exists yet. That failure is
 the point (it proves the tests encode unbuilt behavior). Do NOT implement the feature.
-Do NOT edit any non-test file. Publish nothing to state.
+Do NOT edit any non-test file.
+
+After writing all three test files, record their content hashes so a downstream
+guardrail can verify they were not modified by the implementation task.
+For each file, run `git hash-object <path>` (e.g. Bash with
+  git hash-object tests/Guardrails.Core.Tests/CostCapConfigTests.cs
+); capture the trimmed hex output. Then write this JSON to the path in
+GUARDRAILS_STATE_OUT (which the harness appended to this prompt):
+
+{
+  "01-author-cost-cap-tests": {
+    "testFileHashes": {
+      "tests/Guardrails.Core.Tests/CostCapConfigTests.cs": "<hex>",
+      "tests/Guardrails.Core.Tests/CostCapValidatorTests.cs": "<hex>",
+      "tests/Guardrails.Core.Tests/CostCapSchedulerTests.cs": "<hex>"
+    }
+  }
+}
