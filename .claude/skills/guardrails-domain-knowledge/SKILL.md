@@ -168,5 +168,17 @@ always a **draft** until a human reviews it.
 - **Reality Gate 1 + 2: MET.** `guardrails run examples/hello-guardrails/hello-guardrails`
   completes end-to-end green with the real Claude CLI — script action, two prompt actions,
   and the prompt verdict-contract guardrail all pass; costs journaled (~$1.00 total).
-- M6 (skills) and M7 (polish): not started. Reality Gate 3 (plan-breakdown round-trips
-  validate-clean) lands in M6.
+- M6 Skills: **complete**. `plan-breakdown` SKILL.md + references (guardrail-catalogue
+  with the archetype table / decision tree / demotion gate / anti-patterns; schemas
+  excerpt citing the SSOT; full worked example incl. an inserted test-author task and
+  a negative example), `guardrail-review` (adversarial "cheapest wrong implementation"
+  pass, BLOCKER/WEAK/NIT, per-finding approval), agents `guardrails-harness-developer`/
+  `-skill-author`/`-test-author`/`-devils-advocate`, `guardrails-dev-knowledge`,
+  lightweight `uber-report` (Reality Gate-first), and the real README (workflow,
+  60-second demo, CLI table). **Round-trip proven**: a fresh breakdown of
+  `hello-guardrails.md` following the skill procedure validates clean (exit 0) and
+  matches the golden folder's structure (same task split, same guardrail archetypes).
+- **Reality Gate: MET — all three booleans** (build+tests; end-to-end example run on
+  real Claude, verified 2026-06-10 at ~$0.90; plan-breakdown round-trip).
+- M7 Polish + dogfood: not started (NuGet publish pipeline, run-level cost
+  aggregation, `--dry-run`, validation depth, first dogfooded plan).
