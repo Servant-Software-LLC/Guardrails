@@ -72,13 +72,15 @@ nothing but .NET.
 | `guardrails run <folder> [--fresh] [--no-ui] [--dry-run]` | Run to green; resume-aware; live progress table. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
 | `guardrails status <folder>` | Journal table: per-task status, attempts, last failure |
 | `guardrails reset <folder> [task]` | Re-arm one task, or wipe runtime state entirely |
+| `guardrails skills install [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` |
 
 Exit codes: `0` green · `1` validation/harness error · `2` needs-human · `3` cancelled.
 
 ## The skills
 
-`.claude/skills/` ships the agent-side tooling — usable from any repo by copying
-into `~/.claude/skills/`:
+`.claude/skills/` ships the agent-side tooling. The `guardrails` tool **bundles**
+`plan-breakdown`, `guardrail-review`, and `guardrails-domain-knowledge` and installs
+them into `~/.claude/skills/` via `guardrails skills install` (no manual copy):
 
 - **plan-breakdown** — the generator. Sizes tasks (split where verification changes
   character), computes the sparsest correct DAG, selects guardrails
@@ -111,7 +113,12 @@ Claude, plan-breakdown round-trip) is met. M7 added run-level cost aggregation
 release pipeline.
 
 ```bash
+# Windows one-liner: installs the tool + the bundled skills
+irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.ps1 | iex
+
+# or explicitly (any OS):
 dotnet tool install --global ServantSoftware.Guardrails --prerelease
+guardrails skills install          # copies the bundled skills into ~/.claude/skills
 guardrails validate <plan-folder>
 ```
 

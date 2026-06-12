@@ -52,6 +52,18 @@ YamlDotNet (Core, frontmatter), xunit.v3.
 - Publish pipeline: `.github/workflows/release.yml` — on a pushed tag `v*`, the 3-OS test
   matrix gates, then `dotnet pack` + `dotnet nuget push` using repo secret `NUGET_API_KEY`
   (must be configured in GitHub repo settings).
+- **Bundled skills**: the CLI csproj globs three skill folders
+  (`plan-breakdown` incl. `references/`, `guardrail-review`, `guardrails-domain-knowledge`)
+  as `Content` with `CopyToOutputDirectory=PreserveNewest` and a
+  `<Link>skills\<name>\%(RecursiveDir)…</Link>`. They land in the build output under
+  `skills/` AND — because the dotnet-tool packer sweeps copy-to-output content — inside the
+  nupkg at `tools/net8.0/any/skills/...`, i.e. next to the entry assembly
+  (`AppContext.BaseDirectory`) for the installed global tool. **Do NOT add explicit
+  `Pack=true`/`PackagePath` on those items** — the packer already includes them, so doing so
+  duplicates the path and trips NU5118 (warning-as-error). `guardrails skills install` reads
+  from `AppContext.BaseDirectory/skills`. Repo bootstrap: `install.ps1` (root, tested) and
+  `install.sh` (root, untested twin) verify dotnet, install/update the tool, then run
+  `guardrails skills install`.
 
 ## Commands
 
@@ -61,7 +73,8 @@ dotnet test  "Guardrails.sln" -c Release          # full suite; integration spaw
 dotnet run --project src/Guardrails.Cli -- validate <plan-folder>
 dotnet run --project src/Guardrails.Cli -- run <plan-folder> --no-ui [--fresh]
 dotnet run --project src/Guardrails.Cli -- plan|status|reset <plan-folder>
-dotnet pack src/Guardrails.Cli -c Release -o nupkg    # local tool package
+dotnet run --project src/Guardrails.Cli -- skills install [--target <dir>] [--force]
+dotnet pack src/Guardrails.Cli -c Release -o nupkg    # local tool package (bundles skills/)
 ```
 
 Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --no-ui`

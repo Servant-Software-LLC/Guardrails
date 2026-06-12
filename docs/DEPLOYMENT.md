@@ -4,15 +4,49 @@ This is the runbook for installing Guardrails somewhere other than the dev box �
 e.g. a work laptop — so you can run the full loop (`/plan-breakdown` → review →
 `/guardrail-review` → `guardrails run`) against **your own** plan and codebase.
 
-Deployment has **two parts** that people often miss:
+Deployment has **two parts** — but the tool now carries the skills, so a single
+bootstrap does both:
 
 1. **The harness** — the `guardrails` CLI (a .NET tool).
 2. **The skills** — `plan-breakdown` and `guardrail-review`, which live in Claude
-   Code's skill directory, not in the .NET tool.
+   Code's skill directory. These are **bundled inside the tool package** and copied
+   into place by `guardrails skills install`.
 
 You need both. The harness *runs* a task folder; the skills *generate and review*
 that folder from your plan. Your plan and the code it operates on never leave your
 machine and are never published anywhere.
+
+---
+
+## Quickest path — the one-command bootstrap
+
+On Windows, from PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.ps1 | iex
+```
+
+This verifies `dotnet`, installs (or updates) the `guardrails` tool, and runs
+`guardrails skills install` for you. macOS/Linux have an `install.sh` twin (mirrors
+`install.ps1`; not yet tested on the maintainer's box):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.sh | bash
+```
+
+Prefer the explicit two-liner? It does exactly the same thing:
+
+```bash
+dotnet tool install --global ServantSoftware.Guardrails --prerelease
+guardrails skills install
+```
+
+`guardrails skills install` copies the bundled skills into `~/.claude/skills`
+(`--target <dir>` to override, `--force` to overwrite existing skill folders).
+Restart Claude Code afterwards so `/plan-breakdown` and `/guardrail-review` appear.
+
+The sections below explain the moving parts and the local-pack path for when the
+package is not yet on NuGet.org.
 
 ---
 
@@ -42,16 +76,20 @@ identically on Windows/macOS/Linux.
 git clone https://github.com/Servant-Software-LLC/Guardrails.git
 cd Guardrails
 dotnet pack src/Guardrails.Cli -c Release -o nupkg
+./install.ps1 -Source ./nupkg          # Windows: installs the tool + the skills
+# or, explicitly / on macOS-Linux:
 dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails --prerelease
+guardrails skills install
 ```
 
-`guardrails` is now on PATH. Verify:
+`guardrails` is now on PATH and the skills are installed. Verify:
 
 ```bash
 guardrails validate examples/hello-guardrails/hello-guardrails   # → "OK: plan is valid."
 ```
 
-To update later: `dotnet tool update --global --add-source ./nupkg ServantSoftware.Guardrails --prerelease`.
+To update later: `dotnet tool update --global --add-source ./nupkg ServantSoftware.Guardrails --prerelease`
+(then re-run `guardrails skills install --force` to refresh the skills).
 
 ### Option B — Public NuGet (the clean one-liner, ~15 min one-time setup)
 
@@ -71,6 +109,7 @@ Then, on any machine:
 
 ```bash
 dotnet tool install --global ServantSoftware.Guardrails --prerelease
+guardrails skills install
 ```
 
 **Recommendation:** Use **Option A this week** to unblock dogfooding now — it depends
@@ -83,40 +122,47 @@ for the demo and for eventual Mac/Linux boxes. It is *not* much extra work (one 
 
 ## Part 2 — Install the skills
 
-The skills are folders. Copy the ones you need into your **user** skills directory
-(`~/.claude/skills/`) so `/plan-breakdown` is available in *any* repo on the machine —
-including your work repo, which is where your plan and code live.
-
-**Required** for the loop:
-
-- `plan-breakdown` (includes its `references/` — the guardrail catalogue, schema
-  excerpt, and worked example; the folder is self-contained)
-- `guardrail-review`
-
-**Recommended** (improves breakdown quality — gives the agent the domain model):
-
-- `guardrails-domain-knowledge`
-
-Windows (PowerShell), from the cloned repo root:
-
-```powershell
-$dst = "$HOME\.claude\skills"
-New-Item -ItemType Directory -Force $dst | Out-Null
-Copy-Item -Recurse -Force .\.claude\skills\plan-breakdown           $dst
-Copy-Item -Recurse -Force .\.claude\skills\guardrail-review         $dst
-Copy-Item -Recurse -Force .\.claude\skills\guardrails-domain-knowledge $dst
-```
-
-macOS / Linux:
+The skills are **bundled inside the tool package** (under `skills/` next to the entry
+assembly). The bootstrap and `guardrails skills install` put them in your **user**
+skills directory (`~/.claude/skills/`) so `/plan-breakdown` is available in *any* repo
+on the machine — including your work repo, where your plan and code live.
 
 ```bash
-mkdir -p ~/.claude/skills
-cp -r .claude/skills/plan-breakdown            ~/.claude/skills/
-cp -r .claude/skills/guardrail-review          ~/.claude/skills/
-cp -r .claude/skills/guardrails-domain-knowledge ~/.claude/skills/
+guardrails skills install            # → copies into ~/.claude/skills
+guardrails skills install --target /custom/skills/dir   # override the destination
+guardrails skills install --force    # overwrite skill folders that already exist
 ```
 
-Restart Claude Code (or start a new session) and confirm `/plan-breakdown` appears.
+The three bundled skills:
+
+- `plan-breakdown` (includes its `references/` — the guardrail catalogue, schema
+  excerpt, and worked example; the folder is self-contained) — **required**
+- `guardrail-review` — **required**
+- `guardrails-domain-knowledge` — recommended (gives the agent the domain model,
+  improving breakdown quality)
+
+Without `--force`, a skill folder that already exists in the target is left untouched
+and reported as skipped. Restart Claude Code (or start a new session) and confirm
+`/plan-breakdown` appears.
+
+> **Last resort — manual copy.** If you only have the source checkout (no installed
+> tool), copy the folders by hand from the repo root:
+>
+> ```powershell
+> # Windows
+> $dst = "$HOME\.claude\skills"; New-Item -ItemType Directory -Force $dst | Out-Null
+> Copy-Item -Recurse -Force .\.claude\skills\plan-breakdown            $dst
+> Copy-Item -Recurse -Force .\.claude\skills\guardrail-review          $dst
+> Copy-Item -Recurse -Force .\.claude\skills\guardrails-domain-knowledge $dst
+> ```
+>
+> ```bash
+> # macOS / Linux
+> mkdir -p ~/.claude/skills
+> cp -r .claude/skills/plan-breakdown ~/.claude/skills/
+> cp -r .claude/skills/guardrail-review ~/.claude/skills/
+> cp -r .claude/skills/guardrails-domain-knowledge ~/.claude/skills/
+> ```
 
 > `guardrails-dev-knowledge`, `uber-report`, and the `.claude/agents/` are for working
 > on the Guardrails harness *itself* — you don't need them just to *use* Guardrails on

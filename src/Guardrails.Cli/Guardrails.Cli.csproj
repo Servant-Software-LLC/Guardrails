@@ -38,4 +38,34 @@
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
+  <!--
+    Bundle the agent-side skills INTO the tool so a single `dotnet tool install` carries
+    them. Each file is Content with CopyToOutputDirectory=PreserveNewest and a Link that
+    places it under skills/<name>/... in the build output. The dotnet-tool packaging target
+    sweeps the build output into tools/<tfm>/<rid>/ in the nupkg, so these land at
+    tools/net8.0/any/skills/... — next to the entry assembly (AppContext.BaseDirectory) when
+    the global tool runs. `guardrails skills install` reads them from there.
+
+    Pack=false: the tool packer already includes copy-to-output content; an explicit
+    Pack/PackagePath would add a SECOND copy at the same path (NU5118 duplicate-file error).
+    The skill folders live at the repo root, two levels up from this csproj.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\.claude\skills\plan-breakdown\**\*">
+      <Link>skills\plan-breakdown\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Pack>false</Pack>
+    </Content>
+    <Content Include="..\..\.claude\skills\guardrail-review\**\*">
+      <Link>skills\guardrail-review\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Pack>false</Pack>
+    </Content>
+    <Content Include="..\..\.claude\skills\guardrails-domain-knowledge\**\*">
+      <Link>skills\guardrails-domain-knowledge\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Pack>false</Pack>
+    </Content>
+  </ItemGroup>
+
 </Project>
