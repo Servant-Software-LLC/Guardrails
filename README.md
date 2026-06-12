@@ -72,7 +72,7 @@ nothing but .NET.
 | `guardrails run [folder] [--fresh] [--no-ui] [--dry-run]` | Run to green; resume-aware; live progress table. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
 | `guardrails status [folder]` | Journal table: per-task status, attempts, last failure |
 | `guardrails reset [folder] [task]` | Re-arm one task, or wipe runtime state entirely |
-| `guardrails skills install [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` |
+| `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
 
 The `folder` argument is optional everywhere: omit it to use the current directory, so you
 can `cd` into a plan folder and run `guardrails validate` (etc.) with no path. To reset one

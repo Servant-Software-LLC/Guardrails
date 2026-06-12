@@ -8,5 +8,6 @@ rootCommand.Add(PlanCommand.Create());
 rootCommand.Add(StatusCommand.Create());
 rootCommand.Add(ResetCommand.Create());
 rootCommand.Add(SkillsCommand.Create());
+rootCommand.Add(SkillsCommand.CreateInstallAlias());
 
 return await rootCommand.Parse(args).InvokeAsync();

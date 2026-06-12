@@ -71,6 +71,29 @@ public static class SkillsInstaller
         return results;
     }
 
+    /// <summary>
+    /// Resolve where skills should be installed, in precedence order:
+    /// an explicit <paramref name="target"/> wins; else <paramref name="project"/> means
+    /// <c>./.claude/skills</c> under the current directory (a repo-scoped install); else the
+    /// default <c>~/.claude/skills</c> in the user home (available in every repo). The chosen
+    /// directory is created by <see cref="InstallAll"/> if it does not yet exist.
+    /// </summary>
+    public static string ResolveTargetDir(string? target, bool project)
+    {
+        if (!string.IsNullOrWhiteSpace(target))
+        {
+            return target;
+        }
+
+        if (project)
+        {
+            return Path.Combine(Directory.GetCurrentDirectory(), ".claude", "skills");
+        }
+
+        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return Path.Combine(userProfile, ".claude", "skills");
+    }
+
     /// <summary>Recursively copy <paramref name="source"/> into <paramref name="destination"/>.</summary>
     private static void CopyDirectory(string source, string destination)
     {

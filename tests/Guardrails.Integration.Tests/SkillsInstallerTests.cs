@@ -87,6 +87,28 @@ public sealed class SkillsInstallerTests : IDisposable
             () => SkillsInstaller.InstallAll(missing, _target, force: false));
     }
 
+    [Fact]
+    public void ResolveTargetDir_ExplicitTarget_WinsVerbatim()
+    {
+        string explicitTarget = Path.Combine(_root, "custom");
+        Assert.Equal(explicitTarget, SkillsInstaller.ResolveTargetDir(explicitTarget, project: true));
+    }
+
+    [Fact]
+    public void ResolveTargetDir_Project_UsesCurrentDirDotClaudeSkills()
+    {
+        string expected = Path.Combine(Directory.GetCurrentDirectory(), ".claude", "skills");
+        Assert.Equal(expected, SkillsInstaller.ResolveTargetDir(null, project: true));
+    }
+
+    [Fact]
+    public void ResolveTargetDir_Default_UsesHomeDotClaudeSkills()
+    {
+        string expected = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "skills");
+        Assert.Equal(expected, SkillsInstaller.ResolveTargetDir(null, project: false));
+    }
+
     private static void WriteFile(string path, string content)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);

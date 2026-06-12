@@ -3,26 +3,55 @@ using System.CommandLine;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails skills install [--target &lt;dir&gt;] [--force]</c> — copy the skill folders
-/// bundled inside the tool (next to the entry assembly, under <c>skills/</c>) into Claude
-/// Code's user skills directory so <c>/plan-breakdown</c> and <c>/guardrail-review</c> become
-/// available in any repo. <c>--target</c> defaults to <c>~/.claude/skills</c>; <c>--force</c>
-/// overwrites an already-present skill folder (without it, it is skipped with a note).
+/// Installs the skill folders bundled inside the tool (next to the entry assembly, under
+/// <c>skills/</c>) into Claude Code's skills directory so <c>/plan-breakdown</c> and
+/// <c>/guardrail-review</c> become available. Default destination is <c>~/.claude/skills</c>
+/// (every repo); <c>--project</c> targets <c>./.claude/skills</c> in the current directory;
+/// <c>--target</c> overrides with an explicit path; <c>--force</c> overwrites existing folders.
+///
+/// Two spellings reach the same action: the canonical noun-verb <c>guardrails skills install</c>
+/// (parallel to <c>dotnet tool install</c>), and a hidden verb-noun alias
+/// <c>guardrails install skills</c> for muscle memory.
 /// </summary>
 public static class SkillsCommand
 {
+    /// <summary>The canonical <c>skills</c> command group (<c>guardrails skills install</c>).</summary>
     public static Command Create()
     {
         var command = new Command("skills", "Manage the Guardrails Claude Code skills bundled with this tool.");
-        command.Add(CreateInstall());
+        command.Add(BuildInstallLeaf("install"));
         return command;
     }
 
-    private static Command CreateInstall()
+    /// <summary>
+    /// Hidden alias so <c>guardrails install skills</c> works too. Same action as
+    /// <c>skills install</c>; kept out of <c>--help</c> so there is one canonical spelling.
+    /// </summary>
+    public static Command CreateInstallAlias()
+    {
+        var command = new Command("install", "Install bundled resources (alias for 'skills install').")
+        {
+            Hidden = true
+        };
+        command.Add(BuildInstallLeaf("skills"));
+        return command;
+    }
+
+    /// <summary>
+    /// Build a leaf install command with the given name and the shared options + action. Fresh
+    /// option instances per call (an Option cannot belong to two commands), so the canonical
+    /// leaf and the alias leaf each get their own.
+    /// </summary>
+    private static Command BuildInstallLeaf(string name)
     {
         var targetOption = new Option<string?>("--target")
         {
-            Description = "Directory to install the skills into (default: ~/.claude/skills)."
+            Description = "Explicit directory to install the skills into (overrides the default and --project)."
+        };
+
+        var projectOption = new Option<bool>("--project")
+        {
+            Description = "Install into ./.claude/skills in the current directory (created if missing) instead of the user home."
         };
 
         var forceOption = new Option<bool>("--force")
@@ -30,21 +59,23 @@ public static class SkillsCommand
             Description = "Overwrite a skill folder that already exists in the target (otherwise it is skipped)."
         };
 
-        var command = new Command("install", "Install the bundled skills into Claude Code's user skills directory.");
+        var command = new Command(name, "Install the bundled skills into Claude Code's skills directory.");
         command.Add(targetOption);
+        command.Add(projectOption);
         command.Add(forceOption);
 
         command.SetAction(parseResult =>
         {
             string? target = parseResult.GetValue(targetOption);
+            bool project = parseResult.GetValue(projectOption);
             bool force = parseResult.GetValue(forceOption);
-            return RunInstall(target, force);
+            return RunInstall(target, project, force);
         });
 
         return command;
     }
 
-    private static int RunInstall(string? target, bool force)
+    private static int RunInstall(string? target, bool project, bool force)
     {
         string sourceSkillsDir = Path.Combine(AppContext.BaseDirectory, "skills");
         if (!Directory.Exists(sourceSkillsDir))
@@ -57,7 +88,13 @@ public static class SkillsCommand
             return ExitCodes.HarnessError;
         }
 
-        string targetDir = ResolveTarget(target);
+        if (project && !string.IsNullOrWhiteSpace(target))
+        {
+            Console.Error.WriteLine("Specify either --target or --project, not both.");
+            return ExitCodes.HarnessError;
+        }
+
+        string targetDir = SkillsInstaller.ResolveTargetDir(target, project);
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
             SkillsInstaller.InstallAll(sourceSkillsDir, targetDir, force);
@@ -81,21 +118,5 @@ public static class SkillsCommand
         Console.WriteLine("Restart Claude Code; /plan-breakdown and /guardrail-review are then available.");
 
         return ExitCodes.Success;
-    }
-
-    /// <summary>
-    /// Resolve the install target: the explicit <c>--target</c> when given, otherwise
-    /// <c>~/.claude/skills</c> via <see cref="Environment.SpecialFolder.UserProfile"/>
-    /// (cross-platform).
-    /// </summary>
-    private static string ResolveTarget(string? target)
-    {
-        if (!string.IsNullOrWhiteSpace(target))
-        {
-            return target;
-        }
-
-        string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return Path.Combine(userProfile, ".claude", "skills");
     }
 }

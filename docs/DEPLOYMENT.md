@@ -128,10 +128,16 @@ skills directory (`~/.claude/skills/`) so `/plan-breakdown` is available in *any
 on the machine — including your work repo, where your plan and code live.
 
 ```bash
-guardrails skills install            # → copies into ~/.claude/skills
-guardrails skills install --target /custom/skills/dir   # override the destination
+guardrails skills install            # → ~/.claude/skills (user-level: every repo)
+guardrails skills install --project  # → ./.claude/skills (this repo only; created if missing)
+guardrails skills install --target /custom/skills/dir   # explicit destination
 guardrails skills install --force    # overwrite skill folders that already exist
 ```
+
+`guardrails install skills` is a hidden alias for the same thing, if that word order
+is the one in your fingers. User-level (`~/.claude/skills`, the default) is usually what
+you want — it makes `/plan-breakdown` available in *every* repo, including your work repo.
+Use `--project` when you'd rather scope the skills to one repo (e.g. to commit them with it).
 
 The three bundled skills:
 
