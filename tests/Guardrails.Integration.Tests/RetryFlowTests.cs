@@ -34,7 +34,9 @@ public sealed class RetryFlowTests
             """
         : $$"""
             f="$GUARDRAILS_PLAN_DIR/runs.count"
-            runs=$( [ -f "$f" ] && wc -l < "$f" || echo 0 )
+            # tr strips whitespace because BSD `wc` (macOS) left-pads its count with spaces,
+            # which would otherwise leak into the message below and break a substring assertion.
+            runs=$( [ -f "$f" ] && wc -l < "$f" | tr -d '[:space:]' || echo 0 )
             if [ "$runs" -ge {{n}} ]; then exit 0; fi
             echo "only $runs run(s) so far; need {{n}}"
             exit 1
