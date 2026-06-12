@@ -4,19 +4,19 @@ using Guardrails.Core.State;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails reset &lt;folder&gt; [taskId]</c>. With a task id: push that task back to
+/// <c>guardrails reset [folder] [taskId]</c>. With a task id: push that task back to
 /// <c>pending</c> (keeping its attempt history) so the next run re-executes just it.
 /// Without a task id: confirm, then delete <c>run.json</c>, <c>state.json</c>, and the logs
 /// tree, and re-seed (a full fresh slate). <c>--yes</c> skips the confirmation prompt.
+/// The folder defaults to the current directory when omitted, so <c>guardrails reset</c>
+/// resets cwd, <c>guardrails reset . &lt;taskId&gt;</c> targets a task in the current directory,
+/// and a lone positional binds to <c>folder</c>.
 /// </summary>
 public static class ResetCommand
 {
     public static Command Create()
     {
-        var folderArgument = new Argument<string>("folder")
-        {
-            Description = "Path to the plan folder (contains guardrails.json)."
-        };
+        var folderArgument = FolderArgument.Create();
 
         var taskArgument = new Argument<string?>("taskId")
         {
@@ -36,7 +36,7 @@ public static class ResetCommand
 
         command.SetAction(parseResult =>
         {
-            string folder = parseResult.GetRequiredValue(folderArgument);
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
             string? taskId = parseResult.GetValue(taskArgument);
             bool yes = parseResult.GetValue(yesOption);
             return Run(folder, taskId, yes);

@@ -3,24 +3,21 @@ using System.CommandLine;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails validate &lt;folder&gt;</c> — load + validate a plan folder, print
-/// diagnostics, and exit 0 (clean) or 1 (errors).
+/// <c>guardrails validate [folder]</c> — load + validate a plan folder, print
+/// diagnostics, and exit 0 (clean) or 1 (errors). Defaults to the current directory.
 /// </summary>
 public static class ValidateCommand
 {
     public static Command Create()
     {
-        var folderArgument = new Argument<string>("folder")
-        {
-            Description = "Path to the plan folder (contains guardrails.json)."
-        };
+        var folderArgument = FolderArgument.Create();
 
         var command = new Command("validate", "Validate a plan folder without running it.");
         command.Add(folderArgument);
 
         command.SetAction(parseResult =>
         {
-            string folder = parseResult.GetRequiredValue(folderArgument);
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
             return Run(folder);
         });
 

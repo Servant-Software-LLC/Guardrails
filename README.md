@@ -67,12 +67,16 @@ nothing but .NET.
 
 | Command | Does |
 |---|---|
-| `guardrails validate <folder>` | Schema, DAG (cycles), file refs, interpreter/runner checks |
-| `guardrails plan <folder>` | Execution-wave preview — runs nothing |
-| `guardrails run <folder> [--fresh] [--no-ui] [--dry-run]` | Run to green; resume-aware; live progress table. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
-| `guardrails status <folder>` | Journal table: per-task status, attempts, last failure |
-| `guardrails reset <folder> [task]` | Re-arm one task, or wipe runtime state entirely |
+| `guardrails validate [folder]` | Schema, DAG (cycles), file refs, interpreter/runner checks |
+| `guardrails plan [folder]` | Execution-wave preview — runs nothing |
+| `guardrails run [folder] [--fresh] [--no-ui] [--dry-run]` | Run to green; resume-aware; live progress table. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
+| `guardrails status [folder]` | Journal table: per-task status, attempts, last failure |
+| `guardrails reset [folder] [task]` | Re-arm one task, or wipe runtime state entirely |
 | `guardrails skills install [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` |
+
+The `folder` argument is optional everywhere: omit it to use the current directory, so you
+can `cd` into a plan folder and run `guardrails validate` (etc.) with no path. To reset one
+task in the current directory, pass `.` explicitly: `guardrails reset . <task>`.
 
 Exit codes: `0` green · `1` validation/harness error · `2` needs-human · `3` cancelled.
 

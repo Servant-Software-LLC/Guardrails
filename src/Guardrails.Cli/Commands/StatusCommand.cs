@@ -5,23 +5,21 @@ using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails status &lt;folder&gt;</c> — print a read-only table from the run journal:
+/// <c>guardrails status [folder]</c> — print a read-only table from the run journal:
 /// task, status, attempt count, last failure reason, and the latest attempt's log dir.
 /// Works mid-run (the journal is persisted at every transition) and after a run completes.
+/// Defaults to the current directory when the folder is omitted.
 /// </summary>
 public static class StatusCommand
 {
     public static Command Create()
     {
-        var folderArgument = new Argument<string>("folder")
-        {
-            Description = "Path to the plan folder (contains guardrails.json)."
-        };
+        var folderArgument = FolderArgument.Create();
 
         var command = new Command("status", "Show per-task status from the run journal (read-only).");
         command.Add(folderArgument);
 
-        command.SetAction(parseResult => Run(parseResult.GetRequiredValue(folderArgument)));
+        command.SetAction(parseResult => Run(FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument))));
         return command;
     }
 

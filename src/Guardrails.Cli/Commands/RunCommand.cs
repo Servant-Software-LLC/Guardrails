@@ -8,19 +8,17 @@ using Spectre.Console;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails run &lt;folder&gt; [--fresh] [--no-ui]</c> — validate then execute the plan
+/// <c>guardrails run [folder] [--fresh] [--no-ui]</c> — validate then execute the plan
 /// DAG (parallel, retry-aware, resume-aware). <c>--fresh</c> wipes runtime state first
 /// (SSOT §6.1). Live Spectre progress when interactive; plain lines otherwise. Exit codes
-/// per SSOT §7: 0 green, 1 error, 2 needs-human/failed, 3 cancelled.
+/// per SSOT §7: 0 green, 1 error, 2 needs-human/failed, 3 cancelled. Defaults to the
+/// current directory when the folder is omitted.
 /// </summary>
 public static class RunCommand
 {
     public static Command Create()
     {
-        var folderArgument = new Argument<string>("folder")
-        {
-            Description = "Path to the plan folder (contains guardrails.json)."
-        };
+        var folderArgument = FolderArgument.Create();
 
         var freshOption = new Option<bool>("--fresh")
         {
@@ -45,7 +43,7 @@ public static class RunCommand
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
-            string folder = parseResult.GetRequiredValue(folderArgument);
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
             bool fresh = parseResult.GetValue(freshOption);
             bool noUi = parseResult.GetValue(noUiOption);
             bool dryRun = parseResult.GetValue(dryRunOption);

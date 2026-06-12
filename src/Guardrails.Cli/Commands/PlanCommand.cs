@@ -5,25 +5,23 @@ using Guardrails.Core.Model;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails plan &lt;folder&gt;</c> — print the execution waves the scheduler will
+/// <c>guardrails plan [folder]</c> — print the execution waves the scheduler will
 /// follow: wave 0 has no dependencies; wave N waits on wave N−1. Tasks within a wave run
 /// in parallel up to <c>maxParallelism</c>, except <c>[exclusive]</c> tasks, which run alone.
+/// Defaults to the current directory when the folder is omitted.
 /// </summary>
 public static class PlanCommand
 {
     public static Command Create()
     {
-        var folderArgument = new Argument<string>("folder")
-        {
-            Description = "Path to the plan folder (contains guardrails.json)."
-        };
+        var folderArgument = FolderArgument.Create();
 
         var command = new Command("plan", "Show the execution waves for a plan folder (dry preview; runs nothing).");
         command.Add(folderArgument);
 
         command.SetAction(parseResult =>
         {
-            string folder = parseResult.GetRequiredValue(folderArgument);
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
             return Execute(folder);
         });
 
