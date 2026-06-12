@@ -43,25 +43,49 @@ its dependents, and lets independent branches finish. State flows between tasks 
 immutable snapshots in, JSON fragments out — single-writer merged, crash-safe,
 resumable.
 
-## 60-second demo
+## Installation
+
+Guardrails ships as a cross-platform .NET tool on NuGet. Install it and its bundled
+skills:
 
 ```bash
-git clone https://github.com/Servant-Software-LLC/Guardrails.git
-cd Guardrails
-dotnet run --project src/Guardrails.Cli -- validate examples/hello-guardrails/hello-guardrails
-dotnet run --project src/Guardrails.Cli -- plan     examples/hello-guardrails/hello-guardrails
-# the full run executes two LLM prompt tasks via Claude Code (~$1 of tokens):
-dotnet run --project src/Guardrails.Cli -- run examples/hello-guardrails/hello-guardrails --fresh
+# Windows one-liner — installs the tool + the bundled skills:
+irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.ps1 | iex
+
+# or explicitly (any OS):
+dotnet tool install --global ServantSoftware.Guardrails --prerelease
+guardrails skills install        # installs plan-breakdown + guardrail-review into ~/.claude/skills
 ```
 
-The example produces a greeting validated end-to-end: a script action, two prompt
-actions, state passing between tasks, deterministic guardrails, and one deliberate
-prompt-judge — every moving part in three small tasks.
+**Prerequisites:** the [.NET 8+ SDK](https://dotnet.microsoft.com/download), and — for
+prompt tasks — [Claude Code](https://claude.com/claude-code) installed and authenticated
+(the headless `claude -p` runner the harness drives). Deterministic-only plans need
+nothing but .NET. Restart Claude Code after `skills install` so it picks up the skills.
 
-Prompt tasks run through a pluggable runner; v1 ships Claude Code headless
-(`claude -p`), so the only prerequisites are the .NET SDK and (for prompt tasks)
-[Claude Code](https://claude.com/claude-code). Deterministic-only plans need
-nothing but .NET.
+## Quick Start
+
+From a reviewed markdown plan to finished, verified work — run these in the repo whose
+code the plan operates on:
+
+```
+1. Write your plan as a markdown file — a one-shot prompt or a full design doc.
+
+2. /plan-breakdown path/to/your-plan.md
+     → generates path/to/your-plan/: tasks, a dependency DAG, and deterministic
+       guardrails — inserting guardrail-enabling tasks the plan never mentioned
+       (e.g. "author the unit tests" before "implement the feature"). Hands you a DRAFT.
+
+3. /guardrail-review path/to/your-plan
+     → "what's the cheapest wrong implementation that passes these checks?" Ranked
+       findings with ready-to-paste fixes. Edit the guardrails until you trust them.
+
+4. guardrails run path/to/your-plan
+     → runs the DAG to green, retrying failed tasks with the failure fed back to the
+       agent, or halting honestly at needs-human. Resume-aware — re-run to continue.
+```
+
+Steps 2–3 run inside Claude Code (the skills you installed); step 4 is the `guardrails`
+CLI. You review the **checks** once — not every agent output.
 
 ## CLI
 
@@ -106,27 +130,18 @@ them into `~/.claude/skills/` via `guardrails skills install` (no manual copy):
 | Golden example | `examples/hello-guardrails/` |
 | Harness source | `src/Guardrails.Core`, `src/Guardrails.Cli` (net8.0 dotnet tool) |
 
-## Status
+## From source (contributors)
 
-M1–M7 complete; the Reality Gate (build+tests, end-to-end example run on real
-Claude, plan-breakdown round-trip) is met. M7 added run-level cost aggregation
-(`Total prompt cost` on `run`/`status`), `run --dry-run` (waves + per-task resolution
-+ resume-skip preview, touches no state), prompt-runner PATH probing in `validate`
-(GR2009 warning), and packaging: the tool publishes to NuGet as
-**`ServantSoftware.Guardrails`** (installs as the `guardrails` command) via a tag-driven
-release pipeline.
+Working on Guardrails itself, or want to try the bundled example end-to-end?
 
 ```bash
-# Windows one-liner: installs the tool + the bundled skills
-irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.ps1 | iex
-
-# or explicitly (any OS):
-dotnet tool install --global ServantSoftware.Guardrails --prerelease
-guardrails skills install          # copies the bundled skills into ~/.claude/skills
-guardrails validate <plan-folder>
+git clone https://github.com/Servant-Software-LLC/Guardrails.git
+cd Guardrails
+dotnet run --project src/Guardrails.Cli -- validate examples/hello-guardrails/hello-guardrails
+# the full run executes two LLM prompt tasks via Claude Code (~$1 of tokens):
+dotnet run --project src/Guardrails.Cli -- run examples/hello-guardrails/hello-guardrails --fresh
 ```
 
-The first **dogfood** plan — a per-run cost cap (`docs/plans/04-dogfood-cost-cap.md` and
-its validate-clean task folder) — is authored and awaiting human review before the
-harness runs it on itself. v2 bets (worktree-per-task parallelism, CI mode, an executable
-guardrail template library, cost caps) are specified in the roadmap.
+`examples/hello-guardrails/` is the golden fixture — a script action, two prompt actions,
+state passing, deterministic guardrails, and one deliberate prompt-judge, in three small
+tasks: every moving part end-to-end.
