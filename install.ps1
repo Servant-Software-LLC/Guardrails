@@ -65,9 +65,11 @@ if ($LASTEXITCODE -ne 0) {
 # --- 3. Install the bundled skills --------------------------------------------
 # `guardrails` is now on PATH (the global tools dir is on PATH for new shells; it is also
 # reachable in this session via the dotnet tool shim once installed).
+# --force so re-running the bootstrap to UPGRADE actually refreshes the deployed skills
+# (skills install skips existing folders by default — that would leave stale skills on upgrade).
 Write-Host ''
 Write-Host 'Installing bundled skills...'
-& guardrails skills install
+& guardrails skills install --force
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: 'guardrails skills install' failed (exit $LASTEXITCODE)." -ForegroundColor Red
     Write-Host 'If `guardrails` was not found, open a new terminal so the .NET tools dir is on PATH, then run:'

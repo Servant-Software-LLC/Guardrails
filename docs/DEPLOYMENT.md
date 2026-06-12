@@ -50,6 +50,30 @@ package is not yet on NuGet.org.
 
 ---
 
+## Upgrading
+
+Re-run the **same bootstrap** — it detects the installed tool and *updates* it, then
+refreshes the deployed skills with `--force`:
+
+```powershell
+irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.ps1 | iex
+```
+
+Doing it by hand is two steps, and the second needs `--force` — a plain `skills install`
+**skips** folders that already exist, so without it your `~/.claude/skills` copies stay
+stale after a tool update:
+
+```bash
+dotnet tool update --global ServantSoftware.Guardrails --prerelease   # harness + bundled skills
+guardrails skills install --force                                      # refresh the deployed skill copies
+```
+
+`dotnet tool update` cleanly replaces the harness binary and the skills bundled *inside*
+the package; only the copies you previously installed into `~/.claude/skills` need the
+`--force` refresh. Restart Claude Code afterwards.
+
+---
+
 ## Prerequisites
 
 | Requirement | Why | Windows | macOS / Linux |

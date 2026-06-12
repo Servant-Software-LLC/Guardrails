@@ -1,8 +1,10 @@
 # Release pipeline for the `ServantSoftware.Guardrails` dotnet tool.
 #
-# Trigger: pushing a tag of the form `v*` (e.g. `v1.0.0-preview.1`). The package
-# Version comes from src/Guardrails.Cli/Guardrails.Cli.csproj, NOT from the tag — keep the
-# two in sync when cutting a release.
+# Trigger: pushing a tag of the form `v*` (e.g. `v1.0.0-preview.1`). The package Version is
+# derived FROM the tag (the leading `v` is stripped): tag `v1.2.3` publishes version `1.2.3`,
+# tag `v1.0.0-preview.2` publishes `1.0.0-preview.2`. The <Version> in the csproj is only a
+# default for local `dotnet pack`; the tag is the source of truth for a published release.
+# NuGet refuses to republish an existing version, so cutting a new release = pushing a new tag.
 #
 # Flow: the 3-OS test matrix must pass on the tagged commit; only then does the `publish`
 # job pack and push to NuGet.org.
@@ -62,8 +64,9 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Pack
-        run: dotnet pack src/Guardrails.Cli -c Release -o nupkg
+      - name: Pack (version from tag)
+        # Strip the leading `v` from the tag so `v1.0.0-preview.1` → package version 1.0.0-preview.1.
+        run: dotnet pack src/Guardrails.Cli -c Release -o nupkg -p:Version="${GITHUB_REF_NAME#v}"
 
       - name: Push to NuGet.org
         # NUGET_API_KEY must be configured as a repository secret (see header comment).

@@ -47,12 +47,14 @@ echo "  dotnet ${ARGS[*]}"
 dotnet "${ARGS[@]}"
 
 # --- 3. install the bundled skills -------------------------------------------
+# --force so re-running the bootstrap to UPGRADE actually refreshes the deployed skills
+# (skills install skips existing folders by default — that would leave stale skills on upgrade).
 echo ""
 echo "Installing bundled skills..."
-if ! guardrails skills install; then
+if ! guardrails skills install --force; then
   echo "ERROR: 'guardrails skills install' failed." >&2
   echo "If 'guardrails' was not found, ensure ~/.dotnet/tools is on PATH, then run:" >&2
-  echo "    guardrails skills install" >&2
+  echo "    guardrails skills install --force" >&2
   exit 1
 fi
 
