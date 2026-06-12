@@ -39,10 +39,10 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
 
@@ -67,10 +67,10 @@ jobs:
       id-token: write   # let this job mint a GitHub OIDC token for NuGet Trusted Publishing
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
 
