@@ -50,8 +50,13 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   update` if a version is already installed.) Do NOT run the example's prompt tasks via the
   installed tool — no token spend.
 - Publish pipeline: `.github/workflows/release.yml` — on a pushed tag `v*`, the 3-OS test
-  matrix gates, then `dotnet pack` + `dotnet nuget push` using repo secret `NUGET_API_KEY`
-  (must be configured in GitHub repo settings).
+  matrix gates, then the publish job packs with the version derived FROM the tag
+  (`-p:Version=${GITHUB_REF_NAME#v}`) and pushes via **Trusted Publishing** (OIDC): the job
+  has `id-token: write`, `NuGet/login@v1` (input `user: ${{ secrets.NUGET_USER }}`) exchanges
+  the OIDC token for a short-lived key, then `dotnet nuget push`. No `NUGET_API_KEY` secret —
+  only a non-sensitive `NUGET_USER` (nuget.org profile name) plus a Trusted Publishing policy
+  on nuget.org (Repository Owner `Servant-Software-LLC`, Repository `Guardrails`, Workflow
+  File `release.yml`).
 - **Bundled skills**: the CLI csproj globs three skill folders
   (`plan-breakdown` incl. `references/`, `guardrail-review`, `guardrails-domain-knowledge`)
   as `Content` with `CopyToOutputDirectory=PreserveNewest` and a

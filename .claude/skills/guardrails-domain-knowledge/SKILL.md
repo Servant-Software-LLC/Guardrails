@@ -191,9 +191,10 @@ always a **draft** until a human reviews it.
   **warning** (GR2009, not an error — the plan may run elsewhere). Packaging: PackageId
   `ServantSoftware.Guardrails` (ToolCommandName stays `guardrails`), version
   `1.0.0-preview.1`, MIT `LICENSE` + full package metadata, README packed; release pipeline
-  `.github/workflows/release.yml` (tag `v*` → 3-OS matrix → pack + `dotnet nuget push` via
-  secret `NUGET_API_KEY`). Clean-machine pack/install acceptance passed (validate + plan via
-  the installed tool, then uninstalled). **Dogfood artifact authored, not executed**:
+  `.github/workflows/release.yml` (tag `v*` → 3-OS matrix → pack with version derived from the
+  tag → `dotnet nuget push` via **Trusted Publishing**/OIDC, no long-lived key — `NuGet/login@v1`
+  + a `NUGET_USER` profile-name secret + a nuget.org policy). Clean-machine pack/install
+  acceptance passed (validate + plan via the installed tool, then uninstalled). **Dogfood artifact authored, not executed**:
   `docs/plans/04-dogfood-cost-cap.md` + its breakdown folder (validate-clean, 4 tasks:
   inserted test-author → implement → document → terminal suite-green) await human review
   before `guardrails run` — the first real v2 slice (per-run cost cap).

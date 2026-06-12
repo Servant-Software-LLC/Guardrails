@@ -121,13 +121,23 @@ Once the package is on NuGet.org, **every machine** installs with a single comma
 no clone, no pack. This is the best long-term / team / cross-OS story and is the
 nicest thing to show in a Lunch & Learn ("installing is one line").
 
-One-time setup (done once, by whoever owns the Servant Software NuGet account):
+One-time setup uses **Trusted Publishing** (OIDC) — no long-lived API key to create,
+store, or rotate. Done once, by whoever owns the Servant Software NuGet account:
 
-1. Create a NuGet.org API key scoped to push `ServantSoftware.Guardrails`.
-2. Add it as the `NUGET_API_KEY` secret on the GitHub repo
-   (Settings → Secrets and variables → Actions → New repository secret).
+1. On **nuget.org** → your username → **Trusted Publishing** → add a policy:
+   - Repository Owner = `Servant-Software-LLC`, Repository = `Guardrails`
+   - Workflow File = `release.yml` (file name only), Environment = *(empty)*
+   - Policy owner = the account/org that will own the `ServantSoftware.Guardrails` package
+2. Add **one** repo secret `NUGET_USER` = your nuget.org **profile name** (not email).
+   It is not sensitive — it only tells the workflow which account to mint a key for.
 3. Push the release tag: `git tag v1.0.0-preview.1 && git push origin v1.0.0-preview.1`.
-   The release workflow runs the 3-OS test matrix, then packs and pushes to NuGet.
+   The workflow runs the 3-OS test matrix, then (in the publish job) mints a GitHub OIDC
+   token, exchanges it for a short-lived NuGet key via the policy, and pushes.
+
+> The package version comes from the **tag** (`v1.2.3` → `1.2.3`), so each subsequent
+> release is just `git tag vX.Y.Z && git push origin vX.Y.Z` — no key, no csproj edit.
+> (Public repos activate the policy immediately; a *private* repo's policy is provisional
+> for 7 days and locks in on the first successful publish.)
 
 Then, on any machine:
 
