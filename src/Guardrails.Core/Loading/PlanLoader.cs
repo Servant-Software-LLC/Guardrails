@@ -222,9 +222,20 @@ public sealed class PlanLoader
         }
 
         var tasks = new List<TaskNode>();
-        IEnumerable<string> taskFolders = Directory
+        List<string> taskFolders = Directory
             .EnumerateDirectories(tasksDir)
-            .OrderBy(Path.GetFileName, StringComparer.Ordinal);
+            .OrderBy(Path.GetFileName, StringComparer.Ordinal)
+            .ToList();
+
+        // An empty tasks/ directory is a malformed plan: it would otherwise validate clean and
+        // "run" 0/0 green. (A dir with task folders that all fail to load is already reported by
+        // the per-task diagnostics below, so only the truly-empty case needs flagging here.)
+        if (taskFolders.Count == 0)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.NoTasks, tasksDir,
+                "Plan's 'tasks' directory is empty; a plan needs at least one task folder."));
+            return [];
+        }
 
         foreach (string taskFolder in taskFolders)
         {

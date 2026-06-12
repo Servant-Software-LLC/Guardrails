@@ -32,6 +32,9 @@ public static class DiagnosticCodes
     /// <summary>An unknown value was supplied for an enum-valued field (e.g. guardrailMode).</summary>
     public const string InvalidFieldValue = "GR1008";
 
+    /// <summary>The <c>tasks</c> directory exists but contains no task folders (an empty plan).</summary>
+    public const string NoTasks = "GR1009";
+
     // --- Validation (semantic) --------------------------------------------------------
     /// <summary>A <c>dependsOn</c> entry references a task id that does not exist.</summary>
     public const string UnknownDependency = "GR2001";

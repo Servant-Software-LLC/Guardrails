@@ -71,6 +71,31 @@ public sealed class PlanLoaderTests
     }
 
     [Fact]
+    public void EmptyTasksDirectory_ReportsNoTasks()
+    {
+        // An empty tasks/ dir can't be a committed fixture (git drops empty dirs), and it must
+        // NOT load clean — otherwise it would "run" 0/0 green. Build it on disk and assert GR1009.
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-empty-tasks-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+            File.WriteAllText(Path.Combine(planDir, "guardrails.json"), "{ \"version\": 1 }");
+
+            PlanLoadResult result = new PlanLoader().Load(planDir);
+
+            Assert.Contains(result.Diagnostics, d => d.Code == DiagnosticCodes.NoTasks);
+            Assert.True(result.HasErrors);
+        }
+        finally
+        {
+            if (Directory.Exists(planDir))
+            {
+                Directory.Delete(planDir, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public void CommentsAndTrailingCommas_ParseSuccessfully()
     {
         PlanLoadResult result = Load("comments-and-commas");
