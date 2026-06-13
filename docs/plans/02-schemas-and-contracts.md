@@ -324,3 +324,52 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 - A prompt action may signal an unresolvable decision by writing
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
   as needs-human immediately (no retry burn).
+
+---
+
+## 10. Diagram artifact (`diagram.md`)
+
+`guardrails graph [folder]` renders the plan's task/guardrail DAG as a Mermaid
+`flowchart TD` and writes it to `<plan-folder>/diagram.md`. The file is a **generated,
+non-authored artifact**: it is NOT part of the plan contract, the loader/validator ignore
+it (a present `diagram.md` at the plan root validates clean), and it is safe to delete and
+regenerate. Nothing is added to `guardrails.json` or its model — `guardrails.json` carries
+`//` comments the loader skips, and rewriting it through System.Text.Json would strip them,
+so the staleness key lives in `diagram.md` instead.
+
+**Shape.** Per task NN: the task node fans out one edge to each of its guardrail nodes; all
+of that task's guardrail nodes merge into a single per-task "Finished" node
+(`<id> ✓ Finished`). Dependency edges run FROM a dependency's Finished node TO the
+dependent task node — for each task B that `dependsOn` A, the diagram emits
+`done_A --> task_B` (A is done, now B may start). Three `classDef`s color tasks, guardrails,
+and Finished nodes distinctly. Retry / feedback (cyclic) edges are out of scope for v1.
+
+**Provenance comment.** The first line of `diagram.md` is, verbatim:
+
+```
+<!-- guardrails:graph v1 source-sha256=<hash> generated=<iso8601-utc> -->
+```
+
+followed by a blank line and a fenced ```` ```mermaid ```` block. `generated` is a UTC
+timestamp (`yyyy-MM-ddTHH:mm:ssZ`); it is informational only and is NOT part of the
+staleness comparison.
+
+**`source-sha256`.** A SHA-256 (lowercase hex) over a canonical serialization of ONLY the
+diagram-relevant state: for each task in ordinal order — the task id, its `dependsOn`
+(sorted ordinal), its guardrail **file basenames** (sorted ordinal), and its action kind
+(`Script`/`Prompt`). It is therefore stable across irrelevant reorderings and changes when a
+task, a dependency, or a guardrail is added or removed. Guardrail descriptions and node
+label text are deliberately NOT covered (they change labels, not DAG shape).
+
+**Command contract.**
+
+- `guardrails graph [folder]` — render and write `diagram.md`; print the written path; exit
+  `0`. Front-doors through load/validate first: on any load/validate error, print
+  diagnostics and exit `1`.
+- `--stdout` — print the diagram to stdout; write nothing to disk; exit `0`.
+- `--check` — write nothing. Recompute `source-sha256`, read the value embedded in an
+  existing `diagram.md`, and exit `0` when present and equal (fresh). Otherwise print one
+  actionable line (`diagram.md is stale …` / `diagram.md missing …`) and exit `1`. A missing
+  `diagram.md` counts as stale.
+- `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
+  formats).

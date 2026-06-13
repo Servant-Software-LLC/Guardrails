@@ -28,6 +28,13 @@ DAG mentally. Run `guardrails validate <folder>` first — never hand-check what
 tool checks (schema, refs, cycles, zero-guardrail tasks, missing promptRunners).
 Run `guardrails plan <folder>` to see the waves.
 
+Then run `guardrails graph <folder> --check`. `diagram.md` is a deterministic
+projection of the folder; the human and earlier passes edit guardrails between
+breakdown and review, so a stale or missing diagram means the DAG changed since it
+was drawn. If `--check` reports stale/missing (exit 1), regenerate with
+`guardrails graph <folder>` and note in the Step 6 report that the diagram was
+refreshed to match the current folder.
+
 ### 2. Adversarial pass per task (the heart)
 Role-play a lazy or wrong implementer. Concrete probes (mirror of the catalogue's
 anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalogue.md`):
@@ -82,6 +89,7 @@ changes to it.
 
 ## Quality bar
 - [ ] `guardrails validate` ran first; findings don't duplicate the tool.
+- [ ] `guardrails graph --check` ran; a stale/missing diagram was regenerated and the refresh noted in the report.
 - [ ] Every BLOCKER names the concrete wrong implementation, not a vibe.
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Coverage gaps cite the exact unverified completion criterion.

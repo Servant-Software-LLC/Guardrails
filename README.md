@@ -85,7 +85,8 @@ code the plan operates on:
 ```
 
 Steps 2–3 run inside Claude Code (the skills you installed); step 4 is the `guardrails`
-CLI. You review the **checks** once — not every agent output.
+CLI. You review the **checks** once — not every agent output. `/plan-breakdown` also emits a
+renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view of the DAG.
 
 ## CLI
 
@@ -93,6 +94,7 @@ CLI. You review the **checks** once — not every agent output.
 |---|---|
 | `guardrails validate [folder]` | Schema, DAG (cycles), file refs, interpreter/runner checks |
 | `guardrails plan [folder]` | Execution-wave preview — runs nothing |
+| `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness |
 | `guardrails run [folder] [--fresh] [--no-ui] [--dry-run]` | Run to green; resume-aware; live progress table. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
 | `guardrails status [folder]` | Journal table: per-task status, attempts, last failure |
 | `guardrails reset [folder] [task]` | Re-arm one task, or wipe runtime state entirely |

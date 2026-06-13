@@ -153,10 +153,16 @@ Per `references/schemas.md`, exactly:
    validation was skipped and why).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
    DAG intent.
-3. Emit the **breakdown report**: task table (id, action kind, guardrails with
+3. Once validation passes, run `guardrails graph <folder>` to generate
+   `<folder>/diagram.md` (a Mermaid `flowchart TD` of the task/guardrail DAG — a
+   generated artifact, never hand-edited; see `references/schemas.md`).
+4. Emit the **breakdown report**: task table (id, action kind, guardrails with
    archetype numbers, dependsOn), the inserted-task list with justifications, edge
-   justifications, and any flagged non-executable plan content.
-4. Close with, verbatim in spirit:
+   justifications, and any flagged non-executable plan content. Then **embed the
+   generated Mermaid block inline** (paste the ```mermaid``` fence from `diagram.md`)
+   so the human sees the DAG in chat, and **state the `<folder>/diagram.md` path**
+   explicitly so they can render it in GitHub or VS Code.
+5. Close with, verbatim in spirit:
 
    > **This is a draft.** Review the folder — especially the guardrails — edit,
    > delete, or add, then run `/guardrail-review <folder>` before executing with
@@ -174,4 +180,5 @@ Per `references/schemas.md`, exactly:
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
+- [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline).
 - [ ] Output explicitly presented as a draft for human review.

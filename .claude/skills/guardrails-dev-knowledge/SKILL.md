@@ -78,6 +78,9 @@ dotnet test  "Guardrails.sln" -c Release          # full suite; integration spaw
 dotnet run --project src/Guardrails.Cli -- validate <plan-folder>
 dotnet run --project src/Guardrails.Cli -- run <plan-folder> --no-ui [--fresh]
 dotnet run --project src/Guardrails.Cli -- plan|status|reset <plan-folder>
+dotnet run --project src/Guardrails.Cli -- graph <plan-folder> [--check] [--stdout] [--format mermaid]
+#   renders the task/guardrail DAG to <folder>/diagram.md (Mermaid); --check reports staleness
+#   via a source-sha256 in the file's provenance comment (SSOT §10); --stdout writes nothing
 dotnet run --project src/Guardrails.Cli -- skills install [--project] [--target <dir>] [--force]
 #   `--project` → ./.claude/skills (else ~/.claude/skills); `install skills` is a hidden alias
 dotnet pack src/Guardrails.Cli -c Release -o nupkg    # local tool package (bundles skills/)
