@@ -127,4 +127,39 @@ public sealed class InterpreterMapTests
         Assert.Equal(InterpreterMap.Status.Resolved, resolution.Status);
         Assert.Equal("powershell.exe", resolution.Command!.Executable);
     }
+
+    [Fact]
+    public void ShScript_OnWindows_PrefersGitBashBinPathOverBareBash()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // Git Bash candidate list only applies on Windows
+        }
+
+        const string gitBashBin = @"C:\Program Files\Git\bin\bash.exe";
+        var map = new InterpreterMap(FakeExecutableProbe.With(gitBashBin, "bash"));
+
+        InterpreterMap.Resolution resolution = map.Resolve(@"C:\plan\check.sh", NoArgs);
+
+        Assert.Equal(InterpreterMap.Status.Resolved, resolution.Status);
+        Assert.Equal(gitBashBin, resolution.Command!.Executable);
+    }
+
+    [Fact]
+    public void ShScript_OnWindows_TriesGitBashUsrPathBeforeBareBash()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // Git Bash candidate list only applies on Windows
+        }
+
+        const string gitBashUsr = @"C:\Program Files\Git\usr\bin\bash.exe";
+        // bin/bash.exe absent, usr/bin/bash.exe present — should prefer usr over bare bash
+        var map = new InterpreterMap(FakeExecutableProbe.With(gitBashUsr, "bash"));
+
+        InterpreterMap.Resolution resolution = map.Resolve(@"C:\plan\check.sh", NoArgs);
+
+        Assert.Equal(InterpreterMap.Status.Resolved, resolution.Status);
+        Assert.Equal(gitBashUsr, resolution.Command!.Executable);
+    }
 }

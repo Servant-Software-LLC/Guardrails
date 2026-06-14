@@ -111,7 +111,16 @@ public sealed class InterpreterMap
         ".ps1" => OperatingSystem.IsWindows()
             ? [PwshTemplate, PowershellTemplate]
             : [PwshTemplate],
-        ".sh" => [["bash", ScriptToken, ArgsToken]],
+        // On Windows, probe known Git Bash locations before bare "bash" — which may resolve
+        // to the WSL launcher (C:\Windows\System32\bash.exe) that rejects Windows-style paths.
+        // Escape hatch: pin .sh to a specific interpreter in guardrails.json "interpreters".
+        ".sh" => OperatingSystem.IsWindows()
+            ? [
+                [@"C:\Program Files\Git\bin\bash.exe", ScriptToken, ArgsToken],
+                [@"C:\Program Files\Git\usr\bin\bash.exe", ScriptToken, ArgsToken],
+                ["bash", ScriptToken, ArgsToken]
+              ]
+            : [["bash", ScriptToken, ArgsToken]],
         ".py" => [["python3", ScriptToken, ArgsToken], ["python", ScriptToken, ArgsToken]],
         ".cmd" or ".bat" => [["cmd", "/c", ScriptToken, ArgsToken]],
         ".dll" => [["dotnet", ScriptToken, ArgsToken]],
