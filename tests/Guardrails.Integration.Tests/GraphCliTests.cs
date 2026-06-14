@@ -10,7 +10,6 @@ namespace Guardrails.Integration.Tests;
 /// freshness/staleness/missing (exit 2) vs a genuine load/validate error (exit 1),
 /// <c>--stdout</c> (writes nothing), and the <c>--format</c> guard.
 /// </summary>
-[Collection(ConsoleCaptureCollection.Name)]
 public sealed class GraphCliTests
 {
     private const string DiagramFileName = "diagram.md";
@@ -27,22 +26,13 @@ public sealed class GraphCliTests
 
     private static async Task<(int ExitCode, string Output)> InvokeCapturingAsync(params string[] args)
     {
+        var io = new StringConsoleIo();
         var root = new RootCommand("test root");
-        root.Add(GraphCommand.Create());
-        root.Add(ValidateCommand.Create());
+        root.Add(GraphCommand.Create(io));
+        root.Add(ValidateCommand.Create(io));
 
-        TextWriter original = Console.Out;
-        var captured = new StringWriter();
-        Console.SetOut(captured);
-        try
-        {
-            int exit = await root.Parse(args).InvokeAsync();
-            return (exit, captured.ToString());
-        }
-        finally
-        {
-            Console.SetOut(original);
-        }
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
     }
 
     private static string DiagramPath(string planDir) => Path.Combine(planDir, DiagramFileName);

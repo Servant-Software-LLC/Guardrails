@@ -10,7 +10,6 @@ namespace Guardrails.Integration.Tests;
 /// per-invocation <see cref="StringConsoleIo"/> (discarded — these are exit-code tests), so
 /// nothing touches the process-global console and the class is parallel-safe.
 /// </summary>
-[Collection(ConsoleCaptureCollection.Name)]
 public sealed class StatusResetCliTests
 {
     private static async Task<int> InvokeAsync(params string[] args)

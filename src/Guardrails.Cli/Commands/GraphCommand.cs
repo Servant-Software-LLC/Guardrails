@@ -31,7 +31,7 @@ public static partial class GraphCommand
     /// </summary>
     private const int StaleExitCode = 2;
 
-    public static Command Create()
+    public static Command Create(IConsoleIo io)
     {
         var folderArgument = FolderArgument.Create();
 
@@ -62,21 +62,23 @@ public static partial class GraphCommand
 
         command.SetAction(parseResult =>
         {
-            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
             bool check = parseResult.GetValue(checkOption);
             bool toStdout = parseResult.GetValue(stdoutOption);
-            return Execute(folder, check, toStdout);
+            return Execute(folder, check, toStdout, io);
         });
 
         return command;
     }
 
-    private static int Execute(string folder, bool check, bool toStdout)
+    private static int Execute(string folder, bool check, bool toStdout, IConsoleIo io)
     {
+        TextWriter output = io.Out;
+
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
         {
-            PlanProbe.PrintDiagnostics(probe.Diagnostics);
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, output);
             return ExitCodes.HarnessError;
         }
 
@@ -86,20 +88,20 @@ public static partial class GraphCommand
 
         if (check)
         {
-            return Check(diagramPath, sourceHash);
+            return Check(diagramPath, sourceHash, output);
         }
 
         string diagram = MermaidRenderer.Render(plan);
 
         if (toStdout)
         {
-            Console.WriteLine(diagram);
+            output.WriteLine(diagram);
             return ExitCodes.Success;
         }
 
         string document = ComposeDocument(diagram, sourceHash);
         AtomicFile.WriteAllText(diagramPath, document);
-        Console.WriteLine($"Wrote {diagramPath}");
+        output.WriteLine($"Wrote {diagramPath}");
         return ExitCodes.Success;
     }
 
@@ -112,11 +114,11 @@ public static partial class GraphCommand
     /// before <c>--check</c> is dispatched — so CI can distinguish "regenerate the diagram"
     /// (2) from "the plan is broken" (1).
     /// </summary>
-    private static int Check(string diagramPath, string sourceHash)
+    private static int Check(string diagramPath, string sourceHash, TextWriter output)
     {
         if (!File.Exists(diagramPath))
         {
-            Console.WriteLine($"{DiagramFileName} missing — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
+            output.WriteLine($"{DiagramFileName} missing — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
             return StaleExitCode;
         }
 
@@ -126,7 +128,7 @@ public static partial class GraphCommand
             return ExitCodes.Success;
         }
 
-        Console.WriteLine($"{DiagramFileName} is stale — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
+        output.WriteLine($"{DiagramFileName} is stale — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
         return StaleExitCode;
     }
 

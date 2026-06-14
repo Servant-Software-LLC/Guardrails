@@ -10,25 +10,16 @@ namespace Guardrails.Integration.Tests;
 /// future loader change started treating root markdown as part of the plan, this would catch
 /// it before the generated artifact silently broke validation.
 /// </summary>
-[Collection(ConsoleCaptureCollection.Name)]
 public sealed class GraphValidateToleranceTests
 {
     private static async Task<int> InvokeAsync(params string[] args)
     {
+        var io = new StringConsoleIo();
         var root = new RootCommand("test root");
-        root.Add(GraphCommand.Create());
-        root.Add(ValidateCommand.Create());
+        root.Add(GraphCommand.Create(io));
+        root.Add(ValidateCommand.Create(io));
 
-        TextWriter original = Console.Out;
-        Console.SetOut(new StringWriter()); // graph prints "Wrote ..."; keep test output clean.
-        try
-        {
-            return await root.Parse(args).InvokeAsync();
-        }
-        finally
-        {
-            Console.SetOut(original);
-        }
+        return await root.Parse(args).InvokeAsync();
     }
 
     [Fact]
