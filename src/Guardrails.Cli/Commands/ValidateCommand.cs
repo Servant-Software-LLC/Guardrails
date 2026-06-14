@@ -8,7 +8,7 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class ValidateCommand
 {
-    public static Command Create()
+    public static Command Create(IConsoleIo io)
     {
         var folderArgument = FolderArgument.Create();
 
@@ -17,26 +17,26 @@ public static class ValidateCommand
 
         command.SetAction(parseResult =>
         {
-            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
-            return Run(folder);
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
+            return Run(folder, io);
         });
 
         return command;
     }
 
-    private static int Run(string folder)
+    private static int Run(string folder, IConsoleIo io)
     {
         PlanProbe.Result result = PlanProbe.LoadAndValidate(folder);
-        PlanProbe.PrintDiagnostics(result.Diagnostics);
+        PlanProbe.PrintDiagnostics(result.Diagnostics, io.Out);
 
         if (result.HasErrors)
         {
             int errorCount = result.Diagnostics.Count(d => d.Severity == Core.Loading.DiagnosticSeverity.Error);
-            Console.WriteLine($"\nFAILED: {errorCount} error(s).");
+            io.Out.WriteLine($"\nFAILED: {errorCount} error(s).");
             return ExitCodes.HarnessError;
         }
 
-        Console.WriteLine("OK: plan is valid.");
+        io.Out.WriteLine("OK: plan is valid.");
         return ExitCodes.Success;
     }
 }

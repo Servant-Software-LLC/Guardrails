@@ -14,7 +14,7 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class ResetCommand
 {
-    public static Command Create()
+    public static Command Create(IConsoleIo io)
     {
         var folderArgument = FolderArgument.Create();
 
@@ -36,66 +36,68 @@ public static class ResetCommand
 
         command.SetAction(parseResult =>
         {
-            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
             string? taskId = parseResult.GetValue(taskArgument);
             bool yes = parseResult.GetValue(yesOption);
-            return Run(folder, taskId, yes);
+            return Run(folder, taskId, yes, io);
         });
 
         return command;
     }
 
-    private static int Run(string folder, string? taskId, bool yes)
+    private static int Run(string folder, string? taskId, bool yes, IConsoleIo io)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
         {
-            PlanProbe.PrintDiagnostics(probe.Diagnostics);
-            Console.WriteLine("\nCould not load the plan.");
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, io.Out);
+            io.Out.WriteLine("\nCould not load the plan.");
             return ExitCodes.HarnessError;
         }
 
         return string.IsNullOrWhiteSpace(taskId)
-            ? FullReset(probe.Plan.PlanDirectory, yes)
-            : TaskReset(probe.Plan, taskId);
+            ? FullReset(probe.Plan.PlanDirectory, yes, io)
+            : TaskReset(probe.Plan, taskId, io);
     }
 
-    private static int TaskReset(Core.Model.PlanDefinition plan, string taskId)
+    private static int TaskReset(Core.Model.PlanDefinition plan, string taskId, IConsoleIo io)
     {
         if (RunReset.Task(plan, taskId))
         {
-            Console.WriteLine($"Task '{taskId}' reset to pending. Run 'guardrails run' to re-execute it.");
+            io.Out.WriteLine($"Task '{taskId}' reset to pending. Run 'guardrails run' to re-execute it.");
             return ExitCodes.Success;
         }
 
-        Console.WriteLine($"Task '{taskId}' is not in the run journal (run the plan first, or check the id).");
+        io.Out.WriteLine($"Task '{taskId}' is not in the run journal (run the plan first, or check the id).");
         return ExitCodes.HarnessError;
     }
 
-    private static int FullReset(string planDirectory, bool yes)
+    private static int FullReset(string planDirectory, bool yes, IConsoleIo io)
     {
-        if (!yes && !Confirm(planDirectory))
+        if (!yes && !Confirm(planDirectory, io))
         {
-            Console.WriteLine("Aborted; nothing was changed.");
+            io.Out.WriteLine("Aborted; nothing was changed.");
             return ExitCodes.Success;
         }
 
         RunReset.Fresh(planDirectory);
-        Console.WriteLine("Full reset done: run.json, state.json, and logs deleted; state re-seeded.");
+        io.Out.WriteLine("Full reset done: run.json, state.json, and logs deleted; state re-seeded.");
         return ExitCodes.Success;
     }
 
-    private static bool Confirm(string planDirectory)
+    private static bool Confirm(string planDirectory, IConsoleIo io)
     {
         // Non-interactive (redirected) input cannot answer the prompt — refuse rather than
-        // silently wiping state. Use --yes in scripts.
+        // silently wiping state. Use --yes in scripts. The redirection probe stays on Console
+        // (it is an input-capability check, not the output race); only the prompt TEXT is
+        // routed through the output seam.
         if (Console.IsInputRedirected)
         {
-            Console.WriteLine("Refusing a full reset without confirmation. Re-run with --yes to proceed.");
+            io.Out.WriteLine("Refusing a full reset without confirmation. Re-run with --yes to proceed.");
             return false;
         }
 
-        Console.Write($"Delete all runtime state for '{planDirectory}' and re-seed? [y/N] ");
+        io.Out.Write($"Delete all runtime state for '{planDirectory}' and re-seed? [y/N] ");
         string? answer = Console.ReadLine();
         return answer is not null && answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
     }

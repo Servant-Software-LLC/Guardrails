@@ -35,12 +35,12 @@ public static class PlanProbe
         return new Result { Plan = loadResult.Plan, Diagnostics = diagnostics };
     }
 
-    /// <summary>Print diagnostics in a stable, scannable format.</summary>
-    public static void PrintDiagnostics(IReadOnlyList<Diagnostic> diagnostics)
+    /// <summary>Print diagnostics in a stable, scannable format to <paramref name="output"/>.</summary>
+    public static void PrintDiagnostics(IReadOnlyList<Diagnostic> diagnostics, TextWriter output)
     {
         foreach (Diagnostic diagnostic in diagnostics)
         {
-            Console.WriteLine(diagnostic.ToString());
+            output.WriteLine(diagnostic.ToString());
         }
     }
 }

@@ -12,7 +12,7 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class PlanCommand
 {
-    public static Command Create()
+    public static Command Create(IConsoleIo io)
     {
         var folderArgument = FolderArgument.Create();
 
@@ -21,42 +21,44 @@ public static class PlanCommand
 
         command.SetAction(parseResult =>
         {
-            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
-            return Execute(folder);
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
+            return Execute(folder, io);
         });
 
         return command;
     }
 
-    private static int Execute(string folder)
+    private static int Execute(string folder, IConsoleIo io)
     {
+        TextWriter output = io.Out;
+
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
         {
-            PlanProbe.PrintDiagnostics(probe.Diagnostics);
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, output);
             return ExitCodes.HarnessError;
         }
 
         var graph = new DependencyGraph(probe.Plan.Tasks);
         IReadOnlyList<IReadOnlyList<TaskNode>> waves = graph.Waves();
 
-        Console.WriteLine($"Execution plan — {probe.Plan.Tasks.Count} task(s), " +
-                          $"{waves.Count} wave(s), maxParallelism {probe.Plan.Config.MaxParallelism}");
-        Console.WriteLine();
+        output.WriteLine($"Execution plan — {probe.Plan.Tasks.Count} task(s), " +
+                         $"{waves.Count} wave(s), maxParallelism {probe.Plan.Config.MaxParallelism}");
+        output.WriteLine();
 
         for (int i = 0; i < waves.Count; i++)
         {
-            Console.WriteLine($"Wave {i}:");
+            output.WriteLine($"Wave {i}:");
             foreach (TaskNode task in waves[i])
             {
                 bool exclusive = task.Exclusive ?? task.Action.Kind == ActionKind.Prompt;
                 string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
                 string flags = exclusive ? " [exclusive]" : string.Empty;
                 string deps = task.DependsOn.Count == 0 ? "" : $"  (after: {string.Join(", ", task.DependsOn)})";
-                Console.WriteLine($"  {task.Id,-36} {kind,-7}{flags}{deps}");
+                output.WriteLine($"  {task.Id,-36} {kind,-7}{flags}{deps}");
             }
 
-            Console.WriteLine();
+            output.WriteLine();
         }
 
         return ExitCodes.Success;

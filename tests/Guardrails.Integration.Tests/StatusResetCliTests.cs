@@ -6,17 +6,20 @@ namespace Guardrails.Integration.Tests;
 
 /// <summary>
 /// Drives the real CLI pipeline for the M3 commands (<c>status</c>, <c>reset</c>, and
-/// <c>run --fresh</c>) and the resume exit-code transition (2 → 0).
+/// <c>run --fresh</c>) and the resume exit-code transition (2 → 0). Output goes to a
+/// per-invocation <see cref="StringConsoleIo"/> (discarded — these are exit-code tests), so
+/// nothing touches the process-global console and the class is parallel-safe.
 /// </summary>
 public sealed class StatusResetCliTests
 {
     private static async Task<int> InvokeAsync(params string[] args)
     {
+        var io = new StringConsoleIo();
         var root = new RootCommand("test root");
-        root.Add(RunCommand.Create());
-        root.Add(ValidateCommand.Create());
-        root.Add(StatusCommand.Create());
-        root.Add(ResetCommand.Create());
+        root.Add(RunCommand.Create(io));
+        root.Add(ValidateCommand.Create(io));
+        root.Add(StatusCommand.Create(io));
+        root.Add(ResetCommand.Create(io));
         return await root.Parse(args).InvokeAsync();
     }
 

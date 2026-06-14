@@ -28,10 +28,11 @@ public static class FolderArgument
 
     /// <summary>
     /// Resolve as <see cref="Resolve"/> does, and — only when the folder was omitted — print
-    /// one line naming the current directory so the user can confirm what the command ran
-    /// against. Used by every plan command's action so the behaviour stays consistent.
+    /// one line naming the current directory (to <paramref name="output"/>) so the user can
+    /// confirm what the command ran against. Used by every plan command's action so the
+    /// behaviour stays consistent.
     /// </summary>
-    public static string ResolveAndAnnounce(string? value)
+    public static string ResolveAndAnnounce(string? value, TextWriter output)
     {
         if (!string.IsNullOrWhiteSpace(value))
         {
@@ -39,7 +40,7 @@ public static class FolderArgument
         }
 
         string resolved = Directory.GetCurrentDirectory();
-        Console.WriteLine($"Using current directory: {resolved}");
+        output.WriteLine($"Using current directory: {resolved}");
         return resolved;
     }
 }

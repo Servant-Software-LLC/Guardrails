@@ -16,10 +16,10 @@ namespace Guardrails.Cli.Commands;
 public static class SkillsCommand
 {
     /// <summary>The canonical <c>skills</c> command group (<c>guardrails skills install</c>).</summary>
-    public static Command Create()
+    public static Command Create(IConsoleIo io)
     {
         var command = new Command("skills", "Manage the Guardrails Claude Code skills bundled with this tool.");
-        command.Add(BuildInstallLeaf("install"));
+        command.Add(BuildInstallLeaf("install", io));
         return command;
     }
 
@@ -27,13 +27,13 @@ public static class SkillsCommand
     /// Hidden alias so <c>guardrails install skills</c> works too. Same action as
     /// <c>skills install</c>; kept out of <c>--help</c> so there is one canonical spelling.
     /// </summary>
-    public static Command CreateInstallAlias()
+    public static Command CreateInstallAlias(IConsoleIo io)
     {
         var command = new Command("install", "Install bundled resources (alias for 'skills install').")
         {
             Hidden = true
         };
-        command.Add(BuildInstallLeaf("skills"));
+        command.Add(BuildInstallLeaf("skills", io));
         return command;
     }
 
@@ -42,7 +42,7 @@ public static class SkillsCommand
     /// option instances per call (an Option cannot belong to two commands), so the canonical
     /// leaf and the alias leaf each get their own.
     /// </summary>
-    private static Command BuildInstallLeaf(string name)
+    private static Command BuildInstallLeaf(string name, IConsoleIo io)
     {
         var targetOption = new Option<string?>("--target")
         {
@@ -69,20 +69,20 @@ public static class SkillsCommand
             string? target = parseResult.GetValue(targetOption);
             bool project = parseResult.GetValue(projectOption);
             bool force = parseResult.GetValue(forceOption);
-            return RunInstall(target, project, force);
+            return RunInstall(target, project, force, io);
         });
 
         return command;
     }
 
-    private static int RunInstall(string? target, bool project, bool force)
+    private static int RunInstall(string? target, bool project, bool force, IConsoleIo io)
     {
         string sourceSkillsDir = Path.Combine(AppContext.BaseDirectory, "skills");
         if (!Directory.Exists(sourceSkillsDir))
         {
-            Console.Error.WriteLine(
+            io.Error.WriteLine(
                 $"No bundled skills found at '{sourceSkillsDir}'.");
-            Console.Error.WriteLine(
+            io.Error.WriteLine(
                 "This build of guardrails does not carry its skills. Re-pack/re-install the tool, " +
                 "or copy .claude/skills/ manually (see docs/DEPLOYMENT.md).");
             return ExitCodes.HarnessError;
@@ -90,7 +90,7 @@ public static class SkillsCommand
 
         if (project && !string.IsNullOrWhiteSpace(target))
         {
-            Console.Error.WriteLine("Specify either --target or --project, not both.");
+            io.Error.WriteLine("Specify either --target or --project, not both.");
             return ExitCodes.HarnessError;
         }
 
@@ -107,15 +107,15 @@ public static class SkillsCommand
                 SkillsInstaller.SkillOutcome.Skipped => "skipped (already present; use --force to overwrite)",
                 _ => result.Outcome.ToString()
             };
-            Console.WriteLine($"  {result.Name,-28} {note}");
+            io.Out.WriteLine($"  {result.Name,-28} {note}");
         }
 
         int installed = results.Count(r => r.Outcome == SkillsInstaller.SkillOutcome.Installed);
         int skipped = results.Count(r => r.Outcome == SkillsInstaller.SkillOutcome.Skipped);
 
-        Console.WriteLine();
-        Console.WriteLine($"{installed} skill(s) installed, {skipped} skipped → {targetDir}");
-        Console.WriteLine("Restart Claude Code; /plan-breakdown and /guardrail-review are then available.");
+        io.Out.WriteLine();
+        io.Out.WriteLine($"{installed} skill(s) installed, {skipped} skipped → {targetDir}");
+        io.Out.WriteLine("Restart Claude Code; /plan-breakdown and /guardrail-review are then available.");
 
         return ExitCodes.Success;
     }

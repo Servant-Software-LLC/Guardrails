@@ -9,28 +9,20 @@ namespace Guardrails.Integration.Tests;
 /// Drives <c>guardrails run --dry-run</c> through the real CLI pipeline and asserts the
 /// M7 contract: it prints the waves preview and per-task resolution, marks resume SKIPs
 /// after a partial run, exits 0, and — critically — never touches state (the <c>state/</c>
-/// directory is left byte-for-byte identical).
+/// directory is left byte-for-byte identical). Output is captured from a per-invocation
+/// <see cref="StringConsoleIo"/> — no <c>Console.SetOut</c>, no global state, parallel-safe.
 /// </summary>
 public sealed class DryRunCliTests
 {
     private static async Task<(int ExitCode, string Output)> InvokeCapturingAsync(params string[] args)
     {
+        var io = new StringConsoleIo();
         var root = new RootCommand("test root");
-        root.Add(RunCommand.Create());
-        root.Add(ValidateCommand.Create());
+        root.Add(RunCommand.Create(io));
+        root.Add(ValidateCommand.Create(io));
 
-        TextWriter original = Console.Out;
-        var captured = new StringWriter();
-        Console.SetOut(captured);
-        try
-        {
-            int exit = await root.Parse(args).InvokeAsync();
-            return (exit, captured.ToString());
-        }
-        finally
-        {
-            Console.SetOut(original);
-        }
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
     }
 
     [Fact]
