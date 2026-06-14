@@ -7,6 +7,7 @@ rootCommand.Add(RunCommand.Create());
 rootCommand.Add(PlanCommand.Create());
 rootCommand.Add(StatusCommand.Create());
 rootCommand.Add(ResetCommand.Create());
+rootCommand.Add(LockCommand.Create());
 rootCommand.Add(SkillsCommand.Create());
 rootCommand.Add(SkillsCommand.CreateInstallAlias());
 

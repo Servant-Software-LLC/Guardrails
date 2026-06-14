@@ -46,6 +46,11 @@ internal sealed class RawPromptRunnerOverrides
 internal sealed class RawTask
 {
     public string? Description { get; set; }
+
+    // Optional stable identity that survives renumbering/slug edits across regenerations
+    // (SSOT §10 / issue #5). Reserved for the regeneration merge; not yet consumed at runtime.
+    public string? StableId { get; set; }
+
     public List<string>? DependsOn { get; set; }
     public int? Retries { get; set; }
     public int? TimeoutSeconds { get; set; }

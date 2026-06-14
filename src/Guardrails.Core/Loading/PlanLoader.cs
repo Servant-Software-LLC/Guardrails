@@ -294,6 +294,7 @@ public sealed class PlanLoader
         return new TaskNode
         {
             Id = taskId,
+            StableId = string.IsNullOrWhiteSpace(raw.StableId) ? null : raw.StableId.Trim(),
             Directory = taskFolder,
             Description = raw.Description.Trim(),
             DependsOn = raw.DependsOn ?? [],
