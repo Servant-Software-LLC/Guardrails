@@ -43,8 +43,8 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   comment embeds a `source-sha256` over the diagram's drawn labels + DAG shape (as
   emitted by the renderer), excluding cosmetic `classDef` styling — it changes when a
   task/dependency/guardrail or a node label (e.g. a guardrail `description`) changes, and
-  is unaffected by action kind; `guardrails graph --check` exits 0 when fresh, 1 when
-  stale/missing. See SSOT §10.
+  is unaffected by action kind; `guardrails graph --check` exits 0 fresh, 2 stale/missing
+  (the "regenerate" signal), 1 on a load/validate error. See SSOT §10.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
   `exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
   Zero guardrails = validation error.

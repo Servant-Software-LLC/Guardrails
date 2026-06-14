@@ -278,7 +278,9 @@ last-writer-wins**. Merge order = task completion order, recorded as a monotonic
   `running` (crashed previous run) → `pending`, attempt numbering continues.
 
 **Harness exit codes**: `0` all succeeded · `1` harness/validation error ·
-`2` run completed with ≥1 needs-human · `3` cancelled.
+`2` the operation completed but an actionable condition was found — for `run`: a task is
+needs-human/blocked; for `graph --check`: the diagram is stale or missing (the "regenerate"
+signal) · `3` cancelled.
 
 ---
 
@@ -354,6 +356,20 @@ followed by a blank line and a fenced ```` ```mermaid ```` block. The comment ca
 the `source-sha256` identity — no timestamp — so re-running `graph` on an unchanged plan
 produces a **byte-identical** file (a deterministic projection, no git churn).
 
+**Caption.** Immediately after the closing mermaid fence, the written `diagram.md` carries a
+single italic caption line, verbatim:
+
+```
+_Structure only — retry, feedback, and needs-human edges are omitted._
+```
+
+The flowchart draws the static task/guardrail/dependency structure only (retry, feedback, and
+needs-human edges are out of scope for v1); the caption tells a reader so the diagram is not
+mistaken for a one-pass pipeline. The caption lives in the markdown wrapper **only** — NOT
+inside the ```` ```mermaid ```` block and NOT in the renderer's `source-sha256` semantic
+content — so it does not affect the hash, leaves two regens byte-identical, and is absent from
+`--stdout` (which prints the raw diagram, not the document).
+
 **`source-sha256`.** A SHA-256 (lowercase hex) over the diagram's **semantic content** (node
 labels + DAG shape) as emitted by the renderer, excluding cosmetic `classDef` styling. It
 changes whenever the DRAWN diagram changes — a task, a dependency, or a guardrail (DAG
@@ -369,8 +385,12 @@ styling.
   diagnostics and exit `1`.
 - `--stdout` — print the diagram to stdout; write nothing to disk; exit `0`.
 - `--check` — write nothing. Recompute `source-sha256`, read the value embedded in an
-  existing `diagram.md`, and exit `0` when present and equal (fresh). Otherwise print one
-  actionable line (`diagram.md is stale …` / `diagram.md missing …`) and exit `1`. A missing
-  `diagram.md` counts as stale.
+  existing `diagram.md`, and exit `0` when present and equal (fresh). When the diagram is
+  **stale or missing**, print one actionable line (`diagram.md is stale …` / `diagram.md
+  missing …`) and exit `2` — the "regenerate" signal, distinct from a genuine error so CI can
+  tell "regenerate the diagram" apart from "the plan is broken". A **load/validate error**
+  (no `guardrails.json`, invalid plan, missing folder) front-doors first and exits `1` with
+  diagnostics, never reaching the freshness check. A missing `diagram.md` counts as stale
+  (exit `2`).
 - `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
   formats).

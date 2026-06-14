@@ -9,14 +9,27 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails graph [folder] [--check] [--stdout] [--format mermaid]</c> — render the
 /// plan's task/guardrail DAG as a Mermaid <c>flowchart TD</c> (SSOT §10). Default: write
-/// <c>&lt;folder&gt;/diagram.md</c> (a provenance comment + a fenced <c>mermaid</c> block).
-/// <c>--check</c> writes nothing and reports staleness via exit code. <c>--stdout</c> prints
-/// the diagram instead of writing a file. Defaults to the current directory when the folder
-/// is omitted.
+/// <c>&lt;folder&gt;/diagram.md</c> (a provenance comment + a fenced <c>mermaid</c> block + a
+/// one-line structure-only caption after the fence). <c>--check</c> writes nothing and reports
+/// staleness via exit code (0 fresh, 2 stale/missing, 1 on a load/validate error). <c>--stdout</c>
+/// prints the diagram instead of writing a file. Defaults to the current directory when the
+/// folder is omitted.
 /// </summary>
 public static partial class GraphCommand
 {
     private const string DiagramFileName = "diagram.md";
+
+    /// <summary>
+    /// Exit code returned by <c>--check</c> when <c>diagram.md</c> is stale OR missing — the
+    /// "regenerate" signal (SSOT §7: exit 2 = "the operation completed but an actionable
+    /// condition was found"). Distinct from <see cref="ExitCodes.HarnessError"/> (1), which a
+    /// genuine load/validate failure returns, so CI can tell "regenerate the diagram" apart
+    /// from "the plan is broken". Deliberately NOT added to the shared <see cref="ExitCodes"/>
+    /// class: it shares the numeric value of <see cref="ExitCodes.TaskFailed"/> (2) by design
+    /// (both are the §7 "actionable condition found" code) but is a graph-specific meaning, so
+    /// it lives here next to its only caller rather than aliasing the run-time constant.
+    /// </summary>
+    private const int StaleExitCode = 2;
 
     public static Command Create()
     {
@@ -24,7 +37,7 @@ public static partial class GraphCommand
 
         var checkOption = new Option<bool>("--check")
         {
-            Description = "Report whether diagram.md is up to date (exit 0 fresh, 1 stale/missing); writes nothing."
+            Description = "Report whether diagram.md is up to date (exit 0 fresh, 2 stale/missing, 1 on a load/validate error); writes nothing."
         };
 
         var stdoutOption = new Option<bool>("--stdout")
@@ -93,14 +106,18 @@ public static partial class GraphCommand
     /// <summary>
     /// <c>--check</c>: recompute the source hash and compare it to the one embedded in an
     /// existing <c>diagram.md</c> provenance comment. Fresh (present and equal) → exit 0;
-    /// stale or missing → one actionable line on stdout and exit 1.
+    /// stale or missing → one actionable line on stdout and exit <see cref="StaleExitCode"/>
+    /// (2) — the "regenerate" signal (SSOT §7/§10). A genuine load/validate failure never
+    /// reaches here — <see cref="Execute"/> returns <see cref="ExitCodes.HarnessError"/> (1)
+    /// before <c>--check</c> is dispatched — so CI can distinguish "regenerate the diagram"
+    /// (2) from "the plan is broken" (1).
     /// </summary>
     private static int Check(string diagramPath, string sourceHash)
     {
         if (!File.Exists(diagramPath))
         {
             Console.WriteLine($"{DiagramFileName} missing — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
-            return ExitCodes.HarnessError;
+            return StaleExitCode;
         }
 
         string? embedded = ReadEmbeddedHash(File.ReadAllText(diagramPath));
@@ -110,20 +127,34 @@ public static partial class GraphCommand
         }
 
         Console.WriteLine($"{DiagramFileName} is stale — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
-        return ExitCodes.HarnessError;
+        return StaleExitCode;
     }
 
     /// <summary>
-    /// Compose the persisted artifact: a single-line provenance comment (SSOT §10) followed
-    /// by a fenced <c>mermaid</c> block holding the rendered diagram. The comment carries only
-    /// the <c>source-sha256</c> identity — no timestamp — so re-running <c>graph</c> on an
-    /// unchanged plan yields a byte-identical file (a deterministic projection, no git churn).
+    /// One-line italic caption written AFTER the closing mermaid fence (SSOT §10). It lives in
+    /// the markdown wrapper ONLY — never inside the fenced block, the <see cref="MermaidRenderer"/>
+    /// output, or the hashed semantic content — so it does NOT affect <c>source-sha256</c>, the
+    /// golden render test, or <c>--stdout</c>, and two regens stay byte-identical. Its job is to
+    /// tell a reader the diagram is structure-only: retry, feedback, and needs-human edges are
+    /// out of scope for v1 (SSOT §10) and the static flowchart would otherwise read like a
+    /// one-pass pipeline.
+    /// </summary>
+    private const string DiagramCaption =
+        "_Structure only — retry, feedback, and needs-human edges are omitted._";
+
+    /// <summary>
+    /// Compose the persisted artifact: a single-line provenance comment (SSOT §10), a fenced
+    /// <c>mermaid</c> block holding the rendered diagram, and a one-line italic caption after the
+    /// fence (<see cref="DiagramCaption"/>). The comment carries only the <c>source-sha256</c>
+    /// identity — no timestamp — and the caption is outside the hashed content, so re-running
+    /// <c>graph</c> on an unchanged plan yields a byte-identical file (a deterministic projection,
+    /// no git churn).
     /// </summary>
     private static string ComposeDocument(string diagram, string sourceHash)
     {
         string provenance = $"<!-- guardrails:graph v1 source-sha256={sourceHash} -->";
 
-        return provenance + "\n\n```mermaid\n" + diagram.TrimEnd('\n') + "\n```\n";
+        return provenance + "\n\n```mermaid\n" + diagram.TrimEnd('\n') + "\n```\n\n" + DiagramCaption + "\n";
     }
 
     /// <summary>
