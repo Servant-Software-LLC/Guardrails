@@ -347,19 +347,20 @@ and Finished nodes distinctly. Retry / feedback (cyclic) edges are out of scope 
 **Provenance comment.** The first line of `diagram.md` is, verbatim:
 
 ```
-<!-- guardrails:graph v1 source-sha256=<hash> generated=<iso8601-utc> -->
+<!-- guardrails:graph v1 source-sha256=<hash> -->
 ```
 
-followed by a blank line and a fenced ```` ```mermaid ```` block. `generated` is a UTC
-timestamp (`yyyy-MM-ddTHH:mm:ssZ`); it is informational only and is NOT part of the
-staleness comparison.
+followed by a blank line and a fenced ```` ```mermaid ```` block. The comment carries only
+the `source-sha256` identity — no timestamp — so re-running `graph` on an unchanged plan
+produces a **byte-identical** file (a deterministic projection, no git churn).
 
-**`source-sha256`.** A SHA-256 (lowercase hex) over a canonical serialization of ONLY the
-diagram-relevant state: for each task in ordinal order — the task id, its `dependsOn`
-(sorted ordinal), its guardrail **file basenames** (sorted ordinal), and its action kind
-(`Script`/`Prompt`). It is therefore stable across irrelevant reorderings and changes when a
-task, a dependency, or a guardrail is added or removed. Guardrail descriptions and node
-label text are deliberately NOT covered (they change labels, not DAG shape).
+**`source-sha256`.** A SHA-256 (lowercase hex) over the diagram's **semantic content** (node
+labels + DAG shape) as emitted by the renderer, excluding cosmetic `classDef` styling. It
+changes whenever the DRAWN diagram changes — a task, a dependency, or a guardrail (DAG
+shape), or a node label (a guardrail `description`, which the renderer draws as the guardrail
+label). It is stable across irrelevant input reorderings (the renderer sorts tasks,
+guardrails, and dependents ordinal) and is unaffected by action kind (not drawn) or by
+styling.
 
 **Command contract.**
 

@@ -162,6 +162,57 @@ public sealed class GraphCliTests
         Assert.Equal(ExitCodes.HarnessError, exit);
     }
 
+    [Fact]
+    public async Task Graph_RerunOnUnchangedPlan_ProducesByteIdenticalDiagram()
+    {
+        // Deterministic projection: with no timestamp in the provenance comment, a second run
+        // on an unchanged plan must yield a byte-identical diagram.md (no git churn).
+        using var plan = new ScriptPlanBuilder()
+            .AddTask("01-first")
+            .AddTask("02-second", dependsOn: "01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+        byte[] first = await File.ReadAllBytesAsync(DiagramPath(plan.PlanDir), TestContext.Current.CancellationToken);
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+        byte[] second = await File.ReadAllBytesAsync(DiagramPath(plan.PlanDir), TestContext.Current.CancellationToken);
+
+        Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public async Task Graph_CheckAfterEditingGuardrailDescription_ExitsOne()
+    {
+        // The realignment: the renderer draws the guardrail Description ?? Name. Adding a
+        // sidecar description changes the DRAWN label, so the diagram is now stale.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        SetGuardrailDescription(plan.PlanDir, "01-first", "Build passes with zero warnings");
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains("stale", output);
+    }
+
+    [Fact]
+    public async Task Graph_CheckAfterChangingActionKind_ExitsZero()
+    {
+        // action.Kind is NOT drawn, so switching a task's action from script to prompt does not
+        // change the diagram — the staleness key is unaffected and --check reports FRESH.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        SwitchActionToPrompt(plan.PlanDir, "01-first");
+
+        (int exit, _) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
+
+        Assert.Equal(ExitCodes.Success, exit);
+    }
+
     /// <summary>
     /// Add a second guardrail to an existing <see cref="ScriptPlanBuilder"/> task by writing a
     /// sibling guardrail file directly, mirroring the OS-appropriate script the builder emits.
@@ -183,5 +234,51 @@ public sealed class GraphCliTests
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
                 UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         }
+    }
+
+    /// <summary>
+    /// Write a metadata sidecar carrying a <c>description</c> next to the task's single
+    /// <c>ScriptPlanBuilder</c>-emitted guardrail (<c>01-check.{ps1,sh}</c>), so the renderer
+    /// draws that description as the guardrail label.
+    /// </summary>
+    private static void SetGuardrailDescription(string planDir, string taskId, string description)
+    {
+        string guardrailsDir = Path.Combine(planDir, "tasks", taskId, "guardrails");
+        string sidecarPath = Path.Combine(guardrailsDir, "01-check.json");
+        File.WriteAllText(sidecarPath, $$"""{ "description": "{{description}}" }""");
+    }
+
+    /// <summary>
+    /// Replace the task's script action (<c>action.{ps1,sh}</c>) with a single prompt action
+    /// (<c>action.prompt.md</c>), flipping its <see cref="Guardrails.Core.Model.ActionKind"/>
+    /// from Script to Prompt while leaving every DRAWN element of the diagram unchanged. Also
+    /// declares a <c>promptRunners</c> block so the plan still validates (a prompt with no
+    /// runners is a GR2008 error; a declared runner whose command is off PATH is only a GR2009
+    /// warning, which does not block <c>graph</c>).
+    /// </summary>
+    private static void SwitchActionToPrompt(string planDir, string taskId)
+    {
+        string taskDir = Path.Combine(planDir, "tasks", taskId);
+        foreach (string existing in Directory.EnumerateFiles(taskDir, "action.*"))
+        {
+            File.Delete(existing);
+        }
+
+        File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "Do the thing.\n");
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": ".",
+              "defaultRetries": 0,
+              "maxParallelism": 1,
+              "promptRunners": {
+                "default": "fake-runner",
+                "fake-runner": { "command": "guardrails-no-such-runner" }
+              }
+            }
+            """);
     }
 }

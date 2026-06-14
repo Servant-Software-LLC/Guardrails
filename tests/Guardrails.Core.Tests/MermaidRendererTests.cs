@@ -180,6 +180,75 @@ public sealed class MermaidRendererTests
     }
 
     [Fact]
+    public void Render_GuardrailDescriptionWithNewlines_CollapsesToSingleSafeLine()
+    {
+        // Free-text descriptions can carry line breaks; a raw newline in a Mermaid label would
+        // break the WHOLE diagram. The renderer collapses \r\n / \r / \n to single spaces.
+        TaskNode task = TaskWith("01-a",
+            [Guardrail("01-build", description: "line one\r\nline two\rline three\nline four")]);
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
+
+        Assert.Contains("gr_01_a_0[\"line one line two line three line four\"]:::guardrail", lines);
+
+        // The collapsed label occupies exactly one rendered line — no guardrail label spills.
+        Assert.Single(lines, l => l.StartsWith("gr_01_a_0[", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Render_GuardrailDescriptionWithHtmlChars_IsHtmlEscaped()
+    {
+        // Mermaid renders labels as HTML: < / > would silently drop text as stray tags, & must
+        // be escaped first (no double-escaping), and # can trigger entity parsing.
+        TaskNode task = TaskWith("01-a",
+            [Guardrail("01-build", description: "a < b && c > d #1")]);
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
+
+        string guardrailLine = lines.Single(l => l.StartsWith("gr_01_a_0[", StringComparison.Ordinal));
+
+        Assert.Equal("gr_01_a_0[\"a &lt; b &amp;&amp; c &gt; d &#35;1\"]:::guardrail", guardrailLine);
+
+        // No raw <, >, or # survive inside the drawn label text.
+        Assert.DoesNotContain('<', guardrailLine[(guardrailLine.IndexOf('[', StringComparison.Ordinal))..]);
+        Assert.DoesNotContain('>', guardrailLine[(guardrailLine.IndexOf('[', StringComparison.Ordinal))..]);
+    }
+
+    [Fact]
+    public void Render_AmpersandEscapedOnce_NotDoubleEscaped()
+    {
+        // & is escaped first so a literal "&lt;" in the source becomes "&amp;lt;" (the source
+        // text preserved), never "&lt;" (which would render as a real "<").
+        TaskNode task = TaskWith("01-a", [Guardrail("01-build", description: "&lt; literal")]);
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
+
+        Assert.Contains("gr_01_a_0[\"&amp;lt; literal\"]:::guardrail", lines);
+    }
+
+    [Fact]
+    public void Render_CollidingSanitizedTaskIds_GetDistinctNodeIdsAndCorrectEdges()
+    {
+        // "a.b" and "a_b" both Sanitize to "a_b" → without de-duplication their nodes collide
+        // and edges cross-wire. Ordinal order puts "a.b" first (it keeps "a_b"); "a_b" gets
+        // the deterministic "_2" suffix. "a_b" dependsOn "a.b".
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("a.b", [Guardrail("01-check")]),
+            TaskWith("a_b", [Guardrail("01-check")], "a.b"))));
+
+        // Distinct task node ids, each labelled with its own literal id.
+        Assert.Contains("task_a_b[\"a.b\"]:::task", lines);
+        Assert.Contains("task_a_b_2[\"a_b\"]:::task", lines);
+
+        // Distinct guardrail and done nodes, correctly wired within each task.
+        Assert.Contains("task_a_b --> gr_a_b_0", lines);
+        Assert.Contains("gr_a_b_0 --> done_a_b", lines);
+        Assert.Contains("task_a_b_2 --> gr_a_b_2_0", lines);
+        Assert.Contains("gr_a_b_2_0 --> done_a_b_2", lines);
+
+        // The dependency edge wires a.b's done node to a_b's task node (not cross-wired).
+        Assert.Contains("done_a_b --> task_a_b_2", lines);
+        Assert.DoesNotContain("done_a_b --> task_a_b", lines);
+    }
+
+    [Fact]
     public void Render_NullPlan_Throws()
     {
         Assert.Throws<ArgumentNullException>(() => MermaidRenderer.Render(null!));

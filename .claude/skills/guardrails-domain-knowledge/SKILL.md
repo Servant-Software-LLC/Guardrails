@@ -40,9 +40,11 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
 - **Diagram** `diagram.md` (optional, plan-folder root): a generated Mermaid
   `flowchart TD` of the task/guardrail DAG, written by `guardrails graph`. NOT part of
   the plan contract (loader/validator ignore it) and never hand-edited. Its provenance
-  comment embeds a `source-sha256` over the diagram-relevant state (task ids,
-  `dependsOn`, guardrail basenames, action kinds); `guardrails graph --check` exits 0
-  when fresh, 1 when stale/missing. See SSOT §10.
+  comment embeds a `source-sha256` over the diagram's drawn labels + DAG shape (as
+  emitted by the renderer), excluding cosmetic `classDef` styling — it changes when a
+  task/dependency/guardrail or a node label (e.g. a guardrail `description`) changes, and
+  is unaffected by action kind; `guardrails graph --check` exits 0 when fresh, 1 when
+  stale/missing. See SSOT §10.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
   `exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
   Zero guardrails = validation error.

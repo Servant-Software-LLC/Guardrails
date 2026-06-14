@@ -37,6 +37,8 @@ public static partial class GraphCommand
             Description = "Diagram format. Only 'mermaid' is supported for now.",
             DefaultValueFactory = _ => "mermaid"
         };
+        // Reserved per SSOT §10: the parsed value is intentionally unconsumed until a second
+        // format exists. Only the AcceptOnlyFromAmong("mermaid") rejection below is active today.
         formatOption.AcceptOnlyFromAmong("mermaid");
 
         var command = new Command("graph", "Render a Mermaid diagram of a plan folder's task/guardrail DAG.");
@@ -113,19 +115,22 @@ public static partial class GraphCommand
 
     /// <summary>
     /// Compose the persisted artifact: a single-line provenance comment (SSOT §10) followed
-    /// by a fenced <c>mermaid</c> block holding the rendered diagram.
+    /// by a fenced <c>mermaid</c> block holding the rendered diagram. The comment carries only
+    /// the <c>source-sha256</c> identity — no timestamp — so re-running <c>graph</c> on an
+    /// unchanged plan yields a byte-identical file (a deterministic projection, no git churn).
     /// </summary>
     private static string ComposeDocument(string diagram, string sourceHash)
     {
-        string generated = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
-        string provenance = $"<!-- guardrails:graph v1 source-sha256={sourceHash} generated={generated} -->";
+        string provenance = $"<!-- guardrails:graph v1 source-sha256={sourceHash} -->";
 
         return provenance + "\n\n```mermaid\n" + diagram.TrimEnd('\n') + "\n```\n";
     }
 
     /// <summary>
     /// Parse the <c>source-sha256</c> token from the provenance comment, or null if no
-    /// recognizable provenance line is present.
+    /// recognizable provenance line is present. The regex is anchored to the START of the
+    /// document (SSOT §10: the provenance is the first line), so body text echoed into the
+    /// mermaid block (e.g. a description) can never be matched as the embedded hash.
     /// </summary>
     private static string? ReadEmbeddedHash(string document)
     {
@@ -136,6 +141,6 @@ public static partial class GraphCommand
     private static string QuoteIfNeeded(string path) =>
         path.Contains(' ', StringComparison.Ordinal) ? $"\"{path}\"" : path;
 
-    [GeneratedRegex(@"<!--\s*guardrails:graph\s+v1\s+source-sha256=(?<hash>[0-9a-f]+)\b")]
+    [GeneratedRegex(@"\A\s*<!--\s*guardrails:graph\s+v1\s+source-sha256=(?<hash>[0-9a-f]+)\b")]
     private static partial Regex ProvenanceHashRegex();
 }

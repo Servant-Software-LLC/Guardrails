@@ -6,29 +6,37 @@ namespace Guardrails.Core.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="GraphSourceHash.Compute"/> (SSOT §10): the staleness key over a
-/// plan's diagram-relevant shape. It must be deterministic, order-independent for inputs the
-/// renderer sorts (guardrails, dependsOn, task enumeration), and must change when the DAG's
-/// shape changes (add/remove task, add/remove guardrail file, change dependsOn).
+/// plan's diagram. It is the SHA-256 of the renderer's semantic content (drawn node labels +
+/// DAG shape), so it must be deterministic, order-independent for inputs the renderer sorts
+/// (guardrails, dependsOn, task enumeration), change when the DAG's shape changes
+/// (add/remove task, add/remove guardrail, change dependsOn) OR when a drawn label changes
+/// (a guardrail <c>description</c>), and be unaffected by what the diagram does NOT draw
+/// (<c>action.Kind</c>, cosmetic styling).
 /// </summary>
 public sealed class GraphSourceHashTests
 {
-    private static GuardrailDefinition Guardrail(string name) => new()
+    private static GuardrailDefinition Guardrail(
+        string name,
+        string? description = null,
+        ActionKind kind = ActionKind.Script) => new()
     {
         Name = name,
         Path = $"/fake/guardrails/{name}.sh",
-        Kind = ActionKind.Script
+        Kind = kind,
+        Description = description
     };
 
     private static TaskNode TaskWith(
         string id,
         IReadOnlyList<GuardrailDefinition> guardrails,
+        ActionKind actionKind = ActionKind.Script,
         params string[] dependsOn) => new()
     {
         Id = id,
         Directory = $"/fake/tasks/{id}",
         Description = $"fixture task {id}",
         DependsOn = dependsOn,
-        Action = new ActionDefinition { Path = $"/fake/tasks/{id}/action.sh", Kind = ActionKind.Script },
+        Action = new ActionDefinition { Path = $"/fake/tasks/{id}/action.sh", Kind = actionKind },
         Guardrails = guardrails
     };
 
@@ -54,7 +62,7 @@ public sealed class GraphSourceHashTests
     [Fact]
     public void Compute_UnchangedByGuardrailInputOrder()
     {
-        // Same two guardrails, supplied in different order — the hash sorts basenames ordinal.
+        // Same two guardrails, supplied in different order — the renderer sorts by name ordinal.
         PlanDefinition ascending = Plan(
             TaskWith("01-a", [Guardrail("01-build"), Guardrail("02-test")]));
         PlanDefinition descending = Plan(
@@ -66,15 +74,15 @@ public sealed class GraphSourceHashTests
     [Fact]
     public void Compute_UnchangedByDependsOnInputOrder()
     {
-        // 03-c dependsOn (01-a, 02-b) vs (02-b, 01-a) — dependsOn is sorted ordinal.
+        // 03-c dependsOn (01-a, 02-b) vs (02-b, 01-a) — dependency edges are emitted ordinal.
         PlanDefinition one = Plan(
             Task("01-a"),
             Task("02-b"),
-            TaskWith("03-c", [Guardrail("01-check")], "01-a", "02-b"));
+            TaskWith("03-c", [Guardrail("01-check")], dependsOn: ["01-a", "02-b"]));
         PlanDefinition two = Plan(
             Task("01-a"),
             Task("02-b"),
-            TaskWith("03-c", [Guardrail("01-check")], "02-b", "01-a"));
+            TaskWith("03-c", [Guardrail("01-check")], dependsOn: ["02-b", "01-a"]));
 
         Assert.Equal(GraphSourceHash.Compute(one), GraphSourceHash.Compute(two));
     }
@@ -82,7 +90,7 @@ public sealed class GraphSourceHashTests
     [Fact]
     public void Compute_UnchangedByTaskEnumerationOrder()
     {
-        // Same plan, tasks listed in different order — Compute sorts tasks ordinal.
+        // Same plan, tasks listed in different order — the renderer sorts tasks ordinal.
         PlanDefinition forward = Plan(Task("01-a"), Task("02-b", "01-a"));
         PlanDefinition reversed = Plan(Task("02-b", "01-a"), Task("01-a"));
 
@@ -135,13 +143,52 @@ public sealed class GraphSourceHashTests
     }
 
     [Fact]
-    public void Compute_Changes_WhenGuardrailFileRenamed()
+    public void Compute_Changes_WhenGuardrailNameChanges_AndItIsTheDrawnLabel()
     {
-        // Same count, different basename → different DAG-relevant shape.
+        // No description → the guardrail Name IS the drawn label, so a rename changes the hash.
         PlanDefinition before = Plan(TaskWith("01-a", [Guardrail("01-build")]));
         PlanDefinition after = Plan(TaskWith("01-a", [Guardrail("01-compile")]));
 
         Assert.NotEqual(GraphSourceHash.Compute(before), GraphSourceHash.Compute(after));
+    }
+
+    [Fact]
+    public void Compute_Changes_WhenGuardrailDescriptionChanges()
+    {
+        // The realignment: the renderer draws Description ?? Name, so editing the description
+        // (the DRAWN label) MUST change the hash.
+        PlanDefinition before = Plan(
+            TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]));
+        PlanDefinition after = Plan(
+            TaskWith("01-a", [Guardrail("01-build", description: "Solution builds with zero warnings")]));
+
+        Assert.NotEqual(GraphSourceHash.Compute(before), GraphSourceHash.Compute(after));
+    }
+
+    [Fact]
+    public void Compute_Unchanged_WhenOnlyActionKindChanges()
+    {
+        // action.Kind is NOT drawn, so it is deliberately excluded from the staleness key.
+        PlanDefinition script = Plan(
+            TaskWith("01-a", [Guardrail("01-check")], actionKind: ActionKind.Script));
+        PlanDefinition prompt = Plan(
+            TaskWith("01-a", [Guardrail("01-check")], actionKind: ActionKind.Prompt));
+
+        Assert.Equal(GraphSourceHash.Compute(script), GraphSourceHash.Compute(prompt));
+    }
+
+    [Fact]
+    public void Compute_Unchanged_WhenOnlyGuardrailFileBasenameChanges_ButLabelIsTheDescription()
+    {
+        // With a description present, the guardrail Name (and thus its file basename) is NOT
+        // drawn — only the description is — so renaming the guardrail file does not change the
+        // hash. (Contrast Compute_Changes_WhenGuardrailNameChanges_AndItIsTheDrawnLabel.)
+        PlanDefinition before = Plan(
+            TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]));
+        PlanDefinition after = Plan(
+            TaskWith("01-a", [Guardrail("01-compile", description: "Solution builds clean")]));
+
+        Assert.Equal(GraphSourceHash.Compute(before), GraphSourceHash.Compute(after));
     }
 
     [Fact]
