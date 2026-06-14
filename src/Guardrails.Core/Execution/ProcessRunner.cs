@@ -31,8 +31,13 @@ public sealed class ProcessRunner
     /// sink (used by prompt runners to feed the prompt via stdin and tee the raw output stream
     /// to a log). Existing callers use the simpler overload — behaviour there is unchanged.
     /// </summary>
+    /// <param name="command">The resolved executable + arguments to launch.</param>
+    /// <param name="workingDirectory">Working directory for the child process.</param>
+    /// <param name="environment">Environment variables applied to the child process.</param>
+    /// <param name="timeout">Whole-process timeout; the process tree is killed when it elapses.</param>
     /// <param name="standardInput">Text written to the child's stdin (then closed); null = no stdin redirect.</param>
     /// <param name="stdoutLineSink">Invoked for each stdout line as it arrives (line excludes the newline); null = no tee.</param>
+    /// <param name="cancellationToken">Cancels the run; the process tree is killed on cancellation.</param>
     public async Task<ProcessResult> RunAsync(
         ResolvedCommand command,
         string workingDirectory,
