@@ -47,7 +47,7 @@ jobs:
           dotnet-version: "8.0.x"
 
       - name: Restore
-        run: dotnet restore Guardrails.sln
+        run: dotnet restore Guardrails.sln --locked-mode
 
       - name: Build
         run: dotnet build Guardrails.sln --configuration Release --no-restore
@@ -74,9 +74,12 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      - name: Restore
+        run: dotnet restore Guardrails.sln --locked-mode
+
       - name: Pack (version from tag)
         # Strip the leading `v` from the tag so `v1.0.0-preview.1` → package version 1.0.0-preview.1.
-        run: dotnet pack src/Guardrails.Cli -c Release -o nupkg -p:Version="${GITHUB_REF_NAME#v}"
+        run: dotnet pack src/Guardrails.Cli -c Release --no-restore -o nupkg -p:Version="${GITHUB_REF_NAME#v}"
 
       - name: NuGet login (OIDC → short-lived API key)
         # Exchanges this job's OIDC token for a 1-hour nuget.org key via the Trusted Publishing

@@ -5,6 +5,11 @@
     policy is set once instead of copied into each .csproj, and so a new project picks it up
     automatically. Project files keep only what is genuinely project-specific (target framework,
     output type, packaging, package references).
+
+    MSBuild discovery note: Directory.Build.props is found by walking UP the directory tree from
+    each .csproj. It does not stop at a .git boundary. This file lives at the repo root and is
+    intentionally scoped to this repo only; it should not affect sibling repos unless a parent
+    solution file builds them from below this directory.
   -->
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -16,15 +21,22 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
     <!-- Pin the SDK code-quality analyzer wave to the 8.0 band so an SDK roll-forward cannot
-         silently introduce new diagnostics that break a previously-green build. -->
+         silently introduce new diagnostics that break a previously-green build.
+         Note: this pins only SDK-shipped CA-rule analyzers (Microsoft.CodeAnalysis.NetAnalyzers).
+         Third-party NuGet-shipped analyzers such as xunit.analyzers are not affected by
+         AnalysisLevel — those are pinned by the packages.lock.json files below. -->
     <AnalysisLevel>8.0</AnalysisLevel>
 
     <!-- Deterministic restore: lock the FULL transitive NuGet graph (including analyzer packages
          such as xunit.analyzers, which is what turns warnings on) into a committed
          packages.lock.json per project. Every machine and CI then resolve byte-identical
          versions, so an analyzer-version drift cannot make a warning appear in CI but not locally
-         (or vice versa). CI restores in locked mode to FAIL on any drift from the lock. -->
+         (or vice versa).
+         RestoreLockedMode is conditioned on $(CI) (set to "true" by GitHub Actions) so that CI
+         FAILS on any drift from the committed lock, while local developer restores remain
+         permissive (no hard failure when adding or upgrading packages). -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
   </PropertyGroup>
 
 </Project>
