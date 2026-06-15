@@ -299,6 +299,17 @@ signal); for `lock --check`: the folder has drifted from the baseline or the bas
 (the "re-baseline" signal); for `merge`: there are unresolved conflicts to resolve, or the BASE
 baseline is missing and must be established first (§11.5) · `3` cancelled.
 
+**Plan-file → task-folder argument fixup** (all commands taking a plan folder as their first
+positional: `run`, `validate`, `plan`, `graph`, `lock`, `merge`). Before the folder's existence
+is checked, the CLI applies one fixup so a user who passes the authored plan *source file*
+instead of the generated *task folder* is not blocked: when the argument ends with `.md`
+(ordinal, case-insensitive) **or** resolves to an existing file rather than a directory, and a
+sibling directory with the same stem exists (`plans/0003-foo.md` → `plans/0003-foo/`), the
+command silently switches to that folder and prints one info line
+(`info: resolved plan file → task folder "<folder>"`). When no such sibling folder exists the
+argument is passed through unchanged, so a genuinely bad path still produces the existing
+`GR1001` "Plan folder does not exist" error (issue #16).
+
 ---
 
 ## 8. Per-attempt log layout
