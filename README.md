@@ -16,7 +16,7 @@ agent output** forever.
 2. BREAK    /plan-breakdown generates <plan>/ — tasks, dependencies, guardrails
             (inserting guardrail-enabling tasks the plan never mentioned, e.g.
             "author the unit tests" before "implement the feature")
-3. REVIEW   the human edits guardrails; /guardrail-review attacks them:
+3. REVIEW   the human edits guardrails; /guardrails-review attacks them:
             "what wrong implementation passes these?"
 4. RUN      guardrails run <plan>/ — to green, or to an honest needs-human halt
 ```
@@ -54,7 +54,7 @@ irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/ins
 
 # or explicitly (any OS):
 dotnet tool install --global ServantSoftware.Guardrails --prerelease
-guardrails skills install        # installs plan-breakdown + guardrail-review into ~/.claude/skills
+guardrails skills install        # installs plan-breakdown + guardrails-review into ~/.claude/skills
 ```
 
 **Prerequisites:** the [.NET 8+ SDK](https://dotnet.microsoft.com/download), and — for
@@ -75,7 +75,7 @@ code the plan operates on:
        guardrails — inserting guardrail-enabling tasks the plan never mentioned
        (e.g. "author the unit tests" before "implement the feature"). Hands you a DRAFT.
 
-3. /guardrail-review path/to/your-plan
+3. /guardrails-review path/to/your-plan
      → "what's the cheapest wrong implementation that passes these checks?" Ranked
        findings with ready-to-paste fixes. Edit the guardrails until you trust them.
 
@@ -109,14 +109,14 @@ Exit codes: `0` green · `1` validation/harness error · `2` needs-human · `3` 
 ## The skills
 
 `.claude/skills/` ships the agent-side tooling. The `guardrails` tool **bundles**
-`plan-breakdown`, `guardrail-review`, and `guardrails-domain-knowledge` and installs
+`plan-breakdown`, `guardrails-review`, and `guardrails-domain-knowledge` and installs
 them into `~/.claude/skills/` via `guardrails skills install` (no manual copy):
 
 - **plan-breakdown** — the generator. Sizes tasks (split where verification changes
   character), computes the sparsest correct DAG, selects guardrails
   deterministic-first via a catalogued decision tree, inserts guardrail-enabling
   tasks, self-validates, and always hands you a *draft*.
-- **guardrail-review** — the adversary. Per task: "what's the cheapest wrong
+- **guardrails-review** — the adversary. Per task: "what's the cheapest wrong
   implementation that passes ALL of these?" Findings ranked BLOCKER/WEAK/NIT with
   ready-to-paste fixes.
 - **uber-report**, **guardrails-domain-knowledge**, **guardrails-dev-knowledge** —

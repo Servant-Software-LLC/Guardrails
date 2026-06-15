@@ -2,13 +2,13 @@
 
 This is the runbook for installing Guardrails somewhere other than the dev box —
 e.g. a work laptop — so you can run the full loop (`/plan-breakdown` → review →
-`/guardrail-review` → `guardrails run`) against **your own** plan and codebase.
+`/guardrails-review` → `guardrails run`) against **your own** plan and codebase.
 
 Deployment has **two parts** — but the tool now carries the skills, so a single
 bootstrap does both:
 
 1. **The harness** — the `guardrails` CLI (a .NET tool).
-2. **The skills** — `plan-breakdown` and `guardrail-review`, which live in Claude
+2. **The skills** — `plan-breakdown` and `guardrails-review`, which live in Claude
    Code's skill directory. These are **bundled inside the tool package** and copied
    into place by `guardrails skills install`.
 
@@ -43,7 +43,7 @@ guardrails skills install
 
 `guardrails skills install` copies the bundled skills into `~/.claude/skills`
 (`--target <dir>` to override, `--force` to overwrite existing skill folders).
-Restart Claude Code afterwards so `/plan-breakdown` and `/guardrail-review` appear.
+Restart Claude Code afterwards so `/plan-breakdown` and `/guardrails-review` appear.
 
 The sections below explain the moving parts and the local-pack path for when the
 package is not yet on NuGet.org.
@@ -177,7 +177,7 @@ The three bundled skills:
 
 - `plan-breakdown` (includes its `references/` — the guardrail catalogue, schema
   excerpt, and worked example; the folder is self-contained) — **required**
-- `guardrail-review` — **required**
+- `guardrails-review` — **required**
 - `guardrails-domain-knowledge` — recommended (gives the agent the domain model,
   improving breakdown quality)
 
@@ -192,7 +192,7 @@ and reported as skipped. Restart Claude Code (or start a new session) and confir
 > # Windows
 > $dst = "$HOME\.claude\skills"; New-Item -ItemType Directory -Force $dst | Out-Null
 > Copy-Item -Recurse -Force .\.claude\skills\plan-breakdown            $dst
-> Copy-Item -Recurse -Force .\.claude\skills\guardrail-review          $dst
+> Copy-Item -Recurse -Force .\.claude\skills\guardrails-review         $dst
 > Copy-Item -Recurse -Force .\.claude\skills\guardrails-domain-knowledge $dst
 > ```
 >
@@ -200,7 +200,7 @@ and reported as skipped. Restart Claude Code (or start a new session) and confir
 > # macOS / Linux
 > mkdir -p ~/.claude/skills
 > cp -r .claude/skills/plan-breakdown ~/.claude/skills/
-> cp -r .claude/skills/guardrail-review ~/.claude/skills/
+> cp -r .claude/skills/guardrails-review ~/.claude/skills/
 > cp -r .claude/skills/guardrails-domain-knowledge ~/.claude/skills/
 > ```
 
@@ -233,7 +233,7 @@ In your **work repo** (so `workspace` can point at the code the plan operates on
       → generates path/to/your-plan/  (tasks, dependsOn DAG, guardrails)
       → presents it as a DRAFT and self-runs `guardrails validate`
 3. Review the draft. Edit guardrails where the check is weak or wrong.
-   /guardrail-review path/to/your-plan      → "what wrong implementation passes these?"
+   /guardrails-review path/to/your-plan     → "what wrong implementation passes these?"
 4. guardrails run path/to/your-plan         → to green, or an honest needs-human halt
 ```
 

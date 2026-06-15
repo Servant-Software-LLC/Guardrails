@@ -1,5 +1,5 @@
 ---
-name: guardrail-review
+name: guardrails-review
 description: |
   Adversarial second pass over a generated (and possibly human-edited) Guardrails
   task folder: per task, find the cheapest WRONG implementation that would pass all

@@ -25,7 +25,7 @@ cross-platform harness executes them until every task's **guardrails** pass.
 2. BREAK     /plan-breakdown generates <plan>/ — tasks, dependencies, guardrails
              (including INSERTED tasks that author the guardrails' preconditions,
              e.g. "write the unit tests" before "implement the feature")
-3. REVIEW    human edits/deletes/adds guardrails; /guardrail-review runs an
+3. REVIEW    human edits/deletes/adds guardrails; /guardrails-review runs an
              adversarial pass ("what wrong implementation passes these?")
 4. RUN       guardrails run <plan>/ — executes to green or stops at needs-human
 ```

@@ -216,7 +216,7 @@ exit 0
 > they're not tautological. `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
-> or add, then run `/guardrail-review add-stats-flag` before executing.
+> or add, then run `/guardrails-review add-stats-flag` before executing.
 
 ---
 

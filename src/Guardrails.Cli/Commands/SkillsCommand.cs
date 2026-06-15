@@ -5,7 +5,7 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// Installs the skill folders bundled inside the tool (next to the entry assembly, under
 /// <c>skills/</c>) into Claude Code's skills directory so <c>/plan-breakdown</c> and
-/// <c>/guardrail-review</c> become available. Default destination is <c>~/.claude/skills</c>
+/// <c>/guardrails-review</c> become available. Default destination is <c>~/.claude/skills</c>
 /// (every repo); <c>--project</c> targets <c>./.claude/skills</c> in the current directory;
 /// <c>--target</c> overrides with an explicit path; <c>--force</c> overwrites existing folders.
 ///
@@ -115,7 +115,7 @@ public static class SkillsCommand
 
         io.Out.WriteLine();
         io.Out.WriteLine($"{installed} skill(s) installed, {skipped} skipped → {targetDir}");
-        io.Out.WriteLine("Restart Claude Code; /plan-breakdown and /guardrail-review are then available.");
+        io.Out.WriteLine("Restart Claude Code; /plan-breakdown and /guardrails-review are then available.");
 
         return ExitCodes.Success;
     }

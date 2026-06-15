@@ -58,7 +58,7 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   on nuget.org (Repository Owner `Servant-Software-LLC`, Repository `Guardrails`, Workflow
   File `release.yml`).
 - **Bundled skills**: the CLI csproj globs three skill folders
-  (`plan-breakdown` incl. `references/`, `guardrail-review`, `guardrails-domain-knowledge`)
+  (`plan-breakdown` incl. `references/`, `guardrails-review`, `guardrails-domain-knowledge`)
   as `Content` with `CopyToOutputDirectory=PreserveNewest` and a
   `<Link>skills\<name>\%(RecursiveDir)…</Link>`. They land in the build output under
   `skills/` AND — because the dotnet-tool packer sweeps copy-to-output content — inside the

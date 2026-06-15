@@ -1,7 +1,7 @@
 # 02 — Schemas and Contracts (single source of truth)
 
 Every schema and child-process contract in the Guardrails system is defined **here**.
-The C# serializers (`src/Guardrails.Core`), the `plan-breakdown` and `guardrail-review`
+The C# serializers (`src/Guardrails.Core`), the `plan-breakdown` and `guardrails-review`
 skills, and the example plan folders all implement this document. If code or a skill
 disagrees with this doc, one of them is wrong — fix in the same change.
 

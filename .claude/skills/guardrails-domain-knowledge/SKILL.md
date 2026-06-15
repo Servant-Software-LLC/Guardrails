@@ -6,7 +6,7 @@ description: |
   - The task/guardrail/state conceptual model and the four-stage workflow
   - Plan-folder layout, schemas, or child-process contracts
   - Harness execution semantics (retry, needs-human, resume, merge)
-  - Authoring or reviewing the plan-breakdown / guardrail-review skills
+  - Authoring or reviewing the plan-breakdown / guardrails-review skills
   - Roadmap, v2 bets, or scope questions
 
   Provides: the mental model, execution semantics, contract quick-reference, and
@@ -84,7 +84,7 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
 PLAN (human+agents write/review the .md) → BREAK (`/plan-breakdown` generates the
 folder, **inserting guardrail-enabling tasks** like authoring the unit tests an
 implementation task's guardrails will run — with tests-fail-on-current-code proving
-non-tautology) → REVIEW (human edits; `/guardrail-review` adversarial pass: "what
+non-tautology) → REVIEW (human edits; `/guardrails-review` adversarial pass: "what
 wrong implementation passes these?") → RUN (`guardrails run`). Generated output is
 always a **draft** until a human reviews it.
 
@@ -185,7 +185,7 @@ frozen at breakdown.
 - M6 Skills: **complete**. `plan-breakdown` SKILL.md + references (guardrail-catalogue
   with the archetype table / decision tree / demotion gate / anti-patterns; schemas
   excerpt citing the SSOT; full worked example incl. an inserted test-author task and
-  a negative example), `guardrail-review` (adversarial "cheapest wrong implementation"
+  a negative example), `guardrails-review` (adversarial "cheapest wrong implementation"
   pass, BLOCKER/WEAK/NIT, per-finding approval), agents `guardrails-harness-developer`/
   `-skill-author`/`-test-author`/`-devils-advocate`, `guardrails-dev-knowledge`,
   lightweight `uber-report` (Reality Gate-first), and the real README (workflow,

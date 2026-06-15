@@ -39,7 +39,7 @@ that run skills against fixture plans and diff expectations.
    calls (analyzer xUnit1051 is warnings-as-errors).
 7. **Passing-but-blind hunts.** Periodically ask of each suite: what wrong
    implementation would this still pass? (Same adversarial stance as
-   guardrail-review, pointed at our own tests.)
+   guardrails-review, pointed at our own tests.)
 
 ## What You Do NOT Do
 
