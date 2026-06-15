@@ -18,7 +18,7 @@ A *plan folder* is generated next to its source markdown plan (`<plan-name>.md` 
 ```
 plan-name/
 ├── guardrails.json              # run configuration (§2)
-├── guardrails.lock              # OPTIONAL committed breakdown manifest (§11)
+├── guardrails.baseline          # OPTIONAL committed breakdown manifest (§11)
 ├── diagram.md                   # OPTIONAL generated DAG diagram — non-authored (§10)
 ├── state/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
@@ -295,9 +295,9 @@ last-writer-wins**. Merge order = task completion order, recorded as a monotonic
 **Harness exit codes**: `0` all succeeded · `1` harness/validation error ·
 `2` the operation completed but an actionable condition was found — for `run`: a task is
 needs-human/blocked; for `graph --check`: the diagram is stale or missing (the "regenerate"
-signal); for `lock --check`: the folder has drifted from the lock or the lock is missing (the
-"re-lock" signal); for `merge`: there are unresolved conflicts to resolve, or the BASE lock is
-missing and must be established first (§11.5) · `3` cancelled.
+signal); for `lock --check`: the folder has drifted from the baseline or the baseline is missing
+(the "re-baseline" signal); for `merge`: there are unresolved conflicts to resolve, or the BASE
+baseline is missing and must be established first (§11.5) · `3` cancelled.
 
 ---
 
@@ -414,7 +414,7 @@ styling.
 
 ---
 
-## 11. Breakdown manifest + regeneration merge (`guardrails.lock`)
+## 11. Breakdown manifest + regeneration merge (`guardrails.baseline`)
 
 The plan is the **source of truth**. A re-run of `/plan-breakdown` re-derives the task set and
 the `dependsOn` DAG from the (changed) plan — these are machine-owned and not hand-edited. The
@@ -423,11 +423,14 @@ script, or adding a new one). So a regeneration must re-derive tasks while **pre
 guardrail edits**, discarding them only when the task they belong to no longer exists. The
 manifest is the deterministic foundation that makes this possible. (Tracked in issue #5.)
 
-### 11.1 The lock file
+### 11.1 The baseline file
 
 `guardrails lock [folder]` captures the **authored** files of a plan folder and writes
-`<plan-folder>/guardrails.lock` — a **committed** artifact (unlike harness-owned `state/`). It
-is the BASE that a later regeneration diffs against.
+`<plan-folder>/guardrails.baseline` — a **committed** artifact (unlike harness-owned `state/`). It
+is the BASE that a later regeneration diffs against. The file is named `.baseline` (not `.lock`)
+because it is a durable, committed drift-detection reference point; a `.lock` extension would
+wrongly imply a gitignored transient mutex (issue #10). The command verb stays `guardrails lock`
+— it **writes** the baseline — only the file it produces was renamed.
 
 ```jsonc
 {
@@ -441,30 +444,30 @@ is the BASE that a later regeneration diffs against.
 }
 ```
 
-The lock carries **no timestamp** — its identity is the `files` map alone, so re-running
+The baseline carries **no timestamp** — its identity is the `files` map alone, so re-running
 `guardrails lock` on an unchanged folder rewrites a **byte-identical** file (a deterministic
 projection, no git churn — matching the `diagram.md` precedent in §10).
 
 **Included:** `guardrails.json`, every task's `task.json` / `action.*` / `guardrails/*`, and the
-committed `state/seed.json`. **Excluded:** the lock file itself, the generated `diagram.md`,
+committed `state/seed.json`. **Excluded:** the baseline file itself, the generated `diagram.md`,
 `*.tmp` (atomic-write residue), and harness-owned runtime under `state/` (`state.json`,
 `run.json`, `merge-conflicts.log`, `logs/…`). Hashes are SHA-256 (lowercase hex) over
 **newline-normalized** text (matching `PlanHash`), so CRLF/LF checkouts hash identically.
 
 ### 11.2 Drift classification (LOCAL vs BASE)
 
-Comparing a freshly captured snapshot (LOCAL) against the lock (BASE) classifies each file:
+Comparing a freshly captured snapshot (LOCAL) against the baseline (BASE) classifies each file:
 
 | Status | Meaning |
 |---|---|
 | `Unchanged` | BASE == LOCAL — human didn't touch it; the merge may take REMOTE freely |
 | `Edited` | present in both, content differs — a human edit to preserve |
 | `Added` | in LOCAL only — a human-authored file to preserve |
-| `Missing` | in BASE only — deleted on disk since the last lock |
+| `Missing` | in BASE only — deleted on disk since the last baseline |
 
 ### 11.3 The regeneration merge (BASE / LOCAL / REMOTE)
 
-A re-run has three inputs: **BASE** (the lock), **LOCAL** (on disk = BASE + human CRUD), and
+A re-run has three inputs: **BASE** (the baseline), **LOCAL** (on disk = BASE + human CRUD), and
 **REMOTE** (a fresh generation from the changed plan). Per guardrail:
 
 | BASE | LOCAL | REMOTE | result |
@@ -519,22 +522,23 @@ all of the above; the `/plan-breakdown` skill orchestrates them (§11.5).
 Exit codes follow §7: `0` clean, `1` a genuine error, `2` an actionable "regenerate" condition
 (the same signal `graph --check` uses for a stale/missing diagram).
 
-- `guardrails lock [folder]` — capture authored files and write `guardrails.lock`; print the
+- `guardrails lock [folder]` — capture authored files and write `guardrails.baseline`; print the
   path + file count; exit `0`. A pure content snapshot — it does **not** load or validate the
-  plan (run `guardrails validate` for that). Missing folder → exit `1`.
-- `--check` — write nothing. Recompute the snapshot and compare to the lock: clean → exit `0`;
-  drift **or a missing lock** → one actionable line and exit `2` (the "regenerate" signal,
-  distinct from a genuine error so CI can tell "re-lock the folder" apart from "the tool
-  failed"). A **corrupt** lock (present but unparseable) → exit `1`.
+  plan (run `guardrails validate` for that). Missing folder → exit `1`. (The verb stays `lock` —
+  it WRITES the baseline; only the produced file was renamed from `guardrails.lock`, issue #10.)
+- `--check` — write nothing. Recompute the snapshot and compare to the baseline: clean → exit `0`;
+  drift **or a missing baseline** → one actionable line and exit `2` (the "regenerate" signal,
+  distinct from a genuine error so CI can tell "re-run `guardrails lock`" apart from "the tool
+  failed"). A **corrupt** baseline (present but unparseable) → exit `1`.
 - `--diff` — write nothing. Print one line per changed file (`EDITED` / `ADDED` / `MISSING`)
-  and exit `0` (printing the report IS the success, drift or not). A **missing** lock → exit
-  `2` (run `guardrails lock` first — there is no BASE to diff against); a **corrupt** lock →
+  and exit `0` (printing the report IS the success, drift or not). A **missing** baseline → exit
+  `2` (run `guardrails lock` first — there is no BASE to diff against); a **corrupt** baseline →
   exit `1`.
 
 ### 11.5 The `merge` command + skill orchestration
 
 `guardrails merge [folder] --remote <dir> [--apply]` runs the regeneration merge (§11.3).
-`folder` is the current plan folder (LOCAL, carrying `guardrails.lock` = BASE); `--remote` is a
+`folder` is the current plan folder (LOCAL, carrying `guardrails.baseline` = BASE); `--remote` is a
 freshly generated candidate (REMOTE) staged from the changed plan. Both sides are loaded +
 validated (so a duplicate `stableId` surfaces as GR2010 here too).
 
@@ -543,19 +547,20 @@ validated (so a duplicate `stableId` surfaces as GR2010 here too).
   there are no conflicts, `2` when there are.
 - `--apply` — when there are no conflicts, materialize the merge **in place**: replace the
   authored content (`tasks/`, `guardrails.json`, and `state/seed.json` when REMOTE has one) with
-  REMOTE's, overlay the preserved human guardrails onto the REMOTE task structure, and re-lock so
-  the merged folder is the new BASE. Harness-owned `state/` runtime and the generated `diagram.md`
-  are left untouched. With conflicts present, `--apply` changes nothing and exits `2`. The new
-  `tasks/` tree is assembled in a sibling staging directory and swapped in only once complete, so a
-  failure mid-apply leaves the existing folder intact rather than half-written with a stale lock.
-  On success it prints the re-lock path and a reminder to run `validate` then `graph` (the merge
-  deliberately leaves the old diagram stale, and does **not** need a second `lock` — `--apply`
-  already wrote it).
+  REMOTE's, overlay the preserved human guardrails onto the REMOTE task structure, and re-write the
+  baseline so the merged folder is the new BASE. Harness-owned `state/` runtime and the generated
+  `diagram.md` are left untouched. With conflicts present, `--apply` changes nothing and exits `2`.
+  The new `tasks/` tree is assembled in a sibling staging directory and swapped in only once
+  complete, so a failure mid-apply leaves the existing folder intact rather than half-written with a
+  stale baseline. On success it prints the re-written baseline path and a reminder to run `validate`
+  then `graph` (the merge deliberately leaves the old diagram stale, and does **not** need a second
+  `lock` — `--apply` already wrote the baseline).
 - exit codes (§7): `0` clean (dry run with no conflicts, or applied); `2` the actionable "a human
-  must act" signal — unresolved conflicts, or a **missing** lock (run `guardrails lock` first to
-  adopt the current folder as BASE); `1` a genuine error (missing folder/remote, **corrupt** lock —
-  present but unparseable, distinct from a missing one — or an invalid plan on either side). The
-  missing-lock (`2`) vs corrupt-lock (`1`) split mirrors `lock --check`/`--diff` (§11.4).
+  must act" signal — unresolved conflicts, or a **missing** baseline (run `guardrails lock` first to
+  adopt the current folder as BASE); `1` a genuine error (missing folder/remote, **corrupt**
+  baseline — present but unparseable, distinct from a missing one — or an invalid plan on either
+  side). The missing-baseline (`2`) vs corrupt-baseline (`1`) split mirrors `lock --check`/`--diff`
+  (§11.4).
 
 **Conflict presentation (open question #3 resolved): block + report.** Conflicts are printed to
 stdout — one `CONFLICT <stableId>/<file> — <reason>` line each — and the run is blocked (exit `2`);

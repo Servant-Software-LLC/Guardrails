@@ -5,13 +5,13 @@ namespace Guardrails.Integration.Tests;
 
 /// <summary>
 /// Drives <c>guardrails lock</c> through the REAL composition root
-/// (<see cref="CommandFactory.BuildRootCommand"/>) against temp plan folders (SSOT §11):
-/// default write (path + file count), <c>--check</c> clean/drift/missing/corrupt, the
-/// diagram.md/state exclusion end-to-end, <c>--diff</c> exit codes, and byte-identical re-locks.
-/// Going through the factory also proves the command is actually wired in — a <c>lock</c> that
-/// works only via a hand-built root but is missing from the factory would ship broken. Output is
-/// captured with <see cref="StringConsoleIo"/> (no process-global console) so it stays
-/// parallel-safe.
+/// (<see cref="CommandFactory.BuildRootCommand"/>) against temp plan folders (SSOT §11): default
+/// write (path + file count), <c>--check</c> clean/drift/missing/corrupt, the diagram.md/state
+/// exclusion end-to-end, <c>--diff</c> exit codes, and byte-identical baseline re-writes (the
+/// <c>lock</c> verb writes <c>guardrails.baseline</c>). Going through the factory also proves the
+/// command is actually wired in — a <c>lock</c> that works only via a hand-built root but is
+/// missing from the factory would ship broken. Output is captured with
+/// <see cref="StringConsoleIo"/> (no process-global console) so it stays parallel-safe.
 /// </summary>
 public sealed class LockCliTests
 {
@@ -40,17 +40,17 @@ public sealed class LockCliTests
     }
 
     [Fact]
-    public async Task Lock_Default_WritesLockFile_PrintsPathAndCount_ExitsZero()
+    public async Task Lock_Default_WritesBaselineFile_PrintsPathAndCount_ExitsZero()
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
         (int exit, string output) = await InvokeAsync("lock", plan.PlanDir);
 
         Assert.Equal(ExitCodes.Success, exit);
-        Assert.True(File.Exists(LockPath(plan.PlanDir)), "default run must write guardrails.lock");
+        Assert.True(File.Exists(LockPath(plan.PlanDir)), "default run must write guardrails.baseline");
         Assert.NotNull(BreakdownManifest.Read(plan.PlanDir));
 
-        // The "Wrote <path> (N file(s))" line names the lock and the captured file count.
+        // The "Wrote <path> (N file(s))" line names the baseline and the captured file count.
         Assert.Contains("Wrote", output);
         Assert.Contains(BreakdownManifest.FileName, output);
         Assert.Contains("file(s)", output);

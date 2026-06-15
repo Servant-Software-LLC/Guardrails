@@ -6,22 +6,23 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails merge [folder] --remote &lt;dir&gt; [--apply]</c> — the identity-aware
 /// regeneration merge (SSOT §11.3). <paramref>folder</paramref> is the current plan folder
-/// (LOCAL, carrying <c>guardrails.lock</c> = BASE); <c>--remote</c> is a freshly generated
+/// (LOCAL, carrying <c>guardrails.baseline</c> = BASE); <c>--remote</c> is a freshly generated
 /// candidate (REMOTE) the skill staged from the changed plan. The merge preserves human
 /// guardrail edits and re-derives everything else, matching tasks by <c>stableId</c>.
 ///
 /// Default (dry run) reports the resolutions and writes nothing. <c>--apply</c> materializes the
-/// merge in place and re-locks — but only when there are no conflicts. Exit codes follow §7:
-/// <c>0</c> clean (dry run with no conflicts, or applied); <c>2</c> the actionable "human must
-/// act" signal (conflicts to resolve, or a missing lock to establish first); <c>1</c> a genuine
-/// error (missing folder/remote, corrupt lock, or an invalid plan on either side).
+/// merge in place and re-writes the baseline — but only when there are no conflicts. Exit codes
+/// follow §7: <c>0</c> clean (dry run with no conflicts, or applied); <c>2</c> the actionable
+/// "human must act" signal (conflicts to resolve, or a missing baseline to establish first);
+/// <c>1</c> a genuine error (missing folder/remote, corrupt baseline, or an invalid plan on
+/// either side).
 /// </summary>
 public static class MergeCommand
 {
     /// <summary>
     /// Exit code for an actionable "a human must act" outcome — unresolved conflicts, or a
-    /// missing BASE lock. Shares the numeric value of <see cref="ExitCodes.TaskFailed"/> (2, the
-    /// §7 "actionable condition found" code) but carries a merge-specific meaning, so it lives
+    /// missing BASE baseline. Shares the numeric value of <see cref="ExitCodes.TaskFailed"/> (2,
+    /// the §7 "actionable condition found" code) but carries a merge-specific meaning, so it lives
     /// here next to its only caller (mirroring <c>lock</c>/<c>graph --check</c>).
     /// </summary>
     private const int ActionNeededExitCode = 2;
@@ -74,11 +75,11 @@ public static class MergeCommand
             return ExitCodes.HarnessError;
         }
 
-        // BASE: a missing lock is the actionable "lock first" signal (2); a corrupt one is an error (1).
+        // BASE: a missing baseline is the actionable "lock first" signal (2); a corrupt one is an error (1).
         BreakdownManifest? baseManifest = BreakdownManifest.Read(folder);
         if (baseManifest is null)
         {
-            if (File.Exists(BreakdownManifest.LockFilePath(folder)))
+            if (File.Exists(BreakdownManifest.BaselineFilePath(folder)))
             {
                 output.WriteLine(
                     $"{BreakdownManifest.FileName} is corrupt (could not be parsed) — run: guardrails lock {QuoteIfNeeded(folder)}");
@@ -140,7 +141,7 @@ public static class MergeCommand
         }
 
         output.WriteLine(
-            $"Applied: {plan.PreservedCount} human guardrail(s) preserved, {plan.DroppedCount} dropped; re-locked {BreakdownManifest.LockFilePath(folder)}.");
+            $"Applied: {plan.PreservedCount} human guardrail(s) preserved, {plan.DroppedCount} dropped; re-wrote baseline {BreakdownManifest.BaselineFilePath(folder)}.");
         output.WriteLine(
             $"Next: run 'guardrails validate {QuoteIfNeeded(folder)}' (fix until clean) and 'guardrails graph {QuoteIfNeeded(folder)}' to refresh the diagram.");
         return ExitCodes.Success;

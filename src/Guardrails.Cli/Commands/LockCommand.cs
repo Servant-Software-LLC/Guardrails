@@ -6,25 +6,26 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails lock [folder] [--check] [--diff]</c> — record or compare the breakdown
 /// manifest (SSOT §11). Default: capture the authored files and write
-/// <c>&lt;folder&gt;/guardrails.lock</c> (the BASE a later <c>/plan-breakdown</c> regeneration
-/// diffs against). <c>--check</c> reports drift via exit code (0 clean, 2 drifted/missing lock,
-/// 1 corrupt lock). <c>--diff</c> prints the per-file classification (human edits/additions/
+/// <c>&lt;folder&gt;/guardrails.baseline</c> (the BASE a later <c>/plan-breakdown</c> regeneration
+/// diffs against). <c>--check</c> reports drift via exit code (0 clean, 2 drifted/missing baseline,
+/// 1 corrupt baseline). <c>--diff</c> prints the per-file classification (human edits/additions/
 /// deletions). Defaults to the current directory when the folder is omitted. This is a pure
 /// content snapshot — it does not load or validate the plan; run <c>guardrails validate</c> for
-/// that.
+/// that. (The command verb stays <c>lock</c> — it WRITES the baseline; only the file it produces
+/// was renamed from <c>guardrails.lock</c>, see issue #10.)
 /// </summary>
 public static class LockCommand
 {
     /// <summary>
-    /// Exit code returned by <c>--check</c> when the folder has drifted from <c>guardrails.lock</c>
-    /// OR the lock is missing — the "re-lock" signal (SSOT §7: exit 2 = "the operation completed
-    /// but an actionable condition was found"). Distinct from <see cref="ExitCodes.HarnessError"/>
-    /// (1), which a genuine failure (missing folder, corrupt lock) returns, so CI can tell
-    /// "re-lock the folder" apart from "the tool failed". Mirrors <c>graph --check</c>'s stale
-    /// signal: deliberately NOT added to the shared <see cref="ExitCodes"/> class — it shares the
-    /// numeric value of <see cref="ExitCodes.TaskFailed"/> (2) by design (both are the §7
-    /// "actionable condition found" code) but is a lock-specific meaning, so it lives here next to
-    /// its only caller.
+    /// Exit code returned by <c>--check</c> when the folder has drifted from
+    /// <c>guardrails.baseline</c> OR the baseline is missing — the "re-baseline" signal (SSOT §7:
+    /// exit 2 = "the operation completed but an actionable condition was found"). Distinct from
+    /// <see cref="ExitCodes.HarnessError"/> (1), which a genuine failure (missing folder, corrupt
+    /// baseline) returns, so CI can tell "re-run guardrails lock" apart from "the tool failed".
+    /// Mirrors <c>graph --check</c>'s stale signal: deliberately NOT added to the shared
+    /// <see cref="ExitCodes"/> class — it shares the numeric value of
+    /// <see cref="ExitCodes.TaskFailed"/> (2) by design (both are the §7 "actionable condition
+    /// found" code) but is a baseline-specific meaning, so it lives here next to its only caller.
     /// </summary>
     private const int DriftExitCode = 2;
 
@@ -34,15 +35,15 @@ public static class LockCommand
 
         var checkOption = new Option<bool>("--check")
         {
-            Description = "Report whether the folder matches guardrails.lock (exit 0 clean, 2 drifted/missing, 1 corrupt); writes nothing."
+            Description = "Report whether the folder matches guardrails.baseline (exit 0 clean, 2 drifted/missing, 1 corrupt); writes nothing."
         };
 
         var diffOption = new Option<bool>("--diff")
         {
-            Description = "Print the per-file classification (edited/added/missing) against guardrails.lock; writes nothing."
+            Description = "Print the per-file classification (edited/added/missing) against guardrails.baseline; writes nothing."
         };
 
-        var command = new Command("lock", "Record or compare a plan folder's breakdown manifest (guardrails.lock).");
+        var command = new Command("lock", "Record or compare a plan folder's breakdown manifest (guardrails.baseline).");
         command.Add(folderArgument);
         command.Add(checkOption);
         command.Add(diffOption);
@@ -85,14 +86,14 @@ public static class LockCommand
     {
         BreakdownManifest manifest = BreakdownManifest.Capture(folder);
         manifest.Write(folder);
-        output.WriteLine($"Wrote {BreakdownManifest.LockFilePath(folder)} ({manifest.Files.Count} file(s))");
+        output.WriteLine($"Wrote {BreakdownManifest.BaselineFilePath(folder)} ({manifest.Files.Count} file(s))");
         return ExitCodes.Success;
     }
 
     /// <summary>
-    /// <c>--check</c>: a boolean gate. A missing lock or any drift → one actionable line and exit
-    /// <see cref="DriftExitCode"/> (2, the "re-lock" signal). A corrupt lock (present but
-    /// unparseable) → exit 1, a genuine error. Clean → exit 0.
+    /// <c>--check</c>: a boolean gate. A missing baseline or any drift → one actionable line and
+    /// exit <see cref="DriftExitCode"/> (2, the "re-baseline" signal). A corrupt baseline (present
+    /// but unparseable) → exit 1, a genuine error. Clean → exit 0.
     /// </summary>
     private static int Check(string folder, TextWriter output)
     {
@@ -116,9 +117,9 @@ public static class LockCommand
 
     /// <summary>
     /// <c>--diff</c>: a report. Prints one line per changed file (EDITED/ADDED/MISSING) and exits
-    /// 0 (printing the report IS the success, drift or not). A missing lock → exit
+    /// 0 (printing the report IS the success, drift or not). A missing baseline → exit
     /// <see cref="DriftExitCode"/> (2, "run guardrails lock first" — there is no BASE to diff
-    /// against); a corrupt lock → exit 1.
+    /// against); a corrupt baseline → exit 1.
     /// </summary>
     private static int Diff(string folder, TextWriter output)
     {
@@ -131,7 +132,7 @@ public static class LockCommand
         BreakdownDiff diff = BreakdownDiff.Compute(baseManifest, BreakdownManifest.Capture(folder));
         if (!diff.HasDrift)
         {
-            output.WriteLine("No changes since last lock.");
+            output.WriteLine("No changes since last baseline.");
             return ExitCodes.Success;
         }
 
@@ -153,8 +154,8 @@ public static class LockCommand
 
     /// <summary>
     /// Load the BASE manifest, distinguishing the two failure modes <c>--check</c> and
-    /// <c>--diff</c> share: a missing lock is the actionable "re-lock" signal
-    /// (<see cref="DriftExitCode"/>, 2), while a present-but-corrupt lock is a genuine error
+    /// <c>--diff</c> share: a missing baseline is the actionable "re-baseline" signal
+    /// (<see cref="DriftExitCode"/>, 2), while a present-but-corrupt baseline is a genuine error
     /// (<see cref="ExitCodes.HarnessError"/>, 1). On success returns the manifest and sets
     /// <paramref name="errorCode"/> to <see cref="ExitCodes.Success"/>; on failure returns null
     /// and sets the code the caller should return.
@@ -168,7 +169,7 @@ public static class LockCommand
             return baseManifest;
         }
 
-        if (File.Exists(BreakdownManifest.LockFilePath(folder)))
+        if (File.Exists(BreakdownManifest.BaselineFilePath(folder)))
         {
             output.WriteLine(
                 $"{BreakdownManifest.FileName} is corrupt (could not be parsed) — run: guardrails lock {QuoteIfNeeded(folder)}");
