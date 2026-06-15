@@ -1,4 +1,5 @@
 {
   "description": "Run out/greet.ps1 for the recipient configured in shared state and save the output to out/greeting.txt",
+  "stableId": "q7m2zd",
   "dependsOn": ["01-write-greeting-script"]
 }

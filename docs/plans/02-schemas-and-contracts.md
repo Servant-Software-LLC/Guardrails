@@ -86,6 +86,7 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 {
   "description": "Implement the --stats flag",   // required, one line, human + feedback use
   "stableId": "k3f9a1",        // optional; stable task identity for the regeneration merge (§11)
+                               //   format ^[a-z0-9][a-z0-9._-]*$ (GR2011); unique (GR2010)
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
   "retries": 3,                // optional; overrides defaultRetries
   "timeoutSeconds": 3600,      // optional; whole-attempt ceiling (action + guardrails)
@@ -114,10 +115,13 @@ can't be verified has no business in the DAG).
 `stableId` is an **optional** identity that survives renumbering and slug edits across
 regenerations — the key the merge (§11) uses to recognize "this is the same task, slightly
 altered" versus "this is a new task". It is reserved for that merge and the runtime does not
-yet consume it, but because the merge keys identity on it, `validate` **does** enforce that any
-declared `stableId` is unique across tasks (a duplicate is a `GR2010` error — almost always a
-copy-paste slip). `validate` does not *require* one. Absent ⇒ task identity falls back to the
-folder name.
+yet consume it, but because the merge keys identity on it, `validate` **does** enforce two rules
+on any declared `stableId`: it must be **unique** across tasks (a duplicate is a `GR2010` error —
+almost always a copy-paste slip), and it must match `^[a-z0-9][a-z0-9._-]*$` (lowercase
+alphanumerics, optionally with `.` `_` `-`; a `GR2011` error otherwise). The format is reserved so
+a real id can never collide with the merge's synthetic `folder:<name>` identity (the colon is
+disallowed). `validate` does not *require* one. Absent ⇒ task identity falls back to the folder
+name — see §11.3 for why minting one is still recommended.
 
 ## 4. Guardrails
 
@@ -292,7 +296,8 @@ last-writer-wins**. Merge order = task completion order, recorded as a monotonic
 `2` the operation completed but an actionable condition was found — for `run`: a task is
 needs-human/blocked; for `graph --check`: the diagram is stale or missing (the "regenerate"
 signal); for `lock --check`: the folder has drifted from the lock or the lock is missing (the
-"re-lock" signal) · `3` cancelled.
+"re-lock" signal); for `merge`: there are unresolved conflicts to resolve, or the BASE lock is
+missing and must be established first (§11.5) · `3` cancelled.
 
 ---
 
@@ -470,12 +475,44 @@ A re-run has three inputs: **BASE** (the lock), **LOCAL** (on disk = BASE + huma
 | present | edited | gone (task removed) | drop (task no longer needed → its guardrail goes too) |
 | absent | added | absent | keep (human-authored guardrail) |
 
-Task matching across a regeneration uses `stableId` (§3), not the renumbered folder name, so a
-"slightly altered + reordered" task carries its human guardrails forward while a materially
-changed or removed task does not. The **identity-aware regeneration and the conflict gate are
-the skill-orchestration layer (issue #5, follow-up)**; this document and the CLI ship the
-manifest, the classification, and the `lock` command — the deterministic primitives that layer
-consumes.
+**Task identity.** Matching across a regeneration uses `stableId` (§3), not the renumbered
+folder name, so a "slightly altered + reordered" task carries its human guardrails forward while
+a materially changed or removed task does not. **Open question #2 is resolved: the id is a short
+*minted* token, not a slug.** `/plan-breakdown` mints one per task on first generation and
+*reuses* it for the continuous task on every regeneration (minting only for genuinely new tasks);
+folder renames and slug edits therefore don't break identity. The LLM owns this judgment (which
+id a regenerated task reuses); `validate` enforces uniqueness (GR2010) and format (GR2011).
+
+**Tasks without a `stableId`** match by folder name (`folder:<name>`) instead. This is a
+best-effort fallback, not an equal alternative: the moment a regeneration renumbers or renames
+such a task's folder, the merge reads it as *the old task dropped + a new task added*, so any human
+guardrail edits on it are lost (the drop is surfaced as a warning, never silent). The merge emits a
+one-line heads-up whenever either side has folder-fallback tasks. Pre-`stableId` folders therefore
+sit on this boundary until re-minted; `/plan-breakdown` mints an id per task so new work doesn't.
+
+**Per-task file matching.** Within a matched task, the merge resolves **every file under the
+task's `guardrails/` directory** by its full filename (not the guardrail's logical name): the
+script, its `*.prompt.md`, its metadata sidecar (`<basename>.json`, §4.1), and any file a human
+added there. All are human-ownable content, so all flow through the same per-file resolution — a
+human-tuned `timeoutSeconds` in a sidecar is preserved exactly like an edited script body.
+
+**Guardrail-granularity refinements.** The five-row table is the conceptual contract; at the
+per-file level two more cases resolve to **CONFLICT** because human work would otherwise be lost
+silently: (a) a human *edited* a guardrail that the regeneration *removed* from a surviving task,
+and (b) a human *added* a guardrail whose filename the regeneration also produced, with different
+content. A human-added guardrail the regeneration doesn't emit is simply kept. A guardrail the
+human *deleted* that the regeneration re-emits is taken from REMOTE (the plan wins) but reported as
+a **reinstated** warning — the deletion is being undone, not honored.
+
+**What's machine-owned.** Only files under `guardrails/` are preserved. Everything else in a task —
+its `task.json`, `action.*`, and the `dependsOn` DAG — plus `guardrails.json` is re-derived from
+the plan (taken from REMOTE). `state/seed.json` is treated leniently: adopted from REMOTE when
+present, otherwise left as-is. A human edit to one of these machine-owned files is overwritten by a
+differing REMOTE — that is contractual, but never silent: the merge warns (and `lock --diff` would
+have shown the file as `EDITED`), so the human can move the change into the plan if it mattered.
+
+The deterministic engine (`BreakdownMerge`) and the `guardrails merge` command (§11.5) implement
+all of the above; the `/plan-breakdown` skill orchestrates them (§11.5).
 
 ### 11.4 Command contract
 
@@ -493,3 +530,43 @@ Exit codes follow §7: `0` clean, `1` a genuine error, `2` an actionable "regene
   and exit `0` (printing the report IS the success, drift or not). A **missing** lock → exit
   `2` (run `guardrails lock` first — there is no BASE to diff against); a **corrupt** lock →
   exit `1`.
+
+### 11.5 The `merge` command + skill orchestration
+
+`guardrails merge [folder] --remote <dir> [--apply]` runs the regeneration merge (§11.3).
+`folder` is the current plan folder (LOCAL, carrying `guardrails.lock` = BASE); `--remote` is a
+freshly generated candidate (REMOTE) staged from the changed plan. Both sides are loaded +
+validated (so a duplicate `stableId` surfaces as GR2010 here too).
+
+- default (**dry run**) — compute and print the resolutions (`CONFLICT` / `KEEP` / `DROP` lines,
+  warnings, and a summary; `TakeRemote` is summarized as a count). Writes nothing. Exit `0` when
+  there are no conflicts, `2` when there are.
+- `--apply` — when there are no conflicts, materialize the merge **in place**: replace the
+  authored content (`tasks/`, `guardrails.json`, and `state/seed.json` when REMOTE has one) with
+  REMOTE's, overlay the preserved human guardrails onto the REMOTE task structure, and re-lock so
+  the merged folder is the new BASE. Harness-owned `state/` runtime and the generated `diagram.md`
+  are left untouched. With conflicts present, `--apply` changes nothing and exits `2`. The new
+  `tasks/` tree is assembled in a sibling staging directory and swapped in only once complete, so a
+  failure mid-apply leaves the existing folder intact rather than half-written with a stale lock.
+  On success it prints the re-lock path and a reminder to run `validate` then `graph` (the merge
+  deliberately leaves the old diagram stale, and does **not** need a second `lock` — `--apply`
+  already wrote it).
+- exit codes (§7): `0` clean (dry run with no conflicts, or applied); `2` the actionable "a human
+  must act" signal — unresolved conflicts, or a **missing** lock (run `guardrails lock` first to
+  adopt the current folder as BASE); `1` a genuine error (missing folder/remote, **corrupt** lock —
+  present but unparseable, distinct from a missing one — or an invalid plan on either side). The
+  missing-lock (`2`) vs corrupt-lock (`1`) split mirrors `lock --check`/`--diff` (§11.4).
+
+**Conflict presentation (open question #3 resolved): block + report.** Conflicts are printed to
+stdout — one `CONFLICT <stableId>/<file> — <reason>` line each — and the run is blocked (exit `2`);
+no `--apply` proceeds until none remain. The human resolves by editing the guardrail (or the plan)
+and re-running. (`.orig`-style inline markers are a possible future addition; the run-blocking
+*policy* is what's contractual.)
+
+**Skill flow (`/plan-breakdown`, regeneration path).** When the folder already exists and the
+user chooses *merge*: (1) generate the new breakdown into a **staging** folder, reusing each
+continuous task's `stableId` from the existing `task.json` and minting ids only for new tasks;
+(2) `guardrails merge <folder> --remote <staging>` (dry run) — on exit `2`, surface the conflicts
+and **stop**; (3) on exit `0`, `guardrails merge <folder> --remote <staging> --apply`, then
+`guardrails validate` + `guardrails graph`. The skill never hand-applies the per-guardrail
+decisions — the deterministic engine owns them.

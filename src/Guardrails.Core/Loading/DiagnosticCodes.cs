@@ -72,4 +72,12 @@ public static class DiagnosticCodes
     /// almost always a copy-paste slip. Only declared (non-null) ids are checked.
     /// </summary>
     public const string DuplicateStableId = "GR2010";
+
+    /// <summary>
+    /// A declared <c>stableId</c> is not in the allowed format <c>^[a-z0-9][a-z0-9._-]*$</c>
+    /// (SSOT §3/§11). The regeneration merge derives a synthetic identity (<c>folder:&lt;name&gt;</c>)
+    /// for tasks without a stableId; reserving the format keeps a real stableId from ever colliding
+    /// with that synthetic key, and keeps ids stable across path/JSON handling.
+    /// </summary>
+    public const string InvalidStableId = "GR2011";
 }

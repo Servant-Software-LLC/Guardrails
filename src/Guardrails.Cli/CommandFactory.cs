@@ -24,6 +24,7 @@ public static class CommandFactory
         rootCommand.Add(StatusCommand.Create(io));
         rootCommand.Add(ResetCommand.Create(io));
         rootCommand.Add(LockCommand.Create(io));
+        rootCommand.Add(MergeCommand.Create(io));
         rootCommand.Add(SkillsCommand.Create(io));
         rootCommand.Add(SkillsCommand.CreateInstallAlias(io));
         return rootCommand;

@@ -77,6 +77,11 @@ a .NET plan, not blanket `Bash`.
 ```jsonc
 {
   "description": "One line — feeds retry feedback and the UI",   // REQUIRED
+  "stableId": "k3f9a1",     // OPTIONAL — short minted token, UNIQUE within the plan — the
+                            // regeneration merge's identity key (§11). Mint once; reuse for the
+                            // same task across regenerations; never reuse for a different task.
+                            // absent ⇒ identity falls back to the folder name (§3);
+                            // duplicate ⇒ GR2010; must match ^[a-z0-9][a-z0-9._-]*$ ⇒ GR2011.
   "dependsOn": ["01-other-task"],                                // REQUIRED (may be [])
   "retries": 3,             // optional; overrides defaultRetries
   "timeoutSeconds": 3600,   // optional
@@ -86,8 +91,12 @@ a .NET plan, not blanket `Bash`.
 ```
 
 Task ids = folder names, `NN-verb-object` kebab-case; NN is a topological hint for
-human scanning, `dependsOn` is the truth. Omit the `action` block when the task folder
-has exactly one `action.*` file (the convention); zero or multiple = validation error.
+human scanning, `dependsOn` is the truth. `stableId` is OPTIONAL in the schema but the breakdown
+**mints one per task by default** — it is the identity that survives a renumber/rename (the
+regeneration merge's key, §11). Absent ⇒ identity falls back to the folder name; duplicate within
+the plan ⇒ GR2010; a value not matching `^[a-z0-9][a-z0-9._-]*$` ⇒ GR2011. Omit the `action` block
+when the task folder has exactly one `action.*` file (the convention); zero or multiple =
+validation error.
 
 ## Prompt files (`.prompt.md`)
 
@@ -112,3 +121,18 @@ survive if a human runs the prompt outside the harness.
 - Guardrails see `GUARDRAILS_ACTION_STDOUT/_STDERR/_RESULT` and `GUARDRAILS_STATE_FRAGMENT`.
 - cwd of every child process = `workspace`. Plan-folder paths arrive absolute via env vars.
 - Harness exit codes: 0 green · 1 error · 2 needs-human · 3 cancelled.
+
+## Regeneration merge (§11.5)
+
+`guardrails merge <folder> --remote <dir> [--apply]` runs the identity-aware regeneration merge
+(SSOT §11.3/§11.5). `<folder>` is LOCAL (carries `guardrails.lock` = BASE); `--remote` is the
+freshly staged candidate from the changed plan.
+
+- **Dry-run exit codes:** `0` = no conflicts (proceed) · `2` = conflicts **OR** missing lock —
+  *disambiguate by the output message* (`guardrails.lock missing` ⇒ run `guardrails lock <folder>`
+  first to adopt BASE; otherwise `CONFLICT …` lines ⇒ stop and have a human resolve) · `1` = a
+  genuine error (missing folder/remote, corrupt lock, invalid plan either side incl. GR2010).
+- **`--apply`** materializes the merge in place and **re-locks**; it **must not run with conflicts
+  present** (changes nothing, exits `2`). After apply: delete staging, `guardrails validate` (fix
+  to green), `guardrails graph` (regenerate the stale diagram). Do **not** re-run `guardrails lock`.
+- `--apply` leaves the generated `diagram.md` and harness-owned `state/` runtime **untouched**.
