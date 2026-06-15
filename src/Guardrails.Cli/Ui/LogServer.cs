@@ -33,16 +33,23 @@ public sealed class LogServer : IAsyncDisposable
     private readonly string _logsRoot;
     private readonly IReadOnlyList<TaskNode> _tasks;
     private readonly HashSet<string> _taskIds;
+    private readonly Func<string, string?>? _statusForTask;
     private readonly string _baseUrl;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _acceptLoop;
 
-    private LogServer(HttpListener listener, string baseUrl, string logsRoot, IReadOnlyList<TaskNode> tasks)
+    private LogServer(
+        HttpListener listener,
+        string baseUrl,
+        string logsRoot,
+        IReadOnlyList<TaskNode> tasks,
+        Func<string, string?>? statusForTask)
     {
         _listener = listener;
         _baseUrl = baseUrl;
         _logsRoot = logsRoot;
         _tasks = tasks;
+        _statusForTask = statusForTask;
         _taskIds = new HashSet<string>(tasks.Select(t => t.Id), StringComparer.Ordinal);
     }
 
@@ -59,7 +66,22 @@ public sealed class LogServer : IAsyncDisposable
     /// <paramref name="warn"/> and returns null — the run proceeds without it, never blocked by a
     /// UX nicety. <paramref name="port"/> = 0 selects a free ephemeral port.
     /// </summary>
-    public static LogServer? TryStart(string planDirectory, IReadOnlyList<TaskNode> tasks, int port, TextWriter warn)
+    /// <param name="planDirectory">Plan folder whose <c>state/logs/</c> tree is served.</param>
+    /// <param name="tasks">The plan's tasks — the only ids the server will serve.</param>
+    /// <param name="port">Listen port; 0 selects a free ephemeral port.</param>
+    /// <param name="warn">Where a bind failure's single warning line is written.</param>
+    /// <param name="statusForTask">
+    /// Optional resolver mapping a task id to a status word (e.g. <c>succeeded</c>,
+    /// <c>needs-human</c>). When supplied, the landing page renders a coloured Status column —
+    /// used by <c>guardrails logs</c> (a standalone viewer has no terminal table to carry status).
+    /// Null = no Status column (the live run path, where the terminal table shows status).
+    /// </param>
+    public static LogServer? TryStart(
+        string planDirectory,
+        IReadOnlyList<TaskNode> tasks,
+        int port,
+        TextWriter warn,
+        Func<string, string?>? statusForTask = null)
     {
         try
         {
@@ -76,7 +98,7 @@ public sealed class LogServer : IAsyncDisposable
             listener.Start();
 
             string logsRoot = Path.Combine(planDirectory, "state", "logs");
-            var server = new LogServer(listener, baseUrl, logsRoot, tasks);
+            var server = new LogServer(listener, baseUrl, logsRoot, tasks, statusForTask);
             server._acceptLoop = Task.Run(server.AcceptLoopAsync);
             return server;
         }
@@ -315,16 +337,27 @@ public sealed class LogServer : IAsyncDisposable
 
     private string LandingHtml()
     {
+        bool withStatus = _statusForTask is not null;
         var rows = new StringBuilder();
         foreach (TaskNode task in _tasks)
         {
             string idEnc = Uri.EscapeDataString(task.Id);
             rows.Append("<tr><td><a href=\"/tasks/").Append(idEnc).Append("\">")
-                .Append(WebUtility.HtmlEncode(task.Id)).Append("</a></td><td>")
-                .Append(WebUtility.HtmlEncode(task.Description)).Append("</td></tr>");
+                .Append(WebUtility.HtmlEncode(task.Id)).Append("</a></td>");
+
+            if (withStatus)
+            {
+                string status = _statusForTask!(task.Id) ?? "unknown";
+                rows.Append("<td class=\"status\" data-status=\"").Append(WebUtility.HtmlEncode(status))
+                    .Append("\">").Append(WebUtility.HtmlEncode(status)).Append("</td>");
+            }
+
+            rows.Append("<td>").Append(WebUtility.HtmlEncode(task.Description)).Append("</td></tr>");
         }
 
-        return LandingTemplate.Replace("__ROWS__", rows.ToString());
+        return LandingTemplate
+            .Replace("__STATUS_TH__", withStatus ? "<th>Status</th>" : string.Empty)
+            .Replace("__ROWS__", rows.ToString());
     }
 
     private static string TaskPageHtml(string taskId) =>
@@ -392,13 +425,18 @@ public sealed class LogServer : IAsyncDisposable
   th { color: #8aa0b3; font-weight: 600; }
   a { color: #7fdbff; text-decoration: none; }
   a:hover { text-decoration: underline; }
+  td.status { font-weight: 600; }
+  td.status[data-status="succeeded"], td.status[data-status="skipped"] { color: #3fb950; }
+  td.status[data-status="needs-human"], td.status[data-status="failed"] { color: #f85149; }
+  td.status[data-status="running"] { color: #d29922; }
+  td.status[data-status="pending"], td.status[data-status="blocked"], td.status[data-status="unknown"] { color: #8aa0b3; }
 </style>
 </head>
 <body>
 <h1>Guardrails run — task logs</h1>
-<p>Live attempt logs for each task. This server runs only for the duration of the run and is bound to localhost.</p>
+<p>Attempt logs for each task, bound to localhost. Click a task to tail its log.</p>
 <table>
-<thead><tr><th>Task</th><th>Description</th></tr></thead>
+<thead><tr><th>Task</th>__STATUS_TH__<th>Description</th></tr></thead>
 <tbody>
 __ROWS__
 </tbody>

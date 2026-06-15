@@ -102,6 +102,35 @@ public sealed class LogServerTests
     }
 
     [Fact]
+    public async Task Landing_WithStatusProvider_RendersColouredStatusColumn()
+    {
+        using var temp = new TempPlan();
+        IReadOnlyList<TaskNode> tasks = [Task("01-alpha", "First"), Task("02-beta", "Second")];
+        LogServer? server = LogServer.TryStart(temp.Dir, tasks, port: 0, TextWriter.Null,
+            statusForTask: id => id == "01-alpha" ? "succeeded" : "needs-human");
+        Assert.NotNull(server);
+
+        await using (server)
+        {
+            string html = await GetStringAsync(server!.BaseUrl);
+            Assert.Contains("<th>Status</th>", html);
+            Assert.Contains("data-status=\"succeeded\"", html);
+            Assert.Contains("data-status=\"needs-human\"", html);
+        }
+    }
+
+    [Fact]
+    public async Task Landing_WithoutStatusProvider_HasNoStatusColumn()
+    {
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string html = await GetStringAsync(server.BaseUrl);
+
+        Assert.DoesNotContain("<th>Status</th>", html);
+    }
+
+    [Fact]
     public async Task UrlForTask_KnownReturnsUrl_UnknownReturnsNull()
     {
         using var temp = new TempPlan();
