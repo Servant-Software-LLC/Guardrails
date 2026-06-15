@@ -22,6 +22,7 @@ public static class CommandFactory
         rootCommand.Add(PlanCommand.Create(io));
         rootCommand.Add(GraphCommand.Create(io));
         rootCommand.Add(StatusCommand.Create(io));
+        rootCommand.Add(LogsCommand.Create(io));
         rootCommand.Add(ResetCommand.Create(io));
         rootCommand.Add(LockCommand.Create(io));
         rootCommand.Add(MergeCommand.Create(io));

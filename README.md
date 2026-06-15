@@ -97,6 +97,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness |
 | `guardrails run [folder] [--fresh] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>]` | Run to green; resume-aware; live progress table. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
 | `guardrails status [folder]` | Journal table: per-task status, attempts, last failure |
+| `guardrails logs [folder] [--port <n>] [--task <id>] [--no-open]` | Serve the web log viewer over a plan's persisted logs for post-mortem (any task — pass or fail); reads per-task status from the journal; opens a browser unless `--no-open`; runs until Ctrl-C |
 | `guardrails reset [folder] [task]` | Re-arm one task, or wipe runtime state entirely |
 | `guardrails skills install [--project] [--target <dir>] [--force]` | Copy the bundled skills into `~/.claude/skills` (or `./.claude/skills` with `--project`). `guardrails install skills` also works |
 
