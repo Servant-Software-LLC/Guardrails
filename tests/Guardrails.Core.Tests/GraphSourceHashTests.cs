@@ -1,4 +1,5 @@
 using Guardrails.Core.Graph;
+using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
 using static Guardrails.Core.Tests.PlanFixtures;
 
@@ -195,5 +196,52 @@ public sealed class GraphSourceHashTests
     public void Compute_NullPlan_Throws()
     {
         Assert.Throws<ArgumentNullException>(() => GraphSourceHash.Compute(null!));
+    }
+
+    /// <summary>
+    /// Cross-platform contract lock (issue #3). Because the hash is now newline-normalized
+    /// (<c>\r\n</c>/<c>\r</c> → <c>\n</c>) before hashing, this pinned literal is the SAME
+    /// value computed on Windows, Linux, and macOS. This is the exact <c>source-sha256</c>
+    /// embedded in the committed <c>examples/hello-guardrails/.../diagram.md</c>; if the
+    /// hash ever drifts by platform again, <c>graph --check</c> would flap on CI and this
+    /// test fails on whichever OS recomputes a different value.
+    /// </summary>
+    [Fact]
+    public void Compute_GoldenExample_MatchesPinnedCrossPlatformHash()
+    {
+        const string expected =
+            "56459e16d4eb626893edf0bb21262d8cf1eba3deb414f3f6f6027d7e5bb7e938";
+
+        PlanLoadResult result = new PlanLoader().Load(GoldenExamplePath);
+        Assert.False(result.HasErrors);
+        Assert.NotNull(result.Plan);
+
+        Assert.Equal(expected, GraphSourceHash.Compute(result.Plan!));
+    }
+
+    /// <summary>
+    /// The hashed semantic content must be LF-only on every OS: a stray <c>\r</c> (from
+    /// <c>AppendLine</c> = <c>Environment.NewLine</c> on Windows) is exactly what made the
+    /// raw hash platform-dependent (issue #3). The hash normalizes regardless, but keeping
+    /// the source content LF guards the rendered artifact too.
+    /// </summary>
+    [Fact]
+    public void SemanticContent_GoldenExample_ContainsNoCarriageReturn()
+    {
+        PlanLoadResult result = new PlanLoader().Load(GoldenExamplePath);
+        Assert.NotNull(result.Plan);
+
+        string semantic = MermaidRenderer.SemanticContent(result.Plan!);
+        Assert.DoesNotContain('\r', semantic);
+    }
+
+    private static string GoldenExamplePath
+    {
+        get
+        {
+            // tests/Guardrails.Core.Tests -> repo root -> examples/...
+            string repoRoot = Path.GetFullPath(Path.Combine(TestPaths.ProjectDir, "..", ".."));
+            return Path.Combine(repoRoot, "examples", "hello-guardrails", "hello-guardrails");
+        }
     }
 }

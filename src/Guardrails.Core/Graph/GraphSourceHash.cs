@@ -16,6 +16,15 @@ namespace Guardrails.Core.Graph;
 /// dependents ordinal). It deliberately EXCLUDES <c>action.Kind</c>, which the diagram does
 /// not draw.
 /// </summary>
+/// <remarks>
+/// The semantic content is newline-normalized (<c>\r\n</c>/<c>\r</c> → <c>\n</c>) BEFORE
+/// hashing, so the key is identical on every OS regardless of how the renderer emits line
+/// breaks. Without this, a diagram generated on Windows (CRLF from
+/// <see cref="System.Text.StringBuilder.AppendLine()"/> = <c>Environment.NewLine</c>) would
+/// hash differently from the same plan recomputed on Linux/macOS (LF), making
+/// <c>graph --check</c> spuriously report "stale" across platforms (issue #3). Mirrors
+/// <see cref="Guardrails.Core.Journal.PlanHash"/>, which normalizes for the same reason.
+/// </remarks>
 public static class GraphSourceHash
 {
     /// <summary>
@@ -25,8 +34,15 @@ public static class GraphSourceHash
     {
         ArgumentNullException.ThrowIfNull(plan);
 
-        string semantic = MermaidRenderer.SemanticContent(plan);
+        string semantic = NormalizeNewlines(MermaidRenderer.SemanticContent(plan));
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(semantic));
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
+
+    /// <summary>
+    /// Collapse <c>\r\n</c> and lone <c>\r</c> to <c>\n</c> so the hash is platform-independent.
+    /// Mirrors <see cref="Guardrails.Core.Journal.PlanHash"/>'s normalization.
+    /// </summary>
+    private static string NormalizeNewlines(string text) =>
+        text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal);
 }
