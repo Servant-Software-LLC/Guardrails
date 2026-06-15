@@ -35,7 +35,16 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
 
 - **Plan folder** `<plan-name>/` generated next to `<plan-name>.md`:
   `guardrails.json` (run config) + `state/` (seed, merged state, journal, logs) +
-  `tasks/<NN-verb-object>/` (one folder per task).
+  `tasks/<NN-verb-object>/` (one folder per task) + an optional generated
+  `diagram.md` (see below).
+- **Diagram** `diagram.md` (optional, plan-folder root): a generated Mermaid
+  `flowchart TD` of the task/guardrail DAG, written by `guardrails graph`. NOT part of
+  the plan contract (loader/validator ignore it) and never hand-edited. Its provenance
+  comment embeds a `source-sha256` over the diagram's drawn labels + DAG shape (as
+  emitted by the renderer), excluding cosmetic `classDef` styling — it changes when a
+  task/dependency/guardrail or a node label (e.g. a guardrail `description`) changes, and
+  is unaffected by action kind; `guardrails graph --check` exits 0 fresh, 2 stale/missing
+  (the "regenerate" signal), 1 on a load/validate error. See SSOT §10.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
   `exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
   Zero guardrails = validation error.
@@ -78,6 +87,11 @@ implementation task's guardrails will run — with tests-fail-on-current-code pr
 non-tautology) → REVIEW (human edits; `/guardrail-review` adversarial pass: "what
 wrong implementation passes these?") → RUN (`guardrails run`). Generated output is
 always a **draft** until a human reviews it.
+
+BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
+(`guardrails graph --check`) and regenerates if the human's edits made it stale —
+the diagram is a deterministic projection that must track the folder, not a snapshot
+frozen at breakdown.
 
 ## Load-bearing invariants
 

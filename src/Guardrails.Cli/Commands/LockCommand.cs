@@ -5,22 +5,36 @@ namespace Guardrails.Cli.Commands;
 
 /// <summary>
 /// <c>guardrails lock [folder] [--check] [--diff]</c> — record or compare the breakdown
-/// manifest (SSOT §10). Default: capture the authored files and write
+/// manifest (SSOT §11). Default: capture the authored files and write
 /// <c>&lt;folder&gt;/guardrails.lock</c> (the BASE a later <c>/plan-breakdown</c> regeneration
-/// diffs against). <c>--check</c> reports drift via exit code (0 clean, 1 drifted/missing).
-/// <c>--diff</c> prints the per-file classification (human edits/additions/deletions). Defaults
-/// to the current directory when the folder is omitted. This is a pure content snapshot — it
-/// does not load or validate the plan; run <c>guardrails validate</c> for that.
+/// diffs against). <c>--check</c> reports drift via exit code (0 clean, 2 drifted/missing lock,
+/// 1 corrupt lock). <c>--diff</c> prints the per-file classification (human edits/additions/
+/// deletions). Defaults to the current directory when the folder is omitted. This is a pure
+/// content snapshot — it does not load or validate the plan; run <c>guardrails validate</c> for
+/// that.
 /// </summary>
 public static class LockCommand
 {
-    public static Command Create()
+    /// <summary>
+    /// Exit code returned by <c>--check</c> when the folder has drifted from <c>guardrails.lock</c>
+    /// OR the lock is missing — the "re-lock" signal (SSOT §7: exit 2 = "the operation completed
+    /// but an actionable condition was found"). Distinct from <see cref="ExitCodes.HarnessError"/>
+    /// (1), which a genuine failure (missing folder, corrupt lock) returns, so CI can tell
+    /// "re-lock the folder" apart from "the tool failed". Mirrors <c>graph --check</c>'s stale
+    /// signal: deliberately NOT added to the shared <see cref="ExitCodes"/> class — it shares the
+    /// numeric value of <see cref="ExitCodes.TaskFailed"/> (2) by design (both are the §7
+    /// "actionable condition found" code) but is a lock-specific meaning, so it lives here next to
+    /// its only caller.
+    /// </summary>
+    private const int DriftExitCode = 2;
+
+    public static Command Create(IConsoleIo io)
     {
         var folderArgument = FolderArgument.Create();
 
         var checkOption = new Option<bool>("--check")
         {
-            Description = "Report whether the folder matches guardrails.lock (exit 0 clean, 1 drifted/missing); writes nothing."
+            Description = "Report whether the folder matches guardrails.lock (exit 0 clean, 2 drifted/missing, 1 corrupt); writes nothing."
         };
 
         var diffOption = new Option<bool>("--diff")
@@ -35,55 +49,57 @@ public static class LockCommand
 
         command.SetAction(parseResult =>
         {
-            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
             bool check = parseResult.GetValue(checkOption);
             bool diff = parseResult.GetValue(diffOption);
-            return Execute(folder, check, diff);
+            return Execute(folder, check, diff, io);
         });
 
         return command;
     }
 
-    private static int Execute(string folder, bool check, bool diff)
+    private static int Execute(string folder, bool check, bool diff, IConsoleIo io)
     {
+        TextWriter output = io.Out;
+
         if (!Directory.Exists(folder))
         {
-            Console.WriteLine($"Plan folder does not exist: {folder}");
+            output.WriteLine($"Plan folder does not exist: {folder}");
             return ExitCodes.HarnessError;
         }
 
         if (check)
         {
-            return Check(folder);
+            return Check(folder, output);
         }
 
         if (diff)
         {
-            return Diff(folder);
+            return Diff(folder, output);
         }
 
-        return Write(folder);
+        return Write(folder, output);
     }
 
-    private static int Write(string folder)
+    private static int Write(string folder, TextWriter output)
     {
         BreakdownManifest manifest = BreakdownManifest.Capture(folder);
         manifest.Write(folder);
-        Console.WriteLine($"Wrote {BreakdownManifest.LockFilePath(folder)} ({manifest.Files.Count} file(s))");
+        output.WriteLine($"Wrote {BreakdownManifest.LockFilePath(folder)} ({manifest.Files.Count} file(s))");
         return ExitCodes.Success;
     }
 
     /// <summary>
-    /// <c>--check</c>: a boolean gate. Missing lock or any drift → one actionable line and
-    /// exit 1; otherwise exit 0.
+    /// <c>--check</c>: a boolean gate. A missing lock or any drift → one actionable line and exit
+    /// <see cref="DriftExitCode"/> (2, the "re-lock" signal). A corrupt lock (present but
+    /// unparseable) → exit 1, a genuine error. Clean → exit 0.
     /// </summary>
-    private static int Check(string folder)
+    private static int Check(string folder, TextWriter output)
     {
-        BreakdownManifest? baseManifest = BreakdownManifest.Read(folder);
+        BreakdownManifest? baseManifest = ReadBase(folder, output, out int errorCode);
         if (baseManifest is null)
         {
-            Console.WriteLine($"{BreakdownManifest.FileName} missing — run: guardrails lock {QuoteIfNeeded(folder)}");
-            return ExitCodes.HarnessError;
+            return errorCode;
         }
 
         BreakdownDiff diff = BreakdownDiff.Compute(baseManifest, BreakdownManifest.Capture(folder));
@@ -93,45 +109,76 @@ public static class LockCommand
         }
 
         int changed = diff.Edited.Count() + diff.Added.Count() + diff.Missing.Count();
-        Console.WriteLine(
+        output.WriteLine(
             $"{BreakdownManifest.FileName} is stale — {changed} change(s) since last lock; run: guardrails lock {QuoteIfNeeded(folder)}");
-        return ExitCodes.HarnessError;
+        return DriftExitCode;
     }
 
     /// <summary>
-    /// <c>--diff</c>: a report. Prints one line per changed file (EDITED/ADDED/MISSING) and
-    /// exits 0; a missing lock is the one error (exit 1) since there is no BASE to diff against.
+    /// <c>--diff</c>: a report. Prints one line per changed file (EDITED/ADDED/MISSING) and exits
+    /// 0 (printing the report IS the success, drift or not). A missing lock → exit
+    /// <see cref="DriftExitCode"/> (2, "run guardrails lock first" — there is no BASE to diff
+    /// against); a corrupt lock → exit 1.
     /// </summary>
-    private static int Diff(string folder)
+    private static int Diff(string folder, TextWriter output)
     {
-        BreakdownManifest? baseManifest = BreakdownManifest.Read(folder);
+        BreakdownManifest? baseManifest = ReadBase(folder, output, out int errorCode);
         if (baseManifest is null)
         {
-            Console.WriteLine($"{BreakdownManifest.FileName} missing — run: guardrails lock {QuoteIfNeeded(folder)}");
-            return ExitCodes.HarnessError;
+            return errorCode;
         }
 
         BreakdownDiff diff = BreakdownDiff.Compute(baseManifest, BreakdownManifest.Capture(folder));
         if (!diff.HasDrift)
         {
-            Console.WriteLine("No changes since last lock.");
+            output.WriteLine("No changes since last lock.");
             return ExitCodes.Success;
         }
 
         foreach (string path in diff.Edited)
         {
-            Console.WriteLine($"EDITED   {path}");
+            output.WriteLine($"EDITED   {path}");
         }
         foreach (string path in diff.Added)
         {
-            Console.WriteLine($"ADDED    {path}");
+            output.WriteLine($"ADDED    {path}");
         }
         foreach (string path in diff.Missing)
         {
-            Console.WriteLine($"MISSING  {path}");
+            output.WriteLine($"MISSING  {path}");
         }
 
         return ExitCodes.Success;
+    }
+
+    /// <summary>
+    /// Load the BASE manifest, distinguishing the two failure modes <c>--check</c> and
+    /// <c>--diff</c> share: a missing lock is the actionable "re-lock" signal
+    /// (<see cref="DriftExitCode"/>, 2), while a present-but-corrupt lock is a genuine error
+    /// (<see cref="ExitCodes.HarnessError"/>, 1). On success returns the manifest and sets
+    /// <paramref name="errorCode"/> to <see cref="ExitCodes.Success"/>; on failure returns null
+    /// and sets the code the caller should return.
+    /// </summary>
+    private static BreakdownManifest? ReadBase(string folder, TextWriter output, out int errorCode)
+    {
+        BreakdownManifest? baseManifest = BreakdownManifest.Read(folder);
+        if (baseManifest is not null)
+        {
+            errorCode = ExitCodes.Success;
+            return baseManifest;
+        }
+
+        if (File.Exists(BreakdownManifest.LockFilePath(folder)))
+        {
+            output.WriteLine(
+                $"{BreakdownManifest.FileName} is corrupt (could not be parsed) — run: guardrails lock {QuoteIfNeeded(folder)}");
+            errorCode = ExitCodes.HarnessError;
+            return null;
+        }
+
+        output.WriteLine($"{BreakdownManifest.FileName} missing — run: guardrails lock {QuoteIfNeeded(folder)}");
+        errorCode = DriftExitCode;
+        return null;
     }
 
     private static string QuoteIfNeeded(string path) =>

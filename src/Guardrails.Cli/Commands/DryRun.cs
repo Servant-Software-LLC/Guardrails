@@ -13,18 +13,20 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class DryRun
 {
-    public static int Execute(string folder)
+    public static int Execute(string folder, IConsoleIo io)
     {
+        TextWriter output = io.Out;
+
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
         {
-            PlanProbe.PrintDiagnostics(probe.Diagnostics);
-            Console.WriteLine("\nValidation failed; nothing would be run.");
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, output);
+            output.WriteLine("\nValidation failed; nothing would be run.");
             return ExitCodes.HarnessError;
         }
 
         // Surface warnings (e.g. GR2009 prompt-runner-not-on-PATH) even on a clean dry run.
-        PlanProbe.PrintDiagnostics(probe.Diagnostics);
+        PlanProbe.PrintDiagnostics(probe.Diagnostics, output);
 
         PlanDefinition plan = probe.Plan;
 
@@ -33,45 +35,45 @@ public static class DryRun
         // skipped by a real run; everything else would run with a fresh budget.
         IReadOnlyDictionary<string, JournalTaskStatus> statuses = ReadJournalStatuses(plan.PlanDirectory);
 
-        Console.WriteLine($"Dry run — {plan.Tasks.Count} task(s); validation passed. Nothing was executed; no state was touched.");
-        Console.WriteLine();
+        output.WriteLine($"Dry run — {plan.Tasks.Count} task(s); validation passed. Nothing was executed; no state was touched.");
+        output.WriteLine();
 
-        PrintWaves(plan);
-        PrintResolution(plan, statuses);
-        PrintResumeSkips(plan, statuses);
+        PrintWaves(plan, output);
+        PrintResolution(plan, statuses, output);
+        PrintResumeSkips(plan, statuses, output);
 
         return ExitCodes.Success;
     }
 
-    private static void PrintWaves(PlanDefinition plan)
+    private static void PrintWaves(PlanDefinition plan, TextWriter output)
     {
         var graph = new DependencyGraph(plan.Tasks);
         IReadOnlyList<IReadOnlyList<TaskNode>> waves = graph.Waves();
 
-        Console.WriteLine($"Execution plan — {plan.Tasks.Count} task(s), {waves.Count} wave(s), maxParallelism {plan.Config.MaxParallelism}");
-        Console.WriteLine();
+        output.WriteLine($"Execution plan — {plan.Tasks.Count} task(s), {waves.Count} wave(s), maxParallelism {plan.Config.MaxParallelism}");
+        output.WriteLine();
 
         for (int i = 0; i < waves.Count; i++)
         {
-            Console.WriteLine($"Wave {i}:");
+            output.WriteLine($"Wave {i}:");
             foreach (TaskNode task in waves[i])
             {
                 bool exclusive = IsExclusive(task);
                 string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
                 string flags = exclusive ? " [exclusive]" : string.Empty;
                 string deps = task.DependsOn.Count == 0 ? "" : $"  (after: {string.Join(", ", task.DependsOn)})";
-                Console.WriteLine($"  {task.Id,-36} {kind,-7}{flags}{deps}");
+                output.WriteLine($"  {task.Id,-36} {kind,-7}{flags}{deps}");
             }
 
-            Console.WriteLine();
+            output.WriteLine();
         }
     }
 
-    private static void PrintResolution(PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses)
+    private static void PrintResolution(PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses, TextWriter output)
     {
-        Console.WriteLine("Per-task resolution:");
-        Console.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"EXCLUSIVE",-10} {"RETRY BUDGET",-13} RESUME");
-        Console.WriteLine(new string('-', 100));
+        output.WriteLine("Per-task resolution:");
+        output.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"EXCLUSIVE",-10} {"RETRY BUDGET",-13} RESUME");
+        output.WriteLine(new string('-', 100));
 
         foreach (TaskNode task in plan.Tasks)
         {
@@ -82,20 +84,20 @@ public static class DryRun
             int budget = 1 + retries; // SSOT §2: defaultRetries are AFTER the first attempt.
             string resume = WouldSkip(task, statuses) ? "SKIP (succeeded)" : "run";
 
-            Console.WriteLine($"  {task.Id,-36} {kind,-7} {runner,-10} {(exclusive ? "yes" : "no"),-10} {budget,-13} {resume}");
+            output.WriteLine($"  {task.Id,-36} {kind,-7} {runner,-10} {(exclusive ? "yes" : "no"),-10} {budget,-13} {resume}");
         }
 
-        Console.WriteLine();
+        output.WriteLine();
     }
 
-    private static void PrintResumeSkips(PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses)
+    private static void PrintResumeSkips(PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses, TextWriter output)
     {
         IReadOnlyList<string> skips = plan.Tasks
             .Where(t => WouldSkip(t, statuses))
             .Select(t => t.Id)
             .ToList();
 
-        Console.WriteLine(skips.Count == 0
+        output.WriteLine(skips.Count == 0
             ? "Resume: no tasks would be skipped (no journaled successes; a real run would execute every task)."
             : $"Resume: {skips.Count} task(s) would be SKIPPED (already succeeded): {string.Join(", ", skips)}.");
     }

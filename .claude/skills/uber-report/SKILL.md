@@ -2,7 +2,7 @@
 name: uber-report
 description: |
   Run the Guardrails agent team against the current state of the repo and produce a
-  short, honest status + readiness report with a slug-keyed task index. Use at the
+  short, honest status + readiness report with a slug-keyed findings index. Use at the
   start of a work session, after a burst of multi-session work, or before deciding
   what to build next. The headline is the Reality Gate — three booleans from
   evidence, never from plans. Reports land in .claude/tasks/.
@@ -26,7 +26,7 @@ proven"** — no doc counts, no milestone counts in the summary.
 
 ## Procedure
 
-1. **Prior context**: glob `.claude/tasks/*.tasks.json`; carry forward open slugs;
+1. **Prior context**: glob `.claude/tasks/*.findings.json`; carry forward open slugs;
    mark satisfied ones completed (confirm by inspection).
 2. **WIP survey** (brief): `git -C <repo> status --short`, `log --oneline -15`,
    unmerged branches. Single-session repo — this is usually one line, but say it.
@@ -58,8 +58,21 @@ proven"** — no doc counts, no milestone counts in the summary.
    ## Proposed next actions   (slug-keyed)
    ```
 
-7. **Task index** → same basename `.tasks.json`: `{ slug, kind, priority, effort,
-   status, dependsOn, notes }` per action; carry-forward joins on slug.
+7. **Findings index** → same basename `.findings.json`:
+   `{ "sourceOfTruth": "plan-docs", "findings": [ { slug, kind, priority, effort,
+   route, status, dependsOn, notes } ] }` per finding; carry-forward joins on slug.
+   `route` ∈ `direct | execute-tasks | guardrails | decide` (see Routing below).
+
+## Routing
+
+Each finding carries a `route` the orchestrator proposes and the human confirms — most
+findings are small and never need a plan:
+
+- **`direct`** — trivial, self-evidently correct (rename a test, fix a typo). Just do it.
+- **`execute-tasks`** — standard work an agent implements under normal review.
+- **`guardrails`** — plan-worthy (multi-step, touches a contract/invariant, needs authored
+  tests). Graduates to this repo's own `/plan-breakdown` → `guardrail-review` → `guardrails run`.
+- **`decide`** — needs a human call or a research pass before it's actionable.
 
 ## Honesty rules
 

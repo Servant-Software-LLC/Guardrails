@@ -24,6 +24,7 @@ public sealed class PlanValidator
         var diagnostics = new List<Diagnostic>();
 
         ValidateTaskIdsUnique(plan, diagnostics);
+        ValidateStableIdsUnique(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
@@ -57,6 +58,25 @@ public sealed class PlanValidator
             {
                 diagnostics.Add(Error(DiagnosticCodes.DuplicateTaskId, task.Directory,
                     $"Duplicate task id '{task.Id}'."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A declared <c>stableId</c> must be unique across tasks (SSOT §3/§11). The regeneration
+    /// merge keys task identity on <c>stableId</c>, so two tasks sharing one would be
+    /// indistinguishable to it — a duplicate is almost always a copy-paste slip. Tasks without a
+    /// stableId are skipped (it is optional; absent ⇒ identity falls back to the folder name).
+    /// </summary>
+    private static void ValidateStableIdsUnique(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.StableId is { } stableId && !seen.Add(stableId))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.DuplicateStableId, task.Directory,
+                    $"Task '{task.Id}' declares stableId '{stableId}', which is already used by another task."));
             }
         }
     }

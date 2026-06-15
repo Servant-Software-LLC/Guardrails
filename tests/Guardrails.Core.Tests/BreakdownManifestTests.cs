@@ -51,6 +51,7 @@ public sealed class BreakdownManifestTests : IDisposable
         WriteFile("state/run.json", "{}");                                         // harness runtime
         WriteFile("state/logs/01-a/attempt-1/action-stdout.log", "noise");         // harness runtime
         WriteFile("state/seed.json", "{ \"seeded\": true }");                      // authored, committed
+        WriteFile("guardrails.json.tmp", "{ }");                                    // atomic-write residue
 
         BreakdownManifest manifest = BreakdownManifest.Capture(_planDir);
 
@@ -62,6 +63,38 @@ public sealed class BreakdownManifestTests : IDisposable
         Assert.DoesNotContain("state/state.json", manifest.Files.Keys);
         Assert.DoesNotContain("state/run.json", manifest.Files.Keys);
         Assert.DoesNotContain("state/logs/01-a/attempt-1/action-stdout.log", manifest.Files.Keys);
+        Assert.DoesNotContain("guardrails.json.tmp", manifest.Files.Keys);
+    }
+
+    [Fact]
+    public void Capture_NestedStateSeed_IsExcluded_OnlyTopLevelSeedKept()
+    {
+        // Only the top-level committed state/seed.json is authored; a seed.json nested deeper
+        // under state/ is harness runtime, not authored content.
+        WriteFile("state/seed.json", "{ \"seeded\": true }");
+        WriteFile("state/logs/seed.json", "{ \"noise\": true }");
+
+        BreakdownManifest manifest = BreakdownManifest.Capture(_planDir);
+
+        Assert.Contains("state/seed.json", manifest.Files.Keys);
+        Assert.DoesNotContain("state/logs/seed.json", manifest.Files.Keys);
+    }
+
+    [Fact]
+    public void WriteThenWrite_OnUnchangedFolder_IsByteIdentical()
+    {
+        // The lock carries no timestamp, so re-locking an unchanged folder is byte-identical
+        // (a deterministic projection, no git churn).
+        WriteFile("guardrails.json", "{ \"version\": 1 }");
+        WriteFile("tasks/01-a/task.json", "{ \"description\": \"x\" }");
+
+        BreakdownManifest.Capture(_planDir).Write(_planDir);
+        byte[] first = File.ReadAllBytes(BreakdownManifest.LockFilePath(_planDir));
+
+        BreakdownManifest.Capture(_planDir).Write(_planDir);
+        byte[] second = File.ReadAllBytes(BreakdownManifest.LockFilePath(_planDir));
+
+        Assert.Equal(first, second);
     }
 
     [Fact]

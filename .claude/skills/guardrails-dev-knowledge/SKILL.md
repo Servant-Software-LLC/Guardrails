@@ -78,6 +78,9 @@ dotnet test  "Guardrails.sln" -c Release          # full suite; integration spaw
 dotnet run --project src/Guardrails.Cli -- validate <plan-folder>
 dotnet run --project src/Guardrails.Cli -- run <plan-folder> --no-ui [--fresh]
 dotnet run --project src/Guardrails.Cli -- plan|status|reset <plan-folder>
+dotnet run --project src/Guardrails.Cli -- graph <plan-folder> [--check] [--stdout] [--format mermaid]
+#   renders the task/guardrail DAG to <folder>/diagram.md (Mermaid); --check reports staleness
+#   via a source-sha256 in the file's provenance comment (SSOT §10); --stdout writes nothing
 dotnet run --project src/Guardrails.Cli -- skills install [--project] [--target <dir>] [--force]
 #   `--project` → ./.claude/skills (else ~/.claude/skills); `install skills` is a hidden alias
 dotnet pack src/Guardrails.Cli -c Release -o nupkg    # local tool package (bundles skills/)
@@ -102,6 +105,20 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   `stateManager.MergeFragment(...)`; pass the reserved value to `RecordAttempt`.
 - **Claude specifics live ONLY in `ClaudePromptRunner`** (flags, stream-json
   parsing). Verdicts come from files, never exit codes.
+- **CLI output seam (`IConsoleIo`)**: the CLI writes ALL user-facing output through an
+  injected `IConsoleIo` (`Out`/`Error` `TextWriter`s), never the process-global
+  `Console.*`. Production wires `SystemConsoleIo.Instance` (the ONLY place that touches
+  `Console.Out`/`Console.Error`); `Program.cs` builds the tree via
+  `CommandFactory.BuildRootCommand(io)`. Every command factory takes `io`
+  (`ValidateCommand.Create(io)`, … `SkillsCommand.Create(io)`) and the helpers take the
+  writer (`ConsoleRunObserver(TextWriter)`, `PlanProbe.PrintDiagnostics(diags, TextWriter)`,
+  `DryRun.Execute(folder, io)`, `FolderArgument.ResolveAndAnnounce(value, TextWriter)`).
+  LEFT on `Console` by design: the Spectre `LiveRunObserver`, the UI-capability probes
+  (`Console.IsOutputRedirected`, `AnsiConsole...Interactive`), and `ResetCommand`'s
+  confirmation INPUT (`Console.IsInputRedirected`/`ReadLine`). Tests inject a
+  `StringWriter`-backed `StringConsoleIo` and capture from its `OutText`/`ErrorText` —
+  **no `Console.SetOut`, no global console state, so the CLI-driving test classes are
+  parallel-safe** (there is no `ConsoleCaptureCollection`; do not reintroduce one).
 - **Testing doctrine**: TCS-gated fakes for concurrency (no sleeps); `.ps1` + `.sh`
   fixture flavors OS-picked; plan builders pin `defaultRetries: 0`; prompt-pipeline
   tests use `FakeClaudePlanBuilder` (tokenless); real-claude tests gated behind

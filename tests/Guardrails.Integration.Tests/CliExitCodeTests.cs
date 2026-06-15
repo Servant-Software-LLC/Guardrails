@@ -6,15 +6,18 @@ namespace Guardrails.Integration.Tests;
 
 /// <summary>
 /// Drives the real CLI command pipeline end-to-end and asserts the SSOT §7 exit codes:
-/// 0 all green, 1 validation/harness error, 2 ≥1 task failed/blocked.
+/// 0 all green, 1 validation/harness error, 2 ≥1 task failed/blocked. Output goes to a
+/// per-invocation <see cref="StringConsoleIo"/> (discarded here — these are exit-code tests),
+/// so nothing touches the process-global console and the class is parallel-safe.
 /// </summary>
 public sealed class CliExitCodeTests
 {
     private static async Task<int> InvokeAsync(params string[] args)
     {
+        var io = new StringConsoleIo();
         var root = new RootCommand("test root");
-        root.Add(RunCommand.Create());
-        root.Add(ValidateCommand.Create());
+        root.Add(RunCommand.Create(io));
+        root.Add(ValidateCommand.Create(io));
         return await root.Parse(args).InvokeAsync();
     }
 

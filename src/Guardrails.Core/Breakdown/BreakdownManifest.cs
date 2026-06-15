@@ -1,12 +1,11 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Guardrails.Core.State;
 
 namespace Guardrails.Core.Breakdown;
 
 /// <summary>
-/// The breakdown manifest (SSOT §10): a content snapshot of the AUTHORED files in a plan
+/// The breakdown manifest (SSOT §11): a content snapshot of the AUTHORED files in a plan
 /// folder — <c>guardrails.json</c>, every task's <c>task.json</c> / <c>action.*</c> /
 /// <c>guardrails/*</c> file, and the committed <c>state/seed.json</c> — recorded as
 /// <c>relativePath → SHA-256</c>. Written to <c>guardrails.lock</c> at the plan-folder root
@@ -17,12 +16,18 @@ namespace Guardrails.Core.Breakdown;
 /// Harness-owned runtime under <c>state/</c> (<c>state.json</c>, <c>run.json</c>,
 /// <c>merge-conflicts.log</c>, <c>logs/…</c>), the generated <c>diagram.md</c>, and the lock
 /// file itself are excluded — they are not authored breakdown content. Hashes are taken over
-/// newline-normalized text (matching <c>PlanHash</c>) so CRLF/LF checkouts hash identically.
+/// newline-normalized bytes (CRLF/CR → LF, matching <c>PlanHash</c>'s normalization) so CRLF/LF
+/// checkouts hash identically; normalization is byte-level, so a non-UTF-8 file is hashed as-is
+/// rather than through a lossy decode. The lock carries no timestamp, so re-locking an unchanged
+/// folder rewrites a byte-identical file (a deterministic projection, no git churn).
 /// </summary>
 public sealed record BreakdownManifest
 {
     /// <summary>The lock file name, written at the plan-folder root.</summary>
     public const string FileName = "guardrails.lock";
+
+    /// <summary>The generated diagram artifact (SSOT §10), excluded from the snapshot.</summary>
+    private const string DiagramFileName = "diagram.md";
 
     /// <summary>The current manifest schema version.</summary>
     public const int CurrentVersion = 1;
@@ -40,14 +45,9 @@ public sealed record BreakdownManifest
     public int Version { get; init; } = CurrentVersion;
 
     /// <summary>
-    /// Informational UTC generation timestamp (<c>yyyy-MM-ddTHH:mm:ssZ</c>). NOT part of the
-    /// drift comparison — two manifests with identical <see cref="Files"/> are equivalent.
-    /// </summary>
-    public string? Generated { get; init; }
-
-    /// <summary>
     /// <c>relativePath</c> (forward-slash, ordinal-sorted) → lowercase-hex SHA-256 of the
-    /// file's newline-normalized bytes. This map IS the snapshot.
+    /// file's newline-normalized bytes. This map IS the snapshot — there is no timestamp, so two
+    /// manifests with identical <see cref="Files"/> are byte-identical when written.
     /// </summary>
     public IReadOnlyDictionary<string, string> Files { get; init; } =
         new SortedDictionary<string, string>(StringComparer.Ordinal);
@@ -81,7 +81,6 @@ public sealed record BreakdownManifest
         return new BreakdownManifest
         {
             Version = CurrentVersion,
-            Generated = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
             Files = files
         };
     }
@@ -92,7 +91,6 @@ public sealed record BreakdownManifest
         var dto = new ManifestDto
         {
             Version = Version,
-            Generated = Generated,
             // A SortedDictionary serializes in ordinal key order, so the file is stable across runs.
             Files = new SortedDictionary<string, string>(
                 Files.ToDictionary(kvp => kvp.Key, kvp => kvp.Value), StringComparer.Ordinal)
@@ -105,7 +103,9 @@ public sealed record BreakdownManifest
     /// <summary>
     /// Read the lock file for <paramref name="planDirectory"/>, or <c>null</c> when it is
     /// missing or cannot be parsed. A missing/unreadable BASE is a normal "no prior generation"
-    /// condition the caller decides how to handle — never an exception.
+    /// condition the caller decides how to handle — never an exception. Callers that must tell
+    /// a missing lock apart from a corrupt one check <see cref="LockFilePath"/> existence
+    /// themselves.
     /// </summary>
     public static BreakdownManifest? Read(string planDirectory)
     {
@@ -132,7 +132,7 @@ public sealed record BreakdownManifest
                 }
             }
 
-            return new BreakdownManifest { Version = dto.Version, Generated = dto.Generated, Files = files };
+            return new BreakdownManifest { Version = dto.Version, Files = files };
         }
         catch (JsonException)
         {
@@ -142,25 +142,41 @@ public sealed record BreakdownManifest
 
     /// <summary>
     /// Whether a plan-folder-relative path (forward-slash) is authored breakdown content that
-    /// belongs in the snapshot. Excludes the lock file, the generated <c>diagram.md</c>,
-    /// atomic-write temp residue, and harness-owned runtime under <c>state/</c> — but keeps the
-    /// committed <c>state/seed.json</c>.
+    /// belongs in the snapshot. Excludes the lock file (anywhere), the generated
+    /// <c>diagram.md</c> (at the plan root), atomic-write temp residue (<c>*.tmp</c>), and
+    /// harness-owned runtime under <c>state/</c> — but keeps the committed <c>state/seed.json</c>.
+    /// Reserved-name and segment comparisons are <see cref="StringComparison.OrdinalIgnoreCase"/>
+    /// so the exclusions hold on case-insensitive filesystems (Windows/macOS).
     /// </summary>
     private static bool ShouldInclude(string relativePath)
     {
-        if (relativePath is FileName or "diagram.md")
+        // The lock file itself, anywhere, is never authored content.
+        if (string.Equals(Path.GetFileName(relativePath), FileName, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (relativePath.EndsWith(".tmp", StringComparison.Ordinal))
+        // Atomic-write residue is never authored.
+        if (relativePath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (relativePath.StartsWith("state/", StringComparison.Ordinal))
+        string[] segments = relativePath.Split('/');
+
+        // The generated diagram lives at the plan root and is a non-authored artifact (§10).
+        if (segments.Length == 1 &&
+            string.Equals(segments[0], DiagramFileName, StringComparison.OrdinalIgnoreCase))
         {
-            return relativePath == "state/seed.json";
+            return false;
+        }
+
+        // Under state/, only the top-level committed seed.json is authored; everything else
+        // (state.json, run.json, merge-conflicts.log, logs/…) is harness-owned runtime.
+        if (string.Equals(segments[0], "state", StringComparison.OrdinalIgnoreCase))
+        {
+            return segments.Length == 2 &&
+                string.Equals(segments[1], "seed.json", StringComparison.OrdinalIgnoreCase);
         }
 
         return true;
@@ -171,18 +187,48 @@ public sealed record BreakdownManifest
 
     private static string HashFile(string absolutePath)
     {
-        string normalized = File.ReadAllText(absolutePath)
-            .Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace("\r", "\n", StringComparison.Ordinal);
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        byte[] normalized = NormalizeNewlines(File.ReadAllBytes(absolutePath));
+        byte[] hash = SHA256.HashData(normalized);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Collapse CRLF and lone CR to LF at the byte level so CRLF/LF checkouts of the same text
+    /// hash identically — without UTF-8 decoding (a non-UTF-8 file would otherwise pick up
+    /// U+FFFD replacement characters that could make two distinct files collide). Operates on
+    /// raw bytes: <c>0x0D 0x0A → 0x0A</c>, and any remaining <c>0x0D → 0x0A</c>.
+    /// </summary>
+    private static byte[] NormalizeNewlines(byte[] bytes)
+    {
+        const byte CR = 0x0D;
+        const byte LF = 0x0A;
+
+        var output = new byte[bytes.Length];
+        int length = 0;
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (bytes[i] == CR)
+            {
+                output[length++] = LF;
+                // Skip a following LF so CRLF collapses to a single LF.
+                if (i + 1 < bytes.Length && bytes[i + 1] == LF)
+                {
+                    i++;
+                }
+            }
+            else
+            {
+                output[length++] = bytes[i];
+            }
+        }
+
+        return length == output.Length ? output : output[..length];
     }
 
     /// <summary>Serialization shape of <c>guardrails.lock</c>.</summary>
     private sealed class ManifestDto
     {
         public int Version { get; set; } = CurrentVersion;
-        public string? Generated { get; set; }
         public IDictionary<string, string>? Files { get; set; }
     }
 }

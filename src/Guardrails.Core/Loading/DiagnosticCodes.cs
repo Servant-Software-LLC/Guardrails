@@ -65,4 +65,11 @@ public static class DiagnosticCodes
     /// error — the plan may run on another machine where the runner is installed.
     /// </summary>
     public const string PromptRunnerNotOnPath = "GR2009";
+
+    /// <summary>
+    /// Two tasks declare the same <c>stableId</c> (SSOT §3/§11). The regeneration merge keys
+    /// task identity on <c>stableId</c>, so a duplicate would make two tasks indistinguishable —
+    /// almost always a copy-paste slip. Only declared (non-null) ids are checked.
+    /// </summary>
+    public const string DuplicateStableId = "GR2010";
 }

@@ -23,6 +23,11 @@ plan-name/
 Never generate `state/state.json`, `state/run.json`, or `state/logs/` — those are
 harness-owned runtime artifacts (and gitignored).
 
+`diagram.md` at the plan-folder root is also **generated, not hand-authored** —
+emitted by `guardrails graph`, carrying a `<!-- guardrails:graph … source-sha256=… -->`
+provenance comment whose hash is the staleness key. It is not plan input and must not
+be hand-edited; the loader/validator ignore it. See SSOT §10 (Diagram artifact).
+
 ## `guardrails.json` — minimum to emit
 
 ```jsonc

@@ -17,7 +17,7 @@ public enum BreakdownFileStatus
 }
 
 /// <summary>
-/// The LOCAL-vs-BASE half of the regeneration merge (SSOT §10, issue #5): which authored files
+/// The LOCAL-vs-BASE half of the regeneration merge (SSOT §11, issue #5): which authored files
 /// a human created, edited, or deleted since <c>/plan-breakdown</c> last wrote the lock. This is
 /// the deterministic primitive the skill consumes to know what NOT to clobber; combining it with
 /// REMOTE (a fresh generation) to apply the full per-guardrail merge table — and to block on

@@ -10,7 +10,7 @@ public sealed record TaskNode
 
     /// <summary>
     /// Optional stable identity that survives renumbering/slug edits across regenerations
-    /// (SSOT §10 / issue #5). Null when the plan does not declare one. Reserved for the
+    /// (SSOT §11 / issue #5). Null when the plan does not declare one. Reserved for the
     /// regeneration merge; not yet consumed at runtime.
     /// </summary>
     public string? StableId { get; init; }

@@ -16,7 +16,7 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class RunCommand
 {
-    public static Command Create()
+    public static Command Create(IConsoleIo io)
     {
         var folderArgument = FolderArgument.Create();
 
@@ -43,36 +43,36 @@ public static class RunCommand
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
-            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument));
+            string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
             bool fresh = parseResult.GetValue(freshOption);
             bool noUi = parseResult.GetValue(noUiOption);
             bool dryRun = parseResult.GetValue(dryRunOption);
 
             if (dryRun)
             {
-                return DryRun.Execute(folder);
+                return DryRun.Execute(folder, io);
             }
 
-            return await RunAsync(folder, fresh, noUi, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
-    private static async Task<int> RunAsync(string folder, bool fresh, bool noUi, CancellationToken cancellationToken)
+    private static async Task<int> RunAsync(string folder, bool fresh, bool noUi, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
         {
-            PlanProbe.PrintDiagnostics(probe.Diagnostics);
-            Console.WriteLine("\nValidation failed; nothing was run.");
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, io.Out);
+            io.Out.WriteLine("\nValidation failed; nothing was run.");
             return ExitCodes.HarnessError;
         }
 
         if (fresh)
         {
             RunReset.Fresh(probe.Plan.PlanDirectory);
-            Console.WriteLine("Fresh run: runtime state cleared and re-seeded.\n");
+            io.Out.WriteLine("Fresh run: runtime state cleared and re-seeded.\n");
         }
 
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;
@@ -85,10 +85,10 @@ public static class RunCommand
         }
         else
         {
-            report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(), cancellationToken).ConfigureAwait(false);
+            report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(io.Out), cancellationToken).ConfigureAwait(false);
         }
 
-        PrintSummary(report, probe.Plan.PlanDirectory);
+        PrintSummary(report, probe.Plan.PlanDirectory, io);
 
         if (report.Cancelled)
         {
@@ -107,31 +107,33 @@ public static class RunCommand
         return scheduler.RunAsync(plan, cancellationToken);
     }
 
-    private static void PrintSummary(RunReport report, string planDirectory)
+    private static void PrintSummary(RunReport report, string planDirectory, IConsoleIo io)
     {
-        Console.WriteLine("Summary");
-        Console.WriteLine("-------");
+        TextWriter output = io.Out;
+
+        output.WriteLine("Summary");
+        output.WriteLine("-------");
         foreach (TaskResult result in report.Tasks)
         {
-            Console.WriteLine($"  {StatusLabel(result.Outcome),-16} {result.TaskId,-32} {result.Summary}");
+            output.WriteLine($"  {StatusLabel(result.Outcome),-16} {result.TaskId,-32} {result.Summary}");
         }
 
         int green = report.Tasks.Count(t => t.IsGreen);
-        Console.WriteLine();
-        Console.WriteLine(report.Cancelled
+        output.WriteLine();
+        output.WriteLine(report.Cancelled
             ? $"Run CANCELLED — {green}/{report.Tasks.Count} task(s) green; in-flight tasks journaled pending. Re-run to resume."
             : $"{green}/{report.Tasks.Count} task(s) green (succeeded or skipped).");
 
-        PrintTotalCost(planDirectory);
+        PrintTotalCost(planDirectory, output);
 
         foreach (TaskResult needsHuman in report.Tasks.Where(t =>
                      t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed
                          or TaskOutcome.InvalidFragment or TaskOutcome.NeedsHuman))
         {
-            Console.WriteLine();
-            Console.WriteLine($"NEEDS HUMAN: {needsHuman.TaskId} — {needsHuman.Summary}");
-            Console.WriteLine($"  Inspect state/logs/{needsHuman.TaskId}/ (latest attempt's feedback.md has the full failure detail),");
-            Console.WriteLine("  fix the action or guardrails, then re-run to resume.");
+            output.WriteLine();
+            output.WriteLine($"NEEDS HUMAN: {needsHuman.TaskId} — {needsHuman.Summary}");
+            output.WriteLine($"  Inspect state/logs/{needsHuman.TaskId}/ (latest attempt's feedback.md has the full failure detail),");
+            output.WriteLine("  fix the action or guardrails, then re-run to resume.");
         }
     }
 
@@ -140,7 +142,7 @@ public static class RunCommand
     /// journal. Omitted when no attempt recorded a cost, so deterministic-only plans stay
     /// noise-free.
     /// </summary>
-    private static void PrintTotalCost(string planDirectory)
+    private static void PrintTotalCost(string planDirectory, TextWriter output)
     {
         string journalPath = RunJournal.PathFor(planDirectory);
         if (!File.Exists(journalPath))
@@ -151,7 +153,7 @@ public static class RunCommand
         JournalDocument document = JournalReader.Read(journalPath);
         if (JournalCost.Total(document) is { } total)
         {
-            Console.WriteLine($"Total prompt cost: ${total:F4}");
+            output.WriteLine($"Total prompt cost: ${total:F4}");
         }
     }
 
