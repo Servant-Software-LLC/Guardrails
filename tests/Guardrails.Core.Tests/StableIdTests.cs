@@ -111,6 +111,47 @@ public sealed class StableIdTests : IDisposable
         Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.DuplicateStableId);
     }
 
+    // --- GR2011: stableId format (^[a-z0-9][a-z0-9._-]*$) ------------------------------
+
+    [Theory]
+    [InlineData("Bad_Caps")]   // uppercase not allowed
+    [InlineData("has space")]  // whitespace not allowed
+    [InlineData("-leading")]   // must start with an alphanumeric
+    public void Validate_MalformedStableId_ReportsGR2011(string stableId)
+    {
+        AddTask("01-a", stableId: stableId);
+
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(Load());
+
+        Diagnostic diagnostic = Assert.Single(diagnostics, d => d.Code == DiagnosticCodes.InvalidStableId);
+        Assert.Contains(stableId, diagnostic.Message);
+    }
+
+    [Theory]
+    [InlineData("k3f9a1")]
+    [InlineData("a.b-c_d")]
+    public void Validate_WellFormedStableId_NoInvalidStableIdDiagnostic(string stableId)
+    {
+        AddTask("01-a", stableId: stableId);
+
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(Load());
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.InvalidStableId);
+    }
+
+    [Fact]
+    public void Validate_FolderPrefixedStableId_IsRejected()
+    {
+        // The merge derives a synthetic 'folder:<name>' identity for unkeyed tasks; the format
+        // reservation (a ':' is disallowed) keeps a real stableId from ever colliding with it.
+        AddTask("01-a", stableId: "folder:thing");
+
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(Load());
+
+        Diagnostic diagnostic = Assert.Single(diagnostics, d => d.Code == DiagnosticCodes.InvalidStableId);
+        Assert.Contains("folder:thing", diagnostic.Message);
+    }
+
     public void Dispose()
     {
         try

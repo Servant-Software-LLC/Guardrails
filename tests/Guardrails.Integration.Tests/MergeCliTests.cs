@@ -135,6 +135,128 @@ public sealed class MergeCliTests
         Assert.Equal(ExitCodes.HarnessError, exit);
     }
 
+    [Fact]
+    public async Task Merge_MissingLocalFolder_ExitsHarnessError()
+    {
+        string missingLocal = Path.Combine(Path.GetTempPath(), "no-local-" + Guid.NewGuid().ToString("N"));
+        using var remote = new MergeDir();
+        remote.AddTask("01-a", "sid-a", ("01-g", "v1"));
+
+        (int exit, string output) = await InvokeAsync("merge", missingLocal, "--remote", remote.Dir);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains("does not exist", output);
+    }
+
+    [Fact]
+    public async Task Merge_InvalidLocalPlan_ExitsHarnessError()
+    {
+        // A duplicate stableId is a validation error (GR2010) on the LOCAL side — merge must refuse.
+        using var local = new MergeDir();
+        local.AddTask("01-a", "dup", ("01-g", "v1"));
+        local.AddTask("02-b", "dup", ("01-h", "v1")); // duplicate stableId
+        local.Lock();
+
+        using var remote = new MergeDir();
+        remote.AddTask("01-a", "sid-a", ("01-g", "v1"));
+
+        (int exit, string output) = await InvokeAsync("merge", local.Dir, "--remote", remote.Dir);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains("current", output);
+        Assert.Contains("not valid", output);
+    }
+
+    [Fact]
+    public async Task Merge_InvalidRemotePlan_ExitsHarnessError()
+    {
+        using var local = new MergeDir();
+        local.AddTask("01-a", "sid-a", ("01-g", "v1"));
+        local.Lock();
+
+        using var remote = new MergeDir();
+        remote.AddTask("01-a", "dup", ("01-g", "v1"));
+        remote.AddTask("02-b", "dup", ("01-h", "v1")); // duplicate stableId on the remote side
+
+        (int exit, string output) = await InvokeAsync("merge", local.Dir, "--remote", remote.Dir);
+
+        Assert.Equal(ExitCodes.HarnessError, exit);
+        Assert.Contains("remote", output);
+        Assert.Contains("not valid", output);
+    }
+
+    [Fact]
+    public async Task Merge_Apply_PrintsNextHint()
+    {
+        using var local = new MergeDir();
+        local.AddTask("01-a", "sid-a", ("01-g", "v1"));
+        local.Lock();
+        local.EditGuardrail("01-a", "01-g", "HUMAN");
+
+        using var remote = new MergeDir();
+        remote.AddTask("01-a", "sid-a", ("01-g", "v1"));
+
+        (int exit, string output) = await InvokeAsync("merge", local.Dir, "--remote", remote.Dir, "--apply");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        // The applied run nudges the human to re-validate and refresh the diagram.
+        Assert.Contains("Next:", output);
+        Assert.Contains("validate", output);
+        Assert.Contains("graph", output);
+    }
+
+    [Fact]
+    public async Task Merge_FolderFallbackTask_RendersIdentityWithFolderTag()
+    {
+        // An unkeyed task is matched by folder name. When dropped, its DROP line must render the
+        // identity as "<name> (folder)" — never the raw "folder:<name>" synthetic key.
+        using var local = new MergeDir();
+        local.AddTask("01-keep", "sid-a", ("01-g", "v1"));
+        local.AddUnkeyedTask("02-orphan", ("01-h", "v1")); // no stableId
+        local.Lock();
+
+        using var remote = new MergeDir();
+        remote.AddTask("01-keep", "sid-a", ("01-g", "v1")); // 02-orphan removed from the plan
+
+        (int exit, string output) = await InvokeAsync("merge", local.Dir, "--remote", remote.Dir);
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains("02-orphan (folder)/01-h" + Ext, output);
+        Assert.DoesNotContain("folder:02-orphan", output);
+    }
+
+    [Fact]
+    public async Task Merge_Report_ItemsAreOrdinalOrdered()
+    {
+        // Multiple human edits across tasks/files: the KEEP report lines must appear in deterministic
+        // ordinal order by result path (tasks/<id>/guardrails/<file>). Tasks are ADDED in the reverse
+        // of sorted order (02-b first, files 02-second first) so the final ordinal sort is load-bearing
+        // — an insertion-order report would fail.
+        using var local = new MergeDir();
+        local.AddTask("02-b", "sid-b", ("01-only", "v1"));
+        local.AddTask("01-a", "sid-a", ("02-second", "v1"), ("01-first", "v1"));
+        local.Lock();
+        local.EditGuardrail("01-a", "02-second", "H2");
+        local.EditGuardrail("01-a", "01-first", "H1");
+        local.EditGuardrail("02-b", "01-only", "H3");
+
+        using var remote = new MergeDir();
+        remote.AddTask("02-b", "sid-b", ("01-only", "v1"));
+        remote.AddTask("01-a", "sid-a", ("02-second", "v1"), ("01-first", "v1")); // remote unchanged → keep local
+
+        (int exit, string output) = await InvokeAsync("merge", local.Dir, "--remote", remote.Dir);
+
+        Assert.Equal(ExitCodes.Success, exit);
+        // Report lines are labelled by stableId identity, but ORDERED by result path
+        // (tasks/<folder>/guardrails/<file>): tasks/01-a/.../01-first < .../02-second < tasks/02-b/.../01-only.
+        int firstA = output.IndexOf("sid-a/01-first" + Ext, StringComparison.Ordinal);
+        int secondA = output.IndexOf("sid-a/02-second" + Ext, StringComparison.Ordinal);
+        int onlyB = output.IndexOf("sid-b/01-only" + Ext, StringComparison.Ordinal);
+        Assert.True(firstA >= 0 && secondA >= 0 && onlyB >= 0, $"missing KEEP lines in:\n{output}");
+        Assert.True(firstA < secondA, $"01-first should precede 02-second:\n{output}");
+        Assert.True(secondA < onlyB, $"01-a items should precede 02-b items:\n{output}");
+    }
+
     /// <summary>A temp plan folder with stableId tasks + OS-appropriate guardrail scripts.</summary>
     private sealed class MergeDir : IDisposable
     {
@@ -155,6 +277,20 @@ public sealed class MergeCliTests
             Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
                 $"{{ \"description\": \"{folder}\", \"stableId\": \"{stableId}\", \"dependsOn\": [] }}");
+            Write(Path.Combine(taskDir, "action" + Ext), "echo run\n");
+            foreach ((string name, string content) in guardrails)
+            {
+                Write(Path.Combine(taskDir, "guardrails", name + Ext), content);
+            }
+        }
+
+        /// <summary>Add a task with NO declared stableId — identity falls back to <c>folder:&lt;name&gt;</c>.</summary>
+        public void AddUnkeyedTask(string folder, params (string Name, string Content)[] guardrails)
+        {
+            string taskDir = Path.Combine(Dir, "tasks", folder);
+            Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+            File.WriteAllText(Path.Combine(taskDir, "task.json"),
+                $"{{ \"description\": \"{folder}\", \"dependsOn\": [] }}");
             Write(Path.Combine(taskDir, "action" + Ext), "echo run\n");
             foreach ((string name, string content) in guardrails)
             {

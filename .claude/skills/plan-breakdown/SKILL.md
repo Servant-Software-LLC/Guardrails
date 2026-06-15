@@ -125,10 +125,14 @@ Per `references/schemas.md`, exactly:
   the `promptRunners` block with a resolvable default is REQUIRED** (else GR2008).
   Scope `allowedTools` to what the actions genuinely need.
 - `task.json` per task: `description` (one actionable line), `dependsOn`, a **`stableId`**
-  (a short minted token, e.g. 6 lowercase base36 chars, **unique within the plan** — it is the
-  key the regeneration merge uses to recognize this task across renumbering, so mint it once and
-  never reuse it for a different task), and overrides only when justified. One `action.*` file
-  per task folder.
+  (see below), and overrides only when justified. One `action.*` file per task folder.
+- **`stableId` — mint one per task by default.** It is the identity key the regeneration merge
+  (§11) uses to track a task across renumber/rename. The schema marks it OPTIONAL (a task without
+  one falls back to its folder name for identity), but the breakdown mints one per task so
+  regeneration can preserve human edits. Mint once; never reuse for a different task; duplicates
+  fail validation (**GR2010**). **Format (GR2011):** a `stableId` must match
+  `^[a-z0-9][a-z0-9._-]*$` — lowercase alphanumeric, may contain `. _ -`, no
+  colon/slash/whitespace/uppercase. Mint short lowercase base36 tokens (e.g. `k3f9a1`, `q7m2zd`).
 - Every **prompt action** opens with the harness-contract header block, verbatim:
 
   ```markdown
@@ -183,20 +187,51 @@ generation. **Re-derive the tasks from the changed plan while preserving those e
 hand-clobber the folder. The deterministic engine owns the per-guardrail decisions; you only
 generate and orchestrate. See SSOT §11.5.
 
+**Lock-first check (do this before staging).** Confirm `<folder>/guardrails.lock` exists. If it
+does **not**, run `guardrails lock <folder>` first to adopt the current folder as BASE, and tell
+the human the first merge will take REMOTE for every guardrail (there is no recorded baseline to
+preserve edits against).
+
 1. **Generate into staging, identity-aware.** Run Steps 1–6 but write the new folder to a
-   temporary **staging** directory (e.g. a sibling `<plan-name>.staging/`). For each task that is
-   the continuation of an existing one, **reuse that task's `stableId`** (read it from the current
-   folder's `task.json`); mint a fresh `stableId` only for genuinely new tasks. This is the
-   judgment call the merge relies on — be deliberate about which existing task each new task *is*.
-2. **Dry-run the merge:** `guardrails merge <folder> --remote <staging>`.
-   - Exit `2` (conflicts): **stop.** Surface each `CONFLICT` line to the human (a guardrail both
-     they and the regeneration changed, or that they edited and the regeneration removed). They
-     resolve by editing, then you re-run. Do **not** apply.
-   - Exit `0`: no conflicts — proceed.
-3. **Apply:** `guardrails merge <folder> --remote <staging> --apply` (this re-locks the folder),
-   then delete the staging directory and re-run Step 7's `guardrails validate` + `guardrails graph`.
-4. Report what the merge did (preserved / dropped / from-regeneration counts and any warnings),
-   then close with the Step 7 draft message.
+   temporary **staging** directory, a sibling `<plan-name>.staging/`. For each regenerated task,
+   decide whether it is the **continuation** of an existing one. Use this priority:
+   - (a) **same verifiable outcome / primary artifact** the task produces;
+   - (b) **same/near description intent**;
+   - (c) **same DAG position** (the upstream/downstream artifacts it connects).
+
+   A renamed/renumbered/reworded task with the **same outcome IS the continuation** → **reuse its
+   `stableId`** (read it from the current folder's `task.json`). A materially-changed or absent
+   task is **not** the continuation → **mint a fresh `stableId`** (or let it drop). If genuinely
+   ambiguous, **mint fresh and note it** — the merge then takes REMOTE rather than risk a wrong
+   preserve. Be deliberate: this judgment is what the merge relies on.
+2. **Dry-run the merge:** `guardrails merge <folder> --remote <staging>`. Branch on the exit code:
+   - **Exit `0`** — no conflicts. Proceed to apply (step 3).
+   - **Exit `2`** — read the output to disambiguate (this code has two meanings):
+     - If the message says `guardrails.lock missing` → run `guardrails lock <folder>` to adopt the
+       current folder as BASE, tell the human the first merge will take REMOTE for every guardrail
+       (no recorded baseline), then **re-run the dry-run**.
+     - Otherwise it is **conflicts** → surface each `CONFLICT <stableId>/<file> — <reason>` line to
+       the human, then **STOP**. The human resolves (edit the guardrail or the plan), then you
+       re-run the dry-run. **Never apply** with conflicts present.
+   - **Exit `1`** — a genuine error (missing folder/remote, corrupt lock, or an invalid plan on
+     either side, incl. a duplicate `stableId` → **GR2010**). **STOP**, surface the message, fix the
+     cause, and re-run. **Never apply on a non-zero, non-handled code.**
+3. **Apply (only after exit 0):** `guardrails merge <folder> --remote <staging> --apply`. This
+   replaces authored content with REMOTE's, overlays the preserved human guardrails, and
+   **RE-LOCKS** (writes the new BASE `guardrails.lock`). Then **delete the staging directory** and:
+   - run `guardrails validate <folder>` — **fix until exit 0**; the merged folder is freshly
+     assembled, do not assume it validates;
+   - run `guardrails graph <folder>` to regenerate `diagram.md` (the merge deliberately leaves the
+     old diagram stale).
+
+   **Do NOT run `guardrails lock` again** — `--apply` already wrote the lock, and `diagram.md` is
+   excluded from the lock, so regenerating the diagram does not invalidate it.
+4. **Report.** Relay the command's own summary line verbatim
+   (`N preserved, N dropped, N conflict(s), N from regeneration`) plus any `warning:` lines, then
+   close with the Step 7 draft message.
+
+**Staging cleanup.** The `<plan-name>.staging/` directory is temporary scaffolding — delete it on
+**every** exit path (conflict-stop, error-stop, and success) and **never commit it**.
 
 ## Quality bar (verify before declaring done)
 
@@ -207,8 +242,8 @@ generate and orchestrate. See SSOT §11.5.
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
-- [ ] Every task has a unique minted `stableId`; on a regeneration, continued tasks reuse their prior id.
+- [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline).
-- [ ] `guardrails lock` written (fresh generation), or `guardrails merge --apply` run (regeneration).
+- [ ] On fresh generation: `guardrails lock` written. On regeneration: a BASE lock existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.

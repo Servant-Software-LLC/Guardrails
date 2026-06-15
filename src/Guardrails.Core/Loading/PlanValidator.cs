@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
@@ -25,6 +26,7 @@ public sealed class PlanValidator
 
         ValidateTaskIdsUnique(plan, diagnostics);
         ValidateStableIdsUnique(plan, diagnostics);
+        ValidateStableIdFormat(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
@@ -80,6 +82,29 @@ public sealed class PlanValidator
             }
         }
     }
+
+    /// <summary>
+    /// A declared <c>stableId</c> must match <c>^[a-z0-9][a-z0-9._-]*$</c> (SSOT §3/§11): lowercase
+    /// alphanumerics, optionally with <c>. _ -</c>, starting alphanumeric. This reserves the format
+    /// so a real stableId can never collide with the merge's synthetic <c>folder:&lt;name&gt;</c>
+    /// identity (a colon is disallowed), and keeps ids stable across path/JSON handling. Tasks
+    /// without a stableId are skipped (it is optional).
+    /// </summary>
+    private static void ValidateStableIdFormat(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.StableId is { } stableId && !StableIdPattern.IsMatch(stableId))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidStableId, task.Directory,
+                    $"Task '{task.Id}' declares stableId '{stableId}', which is not in the allowed format " +
+                    "'^[a-z0-9][a-z0-9._-]*$' (lowercase alphanumerics, optionally with '.', '_' or '-')."));
+            }
+        }
+    }
+
+    private static readonly Regex StableIdPattern =
+        new("^[a-z0-9][a-z0-9._-]*$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private static void ValidateDependencies(PlanDefinition plan, List<Diagnostic> diagnostics)
     {

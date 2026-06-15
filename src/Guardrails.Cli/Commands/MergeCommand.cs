@@ -100,10 +100,19 @@ public static class MergeCommand
             return ExitCodes.HarnessError;
         }
 
-        MergePlan plan = BreakdownMerge.Compute(
-            baseManifest,
-            localProbe.Plan!, BreakdownManifest.Capture(folder),
-            remoteProbe.Plan!, BreakdownManifest.Capture(remote));
+        MergePlan plan;
+        try
+        {
+            plan = BreakdownMerge.Compute(
+                baseManifest,
+                localProbe.Plan!, BreakdownManifest.Capture(folder),
+                remoteProbe.Plan!, BreakdownManifest.Capture(remote));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            output.WriteLine($"Merge could not be computed: {ex.Message}");
+            return ExitCodes.HarnessError;
+        }
 
         Report(plan, output);
 
@@ -120,9 +129,20 @@ public static class MergeCommand
             return ExitCodes.Success;
         }
 
-        BreakdownMerge.Apply(plan, folder, remote);
+        try
+        {
+            BreakdownMerge.Apply(plan, folder, remote);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            output.WriteLine($"Merge apply failed (folder left unchanged where possible): {ex.Message}");
+            return ExitCodes.HarnessError;
+        }
+
         output.WriteLine(
             $"Applied: {plan.PreservedCount} human guardrail(s) preserved, {plan.DroppedCount} dropped; re-locked {BreakdownManifest.LockFilePath(folder)}.");
+        output.WriteLine(
+            $"Next: run 'guardrails validate {QuoteIfNeeded(folder)}' (fix until clean) and 'guardrails graph {QuoteIfNeeded(folder)}' to refresh the diagram.");
         return ExitCodes.Success;
     }
 
@@ -158,7 +178,7 @@ public static class MergeCommand
 
             if (label is not null)
             {
-                output.WriteLine($"{label,-9} {item.TaskIdentity}/{item.GuardrailFile} — {item.Reason}");
+                output.WriteLine($"{label,-9} {DisplayIdentity(item.TaskIdentity)}/{item.GuardrailFile} — {item.Reason}");
             }
         }
 
@@ -171,6 +191,16 @@ public static class MergeCommand
         output.WriteLine(
             $"Merge: {plan.PreservedCount} preserved, {plan.DroppedCount} dropped, {plan.Conflicts.Count()} conflict(s), {takeRemote} from regeneration ({plan.Items.Count} guardrails total).");
     }
+
+    /// <summary>
+    /// Render a task identity for the report. A <c>folder:&lt;name&gt;</c> synthetic identity (a task
+    /// with no stableId) is shown as <c>&lt;name&gt; (folder)</c> — the bare folder name, tagged so
+    /// it reads as folder-derived rather than a declared stableId.
+    /// </summary>
+    private static string DisplayIdentity(string identity) =>
+        identity.StartsWith("folder:", StringComparison.Ordinal)
+            ? $"{identity["folder:".Length..]} (folder)"
+            : identity;
 
     private static string QuoteIfNeeded(string path) =>
         path.Contains(' ', StringComparison.Ordinal) ? $"\"{path}\"" : path;

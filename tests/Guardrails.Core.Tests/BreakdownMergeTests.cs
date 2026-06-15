@@ -226,6 +226,330 @@ public sealed class BreakdownMergeTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => BreakdownMerge.Apply(plan, local.Dir, remote.Dir));
     }
 
+    // --- A. Previously-uncovered Resolve branches -------------------------------------
+
+    [Fact]
+    public void Compute_HumanAdded_MatchesRegeneration_TakesRemote()
+    {
+        // Human added a guardrail not in BASE; regeneration emits the SAME content. localHash ==
+        // remoteHash with no base ⇒ converged, the machine version wins (no point preserving a copy).
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        local.AddGuardrail("01-a", "02-extra.sh", "same-content"); // not in BASE
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1"), ("02-extra.sh", "same-content"));
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        GuardrailMergeItem item = ItemFor(plan, "02-extra.sh");
+        Assert.Equal(GuardrailMergeAction.TakeRemote, item.Action);
+        Assert.Equal("human-added matches regeneration", item.Reason);
+        Assert.False(plan.HasConflicts);
+    }
+
+    [Fact]
+    public void Compute_HumanAdded_DiffersFromRegeneration_IsConflict()
+    {
+        // Human added a guardrail not in BASE; regeneration emits a same-named but DIFFERENT file.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        local.AddGuardrail("01-a", "02-extra.sh", "human-version"); // not in BASE
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1"), ("02-extra.sh", "regen-version"));
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        GuardrailMergeItem item = ItemFor(plan, "02-extra.sh");
+        Assert.Equal(GuardrailMergeAction.Conflict, item.Action);
+        Assert.Equal("human-added; regeneration produced a different version", item.Reason);
+        Assert.True(plan.HasConflicts);
+    }
+
+    [Fact]
+    public void Compute_HumanDeleted_RegenerationReinstates_TakesRemote_AndWarns()
+    {
+        // BASE has the guardrail (so baseHash != null); the human DELETED it locally (localHash null);
+        // regeneration re-emits it. The plan wins, but the deletion is being undone — so warn.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-keep.sh", "keep"), ("02-del.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();          // BASE records 02-del.sh
+        local.DeleteGuardrail("01-a", "02-del.sh");          // human removes it locally
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-keep.sh", "keep"), ("02-del.sh", "v1")); // regen re-adds it
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        GuardrailMergeItem item = ItemFor(plan, "02-del.sh");
+        Assert.Equal(GuardrailMergeAction.TakeRemote, item.Action);
+        Assert.Equal("regeneration reinstates it", item.Reason);
+        Assert.Contains(plan.Warnings, w => w.Contains("reinstated") && w.Contains("02-del.sh"));
+        Assert.False(plan.HasConflicts);
+    }
+
+    [Fact]
+    public void Compute_AllThreeIdentical_TakesRemote_Unchanged()
+    {
+        // BASE == LOCAL == REMOTE: nobody touched it. TakeRemote with the "unchanged" reason.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();          // local stays identical to base
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1")); // remote identical too
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        GuardrailMergeItem item = ItemFor(plan, "01-g.sh");
+        Assert.Equal(GuardrailMergeAction.TakeRemote, item.Action);
+        Assert.Equal("unchanged", item.Reason);
+    }
+
+    [Fact]
+    public void Compute_HumanEdit_MatchesRegenerationChange_KeepsLocal()
+    {
+        // Both LOCAL and REMOTE changed away from BASE but to the SAME value: keep local (it already
+        // holds the converged content; no need to overwrite it with an identical remote copy).
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        local.EditGuardrail("01-a", "01-g.sh", "converged");
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "converged")); // same change as the human
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        GuardrailMergeItem item = ItemFor(plan, "01-g.sh");
+        Assert.Equal(GuardrailMergeAction.KeepLocal, item.Action);
+        Assert.Equal("human edit matches regeneration", item.Reason);
+        Assert.Equal("tasks/01-a/guardrails/01-g.sh", item.LocalRelPath);
+    }
+
+    // --- B. Sidecar / arbitrary files under guardrails/ -------------------------------
+
+    [Fact]
+    public void Compute_SidecarEditedLocally_ScriptUnchanged_KeepsSidecar()
+    {
+        // A guardrail's metadata sidecar (<basename>.json) is human content the merge tracks even
+        // though it never appears in the loaded guardrail list. Edited locally (script untouched),
+        // it must be preserved while the script itself is taken from regeneration.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "script-body"));
+        local.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 30 }");
+        BreakdownManifest baseM = local.Capture();
+        local.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 99 }"); // human edits sidecar
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "script-body"));
+        remote.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 30 }"); // regen unchanged
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        Assert.Equal(GuardrailMergeAction.TakeRemote, ItemFor(plan, "01-g.sh").Action);
+        GuardrailMergeItem sidecar = ItemFor(plan, "01-g.json");
+        Assert.Equal(GuardrailMergeAction.KeepLocal, sidecar.Action);
+        Assert.Equal("tasks/01-a/guardrails/01-g.json", sidecar.LocalRelPath);
+    }
+
+    [Fact]
+    public void Apply_PreservesEditedSidecarBytes()
+    {
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "script-body"));
+        local.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 30 }");
+        BreakdownManifest baseM = local.Capture();
+        local.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 99 }");
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "script-body"));
+        remote.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 30 }");
+
+        MergePlan plan = Compute(baseM, local, remote);
+        Assert.False(plan.HasConflicts);
+
+        BreakdownMerge.Apply(plan, local.Dir, remote.Dir);
+
+        Assert.Equal("{ \"timeoutSeconds\": 99 }", ReadGuardrail(local.Dir, "01-a", "01-g.json"));
+    }
+
+    [Fact]
+    public void Apply_KeepsHumanAddedArbitraryFile_UnderGuardrails()
+    {
+        // A human-added arbitrary file with no regeneration counterpart is human content: KeepLocal,
+        // and present on disk after Apply.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        local.WriteGuardrailFile("01-a", "notes.txt", "human notes"); // not in BASE, not in remote
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        Assert.Equal(GuardrailMergeAction.KeepLocal, ItemFor(plan, "notes.txt").Action);
+        Assert.False(plan.HasConflicts);
+
+        BreakdownMerge.Apply(plan, local.Dir, remote.Dir);
+        Assert.Equal("human notes", ReadGuardrail(local.Dir, "01-a", "notes.txt"));
+    }
+
+    [Fact]
+    public void Compute_SidecarEditedBothSidesDifferently_IsConflict()
+    {
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "script-body"));
+        local.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 30 }");
+        BreakdownManifest baseM = local.Capture();
+        local.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 99 }");  // human
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "script-body"));
+        remote.WriteGuardrailFile("01-a", "01-g.json", "{ \"timeoutSeconds\": 60 }"); // regen, different
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        Assert.Equal(GuardrailMergeAction.Conflict, ItemFor(plan, "01-g.json").Action);
+        Assert.True(plan.HasConflicts);
+    }
+
+    // --- D. Machine-owned + folder-fallback warnings ----------------------------------
+
+    [Fact]
+    public void Compute_MachineOwnedConfigEditedLocally_RemoteDiffers_Warns_NoConflict()
+    {
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        local.WriteConfig("{ \"version\": 1, \"maxParallelism\": 2 }");
+        BreakdownManifest baseM = local.Capture();
+        local.WriteConfig("{ \"version\": 1, \"maxParallelism\": 7 }");  // human edits machine-owned config
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        remote.WriteConfig("{ \"version\": 1, \"maxParallelism\": 4 }"); // regen differs again
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        Assert.Contains(plan.Warnings,
+            w => w.Contains("guardrails.json") && (w.Contains("machine-owned") || w.Contains("§11.3")));
+        Assert.False(plan.HasConflicts); // machine-owned overwrite is a warning, never a conflict
+    }
+
+    [Fact]
+    public void Compute_SeedEditedLocally_RemoteDiffers_Warns()
+    {
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        local.WriteSeed("{ \"seed\": 1 }");
+        BreakdownManifest baseM = local.Capture();
+        local.WriteSeed("{ \"seed\": 2 }");   // human edits seed
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        remote.WriteSeed("{ \"seed\": 3 }");  // regen has a differing seed
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        Assert.Contains(plan.Warnings,
+            w => w.Contains("seed.json") && (w.Contains("machine-owned") || w.Contains("§11.3")));
+    }
+
+    [Fact]
+    public void Compute_SeedEditedLocally_RemoteHasNoSeed_NoOverwriteWarning()
+    {
+        // Lenient adopt: seed.json is only overwritten when REMOTE actually has one. Local edit + no
+        // remote seed ⇒ no machine-owned-overwrite warning for the seed.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        local.WriteSeed("{ \"seed\": 1 }");
+        BreakdownManifest baseM = local.Capture();
+        local.WriteSeed("{ \"seed\": 2 }");   // human edits seed
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1")); // no seed at all
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        Assert.DoesNotContain(plan.Warnings, w => w.Contains("seed.json"));
+    }
+
+    [Fact]
+    public void Compute_FolderFallbackIdentity_Warns()
+    {
+        // A task with no stableId is matched by folder name only — edit preservation across a rename
+        // is best-effort, so surface a heads-up.
+        PlanFolder local = NewFolder();
+        local.AddUnkeyedTask("01-a", ("01-g.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        PlanFolder remote = NewFolder();
+        remote.AddUnkeyedTask("01-a", ("01-g.sh", "v1"));
+
+        MergePlan plan = Compute(baseM, local, remote);
+
+        Assert.Contains(plan.Warnings,
+            w => w.Contains("stableId") && w.Contains("folder name") && w.Contains("best-effort"));
+    }
+
+    // --- E. Apply robustness & completeness -------------------------------------------
+
+    [Fact]
+    public void Apply_LeavesNoStagingOrBackupDirectories()
+    {
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-keep.sh", "v1"), ("02-take.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        local.EditGuardrail("01-a", "01-keep.sh", "HUMAN");
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-keep.sh", "v1"), ("02-take.sh", "REGEN"));
+
+        MergePlan plan = Compute(baseM, local, remote);
+        BreakdownMerge.Apply(plan, local.Dir, remote.Dir);
+
+        string[] residue = Directory.GetDirectories(local.Dir)
+            .Select(d => Path.GetFileName(d)!)
+            .Where(n => n.StartsWith(".merge-staged-", StringComparison.Ordinal) ||
+                        n.StartsWith(".merge-backup-", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Empty(residue);
+
+        // And the re-locked manifest has no drift against the merged folder.
+        BreakdownManifest? relock = BreakdownManifest.Read(local.Dir);
+        Assert.NotNull(relock);
+        Assert.False(BreakdownDiff.Compute(relock!, BreakdownManifest.Capture(local.Dir)).HasDrift);
+    }
+
+    [Fact]
+    public void Apply_AdoptsRemoteConfig_AndRemoteSeed_WhenPresent()
+    {
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        local.WriteConfig("{ \"version\": 1, \"maxParallelism\": 2 }");
+        local.WriteSeed("{ \"seed\": \"local\" }");
+        BreakdownManifest baseM = local.Capture();
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        remote.WriteConfig("{ \"version\": 1, \"maxParallelism\": 9 }"); // changed config
+        remote.WriteSeed("{ \"seed\": \"remote\" }");                    // present seed
+
+        MergePlan plan = Compute(baseM, local, remote);
+        BreakdownMerge.Apply(plan, local.Dir, remote.Dir);
+
+        Assert.Equal("{ \"version\": 1, \"maxParallelism\": 9 }",
+            File.ReadAllText(Path.Combine(local.Dir, "guardrails.json")));
+        Assert.Equal("{ \"seed\": \"remote\" }",
+            File.ReadAllText(Path.Combine(local.Dir, "state", "seed.json")));
+    }
+
+    [Fact]
+    public void Apply_LeavesLocalSeed_WhenRemoteHasNone()
+    {
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-g.sh", "v1"));
+        local.WriteSeed("{ \"seed\": \"local\" }");
+        BreakdownManifest baseM = local.Capture();
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-g.sh", "v1")); // no seed
+
+        MergePlan plan = Compute(baseM, local, remote);
+        BreakdownMerge.Apply(plan, local.Dir, remote.Dir);
+
+        Assert.Equal("{ \"seed\": \"local\" }",
+            File.ReadAllText(Path.Combine(local.Dir, "state", "seed.json")));
+    }
+
     private static MergePlan Compute(BreakdownManifest baseM, PlanFolder local, PlanFolder remote) =>
         BreakdownMerge.Compute(
             baseM,
@@ -277,6 +601,46 @@ public sealed class BreakdownMergeTests : IDisposable
 
         public void AddGuardrail(string folder, string file, string content) =>
             File.WriteAllText(Path.Combine(Dir, "tasks", folder, "guardrails", file), content);
+
+        /// <summary>Delete a guardrail file from a task's <c>guardrails/</c> directory (human delete).</summary>
+        public void DeleteGuardrail(string folder, string file) =>
+            File.Delete(Path.Combine(Dir, "tasks", folder, "guardrails", file));
+
+        /// <summary>
+        /// Write an arbitrary file under a task's <c>guardrails/</c> directory — a metadata sidecar
+        /// (<c>&lt;basename&gt;.json</c>) or any human-added file. Used identically for add and edit.
+        /// </summary>
+        public void WriteGuardrailFile(string folder, string file, string content) =>
+            File.WriteAllText(Path.Combine(Dir, "tasks", folder, "guardrails", file), content);
+
+        /// <summary>Edit the machine-owned <c>guardrails.json</c> at the plan root.</summary>
+        public void WriteConfig(string content) =>
+            File.WriteAllText(Path.Combine(Dir, "guardrails.json"), content);
+
+        /// <summary>Write the committed <c>state/seed.json</c> (machine-owned authored content, §11.3).</summary>
+        public void WriteSeed(string content)
+        {
+            string stateDir = Path.Combine(Dir, "state");
+            Directory.CreateDirectory(stateDir);
+            File.WriteAllText(Path.Combine(stateDir, "seed.json"), content);
+        }
+
+        /// <summary>
+        /// Add a task with NO declared stableId — identity falls back to <c>folder:&lt;name&gt;</c>.
+        /// Mirrors <see cref="AddTask"/> but omits the stableId field from task.json.
+        /// </summary>
+        public void AddUnkeyedTask(string folder, params (string File, string Content)[] guardrails)
+        {
+            string taskDir = Path.Combine(Dir, "tasks", folder);
+            Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+            File.WriteAllText(Path.Combine(taskDir, "task.json"),
+                $"{{ \"description\": \"{folder}\", \"dependsOn\": [] }}");
+            File.WriteAllText(Path.Combine(taskDir, "action.sh"), "echo run\n");
+            foreach ((string file, string content) in guardrails)
+            {
+                File.WriteAllText(Path.Combine(taskDir, "guardrails", file), content);
+            }
+        }
 
         public BreakdownManifest Capture() => BreakdownManifest.Capture(Dir);
 
