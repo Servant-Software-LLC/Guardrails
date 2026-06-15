@@ -10,6 +10,15 @@ Write that answer as a comment at the top of every guardrail file (`# catches: �
 scripts; an HTML comment or frontmatter note in prompt guardrails). If you cannot
 write the sentence, the guardrail is decorative — delete it.
 
+**Two layers.** This catalogue holds the **universal** doctrine — archetypes, the
+decision tree, the demotion gate, and stack-agnostic anti-patterns. Stack-specific
+*idioms* (how .NET registers a project in a solution, how Java declares an interface,
+the canonical build command, the layout-specific grep-scope traps) live in a **stack
+file** — `references/stacks/<stack>.md` — which SKILL.md Step 0 loads for the detected
+stack. When this catalogue says "the exact regex/command lives in the stack file,"
+follow that pointer; never bake a `.NET`-only pattern into a guardrail on a JVM/Go/
+Python project.
+
 ## Archetypes (strongest/cheapest first)
 
 | # | Archetype | Form | Use when | Catches |
@@ -32,6 +41,18 @@ write the sentence, the guardrail is decorative — delete it.
 > the tests compile against current code (e.g. they exercise a CLI flag or file
 > output rather than new API surface).
 | 9 | **prompt-judge** | `.prompt.md` (writes `{pass, reason}` verdict) | **LAST RESORT** — see the demotion gate | Genuinely subjective properties: tone, clarity, design taste |
+
+### file-contains: structural vs. keyword matching (universal)
+
+A `file-contains` regex must match the **construct**, not a bare keyword that can also
+appear in a comment, an import/`using`, a string literal, or a locally-defined copy of
+the thing you meant to require. A check for "implements interface IFoo" that greps for
+the token `IFoo` passes on `// IFoo`, on `using …IFoo`, and on a class that declares its
+*own* local `IFoo` — none of which prove the real type was implemented. Match the
+language's declaration syntax instead: `class Foo : IBar` (C#), `implements Foo` /
+`extends Bar` (Java/TS), `func (r Recv) Method` (Go). This principle is stack-agnostic;
+the **exact regex per language lives in the stack file** (`references/stacks/<stack>.md`,
+e.g. the C# class-declaration pattern in `stacks/dotnet.md`).
 
 ## The prompt-judge demotion gate
 
@@ -67,10 +88,47 @@ What is the task's primary deliverable?
 ├── A runnable script/tool     → file-exists + command-exit-code on a representative invocation
 ├── A running service          → port-answers + endpoint-content (curl + contains/schema)
 ├── Config/data                → schema-validates; else file-contains on load-bearing keys
+├── State output (a key a      → fragment-key-present (read $env:GUARDRAILS_STATE_FRAGMENT,
+│    downstream task reads)      parse JSON, assert the key non-null + non-empty; allowed-set
+│                                check if a downstream task branches on the value)
 ├── Docs / prose               → file-exists + file-contains (required headings/terms);
 │                                prompt-judge ONLY for genuine subjective quality, never alone
 └── Refactor (no new behavior) → build-passes + existing-tests-still-pass (the suite IS the guardrail)
 ```
+
+**State-output leaf — the fragment-key contract.** When a task's action publishes a key
+to the state fragment (written to `GUARDRAILS_STATE_OUT`) that a downstream task later
+reads from its merged snapshot (`GUARDRAILS_STATE_IN`), the *file/build* guardrails do
+NOT cover the state hand-off: the action can produce its on-disk artifact yet never write
+the key, and the downstream task then runs with a null value. Add a guardrail on the
+producing task that reads the not-yet-merged fragment from `GUARDRAILS_STATE_FRAGMENT`
+(the env var guardrails get — see schemas.md §5.1), parses it as JSON, and asserts the
+key is present, non-null, and non-empty. If a downstream task *branches* on the value,
+also assert it is in the allowed set.
+
+```powershell
+# catches: action produced its artifact but never wrote the state key a downstream task reads
+$fragmentPath = $env:GUARDRAILS_STATE_FRAGMENT
+if (-not $fragmentPath -or -not (Test-Path $fragmentPath)) {
+    Write-Output "no state fragment written - 'tsw_mechanism_recommended' key is missing"
+    exit 1
+}
+$fragment = Get-Content $fragmentPath -Raw | ConvertFrom-Json
+$value = $fragment.'01-research-tsw-write-mechanism'.tsw_mechanism_recommended
+if ([string]::IsNullOrWhiteSpace($value)) {
+    Write-Output "state key 'tsw_mechanism_recommended' is missing, null, or empty"
+    exit 1
+}
+$allowed = @('rest-api', 'file-drop', 'sdk')
+if ($allowed -notcontains $value) {
+    Write-Output "state key 'tsw_mechanism_recommended' = '$value' is not in the allowed set ($($allowed -join ', '))"
+    exit 1
+}
+exit 0
+```
+
+Drop the allowed-set block when no downstream task branches on the value. Namespace the
+key under the producing task id, matching the fragment convention (schemas.md §6.2).
 
 Per task: **minimum 1, typical 2–3, soft max 4** guardrails. Order them
 **cheapest-first** by filename (`01-exists`, `02-builds`, `03-tests`, `04-review`) —
@@ -92,6 +150,13 @@ should fail before an expensive test run or a paid judge ever starts.
 - **Unactionable failure**: a guardrail that fails with "FAIL" and nothing else. The
   failure line on stdout becomes the retry feedback — "greeting.txt missing 'Hello'"
   converges; "FAIL" loops.
+- **Grep-scope contamination**: a guardrail that checks a property of a file THIS task
+  produces but greps the whole project directory for the pattern. A sibling task in the
+  same wave can satisfy a broad grep with terminology it happens to share — so the check
+  passes even when this task's file is wrong. Scope `Select-String`/`Get-Content` to the
+  specific file this task produces, never the project tree.
+  - Weak (gameable): `Get-ChildItem src/Desktop -Recurse -Filter *.cs | Select-String -Pattern "LocalAppData"` — a sibling `SettingsService.cs` mentioning `LocalApplicationData` in the same wave satisfies it.
+  - Strong: `Select-String -Path "src/Desktop/WorkspaceRecentsList.cs" -Pattern "LocalAppData"` — scoped to the one file this task owns.
 
 ## The artifact-ancestry rule
 
