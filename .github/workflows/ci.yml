@@ -33,3 +33,10 @@ jobs:
 
       - name: Test (Integration)
         run: dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --configuration Release --no-build
+
+      # Guard the committed golden example's diagram.md against drift: `graph --check` recomputes
+      # the plan's semantic source hash and compares it to the one stamped in the committed file.
+      # Exit 0 = fresh, 2 = stale/missing (regenerate with `guardrails graph <folder>`). If the
+      # plan changes without regenerating the diagram, this fails CI. (#3)
+      - name: Example diagram is fresh (graph --check)
+        run: dotnet run --project src/Guardrails.Cli --configuration Release --no-build -- graph examples/hello-guardrails/hello-guardrails --check

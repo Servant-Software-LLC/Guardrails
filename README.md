@@ -146,4 +146,7 @@ dotnet run --project src/Guardrails.Cli -- run examples/hello-guardrails/hello-g
 
 `examples/hello-guardrails/` is the golden fixture — a script action, two prompt actions,
 state passing, deterministic guardrails, and one deliberate prompt-judge, in three small
-tasks: every moving part end-to-end.
+tasks: every moving part end-to-end. Its DAG is committed, pre-rendered, at
+[`examples/hello-guardrails/hello-guardrails/diagram.md`](examples/hello-guardrails/hello-guardrails/diagram.md)
+(GitHub renders the Mermaid inline) — the few-shot reference for what `guardrails graph` emits;
+CI keeps it fresh with `graph --check`.
