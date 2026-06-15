@@ -164,7 +164,7 @@ Per `references/schemas.md`, exactly:
 3. Once validation passes, run `guardrails graph <folder>` to generate
    `<folder>/diagram.md` (a Mermaid `flowchart TD` of the task/guardrail DAG — a
    generated artifact, never hand-edited; see `references/schemas.md`). Then run
-   `guardrails lock <folder>` to write the committed `guardrails.lock` BASE manifest, so a
+   `guardrails lock <folder>` to write the committed `guardrails.baseline` BASE manifest, so a
    future regeneration can preserve any guardrails the human edits in the meantime (§11).
 4. Emit the **breakdown report**: task table (id, action kind, guardrails with
    archetype numbers, dependsOn), the inserted-task list with justifications, edge
@@ -187,10 +187,10 @@ generation. **Re-derive the tasks from the changed plan while preserving those e
 hand-clobber the folder. The deterministic engine owns the per-guardrail decisions; you only
 generate and orchestrate. See SSOT §11.5.
 
-**Lock-first check (do this before staging).** Confirm `<folder>/guardrails.lock` exists. If it
-does **not**, run `guardrails lock <folder>` first to adopt the current folder as BASE, and tell
-the human the first merge will take REMOTE for every guardrail (there is no recorded baseline to
-preserve edits against).
+**Baseline-first check (do this before staging).** Confirm `<folder>/guardrails.baseline` exists.
+If it does **not**, run `guardrails lock <folder>` first to adopt the current folder as BASE, and
+tell the human the first merge will take REMOTE for every guardrail (there is no recorded baseline
+to preserve edits against).
 
 1. **Generate into staging, identity-aware.** Run Steps 1–6 but write the new folder to a
    temporary **staging** directory, a sibling `<plan-name>.staging/`. For each regenerated task,
@@ -207,25 +207,25 @@ preserve edits against).
 2. **Dry-run the merge:** `guardrails merge <folder> --remote <staging>`. Branch on the exit code:
    - **Exit `0`** — no conflicts. Proceed to apply (step 3).
    - **Exit `2`** — read the output to disambiguate (this code has two meanings):
-     - If the message says `guardrails.lock missing` → run `guardrails lock <folder>` to adopt the
-       current folder as BASE, tell the human the first merge will take REMOTE for every guardrail
-       (no recorded baseline), then **re-run the dry-run**.
+     - If the message says `guardrails.baseline missing` → run `guardrails lock <folder>` to adopt
+       the current folder as BASE, tell the human the first merge will take REMOTE for every
+       guardrail (no recorded baseline), then **re-run the dry-run**.
      - Otherwise it is **conflicts** → surface each `CONFLICT <stableId>/<file> — <reason>` line to
        the human, then **STOP**. The human resolves (edit the guardrail or the plan), then you
        re-run the dry-run. **Never apply** with conflicts present.
-   - **Exit `1`** — a genuine error (missing folder/remote, corrupt lock, or an invalid plan on
+   - **Exit `1`** — a genuine error (missing folder/remote, corrupt baseline, or an invalid plan on
      either side, incl. a duplicate `stableId` → **GR2010**). **STOP**, surface the message, fix the
      cause, and re-run. **Never apply on a non-zero, non-handled code.**
 3. **Apply (only after exit 0):** `guardrails merge <folder> --remote <staging> --apply`. This
    replaces authored content with REMOTE's, overlays the preserved human guardrails, and
-   **RE-LOCKS** (writes the new BASE `guardrails.lock`). Then **delete the staging directory** and:
+   **RE-WRITES THE BASELINE** (writes the new BASE `guardrails.baseline`). Then **delete the staging directory** and:
    - run `guardrails validate <folder>` — **fix until exit 0**; the merged folder is freshly
      assembled, do not assume it validates;
    - run `guardrails graph <folder>` to regenerate `diagram.md` (the merge deliberately leaves the
      old diagram stale).
 
-   **Do NOT run `guardrails lock` again** — `--apply` already wrote the lock, and `diagram.md` is
-   excluded from the lock, so regenerating the diagram does not invalidate it.
+   **Do NOT run `guardrails lock` again** — `--apply` already wrote the baseline, and `diagram.md` is
+   excluded from the baseline, so regenerating the diagram does not invalidate it.
 4. **Report.** Relay the command's own summary line verbatim
    (`N preserved, N dropped, N conflict(s), N from regeneration`) plus any `warning:` lines, then
    close with the Step 7 draft message.
@@ -245,5 +245,5 @@ preserve edits against).
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline).
-- [ ] On fresh generation: `guardrails lock` written. On regeneration: a BASE lock existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
+- [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.

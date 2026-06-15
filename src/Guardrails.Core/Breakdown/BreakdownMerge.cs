@@ -4,7 +4,7 @@ using Guardrails.Core.State;
 namespace Guardrails.Core.Breakdown;
 
 /// <summary>
-/// The identity-aware regeneration merge (SSOT §11.3, issue #5). Given BASE (the lock), LOCAL
+/// The identity-aware regeneration merge (SSOT §11.3, issue #5). Given BASE (the baseline), LOCAL
 /// (the current on-disk folder = BASE + human guardrail CRUD), and REMOTE (a freshly generated
 /// candidate from the changed plan), it preserves human guardrail edits while re-deriving
 /// everything else from the plan. Tasks are matched by <c>stableId</c> (§3), so a renumbered or
@@ -78,13 +78,13 @@ public static class BreakdownMerge
     /// Apply a conflict-free plan in place on <paramref name="localFolder"/>: replace the
     /// authored content (<c>tasks/</c>, <c>guardrails.json</c>, and <c>state/seed.json</c> when
     /// REMOTE has one) with REMOTE's, overlay the preserved human guardrails, and re-write the
-    /// lock so the merged folder becomes the new BASE. Harness-owned <c>state/</c> runtime and the
+    /// baseline so the merged folder becomes the new BASE. Harness-owned <c>state/</c> runtime and the
     /// generated <c>diagram.md</c> are left untouched. Throws if the plan still has conflicts.
     ///
     /// The new <c>tasks/</c> tree is fully assembled in a temp directory first (the long copy +
     /// overlay), and only swapped in once complete. So a failure mid-assembly — a partial REMOTE, a
     /// disk-full, an unreadable preserved file — leaves the existing folder untouched rather than
-    /// half-deleted with a stale lock.
+    /// half-deleted with a stale baseline.
     ///
     /// The staging directory is created OUTSIDE the local plan folder (beside REMOTE, falling back
     /// to the OS temp dir), never inside it: some Windows policies (Controlled Folder Access,
@@ -177,7 +177,7 @@ public static class BreakdownMerge
         CopyFileIfExists(Path.Combine(remote, ConfigFileName), Path.Combine(local, ConfigFileName));
         CopyFileIfExists(Path.Combine(remote, ToOsPath(SeedRelPath)), Path.Combine(local, ToOsPath(SeedRelPath)));
 
-        // 5. Re-lock: the merged folder is the new BASE.
+        // 5. Re-write the baseline: the merged folder is the new BASE.
         BreakdownManifest.Capture(local).Write(local);
     }
 

@@ -8,23 +8,25 @@ namespace Guardrails.Core.Breakdown;
 /// The breakdown manifest (SSOT §11): a content snapshot of the AUTHORED files in a plan
 /// folder — <c>guardrails.json</c>, every task's <c>task.json</c> / <c>action.*</c> /
 /// <c>guardrails/*</c> file, and the committed <c>state/seed.json</c> — recorded as
-/// <c>relativePath → SHA-256</c>. Written to <c>guardrails.lock</c> at the plan-folder root
+/// <c>relativePath → SHA-256</c>. Written to <c>guardrails.baseline</c> at the plan-folder root
 /// the moment <c>/plan-breakdown</c> generates (or regenerates) a folder, it is the BASE that
 /// a later regeneration diffs the on-disk LOCAL files against, so a human's guardrail edits
-/// can be recognized and preserved instead of clobbered (see issue #5).
+/// can be recognized and preserved instead of clobbered (see issue #5). The file is named
+/// <c>.baseline</c> (not <c>.lock</c>) because it is a durable, committed drift-detection
+/// reference point — a <c>.lock</c> extension would wrongly imply a gitignored transient mutex.
 ///
 /// Harness-owned runtime under <c>state/</c> (<c>state.json</c>, <c>run.json</c>,
-/// <c>merge-conflicts.log</c>, <c>logs/…</c>), the generated <c>diagram.md</c>, and the lock
+/// <c>merge-conflicts.log</c>, <c>logs/…</c>), the generated <c>diagram.md</c>, and the baseline
 /// file itself are excluded — they are not authored breakdown content. Hashes are taken over
 /// newline-normalized bytes (CRLF/CR → LF, matching <c>PlanHash</c>'s normalization) so CRLF/LF
 /// checkouts hash identically; normalization is byte-level, so a non-UTF-8 file is hashed as-is
-/// rather than through a lossy decode. The lock carries no timestamp, so re-locking an unchanged
-/// folder rewrites a byte-identical file (a deterministic projection, no git churn).
+/// rather than through a lossy decode. The baseline carries no timestamp, so re-capturing an
+/// unchanged folder rewrites a byte-identical file (a deterministic projection, no git churn).
 /// </summary>
 public sealed record BreakdownManifest
 {
-    /// <summary>The lock file name, written at the plan-folder root.</summary>
-    public const string FileName = "guardrails.lock";
+    /// <summary>The baseline file name, written at the plan-folder root.</summary>
+    public const string FileName = "guardrails.baseline";
 
     /// <summary>The generated diagram artifact (SSOT §10), excluded from the snapshot.</summary>
     private const string DiagramFileName = "diagram.md";
@@ -52,8 +54,8 @@ public sealed record BreakdownManifest
     public IReadOnlyDictionary<string, string> Files { get; init; } =
         new SortedDictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>Absolute path to the lock file for the given plan folder.</summary>
-    public static string LockFilePath(string planDirectory) =>
+    /// <summary>Absolute path to the baseline file for the given plan folder.</summary>
+    public static string BaselineFilePath(string planDirectory) =>
         Path.Combine(Path.GetFullPath(planDirectory), FileName);
 
     /// <summary>
@@ -85,7 +87,7 @@ public sealed record BreakdownManifest
         };
     }
 
-    /// <summary>Write the manifest atomically to <c>&lt;planDirectory&gt;/guardrails.lock</c>.</summary>
+    /// <summary>Write the manifest atomically to <c>&lt;planDirectory&gt;/guardrails.baseline</c>.</summary>
     public void Write(string planDirectory)
     {
         var dto = new ManifestDto
@@ -97,19 +99,19 @@ public sealed record BreakdownManifest
         };
 
         string json = JsonSerializer.Serialize(dto, WriteOptions);
-        AtomicFile.WriteAllText(LockFilePath(planDirectory), json + "\n");
+        AtomicFile.WriteAllText(BaselineFilePath(planDirectory), json + "\n");
     }
 
     /// <summary>
-    /// Read the lock file for <paramref name="planDirectory"/>, or <c>null</c> when it is
+    /// Read the baseline file for <paramref name="planDirectory"/>, or <c>null</c> when it is
     /// missing or cannot be parsed. A missing/unreadable BASE is a normal "no prior generation"
     /// condition the caller decides how to handle — never an exception. Callers that must tell
-    /// a missing lock apart from a corrupt one check <see cref="LockFilePath"/> existence
+    /// a missing baseline apart from a corrupt one check <see cref="BaselineFilePath"/> existence
     /// themselves.
     /// </summary>
     public static BreakdownManifest? Read(string planDirectory)
     {
-        string path = LockFilePath(planDirectory);
+        string path = BaselineFilePath(planDirectory);
         if (!File.Exists(path))
         {
             return null;
@@ -142,7 +144,7 @@ public sealed record BreakdownManifest
 
     /// <summary>
     /// Whether a plan-folder-relative path (forward-slash) is authored breakdown content that
-    /// belongs in the snapshot. Excludes the lock file (anywhere), the generated
+    /// belongs in the snapshot. Excludes the baseline file (anywhere), the generated
     /// <c>diagram.md</c> (at the plan root), atomic-write temp residue (<c>*.tmp</c>), and
     /// harness-owned runtime under <c>state/</c> — but keeps the committed <c>state/seed.json</c>.
     /// Reserved-name and segment comparisons are <see cref="StringComparison.OrdinalIgnoreCase"/>
@@ -150,7 +152,7 @@ public sealed record BreakdownManifest
     /// </summary>
     private static bool ShouldInclude(string relativePath)
     {
-        // The lock file itself, anywhere, is never authored content.
+        // The baseline file itself, anywhere, is never authored content.
         if (string.Equals(Path.GetFileName(relativePath), FileName, StringComparison.OrdinalIgnoreCase))
         {
             return false;
@@ -225,7 +227,7 @@ public sealed record BreakdownManifest
         return length == output.Length ? output : output[..length];
     }
 
-    /// <summary>Serialization shape of <c>guardrails.lock</c>.</summary>
+    /// <summary>Serialization shape of <c>guardrails.baseline</c>.</summary>
     private sealed class ManifestDto
     {
         public int Version { get; set; } = CurrentVersion;

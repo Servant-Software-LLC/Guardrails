@@ -125,14 +125,15 @@ survive if a human runs the prompt outside the harness.
 ## Regeneration merge (§11.5)
 
 `guardrails merge <folder> --remote <dir> [--apply]` runs the identity-aware regeneration merge
-(SSOT §11.3/§11.5). `<folder>` is LOCAL (carries `guardrails.lock` = BASE); `--remote` is the
+(SSOT §11.3/§11.5). `<folder>` is LOCAL (carries `guardrails.baseline` = BASE); `--remote` is the
 freshly staged candidate from the changed plan.
 
-- **Dry-run exit codes:** `0` = no conflicts (proceed) · `2` = conflicts **OR** missing lock —
-  *disambiguate by the output message* (`guardrails.lock missing` ⇒ run `guardrails lock <folder>`
+- **Dry-run exit codes:** `0` = no conflicts (proceed) · `2` = conflicts **OR** missing baseline —
+  *disambiguate by the output message* (`guardrails.baseline missing` ⇒ run `guardrails lock <folder>`
   first to adopt BASE; otherwise `CONFLICT …` lines ⇒ stop and have a human resolve) · `1` = a
-  genuine error (missing folder/remote, corrupt lock, invalid plan either side incl. GR2010).
-- **`--apply`** materializes the merge in place and **re-locks**; it **must not run with conflicts
-  present** (changes nothing, exits `2`). After apply: delete staging, `guardrails validate` (fix
-  to green), `guardrails graph` (regenerate the stale diagram). Do **not** re-run `guardrails lock`.
+  genuine error (missing folder/remote, corrupt baseline, invalid plan either side incl. GR2010).
+- **`--apply`** materializes the merge in place and **re-writes the baseline**; it **must not run
+  with conflicts present** (changes nothing, exits `2`). After apply: delete staging,
+  `guardrails validate` (fix to green), `guardrails graph` (regenerate the stale diagram). Do
+  **not** re-run `guardrails lock`.
 - `--apply` leaves the generated `diagram.md` and harness-owned `state/` runtime **untouched**.

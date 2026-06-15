@@ -4,9 +4,9 @@ namespace Guardrails.Core.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="BreakdownManifest"/> (SSOT §10) against real temp folders:
-/// capture hashes authored files, applies the include/exclude rule (lock + diagram.md +
+/// capture hashes authored files, applies the include/exclude rule (baseline + diagram.md +
 /// state runtime out, seed.json in), normalizes newlines, and round-trips through
-/// <c>guardrails.lock</c>. <see cref="BreakdownManifest.Read"/> tolerates missing/garbage.
+/// <c>guardrails.baseline</c>. <see cref="BreakdownManifest.Read"/> tolerates missing/garbage.
 /// </summary>
 public sealed class BreakdownManifestTests : IDisposable
 {
@@ -41,7 +41,7 @@ public sealed class BreakdownManifestTests : IDisposable
     }
 
     [Fact]
-    public void Capture_ExcludesLockFile_DiagramAndStateRuntime_ButKeepsSeed()
+    public void Capture_ExcludesBaselineFile_DiagramAndStateRuntime_ButKeepsSeed()
     {
         WriteFile("guardrails.json", "{ \"version\": 1 }");
         WriteFile("tasks/01-a/task.json", "{ \"description\": \"x\" }");
@@ -89,10 +89,10 @@ public sealed class BreakdownManifestTests : IDisposable
         WriteFile("tasks/01-a/task.json", "{ \"description\": \"x\" }");
 
         BreakdownManifest.Capture(_planDir).Write(_planDir);
-        byte[] first = File.ReadAllBytes(BreakdownManifest.LockFilePath(_planDir));
+        byte[] first = File.ReadAllBytes(BreakdownManifest.BaselineFilePath(_planDir));
 
         BreakdownManifest.Capture(_planDir).Write(_planDir);
-        byte[] second = File.ReadAllBytes(BreakdownManifest.LockFilePath(_planDir));
+        byte[] second = File.ReadAllBytes(BreakdownManifest.BaselineFilePath(_planDir));
 
         Assert.Equal(first, second);
     }
@@ -136,7 +136,7 @@ public sealed class BreakdownManifestTests : IDisposable
         BreakdownManifest captured = BreakdownManifest.Capture(_planDir);
         captured.Write(_planDir);
 
-        Assert.True(File.Exists(BreakdownManifest.LockFilePath(_planDir)));
+        Assert.True(File.Exists(BreakdownManifest.BaselineFilePath(_planDir)));
 
         BreakdownManifest? read = BreakdownManifest.Read(_planDir);
         Assert.NotNull(read);
@@ -152,7 +152,7 @@ public sealed class BreakdownManifestTests : IDisposable
     [Fact]
     public void Read_MalformedLock_ReturnsNull()
     {
-        File.WriteAllText(BreakdownManifest.LockFilePath(_planDir), "{ not json");
+        File.WriteAllText(BreakdownManifest.BaselineFilePath(_planDir), "{ not json");
         Assert.Null(BreakdownManifest.Read(_planDir));
     }
 
