@@ -31,7 +31,8 @@ and only then does `guardrails run` execute it.
 
 1. Resolve the plan path. If the file doesn't exist, stop and say so.
 2. If `<plan-name>/` already exists next to the plan, **never silently clobber** —
-   ask: overwrite, merge, or abort. A human may have edited that folder.
+   ask: **merge** (default, preserves human guardrail edits), overwrite, or abort. A human
+   may have edited that folder. On **merge**, follow the regeneration flow in Step 8.
 3. Confirm the plan is *reviewed* (ask if unclear). Breaking down an unreviewed plan
    multiplies its errors into N tasks.
 4. Check `guardrails --version` works. If not on PATH, warn that Step 7
@@ -123,8 +124,11 @@ Per `references/schemas.md`, exactly:
 - `guardrails.json`: version + sensible run config. **Any `.prompt.md` anywhere ⇒
   the `promptRunners` block with a resolvable default is REQUIRED** (else GR2008).
   Scope `allowedTools` to what the actions genuinely need.
-- `task.json` per task: `description` (one actionable line), `dependsOn`, overrides
-  only when justified. One `action.*` file per task folder.
+- `task.json` per task: `description` (one actionable line), `dependsOn`, a **`stableId`**
+  (a short minted token, e.g. 6 lowercase base36 chars, **unique within the plan** — it is the
+  key the regeneration merge uses to recognize this task across renumbering, so mint it once and
+  never reuse it for a different task), and overrides only when justified. One `action.*` file
+  per task folder.
 - Every **prompt action** opens with the harness-contract header block, verbatim:
 
   ```markdown
@@ -155,7 +159,9 @@ Per `references/schemas.md`, exactly:
    DAG intent.
 3. Once validation passes, run `guardrails graph <folder>` to generate
    `<folder>/diagram.md` (a Mermaid `flowchart TD` of the task/guardrail DAG — a
-   generated artifact, never hand-edited; see `references/schemas.md`).
+   generated artifact, never hand-edited; see `references/schemas.md`). Then run
+   `guardrails lock <folder>` to write the committed `guardrails.lock` BASE manifest, so a
+   future regeneration can preserve any guardrails the human edits in the meantime (§11).
 4. Emit the **breakdown report**: task table (id, action kind, guardrails with
    archetype numbers, dependsOn), the inserted-task list with justifications, edge
    justifications, and any flagged non-executable plan content. Then **embed the
@@ -170,6 +176,28 @@ Per `references/schemas.md`, exactly:
 
    Never present the output as execution-ready.
 
+## Step 8 — Regeneration merge (only when the folder already exists, Step 0 → merge)
+
+The plan is the source of truth, but a human may have edited or added guardrails since the last
+generation. **Re-derive the tasks from the changed plan while preserving those edits** — never
+hand-clobber the folder. The deterministic engine owns the per-guardrail decisions; you only
+generate and orchestrate. See SSOT §11.5.
+
+1. **Generate into staging, identity-aware.** Run Steps 1–6 but write the new folder to a
+   temporary **staging** directory (e.g. a sibling `<plan-name>.staging/`). For each task that is
+   the continuation of an existing one, **reuse that task's `stableId`** (read it from the current
+   folder's `task.json`); mint a fresh `stableId` only for genuinely new tasks. This is the
+   judgment call the merge relies on — be deliberate about which existing task each new task *is*.
+2. **Dry-run the merge:** `guardrails merge <folder> --remote <staging>`.
+   - Exit `2` (conflicts): **stop.** Surface each `CONFLICT` line to the human (a guardrail both
+     they and the regeneration changed, or that they edited and the regeneration removed). They
+     resolve by editing, then you re-run. Do **not** apply.
+   - Exit `0`: no conflicts — proceed.
+3. **Apply:** `guardrails merge <folder> --remote <staging> --apply` (this re-locks the folder),
+   then delete the staging directory and re-run Step 7's `guardrails validate` + `guardrails graph`.
+4. Report what the merge did (preserved / dropped / from-regeneration counts and any warnings),
+   then close with the Step 7 draft message.
+
 ## Quality bar (verify before declaring done)
 
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
@@ -179,6 +207,8 @@ Per `references/schemas.md`, exactly:
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
+- [ ] Every task has a unique minted `stableId`; on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline).
+- [ ] `guardrails lock` written (fresh generation), or `guardrails merge --apply` run (regeneration).
 - [ ] Output explicitly presented as a draft for human review.

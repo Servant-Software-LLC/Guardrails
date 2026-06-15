@@ -470,12 +470,28 @@ A re-run has three inputs: **BASE** (the lock), **LOCAL** (on disk = BASE + huma
 | present | edited | gone (task removed) | drop (task no longer needed → its guardrail goes too) |
 | absent | added | absent | keep (human-authored guardrail) |
 
-Task matching across a regeneration uses `stableId` (§3), not the renumbered folder name, so a
-"slightly altered + reordered" task carries its human guardrails forward while a materially
-changed or removed task does not. The **identity-aware regeneration and the conflict gate are
-the skill-orchestration layer (issue #5, follow-up)**; this document and the CLI ship the
-manifest, the classification, and the `lock` command — the deterministic primitives that layer
-consumes.
+**Task identity.** Matching across a regeneration uses `stableId` (§3), not the renumbered
+folder name, so a "slightly altered + reordered" task carries its human guardrails forward while
+a materially changed or removed task does not. **Open question #2 is resolved: the id is a short
+*minted* token, not a slug.** `/plan-breakdown` mints one per task on first generation and
+*reuses* it for the continuous task on every regeneration (minting only for genuinely new tasks);
+folder renames and slug edits therefore don't break identity. The LLM owns this judgment (which
+id a regenerated task reuses); `validate` enforces uniqueness (GR2010); a task with no `stableId`
+falls back to matching by folder name. Within a matched task, guardrails are matched by filename.
+
+**Guardrail-granularity refinements.** The five-row table is the conceptual contract; at the
+per-file level two more cases resolve to **CONFLICT** because human work would otherwise be lost
+silently: (a) a human *edited* a guardrail that the regeneration *removed* from a surviving task,
+and (b) a human *added* a guardrail whose filename the regeneration also produced, with different
+content. A human-added guardrail the regeneration doesn't emit is simply kept.
+
+**What's machine-owned.** Only guardrail files are preserved. Everything else in a task — its
+`task.json`, `action.*`, and the `dependsOn` DAG — plus `guardrails.json` is re-derived from the
+plan (taken from REMOTE). `state/seed.json` is treated leniently: adopted from REMOTE when present,
+otherwise left as-is.
+
+The deterministic engine (`BreakdownMerge`) and the `guardrails merge` command (§11.5) implement
+all of the above; the `/plan-breakdown` skill orchestrates them (§11.5).
 
 ### 11.4 Command contract
 
@@ -493,3 +509,37 @@ Exit codes follow §7: `0` clean, `1` a genuine error, `2` an actionable "regene
   and exit `0` (printing the report IS the success, drift or not). A **missing** lock → exit
   `2` (run `guardrails lock` first — there is no BASE to diff against); a **corrupt** lock →
   exit `1`.
+
+### 11.5 The `merge` command + skill orchestration
+
+`guardrails merge [folder] --remote <dir> [--apply]` runs the regeneration merge (§11.3).
+`folder` is the current plan folder (LOCAL, carrying `guardrails.lock` = BASE); `--remote` is a
+freshly generated candidate (REMOTE) staged from the changed plan. Both sides are loaded +
+validated (so a duplicate `stableId` surfaces as GR2010 here too).
+
+- default (**dry run**) — compute and print the resolutions (`CONFLICT` / `KEEP` / `DROP` lines,
+  warnings, and a summary; `TakeRemote` is summarized as a count). Writes nothing. Exit `0` when
+  there are no conflicts, `2` when there are.
+- `--apply` — when there are no conflicts, materialize the merge **in place**: replace the
+  authored content (`tasks/`, `guardrails.json`, and `state/seed.json` when REMOTE has one) with
+  REMOTE's, overlay the preserved human guardrails onto the REMOTE task structure, and re-lock so
+  the merged folder is the new BASE. Harness-owned `state/` runtime and the generated `diagram.md`
+  are left untouched. With conflicts present, `--apply` changes nothing and exits `2`.
+- exit codes (§7): `0` clean (dry run with no conflicts, or applied); `2` the actionable "a human
+  must act" signal — unresolved conflicts, or a **missing** lock (run `guardrails lock` first to
+  adopt the current folder as BASE); `1` a genuine error (missing folder/remote, corrupt lock, or
+  an invalid plan on either side).
+
+**Conflict presentation (open question #3 resolved): block + report.** Conflicts are printed to
+stdout — one `CONFLICT <stableId>/<file> — <reason>` line each — and the run is blocked (exit `2`);
+no `--apply` proceeds until none remain. The human resolves by editing the guardrail (or the plan)
+and re-running. (`.orig`-style inline markers are a possible future addition; the run-blocking
+*policy* is what's contractual.)
+
+**Skill flow (`/plan-breakdown`, regeneration path).** When the folder already exists and the
+user chooses *merge*: (1) generate the new breakdown into a **staging** folder, reusing each
+continuous task's `stableId` from the existing `task.json` and minting ids only for new tasks;
+(2) `guardrails merge <folder> --remote <staging>` (dry run) — on exit `2`, surface the conflicts
+and **stop**; (3) on exit `0`, `guardrails merge <folder> --remote <staging> --apply`, then
+`guardrails validate` + `guardrails graph`. The skill never hand-applies the per-guardrail
+decisions — the deterministic engine owns them.

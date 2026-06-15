@@ -77,6 +77,9 @@ a .NET plan, not blanket `Bash`.
 ```jsonc
 {
   "description": "One line — feeds retry feedback and the UI",   // REQUIRED
+  "stableId": "k3f9a1",     // short minted token, UNIQUE within the plan — the regeneration
+                            // merge's identity key (§11). Mint once; reuse for the same task
+                            // across regenerations; never reuse for a different task.
   "dependsOn": ["01-other-task"],                                // REQUIRED (may be [])
   "retries": 3,             // optional; overrides defaultRetries
   "timeoutSeconds": 3600,   // optional
@@ -86,7 +89,8 @@ a .NET plan, not blanket `Bash`.
 ```
 
 Task ids = folder names, `NN-verb-object` kebab-case; NN is a topological hint for
-human scanning, `dependsOn` is the truth. Omit the `action` block when the task folder
+human scanning, `dependsOn` is the truth. `stableId` is the identity that survives a renumber
+(duplicate within the plan = GR2010 error). Omit the `action` block when the task folder
 has exactly one `action.*` file (the convention); zero or multiple = validation error.
 
 ## Prompt files (`.prompt.md`)
