@@ -47,6 +47,7 @@ public sealed class TaskExecutor : ITaskExecutor
     /// <inheritdoc />
     public async Task<TaskResult> ExecuteAsync(TaskNode task, CancellationToken cancellationToken)
     {
+        var taskStartedAt = DateTimeOffset.UtcNow;
         _observer.TaskStarting(task);
         _journal.MarkRunning(task.Id);
 
@@ -64,9 +65,24 @@ public sealed class TaskExecutor : ITaskExecutor
                 .ConfigureAwait(false);
             last = attempt.Result;
 
-            // Terminal outcomes do not retry: success and cancellation, plus the prompt-action
-            // needsHuman short-circuit (SSOT §9) which escalates immediately with no retry burn.
-            if (attempt.Result.Outcome is TaskOutcome.Succeeded or TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
+            // On success, stamp the summary with how long the task took (including any retries)
+            // and the wall-clock completion time, so an unattended/overnight run can be reviewed
+            // in the morning. Display-only — the journal already records per-attempt start/end.
+            if (attempt.Result.Outcome is TaskOutcome.Succeeded)
+            {
+                return attempt.Result with
+                {
+                    // taskStartedAt is UTC; the subtraction is drift-free elapsed wall time.
+                    // DateTimeOffset.Now (local) is used only for the human-readable HH:mm:ss
+                    // stamp — intentional so the display matches the developer's clock.
+                    Summary = $"{attempt.Result.Summary}; took {FormatDuration(DateTimeOffset.UtcNow - taskStartedAt)}, " +
+                              $"done {DateTimeOffset.Now:HH:mm:ss}"
+                };
+            }
+
+            // Other terminal outcomes do not retry: cancellation, plus the prompt-action needsHuman
+            // short-circuit (SSOT §9) which escalates immediately with no retry burn.
+            if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 return attempt.Result;
             }
@@ -75,6 +91,32 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         return last with { Summary = $"{last.Summary} — needs human after {budget} attempt(s)" };
+    }
+
+    /// <summary>
+    /// Compact human-readable duration for the success summary: <c>43s</c>, <c>2m13s</c>,
+    /// <c>1h04m</c>. Sub-minute keeps one decimal under 10s (<c>3.4s</c>) and whole seconds above.
+    /// </summary>
+    internal static string FormatDuration(TimeSpan d)
+    {
+        if (d < TimeSpan.Zero)
+        {
+            d = TimeSpan.Zero;
+        }
+
+        if (d.TotalHours >= 1)
+        {
+            return $"{(int)d.TotalHours}h{d.Minutes:D2}m";
+        }
+
+        if (d.TotalMinutes >= 1)
+        {
+            return $"{(int)d.TotalMinutes}m{d.Seconds:D2}s";
+        }
+
+        return d.TotalSeconds < 10
+            ? $"{d.TotalSeconds:0.#}s"
+            : $"{(int)d.TotalSeconds}s";
     }
 
     private async Task<AttemptResult> RunAttemptAsync(
