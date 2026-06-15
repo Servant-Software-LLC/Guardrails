@@ -58,6 +58,19 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   tests-fail-on-current-code.
 - **Unactionable failures**: guardrails that fail without printing a usable reason
   (retry feedback quality).
+- **Grep-scope contamination**: a file-content guardrail that greps the project tree
+  (`Get-ChildItem -Recurse | Select-String`) instead of the one file the task owns — a
+  same-wave sibling sharing the term can satisfy it. (Catalogue anti-pattern.)
+- **Keyword-not-structural**: an "implements/extends/declares" check matching a bare
+  type name (`Select-String "IFoo"`) that a comment, `using`, or local copy satisfies —
+  it should match the declaration construct (stack file's structural regex).
+- **Unregistered module**: a task adds a module/project to a build descriptor (`.csproj`
+  → `.slnx`) but no guardrail checks the DESCRIPTOR names it — a descriptor build passes
+  with the project unregistered. (Stack file → build-descriptor registration.)
+- **Unreferenced abstraction**: a task creates an abstraction a later task must consume,
+  but no guardrail checks the consumer's project file has a `<ProjectReference>` — builds
+  pass independently, so a local copy of the interface slips through. (Stack file →
+  cross-module reference.)
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -73,6 +86,10 @@ produces and the repo doesn't already contain → a missing guardrail-enabling t
 ### 5. State-contract lint
 - Every prompt action carries the harness-contract header block.
 - Every state key consumed downstream is produced upstream (or seeded).
+- **Every state key consumed downstream has a fragment-key-present guardrail on its
+  producer** (reads `GUARDRAILS_STATE_FRAGMENT`, asserts non-null/non-empty) — otherwise
+  the action can skip writing the key and the consumer runs with null. (Catalogue
+  state-output leaf.)
 - `promptRunners` present iff prompts exist; `allowedTools` scoped, not blanket.
 
 ### 6. Report

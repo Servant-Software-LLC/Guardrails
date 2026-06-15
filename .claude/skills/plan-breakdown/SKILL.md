@@ -21,7 +21,12 @@ and only then does `guardrails run` execute it.
 
 **References (load as needed):**
 - `references/guardrail-catalogue.md` — archetypes, decision tree, demotion gate,
-  anti-patterns. **Read before Step 4, every time.**
+  anti-patterns (UNIVERSAL doctrine). **Read before Step 4, every time.**
+- `references/stacks/<stack>.md` — the STACK-SPECIFIC idioms (build-descriptor
+  registration, cross-module reference, structural impl regex, canonical build command,
+  grep-scope traps). **Load the one matching the detected stack in Step 0** (only
+  `stacks/dotnet.md` ships today). The catalogue holds the universal rule; the stack file
+  holds the exact regex/command.
 - `references/schemas.md` — exact file formats to emit (excerpt of the SSOT,
   `docs/plans/02-schemas-and-contracts.md`).
 - `references/example-breakdown.md` — a complete worked breakdown including an
@@ -40,6 +45,58 @@ and only then does `guardrails run` execute it.
 5. Identify the **workspace** (the repo the plan operates on — normally the folder
    containing the plan) and what already exists there: test framework, linter,
    build system. Guardrail selection depends on what's real.
+6. **Detect the stack** from the workspace and load the matching stack file
+   (`references/stacks/<stack>.md`) BEFORE guardrail selection (Steps 4–6):
+
+   | Workspace signal (any match) | Stack | Stack file |
+   |---|---|---|
+   | `*.slnx` · `*.sln` · `*.csproj` | dotnet | `references/stacks/dotnet.md` *(ships)* |
+   | `build.gradle` · `build.gradle.kts` · `pom.xml` | jvm | *(not authored yet)* |
+   | `package.json` | node | *(not authored yet)* |
+   | `go.mod` | go | *(not authored yet)* |
+   | `pyproject.toml` · `requirements.txt` | python | *(not authored yet)* |
+
+   - **Ambiguous (mixed monorepo, multiple signals)** or **no stack file exists yet** for
+     the detected stack → FALL BACK to the core catalogue and **warn the user explicitly**:
+     "stack <X> detected but no stack file ships yet (or the workspace mixes stacks); I'll
+     use only the universal catalogue, so stack-specific guardrails (build-descriptor
+     registration, cross-module references, structural impl checks) may be incomplete —
+     review those especially." Never silently emit stack-agnostic guardrails as if complete.
+   - When exactly one stack is detected and its file exists, load it and use its idioms
+     wherever the catalogue points to the stack file (Steps 4–6).
+   - A `## Stack` declared in `guardrails-patterns.md` (substep 7) **overrides
+     auto-detection** — a human declaring the stack resolves an otherwise-ambiguous
+     monorepo, so load that stack's file directly instead of falling back.
+
+   *Future stacks: jvm / node / go / python — add as real projects on those stacks surface
+   gaps (issue #13's sequencing). The routing above is generic, so a new `stacks/<stack>.md`
+   is drop-in: author the file, and detection already routes to it.*
+7. **Read the repo pattern file, if present** (`guardrails-patterns.md` at the workspace
+   root or under `.guardrails/`). It is an OPTIONAL, human-authored topology file — the
+   project's `CLAUDE.md`-analogue for breakdowns — naming repo specifics no stack file can
+   infer: the stack, the build-descriptor path, the shared-abstraction project name + its
+   consumers, and project-layout notes. **When present, its specifics OVERRIDE/augment the
+   stack file's generic guidance** (use the real solution path, the real abstraction project
+   name in the pattern-2/3 guardrails). **When absent, proceed with the stack file alone** —
+   it is high-value but never required. Expected shape:
+
+   ```markdown
+   # guardrails-patterns.md   (repo root or .guardrails/)
+
+   ## Stack
+   dotnet
+
+   ## Build descriptor
+   PoC/ConformedSources/WorksoftMigrator.slnx
+
+   ## Shared abstractions project
+   MigrationAbstractions — consumed by WorksoftMigrator.Desktop and WorksoftMigrator.Cli
+
+   ## Project layout notes
+   New UI projects live under PoC/ConformedSources/. Each new .csproj must be registered in
+   WorksoftMigrator.slnx and have a <ProjectReference> from its consumer before the solution
+   build guardrail is meaningful.
+   ```
 
 ## Step 1 — Parse the plan into candidate work items
 
@@ -85,7 +142,10 @@ per edge (in the task description or the breakdown report). Verify acyclicity.
 
 ## Step 4 — Select guardrails (read `references/guardrail-catalogue.md` first)
 
-Apply the decision tree per task. Rules that are never optional:
+Apply the decision tree per task, using BOTH layers loaded in Step 0: the universal
+catalogue for the archetype, and the **stack file** (`references/stacks/<stack>.md`, plus
+any `guardrails-patterns.md` topology) for the exact regex/command. Rules that are never
+optional:
 - 1–4 guardrails per task, **cheapest-first** filename order (`01-exists`,
   `02-builds`, `03-tests`, `04-review`).
 - Every guardrail file opens with `# catches: <the wrong implementation it catches>`.
@@ -95,6 +155,24 @@ Apply the decision tree per task. Rules that are never optional:
 - Deterministic guardrails print ONE actionable failure line to stdout (it becomes
   retry feedback).
 - "All tests pass" appears ONLY on a terminal integration task.
+
+**Route through these doctrine checks every task (the decision tree's newer leaves):**
+- **State output** — does this task's action write a state key (to `GUARDRAILS_STATE_OUT`)
+  that a downstream task reads (via `GUARDRAILS_STATE_IN`)? Add the fragment-key-present
+  guardrail (catalogue → state-output leaf): read `GUARDRAILS_STATE_FRAGMENT`, parse JSON,
+  assert the key non-null + non-empty (+ allowed-set if a downstream task branches on it).
+- **Build-descriptor registration** — does the task add a module/project to a build
+  descriptor (a `.csproj` to a `.slnx`)? Add the stack file's registration guardrail on the
+  DESCRIPTOR, not just the new file (`stacks/dotnet.md §1`). A descriptor build passes with
+  an unregistered project — file-exists + build-passes do NOT cover this.
+- **Cross-module reference** — does this task create an abstraction a later task must
+  consume? Add the stack file's reference-chain guardrail on the CONSUMER's project file
+  (`stacks/dotnet.md §2`). Builds pass independently, so without this an agent can define a
+  local copy of the interface and pass.
+- **Structural impl / keyword match** — any "implements/extends/declares" check uses the
+  stack file's declaration regex (`stacks/dotnet.md §3`), never a bare type-name grep.
+- **Grep scope** — every file-content guardrail is scoped to the one file this task owns
+  (catalogue → grep-scope contamination anti-pattern; `.NET` traps in `stacks/dotnet.md §5`).
 
 ## Step 5 — Insert guardrail-enabling tasks (the generative step)
 
@@ -110,10 +188,14 @@ upstream task that creates it:
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
   guardrail owns start/stop itself with a timeout.
+- A downstream task reads a state key (`GUARDRAILS_STATE_IN`) → the producing ancestor
+  must (a) actually write that key, and (b) carry the fragment-key-present guardrail
+  (Step 4 state-output leaf) so a run can't silently feed the downstream task a null.
+  The state key is an artifact under the artifact-ancestry rule, just like a file.
 
-**The artifact-ancestry rule:** a guardrail may only reference artifacts produced by
-an ancestor task or pre-existing in the repo. Sweep all guardrails against this rule
-before Step 6; every violation is a missing inserted task.
+**The artifact-ancestry rule:** a guardrail may only reference artifacts (files **and
+state keys**) produced by an ancestor task or pre-existing in the repo. Sweep all
+guardrails against this rule before Step 6; every violation is a missing inserted task.
 
 ## Step 6 — Write the folder
 
@@ -235,9 +317,15 @@ to preserve edits against).
 
 ## Quality bar (verify before declaring done)
 
+- [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
 - [ ] Every guardrail file opens with its `catches:` line.
-- [ ] Every guardrail respects the artifact-ancestry rule.
+- [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys).
+- [ ] Any task that writes a downstream-read state key carries the fragment-key-present guardrail.
+- [ ] New module/project added to a build descriptor → registration guardrail on the descriptor itself.
+- [ ] Abstraction consumed by a later task → cross-module reference guardrail on the consumer.
+- [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
+- [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
 - [ ] Inserted test-author tasks include tests-fail-on-current-code; implementation tasks guard tests-untouched.
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
