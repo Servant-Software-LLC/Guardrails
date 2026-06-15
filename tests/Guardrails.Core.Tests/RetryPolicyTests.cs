@@ -45,6 +45,52 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void GuardrailFailure_IncludesFullOutput_NotJustFirstLine()
+    {
+        // Regression for issue #26 Gap 1: a build guardrail with 9 errors must surface ALL of
+        // them in feedback, not only the first line (the one-line Reason).
+        string nineErrors = string.Join('\n', new[]
+        {
+            "error CS5001: no Main method",
+            "MainWindow.xaml.cs: error CS0103: 'InitializeComponent' missing",
+            "PlaceholderStep.xaml.cs: error CS0103: 'InitializeComponent' missing",
+            "ConnectionStep.xaml.cs: error CS0103: 'InitializeComponent' missing"
+        });
+
+        var results = new List<GuardrailResult>
+        {
+            new()
+            {
+                Name = "04-builds",
+                Passed = false,
+                Reason = "error CS5001: no Main method",
+                Output = nineErrors
+            }
+        };
+
+        string feedback = RetryPolicy.ForGuardrailFailures(Task("01-t"), attempt: 1, results);
+
+        Assert.Contains("Reason: error CS5001: no Main method", feedback);
+        Assert.Contains("Full output (tail)", feedback);
+        Assert.Contains("InitializeComponent", feedback);     // the hidden errors are now visible
+        Assert.Contains("ConnectionStep.xaml.cs", feedback);
+    }
+
+    [Fact]
+    public void GuardrailFailure_OutputEqualToReason_DoesNotDuplicate()
+    {
+        var results = new List<GuardrailResult>
+        {
+            new() { Name = "02-tests", Passed = false, Reason = "1 test failed", Output = "1 test failed" }
+        };
+
+        string feedback = RetryPolicy.ForGuardrailFailures(Task("01-t"), attempt: 1, results);
+
+        Assert.Contains("Reason: 1 test failed", feedback);
+        Assert.DoesNotContain("Full output (tail)", feedback);
+    }
+
+    [Fact]
     public void InvalidFragment_ExplainsTheContractWithExample()
     {
         string feedback = RetryPolicy.ForInvalidFragment(Task("01-t"), attempt: 1, "fragment root is an array");

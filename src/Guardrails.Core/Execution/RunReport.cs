@@ -6,8 +6,17 @@ public sealed record GuardrailResult
     public required string Name { get; init; }
     public required bool Passed { get; init; }
 
-    /// <summary>One-line actionable reason on failure (the guardrail's stdout), else null.</summary>
+    /// <summary>One-line actionable reason on failure (the guardrail's first stdout line), else null.</summary>
     public string? Reason { get; init; }
+
+    /// <summary>
+    /// The guardrail's full captured output on failure (stdout, or stderr when stdout is empty),
+    /// for the retry feedback (issue #26 Gap 1). The one-line <see cref="Reason"/> truncates at
+    /// the first line, which hid 8-of-9 build errors in a real failure; the retry agent needs
+    /// every error, not just the first. Null for passing guardrails and prompt guardrails (whose
+    /// signal is the one-line verdict reason).
+    /// </summary>
+    public string? Output { get; init; }
 }
 
 /// <summary>The full result of a single task in an M2 serial run.</summary>

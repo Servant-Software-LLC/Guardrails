@@ -41,6 +41,35 @@ public sealed class DependencyGraph
     public IReadOnlyList<string> DependentsOf(string taskId) => _dependents[taskId];
 
     /// <summary>
+    /// Every task <paramref name="taskId"/> depends on, transitively — the ancestor closure
+    /// reached by following <c>dependsOn</c> edges. This is the set whose work a task builds
+    /// on; used to give the task descriptive context about its ancestors (issue #26 Gap 4).
+    /// Unknown ids in <c>dependsOn</c> (a validation error caught earlier) are skipped.
+    /// </summary>
+    public IReadOnlySet<string> TransitiveDependenciesOf(string taskId)
+    {
+        var closure = new HashSet<string>(StringComparer.Ordinal);
+        if (!_tasks.TryGetValue(taskId, out TaskNode? start))
+        {
+            return closure;
+        }
+
+        var queue = new Queue<string>(start.DependsOn.Where(_tasks.ContainsKey));
+        while (queue.TryDequeue(out string? current))
+        {
+            if (closure.Add(current))
+            {
+                foreach (string next in _tasks[current].DependsOn.Where(_tasks.ContainsKey))
+                {
+                    queue.Enqueue(next);
+                }
+            }
+        }
+
+        return closure;
+    }
+
+    /// <summary>
     /// Every task reachable from <paramref name="taskId"/> by following dependent edges —
     /// the set that must be blocked when <paramref name="taskId"/> cannot succeed.
     /// </summary>

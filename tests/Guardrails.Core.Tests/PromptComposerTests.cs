@@ -72,6 +72,106 @@ public sealed class PromptComposerTests : IDisposable
     }
 
     [Fact]
+    public void Action_WithDependencyContext_ListsAncestorTranscripts_BeforeOutputContract()
+    {
+        string stateIn = WriteState("{}");
+        var deps = new List<DependencyContextRef>
+        {
+            new()
+            {
+                TaskId = "01-research-tsw",
+                Description = "research the .tsw write mechanism",
+                LogDir = "/plan/state/logs/01-research-tsw/attempt-1",
+                TranscriptPath = "/plan/state/logs/01-research-tsw/attempt-1/transcript.md",
+                FragmentPath = "/plan/state/logs/01-research-tsw/attempt-1/fragment.json"
+            }
+        };
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), null, deps);
+
+        Assert.Contains("## Context from completed dependency tasks", composed);
+        Assert.Contains("01-research-tsw", composed);
+        Assert.Contains("research the .tsw write mechanism", composed);
+        Assert.Contains("/plan/state/logs/01-research-tsw/attempt-1/transcript.md", composed);
+        Assert.Contains("/plan/state/logs/01-research-tsw/attempt-1/fragment.json", composed);
+        // Dependency context must precede the output contract (read what exists before writing).
+        Assert.True(
+            composed.IndexOf("## Context from completed dependency tasks", StringComparison.Ordinal)
+            < composed.IndexOf("## Output contract", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Action_DependencyWithoutTranscript_FallsBackToLogDir()
+    {
+        string stateIn = WriteState("{}");
+        var deps = new List<DependencyContextRef>
+        {
+            new()
+            {
+                TaskId = "02-restructure",
+                Description = "restructure the solution",
+                LogDir = "/plan/state/logs/02-restructure/attempt-1",
+                TranscriptPath = null, // script ancestor — no Claude stream
+                FragmentPath = null
+            }
+        };
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), null, deps);
+
+        Assert.Contains("Logs: `/plan/state/logs/02-restructure/attempt-1`", composed);
+        Assert.DoesNotContain("What it did:", composed);
+    }
+
+    [Fact]
+    public void Action_NoDependencies_OmitsContextSection()
+    {
+        string stateIn = WriteState("{}");
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), null);
+
+        Assert.DoesNotContain("## Context from completed dependency tasks", composed);
+    }
+
+    [Fact]
+    public void Action_WithPriorAttempts_ListsAllMostRecentFirst_WithTranscriptAndFeedback()
+    {
+        string stateIn = WriteState("{}");
+        string feedbackPath = Path.Combine(_dir, "feedback.md");
+        File.WriteAllText(feedbackPath, "BG1002: BAML not found.");
+
+        var priors = new List<PriorAttemptRef>
+        {
+            new()
+            {
+                Attempt = 2, Outcome = "guardrail-failed",
+                LogDir = "/plan/state/logs/08/attempt-2",
+                TranscriptPath = "/plan/state/logs/08/attempt-2/transcript.md",
+                FeedbackPath = "/plan/state/logs/08/attempt-2/feedback.md"
+            },
+            new()
+            {
+                Attempt = 1, Outcome = "guardrail-failed",
+                LogDir = "/plan/state/logs/08/attempt-1",
+                TranscriptPath = "/plan/state/logs/08/attempt-1/transcript.md",
+                FeedbackPath = "/plan/state/logs/08/attempt-1/feedback.md"
+            }
+        };
+
+        string composed = PromptComposer.ComposeAction(
+            "body", stateIn, Path.Combine(_dir, "o.json"), feedbackPath, dependencies: null, priorAttempts: priors);
+
+        // Inline latest feedback is still present.
+        Assert.Contains("BG1002: BAML not found.", composed);
+        // Pointers to all prior attempts.
+        Assert.Contains("### Prior attempt logs", composed);
+        Assert.Contains("/plan/state/logs/08/attempt-2/transcript.md", composed);
+        Assert.Contains("/plan/state/logs/08/attempt-1/feedback.md", composed);
+        // Most recent first: attempt-2 listed before attempt-1.
+        Assert.True(
+            composed.IndexOf("attempt-2", StringComparison.Ordinal)
+            < composed.IndexOf("attempt-1", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Guardrail_HasVerifierContract_AndVerdictPath()
     {
         string stateIn = WriteState("{}");

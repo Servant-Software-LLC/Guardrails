@@ -103,8 +103,12 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   (tests use `FakeExecutableProbe`, never the real PATH).
 - **Merge-sequence protocol**: `journal.ReserveMergeSequence()` BEFORE
   `stateManager.MergeFragment(...)`; pass the reserved value to `RecordAttempt`.
-- **Claude specifics live ONLY in `ClaudePromptRunner`** (flags, stream-json
-  parsing). Verdicts come from files, never exit codes.
+- **Claude specifics live ONLY in `Prompts/`** — `ClaudePromptRunner` (flags, invocation),
+  `ClaudeStreamParser` (terminal result), and `ClaudeTranscriptRenderer` (the deterministic
+  `transcript.md` projection of the raw stream, #27). Verdicts come from files, never exit
+  codes. `PromptComposer` injects dependency-context + prior-attempt pointers that reference
+  `transcript.md` (#26); it stays PURE (no IO) — `TaskExecutor` resolves paths/existence, and
+  the renderer must stay deterministic (golden-file tested).
 - **CLI output seam (`IConsoleIo`)**: the CLI writes ALL user-facing output through an
   injected `IConsoleIo` (`Out`/`Error` `TextWriter`s), never the process-global
   `Console.*`. Production wires `SystemConsoleIo.Instance` (the ONLY place that touches
