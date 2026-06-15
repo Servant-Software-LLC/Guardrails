@@ -6,7 +6,7 @@
 .DESCRIPTION
     Idempotent. Installs ServantSoftware.Guardrails as a global .NET tool (or updates it if
     already installed), then runs `guardrails skills install` to copy the bundled skills
-    (plan-breakdown, guardrail-review, guardrails-domain-knowledge) into ~/.claude/skills.
+    (plan-breakdown, guardrails-review, guardrails-domain-knowledge) into ~/.claude/skills.
 
 .PARAMETER Source
     Optional. A local folder (e.g. a freshly-packed ./nupkg) to install FROM instead of

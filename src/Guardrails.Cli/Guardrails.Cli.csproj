@@ -56,8 +56,8 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Pack>false</Pack>
     </Content>
-    <Content Include="..\..\.claude\skills\guardrail-review\**\*">
-      <Link>skills\guardrail-review\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    <Content Include="..\..\.claude\skills\guardrails-review\**\*">
+      <Link>skills\guardrails-review\%(RecursiveDir)%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Pack>false</Pack>
     </Content>

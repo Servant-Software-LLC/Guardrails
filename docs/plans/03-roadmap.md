@@ -13,7 +13,7 @@ weak guardrails would let the harness ship broken features into itself.
 | M3 | **State + journal + resume** — StateManager (snapshot/fragment/merge), env contract, RunJournal, resume semantics, `status`/`reset`, per-attempt logs | Kill a run mid-flight, resume, completed tasks are skipped |
 | M4 | **DAG + parallelism + retry** — Channel scheduler, cycle detection, maxParallelism, `exclusive`, retry + feedback composition, needs-human/blocked, Ctrl+C tree-kill, `plan` command, Spectre live UI | 4-task diamond: break a guardrail → exit 2 + blocked dependents; fix → resume green |
 | M5 | **Prompts** — PromptComposer, frontmatter, IPromptRunner/registry/ClaudePromptRunner, verdict contract, feedback injection, fake-CLI tests + opt-in real-claude smoke | `hello-guardrails` runs fully green including prompt tasks |
-| M6 | **Skills** — `plan-breakdown` (+ guardrail catalogue, schemas excerpt, worked example), `guardrail-review`, remaining agents, `guardrails-dev-knowledge`, `uber-report`, README | `/plan-breakdown` on `hello-guardrails.md` regenerates a validate-clean, structurally equivalent folder |
+| M6 | **Skills** — `plan-breakdown` (+ guardrail catalogue, schemas excerpt, worked example), `guardrails-review`, remaining agents, `guardrails-dev-knowledge`, `uber-report`, README | `/plan-breakdown` on `hello-guardrails.md` regenerates a validate-clean, structurally equivalent folder |
 | M7 | **Polish + dogfood** — validation depth (interpreter/runner probes), cost reporting, `--fresh`/`--dry-run`, NuGet publish pipeline | Clean-machine acceptance (tool install + example green); a phase plan broken down, reviewed, and executed by the harness itself |
 
 ## Reality Gate (uber-report's honesty booleans)
@@ -53,7 +53,7 @@ Each slots into an existing v1 seam — none invalidates the architecture:
 2. Parallel tasks sharing one workspace — prompt actions exclusive-by-default;
    honest docs; worktrees are the v2 fix.
 3. Plausible-but-weak generated guardrails — "catches:" comments, prompt-judge
-   demotion gate, tests-fail-on-stub, human review, `guardrail-review`, dogfooding.
+   demotion gate, tests-fail-on-stub, human review, `guardrails-review`, dogfooding.
 4. Retry divergence (attempt N builds on attempt N−1's wreckage) — low default
    retries (2), "fix don't restart" feedback, full attempt logs.
 5. Schema drift across docs/C#/skills — `02-schemas-and-contracts.md` is the SSOT;

@@ -2,7 +2,7 @@
 
 ## Context
 
-Agentic engineering workflow today: agents + human produce a reviewed markdown plan, then execution is ad hoc. **Guardrails** closes the loop: a `plan-breakdown` skill converts a reviewed plan into a file-system folder of **tasks** (DAG with `dependsOn`), each with an **action** (exe/script/prompt) and one or more **guardrails** (exe/script/prompt — ALL must pass). A cross-platform C#/.NET **harness** (`guardrails` dotnet tool) executes the DAG: run action → run guardrails → on failure, retry the action with guardrail-failure feedback up to N times → halt that branch as `needs-human` while independent branches finish. Humans review/edit the generated folder before execution; a `guardrail-review` skill provides an adversarial second pass. Source notes: `C:\Users\David\Downloads\Guardrails thoughts on paper.pdf`. Repo: `C:\Dev AI\Guardrails` (fresh — `.git` + README only). The `.claude/` setup mirrors `C:\Dev AI\MaltbyGenealogy\.claude` house style.
+Agentic engineering workflow today: agents + human produce a reviewed markdown plan, then execution is ad hoc. **Guardrails** closes the loop: a `plan-breakdown` skill converts a reviewed plan into a file-system folder of **tasks** (DAG with `dependsOn`), each with an **action** (exe/script/prompt) and one or more **guardrails** (exe/script/prompt — ALL must pass). A cross-platform C#/.NET **harness** (`guardrails` dotnet tool) executes the DAG: run action → run guardrails → on failure, retry the action with guardrail-failure feedback up to N times → halt that branch as `needs-human` while independent branches finish. Humans review/edit the generated folder before execution; a `guardrails-review` skill provides an adversarial second pass. Source notes: `C:\Users\David\Downloads\Guardrails thoughts on paper.pdf`. Repo: `C:\Dev AI\Guardrails` (fresh — `.git` + README only). The `.claude/` setup mirrors `C:\Dev AI\MaltbyGenealogy\.claude` house style.
 
 ## Decisions (user-confirmed)
 
@@ -33,7 +33,7 @@ C:\Dev AI\Guardrails\
 └── .claude\
     ├── agents\                # guardrails-architect, -harness-developer, -skill-author,
     │                          # -test-author, -devils-advocate
-    ├── skills\                # plan-breakdown, guardrail-review, guardrails-domain-knowledge,
+    ├── skills\                # plan-breakdown, guardrails-review, guardrails-domain-knowledge,
     │                          # guardrails-dev-knowledge, uber-report
     └── tasks\                 # uber-report output
 ```
@@ -85,9 +85,9 @@ plan-name/                       (created next to plan-name.md)
 4. Guardrails per task (1–4, cheapest-first), **leaning deterministic**: file-exists/contains → command-exit-code → build-passes → specific-tests-pass (`--filter`, never whole-suite early) → lint → schema-validates → port-answers → tests-fail-on-current-code → prompt-judge (last resort, 4-question demotion gate, never alone). Every guardrail file opens with a `# catches: <what wrong implementation this catches>` comment — can't write it, delete the guardrail.
 5. **Insert guardrail-enabling tasks**: e.g. guardrail "tests X pass" + tests don't exist → insert upstream `author-tests-X` task whose own guardrails include **tests-fail-on-current-code** (anti-tautology). Rule: a guardrail may only reference artifacts produced by an ancestor task or pre-existing.
 6. Write folder; prompt actions embed the verbatim harness-contract block (STATE_IN/STATE_OUT/FEEDBACK/needsHuman escape).
-7. Self-validate via `guardrails validate`; emit breakdown report (task table, inserted tasks + justifications, unmapped plan content); close with "**this is a draft — review, edit, then run /guardrail-review**".
+7. Self-validate via `guardrails validate`; emit breakdown report (task table, inserted tasks + justifications, unmapped plan content); close with "**this is a draft — review, edit, then run /guardrails-review**".
 
-### `guardrail-review` skill
+### `guardrails-review` skill
 Read-only adversarial pass on a generated/human-edited folder: per task, "what's the cheapest wrong implementation that passes ALL these guardrails?" Probes: tautologies, echo-judges, prompt-judge-where-deterministic-possible, over-broad tests, artifacts no ancestor produces, missing tests-fail-on-stub, action-criteria > guardrail-coverage. Plus DAG soundness (missing/false edges, terminal aggregator task) and state-contract lint (consumed keys are produced; failure messages actionable). Findings table with BLOCKER/WEAK/NIT severities; applies fixes only per-finding on approval.
 
 ### Agents (house style of `maltby-architect.md`: Role / Skills table / Operating Contract / Deliverable Format / Quality Bar)
@@ -114,7 +114,7 @@ Read-only adversarial pass on a generated/human-edited folder: per task, "what's
 3. **State + journal + resume**: StateManager, env contract, RunJournal, resume semantics, `status`/`reset`, per-attempt logs. *Exit: kill mid-run, resume, completed tasks skipped.*
 4. **DAG + parallelism + retry**: Channel scheduler, cycles, `exclusive`, retry+feedback, needs-human/blocked, Ctrl+C tree-kill, `plan` command, Spectre live UI. *Exit: 4-task diamond fixture — break a guardrail → exit 2 + blocked dependents; fix → resume green. hello-guardrails tasks 01 runs green.*
 5. **Prompts**: PromptComposer, frontmatter, IPromptRunner/registry/ClaudePromptRunner, verdict contract, feedback injection; fake-CLI integration tests + one opt-in real-claude smoke test. *Exit: hello-guardrails runs fully green including prompt tasks (Reality Gate 1+2).*
-6. **Skills**: `plan-breakdown` (+references) — golden test: regenerates a validate-clean, structurally equivalent folder from `hello-guardrails.md` (Reality Gate 3); then `guardrail-review` pointed first at plan-breakdown's own output; remaining agents + `guardrails-dev-knowledge` + `uber-report`; README.
+6. **Skills**: `plan-breakdown` (+references) — golden test: regenerates a validate-clean, structurally equivalent folder from `hello-guardrails.md` (Reality Gate 3); then `guardrails-review` pointed first at plan-breakdown's own output; remaining agents + `guardrails-dev-knowledge` + `uber-report`; README.
 7. **Polish + dogfood**: validation depth, cost reporting, `--fresh`/`--dry-run`, NuGet publish pipeline; first dogfooded phase plan (roadmap exit criterion: a phase's own plan, broken down + reviewed, executes green under the prior phase's harness).
 
 ## v2 bets (named in `docs/plans/03-roadmap.md` from day one; NOT v1 scope)
@@ -137,6 +137,6 @@ The four items that turn "useful for one agentic engineer" into "adopted by team
 
 1. Claude CLI contract instability — quarantined in ClaudePromptRunner; verdict files not exit codes; max-turns/timeout cost breakers.
 2. Parallel tasks sharing one workspace — prompt actions exclusive-by-default; honest docs; per-resource locks = v2.
-3. Plausible-but-weak generated guardrails — "catches:" comments, demotion gate, tests-fail-on-stub, human review, guardrail-review pass, dogfooding as detector.
+3. Plausible-but-weak generated guardrails — "catches:" comments, demotion gate, tests-fail-on-stub, human review, guardrails-review pass, dogfooding as detector.
 4. Retry divergence (attempt N builds on attempt N−1's wreckage) — low default retries (2), "fix don't restart" feedback, full attempt logs; auto-clean hooks deferred.
 5. Schema drift across docs/C#/skills — single SSOT doc, validate as the skill's exit gate, golden round-trip test in CI, SELF-UPDATING clauses.

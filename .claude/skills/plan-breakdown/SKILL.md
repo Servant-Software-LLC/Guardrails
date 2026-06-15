@@ -16,7 +16,7 @@ description: |
 
 Turn a reviewed plan into an executable task DAG whose guardrails a human approves
 once — instead of reviewing every agent output forever. The output is always a
-**draft**: the human edits it, then `/guardrail-review` runs an adversarial pass,
+**draft**: the human edits it, then `/guardrails-review` runs an adversarial pass,
 and only then does `guardrails run` execute it.
 
 **References (load as needed):**
@@ -175,7 +175,7 @@ Per `references/schemas.md`, exactly:
 5. Close with, verbatim in spirit:
 
    > **This is a draft.** Review the folder — especially the guardrails — edit,
-   > delete, or add, then run `/guardrail-review <folder>` before executing with
+   > delete, or add, then run `/guardrails-review <folder>` before executing with
    > `guardrails run <folder>`.
 
    Never present the output as execution-ready.

@@ -23,7 +23,7 @@ public sealed class SkillsInstallerTests : IDisposable
         // A fake bundle: two skills, one with a nested references/ subfolder.
         WriteFile(Path.Combine(_source, "plan-breakdown", "SKILL.md"), "# plan-breakdown");
         WriteFile(Path.Combine(_source, "plan-breakdown", "references", "catalogue.md"), "# catalogue");
-        WriteFile(Path.Combine(_source, "guardrail-review", "SKILL.md"), "# guardrail-review");
+        WriteFile(Path.Combine(_source, "guardrails-review", "SKILL.md"), "# guardrails-review");
     }
 
     [Fact]
@@ -37,7 +37,7 @@ public sealed class SkillsInstallerTests : IDisposable
 
         Assert.True(File.Exists(Path.Combine(_target, "plan-breakdown", "SKILL.md")));
         Assert.True(File.Exists(Path.Combine(_target, "plan-breakdown", "references", "catalogue.md")));
-        Assert.True(File.Exists(Path.Combine(_target, "guardrail-review", "SKILL.md")));
+        Assert.True(File.Exists(Path.Combine(_target, "guardrails-review", "SKILL.md")));
     }
 
     [Fact]
@@ -74,9 +74,9 @@ public sealed class SkillsInstallerTests : IDisposable
             File.ReadAllText(Path.Combine(_target, "plan-breakdown", "SKILL.md")));
 
         // The other, absent skill was still installed.
-        SkillsInstaller.SkillResult guardrailReview = results.Single(r => r.Name == "guardrail-review");
-        Assert.Equal(SkillsInstaller.SkillOutcome.Installed, guardrailReview.Outcome);
-        Assert.True(File.Exists(Path.Combine(_target, "guardrail-review", "SKILL.md")));
+        SkillsInstaller.SkillResult guardrailsReview = results.Single(r => r.Name == "guardrails-review");
+        Assert.Equal(SkillsInstaller.SkillOutcome.Installed, guardrailsReview.Outcome);
+        Assert.True(File.Exists(Path.Combine(_target, "guardrails-review", "SKILL.md")));
     }
 
     [Fact]

@@ -1,6 +1,6 @@
 ---
 name: guardrails-skill-author
-description: Authors and maintains the Guardrails Claude skills (plan-breakdown, guardrail-review, uber-report, knowledge skills) and the examples/ folder. Use when skill procedures, the guardrail catalogue, references, or the golden example need creating or updating — especially after schema/contract changes.
+description: Authors and maintains the Guardrails Claude skills (plan-breakdown, guardrails-review, uber-report, knowledge skills) and the examples/ folder. Use when skill procedures, the guardrail catalogue, references, or the golden example need creating or updating — especially after schema/contract changes.
 ---
 
 You are the Guardrails skill author.

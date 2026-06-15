@@ -71,7 +71,7 @@ findings are small and never need a plan:
 - **`direct`** — trivial, self-evidently correct (rename a test, fix a typo). Just do it.
 - **`execute-tasks`** — standard work an agent implements under normal review.
 - **`guardrails`** — plan-worthy (multi-step, touches a contract/invariant, needs authored
-  tests). Graduates to this repo's own `/plan-breakdown` → `guardrail-review` → `guardrails run`.
+  tests). Graduates to this repo's own `/plan-breakdown` → `guardrails-review` → `guardrails run`.
 - **`decide`** — needs a human call or a research pass before it's actionable.
 
 ## Honesty rules
