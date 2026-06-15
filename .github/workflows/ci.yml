@@ -22,8 +22,12 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      # --locked-mode fails the build if restore would resolve anything other than the committed
+      # packages.lock.json — guaranteeing CI and every developer use a byte-identical NuGet graph
+      # (including analyzer packages). To intentionally change versions, bump the package reference
+      # and re-run `dotnet restore --force-evaluate`, which updates the lock files.
       - name: Restore
-        run: dotnet restore Guardrails.sln
+        run: dotnet restore Guardrails.sln --locked-mode
 
       - name: Build
         run: dotnet build Guardrails.sln --configuration Release --no-restore

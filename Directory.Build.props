@@ -1,0 +1,30 @@
+<Project>
+
+  <!--
+    Repo-wide build policy, inherited by every project (src + tests). Centralised here so the
+    policy is set once instead of copied into each .csproj, and so a new project picks it up
+    automatically. Project files keep only what is genuinely project-specific (target framework,
+    output type, packaging, package references).
+  -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- Warnings are errors everywhere: the published tool stays clean, and a genuine issue
+         (e.g. xUnit1031 blocking-task-in-test, a real deadlock risk) fails the build instead of
+         shipping. This is only safe alongside a DETERMINISTIC analyzer set (see below). -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Pin the SDK code-quality analyzer wave to the 8.0 band so an SDK roll-forward cannot
+         silently introduce new diagnostics that break a previously-green build. -->
+    <AnalysisLevel>8.0</AnalysisLevel>
+
+    <!-- Deterministic restore: lock the FULL transitive NuGet graph (including analyzer packages
+         such as xunit.analyzers, which is what turns warnings on) into a committed
+         packages.lock.json per project. Every machine and CI then resolve byte-identical
+         versions, so an analyzer-version drift cannot make a warning appear in CI but not locally
+         (or vice versa). CI restores in locked mode to FAIL on any drift from the lock. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+</Project>
