@@ -11,7 +11,8 @@ public sealed class FormatDurationTests
     [Theory]
     [InlineData(0, "0s")]
     [InlineData(3.4, "3.4s")]
-    [InlineData(9.95, "10s")]   // rounds to 10.0 → whole-second branch reads cleaner
+    [InlineData(9.95, "10s")]   // stays in the sub-10 branch (TotalSeconds < 10); "0.#" rounds up to "10"
+    [InlineData(10.0, "10s")]   // exactly 10 — first case that takes the ≥10 integer branch
     [InlineData(42, "42s")]
     [InlineData(59, "59s")]
     public void SubMinute_ShowsSeconds(double seconds, string expected) =>

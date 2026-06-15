@@ -72,6 +72,9 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 return attempt.Result with
                 {
+                    // taskStartedAt is UTC; the subtraction is drift-free elapsed wall time.
+                    // DateTimeOffset.Now (local) is used only for the human-readable HH:mm:ss
+                    // stamp — intentional so the display matches the developer's clock.
                     Summary = $"{attempt.Result.Summary}; took {FormatDuration(DateTimeOffset.UtcNow - taskStartedAt)}, " +
                               $"done {DateTimeOffset.Now:HH:mm:ss}"
                 };

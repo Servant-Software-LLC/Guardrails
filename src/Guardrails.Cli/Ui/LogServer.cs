@@ -9,7 +9,7 @@ namespace Guardrails.Cli.Ui;
 /// <summary>
 /// A loopback-only HTTP server that surfaces each task's live attempt log while a run is in
 /// flight, so the user can answer "is it actually working?" without leaving the terminal.
-/// Bound to <c>localhost</c> on an ephemeral port (logs may echo secrets — it is NEVER exposed
+/// Bound to <c>127.0.0.1</c> on an ephemeral port (logs may echo secrets — it is NEVER exposed
 /// off the local machine). The lifetime is the run: <see cref="TryStart"/> at the top,
 /// <see cref="DisposeAsync"/> in a finally.
 ///
@@ -64,10 +64,15 @@ public sealed class LogServer : IAsyncDisposable
         try
         {
             int boundPort = port > 0 ? port : FreeLoopbackPort();
-            string baseUrl = $"http://localhost:{boundPort}/";
+            // Bind to the numeric loopback address rather than the name "localhost" so the
+            // "never exposed off this machine" guarantee is unconditional and not affected by
+            // custom /etc/hosts or DNS overrides that map "localhost" to a routable address.
+            string bindUrl = $"http://127.0.0.1:{boundPort}/";
+            // BaseUrl uses the numeric address too — keeps it honest and matches the binding.
+            string baseUrl = $"http://127.0.0.1:{boundPort}/";
 
             var listener = new HttpListener();
-            listener.Prefixes.Add(baseUrl);
+            listener.Prefixes.Add(bindUrl);
             listener.Start();
 
             string logsRoot = Path.Combine(planDirectory, "state", "logs");
@@ -343,6 +348,10 @@ public sealed class LogServer : IAsyncDisposable
         context.Response.StatusCode = (int)HttpStatusCode.OK;
         context.Response.ContentType = contentType;
         context.Response.ContentLength64 = bytes.Length;
+        // Prevent browsers from MIME-sniffing log content (which may contain LLM output that
+        // looks like HTML) and rendering it as anything other than the declared type.
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        context.Response.Headers["X-Frame-Options"] = "DENY";
         context.Response.OutputStream.Write(bytes, 0, bytes.Length);
     }
 

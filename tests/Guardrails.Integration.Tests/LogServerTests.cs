@@ -102,22 +102,14 @@ public sealed class LogServerTests
     }
 
     [Fact]
-    public void UrlForTask_KnownReturnsUrl_UnknownReturnsNull()
+    public async Task UrlForTask_KnownReturnsUrl_UnknownReturnsNull()
     {
         using var temp = new TempPlan();
-        LogServer? server = LogServer.TryStart(temp.Dir, [Task("01-alpha", "First")], port: 0, TextWriter.Null);
-        Assert.NotNull(server);
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
 
-        try
-        {
-            Assert.NotNull(server!.UrlForTask("01-alpha"));
-            Assert.StartsWith(server.BaseUrl, server.UrlForTask("01-alpha")!);
-            Assert.Null(server.UrlForTask("nope"));
-        }
-        finally
-        {
-            server!.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        }
+        Assert.NotNull(server.UrlForTask("01-alpha"));
+        Assert.StartsWith(server.BaseUrl, server.UrlForTask("01-alpha")!);
+        Assert.Null(server.UrlForTask("nope"));
     }
 
     // --- helpers ----------------------------------------------------------------------------
@@ -157,7 +149,9 @@ public sealed class LogServerTests
 
         public void Dispose()
         {
-            try { Directory.Delete(Dir, recursive: true); } catch (IOException) { /* best effort */ }
+            // UnauthorizedAccessException is NOT a subtype of IOException on .NET — catch both
+            // so a locked file on Windows doesn't mask the original test failure.
+            try { Directory.Delete(Dir, recursive: true); } catch (Exception) { /* best effort */ }
         }
     }
 }
