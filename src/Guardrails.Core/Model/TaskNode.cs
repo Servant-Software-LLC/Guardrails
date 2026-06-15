@@ -8,6 +8,13 @@ public sealed record TaskNode
     /// <summary>Task id = the task folder name (kebab-case, e.g. "01-write-greeting-script").</summary>
     public required string Id { get; init; }
 
+    /// <summary>
+    /// Optional stable identity that survives renumbering/slug edits across regenerations
+    /// (SSOT §11 / issue #5). Null when the plan does not declare one. Reserved for the
+    /// regeneration merge; not yet consumed at runtime.
+    /// </summary>
+    public string? StableId { get; init; }
+
     /// <summary>Absolute path to the task folder.</summary>
     public required string Directory { get; init; }
 

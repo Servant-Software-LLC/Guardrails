@@ -18,6 +18,8 @@ A *plan folder* is generated next to its source markdown plan (`<plan-name>.md` 
 ```
 plan-name/
 ├── guardrails.json              # run configuration (§2)
+├── guardrails.lock              # OPTIONAL committed breakdown manifest (§11)
+├── diagram.md                   # OPTIONAL generated DAG diagram — non-authored (§10)
 ├── state/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
@@ -83,6 +85,7 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 ```jsonc
 {
   "description": "Implement the --stats flag",   // required, one line, human + feedback use
+  "stableId": "k3f9a1",        // optional; stable task identity for the regeneration merge (§11)
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
   "retries": 3,                // optional; overrides defaultRetries
   "timeoutSeconds": 3600,      // optional; whole-attempt ceiling (action + guardrails)
@@ -107,6 +110,14 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 resolved through the interpreter map (§5.2). A task **must** have an action and
 **at least one guardrail** — zero guardrails is a validation **error** (a task that
 can't be verified has no business in the DAG).
+
+`stableId` is an **optional** identity that survives renumbering and slug edits across
+regenerations — the key the merge (§11) uses to recognize "this is the same task, slightly
+altered" versus "this is a new task". It is reserved for that merge and the runtime does not
+yet consume it, but because the merge keys identity on it, `validate` **does** enforce that any
+declared `stableId` is unique across tasks (a duplicate is a `GR2010` error — almost always a
+copy-paste slip). `validate` does not *require* one. Absent ⇒ task identity falls back to the
+folder name.
 
 ## 4. Guardrails
 
@@ -280,7 +291,8 @@ last-writer-wins**. Merge order = task completion order, recorded as a monotonic
 **Harness exit codes**: `0` all succeeded · `1` harness/validation error ·
 `2` the operation completed but an actionable condition was found — for `run`: a task is
 needs-human/blocked; for `graph --check`: the diagram is stale or missing (the "regenerate"
-signal) · `3` cancelled.
+signal); for `lock --check`: the folder has drifted from the lock or the lock is missing (the
+"re-lock" signal) · `3` cancelled.
 
 ---
 
@@ -394,3 +406,90 @@ styling.
   (exit `2`).
 - `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
   formats).
+
+---
+
+## 11. Breakdown manifest + regeneration merge (`guardrails.lock`)
+
+The plan is the **source of truth**. A re-run of `/plan-breakdown` re-derives the task set and
+the `dependsOn` DAG from the (changed) plan — these are machine-owned and not hand-edited. The
+**only** durable human asset in a generated folder is **guardrail CRUD** (editing a guardrail
+script, or adding a new one). So a regeneration must re-derive tasks while **preserving human
+guardrail edits**, discarding them only when the task they belong to no longer exists. The
+manifest is the deterministic foundation that makes this possible. (Tracked in issue #5.)
+
+### 11.1 The lock file
+
+`guardrails lock [folder]` captures the **authored** files of a plan folder and writes
+`<plan-folder>/guardrails.lock` — a **committed** artifact (unlike harness-owned `state/`). It
+is the BASE that a later regeneration diffs against.
+
+```jsonc
+{
+  "version": 1,
+  "files": {                              // relativePath (forward-slash, ordinal-sorted) → sha256
+    "guardrails.json": "<64-hex>",
+    "state/seed.json": "<64-hex>",
+    "tasks/01-a/task.json": "<64-hex>",
+    "tasks/01-a/guardrails/01-build.ps1": "<64-hex>"
+  }
+}
+```
+
+The lock carries **no timestamp** — its identity is the `files` map alone, so re-running
+`guardrails lock` on an unchanged folder rewrites a **byte-identical** file (a deterministic
+projection, no git churn — matching the `diagram.md` precedent in §10).
+
+**Included:** `guardrails.json`, every task's `task.json` / `action.*` / `guardrails/*`, and the
+committed `state/seed.json`. **Excluded:** the lock file itself, the generated `diagram.md`,
+`*.tmp` (atomic-write residue), and harness-owned runtime under `state/` (`state.json`,
+`run.json`, `merge-conflicts.log`, `logs/…`). Hashes are SHA-256 (lowercase hex) over
+**newline-normalized** text (matching `PlanHash`), so CRLF/LF checkouts hash identically.
+
+### 11.2 Drift classification (LOCAL vs BASE)
+
+Comparing a freshly captured snapshot (LOCAL) against the lock (BASE) classifies each file:
+
+| Status | Meaning |
+|---|---|
+| `Unchanged` | BASE == LOCAL — human didn't touch it; the merge may take REMOTE freely |
+| `Edited` | present in both, content differs — a human edit to preserve |
+| `Added` | in LOCAL only — a human-authored file to preserve |
+| `Missing` | in BASE only — deleted on disk since the last lock |
+
+### 11.3 The regeneration merge (BASE / LOCAL / REMOTE)
+
+A re-run has three inputs: **BASE** (the lock), **LOCAL** (on disk = BASE + human CRUD), and
+**REMOTE** (a fresh generation from the changed plan). Per guardrail:
+
+| BASE | LOCAL | REMOTE | result |
+|---|---|---|---|
+| present | == BASE | changed | take REMOTE (machine owns it) |
+| present | edited | == BASE | keep LOCAL (preserve the human edit) |
+| present | edited | also changed | **CONFLICT → block the run** until a human applies or discards |
+| present | edited | gone (task removed) | drop (task no longer needed → its guardrail goes too) |
+| absent | added | absent | keep (human-authored guardrail) |
+
+Task matching across a regeneration uses `stableId` (§3), not the renumbered folder name, so a
+"slightly altered + reordered" task carries its human guardrails forward while a materially
+changed or removed task does not. The **identity-aware regeneration and the conflict gate are
+the skill-orchestration layer (issue #5, follow-up)**; this document and the CLI ship the
+manifest, the classification, and the `lock` command — the deterministic primitives that layer
+consumes.
+
+### 11.4 Command contract
+
+Exit codes follow §7: `0` clean, `1` a genuine error, `2` an actionable "regenerate" condition
+(the same signal `graph --check` uses for a stale/missing diagram).
+
+- `guardrails lock [folder]` — capture authored files and write `guardrails.lock`; print the
+  path + file count; exit `0`. A pure content snapshot — it does **not** load or validate the
+  plan (run `guardrails validate` for that). Missing folder → exit `1`.
+- `--check` — write nothing. Recompute the snapshot and compare to the lock: clean → exit `0`;
+  drift **or a missing lock** → one actionable line and exit `2` (the "regenerate" signal,
+  distinct from a genuine error so CI can tell "re-lock the folder" apart from "the tool
+  failed"). A **corrupt** lock (present but unparseable) → exit `1`.
+- `--diff` — write nothing. Print one line per changed file (`EDITED` / `ADDED` / `MISSING`)
+  and exit `0` (printing the report IS the success, drift or not). A **missing** lock → exit
+  `2` (run `guardrails lock` first — there is no BASE to diff against); a **corrupt** lock →
+  exit `1`.
