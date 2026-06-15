@@ -1,10 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Build policy (ImplicitUsings, Nullable, TreatWarningsAsErrors, analyzer/restore
+       determinism) is centralised in the repo-root Directory.Build.props. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
