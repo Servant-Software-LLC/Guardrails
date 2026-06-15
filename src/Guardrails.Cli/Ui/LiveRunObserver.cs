@@ -20,6 +20,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private readonly Task _liveLoop;
     private readonly Timer _ticker;
     private readonly Func<string, string?>? _logUrlForTask;
+    private readonly string? _planDirectory;
     private LiveDisplayContext? _context;
 
     /// <summary>A task currently running: when it started and the status word to prefix the clock.</summary>
@@ -31,9 +32,19 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     /// Detail cell renders a clickable <c>view log</c> link (OSC 8 hyperlink in capable terminals,
     /// plain text elsewhere). Null = no links (no log server).
     /// </param>
-    public LiveRunObserver(IReadOnlyList<TaskNode> tasks, Func<string, string?>? logUrlForTask = null)
+    /// <param name="planDirectory">
+    /// Optional plan folder. When supplied, a FINISHED task's Detail cell carries a durable
+    /// <c>logs</c> link (a <c>file://</c> hyperlink to its on-disk log directory) for post-mortem —
+    /// available on success, needs-human, and failure alike, and still valid after the run ends and
+    /// the live log server is gone. Null = no post-mortem links.
+    /// </param>
+    public LiveRunObserver(
+        IReadOnlyList<TaskNode> tasks,
+        Func<string, string?>? logUrlForTask = null,
+        string? planDirectory = null)
     {
         _logUrlForTask = logUrlForTask;
+        _planDirectory = planDirectory;
         _table = new Table().Border(TableBorder.Rounded);
         _table.AddColumn("Task");
         _table.AddColumn("Status");
@@ -143,6 +154,23 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private string? LogLinkMarkup(string taskId) =>
         _logUrlForTask?.Invoke(taskId) is { } url ? $"[link={url}]view log[/]" : null;
 
+    /// <summary>
+    /// Spectre markup for a durable <c>logs</c> link to a task's on-disk log directory
+    /// (<c>state/logs/&lt;id&gt;/</c>, holding every attempt's action output, guardrail logs and
+    /// feedback). A <c>file://</c> OSC 8 hyperlink that survives the run — the entry point for a
+    /// post-mortem on any finished task, not just failures. Null when no plan dir was supplied.
+    /// </summary>
+    private string? PostMortemLinkMarkup(string taskId)
+    {
+        if (_planDirectory is null)
+        {
+            return null;
+        }
+
+        string dir = Path.GetFullPath(Path.Combine(_planDirectory, "state", "logs", taskId));
+        return $"[link={new Uri(dir).AbsoluteUri}]logs[/]";
+    }
+
     public void GuardrailFinished(TaskNode task, GuardrailResult result) =>
         Update(task.Id, null, result.Passed
             ? $"[green]{Markup.Escape(result.Name)} ✓[/]"
@@ -155,7 +183,13 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             _running.Remove(result.TaskId); // stop the clock — outcome + summary are terminal
         }
 
-        Update(result.TaskId, StatusMarkup(result.Outcome), Markup.Escape(result.Summary));
+        string detail = Markup.Escape(result.Summary);
+        if (PostMortemLinkMarkup(result.TaskId) is { } link)
+        {
+            detail += $" · {link}";
+        }
+
+        Update(result.TaskId, StatusMarkup(result.Outcome), detail);
     }
 
     public void PlanHashMismatch(string previousPlanHash)

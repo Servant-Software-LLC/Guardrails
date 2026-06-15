@@ -111,7 +111,7 @@ public static class RunCommand
             RunReport report;
             if (live)
             {
-                await using var observer = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask);
+                await using var observer = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory);
                 report = await ExecuteAsync(probe.Plan, observer, cancellationToken).ConfigureAwait(false);
             }
             else
@@ -171,13 +171,20 @@ public static class RunCommand
 
         PrintTotalCost(planDirectory, output);
 
+        // Post-mortem pointer for EVERY task, not just failures: a green task whose guardrails
+        // turned out too weak is reviewed from the same on-disk logs (action output, guardrail
+        // stdout, feedback per attempt). One line, so it stays quiet for large plans.
+        string logsRoot = Path.Combine("state", "logs");
+        output.WriteLine();
+        output.WriteLine($"Logs (post-mortem any task — pass or fail): {logsRoot}{Path.DirectorySeparatorChar}<task-id>{Path.DirectorySeparatorChar}attempt-N{Path.DirectorySeparatorChar}");
+
         foreach (TaskResult needsHuman in report.Tasks.Where(t =>
                      t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed
                          or TaskOutcome.InvalidFragment or TaskOutcome.NeedsHuman))
         {
             output.WriteLine();
             output.WriteLine($"NEEDS HUMAN: {needsHuman.TaskId} — {needsHuman.Summary}");
-            output.WriteLine($"  Inspect state/logs/{needsHuman.TaskId}/ (latest attempt's feedback.md has the full failure detail),");
+            output.WriteLine($"  Inspect {logsRoot}{Path.DirectorySeparatorChar}{needsHuman.TaskId}{Path.DirectorySeparatorChar} (latest attempt's feedback.md has the full failure detail),");
             output.WriteLine("  fix the action or guardrails, then re-run to resume.");
         }
     }
