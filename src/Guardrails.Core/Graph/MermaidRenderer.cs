@@ -12,6 +12,13 @@ namespace Guardrails.Core.Graph;
 /// (<c>done_A --> task_B</c> for each B that <c>dependsOn</c> A). Retry / feedback edges
 /// are intentionally out of scope for v1.
 /// </summary>
+/// <remarks>
+/// Line breaks are emitted as an explicit <c>\n</c> (never
+/// <see cref="StringBuilder.AppendLine()"/>, which writes <c>Environment.NewLine</c> = CRLF
+/// on Windows). This keeps <see cref="Render"/>, <see cref="SemanticContent"/>, and the
+/// <c>--stdout</c> output byte-identical on every OS, so the committed <c>diagram.md</c>
+/// few-shot reference never churns between a Windows and a Linux regeneration (issue #3).
+/// </remarks>
 public static class MermaidRenderer
 {
     /// <summary>Render the plan as a Mermaid <c>flowchart TD</c> string (no trailing I/O).</summary>
@@ -20,15 +27,15 @@ public static class MermaidRenderer
         ArgumentNullException.ThrowIfNull(plan);
 
         var sb = new StringBuilder();
-        sb.AppendLine("flowchart TD");
+        AppendLf(sb, "flowchart TD");
 
         AppendNodesAndEdges(plan, sb);
 
         // --- class definitions (three colors) -----------------------------------------
         // Cosmetic only: deliberately EXCLUDED from the staleness key (see SemanticContent).
-        sb.AppendLine("  classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;");
-        sb.AppendLine("  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;");
-        sb.AppendLine("  classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;");
+        AppendLf(sb, "  classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;");
+        AppendLf(sb, "  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;");
+        AppendLf(sb, "  classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;");
 
         return sb.ToString();
     }
@@ -75,7 +82,7 @@ public static class MermaidRenderer
             string taskNode = $"task_{@base}";
             string doneNode = $"done_{@base}";
 
-            sb.AppendLine($"  {taskNode}[{Quote(task.Id)}]:::task");
+            AppendLf(sb, $"  {taskNode}[{Quote(task.Id)}]:::task");
 
             int ordinal = 0;
             foreach (GuardrailDefinition guardrail in task.Guardrails
@@ -86,13 +93,13 @@ public static class MermaidRenderer
                     ? guardrail.Name
                     : guardrail.Description!;
 
-                sb.AppendLine($"  {guardrailNode}[{Quote(label)}]:::guardrail");
-                sb.AppendLine($"  {taskNode} --> {guardrailNode}");
-                sb.AppendLine($"  {guardrailNode} --> {doneNode}");
+                AppendLf(sb, $"  {guardrailNode}[{Quote(label)}]:::guardrail");
+                AppendLf(sb, $"  {taskNode} --> {guardrailNode}");
+                AppendLf(sb, $"  {guardrailNode} --> {doneNode}");
                 ordinal++;
             }
 
-            sb.AppendLine($"  {doneNode}[{Quote($"{task.Id} ✓ Finished")}]:::done");
+            AppendLf(sb, $"  {doneNode}[{Quote($"{task.Id} ✓ Finished")}]:::done");
         }
 
         // --- dependency edges: done_A --> task_B for each B dependsOn A ----------------
@@ -101,10 +108,18 @@ public static class MermaidRenderer
             foreach (string dependentId in graph.DependentsOf(dependency.Id)
                          .OrderBy(id => id, StringComparer.Ordinal))
             {
-                sb.AppendLine($"  done_{nodeIdBase[dependency.Id]} --> task_{nodeIdBase[dependentId]}");
+                AppendLf(sb, $"  done_{nodeIdBase[dependency.Id]} --> task_{nodeIdBase[dependentId]}");
             }
         }
     }
+
+    /// <summary>
+    /// Append <paramref name="line"/> followed by an explicit <c>'\n'</c>. Used everywhere a
+    /// line is emitted INSTEAD of <see cref="StringBuilder.AppendLine(string)"/>, whose
+    /// <c>Environment.NewLine</c> would inject CRLF on Windows and make the rendered diagram
+    /// (and its source hash) platform-dependent (issue #3).
+    /// </summary>
+    private static void AppendLf(StringBuilder sb, string line) => sb.Append(line).Append('\n');
 
     // --- node id helpers --------------------------------------------------------------
 

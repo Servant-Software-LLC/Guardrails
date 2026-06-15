@@ -253,4 +253,23 @@ public sealed class MermaidRendererTests
     {
         Assert.Throws<ArgumentNullException>(() => MermaidRenderer.Render(null!));
     }
+
+    /// <summary>
+    /// The renderer must emit LF-only line breaks on EVERY OS (issue #3). The original code
+    /// used <c>StringBuilder.AppendLine</c>, which writes <c>Environment.NewLine</c> (CRLF on
+    /// Windows) — that made the rendered diagram, its source hash, and the committed few-shot
+    /// reference platform-dependent. Both the styled <see cref="MermaidRenderer.Render"/>
+    /// output and the hashed <see cref="MermaidRenderer.SemanticContent"/> must be free of
+    /// any <c>'\r'</c>.
+    /// </summary>
+    [Fact]
+    public void RenderAndSemanticContent_ContainNoCarriageReturn()
+    {
+        PlanDefinition plan = Plan(
+            TaskWith("01-a", [Guardrail("01-build"), Guardrail("02-test")]),
+            TaskWith("02-b", [Guardrail("01-check")], "01-a"));
+
+        Assert.DoesNotContain('\r', MermaidRenderer.Render(plan));
+        Assert.DoesNotContain('\r', MermaidRenderer.SemanticContent(plan));
+    }
 }
