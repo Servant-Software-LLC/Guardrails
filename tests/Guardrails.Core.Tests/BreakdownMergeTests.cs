@@ -550,6 +550,172 @@ public sealed class BreakdownMergeTests : IDisposable
             File.ReadAllText(Path.Combine(local.Dir, "state", "seed.json")));
     }
 
+    // --- F. Staging location & swap (issue #9) ----------------------------------------
+
+    [Fact]
+    public void Apply_DoesNotCreateStagingInsideLocalFolder()
+    {
+        // Regression for issue #9: the temp staging dir must NOT be created inside the local plan
+        // folder. On machines with Controlled Folder Access / integrity-level boundaries,
+        // Directory.CreateDirectory of a new ".merge-staged-*" subdir under a protected non-system
+        // path throws UnauthorizedAccessException even with Modify rights. We can't reproduce CFA in
+        // a unit test, so we assert the contract that prevents it: no ".merge-staged-*" ever appears
+        // inside local (it lives beside the remote / under %TEMP% instead), neither during a snapshot
+        // nor as residue afterward.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-keep.sh", "v1"), ("02-take.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        local.EditGuardrail("01-a", "01-keep.sh", "HUMAN");
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-keep.sh", "v1"), ("02-take.sh", "REGEN"));
+
+        MergePlan plan = Compute(baseM, local, remote);
+        BreakdownMerge.Apply(plan, local.Dir, remote.Dir);
+
+        bool stagingInsideLocal = Directory.GetDirectories(local.Dir, ".merge-staged-*").Length > 0;
+        Assert.False(stagingInsideLocal, "no .merge-staged-* directory may be created inside the local plan folder");
+
+        // Apply still succeeded and produced correct content.
+        Assert.Equal("HUMAN", ReadGuardrail(local.Dir, "01-a", "01-keep.sh"));
+        Assert.Equal("REGEN", ReadGuardrail(local.Dir, "01-a", "02-take.sh"));
+    }
+
+    [Fact]
+    public void CreateStagingDir_PlacesStagingBesideRemote_NotInsideLocal()
+    {
+        // The primary staging location is beside the REMOTE folder, so in the normal sibling-staging
+        // case it is on the same volume as local (atomic-rename swap) yet outside local (issue #9).
+        PlanFolder remote = NewFolder();
+
+        string staged = BreakdownMerge.CreateStagingDir(remote.Dir);
+        try
+        {
+            Assert.True(Directory.Exists(staged));
+            Assert.Equal(Path.GetDirectoryName(Path.GetFullPath(remote.Dir)),
+                Path.GetDirectoryName(Path.GetFullPath(staged)));
+            Assert.StartsWith(".merge-staged-", Path.GetFileName(staged), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(staged, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void CreateStagingDir_FallsBackToTemp_WhenBesideRemoteIsDenied()
+    {
+        // Belt-and-suspenders fallback: if creating the staged dir beside REMOTE itself throws
+        // (the same CFA / integrity-level policy could protect that tree too), retry under %TEMP%.
+        // Forcing CreateDirectory to fail deterministically requires a read-only parent, which is
+        // only reliable via the Unix permission bits; on Windows a non-elevated process can still
+        // create children under a "read-only" directory, so this path is covered by the unit test on
+        // POSIX and by the CLI-level coverage elsewhere. The fallback code itself is OS-agnostic.
+        if (OperatingSystem.IsWindows())
+        {
+            return; // documented limitation: cannot deterministically deny CreateDirectory on Windows here
+        }
+
+        string parent = Path.Combine(Path.GetTempPath(), "gr-ro-parent-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(parent);
+        string remote = Path.Combine(parent, "remote");
+        Directory.CreateDirectory(remote);
+        // Make the parent read+execute only: creating a NEW child (the ".merge-staged-*" sibling of
+        // remote) is denied, so CreateStagingDir must fall back to %TEMP%.
+        File.SetUnixFileMode(parent, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        string staged;
+        try
+        {
+            staged = BreakdownMerge.CreateStagingDir(remote);
+        }
+        finally
+        {
+            File.SetUnixFileMode(parent,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Directory.Delete(parent, recursive: true);
+        }
+
+        try
+        {
+            Assert.True(Directory.Exists(staged));
+            // Fell back under the OS temp dir, NOT beside the (denied) remote parent.
+            Assert.StartsWith(Path.GetFullPath(Path.GetTempPath()), Path.GetFullPath(staged),
+                StringComparison.Ordinal);
+            Assert.NotEqual(parent, Path.GetDirectoryName(Path.GetFullPath(staged)));
+        }
+        finally
+        {
+            Directory.Delete(staged, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void SameVolume_TrueForSameRoot_FalseForDifferentRoot()
+    {
+        string root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()))!;
+        Assert.True(BreakdownMerge.SameVolume(Path.Combine(root, "a"), Path.Combine(root, "b", "c")));
+
+        if (OperatingSystem.IsWindows())
+        {
+            // Two distinct drive letters are distinct volumes — forces the cross-volume copy in SwapIn.
+            Assert.False(BreakdownMerge.SameVolume(@"C:\a", @"D:\b"));
+            // Drive-letter casing must not register as a different volume (Windows is case-insensitive).
+            Assert.True(BreakdownMerge.SameVolume(@"c:\a", @"C:\b"));
+        }
+    }
+
+    [Fact]
+    public void SwapIn_SameVolume_RenamesStagedTreeIntoPlace()
+    {
+        // Same-volume happy path: SwapIn renames the assembled tree to the destination (no copy).
+        string baseDir = Path.Combine(Path.GetTempPath(), "gr-swap-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(baseDir);
+        try
+        {
+            string staged = Path.Combine(baseDir, "staged");
+            Directory.CreateDirectory(Path.Combine(staged, "sub"));
+            File.WriteAllText(Path.Combine(staged, "sub", "f.txt"), "payload");
+            string dest = Path.Combine(baseDir, "tasks");
+
+            BreakdownMerge.SwapIn(staged, dest);
+
+            Assert.False(Directory.Exists(staged));                 // moved, not copied
+            Assert.Equal("payload", File.ReadAllText(Path.Combine(dest, "sub", "f.txt")));
+        }
+        finally
+        {
+            Directory.Delete(baseDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Apply_PreservedSourceMissing_ThrowsAndLeavesFolderUnchanged()
+    {
+        // Rollback-on-failure: a preserved guardrail whose on-disk source vanishes makes Apply throw.
+        // Because preserved bytes are read up front (before any mutation), the whole local folder —
+        // tasks tree and lock — must be left exactly as it was.
+        PlanFolder local = NewFolder();
+        local.AddTask("01-a", "sid-a", ("01-keep.sh", "v1"), ("02-take.sh", "v1"));
+        BreakdownManifest baseM = local.Capture();
+        local.EditGuardrail("01-a", "01-keep.sh", "HUMAN");
+        PlanFolder remote = NewFolder();
+        remote.AddTask("01-a", "sid-a", ("01-keep.sh", "v1"), ("02-take.sh", "REGEN"));
+
+        MergePlan plan = Compute(baseM, local, remote);
+        // Yank the preserved source out from under Apply just before it runs.
+        local.DeleteGuardrail("01-a", "01-keep.sh");
+
+        Assert.ThrowsAny<IOException>(() => BreakdownMerge.Apply(plan, local.Dir, remote.Dir));
+
+        // The live tasks tree is untouched: 02-take.sh still holds the LOCAL "v1", not "REGEN", and
+        // 01-keep.sh is still absent exactly as we left it (no half-applied REMOTE tree).
+        Assert.Equal("v1", ReadGuardrail(local.Dir, "01-a", "02-take.sh"));
+        Assert.False(File.Exists(GuardrailPath(local.Dir, "01-a", "01-keep.sh")));
+        // No staging/backup residue inside local.
+        Assert.Empty(Directory.GetDirectories(local.Dir, ".merge-staged-*"));
+        Assert.Empty(Directory.GetDirectories(local.Dir, ".merge-backup-*"));
+    }
+
     private static MergePlan Compute(BreakdownManifest baseM, PlanFolder local, PlanFolder remote) =>
         BreakdownMerge.Compute(
             baseM,
