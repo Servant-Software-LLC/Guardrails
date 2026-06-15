@@ -90,6 +90,42 @@ public sealed class MergeCliTests
     }
 
     [Fact]
+    public async Task Merge_Apply_SiblingStagingRemote_LeavesNoStagingInsideLocal()
+    {
+        // Models the exact issue #9 layout: REMOTE is a sibling "<local>.staging" folder on the same
+        // volume as local. Apply must succeed and must NOT leave (or have created) any ".merge-staged-*"
+        // directory inside the local plan folder — the staging tree is assembled beside REMOTE instead.
+        string parent = Path.Combine(Path.GetTempPath(), "gr-sibling-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(parent);
+        try
+        {
+            using var local = new MergeDir(Path.Combine(parent, "plan"));
+            local.AddTask("01-a", "sid-a", ("01-g", "v1"));
+            local.Lock();
+            local.EditGuardrail("01-a", "01-g", "HUMAN");
+
+            using var remote = new MergeDir(Path.Combine(parent, "plan.staging"));
+            remote.AddTask("01-a", "sid-a", ("01-g", "v1")); // unchanged → human edit preserved
+
+            (int exit, string output) = await InvokeAsync("merge", local.Dir, "--remote", remote.Dir, "--apply");
+
+            Assert.Equal(ExitCodes.Success, exit);
+            Assert.Contains("Applied", output);
+            Assert.Equal("HUMAN", local.ReadGuardrail("01-a", "01-g"));
+            // The smoking gun for issue #9: nothing named ".merge-staged-*" inside local.
+            Assert.Empty(Directory.GetDirectories(local.Dir, ".merge-staged-*"));
+            Assert.Empty(Directory.GetDirectories(local.Dir, ".merge-backup-*"));
+            // Re-locked clean.
+            (int checkExit, _) = await InvokeAsync("lock", local.Dir, "--check");
+            Assert.Equal(ExitCodes.Success, checkExit);
+        }
+        finally
+        {
+            try { Directory.Delete(parent, recursive: true); } catch (IOException) { /* best effort */ }
+        }
+    }
+
+    [Fact]
     public async Task Merge_MissingLock_ExitsActionNeeded()
     {
         using var local = new MergeDir();
@@ -263,8 +299,14 @@ public sealed class MergeCliTests
         public string Dir { get; }
 
         public MergeDir()
+            : this(Path.Combine(Path.GetTempPath(), "gr-mergecli-" + Guid.NewGuid().ToString("N")))
         {
-            Dir = Path.Combine(Path.GetTempPath(), "gr-mergecli-" + Guid.NewGuid().ToString("N"));
+        }
+
+        /// <summary>Build the plan folder at an explicit path (used to model a sibling <c>*.staging</c> remote).</summary>
+        public MergeDir(string dir)
+        {
+            Dir = dir;
             Directory.CreateDirectory(Dir);
             File.WriteAllText(Path.Combine(Dir, "guardrails.json"),
                 "{ \"version\": 1, \"defaultRetries\": 0, \"maxParallelism\": 1 }");

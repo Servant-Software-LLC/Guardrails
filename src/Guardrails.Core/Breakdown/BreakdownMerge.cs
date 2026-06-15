@@ -81,11 +81,20 @@ public static class BreakdownMerge
     /// lock so the merged folder becomes the new BASE. Harness-owned <c>state/</c> runtime and the
     /// generated <c>diagram.md</c> are left untouched. Throws if the plan still has conflicts.
     ///
-    /// The new <c>tasks/</c> tree is fully assembled in a sibling temp directory first (the long
-    /// copy + overlay), and only swapped in once complete. So a failure mid-assembly — a partial
-    /// REMOTE, a disk-full, an unreadable preserved file — leaves the existing folder untouched
-    /// rather than half-deleted with a stale lock. The unavoidable swap window (delete the old
-    /// <c>tasks/</c>, move the staged one in) is two fast renames on the same volume.
+    /// The new <c>tasks/</c> tree is fully assembled in a temp directory first (the long copy +
+    /// overlay), and only swapped in once complete. So a failure mid-assembly — a partial REMOTE, a
+    /// disk-full, an unreadable preserved file — leaves the existing folder untouched rather than
+    /// half-deleted with a stale lock.
+    ///
+    /// The staging directory is created OUTSIDE the local plan folder (beside REMOTE, falling back
+    /// to the OS temp dir), never inside it: some Windows policies (Controlled Folder Access,
+    /// integrity-level boundaries) deny <c>Directory.CreateDirectory</c> for a non-shell .NET
+    /// process writing a new subdirectory under a protected non-system path, even when the user has
+    /// Modify rights (issue #9). When the staging directory lands on the SAME volume as local (the
+    /// normal case — REMOTE is a <c>*.staging</c> sibling of local) the swap stays two fast renames.
+    /// When the fallback puts it on a DIFFERENT volume (e.g. <c>%TEMP%</c> on C: while the plan is on
+    /// F:), the swap-in is a recursive copy instead, because <c>Directory.Move</c> cannot cross
+    /// volumes; the backup-then-restore-on-failure guarantee holds either way.
     /// </summary>
     public static void Apply(MergePlan plan, string localFolder, string remoteFolder)
     {
@@ -106,8 +115,9 @@ public static class BreakdownMerge
             preserved[item.ResultRelPath!] = File.ReadAllBytes(source);
         }
 
-        // 2. Assemble the merged tasks tree off to the side (REMOTE's tasks + preserved overlay).
-        string staged = Path.Combine(local, $".merge-staged-{Guid.NewGuid():N}");
+        // 2. Assemble the merged tasks tree off to the side — OUTSIDE local (issue #9): beside
+        //    REMOTE first (same volume as local in the normal sibling-staging case), %TEMP% on fallback.
+        string staged = CreateStagingDir(remote);
         try
         {
             CopyDirectory(Path.Combine(remote, TasksDir), staged);
@@ -121,7 +131,8 @@ public static class BreakdownMerge
                 File.WriteAllBytes(target, bytes);
             }
 
-            // 3. Swap the staged tree in for the live one (two fast same-volume renames).
+            // 3. Swap the staged tree in for the live one. The backup lives inside local (a same-volume
+            //    rename of the existing tasks/ — never blocked, and keeps the old tree recoverable).
             string localTasks = Path.Combine(local, TasksDir);
             string backup = Path.Combine(local, $".merge-backup-{Guid.NewGuid():N}");
             if (Directory.Exists(localTasks))
@@ -131,11 +142,15 @@ public static class BreakdownMerge
 
             try
             {
-                Directory.Move(staged, localTasks);
+                SwapIn(staged, localTasks);
             }
             catch
             {
                 // Restore the original tasks tree if the final swap fails.
+                if (Directory.Exists(localTasks))
+                {
+                    Directory.Delete(localTasks, recursive: true);
+                }
                 if (Directory.Exists(backup) && !Directory.Exists(localTasks))
                 {
                     Directory.Move(backup, localTasks);
@@ -423,6 +438,69 @@ public static class BreakdownMerge
         }
 
         return map;
+    }
+
+    /// <summary>
+    /// Create the temp staging directory OUTSIDE the local plan folder (issue #9). Primary location:
+    /// beside the REMOTE folder — in the normal case REMOTE is a <c>*.staging</c> sibling of local, so
+    /// this is the same volume as local and the final swap stays an atomic rename. Belt-and-suspenders:
+    /// if creating it beside REMOTE is itself denied (the same CFA / integrity-level policy could
+    /// protect that tree too) fall back to the OS temp dir. Returns the created (empty) directory path.
+    /// </summary>
+    internal static string CreateStagingDir(string remote)
+    {
+        string besideRemote = Path.Combine(
+            Path.GetDirectoryName(Path.GetFullPath(remote))!, $".merge-staged-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(besideRemote);
+            return besideRemote;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            string inTemp = Path.Combine(Path.GetTempPath(), $".merge-staged-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(inTemp);
+            return inTemp;
+        }
+    }
+
+    /// <summary>
+    /// Move the assembled staging tree into place at <paramref name="localTasks"/>. Within one volume
+    /// this is an atomic <see cref="Directory.Move(string, string)"/> rename; across volumes (the temp
+    /// fallback can land staging on a different drive than the plan) <c>Directory.Move</c> throws, so
+    /// the swap is a recursive copy instead. The caller owns the backup-then-restore-on-failure guard,
+    /// so a mid-copy failure here still leaves the original tasks tree recoverable.
+    /// </summary>
+    internal static void SwapIn(string staged, string localTasks)
+    {
+        if (SameVolume(staged, localTasks))
+        {
+            Directory.Move(staged, localTasks);
+        }
+        else
+        {
+            CopyDirectory(staged, localTasks);
+        }
+    }
+
+    /// <summary>
+    /// True when two paths share a volume root, so <see cref="Directory.Move(string, string)"/> can
+    /// rename between them. Roots are compared case-insensitively on Windows (drive letters), ordinally
+    /// elsewhere. A null/empty root (relative path) is treated as a non-match to force the safe copy.
+    /// </summary>
+    internal static bool SameVolume(string a, string b)
+    {
+        string? rootA = Path.GetPathRoot(Path.GetFullPath(a));
+        string? rootB = Path.GetPathRoot(Path.GetFullPath(b));
+        if (string.IsNullOrEmpty(rootA) || string.IsNullOrEmpty(rootB))
+        {
+            return false;
+        }
+
+        StringComparison cmp = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        return string.Equals(rootA, rootB, cmp);
     }
 
     private static string ToOsPath(string relPath) => relPath.Replace('/', Path.DirectorySeparatorChar);
