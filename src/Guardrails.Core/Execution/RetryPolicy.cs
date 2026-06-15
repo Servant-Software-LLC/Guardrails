@@ -48,6 +48,15 @@ public static class RetryPolicy
             }
 
             text.AppendLine($"Reason: {failed.Reason ?? "guardrail failed (no reason printed)"}");
+
+            // The one-line reason is the FIRST line only; include the full (tail-bounded) output
+            // so a multi-error failure shows every error, not just the first (issue #26 Gap 1).
+            // Skipped when the output is just the reason line again (no extra signal).
+            if (HasMoreThanReason(failed.Output, failed.Reason))
+            {
+                AppendTail(text, "Full output (tail)", failed.Output!);
+            }
+
             text.AppendLine();
         }
 
@@ -71,6 +80,21 @@ public static class RetryPolicy
         text.AppendLine("The file written to GUARDRAILS_STATE_OUT must be a single JSON object, e.g.");
         text.AppendLine($"`{{ \"{task.Id}\": {{ \"someKey\": \"someValue\" }} }}`.");
         return text.ToString();
+    }
+
+    /// <summary>
+    /// True when <paramref name="output"/> carries more than the one-line <paramref name="reason"/>
+    /// already shown — i.e. it is non-empty and not just the reason line repeated.
+    /// </summary>
+    private static bool HasMoreThanReason(string? output, string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return false;
+        }
+
+        string trimmed = output.Trim();
+        return !string.Equals(trimmed, reason?.Trim(), StringComparison.Ordinal);
     }
 
     private static void AppendHeader(StringBuilder text, TaskNode task, int attempt)

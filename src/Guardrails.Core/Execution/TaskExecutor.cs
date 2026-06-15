@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Guardrails.Core.Graph;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
@@ -25,6 +26,8 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly RunJournal _journal;
     private readonly IRunObserver _observer;
     private readonly PromptRunnerRegistry? _promptRunners;
+    private readonly DependencyGraph _graph;
+    private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
 
     public TaskExecutor(
         PlanDefinition plan,
@@ -42,6 +45,8 @@ public sealed class TaskExecutor : ITaskExecutor
         _journal = journal;
         _observer = observer;
         _promptRunners = promptRunners;
+        _graph = new DependencyGraph(plan.Tasks);
+        _tasksById = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
     }
 
     /// <inheritdoc />
@@ -254,7 +259,10 @@ public sealed class TaskExecutor : ITaskExecutor
         PromptFile promptFile = LoadPromptFile(task.Action.Path);
         PromptRunnerConfig runnerConfig = registry.ResolveConfig(task.Action.Runner ?? promptFile.Frontmatter.Runner);
 
-        string composed = PromptComposer.ComposeAction(promptFile.Body, snapshotPath, fragmentOutPath, previousFeedbackPath);
+        IReadOnlyList<DependencyContextRef> dependencies = BuildDependencyContext(task);
+        IReadOnlyList<PriorAttemptRef> priorAttempts = BuildPriorAttempts(task.Id, attemptNumber);
+        string composed = PromptComposer.ComposeAction(
+            promptFile.Body, snapshotPath, fragmentOutPath, previousFeedbackPath, dependencies, priorAttempts);
         AtomicFile.WriteAllText(Path.Combine(logDir, "composed-prompt.md"), composed);
 
         PromptRunnerSettings settings = ApplyPromptOverrides(
@@ -269,7 +277,8 @@ public sealed class TaskExecutor : ITaskExecutor
             Environment = env,
             Settings = settings,
             Timeout = ResolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
-            StreamLogPath = Path.Combine(logDir, "claude-stream.jsonl")
+            StreamLogPath = Path.Combine(logDir, "claude-stream.jsonl"),
+            TranscriptLogPath = Path.Combine(logDir, "transcript.md")
         };
 
         PromptResult result = await registry.Resolve(task.Action.Runner ?? promptFile.Frontmatter.Runner)
@@ -554,7 +563,8 @@ public sealed class TaskExecutor : ITaskExecutor
             Environment = guardrailEnv,
             Settings = settings,
             Timeout = ResolveTimeout(task, guardrail.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
-            StreamLogPath = Path.Combine(logDir, $"guardrail-{Sanitize(guardrail.Name)}.stream.jsonl")
+            StreamLogPath = Path.Combine(logDir, $"guardrail-{Sanitize(guardrail.Name)}.stream.jsonl"),
+            TranscriptLogPath = Path.Combine(logDir, $"guardrail-{Sanitize(guardrail.Name)}.transcript.md")
         };
 
         PromptResult promptResult = await registry.Resolve(promptFile.Frontmatter.Runner)
@@ -619,7 +629,13 @@ public sealed class TaskExecutor : ITaskExecutor
               ?? FirstNonEmptyLine(result.StandardError)
               ?? $"exit code {result.ExitCode}";
 
-        return new GuardrailResult { Name = guardrail.Name, Passed = false, Reason = reason };
+        // The one-line reason feeds the UI/journal; the FULL output feeds retry feedback
+        // (issue #26 Gap 1) so a multi-error failure surfaces every error, not just the first.
+        string? output = FirstNonEmptyLine(result.StandardOutput) is not null
+            ? result.StandardOutput
+            : (FirstNonEmptyLine(result.StandardError) is not null ? result.StandardError : null);
+
+        return new GuardrailResult { Name = guardrail.Name, Passed = false, Reason = reason, Output = output };
     }
 
     // --- log paths -----------------------------------------------------------------------
@@ -753,6 +769,83 @@ public sealed class TaskExecutor : ITaskExecutor
     /// <summary>Apply a task/frontmatter <c>maxTurns</c> override over the runner-config settings.</summary>
     private static PromptRunnerSettings ApplyPromptOverrides(PromptRunnerSettings settings, int? maxTurns) =>
         maxTurns is { } turns ? settings with { MaxTurns = turns } : settings;
+
+    /// <summary>
+    /// Build the dependency-context pointers (issue #26 Gap 4): for each task in the transitive
+    /// <c>dependsOn</c> closure that has a recorded success, a pointer to its succeeded-attempt
+    /// transcript and contributed fragment. Ancestors with no success (or no log dir) are
+    /// skipped. Ordered by id for a deterministic prompt.
+    /// </summary>
+    private IReadOnlyList<DependencyContextRef> BuildDependencyContext(TaskNode task)
+    {
+        JournalDocument document = _journal.Document;
+        var refs = new List<DependencyContextRef>();
+
+        foreach (string depId in _graph.TransitiveDependenciesOf(task.Id).OrderBy(d => d, StringComparer.Ordinal))
+        {
+            if (!_tasksById.TryGetValue(depId, out TaskNode? depTask) ||
+                !document.Tasks.TryGetValue(depId, out TaskJournalEntry? entry))
+            {
+                continue;
+            }
+
+            AttemptRecord? success = entry.Attempts.LastOrDefault(a => a.Outcome == AttemptOutcome.Succeeded);
+            if (success is null)
+            {
+                continue;
+            }
+
+            string absLogDir = ResolveAbsoluteLogDir(success.LogDir);
+            refs.Add(new DependencyContextRef
+            {
+                TaskId = depId,
+                Description = depTask.Description,
+                LogDir = absLogDir,
+                TranscriptPath = ExistingOrNull(Path.Combine(absLogDir, "transcript.md")),
+                FragmentPath = ExistingOrNull(Path.Combine(absLogDir, "fragment.json"))
+            });
+        }
+
+        return refs;
+    }
+
+    /// <summary>
+    /// Build pointers to this task's PRIOR attempts (issue #26 Gaps 2 &amp; 3): every recorded
+    /// attempt earlier than <paramref name="currentAttemptNumber"/>, most recent first, each
+    /// with its transcript (what it did) and feedback (why it failed) if present.
+    /// </summary>
+    private IReadOnlyList<PriorAttemptRef> BuildPriorAttempts(string taskId, int currentAttemptNumber)
+    {
+        JournalDocument document = _journal.Document;
+        if (!document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry))
+        {
+            return [];
+        }
+
+        var refs = new List<PriorAttemptRef>();
+        foreach (AttemptRecord record in entry.Attempts
+                     .Where(a => a.Attempt < currentAttemptNumber)
+                     .OrderByDescending(a => a.Attempt))
+        {
+            string absLogDir = ResolveAbsoluteLogDir(record.LogDir);
+            refs.Add(new PriorAttemptRef
+            {
+                Attempt = record.Attempt,
+                Outcome = JournalJson.OutcomeToken(record.Outcome),
+                LogDir = absLogDir,
+                TranscriptPath = ExistingOrNull(Path.Combine(absLogDir, "transcript.md")),
+                FeedbackPath = ExistingOrNull(Path.Combine(absLogDir, "feedback.md"))
+            });
+        }
+
+        return refs;
+    }
+
+    /// <summary>Resolve a journal's plan-relative log dir (forward-slash) to an absolute path.</summary>
+    private string ResolveAbsoluteLogDir(string relativeLogDir) =>
+        Path.GetFullPath(Path.Combine(_plan.PlanDirectory, relativeLogDir));
+
+    private static string? ExistingOrNull(string path) => File.Exists(path) ? path : null;
 
     /// <summary>
     /// Read the (already-written) action fragment and, if its root is an object with a string

@@ -31,6 +31,13 @@ public sealed record PromptInvocation
 
     /// <summary>Absolute path the raw runner output stream is teed to (<c>claude-stream.jsonl</c>).</summary>
     public required string StreamLogPath { get; init; }
+
+    /// <summary>
+    /// Absolute path for the rendered, human/agent-readable transcript (<c>transcript.md</c>,
+    /// issue #27) — the CLI-equivalent view derived deterministically from the raw stream.
+    /// Null disables transcript rendering (e.g. a runner whose output is not a Claude stream).
+    /// </summary>
+    public string? TranscriptLogPath { get; init; }
 }
 
 /// <summary>

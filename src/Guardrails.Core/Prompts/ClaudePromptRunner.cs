@@ -58,7 +58,16 @@ public sealed class ClaudePromptRunner : IPromptRunner
             cancellationToken).ConfigureAwait(false);
 
         // Tee the raw stream to claude-stream.jsonl (SSOT §8).
-        AtomicFile.WriteAllText(invocation.StreamLogPath, string.Join('\n', streamLines));
+        string rawStream = string.Join('\n', streamLines);
+        AtomicFile.WriteAllText(invocation.StreamLogPath, rawStream);
+
+        // Derive the CLI-equivalent transcript.md deterministically from the same stream
+        // (issue #27): the raw JSONL is the debug artifact; the transcript is what humans
+        // skim and what dependent tasks read (issue #26).
+        if (invocation.TranscriptLogPath is { } transcriptPath)
+        {
+            AtomicFile.WriteAllText(transcriptPath, ClaudeTranscriptRenderer.Render(rawStream));
+        }
 
         ClaudeResult result = parser.Build();
 

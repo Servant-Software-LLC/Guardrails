@@ -13,6 +13,23 @@ public static class JournalJson
 {
     public static JsonSerializerOptions Options { get; } = Build();
 
+    /// <summary>
+    /// The SSOT §7 outcome token for an <see cref="AttemptOutcome"/> (e.g. <c>guardrail-failed</c>).
+    /// The single source of truth for the kebab spelling, reused by the JSON converter and by
+    /// prompt-context labelling (issue #26).
+    /// </summary>
+    public static string OutcomeToken(AttemptOutcome outcome) => outcome switch
+    {
+        AttemptOutcome.Succeeded => "succeeded",
+        AttemptOutcome.ActionFailed => "action-failed",
+        AttemptOutcome.GuardrailFailed => "guardrail-failed",
+        AttemptOutcome.Timeout => "timeout",
+        AttemptOutcome.Cancelled => "cancelled",
+        AttemptOutcome.InvalidFragment => "invalid-fragment",
+        AttemptOutcome.NeedsHuman => "needs-human",
+        _ => throw new JsonException($"Unhandled attempt outcome '{outcome}'.")
+    };
+
     private static JsonSerializerOptions Build()
     {
         var options = new JsonSerializerOptions
@@ -80,16 +97,6 @@ public static class JournalJson
         }
 
         public override void Write(Utf8JsonWriter writer, AttemptOutcome value, JsonSerializerOptions options) =>
-            writer.WriteStringValue(value switch
-            {
-                AttemptOutcome.Succeeded => "succeeded",
-                AttemptOutcome.ActionFailed => "action-failed",
-                AttemptOutcome.GuardrailFailed => "guardrail-failed",
-                AttemptOutcome.Timeout => "timeout",
-                AttemptOutcome.Cancelled => "cancelled",
-                AttemptOutcome.InvalidFragment => "invalid-fragment",
-                AttemptOutcome.NeedsHuman => "needs-human",
-                _ => throw new JsonException($"Unhandled attempt outcome '{value}'.")
-            });
+            writer.WriteStringValue(OutcomeToken(value));
     }
 }

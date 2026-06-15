@@ -322,10 +322,17 @@ state/logs/<task-id>/attempt-N/
 ├── action-out-fragment.json # the LIVE GUARDRAILS_STATE_OUT target the action writes
 ├── fragment.json            # copy of the fragment made on successful merge — audit trail
 ├── composed-prompt.md       # prompt actions/guardrails: exactly what the runner got
-├── claude-stream.jsonl      # raw runner output stream
+├── claude-stream.jsonl      # raw runner output stream (canonical debug artifact)
+├── transcript.md            # CLI-equivalent view, rendered deterministically from the stream (#27)
 ├── guardrail-<name>.stdout.log / .stderr.log / .verdict.json
 └── feedback.md              # composed failure feedback (input to the NEXT attempt)
 ```
+
+`transcript.md` is a PURE, DETERMINISTIC projection of `claude-stream.jsonl` (no model in
+the loop): assistant prose + `● Tool(args)` + truncated `⎿` tool-result summaries + the final
+result text; thinking blocks and all telemetry (thinking-token counters, rate-limit/init/usage
+events) are dropped. It is what a human skims and what a dependent task's prompt links to
+(§9, #26) — the raw stream stays as the debug artifact.
 
 ---
 
@@ -339,9 +346,12 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 - Prompt delivered via **stdin** (no arg-length/quoting issues).
 - cwd = workspace; `--add-dir <planDir>` grants access to state/verdict paths.
 - The composed prompt (§8 `composed-prompt.md`) = body + appended harness sections:
-  shared state (inlined ≤ 16 KB, else by path), output contract (actions), previous-
-  attempt feedback (actions, attempt ≥ 2: "fix these specific problems; do not start
-  over"), verdict contract (guardrails: "you are a verifier — do NOT fix anything").
+  shared state (inlined ≤ 16 KB, else by path), **dependency context** (actions: pointers to
+  the transitive `dependsOn` closure's `transcript.md` + contributed `fragment.json`, present
+  on every attempt — #26 Gap 4), output contract (actions), previous-attempt feedback (actions,
+  attempt ≥ 2: the latest `feedback.md` verbatim + pointers to ALL prior attempts' transcript
+  and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), verdict
+  contract (guardrails: "you are a verifier — do NOT fix anything").
 - Semantic success for a prompt **action** = process completed AND result `is_error == false`.
   For a prompt **guardrail** = the verdict file, full stop.
 - Per-attempt `total_cost_usd` is recorded in the journal. The `run` summary and

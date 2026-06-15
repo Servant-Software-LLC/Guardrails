@@ -11,8 +11,11 @@ namespace Guardrails.Core.Prompts;
 /// Sections:
 /// <list type="bullet">
 /// <item><c>## Shared state</c> — STATE_IN inlined when ≤ 16 KB, else "read the JSON at &lt;path&gt;".</item>
+/// <item>(actions) <c>## Context from completed dependency tasks</c> — transcript/fragment pointers
+///   for the transitive <c>dependsOn</c> closure (issue #26 Gap 4); present on every attempt.</item>
 /// <item>(actions) <c>## Output contract</c> — write a JSON fragment to STATE_OUT; the needsHuman escape.</item>
-/// <item>(actions, attempt ≥ 2) <c>## Previous attempt failed</c> — the feedback.md content verbatim.</item>
+/// <item>(actions, attempt ≥ 2) <c>## Previous attempt failed</c> — the latest feedback.md verbatim,
+///   plus pointers to ALL prior attempts' transcript/feedback (issue #26 Gaps 2 &amp; 3).</item>
 /// <item>(guardrails) <c>## Verdict contract</c> — verifier instructions + the verdict file path.</item>
 /// </list>
 /// </summary>
@@ -26,13 +29,16 @@ public static class PromptComposer
         string body,
         string stateInPath,
         string stateOutPath,
-        string? feedbackPath)
+        string? feedbackPath,
+        IReadOnlyList<DependencyContextRef>? dependencies = null,
+        IReadOnlyList<PriorAttemptRef>? priorAttempts = null)
     {
         var text = new StringBuilder();
         AppendBody(text, body);
         AppendSharedState(text, stateInPath);
+        AppendDependencyContext(text, dependencies);
         AppendOutputContract(text, stateOutPath);
-        AppendPreviousAttempt(text, feedbackPath);
+        AppendPreviousAttempt(text, feedbackPath, priorAttempts);
         return text.ToString();
     }
 
@@ -89,18 +95,96 @@ public static class PromptComposer
         text.Append("escalate to a human without burning further retries.\n");
     }
 
-    private static void AppendPreviousAttempt(StringBuilder text, string? feedbackPath)
+    /// <summary>
+    /// The dependency-context section (issue #26 Gap 4): for each transitive <c>dependsOn</c>
+    /// ancestor, a pointer to its clean transcript (what it built) and the state fragment it
+    /// contributed. Present on every attempt so the FIRST try already knows the project shape,
+    /// rather than rediscovering it via Glob/Read. Reading is encouraged but not mandated —
+    /// the section is bounded (paths, not inlined content), so it stays cheap even with many
+    /// ancestors. Emitted only when there is at least one resolvable ancestor.
+    /// </summary>
+    private static void AppendDependencyContext(StringBuilder text, IReadOnlyList<DependencyContextRef>? dependencies)
     {
-        if (feedbackPath is null || !File.Exists(feedbackPath))
+        if (dependencies is null || dependencies.Count == 0)
         {
             return;
         }
 
-        string feedback = File.ReadAllText(feedbackPath).TrimEnd();
+        text.Append("\n## Context from completed dependency tasks\n\n");
+        text.Append("Your task depends on the tasks below (directly or transitively); they have already ");
+        text.Append("completed. Read their transcripts to see exactly what they produced — files, classes, ");
+        text.Append("and conventions — instead of rediscovering the project from scratch. These are ");
+        text.Append("read-only context, not work to redo.\n\n");
+
+        foreach (DependencyContextRef dependency in dependencies)
+        {
+            text.Append("- `").Append(dependency.TaskId).Append("` — ").Append(dependency.Description).Append('\n');
+            if (dependency.TranscriptPath is { } transcript)
+            {
+                text.Append("  - What it did: `").Append(transcript).Append("`\n");
+            }
+            else
+            {
+                text.Append("  - Logs: `").Append(dependency.LogDir).Append("`\n");
+            }
+
+            if (dependency.FragmentPath is { } fragment)
+            {
+                text.Append("  - State it contributed: `").Append(fragment).Append("`\n");
+            }
+        }
+    }
+
+    /// <summary>
+    /// The retry section: the latest <c>feedback.md</c> inlined verbatim (issue feedback loop),
+    /// followed by pointers to ALL prior attempts' transcript/feedback so the agent sees the
+    /// full arc of what was tried, not only the immediately preceding failure (issue #26 Gaps
+    /// 2 &amp; 3). The agent is pointed at the clean <c>transcript.md</c> (what it did) and
+    /// <c>feedback.md</c> (why it failed) — never the raw stream.
+    /// </summary>
+    private static void AppendPreviousAttempt(
+        StringBuilder text,
+        string? feedbackPath,
+        IReadOnlyList<PriorAttemptRef>? priorAttempts)
+    {
+        bool hasFeedback = feedbackPath is not null && File.Exists(feedbackPath);
+        bool hasPriors = priorAttempts is { Count: > 0 };
+        if (!hasFeedback && !hasPriors)
+        {
+            return;
+        }
+
         text.Append("\n## Previous attempt failed\n\n");
-        text.Append(feedback);
-        text.Append("\n\nThis is a RETRY. Fix these specific problems; do not start over — keep what already ");
-        text.Append("works and address only what failed above.\n");
+
+        if (hasFeedback)
+        {
+            string feedback = File.ReadAllText(feedbackPath!).TrimEnd();
+            text.Append(feedback);
+            text.Append("\n\nThis is a RETRY. Fix these specific problems; do not start over — keep what already ");
+            text.Append("works and address only what failed above.\n");
+        }
+
+        if (hasPriors)
+        {
+            text.Append("\n### Prior attempt logs (read-only — inspect for full context)\n\n");
+            text.Append("Earlier attempts and their logs, most recent first. Read the transcript to see what ");
+            text.Append("each attempt did, and the feedback for why it failed:\n\n");
+
+            foreach (PriorAttemptRef attempt in priorAttempts!)
+            {
+                text.Append("- Attempt ").Append(attempt.Attempt)
+                    .Append(" (").Append(attempt.Outcome).Append("): `").Append(attempt.LogDir).Append("`\n");
+                if (attempt.TranscriptPath is { } transcript)
+                {
+                    text.Append("  - What it did: `").Append(transcript).Append("`\n");
+                }
+
+                if (attempt.FeedbackPath is { } feedback)
+                {
+                    text.Append("  - Why it failed: `").Append(feedback).Append("`\n");
+                }
+            }
+        }
     }
 
     private static void AppendVerdictContract(StringBuilder text, string verdictOutPath, string actionStdoutPath)

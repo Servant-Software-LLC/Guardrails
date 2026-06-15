@@ -79,4 +79,34 @@ public sealed class DependencyGraphTests
 
         Assert.Equal(new HashSet<string> { "02-mid", "03-leaf" }, closure);
     }
+
+    [Fact]
+    public void TransitiveDependencies_CoversWholeAncestorClosure()
+    {
+        // Mirror of the real task-08 graph: 08 → {01, 04, 05}; 04 → 02; 05 → 02.
+        // Closure must be {01, 02, 04, 05} — excludes 03 (unrelated) and dependents.
+        var graph = new DependencyGraph([
+            Task("01-research"),
+            Task("02-restructure"),
+            Task("03-decide"),
+            Task("04-shell", "02-restructure"),
+            Task("05-abstraction", "02-restructure"),
+            Task("08-onprem", "04-shell", "05-abstraction", "01-research")
+        ]);
+
+        IReadOnlySet<string> ancestors = graph.TransitiveDependenciesOf("08-onprem");
+
+        Assert.Equal(
+            new HashSet<string> { "01-research", "02-restructure", "04-shell", "05-abstraction" },
+            ancestors);
+        Assert.DoesNotContain("03-decide", ancestors);
+    }
+
+    [Fact]
+    public void TransitiveDependencies_NoDeps_IsEmpty()
+    {
+        var graph = new DependencyGraph([Task("01-root"), Task("02-b", "01-root")]);
+
+        Assert.Empty(graph.TransitiveDependenciesOf("01-root"));
+    }
 }

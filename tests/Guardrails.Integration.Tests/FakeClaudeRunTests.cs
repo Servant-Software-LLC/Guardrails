@@ -54,6 +54,55 @@ public sealed class FakeClaudeRunTests
         string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
         Assert.True(File.Exists(Path.Combine(attemptDir, "composed-prompt.md")));
         Assert.True(File.Exists(Path.Combine(attemptDir, "claude-stream.jsonl")));
+
+        // A deterministic, CLI-equivalent transcript was rendered from the stream (issue #27).
+        string transcriptPath = Path.Combine(attemptDir, "transcript.md");
+        Assert.True(File.Exists(transcriptPath));
+        string transcript = File.ReadAllText(transcriptPath);
+        Assert.Contains("⏺ fake done", transcript);
+        Assert.DoesNotContain("total_cost_usd", transcript); // telemetry stripped
+    }
+
+    [Fact]
+    public async Task DependencyContext_PointsDependentAtAncestorTranscript()
+    {
+        // 02 depends on 01; once 01 succeeds, 02's prompt must carry a dependency-context
+        // pointer to 01's transcript (issue #26 Gap 4), on its very first attempt.
+        using var plan = new FakeClaudePlanBuilder()
+            .AddPromptTask("01-foundation", mode: "fragment")
+            .AddPromptTask("02-dependent", mode: "fragment", dependsOn: "01-foundation");
+
+        RunReport report = await RunAsync(plan.PlanDir);
+        Assert.All(report.Tasks, t => Assert.Equal(TaskOutcome.Succeeded, t.Outcome));
+
+        string composed = File.ReadAllText(
+            Path.Combine(plan.PlanDir, "state", "logs", "02-dependent", "attempt-1", "composed-prompt.md"));
+
+        Assert.Contains("## Context from completed dependency tasks", composed);
+        Assert.Contains("01-foundation", composed);
+        string ancestorTranscript = Path.Combine(
+            plan.PlanDir, "state", "logs", "01-foundation", "attempt-1", "transcript.md");
+        Assert.Contains(ancestorTranscript, composed);
+    }
+
+    [Fact]
+    public async Task RetryPrompt_PointsAtPriorAttemptTranscriptAndFeedback()
+    {
+        // A failing guardrail yields two attempts; attempt 2's prompt must list attempt 1's
+        // logs (issue #26 Gaps 2 & 3) — transcript (what it did) and feedback (why it failed).
+        using var plan = new FakeClaudePlanBuilder(defaultRetries: 1)
+            .AddPromptTask("01-generate", mode: "fragment", promptGuardrail: true,
+                env: new Dictionary<string, string> { ["FAKE_VERDICT"] = "fail" });
+
+        await RunAsync(plan.PlanDir);
+
+        string attempt2Prompt = File.ReadAllText(
+            Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-2", "composed-prompt.md"));
+
+        Assert.Contains("### Prior attempt logs", attempt2Prompt);
+        string attempt1Dir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
+        Assert.Contains(Path.Combine(attempt1Dir, "transcript.md"), attempt2Prompt);
+        Assert.Contains(Path.Combine(attempt1Dir, "feedback.md"), attempt2Prompt);
     }
 
     [Fact]
