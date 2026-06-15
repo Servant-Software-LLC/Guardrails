@@ -35,11 +35,23 @@ public static class RunCommand
             Description = "Validate and preview waves + per-task resolution + resume skips, then exit 0 without running or touching state."
         };
 
+        var noLogServerOption = new Option<bool>("--no-log-server")
+        {
+            Description = "Do not start the local log server / clickable per-task log links (for headless or CI use)."
+        };
+
+        var logPortOption = new Option<int>("--log-port")
+        {
+            Description = "Port for the local log server (default 0 = an automatically chosen free port). Bound to localhost only."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
         command.Add(noUiOption);
         command.Add(dryRunOption);
+        command.Add(noLogServerOption);
+        command.Add(logPortOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -47,19 +59,22 @@ public static class RunCommand
             bool fresh = parseResult.GetValue(freshOption);
             bool noUi = parseResult.GetValue(noUiOption);
             bool dryRun = parseResult.GetValue(dryRunOption);
+            bool noLogServer = parseResult.GetValue(noLogServerOption);
+            int logPort = parseResult.GetValue(logPortOption);
 
             if (dryRun)
             {
                 return DryRun.Execute(folder, io);
             }
 
-            return await RunAsync(folder, fresh, noUi, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
-    private static async Task<int> RunAsync(string folder, bool fresh, bool noUi, IConsoleIo io, CancellationToken cancellationToken)
+    private static async Task<int> RunAsync(
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -77,18 +92,48 @@ public static class RunCommand
 
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;
 
-        RunReport report;
-        if (live)
-        {
-            await using var observer = new LiveRunObserver(probe.Plan.Tasks);
-            report = await ExecuteAsync(probe.Plan, observer, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(io.Out), cancellationToken).ConfigureAwait(false);
-        }
+        // The log server is a companion to the live table: start it only in the interactive path
+        // (nobody clicks links in CI / redirected output), and never let a binding failure abort
+        // the run — TryStart returns null and prints one warning.
+        LogServer? logServer = (live && !noLogServer)
+            ? LogServer.TryStart(probe.Plan.PlanDirectory, probe.Plan.Tasks, logPort, io.Out)
+            : null;
 
-        PrintSummary(report, probe.Plan.PlanDirectory, io);
+        try
+        {
+            if (logServer is not null)
+            {
+                io.Out.WriteLine($"Live task logs: {logServer.BaseUrl} (Ctrl/Cmd-click a task's \"view log\" link)\n");
+            }
+
+            Func<string, string?>? logUrlForTask = logServer is null ? null : logServer.UrlForTask;
+
+            RunReport report;
+            if (live)
+            {
+                await using var observer = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask);
+                report = await ExecuteAsync(probe.Plan, observer, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(io.Out), cancellationToken).ConfigureAwait(false);
+            }
+
+            return Finish(report, probe.Plan.PlanDirectory, io);
+        }
+        finally
+        {
+            if (logServer is not null)
+            {
+                await logServer.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>Print the summary and map the report to the process exit code (SSOT §7).</summary>
+    private static int Finish(RunReport report, string planDirectory, IConsoleIo io)
+    {
+        PrintSummary(report, planDirectory, io);
 
         if (report.Cancelled)
         {

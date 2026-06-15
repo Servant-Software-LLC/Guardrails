@@ -17,10 +17,18 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private readonly Dictionary<string, int> _rowByTask = new(StringComparer.Ordinal);
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _liveLoop;
+    private readonly Func<string, string?>? _logUrlForTask;
     private LiveDisplayContext? _context;
 
-    public LiveRunObserver(IReadOnlyList<TaskNode> tasks)
+    /// <param name="tasks">The tasks to render, one row each.</param>
+    /// <param name="logUrlForTask">
+    /// Optional resolver mapping a task id to its live-log URL. When supplied, a running task's
+    /// Detail cell renders a clickable <c>view log</c> link (OSC 8 hyperlink in capable terminals,
+    /// plain text elsewhere). Null = no links (no log server).
+    /// </param>
+    public LiveRunObserver(IReadOnlyList<TaskNode> tasks, Func<string, string?>? logUrlForTask = null)
     {
+        _logUrlForTask = logUrlForTask;
         _table = new Table().Border(TableBorder.Rounded);
         _table.AddColumn("Task");
         _table.AddColumn("Status");
@@ -49,15 +57,29 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     }
 
     public void TaskStarting(TaskNode task) =>
-        Update(task.Id, "[yellow]running[/]", string.Empty);
+        Update(task.Id, "[yellow]running[/]", LogLinkMarkup(task.Id) ?? string.Empty);
 
     public void AttemptStarting(TaskNode task, int attempt, int budget)
     {
         if (attempt > 1)
         {
-            Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", "previous attempt failed");
+            string detail = "previous attempt failed";
+            if (LogLinkMarkup(task.Id) is { } link)
+            {
+                detail += $" · {link}";
+            }
+
+            Update(task.Id, $"[yellow]retry {attempt}/{budget}[/]", detail);
         }
     }
+
+    /// <summary>
+    /// Spectre markup for a clickable "view log" link, or null when no log server is wired.
+    /// <c>[link=…]</c> emits an OSC 8 hyperlink in capable terminals (Windows Terminal, VS Code,
+    /// iTerm2) and degrades to plain underlined text elsewhere.
+    /// </summary>
+    private string? LogLinkMarkup(string taskId) =>
+        _logUrlForTask?.Invoke(taskId) is { } url ? $"[link={url}]view log[/]" : null;
 
     public void GuardrailFinished(TaskNode task, GuardrailResult result) =>
         Update(task.Id, null, result.Passed
