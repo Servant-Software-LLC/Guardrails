@@ -1,0 +1,102 @@
+<!-- guardrails:graph v1 source-sha256=56459e16d4eb626893edf0bb21262d8cf1eba3deb414f3f6f6027d7e5bb7e938 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guardrails — task/guardrail DAG</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f14; color: #d6deeb;
+               font-family: system-ui, sans-serif; overflow: hidden; }
+  #bar { position: fixed; top: 8px; left: 8px; z-index: 10; display: flex; gap: 6px; }
+  #bar button { background: #121a24; color: #d6deeb; border: 1px solid #243343;
+                border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  #bar button:hover { border-color: #7fdbff; }
+  #stage { width: 100vw; height: 100vh; }
+  #stage svg { width: 100vw; height: 100vh; max-width: none !important; }
+  #hint { position: fixed; bottom: 8px; left: 8px; color: #5b6b7b; font-size: 12px;
+          max-width: 90vw; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="fit">Fit</button>
+  <button id="zin">+</button>
+  <button id="zout">&minus;</button>
+  <button id="fs">Fullscreen</button>
+</div>
+<div id="stage"></div>
+<div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
+  Local viewer &mdash; on GitHub, diagram.md renders instead.</div>
+
+<script type="text/plain" id="graph-source">flowchart TD
+  task_01_write_greeting_script["01-write-greeting-script"]:::task
+  gr_01_write_greeting_script_0["01-script-exists"]:::guardrail
+  task_01_write_greeting_script --> gr_01_write_greeting_script_0
+  gr_01_write_greeting_script_0 --> done_01_write_greeting_script
+  gr_01_write_greeting_script_1["02-script-runs-clean"]:::guardrail
+  task_01_write_greeting_script --> gr_01_write_greeting_script_1
+  gr_01_write_greeting_script_1 --> done_01_write_greeting_script
+  done_01_write_greeting_script["01-write-greeting-script ✓ Finished"]:::done
+  task_02_generate_greeting["02-generate-greeting"]:::task
+  gr_02_generate_greeting_0["01-greeting-exists"]:::guardrail
+  task_02_generate_greeting --> gr_02_generate_greeting_0
+  gr_02_generate_greeting_0 --> done_02_generate_greeting
+  gr_02_generate_greeting_1["02-greeting-contains"]:::guardrail
+  task_02_generate_greeting --> gr_02_generate_greeting_1
+  gr_02_generate_greeting_1 --> done_02_generate_greeting
+  done_02_generate_greeting["02-generate-greeting ✓ Finished"]:::done
+  task_03_quality_check["03-quality-check"]:::task
+  gr_03_quality_check_0["01-report-exists"]:::guardrail
+  task_03_quality_check --> gr_03_quality_check_0
+  gr_03_quality_check_0 --> done_03_quality_check
+  gr_03_quality_check_1["02-tone-is-friendly"]:::guardrail
+  task_03_quality_check --> gr_03_quality_check_1
+  gr_03_quality_check_1 --> done_03_quality_check
+  done_03_quality_check["03-quality-check ✓ Finished"]:::done
+  done_01_write_greeting_script --> task_02_generate_greeting
+  done_02_generate_greeting --> task_03_quality_check
+  classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
+  classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  click task_01_write_greeting_script href "tasks/01-write-greeting-script/" "01-write-greeting-script" _blank
+  click gr_01_write_greeting_script_0 href "tasks/01-write-greeting-script/guardrails/01-script-exists.ps1" "01-script-exists" _blank
+  click gr_01_write_greeting_script_1 href "tasks/01-write-greeting-script/guardrails/02-script-runs-clean.ps1" "02-script-runs-clean" _blank
+  click task_02_generate_greeting href "tasks/02-generate-greeting/" "02-generate-greeting" _blank
+  click gr_02_generate_greeting_0 href "tasks/02-generate-greeting/guardrails/01-greeting-exists.ps1" "01-greeting-exists" _blank
+  click gr_02_generate_greeting_1 href "tasks/02-generate-greeting/guardrails/02-greeting-contains.ps1" "02-greeting-contains" _blank
+  click task_03_quality_check href "tasks/03-quality-check/" "03-quality-check" _blank
+  click gr_03_quality_check_0 href "tasks/03-quality-check/guardrails/01-report-exists.ps1" "01-report-exists" _blank
+  click gr_03_quality_check_1 href "tasks/03-quality-check/guardrails/02-tone-is-friendly.prompt.md" "02-tone-is-friendly" _blank</script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+const graph = document.getElementById('graph-source').textContent;
+// securityLevel 'loose' is required for the `click ... href` directives to open node sources;
+// the content is the user's own local plan, served from file:// — not untrusted input.
+mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', flowchart: { useMaxWidth: false } });
+
+let pz = null;
+try {
+  const { svg } = await mermaid.render('dag', graph);
+  document.getElementById('stage').innerHTML = svg;
+  const el = document.querySelector('#stage svg');
+  el.setAttribute('width', '100vw');
+  el.setAttribute('height', '100vh');
+  pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
+                        minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
+  window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
+} catch (e) {
+  document.getElementById('stage').innerHTML =
+    '<p style="padding:1rem">Could not render the diagram (offline? the renderer loads from a CDN). ' +
+    'The DAG source is embedded in this page, and diagram.md renders on GitHub.</p>';
+}
+
+document.getElementById('fit').onclick  = () => { if (pz) { pz.fit(); pz.center(); } };
+document.getElementById('zin').onclick  = () => { if (pz) pz.zoomBy(1.3); };
+document.getElementById('zout').onclick = () => { if (pz) pz.zoomBy(0.77); };
+document.getElementById('fs').onclick   = () => document.documentElement.requestFullscreen();
+</script>
+</body>
+</html>

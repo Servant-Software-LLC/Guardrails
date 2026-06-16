@@ -47,6 +47,7 @@ public sealed class BreakdownManifestTests : IDisposable
         WriteFile("tasks/01-a/task.json", "{ \"description\": \"x\" }");
         WriteFile(BreakdownManifest.FileName, "{ \"version\": 1, \"files\": {} }"); // self
         WriteFile("diagram.md", "<!-- generated -->");                             // generated artifact
+        WriteFile("diagram.html", "<!-- generated -->");                           // generated artifact (#33)
         WriteFile("state/state.json", "{}");                                       // harness runtime
         WriteFile("state/run.json", "{}");                                         // harness runtime
         WriteFile("state/logs/01-a/attempt-1/action-stdout.log", "noise");         // harness runtime
@@ -60,6 +61,7 @@ public sealed class BreakdownManifestTests : IDisposable
         Assert.Contains("state/seed.json", manifest.Files.Keys);
         Assert.DoesNotContain(BreakdownManifest.FileName, manifest.Files.Keys);
         Assert.DoesNotContain("diagram.md", manifest.Files.Keys);
+        Assert.DoesNotContain("diagram.html", manifest.Files.Keys);
         Assert.DoesNotContain("state/state.json", manifest.Files.Keys);
         Assert.DoesNotContain("state/run.json", manifest.Files.Keys);
         Assert.DoesNotContain("state/logs/01-a/attempt-1/action-stdout.log", manifest.Files.Keys);

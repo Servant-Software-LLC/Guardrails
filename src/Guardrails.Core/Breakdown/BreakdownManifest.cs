@@ -28,8 +28,9 @@ public sealed record BreakdownManifest
     /// <summary>The baseline file name, written at the plan-folder root.</summary>
     public const string FileName = "guardrails.baseline";
 
-    /// <summary>The generated diagram artifact (SSOT §10), excluded from the snapshot.</summary>
+    /// <summary>The generated diagram artifacts (SSOT §10 / issue #33), excluded from the snapshot.</summary>
     private const string DiagramFileName = "diagram.md";
+    private const string DiagramHtmlFileName = "diagram.html";
 
     /// <summary>The current manifest schema version.</summary>
     public const int CurrentVersion = 1;
@@ -145,8 +146,9 @@ public sealed record BreakdownManifest
     /// <summary>
     /// Whether a plan-folder-relative path (forward-slash) is authored breakdown content that
     /// belongs in the snapshot. Excludes the baseline file (anywhere), the generated
-    /// <c>diagram.md</c> (at the plan root), atomic-write temp residue (<c>*.tmp</c>), and
-    /// harness-owned runtime under <c>state/</c> — but keeps the committed <c>state/seed.json</c>.
+    /// <c>diagram.md</c> and <c>diagram.html</c> (at the plan root), atomic-write temp residue
+    /// (<c>*.tmp</c>), and harness-owned runtime under <c>state/</c> — but keeps the committed
+    /// <c>state/seed.json</c>.
     /// Reserved-name and segment comparisons are <see cref="StringComparison.OrdinalIgnoreCase"/>
     /// so the exclusions hold on case-insensitive filesystems (Windows/macOS).
     /// </summary>
@@ -166,9 +168,11 @@ public sealed record BreakdownManifest
 
         string[] segments = relativePath.Split('/');
 
-        // The generated diagram lives at the plan root and is a non-authored artifact (§10).
+        // The generated diagrams live at the plan root and are non-authored artifacts (§10 / #33):
+        // diagram.md (GitHub render) and its diagram.html navigation companion.
         if (segments.Length == 1 &&
-            string.Equals(segments[0], DiagramFileName, StringComparison.OrdinalIgnoreCase))
+            (string.Equals(segments[0], DiagramFileName, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(segments[0], DiagramHtmlFileName, StringComparison.OrdinalIgnoreCase)))
         {
             return false;
         }
