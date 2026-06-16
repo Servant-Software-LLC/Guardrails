@@ -44,7 +44,13 @@ and only then does `guardrails run` execute it.
    self-validation will be skipped and the output is unverified.
 5. Identify the **workspace** (the repo the plan operates on — normally the folder
    containing the plan) and what already exists there: test framework, linter,
-   build system. Guardrail selection depends on what's real.
+   build system. Guardrail selection depends on what's real. **Record WHICH test
+   framework is present, not merely whether one is** — set `$testFramework` by scanning
+   existing test projects for the framework dependency (.NET: a `PackageReference` to
+   `xunit` / `NUnit` / `MSTest.TestFramework` in any `*.csproj`; node: `jest` / `vitest`
+   / `mocha` in `package.json`; python: `pytest`; etc.). If no test project exists, set
+   `$testFramework = none` — that is the trigger for the framework-selection rule in
+   Step 5, **not** a licence to pick one silently.
 6. **Detect the stack** from the workspace and load the matching stack file
    (`references/stacks/<stack>.md`) BEFORE guardrail selection (Steps 4–6):
 
@@ -296,6 +302,25 @@ upstream task that creates it:
   mistake; (c) do NOT implement the behavior, only the tests; (d) after writing the tests,
   compute and publish their hashes per the Part 1 template above. See
   `references/example-breakdown.md` for the complete worked `action.prompt.md`.
+- **Test framework is not yet chosen** (`$testFramework = none` from Step 0 and no test
+  project exists) → the framework is a real fork (xUnit / NUnit / MSTest; jest / vitest;
+  pytest / unittest) that **no one has decided**. Never let the action agent guess it from
+  its training prior — that is the silent-default failure. Resolve it once, at breakdown
+  time, in this priority:
+  1. **Detected in the repo** (`$testFramework` ≠ none) → use it; no decision needed.
+  2. **Named in the plan** → use exactly what the plan names.
+  3. **Absent, and this is an interactive breakdown** → ask the human with `AskUserQuestion`
+     (options = the stack's common frameworks; mark the ecosystem's usual choice
+     "(Recommended)"). Use the answer.
+  4. **Absent, and this is an unattended breakdown** (CI, the golden round-trip meta-test,
+     any non-interactive run) → do NOT block and do NOT silently default. Write the
+     test-bootstrap / test-author action prompt with the **honest-halt instruction**
+     (Step 6) so the choice surfaces to a human at run time, and flag the open choice in
+     the breakdown report (Step 7).
+
+  The same priority governs an **E2E driver** choice (Playwright / Cypress); the `$e2eStack`
+  detection mechanics land with the web-UI verification work — until then, an absent driver
+  is surfaced (report + honest-halt), never silently scaffolded.
 - Guardrail "schema validates" and no schema exists → insert an author-schema task
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
@@ -344,6 +369,18 @@ Per `references/schemas.md`, exactly:
   task's guardrails>
   ```
 
+- **Test-bootstrap / test-author action prompts must name the framework or halt — never
+  guess.** When the framework was resolved (Step 5 cases 1–3), name it concretely (e.g.
+  "an xUnit.v3 test project") and tell the agent to mirror existing projects' package
+  versions **only if such projects actually exist**. Never instruct an agent to "mirror
+  the existing test projects" in a workspace that has none — that self-contradiction is
+  the #40 failure (the agent resolves it by silently guessing). When the framework is
+  unresolved in an unattended run (Step 5 case 4), the `## Task` instead says, verbatim in
+  spirit:
+
+  > No test project exists and no framework was specified. Do NOT assume one. Write
+  > `{"needsHuman": "No test framework found — which should <TestProject> use: xUnit,
+  > NUnit, or MSTest?"}` to the state-out path and stop.
 - `state/seed.json` only if the plan implies initial shared state (input paths,
   names, configuration the tasks read).
 - Scripts: prefer the workspace's native platform; note any interpreter requirement
@@ -362,10 +399,14 @@ Per `references/schemas.md`, exactly:
    future regeneration can preserve any guardrails the human edits in the meantime (§11).
 4. Emit the **breakdown report**: task table (id, action kind, guardrails with
    archetype numbers, dependsOn), the inserted-task list with justifications, edge
-   justifications, and any flagged non-executable plan content. Then **embed the
-   generated Mermaid block inline** (paste the ```mermaid``` fence from `diagram.md`)
-   so the human sees the DAG in chat, and **state the `<folder>/diagram.md` path**
-   explicitly so they can render it in GitHub or VS Code.
+   justifications, and any flagged non-executable plan content. **Surface every decision
+   the human should confirm** — chief among them any test-framework or E2E-driver choice:
+   state which was used and why (detected in repo / named in the plan / asked via
+   `AskUserQuestion` / left as a needs-human halt). A wrong framework poisons every
+   downstream test task, so it must never be buried. Then **embed the generated Mermaid
+   block inline** (paste the ```mermaid``` fence from `diagram.md`) so the human sees the
+   DAG in chat, and **state the `<folder>/diagram.md` path** explicitly so they can render
+   it in GitHub or VS Code.
 5. Close with, verbatim in spirit:
 
    > **This is a draft.** Review the folder — especially the guardrails — edit,
