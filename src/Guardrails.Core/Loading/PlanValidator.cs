@@ -27,6 +27,7 @@ public sealed class PlanValidator
         ValidateTaskIdsUnique(plan, diagnostics);
         ValidateStableIdsUnique(plan, diagnostics);
         ValidateStableIdFormat(plan, diagnostics);
+        ValidateCostCap(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
@@ -105,6 +106,21 @@ public sealed class PlanValidator
 
     private static readonly Regex StableIdPattern =
         new("^[a-z0-9][a-z0-9._-]*$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The per-run cost cap (<c>maxCostUsd</c>, SSOT §2) must be positive when present. A zero or
+    /// negative cap would trip before any work could run — almost always a configuration mistake —
+    /// so it is an ERROR (GR2012). An absent cap is the no-cap default and is fine.
+    /// </summary>
+    private static void ValidateCostCap(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (plan.Config.MaxCostUsd is { } cap && cap <= 0m)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.CostCapNonPositive, plan.PlanDirectory,
+                $"maxCostUsd is {cap}, but a cost cap must be positive; a zero or negative cap would " +
+                "halt the run before any work could run."));
+        }
+    }
 
     private static void ValidateDependencies(PlanDefinition plan, List<Diagnostic> diagnostics)
     {

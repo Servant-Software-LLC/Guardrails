@@ -80,4 +80,12 @@ public static class DiagnosticCodes
     /// with that synthetic key, and keeps ids stable across path/JSON handling.
     /// </summary>
     public const string InvalidStableId = "GR2011";
+
+    /// <summary>
+    /// A present <c>maxCostUsd</c> (SSOT §2) is zero or negative. A non-positive cap would halt the
+    /// run before any work runs — a configuration mistake — so it is an ERROR. (Plan 04 reserved
+    /// "GR2010", but GR2010/GR2011 were taken by the stableId checks, which landed after that slice
+    /// was planned; this uses the next free validation code.)
+    /// </summary>
+    public const string CostCapNonPositive = "GR2012";
 }

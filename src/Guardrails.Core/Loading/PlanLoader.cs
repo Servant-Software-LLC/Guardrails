@@ -117,6 +117,7 @@ public sealed class PlanLoader
             Version = raw.Version.Value,
             MaxParallelism = raw.MaxParallelism ?? 4,
             DefaultRetries = raw.DefaultRetries ?? 2,
+            MaxCostUsd = raw.MaxCostUsd,
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
             GuardrailMode = mode,
             Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,

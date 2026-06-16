@@ -70,6 +70,12 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   specific problems; do not start over").
 - Retry budget exhausted → `needs-human`; transitive dependents → `blocked`;
   **independent branches keep running**.
+- **Per-run cost cap** (`maxCostUsd` in `guardrails.json`, optional decimal USD): when
+  the journal's cumulative cost (sum of each attempt's `costUsd`) reaches/exceeds the
+  cap, the scheduler stops launching new attempts — each not-yet-launched task settles
+  `needs-human` ("cost cap reached") and its transitive dependents `blocked` (the same
+  halt path above); an in-flight attempt is never interrupted. Absent ⇒ no cap; a
+  non-positive cap is a validation error (GR2012). See SSOT §2.
 - Prompt actions default `exclusive: true` (sole workspace access) — two agents
   editing one repo concurrently is the #1 real-world failure mode. Deterministic
   actions default shared.
