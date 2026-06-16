@@ -6,7 +6,8 @@ namespace Guardrails.Core.State;
 
 /// <summary>
 /// Why a fragment could not be merged into <c>state.json</c>. SSOT §6.2: a fragment that
-/// exists but is not a parseable JSON object fails the attempt with "invalid state fragment".
+/// exists but is not a parseable JSON object fails the attempt with "invalid state fragment";
+/// a fragment whose top-level keys are not all owned by the writing task fails the same way.
 /// </summary>
 public enum FragmentRejection
 {
@@ -14,7 +15,15 @@ public enum FragmentRejection
     NotJson,
 
     /// <summary>The fragment parsed but its top-level value is not a JSON object.</summary>
-    NotAnObject
+    NotAnObject,
+
+    /// <summary>
+    /// The fragment is a JSON object but carries a top-level key that the writing task does not
+    /// own — a foreign task id or an arbitrary shared key. The single-writer-per-key rule (SSOT
+    /// §6.2, issue #48) requires every top-level key to be the task's own id (or a harness
+    /// reserved key — none in v1), so no task can poison another's namespace.
+    /// </summary>
+    ForeignKey
 }
 
 /// <summary>The outcome of attempting to merge a fragment into state.</summary>
@@ -29,6 +38,13 @@ public sealed record MergeFragmentResult
     /// <summary>When <see cref="Merged"/> is false, a one-line actionable reason.</summary>
     public string? Reason { get; init; }
 
+    /// <summary>
+    /// When <see cref="Rejection"/> is <see cref="FragmentRejection.ForeignKey"/>, the offending
+    /// top-level key(s) the task does not own. Empty otherwise. Lets the caller compose feedback
+    /// that names the exact stray key for the retry.
+    /// </summary>
+    public IReadOnlyList<string> ForeignKeys { get; init; } = [];
+
     /// <summary>Overwrites of pre-existing non-null values caused by this merge (empty on rejection).</summary>
     public IReadOnlyList<MergeConflict> Conflicts { get; init; } = [];
 
@@ -37,6 +53,9 @@ public sealed record MergeFragmentResult
 
     internal static MergeFragmentResult Reject(FragmentRejection rejection, string reason) =>
         new() { Merged = false, Rejection = rejection, Reason = reason };
+
+    internal static MergeFragmentResult RejectForeignKeys(string reason, IReadOnlyList<string> foreignKeys) =>
+        new() { Merged = false, Rejection = FragmentRejection.ForeignKey, Reason = reason, ForeignKeys = foreignKeys };
 }
 
 /// <summary>
@@ -58,6 +77,16 @@ public sealed class StateManager
     private const string ConflictsLogName = "merge-conflicts.log";
     private const string SnapshotFileName = "state-in.json";
     private const string FragmentCopyName = "fragment.json";
+
+    /// <summary>
+    /// Top-level keys a merged fragment may carry IN ADDITION to the writing task's own id
+    /// (SSOT §6.2, issue #48). EMPTY in v1 by design: the harness is the single writer of every
+    /// namespace, so no task can write under another task's id or any shared key. Any future
+    /// reserved key MUST carry its own anti-poisoning analysis before admission here — a shared
+    /// writable namespace is exactly the cross-task poisoning vector this rule closes.
+    /// </summary>
+    internal static readonly IReadOnlySet<string> ReservedMergeKeys =
+        new HashSet<string>(StringComparer.Ordinal);
 
     private readonly string _stateDirectory;
     private readonly string _statePath;
@@ -124,8 +153,10 @@ public sealed class StateManager
 
     /// <summary>
     /// Merge the fragment at <paramref name="fragmentPath"/> into <c>state.json</c> (SSOT §6.3).
-    /// The fragment MUST be a JSON object; anything else is rejected (the caller surfaces this
-    /// as the <c>invalid-fragment</c> attempt outcome and leaves state unchanged). On success:
+    /// The fragment MUST be a JSON object whose top-level keys are each <paramref name="taskId"/>
+    /// (or a harness reserved key — none in v1); anything else — non-JSON, a non-object, or a
+    /// foreign/shared top-level key — is rejected (the caller surfaces this as the
+    /// <c>invalid-fragment</c> attempt outcome and leaves state unchanged). On success:
     /// deep-merge, append each overwrite to <c>merge-conflicts.log</c> stamped with
     /// <paramref name="mergeSequence"/> and <paramref name="taskId"/>, atomically replace
     /// <c>state.json</c>, and copy the fragment into <paramref name="attemptLogDir"/> as
@@ -154,6 +185,29 @@ public sealed class StateManager
             string kind = fragmentNode is null ? "null" : fragmentNode.GetValueKind().ToString().ToLowerInvariant();
             return MergeFragmentResult.Reject(FragmentRejection.NotAnObject,
                 $"invalid state fragment: top-level value must be a JSON object, was {kind}");
+        }
+
+        // Single-writer-per-key (SSOT §6.2, issue #48): every top-level key must be the writing
+        // task's OWN id (Ordinal — matches duplicate-id detection and task.Id = folder name) or a
+        // harness reserved key (none in v1). A foreign task id or an arbitrary shared key would let
+        // one task poison another's namespace (e.g. the captured tests-untouched hashes), so we
+        // REJECT — not strip — the whole fragment. The attempt then fails as invalid-fragment,
+        // retries with feedback, and nothing is merged. An empty fragment passes vacuously.
+        // A task overwriting its OWN namespace is allowed (self-inflicted, not cross-task poisoning);
+        // `needsHuman` is exempt because it short-circuits before this merge runs.
+        IReadOnlyList<string> foreignKeys = fragmentObject
+            .Select(pair => pair.Key)
+            .Where(key => !string.Equals(key, taskId, StringComparison.Ordinal)
+                          && !ReservedMergeKeys.Contains(key))
+            .ToList();
+
+        if (foreignKeys.Count > 0)
+        {
+            string named = string.Join(", ", foreignKeys.Select(k => $"'{k}'"));
+            return MergeFragmentResult.RejectForeignKeys(
+                $"invalid state fragment: top-level key(s) {named} are not owned by task '{taskId}'; " +
+                $"a task may only write under its own id",
+                foreignKeys);
         }
 
         lock (_gate)

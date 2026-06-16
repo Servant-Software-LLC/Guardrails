@@ -61,9 +61,15 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
 - **State**: snapshot-in / fragment-out. Attempt gets an immutable snapshot
   (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment
   (`GUARDRAILS_STATE_OUT`); harness (single writer) deep-merges fragments into
-  `state/state.json` in completion order after guardrails pass. Scalars/arrays
-  last-writer-wins; overwrites logged. `state/seed.json` (committed) seeds the
-  runtime state.
+  `state/state.json` in completion order after guardrails pass.
+  **Single-writer-per-key is ENFORCED, not a convention (SSOT §6.2):** a fragment's top-level
+  keys must each equal the writing task's OWN id (reserved keys — none in v1). A foreign task id
+  or any arbitrary shared key makes the fragment invalid-fragment — it is rejected (not stripped),
+  the attempt fails and retries with feedback, and nothing merges. This makes the harness the sole
+  writer of every task's namespace (closing the #48 cross-task poisoning vector). Scalars/arrays
+  last-writer-wins, but with single-writer-per-key enforced that is reachable only WITHIN a task's
+  own namespace or against committed seed content — never cross-task at the root (§6.3); overwrites
+  logged. `state/seed.json` (committed) seeds the runtime state.
 
 ## Execution semantics
 

@@ -101,6 +101,20 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void ForeignKey_NamesEachOffendingKey_AndPointsToOwnNamespace()
+    {
+        // SSOT §6.2 single-writer-per-key (issue #48): the feedback must name the exact stray
+        // top-level key(s) and tell the agent to nest under its own id, so a confused (non-malicious)
+        // agent can drop the foreign key on retry.
+        string feedback = RetryPolicy.ForForeignKey(Task("02-x"), attempt: 1, ["01-producer", "config"]);
+
+        Assert.Contains("01-producer", feedback);
+        Assert.Contains("config", feedback);
+        Assert.Contains("\"02-x\"", feedback);          // example is namespaced under the task's own id
+        Assert.Contains("Do NOT start over", feedback); // shared retry header
+    }
+
+    [Fact]
     public void LongOutput_IsTailTruncated()
     {
         string longError = string.Join('\n', Enumerable.Range(1, 500).Select(i => $"line {i}"));

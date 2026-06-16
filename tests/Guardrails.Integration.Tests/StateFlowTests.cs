@@ -104,11 +104,57 @@ public sealed class StateFlowTests
     }
 
     [Fact]
+    public async Task ForeignTaskIdFragment_FailsInvalidFragment_StateUnchanged_FeedbackNamesKey()
+    {
+        // The #48 attack end-to-end: task '02-poisoner' writes a fragment keyed under ANOTHER task's
+        // id ('01-producer') — an attempt to poison the producer's namespace (e.g. its captured
+        // tests-untouched hashes). The single-writer-per-key rule (SSOT §6.2) fails the attempt as
+        // invalid-fragment, merges NOTHING, and the feedback names the offending key so a confused
+        // agent can drop it on retry.
+        string writeForeignFragment = StatePlanBuilder.UsePowerShell
+            ? """
+              [System.IO.File]::WriteAllText($env:GUARDRAILS_STATE_OUT, '{ "01-producer": { "fileHashes": { "Tests.cs": "DEADBEEF" } } }')
+              exit 0
+              """
+            : """
+              printf '%s' '{ "01-producer": { "fileHashes": { "Tests.cs": "DEADBEEF" } } }' > "$GUARDRAILS_STATE_OUT"
+              exit 0
+              """;
+
+        using var plan = new StatePlanBuilder(seedJson: """{ "seeded": true }""")
+            .AddTask("02-poisoner", actionBody: writeForeignFragment);
+
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.InvalidFragment, task.Outcome);
+
+        // State.json is untouched — the foreign key never reached '01-producer''s namespace.
+        JsonObject state = (JsonObject)JsonNode.Parse(File.ReadAllText(plan.StateJsonPath))!;
+        Assert.True(state.ContainsKey("seeded"));
+        Assert.False(state.ContainsKey("01-producer"));
+        Assert.False(state.ContainsKey("02-poisoner"));
+
+        // The journal records the invalid-fragment outcome.
+        JournalDocument journal = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
+        Assert.Equal(JournalTaskStatus.NeedsHuman, journal.Tasks["02-poisoner"].Status);
+        Assert.Equal(AttemptOutcome.InvalidFragment, journal.Tasks["02-poisoner"].Attempts[^1].Outcome);
+
+        // The retry feedback names the exact offending key.
+        string feedback = File.ReadAllText(
+            Path.Combine(plan.PlanDir, "state", "logs", "02-poisoner", "attempt-1", "feedback.md"));
+        Assert.Contains("01-producer", feedback);
+    }
+
+    [Fact]
     public async Task PerAttemptLog_Layout_IsWritten()
     {
+        // Namespaced under the task's own id '01-task' so the fragment satisfies the
+        // single-writer-per-key rule (SSOT §6.2, issue #48); this test is about the per-attempt log
+        // layout, not the rule.
         string writeFragment = StatePlanBuilder.UsePowerShell
-            ? """[System.IO.File]::WriteAllText($env:GUARDRAILS_STATE_OUT, '{ "t": { "k": 1 } }'); exit 0"""
-            : """printf '%s' '{ "t": { "k": 1 } }' > "$GUARDRAILS_STATE_OUT"; exit 0""";
+            ? """[System.IO.File]::WriteAllText($env:GUARDRAILS_STATE_OUT, '{ "01-task": { "k": 1 } }'); exit 0"""
+            : """printf '%s' '{ "01-task": { "k": 1 } }' > "$GUARDRAILS_STATE_OUT"; exit 0""";
 
         using var plan = new StatePlanBuilder().AddTask("01-task", actionBody: writeFragment);
         await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);

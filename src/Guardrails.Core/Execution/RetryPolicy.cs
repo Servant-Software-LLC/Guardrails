@@ -107,6 +107,32 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Compose feedback for an attempt rejected because its state fragment carried a top-level key
+    /// the task does not own — a foreign task id or an arbitrary shared key (SSOT §6.2,
+    /// single-writer-per-key, issue #48). Names the exact offending key(s) so a confused (non-malicious)
+    /// agent drops the stray key on retry and writes ONLY under its own id.
+    /// </summary>
+    public static string ForForeignKey(TaskNode task, int attempt, IReadOnlyList<string> foreignKeys)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## State fragment wrote a key this task does not own");
+        text.AppendLine();
+        foreach (string key in foreignKeys)
+        {
+            text.AppendLine($"- top-level key '{key}' is not owned by this task");
+        }
+
+        text.AppendLine();
+        text.AppendLine($"A task may only write state under its OWN id, '{task.Id}'. The harness is the");
+        text.AppendLine("single writer of every namespace, so writing under another task's id (or any");
+        text.AppendLine("shared key) is rejected and NOTHING is merged. Remove the stray top-level key(s)");
+        text.AppendLine("above and nest everything you publish under your own id, e.g.");
+        text.AppendLine($"`{{ \"{task.Id}\": {{ \"someKey\": \"someValue\" }} }}`.");
+        return text.ToString();
+    }
+
+    /// <summary>
     /// True when <paramref name="output"/> carries more than the one-line <paramref name="reason"/>
     /// already shown — i.e. it is non-empty and not just the reason line repeated.
     /// </summary>

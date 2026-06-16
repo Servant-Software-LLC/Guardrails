@@ -164,12 +164,14 @@ drive- or root-rooted path, or any entry whose normalized resolution escapes the
 **Merge ordering — capture overlays the action's own fragment.** Capture does not replace the
 fragment the action wrote to `GUARDRAILS_STATE_OUT`; it **overlays** onto it. The harness reads the
 action's pending fragment, sets `{ "<taskId>": { "fileHashes": { … } } }`, and writes the result
-back, **preserving every other key the action published** (including other task keys and other keys
-under `<taskId>`). For a path that appears in **both** the action's own `fileHashes` and the
-harness capture, **the harness-computed value takes precedence** (it overwrites the action's). A
-non-object or unparseable action fragment still triggers the **invalid-fragment** attempt failure
-(§6.2) — capture leaves those bytes untouched and never papers over them, so declaring
-`captureHashes` does not change whether a task with a malformed fragment fails.
+back, **preserving the action's own-namespace keys** (other keys under `<taskId>`). For a path that
+appears in **both** the action's own `fileHashes` and the harness capture, **the harness-computed
+value takes precedence** (it overwrites the action's). A non-object or unparseable action fragment
+still triggers the **invalid-fragment** attempt failure (§6.2) — capture leaves those bytes
+untouched and never papers over them, so declaring `captureHashes` does not change whether a task
+with a malformed fragment fails. Capture writes only under the task's own id, so a capture-overlaid
+fragment satisfies single-writer-per-key (§6.2) by construction; a **foreign** top-level key in the
+action's own fragment makes the whole attempt fail at the merge step (§6.2) regardless of capture.
 
 The canonical use is the `tests-untouched` guardrail: a test-author task declares the test files
 in `captureHashes`, and the implementation task's guardrail recomputes with
@@ -293,16 +295,33 @@ not resolvable on PATH.
 ### 6.2 Fragments (snapshot in, fragment out)
 
 Each attempt receives an immutable snapshot (`GUARDRAILS_STATE_IN`). An action that
-wants to publish state writes a JSON **object** to `GUARDRAILS_STATE_OUT`.
-Convention (not enforced): namespace under your own task id —
+wants to publish state writes a JSON **object** to `GUARDRAILS_STATE_OUT`, with every
+top-level key namespaced under its own task id —
 
 ```json
 { "02-generate-greeting": { "greetingPath": "out/greeting.txt" } }
 ```
 
+**Single-writer-per-key (ENFORCED).** A merged fragment's top-level keys must each be the
+writing task's **own id** (or a harness reserved key — **none in v1**, see
+`ReservedMergeKeys` below). A fragment with **any other** top-level key — a **foreign task
+id** OR an arbitrary **shared** (non-task) key — fails as **invalid-fragment** and is **NOT**
+merged (the attempt fails, retries with feedback naming the stray key, and nothing reaches
+`state.json`). The fragment is **rejected, not stripped**. This makes the harness the single
+writer of every task's namespace, closing the #48 cross-task poisoning vector: no task can
+overwrite another task's captured `fileHashes` (or any derived key) by writing under that
+task's id. `needsHuman` is **exempt** — it short-circuits the attempt (§9) *before* the merge
+step, so it is never subject to this rule.
+
 A fragment that exists but is not a parseable JSON object ⇒ the attempt **fails**
 (reason: "invalid state fragment") and is retried — better than silently dropping data.
-The fragment is merged only after **all guardrails pass**.
+An **empty** object `{}` passes vacuously (no keys) and merges nothing. The fragment is
+merged only after **all guardrails pass**.
+
+**`ReservedMergeKeys`** is the harness allowlist of top-level keys permitted in addition to
+the writing task's own id. It ships **EMPTY** in v1 — there is deliberately no shared writable
+namespace. Any future reserved key MUST carry its own anti-poisoning analysis before admission:
+a shared writable key is exactly the cross-task poisoning vector this rule closes.
 
 ### 6.3 Merge policy (deterministic)
 
@@ -311,6 +330,12 @@ last-writer-wins**. Merge order = task completion order, recorded as a monotonic
 `mergeSequence` in the journal. Every overwrite of an existing non-null value with a
 *different* value is appended to `state/merge-conflicts.log` — tab-separated columns
 `seq, task, jsonPath, old, new`, with values as compact JSON.
+
+With single-writer-per-key enforced (§6.2), last-writer-wins is reachable only **WITHIN a
+task's own namespace** (a task overwriting a value it previously wrote under its own id) or
+against committed **`seed.json`** content under that namespace — **never cross-task at the
+root**. A conflict row's `jsonPath` therefore always begins with the writing task's own id
+(e.g. `01-author.fileHashes."Tests.cs"`).
 
 ---
 

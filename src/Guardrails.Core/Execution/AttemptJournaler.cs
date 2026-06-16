@@ -45,7 +45,12 @@ internal sealed class AttemptJournaler
             if (!merge.Merged)
             {
                 string reason = merge.Reason ?? "invalid state fragment";
-                string feedback = RetryPolicy.ForInvalidFragment(task, attemptNumber, reason);
+                // A foreign top-level key gets feedback that names the exact stray key so a confused
+                // agent drops it on retry (SSOT §6.2, single-writer-per-key); any other rejection uses
+                // the generic invalid-fragment feedback. Both route to the same invalid-fragment outcome.
+                string feedback = merge.Rejection == FragmentRejection.ForeignKey
+                    ? RetryPolicy.ForForeignKey(task, attemptNumber, merge.ForeignKeys)
+                    : RetryPolicy.ForInvalidFragment(task, attemptNumber, reason);
                 return FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     AttemptOutcome.InvalidFragment,

@@ -183,6 +183,9 @@ optional:
   that a downstream task reads (via `GUARDRAILS_STATE_IN`)? Add the fragment-key-present
   guardrail (catalogue → state-output leaf): read `GUARDRAILS_STATE_FRAGMENT`, parse JSON,
   assert the key non-null + non-empty (+ allowed-set if a downstream task branches on it).
+  A task's action may write state ONLY under its own task id — single-writer-per-key is enforced
+  (SSOT §6.2); writing under another task's id or a shared key rejects the fragment and fails the
+  attempt.
 - **Build-descriptor registration** — does the task add a module/project to a build
   descriptor (a `.csproj` to a `.slnx`)? Add the stack file's registration guardrail on the
   DESCRIPTOR, not just the new file (`stacks/dotnet.md §1`). A descriptor build passes with

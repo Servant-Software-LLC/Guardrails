@@ -189,6 +189,12 @@ if ($failures) { Write-Output ($failures -join "; "); exit 1 }
 exit 0
 ```
 
+The recorded hash is contract-protected: no intervening task can forge
+`01-author-stats-tests.fileHashes` to poison this check, because the harness enforces
+single-writer-per-key — a task may only write top-level keys equal to its own id (SSOT §6.2,
+issue #48). The script above (the `captureHashes` → `Get-FileHash` recompute) is unchanged; it is
+simply now backed by that contract.
+
 ### `tasks/03-update-readme/`
 
 `task.json`
