@@ -14,7 +14,7 @@ namespace Guardrails.Integration.Tests;
 /// </summary>
 public sealed class StateFlowTests
 {
-    private static async Task<RunReport> RunAsync(string planDir)
+    private static async Task<RunReport> RunAsync(string planDir, CancellationToken cancellationToken = default)
     {
         PlanLoadResult load = new PlanLoader().Load(planDir);
         Assert.NotNull(load.Plan);
@@ -22,7 +22,7 @@ public sealed class StateFlowTests
 
         Scheduler scheduler = SchedulerFactory.Create(
             load.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
-        return await scheduler.RunAsync(load.Plan!);
+        return await scheduler.RunAsync(load.Plan!, cancellationToken);
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class StateFlowTests
             .AddTask("01-produce", actionBody: writeValue)
             .AddTask("02-consume", actionBody: assertValue, dependsOn: "01-produce");
 
-        RunReport report = await RunAsync(plan.PlanDir);
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
 
         Assert.True(report.AllSucceeded, Summarize(report));
 
@@ -86,7 +86,7 @@ public sealed class StateFlowTests
         using var plan = new StatePlanBuilder(seedJson: """{ "seeded": true }""")
             .AddTask("01-bad", actionBody: writeBadFragment);
 
-        RunReport report = await RunAsync(plan.PlanDir);
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
 
         TaskResult task = Assert.Single(report.Tasks);
         Assert.Equal(TaskOutcome.InvalidFragment, task.Outcome);
@@ -111,7 +111,7 @@ public sealed class StateFlowTests
             : """printf '%s' '{ "t": { "k": 1 } }' > "$GUARDRAILS_STATE_OUT"; exit 0""";
 
         using var plan = new StatePlanBuilder().AddTask("01-task", actionBody: writeFragment);
-        await RunAsync(plan.PlanDir);
+        await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
 
         string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-task", "attempt-1");
         Assert.True(File.Exists(Path.Combine(attemptDir, "state-in.json")), "state-in.json");
@@ -165,7 +165,7 @@ public sealed class StateFlowTests
             .AddTask("01-author", actionBody: writeFile, captureHashes: ["WidgetTests.cs"])
             .AddTask("02-verify", actionBody: assertHash, dependsOn: "01-author");
 
-        RunReport report = await RunAsync(plan.PlanDir);
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
 
         Assert.True(report.AllSucceeded, Summarize(report));
 
@@ -186,7 +186,7 @@ public sealed class StateFlowTests
         using var plan = new StatePlanBuilder(seedJson: """{ "seeded": true }""")
             .AddTask("01-author", actionBody: noFile, captureHashes: ["NeverCreated.cs"]);
 
-        RunReport report = await RunAsync(plan.PlanDir);
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
 
         Assert.False(report.AllSucceeded);
         TaskResult task = Assert.Single(report.Tasks);
@@ -196,6 +196,47 @@ public sealed class StateFlowTests
         JsonObject state = (JsonObject)JsonNode.Parse(File.ReadAllText(plan.StateJsonPath))!;
         Assert.True(state.ContainsKey("seeded"));
         Assert.False(state.ContainsKey("01-author"));
+    }
+
+    [Fact]
+    public async Task CaptureHashes_WithNonObjectFragment_FailsInvalidFragment_StateUnchanged()
+    {
+        // FIX 1 regression / parity: this MIRRORS InvalidFragment_FailsTaskWithInvalidFragmentOutcome_
+        // StateUnchanged but ALSO declares captureHashes and creates the declared file. Declaring
+        // captureHashes must NOT change the outcome: a non-object fragment still fails as
+        // invalid-fragment with state unchanged. (Before the fix, capture overwrote the malformed
+        // fragment with a clean hashes object and the task wrongly Succeeded.)
+        const string content = "public class WidgetTests { }";
+        string writeBadFragmentAndFile = StatePlanBuilder.UsePowerShell
+            ? $$"""
+              [System.IO.File]::WriteAllText((Join-Path (Get-Location) "WidgetTests.cs"), "{{content}}")
+              [System.IO.File]::WriteAllText($env:GUARDRAILS_STATE_OUT, '[1, 2, 3]')
+              exit 0
+              """
+            : $$"""
+              printf '%s' '{{content}}' > "WidgetTests.cs"
+              printf '%s' '[1, 2, 3]' > "$GUARDRAILS_STATE_OUT"
+              exit 0
+              """;
+
+        using var plan = new StatePlanBuilder(seedJson: """{ "seeded": true }""")
+            .AddTask("01-author", actionBody: writeBadFragmentAndFile, captureHashes: ["WidgetTests.cs"]);
+
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.InvalidFragment, task.Outcome);
+
+        // State.json is still exactly the seed-derived content — the bad fragment was dropped, and the
+        // harness did NOT sneak a fileHashes object in via capture.
+        JsonObject state = (JsonObject)JsonNode.Parse(File.ReadAllText(plan.StateJsonPath))!;
+        Assert.True(state.ContainsKey("seeded"));
+        Assert.False(state.ContainsKey("01-author"));
+
+        // The journal records the invalid-fragment outcome verbatim (parity with the no-captureHashes test).
+        JournalDocument journal = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
+        Assert.Equal(JournalTaskStatus.NeedsHuman, journal.Tasks["01-author"].Status);
+        Assert.Equal(AttemptOutcome.InvalidFragment, journal.Tasks["01-author"].Attempts[^1].Outcome);
     }
 
     private static string Summarize(RunReport report) =>

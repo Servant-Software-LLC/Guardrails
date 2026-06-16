@@ -88,4 +88,12 @@ public static class DiagnosticCodes
     /// was planned; this uses the next free validation code.)
     /// </summary>
     public const string CostCapNonPositive = "GR2012";
+
+    /// <summary>
+    /// A <c>captureHashes</c> entry (SSOT §3.1) is not a safe workspace-relative path: it is
+    /// absolute, drive- or root-rooted, or its normalized resolution escapes the workspace root
+    /// (e.g. <c>../../etc/passwd</c>). The harness resolves each entry against the workspace and
+    /// hashes/reads the file, so an escaping path could reach outside the workspace — an ERROR.
+    /// </summary>
+    public const string CaptureHashEscapesWorkspace = "GR2013";
 }

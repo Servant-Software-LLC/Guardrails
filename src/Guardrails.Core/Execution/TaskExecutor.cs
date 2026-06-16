@@ -193,7 +193,7 @@ public sealed class TaskExecutor : ITaskExecutor
         if (task.CaptureHashes.Count > 0)
         {
             CaptureResult capture = FileHashCapture.Capture(task.Id, task.CaptureHashes, workspace, fragmentOutPath);
-            if (!capture.Succeeded)
+            if (capture.IsMissing)
             {
                 string feedback = RetryPolicy.ForMissingCaptureFiles(task, attemptNumber, capture.MissingFiles);
                 return _journaler.FailedAttempt(
@@ -208,6 +208,12 @@ public sealed class TaskExecutor : ITaskExecutor
                     },
                     costUsd: action.CostUsd);
             }
+
+            // A malformed action fragment is the harness's to reject, not capture's to paper over:
+            // capture left the bytes untouched, so we fall through to guardrails + the merge step,
+            // which re-reads and rejects them as invalid-fragment — identical to the path a task with
+            // a malformed fragment and NO captureHashes takes (SSOT §3.1 / §6.2). Declaring
+            // captureHashes must not change whether such a task fails.
         }
 
         // --- guardrails -----------------------------------------------------------------

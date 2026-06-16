@@ -122,6 +122,101 @@ public sealed class FileHashCaptureTests : IDisposable
             ReadFragmentHash(fragmentPath, "t", "sub/two.cs"));
     }
 
+    [Fact]
+    public void Capture_EmptyFile_RecordsCanonicalSha256_MatchingGetFileHash()
+    {
+        // SHA-256 of zero bytes is a fixed constant; Get-FileHash -Algorithm SHA256 of an empty file
+        // returns exactly this. The harness must record the same canonical value.
+        const string canonicalEmptySha256 = "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855";
+        string relative = "Empty.cs";
+        WriteWorkspaceFile(relative, []);
+        string fragmentPath = Path.Combine(_root, "action-out-fragment.json");
+
+        CaptureResult result = FileHashCapture.Capture("01-x", [relative], _root, fragmentPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(canonicalEmptySha256, ReadFragmentHash(fragmentPath, "01-x", relative));
+        // And it equals SHA256 over the actual (empty) bytes — the same thing Get-FileHash computes.
+        Assert.Equal(Convert.ToHexString(SHA256.HashData([])), ReadFragmentHash(fragmentPath, "01-x", relative));
+    }
+
+    [Fact]
+    public void Capture_PathWithSpaceAndNonAscii_CapturesCorrectly()
+    {
+        // A path containing a space and a non-ASCII character must resolve and hash correctly — the
+        // relative key is preserved verbatim in the fragment.
+        string relative = "tests/Café Tests/Wîdget Tests.cs";
+        byte[] bytes = Encoding.UTF8.GetBytes("public class WidgetTests { } // café\n");
+        WriteWorkspaceFile(relative, bytes);
+        string fragmentPath = Path.Combine(_root, "action-out-fragment.json");
+
+        CaptureResult result = FileHashCapture.Capture("01-x", [relative], _root, fragmentPath);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)), ReadFragmentHash(fragmentPath, "01-x", relative));
+    }
+
+    [Fact]
+    public void Capture_ActionWroteOwnFileHashesForSamePath_HarnessValueWins()
+    {
+        // W2 precedence (SSOT §3.1): if the action published its own fileHashes entry for a path the
+        // harness also captures, the harness-computed value overwrites the action's.
+        string relative = "a.txt";
+        byte[] bytes = Encoding.UTF8.GetBytes("real content");
+        WriteWorkspaceFile(relative, bytes);
+        string fragmentPath = Path.Combine(_root, "action-out-fragment.json");
+        File.WriteAllText(fragmentPath,
+            """
+            { "01-x": { "fileHashes": { "a.txt": "DEADBEEF", "other.txt": "CAFEBABE" } } }
+            """);
+
+        CaptureResult result = FileHashCapture.Capture("01-x", [relative], _root, fragmentPath);
+
+        Assert.True(result.Succeeded);
+        // Harness value wins for the captured path...
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)), ReadFragmentHash(fragmentPath, "01-x", relative));
+        Assert.NotEqual("DEADBEEF", ReadFragmentHash(fragmentPath, "01-x", relative));
+        // ...but an unrelated fileHashes entry the action wrote is preserved.
+        Assert.Equal("CAFEBABE", ReadFragmentHash(fragmentPath, "01-x", "other.txt"));
+    }
+
+    [Fact]
+    public void Capture_NonObjectFragment_LeavesBytesIntact_AndReportsInvalidFragment()
+    {
+        // FIX 1: a malformed (non-object) action fragment is the harness's to reject. Capture must NOT
+        // overwrite it with a clean hashes-only object — the original bytes stay on disk so the merge
+        // step rejects them identically, and the result signals invalid-fragment (not success).
+        string relative = "a.txt";
+        WriteWorkspaceFile(relative, Encoding.UTF8.GetBytes("hi"));
+        string fragmentPath = Path.Combine(_root, "action-out-fragment.json");
+        const string original = "[1, 2, 3]";
+        File.WriteAllText(fragmentPath, original);
+
+        CaptureResult result = FileHashCapture.Capture("01-x", [relative], _root, fragmentPath);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.IsInvalidFragment);
+        Assert.False(result.IsMissing);
+        // The malformed bytes are untouched — capture did not write a hashes object over them.
+        Assert.Equal(original, File.ReadAllText(fragmentPath));
+    }
+
+    [Fact]
+    public void Capture_UnparseableFragment_LeavesBytesIntact_AndReportsInvalidFragment()
+    {
+        string relative = "a.txt";
+        WriteWorkspaceFile(relative, Encoding.UTF8.GetBytes("hi"));
+        string fragmentPath = Path.Combine(_root, "action-out-fragment.json");
+        const string original = "{ not valid json ";
+        File.WriteAllText(fragmentPath, original);
+
+        CaptureResult result = FileHashCapture.Capture("01-x", [relative], _root, fragmentPath);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.IsInvalidFragment);
+        Assert.Equal(original, File.ReadAllText(fragmentPath));
+    }
+
     private void WriteWorkspaceFile(string relative, byte[] bytes)
     {
         string full = Path.Combine(_root, relative);

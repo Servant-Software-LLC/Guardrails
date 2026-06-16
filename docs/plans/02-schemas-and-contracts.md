@@ -156,12 +156,31 @@ sandbox) can never block it. If a declared file does not exist after the action,
 **fails** with an actionable message naming the missing path (the action claimed success but did
 not produce a declared output); nothing is recorded.
 
+**Paths are workspace-relative and validated.** Each `captureHashes` entry must be a
+workspace-relative path that stays inside the workspace. `validate` rejects an absolute path, a
+drive- or root-rooted path, or any entry whose normalized resolution escapes the workspace root
+(e.g. `../../etc/passwd`) as a `GR2013` error naming the offending task and path.
+
+**Merge ordering — capture overlays the action's own fragment.** Capture does not replace the
+fragment the action wrote to `GUARDRAILS_STATE_OUT`; it **overlays** onto it. The harness reads the
+action's pending fragment, sets `{ "<taskId>": { "fileHashes": { … } } }`, and writes the result
+back, **preserving every other key the action published** (including other task keys and other keys
+under `<taskId>`). For a path that appears in **both** the action's own `fileHashes` and the
+harness capture, **the harness-computed value takes precedence** (it overwrites the action's). A
+non-object or unparseable action fragment still triggers the **invalid-fragment** attempt failure
+(§6.2) — capture leaves those bytes untouched and never papers over them, so declaring
+`captureHashes` does not change whether a task with a malformed fragment fails.
+
 The canonical use is the `tests-untouched` guardrail: a test-author task declares the test files
 in `captureHashes`, and the implementation task's guardrail recomputes with
 `Get-FileHash -Algorithm SHA256` (a pwsh cmdlet, run by the interpreter — not the agent sandbox)
 and compares. SHA-256-over-raw-bytes is chosen so the harness (`SHA256.HashData`) and a guardrail
-(`Get-FileHash`) agree exactly, with no git dependency and no CRLF-normalization hazard, and with
-no shared git-index mutation that could race under `maxParallelism > 1`.
+(`Get-FileHash`) agree exactly, with no git dependency and no shared git-index mutation that could
+race under `maxParallelism > 1`. It sidesteps the **git-blob** normalization hazard, but it is an
+**exact raw-byte match**: a line-ending normalization that touches the file between capture and the
+downstream recompute (git `autocrlf` on checkout, or an IDE/formatter rewriting the file) makes the
+comparison **fail closed** — a spurious "tests changed" block a human then reviews. Safe, but
+possible; it does not silently pass.
 
 ## 4. Guardrails
 
