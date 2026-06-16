@@ -140,6 +140,18 @@ public sealed class Scheduler
         {
             await foreach (TaskNode task in context.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
+                // Per-run cost cap (SSOT §2 / plan 04): if the journal's cumulative cost has reached
+                // the configured cap, do NOT launch this attempt. Settle the task needs-human and let
+                // OnSettled block its transitive dependents via the existing halt path. The check is
+                // against cumulative journaled cost, so resumes account for prior spend; an attempt
+                // already in flight on another worker is never interrupted — the cap only gates new
+                // launches.
+                if (CostCapHaltFor(task) is { } capped)
+                {
+                    OnSettled(context, task, capped);
+                    continue;
+                }
+
                 bool exclusive = task.Exclusive ?? task.Action.Kind == ActionKind.Prompt;
                 await _workspaceLock.AcquireAsync(exclusive, cancellationToken).ConfigureAwait(false);
 
@@ -176,6 +188,27 @@ public sealed class Scheduler
             context.Channel.Writer.TryComplete();
             runCts.Cancel();
         }
+    }
+
+    /// <summary>
+    /// If the per-run cost cap (<see cref="RunConfig.MaxCostUsd"/>) is set and the journal's
+    /// cumulative cost has reached it, return the <c>needs-human</c> result that settles
+    /// <paramref name="task"/> without launching its attempt; otherwise null (launch normally).
+    /// </summary>
+    private TaskResult? CostCapHaltFor(TaskNode task)
+    {
+        if (_plan.Config.MaxCostUsd is not { } cap || _journal.CurrentCostUsd() < cap)
+        {
+            return null;
+        }
+
+        return new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            Summary = $"cost cap reached: cumulative journaled cost has reached the configured " +
+                      $"maxCostUsd (${cap}); task not launched."
+        };
     }
 
     private void OnSettled(RunContext context, TaskNode task, TaskResult result)

@@ -99,6 +99,21 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// The run's cumulative journaled cost (SSOT §7), summed across every recorded attempt of
+    /// every task via <see cref="JournalCost.Total"/>. Drives the per-run cost cap
+    /// (<see cref="Model.RunConfig.MaxCostUsd"/>); the total is cumulative across resumes because it
+    /// reads the durable journal. A deterministic-only run records no cost, which reads as $0 so an
+    /// uncapped-cost run never trips a cap.
+    /// </summary>
+    public decimal CurrentCostUsd()
+    {
+        lock (_gate)
+        {
+            return JournalCost.Total(_document) ?? 0m;
+        }
+    }
+
     /// <summary>The next attempt number for a task: one past the highest recorded attempt.</summary>
     public int NextAttemptNumber(string taskId)
     {

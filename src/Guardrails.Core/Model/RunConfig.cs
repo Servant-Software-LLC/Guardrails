@@ -17,6 +17,15 @@ public sealed record RunConfig
     /// <summary>Retries after the first attempt. Default 2. (Retry is M4; not honored in M2.)</summary>
     public int DefaultRetries { get; init; } = 2;
 
+    /// <summary>
+    /// Optional per-run cost ceiling in USD (SSOT §2). When set, the scheduler stops launching
+    /// new attempts once the journal's cumulative cost reaches or exceeds it, settling the
+    /// remaining work <c>needs-human</c> ("cost cap reached"). Null (the default) means no cap —
+    /// today's behavior, unchanged. A present non-positive value is a validation error
+    /// (<see cref="Loading.DiagnosticCodes.CostCapNonPositive"/>).
+    /// </summary>
+    public decimal? MaxCostUsd { get; init; }
+
     /// <summary>Per-attempt timeout ceiling when nothing narrower applies. Default 1800s.</summary>
     public int DefaultTimeoutSeconds { get; init; } = 1800;
 

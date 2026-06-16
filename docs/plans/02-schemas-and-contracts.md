@@ -49,6 +49,7 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   "maxParallelism": 4,                // default 4
   "defaultRetries": 2,                // retries AFTER the first attempt; default 2
   "defaultTimeoutSeconds": 1800,      // per-attempt ceiling when nothing narrower applies
+  "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
@@ -84,6 +85,12 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 - `guardrailMode: failFast` stops at the first failing guardrail of a task attempt
   (guardrails are ordered cheapest-first by filename convention); `runAll` runs every
   guardrail and aggregates all failures into one feedback document.
+- `maxCostUsd` caps total spend for the run. When the journal's cumulative cost — the sum of
+  every attempt's `costUsd` (§7) — reaches or exceeds it, the harness stops launching new
+  attempts: each not-yet-launched task settles `needs-human` (reason "cost cap reached") and
+  its transitive dependents `blocked`, via the same halt path as any other needs-human task. An
+  attempt already in flight is never interrupted — the cap gates new launches, not running work.
+  Absent ⇒ no cap. A present non-positive value is a validation error (GR2012).
 
 ## 3. `tasks/<id>/task.json`
 

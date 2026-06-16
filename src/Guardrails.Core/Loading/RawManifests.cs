@@ -9,6 +9,7 @@ internal sealed class RawRunConfig
     public int? Version { get; set; }
     public int? MaxParallelism { get; set; }
     public int? DefaultRetries { get; set; }
+    public decimal? MaxCostUsd { get; set; }
     public int? DefaultTimeoutSeconds { get; set; }
     public string? GuardrailMode { get; set; }
     public string? Workspace { get; set; }
