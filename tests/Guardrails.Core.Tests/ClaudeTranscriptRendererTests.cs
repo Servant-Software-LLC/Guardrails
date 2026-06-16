@@ -92,6 +92,42 @@ public sealed class ClaudeTranscriptRendererTests
     }
 
     [Fact]
+    public void Truncate_DoesNotSplitSurrogatePair_AtMaxBoundary()
+    {
+        // Regression: transcript-truncate-splits-surrogates.
+        // MaxArgValueChars == 80. Pad with 79 ASCII chars so the astral-plane emoji "😀"
+        // (U+1F600, a UTF-16 surrogate PAIR occupying two code units) sits at indices 79..80 —
+        // straddling the truncation boundary. A naive value[..80] keeps index 79 (the lone HIGH
+        // surrogate) and drops index 80 (the low surrogate); that orphan renders as U+FFFD '�'.
+        const string emoji = "😀"; // U+1F600 😀
+        string value = new string('x', 79) + emoji + new string('y', 50);
+        string stream =
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\"," +
+            "\"input\":{\"content\":\"" + value + "\"}}]}}";
+
+        string transcript = ClaudeTranscriptRenderer.Render(stream);
+
+        // No replacement char must appear, and no rendered line may end on a lone surrogate.
+        Assert.DoesNotContain('�', transcript);
+        foreach (string ch in transcript.Select(c => c.ToString()))
+        {
+            Assert.False(char.IsHighSurrogate(ch[0]) && ch.Length == 1, "stray high surrogate");
+        }
+
+        foreach (string outLine in transcript.Split('\n'))
+        {
+            if (outLine.Length > 0)
+            {
+                Assert.False(char.IsHighSurrogate(outLine[^1]), "line ends on a lone high surrogate");
+            }
+        }
+
+        // The fix backs the cut off by one, so the orphaned high surrogate is dropped entirely
+        // (the pair is not kept because its low half is past the cap) and the ellipsis follows.
+        Assert.Contains("content: " + new string('x', 79) + "…", transcript);
+    }
+
+    [Fact]
     public void ComplexToolArgs_AreElided()
     {
         const string stream =
