@@ -772,9 +772,15 @@ public sealed class TaskExecutor : ITaskExecutor
 
     /// <summary>
     /// Build the dependency-context pointers (issue #26 Gap 4): for each task in the transitive
-    /// <c>dependsOn</c> closure that has a recorded success, a pointer to its succeeded-attempt
-    /// transcript and contributed fragment. Ancestors with no success (or no log dir) are
-    /// skipped. Ordered by id for a deterministic prompt.
+    /// <c>dependsOn</c> closure that has a recorded success, a pointer to the artifacts of its
+    /// CURRENT successful result — the attempt whose fragment is reflected in the dependency's
+    /// current <c>state.json</c> (which the dependent will read via <c>GUARDRAILS_STATE_IN</c>) —
+    /// not merely the last <c>Succeeded</c> attempt in the journal history. After a
+    /// <c>reset</c> + re-run, a later succeeded attempt may have contributed NO fragment, so the
+    /// current state still comes from an earlier attempt; pointing at the later one would cite a
+    /// stale transcript/fragment that disagrees with the state the dependent actually sees.
+    /// Ancestors with no success (or no log dir) are skipped. Ordered by id for a deterministic
+    /// prompt.
     /// </summary>
     private IReadOnlyList<DependencyContextRef> BuildDependencyContext(TaskNode task)
     {
@@ -789,13 +795,13 @@ public sealed class TaskExecutor : ITaskExecutor
                 continue;
             }
 
-            AttemptRecord? success = entry.Attempts.LastOrDefault(a => a.Outcome == AttemptOutcome.Succeeded);
-            if (success is null)
+            AttemptRecord? current = CurrentSuccessfulAttempt(entry);
+            if (current is null)
             {
                 continue;
             }
 
-            string absLogDir = ResolveAbsoluteLogDir(success.LogDir);
+            string absLogDir = ResolveAbsoluteLogDir(current.LogDir);
             refs.Add(new DependencyContextRef
             {
                 TaskId = depId,
@@ -807,6 +813,38 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         return refs;
+    }
+
+    /// <summary>
+    /// Select the succeeded attempt that produced a dependency's CURRENT state — the provenance
+    /// the dependent must be pointed at. The authority is the <c>fragment.json</c> audit copy
+    /// that <see cref="StateManager.MergeFragment"/> writes (atomically with the
+    /// <c>state.json</c> update) into the merging attempt's log dir: merges advance in attempt
+    /// order, so the succeeded attempt with the HIGHEST attempt number that has a
+    /// <c>fragment.json</c> on disk is the one currently reflected in <c>state.json</c>. If no
+    /// succeeded attempt ever merged a fragment (the dependency contributed nothing to state),
+    /// fall back to the latest succeeded attempt so its transcript still serves as "what it did".
+    /// Returns null when the dependency has no succeeded attempt.
+    /// </summary>
+    private AttemptRecord? CurrentSuccessfulAttempt(TaskJournalEntry entry)
+    {
+        IReadOnlyList<AttemptRecord> succeeded = entry.Attempts
+            .Where(a => a.Outcome == AttemptOutcome.Succeeded)
+            .OrderBy(a => a.Attempt)
+            .ToList();
+
+        if (succeeded.Count == 0)
+        {
+            return null;
+        }
+
+        // Prefer the latest attempt that actually merged a fragment (current-state provenance —
+        // merges advance in attempt order, so the last fragment.json on disk is the live one);
+        // otherwise the latest succeeded attempt (transcript-only, no state contribution).
+        AttemptRecord? latestWithFragment = succeeded
+            .LastOrDefault(a => File.Exists(Path.Combine(ResolveAbsoluteLogDir(a.LogDir), "fragment.json")));
+
+        return latestWithFragment ?? succeeded[^1];
     }
 
     /// <summary>
