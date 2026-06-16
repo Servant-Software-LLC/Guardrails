@@ -34,9 +34,16 @@ foreach ($file in $files) {
     $failures += "$file was deleted by the implementation task"
     continue
   }
-  # git hash-object computes the git blob SHA1 from on-disk content — content-based,
-  # not index/commit-based, so a mid-execution git commit cannot game this check.
-  $current = (git hash-object $file).Trim()
+  # git hash-object computes the git blob SHA1 from the WORKING-TREE content — content-based,
+  # not index- or commit-based — so a mid-execution `git add`/`git commit`/`git stash` cannot
+  # game this check (the file's on-disk bytes are what is hashed, and what the build/test sees).
+  # The baseline ($stored) was captured the same way by task 01 BEFORE this task ran, so the
+  # comparison is against the pre-implementation content, never against HEAD or a fresh clone.
+  $current = (git hash-object $file 2>$null).Trim()
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($current)) {
+    $failures += "Could not hash $file (git hash-object failed) — cannot prove it is untouched"
+    continue
+  }
   if ($current -ne $stored.Trim()) {
     $failures += "$file was modified by the implementation task (expected $stored, got $current)"
   }
