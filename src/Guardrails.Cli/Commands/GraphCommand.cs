@@ -38,7 +38,7 @@ public static partial class GraphCommand
 
         var checkOption = new Option<bool>("--check")
         {
-            Description = "Report whether diagram.md is up to date (exit 0 fresh, 2 stale/missing, 1 on a load/validate error); writes nothing."
+            Description = "Report whether diagram.md (and diagram.html if present) are up to date (exit 0 fresh, 2 stale/missing, 1 on a load/validate error); writes nothing. A missing diagram.html is not stale — only a present-but-hash-mismatched one is."
         };
 
         var stdoutOption = new Option<bool>("--stdout")
@@ -48,7 +48,7 @@ public static partial class GraphCommand
 
         var noHtmlOption = new Option<bool>("--no-html")
         {
-            Description = "Write only diagram.md; skip the interactive diagram.html navigation companion."
+            Description = "Write only diagram.md; skip the interactive diagram.html navigation companion. Has no effect when combined with --stdout (which writes nothing to disk)."
         };
 
         var formatOption = new Option<string>("--format")

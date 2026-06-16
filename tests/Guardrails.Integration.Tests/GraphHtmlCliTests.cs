@@ -88,10 +88,25 @@ public sealed class GraphHtmlCliTests
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
-        await InvokeCapturingAsync("graph", plan.PlanDir, "--stdout");
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--stdout");
 
+        Assert.Equal(ExitCodes.Success, exit);
         Assert.False(File.Exists(MdPath(plan.PlanDir)));
         Assert.False(File.Exists(HtmlPath(plan.PlanDir)));
+        Assert.Contains("flowchart TD", output);
+    }
+
+    [Fact]
+    public async Task Stdout_WithNoHtml_WritesNeitherFile()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--stdout", "--no-html");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.False(File.Exists(MdPath(plan.PlanDir)));
+        Assert.False(File.Exists(HtmlPath(plan.PlanDir)));
+        Assert.Contains("flowchart TD", output);
     }
 
     [Fact]
@@ -120,6 +135,29 @@ public sealed class GraphHtmlCliTests
         // diagram.html legitimately absent (--no-html) — md fresh → check passes.
         (int exit, _) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
         Assert.Equal(ExitCodes.Success, exit);
+    }
+
+    [Fact]
+    public async Task Check_BothFilesStale_ReportsMdFirst()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        // Tamper both files' hashes — check should short-circuit on diagram.md (checked first).
+        string md = await File.ReadAllTextAsync(MdPath(plan.PlanDir), TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(MdPath(plan.PlanDir),
+            md.Replace($"source-sha256={EmbeddedHash(md)}", "source-sha256=deadbeef", StringComparison.Ordinal),
+            TestContext.Current.CancellationToken);
+
+        string html = await File.ReadAllTextAsync(HtmlPath(plan.PlanDir), TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(HtmlPath(plan.PlanDir),
+            html.Replace($"source-sha256={EmbeddedHash(html)}", "source-sha256=deadbeef", StringComparison.Ordinal),
+            TestContext.Current.CancellationToken);
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
+
+        Assert.Equal(2, exit);
+        Assert.Contains("diagram.md", output); // md is checked first; its stale message appears
     }
 
     [Fact]

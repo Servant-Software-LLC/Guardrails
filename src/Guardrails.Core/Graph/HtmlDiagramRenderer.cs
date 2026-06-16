@@ -89,12 +89,15 @@ public static class HtmlDiagramRenderer
 </div>
 <div id="stage"></div>
 <div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
-  Local viewer &mdash; on GitHub, diagram.md renders instead.</div>
+  Node clicks open source files &mdash; serve via a local HTTP server (e.g.
+  <code>python -m http.server</code>) for clicks to work; browsers block
+  <code>file://&rarr;file://</code> navigation by default.
+  On GitHub, diagram.md renders instead.</div>
 
 <script type="text/plain" id="graph-source">__GRAPH_SOURCE__</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
 
 const graph = document.getElementById('graph-source').textContent;
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;

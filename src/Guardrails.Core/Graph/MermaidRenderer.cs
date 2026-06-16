@@ -180,7 +180,9 @@ public static class MermaidRenderer
     /// make the href resolve relative to <c>diagram.html</c> at the plan root.
     /// </summary>
     private static string ToPlanRelative(string planDirectory, string absolutePath) =>
-        Path.GetRelativePath(planDirectory, absolutePath).Replace('\\', '/');
+        Path.GetRelativePath(planDirectory, absolutePath)
+            .Replace('\\', '/')
+            .Replace("\"", "%22", StringComparison.Ordinal); // " is legal in Linux filenames; URL-encode to keep the click directive parseable
 
     /// <summary>Make a label safe inside a double-quoted Mermaid <c>click</c> tooltip.</summary>
     private static string ClickTooltip(string text) =>
