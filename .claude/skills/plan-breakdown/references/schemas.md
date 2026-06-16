@@ -90,8 +90,11 @@ a .NET plan, not blanket `Bash`.
   "dependsOn": ["01-other-task"],                                // REQUIRED (may be [])
   "retries": 3,             // optional; overrides defaultRetries
   "timeoutSeconds": 3600,   // optional
-  "exclusive": null         // optional; default: prompt action → true, script → false.
+  "exclusive": null,        // optional; default: prompt action → true, script → false.
                             // Leave null unless you have a reason.
+  "captureHashes": [        // optional; workspace-relative files whose SHA-256 the HARNESS
+    "tests/MyProj/FooTests.cs"  // records into state after a successful action — the agent
+  ]                         // never hashes anything. Missing file ⇒ attempt fails. (tests-untouched)
 }
 ```
 
@@ -102,6 +105,12 @@ regeneration merge's key, §11). Absent ⇒ identity falls back to the folder na
 the plan ⇒ GR2010; a value not matching `^[a-z0-9][a-z0-9._-]*$` ⇒ GR2011. Omit the `action` block
 when the task folder has exactly one `action.*` file (the convention); zero or multiple =
 validation error.
+
+`captureHashes` lists files the harness hashes (SHA-256, uppercase hex, raw bytes) into
+`{ "<taskId>": { "fileHashes": { "<path>": "<hex>" } } }` after the action succeeds — computed in
+harness code, so the agent never runs a shell command to produce it. A `tests-untouched` guardrail
+on a downstream task reads it back and recomputes with `Get-FileHash -Algorithm SHA256`. See
+SKILL.md Step 5.
 
 ## Prompt files (`.prompt.md`)
 

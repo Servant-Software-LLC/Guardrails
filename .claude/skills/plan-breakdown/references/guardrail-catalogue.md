@@ -83,16 +83,16 @@ What is the task's primary deliverable?
 ├── A file/artifact            → file-exists (always) + the strongest content check available:
 │                                schema-validates > file-contains-regex > prompt-judge
 ├── Code (library/feature)     → build-passes + specific-tests-pass (--filter THIS task's tests)
-│                                + tests-untouched (IMPLEMENTATION task: reads blob hashes the
-│                                │  test-author task stored in state; tamper-evident regardless
-│                                │  of commit timing — see SKILL.md Step 5 three-part pattern;
-│                                │  required whenever an upstream test-author task exists)
+│                                + tests-untouched (IMPLEMENTATION task: recomputes Get-FileHash
+│                                │  and compares to the SHA-256 the HARNESS recorded from the
+│                                │  test-author task's captureHashes — agent never shells out;
+│                                │  see SKILL.md Step 5; required whenever a test-author exists)
 │                                └─ INSERT a test-author task upstream BY DEFAULT (SKILL Step 2
 │                                   TDD rule); skip only if tests already exist or behavior is
 │                                   too simple for unit tests — state why in task description
-│                                   (test-author guardrails: tests-fail-on-current-code (8),
-│                                    state-fragment-written; tests-build only if tests compile
-│                                    against current code)
+│                                   (test-author: tests-fail-on-current-code (8) + declares
+│                                    captureHashes in task.json; tests-build only if tests
+│                                    compile against current code)
 ├── A runnable script/tool     → file-exists + command-exit-code on a representative invocation
 ├── A running service          → port-answers + endpoint-content (curl + contains/schema)
 ├── Config/data                → schema-validates; else file-contains on load-bearing keys

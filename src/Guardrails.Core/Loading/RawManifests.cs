@@ -56,6 +56,11 @@ internal sealed class RawTask
     public int? Retries { get; set; }
     public int? TimeoutSeconds { get; set; }
     public bool? Exclusive { get; set; }
+
+    // Workspace-relative files whose SHA-256 the harness records into state after a successful
+    // action (issue #46) — the agent never computes the hash itself.
+    public List<string>? CaptureHashes { get; set; }
+
     public RawAction? Action { get; set; }
 }
 

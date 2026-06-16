@@ -56,6 +56,7 @@ public sealed class StatePlanBuilder : IDisposable
         string? actionBody = null,
         string? guardrailBody = null,
         bool? exclusive = null,
+        IReadOnlyList<string>? captureHashes = null,
         params string[] dependsOn)
     {
         string taskDir = Path.Combine(_root, "tasks", id);
@@ -70,11 +71,15 @@ public sealed class StatePlanBuilder : IDisposable
             ? string.Empty
             : $",\n  \"exclusive\": {(exclusive.Value ? "true" : "false")}";
 
+        string captureLine = captureHashes is null || captureHashes.Count == 0
+            ? string.Empty
+            : $",\n  \"captureHashes\": [{string.Join(", ", captureHashes.Select(p => $"\"{p}\""))}]";
+
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
               "description": "fixture task {{id}}",
-              "dependsOn": {{dependsJson}}{{exclusiveLine}}
+              "dependsOn": {{dependsJson}}{{exclusiveLine}}{{captureLine}}
             }
             """);
 

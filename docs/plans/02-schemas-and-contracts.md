@@ -106,6 +106,9 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   "exclusive": null,           // optional; null/absent = default by action kind:
                                //   prompt action  → true  (runs alone — sole workspace access)
                                //   exe/script     → false
+  "captureHashes": [           // optional; workspace-relative files whose SHA-256 the HARNESS
+    "tests/MyProj/FooTests.cs" //   records into state after a successful action (§3.1) — the
+  ],                           //   agent never computes a hash. Missing file ⇒ attempt fails.
   "action": {                  // OPTIONAL — omit to use convention discovery:
                                //   exactly ONE file named action.* in the task folder;
                                //   zero or multiple action.* files = validation error
@@ -135,6 +138,49 @@ alphanumerics, optionally with `.` `_` `-`; a `GR2011` error otherwise). The for
 a real id can never collide with the merge's synthetic `folder:<name>` identity (the colon is
 disallowed). `validate` does not *require* one. Absent ⇒ task identity falls back to the folder
 name — see §11.3 for why minting one is still recommended.
+
+### 3.1 `captureHashes` — harness-computed content hashes
+
+`captureHashes` is an optional list of **workspace-relative file paths**. After a task's action
+succeeds (and **before** its guardrails run), the harness computes each listed file's **SHA-256
+over its raw bytes** (uppercase hex) and merges the result into the task's state fragment under:
+
+```jsonc
+{ "<taskId>": { "fileHashes": { "<relative/path>": "<UPPERCASE-SHA-256-HEX>" } } }
+```
+
+The hashes then merge into `state.json` like any fragment, so a downstream task reads them via
+`GUARDRAILS_STATE_IN`. The hash is computed **in harness code** — the action agent never runs
+`git hash-object`, `Get-FileHash`, or any shell command, so a scoped `allowedTools` (or an offline
+sandbox) can never block it. If a declared file does not exist after the action, the attempt
+**fails** with an actionable message naming the missing path (the action claimed success but did
+not produce a declared output); nothing is recorded.
+
+**Paths are workspace-relative and validated.** Each `captureHashes` entry must be a
+workspace-relative path that stays inside the workspace. `validate` rejects an absolute path, a
+drive- or root-rooted path, or any entry whose normalized resolution escapes the workspace root
+(e.g. `../../etc/passwd`) as a `GR2013` error naming the offending task and path.
+
+**Merge ordering — capture overlays the action's own fragment.** Capture does not replace the
+fragment the action wrote to `GUARDRAILS_STATE_OUT`; it **overlays** onto it. The harness reads the
+action's pending fragment, sets `{ "<taskId>": { "fileHashes": { … } } }`, and writes the result
+back, **preserving every other key the action published** (including other task keys and other keys
+under `<taskId>`). For a path that appears in **both** the action's own `fileHashes` and the
+harness capture, **the harness-computed value takes precedence** (it overwrites the action's). A
+non-object or unparseable action fragment still triggers the **invalid-fragment** attempt failure
+(§6.2) — capture leaves those bytes untouched and never papers over them, so declaring
+`captureHashes` does not change whether a task with a malformed fragment fails.
+
+The canonical use is the `tests-untouched` guardrail: a test-author task declares the test files
+in `captureHashes`, and the implementation task's guardrail recomputes with
+`Get-FileHash -Algorithm SHA256` (a pwsh cmdlet, run by the interpreter — not the agent sandbox)
+and compares. SHA-256-over-raw-bytes is chosen so the harness (`SHA256.HashData`) and a guardrail
+(`Get-FileHash`) agree exactly, with no git dependency and no shared git-index mutation that could
+race under `maxParallelism > 1`. It sidesteps the **git-blob** normalization hazard, but it is an
+**exact raw-byte match**: a line-ending normalization that touches the file between capture and the
+downstream recompute (git `autocrlf` on checkout, or an IDE/formatter rewriting the file) makes the
+comparison **fail closed** — a spurious "tests changed" block a human then reviews. Safe, but
+possible; it does not silently pass.
 
 ## 4. Guardrails
 

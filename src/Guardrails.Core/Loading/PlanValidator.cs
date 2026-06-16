@@ -28,6 +28,7 @@ public sealed class PlanValidator
         ValidateStableIdsUnique(plan, diagnostics);
         ValidateStableIdFormat(plan, diagnostics);
         ValidateCostCap(plan, diagnostics);
+        ValidateCaptureHashPaths(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
@@ -121,6 +122,65 @@ public sealed class PlanValidator
                 "halt the run before any work could run."));
         }
     }
+
+    /// <summary>
+    /// Every <c>captureHashes</c> entry (SSOT §3.1) must be a safe workspace-relative path. The
+    /// harness resolves each as <c>Path.GetFullPath(Path.Combine(workspace, entry))</c> and then
+    /// hashes/reads the file, so an absolute path, a drive- or root-rooted path, or a path that
+    /// normalizes outside the workspace (e.g. <c>../../etc/passwd</c>) would reach outside the
+    /// workspace — a GR2013 ERROR naming the offending task and path. Resolution uses the plan's
+    /// configured workspace root (the action's per-task <c>workingDirectory</c> is the rare override
+    /// that only ever narrows the cwd; the workspace root is the canonical containment boundary).
+    /// </summary>
+    private static void ValidateCaptureHashPaths(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        string workspaceRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(plan.Workspace));
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            foreach (string entry in task.CaptureHashes)
+            {
+                if (EscapesWorkspace(workspaceRoot, entry))
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.CaptureHashEscapesWorkspace, task.Directory,
+                        $"Task '{task.Id}' declares captureHashes entry '{entry}', which is not a " +
+                        "workspace-relative path: it is absolute/rooted or escapes the workspace root. " +
+                        "captureHashes paths must stay inside the workspace."));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="entry"/> is not safely contained by <paramref name="workspaceRoot"/>:
+    /// it is rooted (absolute or drive-rooted such as <c>/etc</c> or <c>C:\x</c>), or its normalized
+    /// resolution against the workspace leaves the workspace root. Comparison is on a directory
+    /// boundary so a sibling like <c>workspace-evil</c> never counts as inside <c>workspace</c>.
+    /// </summary>
+    private static bool EscapesWorkspace(string workspaceRoot, string entry)
+    {
+        // A rooted entry ignores the workspace base entirely under Path.Combine — reject outright.
+        if (Path.IsPathRooted(entry))
+        {
+            return true;
+        }
+
+        string resolved = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(Path.Combine(workspaceRoot, entry)));
+
+        if (string.Equals(resolved, workspaceRoot, PathComparison))
+        {
+            // Resolves to the workspace root itself (e.g. "." or "sub/.."). Not a file inside it,
+            // but it does not escape — leave that to the harness's missing-file path; not GR2013.
+            return false;
+        }
+
+        string prefix = workspaceRoot + Path.DirectorySeparatorChar;
+        return !resolved.StartsWith(prefix, PathComparison);
+    }
+
+    private static StringComparison PathComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     private static void ValidateDependencies(PlanDefinition plan, List<Diagnostic> diagnostics)
     {

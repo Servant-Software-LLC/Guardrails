@@ -302,6 +302,10 @@ public sealed class PlanLoader
             Retries = raw.Retries,
             TimeoutSeconds = raw.TimeoutSeconds,
             Exclusive = raw.Exclusive,
+            CaptureHashes = (raw.CaptureHashes ?? [])
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p.Trim().Replace('\\', '/'))
+                .ToList(),
             Action = action,
             Guardrails = guardrails
         };
