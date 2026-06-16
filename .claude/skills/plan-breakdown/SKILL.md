@@ -125,9 +125,25 @@ A task is right-sized when ALL hold:
    (≈ ≤ 30–45 min of agent work).
 4. **Retry-cheapness:** a failed guardrail re-runs the whole action. If a one-line
    fix would redo an hour of work, the task is too coarse.
+5. **TDD default for code deliverables.** When the primary deliverable is code (a
+   library, feature, service behavior, or algorithm), the guardrail-boundary rule (rule
+   2) almost always fires: a test-author task's guardrail (`tests-fail-on-current-code`)
+   and the implementation task's guardrail (`specific-tests-pass`) are different in
+   character. Default to splitting into two consecutive tasks:
 
-Heuristic: a typical feature plan yields **5–15 tasks**. Under 3 or over 25 →
-re-examine, and tell the user why if it stands.
+   1. `NN-author-tests-<feature>` — writes tests encoding the behavior BEFORE it exists
+   2. `NM-implement-<feature>` — makes those tests pass without modifying them
+
+   Collapse to a single task only when (a) tests for this behavior **already exist** in
+   the repo, or (b) the behavior is too simple to have meaningful unit tests — state the
+   reason explicitly in the task description or breakdown report. When in doubt, split: the test-author
+   task is cheap and its `tests-fail-on-current-code` guardrail is the strongest
+   anti-tautology check the skill has.
+
+Heuristic: a typical feature plan yields **5–15 tasks**. TDD splitting doubles code
+tasks (each code item becomes two tasks); this does not count against the threshold.
+Under 3 or over 25 tasks after applying TDD → re-examine, and tell the user why if
+it stands.
 
 ## Step 3 — Determine the DAG (`dependsOn`)
 
@@ -179,11 +195,64 @@ optional:
 For every selected guardrail whose precondition doesn't exist yet, generate the
 upstream task that creates it:
 
-- Guardrail "tests X pass" and tests X don't exist → insert `NN-author-tests-X`
-  BEFORE the implementation task. Its own guardrails: tests-build +
-  **tests-fail-on-current-code** (the anti-tautology check). The implementation task
-  gains a guardrail like `tests-untouched` (git-diff the test files) so it can't
-  "pass" by editing the tests.
+- Code task and tests do not yet exist → insert `NN-author-tests-<feature>` BEFORE the
+  implementation task (the TDD default in Step 2 means this fires for most code tasks).
+  Three things follow automatically:
+
+  **Test-author task guardrails.** `tests-fail-on-current-code` (archetype #8) is
+  required. Keep `tests-build` unless the new tests reference not-yet-existing symbols (a
+  new type, method, or constant) that make the project un-compilable against current code —
+  in that case drop it, since a build guardrail that always fails due to missing symbols
+  adds noise without signal. When tests exercise only existing API surface (a CLI flag, a
+  file path, a response code), keep `tests-build`.
+
+  **`tests-untouched` guardrail on every implementation task** that has an upstream
+  test-author task. Prevents the agent from making tests pass by editing them instead of
+  fixing the implementation. Use the **content-hash pattern**: the test-author task writes
+  `git hash-object` hashes to `GUARDRAILS_STATE_OUT`; the implementation task's guardrail
+  reads them from `GUARDRAILS_STATE_IN` and compares. This is immune to git-commit timing
+  (the harness does NOT commit between tasks — `git diff HEAD` on an untracked test file
+  is always empty, making a git-diff-based check vacuous).
+
+  ```powershell
+  # catches: "making tests pass" by editing the tests instead of the implementation
+  # Uses content hashes stored by the test-author task (immune to git-commit timing)
+  $stateIn = $env:GUARDRAILS_STATE_IN
+  if (-not $stateIn -or -not (Test-Path $stateIn)) {
+    Write-Output "GUARDRAILS_STATE_IN not set or missing — cannot verify test file integrity"
+    exit 1
+  }
+  $state = Get-Content $stateIn -Raw | ConvertFrom-Json
+  $storedHashes = $state.'NN-author-tests-FEATURE'.testFileHashes
+  if (-not $storedHashes) {
+    Write-Output "State key 'NN-author-tests-FEATURE.testFileHashes' missing — test-author task may not have written its state"
+    exit 1
+  }
+  $failures = @()
+  foreach ($file in $storedHashes.PSObject.Properties.Name) {
+    $stored = $storedHashes.$file
+    if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
+    $current = (git hash-object $file 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0) { $failures += "Could not hash $file"; continue }
+    if ($current -ne $stored.Trim()) { $failures += "$file was modified (expected $stored, got $current)" }
+  }
+  if ($failures) { Write-Output ($failures -join "; "); exit 1 }
+  exit 0
+  ```
+
+  Replace `NN-author-tests-FEATURE` with the actual upstream task's folder name (which is
+  the default state key prefix). The test-author task must write this data — see the action
+  prompt guidance below and `references/example-breakdown.md`.
+
+  **Action prompt for test-author tasks.** The `## Task` section must explicitly tell the
+  agent: (a) the exact test file path(s) and any category/trait convention the repo uses;
+  (b) the tests MUST fail against the current code — this is intentional, not a mistake;
+  (c) do NOT implement the behavior, only the tests; (d) after writing the tests, record
+  their content hashes by running `git hash-object <file>` on each test file and writing
+  the results to `GUARDRAILS_STATE_OUT` under `{"NN-author-tests-FEATURE": {"testFileHashes":
+  {"<path>": "<hex>", ...}}}` — a downstream guardrail on the implementation task uses these
+  hashes to verify the tests were not edited. See `references/example-breakdown.md` for
+  the complete worked `action.prompt.md`.
 - Guardrail "schema validates" and no schema exists → insert an author-schema task
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the

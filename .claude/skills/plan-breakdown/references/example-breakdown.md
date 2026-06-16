@@ -104,7 +104,18 @@ Author unit tests in `tests/Inventory.Tests/StatsCommandTests.cs` (trait/categor
 Use the existing test conventions in tests/Inventory.Tests. The tests MUST fail (or
 be unable to find the flag) against the current code — they test behavior that does
 not exist yet. Do not implement the flag.
-Publish nothing to state.
+
+After writing the tests, record their content hashes so a downstream guardrail can verify
+the implementation task did not edit them. For each test file, run:
+  git hash-object tests/Inventory.Tests/StatsCommandTests.cs
+Capture the trimmed hex output, then write to GUARDRAILS_STATE_OUT:
+{
+  "01-author-stats-tests": {
+    "testFileHashes": {
+      "tests/Inventory.Tests/StatsCommandTests.cs": "<hex>"
+    }
+  }
+}
 ```
 
 `guardrails/01-tests-build.ps1`
@@ -159,8 +170,28 @@ exit 0
 `guardrails/03-tests-untouched.ps1`
 ```powershell
 # catches: "making tests pass" by editing the tests instead of the implementation
-$changed = git diff --name-only HEAD -- tests/Inventory.Tests/StatsCommandTests.cs
-if ($changed) { Write-Output "StatsCommandTests.cs was modified by the implementation task"; exit 1 }
+# Uses content hashes stored by task 01 — immune to git-commit timing (harness does not
+# commit between tasks; git diff HEAD on an untracked file always returns empty output).
+$stateIn = $env:GUARDRAILS_STATE_IN
+if (-not $stateIn -or -not (Test-Path $stateIn)) {
+  Write-Output "GUARDRAILS_STATE_IN not set or missing — cannot verify test file integrity"
+  exit 1
+}
+$state = Get-Content $stateIn -Raw | ConvertFrom-Json
+$storedHashes = $state.'01-author-stats-tests'.testFileHashes
+if (-not $storedHashes) {
+  Write-Output "State key '01-author-stats-tests.testFileHashes' missing — task 01 may not have written its state"
+  exit 1
+}
+$failures = @()
+foreach ($file in $storedHashes.PSObject.Properties.Name) {
+  $stored = $storedHashes.$file
+  if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
+  $current = (git hash-object $file 2>$null).Trim()
+  if ($LASTEXITCODE -ne 0) { $failures += "Could not hash $file"; continue }
+  if ($current -ne $stored.Trim()) { $failures += "$file was modified (expected $stored, got $current)" }
+}
+if ($failures) { Write-Output ($failures -join "; "); exit 1 }
 exit 0
 ```
 
