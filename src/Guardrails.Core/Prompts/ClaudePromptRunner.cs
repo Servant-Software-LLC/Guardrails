@@ -1,6 +1,5 @@
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
-using Guardrails.Core.State;
 
 namespace Guardrails.Core.Prompts;
 
@@ -40,49 +39,74 @@ public sealed class ClaudePromptRunner : IPromptRunner
         };
 
         var parser = new ClaudeStreamParser();
-        var streamLines = new List<string>();
 
-        void Tee(string line)
+        // Open both log artifacts for incremental writes before launching the process so the
+        // "view log" link can tail them in real time (issue #41) — both claude-stream.jsonl (the
+        // raw debug stream) and transcript.md (the human/dependent-task view, issues #26/#27) grow
+        // live, instead of appearing only when the task finishes. OutputDataReceived events are
+        // serialized by AsyncStreamReader, so the shared writers/parser need no locking.
+        //
+        // DELIBERATE TRADEOFF: master wrote both artifacts via AtomicFile.WriteAllText (temp+move)
+        // once the process exited; this streams them in place so a "view log" tail sees them grow
+        // live (issue #41). Dropping atomicity is acceptable for these two append-only log artifacts
+        // because nothing hashes or guardrail-gates them: the verdict never comes from these files —
+        // it comes from the parsed `result` line + exit code (see `completed` below).
+        Directory.CreateDirectory(Path.GetDirectoryName(invocation.StreamLogPath)!);
+        await using var streamWriter = new StreamWriter(invocation.StreamLogPath, append: false) { AutoFlush = true };
+
+        // transcript.md is rendered incrementally from the same lines via StreamingWriter, which
+        // parses each line independently and is byte-identical to a batch Render at Complete().
+        // StreamingWriter flushes itself, so this writer needs no AutoFlush.
+        StreamWriter? transcriptFile = invocation.TranscriptLogPath is { } transcriptPath
+            ? new StreamWriter(transcriptPath, append: false)
+            : null;
+        ClaudeTranscriptRenderer.StreamingWriter? transcript =
+            transcriptFile is null ? null : new ClaudeTranscriptRenderer.StreamingWriter(transcriptFile);
+
+        try
         {
-            streamLines.Add(line);
-            parser.Feed(line);
+            void Tee(string line)
+            {
+                parser.Feed(line);
+                streamWriter.WriteLine(line);
+                transcript?.Feed(line);
+            }
+
+            ProcessResult process = await _processRunner.RunAsync(
+                command,
+                invocation.WorkingDirectory,
+                invocation.Environment,
+                invocation.Timeout,
+                standardInput: invocation.ComposedPrompt,
+                stdoutLineSink: Tee,
+                cancellationToken).ConfigureAwait(false);
+
+            // Both files are fully written line-by-line above; Complete() finalizes the transcript's
+            // trailing newline so it matches a batch render exactly.
+            transcript?.Complete();
+
+            ClaudeResult result = parser.Build();
+
+            bool completed = process.Succeeded && result.HasResult;
+            string summary = BuildSummary(process, result);
+
+            return new PromptResult
+            {
+                Completed = completed,
+                IsError = result.IsError,
+                ResultText = result.ResultText,
+                CostUsd = result.CostUsd,
+                NumTurns = result.NumTurns,
+                Summary = summary
+            };
         }
-
-        ProcessResult process = await _processRunner.RunAsync(
-            command,
-            invocation.WorkingDirectory,
-            invocation.Environment,
-            invocation.Timeout,
-            standardInput: invocation.ComposedPrompt,
-            stdoutLineSink: Tee,
-            cancellationToken).ConfigureAwait(false);
-
-        // Tee the raw stream to claude-stream.jsonl (SSOT §8).
-        string rawStream = string.Join('\n', streamLines);
-        AtomicFile.WriteAllText(invocation.StreamLogPath, rawStream);
-
-        // Derive the CLI-equivalent transcript.md deterministically from the same stream
-        // (issue #27): the raw JSONL is the debug artifact; the transcript is what humans
-        // skim and what dependent tasks read (issue #26).
-        if (invocation.TranscriptLogPath is { } transcriptPath)
+        finally
         {
-            AtomicFile.WriteAllText(transcriptPath, ClaudeTranscriptRenderer.Render(rawStream));
+            if (transcriptFile is not null)
+            {
+                await transcriptFile.DisposeAsync().ConfigureAwait(false);
+            }
         }
-
-        ClaudeResult result = parser.Build();
-
-        bool completed = process.Succeeded && result.HasResult;
-        string summary = BuildSummary(process, result);
-
-        return new PromptResult
-        {
-            Completed = completed,
-            IsError = result.IsError,
-            ResultText = result.ResultText,
-            CostUsd = result.CostUsd,
-            NumTurns = result.NumTurns,
-            Summary = summary
-        };
     }
 
     /// <summary>Build the <c>claude</c> argument list (SSOT §9). All flag spelling lives here.</summary>
