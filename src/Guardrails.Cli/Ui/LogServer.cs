@@ -38,6 +38,16 @@ public sealed class LogServer : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _acceptLoop;
 
+    // Per-file read cache, keyed by absolute path. The accept loop serves requests concurrently,
+    // so all access is under _fileCacheLock. A cached entry is reused ONLY when the file's current
+    // (Length, LastWriteTimeUtc) exactly match the values captured at the last serve; since these
+    // logs are append-only and the writer touches mtime on every write, a changed entry is always
+    // re-read — the cache only skips redundant reads of an idle file, never serves stale bytes.
+    private readonly object _fileCacheLock = new();
+    private readonly Dictionary<string, CachedFile> _fileCache = new(StringComparer.Ordinal);
+
+    private readonly record struct CachedFile(long Length, DateTime LastWriteTimeUtc, string Content);
+
     private LogServer(
         HttpListener listener,
         string baseUrl,
@@ -85,22 +95,48 @@ public sealed class LogServer : IAsyncDisposable
     {
         try
         {
-            int boundPort = port > 0 ? port : FreeLoopbackPort();
-            // Bind to the numeric loopback address rather than the name "localhost" so the
-            // "never exposed off this machine" guarantee is unconditional and not affected by
-            // custom /etc/hosts or DNS overrides that map "localhost" to a routable address.
-            string bindUrl = $"http://127.0.0.1:{boundPort}/";
-            // BaseUrl uses the numeric address too — keeps it honest and matches the binding.
-            string baseUrl = $"http://127.0.0.1:{boundPort}/";
+            // HttpListener prefixes need a concrete port (it cannot itself take ephemeral port 0),
+            // so for port 0 we probe a free port with a TcpListener, then bind the HttpListener to
+            // it. That probe→bind gap is a TOCTOU window: another process can steal the port in
+            // between. For a caller-chosen port we honour it with a single attempt; for an
+            // ephemeral port we retry with a fresh probe if the bind loses the race.
+            int maxAttempts = port > 0 ? 1 : 10;
+            HttpListenerException? lastBindFailure = null;
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                int boundPort = port > 0 ? port : FreeLoopbackPort();
+                // Bind to the numeric loopback address rather than the name "localhost" so the
+                // "never exposed off this machine" guarantee is unconditional and not affected by
+                // custom /etc/hosts or DNS overrides that map "localhost" to a routable address.
+                string bindUrl = $"http://127.0.0.1:{boundPort}/";
+                // BaseUrl uses the numeric address too — keeps it honest and matches the binding.
+                string baseUrl = $"http://127.0.0.1:{boundPort}/";
 
-            var listener = new HttpListener();
-            listener.Prefixes.Add(bindUrl);
-            listener.Start();
+                var listener = new HttpListener();
+                listener.Prefixes.Add(bindUrl);
+                try
+                {
+                    listener.Start();
+                }
+                catch (HttpListenerException ex)
+                {
+                    // The probed port was taken between probe and bind (or the caller's port is in
+                    // use). Drop this listener; retry with a fresh probe for an ephemeral port,
+                    // or fall through to the outer catch on the last attempt.
+                    ((IDisposable)listener).Dispose();
+                    lastBindFailure = ex;
+                    continue;
+                }
 
-            string logsRoot = Path.Combine(planDirectory, "state", "logs");
-            var server = new LogServer(listener, baseUrl, logsRoot, tasks, statusForTask);
-            server._acceptLoop = Task.Run(server.AcceptLoopAsync);
-            return server;
+                string logsRoot = Path.Combine(planDirectory, "state", "logs");
+                var server = new LogServer(listener, baseUrl, logsRoot, tasks, statusForTask);
+                server._acceptLoop = Task.Run(server.AcceptLoopAsync);
+                return server;
+            }
+
+            // Exhausted the retry budget without binding — surface the last race failure to the
+            // existing warn-and-return-null path below.
+            throw lastBindFailure!;
         }
         catch (Exception ex) when (ex is HttpListenerException or SocketException or PlatformNotSupportedException)
         {
@@ -274,7 +310,34 @@ public sealed class LogServer : IAsyncDisposable
             return;
         }
 
-        // The producing process may still be writing — read with a fully shared handle.
+        WriteText(context, ReadFileCached(full));
+    }
+
+    /// <summary>
+    /// Reads <paramref name="full"/> (an absolute path), reusing the last-served content when the
+    /// file's current length and last-write time are both unchanged since that serve. The task
+    /// page polls /file every second; an idle log would otherwise be fully re-read each tick. The
+    /// cache is keyed on (Length, LastWriteTimeUtc): these logs are append-only and the writer
+    /// touches mtime on every write, so any active write invalidates the entry — it never serves
+    /// stale bytes. Access is serialised by <see cref="_fileCacheLock"/> (concurrent accept loop).
+    /// </summary>
+    private string ReadFileCached(string full)
+    {
+        var info = new FileInfo(full);
+        long length = info.Length;
+        DateTime lastWriteUtc = info.LastWriteTimeUtc;
+
+        lock (_fileCacheLock)
+        {
+            if (_fileCache.TryGetValue(full, out CachedFile cached) &&
+                cached.Length == length && cached.LastWriteTimeUtc == lastWriteUtc)
+            {
+                return cached.Content;
+            }
+        }
+
+        // Cache miss or the file changed since the last serve — re-read. The producing process may
+        // still be writing, so read with a fully shared handle (identical to the original open).
         string content;
         using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read,
                    FileShare.ReadWrite | FileShare.Delete))
@@ -283,7 +346,12 @@ public sealed class LogServer : IAsyncDisposable
             content = reader.ReadToEnd();
         }
 
-        WriteText(context, content);
+        lock (_fileCacheLock)
+        {
+            _fileCache[full] = new CachedFile(length, lastWriteUtc, content);
+        }
+
+        return content;
     }
 
     // --- log-dir resolution -----------------------------------------------------------------

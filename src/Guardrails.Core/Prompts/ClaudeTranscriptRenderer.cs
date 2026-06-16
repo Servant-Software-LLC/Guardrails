@@ -10,10 +10,12 @@ namespace Guardrails.Core.Prompts;
 /// events, init/usage blocks, full tool-result dumps); it is the wrong thing to feed to a
 /// dependent task's agent (issue #26) or to a human skimming "what happened".
 ///
-/// This is a PURE, DETERMINISTIC transformation: same stream in ⇒ byte-identical transcript
-/// out. No model is in the loop — every line maps to its rendering by a fixed rule, so the
-/// transcript a downstream task reads never varies run-to-run and cannot hallucinate or drop
-/// a tool call. Quarantined here with the other Claude-specific parsing (SSOT §9).
+/// This is a PURE, DETERMINISTIC transformation: the SAME stream in ⇒ byte-identical transcript
+/// out, every run. No model is in the loop — every line maps to its rendering by a fixed rule.
+/// (Different runs produce different streams, so the transcript naturally differs run-to-run;
+/// the guarantee is over identical input.) For a given stream the transcript a downstream task
+/// reads cannot hallucinate or drop a tool call. Quarantined here with the other Claude-specific
+/// parsing (SSOT §9).
 ///
 /// Mapping:
 /// <list type="bullet">
@@ -312,8 +314,19 @@ public static class ClaudeTranscriptRenderer
         return sb.ToString().Trim();
     }
 
-    private static string Truncate(string value, int max) =>
-        value.Length <= max ? value : value[..max].TrimEnd() + "…";
+    private static string Truncate(string value, int max)
+    {
+        if (value.Length <= max)
+        {
+            return value;
+        }
+
+        // Don't slice between the halves of a surrogate pair: if the char immediately before the
+        // cut is a high surrogate, value[max] is its low surrogate, so backing the cut off by one
+        // keeps the pair whole (or drops the orphaned high surrogate when max == 1). Deterministic.
+        int cut = max > 0 && char.IsHighSurrogate(value[max - 1]) ? max - 1 : max;
+        return value[..cut].TrimEnd() + "…";
+    }
 
     /// <summary>Collapse 3+ consecutive newlines to a blank line; trim trailing whitespace; end with one newline.</summary>
     private static string Normalize(string text)

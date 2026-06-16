@@ -75,8 +75,7 @@ public static class LogsCommand
         // Read-only snapshot of the journal — the landing page shows each task's status as it
         // stands on disk (works after a run, or mid-run from another terminal).
         JournalDocument document = JournalReader.Read(journalPath);
-        Func<string, string?> statusForTask = id =>
-            document.Tasks.TryGetValue(id, out TaskJournalEntry? entry) ? StatusText(entry.Status) : "unknown";
+        Func<string, string?> statusForTask = StatusResolver(document);
 
         LogServer? server = LogServer.TryStart(probe.Plan.PlanDirectory, probe.Plan.Tasks, port, output, statusForTask);
         if (server is null)
@@ -133,7 +132,18 @@ public static class LogsCommand
         }
     }
 
-    private static string StatusText(JournalTaskStatus status) => status switch
+    /// <summary>
+    /// Build the per-task status resolver the landing page uses: a task present in the journal
+    /// maps to its <see cref="StatusText"/> word; an id absent from the journal is "unknown".
+    /// Extracted (and exposed) so the real journal→status-word mapping is testable without a
+    /// stand-in lambda. The Cli assembly ships no InternalsVisibleTo, so this is public rather
+    /// than internal; behavior is unchanged — <see cref="RunAsync"/> uses exactly this resolver.
+    /// </summary>
+    public static Func<string, string?> StatusResolver(JournalDocument document) =>
+        id => document.Tasks.TryGetValue(id, out TaskJournalEntry? entry) ? StatusText(entry.Status) : "unknown";
+
+    /// <summary>Map a journal <see cref="JournalTaskStatus"/> to the SSOT status word shown in the UI.</summary>
+    public static string StatusText(JournalTaskStatus status) => status switch
     {
         JournalTaskStatus.Pending => "pending",
         JournalTaskStatus.Running => "running",

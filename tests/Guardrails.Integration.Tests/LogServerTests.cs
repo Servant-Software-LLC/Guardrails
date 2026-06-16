@@ -76,6 +76,38 @@ public sealed class LogServerTests
     }
 
     [Fact]
+    public async Task File_ReReadsAfterAppend_NeverServesStaleContent()
+    {
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "line one\n");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+        string url = $"{server.BaseUrl}tasks/01-alpha/file?name=action-stdout.log";
+
+        // First serve populates the read cache.
+        Assert.Equal("line one\n", await GetStringAsync(url));
+
+        // The log grows (more bytes + fresh mtime) — the cache key changes, so the next serve must
+        // re-read and include the appended tail rather than returning the cached first line.
+        temp.AppendLog("01-alpha", attempt: 1, "action-stdout.log", "line two\n");
+
+        Assert.Equal("line one\nline two\n", await GetStringAsync(url));
+    }
+
+    [Fact]
+    public async Task File_RepeatedRequestsOfUnchangedFile_AreConsistent()
+    {
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "stable content");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+        string url = $"{server.BaseUrl}tasks/01-alpha/file?name=action-stdout.log";
+
+        // Multiple serves of an idle file (the cache-hit path) must return identical content.
+        Assert.Equal("stable content", await GetStringAsync(url));
+        Assert.Equal("stable content", await GetStringAsync(url));
+        Assert.Equal("stable content", await GetStringAsync(url));
+    }
+
+    [Fact]
     public async Task File_NoAttemptYet_ReturnsEmptyButOk()
     {
         using var temp = new TempPlan();
@@ -141,7 +173,65 @@ public sealed class LogServerTests
         Assert.Null(server.UrlForTask("nope"));
     }
 
+    [Fact]
+    public async Task EphemeralPort_ManyConcurrentServers_AllBindToDistinctPorts()
+    {
+        // Stand up several port-0 servers at once: each probes a free ephemeral port then binds an
+        // HttpListener to it. This is the path the TOCTOU retry hardens — under contention a probe
+        // can hand out a port that is then taken before the bind. The retry loop must let every
+        // server bind, on a distinct port. (Deterministic: asserts all-bound, not a timing race.)
+        using var temp = new TempPlan();
+        IReadOnlyList<TaskNode> tasks = [Task("01-alpha", "First")];
+
+        var servers = new List<LogServer>();
+        try
+        {
+            for (int i = 0; i < 16; i++)
+            {
+                LogServer? server = LogServer.TryStart(temp.Dir, tasks, port: 0, TextWriter.Null);
+                Assert.NotNull(server); // the retry loop survives the probe→bind race
+                servers.Add(server!);
+            }
+
+            // Every server got its own port — none collided.
+            string[] urls = servers.Select(s => s.BaseUrl).ToArray();
+            Assert.Equal(urls.Length, urls.Distinct(StringComparer.Ordinal).Count());
+        }
+        finally
+        {
+            foreach (LogServer server in servers)
+            {
+                await server.DisposeAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CallerChosenPort_BindsToExactlyThatPort()
+    {
+        // A non-zero port is honoured verbatim with a single bind attempt (no retry — the caller
+        // picked it). Pick a free port via a throwaway probe, then assert the server lands on it.
+        int port = FreeLoopbackPort();
+        using var temp = new TempPlan();
+        LogServer? server = LogServer.TryStart(temp.Dir, [Task("01-alpha", "First")], port, TextWriter.Null);
+        Assert.NotNull(server);
+
+        await using (server)
+        {
+            Assert.Equal($"http://127.0.0.1:{port}/", server!.BaseUrl);
+        }
+    }
+
     // --- helpers ----------------------------------------------------------------------------
+
+    private static int FreeLoopbackPort()
+    {
+        var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
 
     private static LogServer Start(string planDir, IReadOnlyList<TaskNode> tasks)
     {
@@ -174,6 +264,20 @@ public sealed class LogServerTests
             string attemptDir = Path.Combine(Dir, "state", "logs", taskId, $"attempt-{attempt}");
             Directory.CreateDirectory(attemptDir);
             File.WriteAllText(Path.Combine(attemptDir, fileName), content);
+        }
+
+        /// <summary>
+        /// Appends to an existing attempt log, mirroring how the producing process grows it (more
+        /// bytes, fresh mtime). Used to prove the read cache never serves stale content.
+        /// </summary>
+        public void AppendLog(string taskId, int attempt, string fileName, string extra)
+        {
+            string path = Path.Combine(Dir, "state", "logs", taskId, $"attempt-{attempt}", fileName);
+            File.AppendAllText(path, extra);
+            // Guarantee a distinct LastWriteTimeUtc from the prior serve even on coarse-grained
+            // filesystem timestamp resolution, so the change is observable to the (Length, mtime)
+            // cache key regardless of how fast the test runs.
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(1));
         }
 
         public void Dispose()
