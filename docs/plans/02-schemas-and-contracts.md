@@ -52,7 +52,7 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
-    ".ps1": ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{script}"]
+    ".ps1": ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{script}", "{args}"]
   },
   "promptRunners": {                  // §9
     "default": "claude",
@@ -72,6 +72,11 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   }
 }
 ```
+
+<!-- canonical-schema:promptRunners — the `"promptRunners": { … }` block above (from its
+     `"promptRunners":` line through its matching close, leading 2-space indent included) is the
+     CANONICAL copy. `.claude/skills/plan-breakdown/references/schemas.md` mirrors it byte-for-byte
+     between its `canonical-schema:promptRunners` sentinels (drift-tested). Edit here first. -->
 
 - `workspace` is the repo/directory the plan operates ON (typically the folder that
   contains the plan folder). Children run with cwd = workspace; everything
@@ -300,7 +305,7 @@ signal); for `lock --check`: the folder has drifted from the baseline or the bas
 baseline is missing and must be established first (§11.5) · `3` cancelled.
 
 **Plan-file → task-folder argument fixup** (all commands taking a plan folder as their first
-positional: `run`, `validate`, `plan`, `graph`, `lock`, `merge`). Before the folder's existence
+positional: `run`, `validate`, `plan`, `graph`, `lock`, `merge`, `logs`). Before the folder's existence
 is checked, the CLI applies one fixup so a user who passes the authored plan *source file*
 instead of the generated *task folder* is not blocked: when the argument ends with `.md`
 (ordinal, case-insensitive) **or** resolves to an existing file rather than a directory, and a
@@ -321,18 +326,30 @@ state/logs/<task-id>/attempt-N/
 ├── action-result.json
 ├── action-out-fragment.json # the LIVE GUARDRAILS_STATE_OUT target the action writes
 ├── fragment.json            # copy of the fragment made on successful merge — audit trail
-├── composed-prompt.md       # prompt actions/guardrails: exactly what the runner got
-├── claude-stream.jsonl      # raw runner output stream (canonical debug artifact)
-├── transcript.md            # CLI-equivalent view, rendered deterministically from the stream (#27)
-├── guardrail-<name>.stdout.log / .stderr.log / .verdict.json
+├── composed-prompt.md       # prompt ACTION: exactly what the runner got
+├── claude-stream.jsonl      # prompt ACTION: raw runner output stream (canonical debug artifact)
+├── transcript.md            # prompt ACTION: CLI-equivalent view, rendered deterministically from the stream (#27)
+├── guardrail-<name>.stdout.log / .stderr.log   # script guardrail: captured output
+├── composed-prompt.<name>.md                   # prompt guardrail: exactly what the verifier got
+├── guardrail-<name>.stream.jsonl               # prompt guardrail: raw runner output stream
+├── guardrail-<name>.transcript.md              # prompt guardrail: deterministic transcript projection
+├── guardrail-<name>.verdict.json               # prompt guardrail: the verdict file (§4.2) — the ONLY pass/fail authority
 └── feedback.md              # composed failure feedback (input to the NEXT attempt)
 ```
 
-`transcript.md` is a PURE, DETERMINISTIC projection of `claude-stream.jsonl` (no model in
-the loop): assistant prose + `● Tool(args)` + truncated `⎿` tool-result summaries + the final
-result text; thinking blocks and all telemetry (thinking-token counters, rate-limit/init/usage
-events) are dropped. It is what a human skims and what a dependent task's prompt links to
-(§9, #26) — the raw stream stays as the debug artifact.
+Prompt **actions** write `composed-prompt.md` / `claude-stream.jsonl` / `transcript.md`. Prompt
+**guardrails** write the same three artifacts *per guardrail*, namespaced by the guardrail's
+`<name>` (filename minus extension, §4): `composed-prompt.<name>.md`,
+`guardrail-<name>.stream.jsonl`, `guardrail-<name>.transcript.md`, plus the
+`guardrail-<name>.verdict.json` verdict file. Script guardrails write
+`guardrail-<name>.stdout.log` / `.stderr.log`. The `<name>` is sanitized for the filesystem (any
+character other than a letter, digit, `-`, `_`, or `.` becomes `_`).
+
+`transcript.md` (and each `guardrail-<name>.transcript.md`) is a PURE, DETERMINISTIC projection of
+its `*.jsonl` stream (no model in the loop): assistant prose + `● Tool(args)` + truncated `⎿`
+tool-result summaries + the final result text; thinking blocks and all telemetry (thinking-token
+counters, rate-limit/init/usage events) are dropped. It is what a human skims and what a dependent
+task's prompt links to (§9, #26) — the raw stream stays as the debug artifact.
 
 ---
 
@@ -596,3 +613,65 @@ continuous task's `stableId` from the existing `task.json` and minting ids only 
 and **stop**; (3) on exit `0`, `guardrails merge <folder> --remote <staging> --apply`, then
 `guardrails validate` + `guardrails graph`. The skill never hand-applies the per-guardrail
 decisions — the deterministic engine owns them.
+
+---
+
+## 12. Log viewer (`run` live links + `guardrails logs`)
+
+A small **loopback-only** HTTP server surfaces each task's per-attempt log artifacts (§8) in a
+browser, so a human can answer "is it actually working?" without leaving the terminal — live
+during a run, or after the fact. It serves the same on-disk files documented in §8; it adds no new
+artifacts and is never part of the plan contract (the loader/validator ignore it entirely).
+
+**Binding and safety.** The server binds to the numeric loopback address `127.0.0.1` on a port (an
+automatically chosen free ephemeral port by default), **never** to a routable interface — logs may
+echo secrets, so they are never exposed off the local machine (the numeric bind is deliberate, so a
+custom `/etc/hosts` mapping of `localhost` cannot widen the exposure). Responses carry
+`X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. The file surface is confined to
+`state/logs/<task-id>/`: the requested task id must be one the plan declares, and the requested
+filename must be a bare name inside the latest `attempt-N/` directory (no traversal).
+
+**Routes** (both the live and post-mortem servers expose the same set):
+
+| Route | Serves |
+|---|---|
+| `GET /` | landing page — every task linking to its log page (the `logs` variant also shows each task's journal status) |
+| `GET /tasks/{id}` | a page that tails the latest attempt's log directory for task `{id}` |
+| `GET /tasks/{id}/files` | JSON `{ attempt, preferred, files[] }` — the latest attempt number, a preferred file to open first (`claude-stream.jsonl`, else `action-stdout.log`, else the first file), and the attempt's files |
+| `GET /tasks/{id}/file?name={f}` | the raw text of one log file (read with a shared handle so an in-flight writer is not blocked) |
+
+### 12.1 `guardrails run` — live log links
+
+`run` starts the server as a **companion to the live progress table** and prints its base URL plus
+clickable per-task "view log" links. It is started **only** on the interactive path (a live UI,
+output not redirected) — nobody clicks links in CI or piped output — and a bind failure is
+**non-fatal**: the run prints one warning and proceeds without links. The server's lifetime is the
+run; it is disposed when the run ends.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--no-log-server` | off (server on) | Do not start the log server / per-task links (headless or CI use). The server is also skipped whenever the run is non-interactive or `--no-ui` is set, regardless of this flag. |
+| `--log-port <n>` | `0` | Port for the live log server. `0` = an automatically chosen free port. Bound to localhost only. |
+
+### 12.2 `guardrails logs` — post-mortem viewer
+
+`guardrails logs [folder] [--port n] [--task id] [--no-open]` serves the **same** viewer over a
+plan's **persisted** logs, decoupled from any active run — the post-mortem companion for reviewing
+an overnight run, or judging whether a *passing* task's guardrails were strong enough, from the
+same attempt logs. It runs until Ctrl-C, then exits `0`. The folder argument defaults to the
+current directory and follows the §7 plan-file → task-folder fixup.
+
+Unlike the live links, the post-mortem landing page reads the run journal (§7) and renders a
+coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked` / `failed` /
+`pending`) per task — a standalone viewer has no terminal table to carry status.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--port <n>` | `0` | Port for the viewer. `0` = an automatically chosen free port. Bound to localhost only. |
+| `--task <id>` | (none) | Open straight to this task's log page instead of the task list. An unknown id falls back to the task list with a notice. |
+| `--no-open` | off | Do not launch a browser; just print the URL (headless hosts). |
+
+**Exit codes.** `0` on a clean serve or clean shutdown (Ctrl-C). A load/validate failure prints
+diagnostics and exits `1`. When the plan has **no run journal yet** (never run), `logs` prints a
+one-line notice and exits `0` — there is nothing to post-mortem, which is not an error. A bind
+failure exits `1`.

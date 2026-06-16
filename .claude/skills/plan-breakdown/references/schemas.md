@@ -50,24 +50,29 @@ first guardrail are cheap sanity checks.
 **If ANY task or guardrail is a `.prompt.md`, a `promptRunners` block is REQUIRED**
 (validation error GR2008 otherwise), with a resolvable default:
 
+<!-- canonical-schema:promptRunners — MIRRORS docs/plans/02-schemas-and-contracts.md §2 verbatim.
+     Keep byte-identical to the SSOT's `"promptRunners": { … }` block (drift-tested). Edit the
+     SSOT first, then copy here — never diverge. The leading indent is the SSOT's (it is nested in
+     the full guardrails.json example there); preserved so the two regions compare byte-for-byte. -->
 ```jsonc
-"promptRunners": {
-  "default": "claude",
-  "claude": {
-    "command": "claude",                 // default: the runner name
-    "permissionMode": "acceptEdits",     // default
-    "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
-    "maxTurns": 50,                      // default
-    "model": null,                       // null = CLI default
-    "extraArgs": [],
-    "guardrailOverrides": {              // tighter verifier profile (partial override)
-      "permissionMode": "default",
-      "allowedTools": ["Read", "Grep", "Glob", "Write"],
-      "maxTurns": 20
+  "promptRunners": {                  // §9
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
+      "maxTurns": 50,
+      "model": null,                  // null = CLI default
+      "extraArgs": [],
+      "guardrailOverrides": {         // tighter profile for verdict-only guardrail prompts
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 20
+      }
     }
   }
-}
 ```
+<!-- /canonical-schema:promptRunners -->
 
 Scope `allowedTools` to what the plan's actions genuinely need — `Bash(dotnet *)` for
 a .NET plan, not blanket `Bash`.
