@@ -8,8 +8,11 @@ namespace Guardrails.Integration.Tests;
 /// pipeline (compose → invoke → verdict/fragment → merge → journal cost) without any tokens.
 ///
 /// Scenario control flows through env vars set on the action (which the harness propagates to
-/// guardrails too): <c>FAKE_MODE</c> = fragment | needshuman | iserror; <c>FAKE_COST</c> = a
-/// cost string; <c>FAKE_VERDICT</c> = pass | fail (read by guardrail invocations).
+/// guardrails too): <c>FAKE_MODE</c> = fragment | nofragment | needshuman | iserror;
+/// <c>FAKE_COST</c> = a cost string; <c>FAKE_VERDICT</c> = pass | fail (read by guardrail
+/// invocations). <c>nofragment</c> succeeds cleanly but contributes NO state fragment — the
+/// shape a task takes when a reset + re-run produces a later succeeded attempt that does not
+/// touch <c>state.json</c>.
 /// </summary>
 public sealed class FakeClaudePlanBuilder : IDisposable
 {
@@ -118,6 +121,28 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         return this;
     }
 
+    /// <summary>
+    /// Rewrite an existing prompt task's <c>FAKE_MODE</c> (preserving its cost) so a re-run after
+    /// a reset can take a different shape — e.g. flip a previously fragment-producing task to
+    /// <c>nofragment</c> so its later succeeded attempt leaves <c>state.json</c> untouched.
+    /// </summary>
+    public FakeClaudePlanBuilder SetMode(string id, string mode, string cost = "0.0150")
+    {
+        string taskDir = Path.Combine(_root, "tasks", id);
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $$"""
+            {
+              "description": "fake prompt task {{id}}",
+              "dependsOn": [],
+              "action": {
+                "path": "action.prompt.md",
+                "env": { "FAKE_MODE": "{{mode}}", "FAKE_COST": "{{cost}}" }
+              }
+            }
+            """);
+        return this;
+    }
+
     private void WriteFakeCli(string path)
     {
         // The fake CLI: drain stdin, then either write a verdict (guardrail) or a fragment
@@ -155,8 +180,8 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         } elseif ($env:GUARDRAILS_STATE_OUT) {
             if ($env:FAKE_MODE -eq 'needshuman') {
                 Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value '{"needsHuman": "which color should I use?"}'
-            } elseif ($env:FAKE_MODE -eq 'iserror') {
-                # no fragment
+            } elseif ($env:FAKE_MODE -eq 'iserror' -or $env:FAKE_MODE -eq 'nofragment') {
+                # no fragment (iserror also reports is_error; nofragment succeeds cleanly)
             } else {
                 $frag = '{"' + $env:GUARDRAILS_TASK_ID + '": {"produced": true}}'
                 Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value $frag
@@ -180,8 +205,8 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         elif [ -n "$GUARDRAILS_STATE_OUT" ]; then
           if [ "$FAKE_MODE" = "needshuman" ]; then
             printf '{"needsHuman": "which color should I use?"}' > "$GUARDRAILS_STATE_OUT"
-          elif [ "$FAKE_MODE" = "iserror" ]; then
-            :
+          elif [ "$FAKE_MODE" = "iserror" ] || [ "$FAKE_MODE" = "nofragment" ]; then
+            : # no fragment (iserror also reports is_error; nofragment succeeds cleanly)
           else
             printf '{"%s": {"produced": true}}' "$GUARDRAILS_TASK_ID" > "$GUARDRAILS_STATE_OUT"
           fi

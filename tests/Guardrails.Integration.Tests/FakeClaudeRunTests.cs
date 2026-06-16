@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
+using Guardrails.Core.State;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Integration.Tests;
@@ -83,6 +84,60 @@ public sealed class FakeClaudeRunTests
         string ancestorTranscript = Path.Combine(
             plan.PlanDir, "state", "logs", "01-foundation", "attempt-1", "transcript.md");
         Assert.Contains(ancestorTranscript, composed);
+    }
+
+    [Fact]
+    public async Task DependencyContext_AfterResetRerun_PointsAtCurrentStateAttempt_NotStaleLaterAttempt()
+    {
+        // Regression for the stale dependency-context pointer (P2): a dependency succeeds with a
+        // fragment in attempt-1 (which is what its state.json reflects), is reset + re-run, and
+        // succeeds AGAIN in attempt-2 but contributes NO fragment (nofragment mode). The journal
+        // now holds a LATER succeeded attempt (attempt-2) whose artifacts do NOT match current
+        // state. The dependent's composed prompt must cite the CURRENT-state provenance
+        // (attempt-1), not the last succeeded attempt (attempt-2).
+        using var plan = new FakeClaudePlanBuilder()
+            .AddPromptTask("01-foundation", mode: "fragment")
+            .AddPromptTask("02-dependent", mode: "fragment", dependsOn: "01-foundation");
+
+        // Run 1: both succeed; 01 merges its fragment into state via attempt-1.
+        RunReport first = await RunAsync(plan.PlanDir);
+        Assert.All(first.Tasks, t => Assert.Equal(TaskOutcome.Succeeded, t.Outcome));
+
+        string foundationAttempt1 = Path.Combine(plan.PlanDir, "state", "logs", "01-foundation", "attempt-1");
+        Assert.True(File.Exists(Path.Combine(foundationAttempt1, "fragment.json")),
+            "attempt-1 should have merged a fragment (current-state provenance)");
+
+        // Reset BOTH so the next run re-attempts 01 (attempt-2) and re-composes 02 (attempt-2).
+        PlanLoadResult load = new PlanLoader().Load(plan.PlanDir);
+        Assert.NotNull(load.Plan);
+        Assert.True(RunReset.Task(load.Plan!, "01-foundation"));
+        Assert.True(RunReset.Task(load.Plan!, "02-dependent"));
+
+        // Flip 01 to nofragment: its attempt-2 succeeds but leaves state.json untouched, so the
+        // CURRENT state still comes from attempt-1.
+        plan.SetMode("01-foundation", mode: "nofragment");
+
+        // Run 2: 01 re-runs (attempt-2, no fragment) then 02 re-runs (attempt-2) and composes.
+        RunReport second = await RunAsync(plan.PlanDir);
+        Assert.All(second.Tasks, t => Assert.Equal(TaskOutcome.Succeeded, t.Outcome));
+
+        string foundationAttempt2 = Path.Combine(plan.PlanDir, "state", "logs", "01-foundation", "attempt-2");
+        Assert.True(File.Exists(Path.Combine(foundationAttempt2, "transcript.md")),
+            "attempt-2 ran and produced a transcript (the stale pointer the bug would cite)");
+        Assert.False(File.Exists(Path.Combine(foundationAttempt2, "fragment.json")),
+            "attempt-2 contributed no fragment, so it is NOT the current-state provenance");
+
+        string composed = File.ReadAllText(
+            Path.Combine(plan.PlanDir, "state", "logs", "02-dependent", "attempt-2", "composed-prompt.md"));
+
+        Assert.Contains("## Context from completed dependency tasks", composed);
+
+        // The dependent must point at attempt-1's artifacts (consistent with current state.json)…
+        Assert.Contains(Path.Combine(foundationAttempt1, "transcript.md"), composed);
+        Assert.Contains(Path.Combine(foundationAttempt1, "fragment.json"), composed);
+
+        // …and must NOT cite attempt-2's stale transcript (the pre-fix LastOrDefault behaviour).
+        Assert.DoesNotContain(Path.Combine(foundationAttempt2, "transcript.md"), composed);
     }
 
     [Fact]

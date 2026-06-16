@@ -26,6 +26,10 @@ public sealed class Scheduler
     private readonly object _gate = new();
     private readonly WorkspaceLock _workspaceLock = new();
 
+    // First unexpected (non-cancellation) executor fault wins; surfaced after WhenAll so the
+    // run terminates deterministically with a harness error instead of hanging (see WorkerLoopAsync).
+    private Exception? _fault;
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -104,19 +108,34 @@ public sealed class Scheduler
         }
 
         // --- workers ---------------------------------------------------------------------
+        // A run-scoped CTS linked to the caller's token: the workers honor the caller's
+        // cancellation AND an unexpected executor fault cancels it internally, so sibling
+        // workers drain instead of blocking forever on a channel that would never complete.
+        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining);
         int workerCount = Math.Min(_maxParallelism, remaining);
         Task[] workers = Enumerable.Range(0, workerCount)
-            .Select(_ => Task.Run(() => WorkerLoopAsync(context, cancellationToken), CancellationToken.None))
+            .Select(_ => Task.Run(() => WorkerLoopAsync(context, runCts), CancellationToken.None))
             .ToArray();
 
         await Task.WhenAll(workers).ConfigureAwait(false);
 
+        // An unexpected (non-cancellation) executor throw is a harness fault, not an actionable
+        // task verdict: surface it so the run terminates with a non-zero (harness-error) exit
+        // (SSOT §7) rather than hanging or silently degrading the report.
+        if (_fault is { } fault)
+        {
+            throw new InvalidOperationException(
+                $"A task executor threw an unexpected exception; the run was aborted: {fault.Message}",
+                fault);
+        }
+
         return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested);
     }
 
-    private async Task WorkerLoopAsync(RunContext context, CancellationToken cancellationToken)
+    private async Task WorkerLoopAsync(RunContext context, CancellationTokenSource runCts)
     {
+        CancellationToken cancellationToken = runCts.Token;
         try
         {
             await foreach (TaskNode task in context.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
@@ -140,7 +159,22 @@ public sealed class Scheduler
         catch (OperationCanceledException)
         {
             // Cancelled drain: in-flight attempts were journaled by the executor; the
-            // report marks the run cancelled.
+            // report marks the run cancelled. (Also reached when an executor fault on a
+            // sibling worker cancels runCts — the fault itself is recorded below.)
+        }
+        catch (Exception ex)
+        {
+            // Unexpected executor fault: record the first one (first-wins), then cancel the
+            // run-scoped token and complete the channel so every sibling worker breaks out of
+            // ReadAllAsync and drains. Without this the channel would never complete and
+            // Task.WhenAll — hence the whole run — would hang.
+            lock (_gate)
+            {
+                _fault ??= ex;
+            }
+
+            context.Channel.Writer.TryComplete();
+            runCts.Cancel();
         }
     }
 
