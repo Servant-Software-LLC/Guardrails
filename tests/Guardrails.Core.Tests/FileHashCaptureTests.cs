@@ -74,23 +74,27 @@ public sealed class FileHashCaptureTests : IDisposable
     [Fact]
     public void Capture_PreservesExistingFragmentContent()
     {
-        // The action may have published its own state under the same task id; capture must merge,
-        // not clobber.
+        // The action may have published its own state under its own task id; capture must merge,
+        // not clobber. The published keys are all under the OWN id '01-x' — under the
+        // single-writer-per-key rule (SSOT §6.2, issue #48) a fragment may only carry the writing
+        // task's own top-level key, so the action's own-namespace keys (and a sibling fileHashes
+        // entry) are what capture must preserve.
         string relative = "a.txt";
         WriteWorkspaceFile(relative, Encoding.UTF8.GetBytes("hi"));
         string fragmentPath = Path.Combine(_root, "action-out-fragment.json");
         File.WriteAllText(fragmentPath,
             """
-            { "01-x": { "agentKey": "agentValue" }, "other-task": { "k": 1 } }
+            { "01-x": { "agentKey": "agentValue", "fileHashes": { "other.txt": "CAFEBABE" } } }
             """);
 
         CaptureResult result = FileHashCapture.Capture("01-x", [relative], _root, fragmentPath);
 
         Assert.True(result.Succeeded);
         JsonObject root = (JsonObject)JsonNode.Parse(File.ReadAllText(fragmentPath))!;
-        // Pre-existing keys survive.
+        // Pre-existing own-namespace keys survive.
         Assert.Equal("agentValue", (string?)root["01-x"]!["agentKey"]);
-        Assert.Equal(1, (int)root["other-task"]!["k"]!);
+        // A pre-existing fileHashes entry the action wrote under its own id is preserved.
+        Assert.Equal("CAFEBABE", (string?)root["01-x"]!["fileHashes"]!["other.txt"]);
         // New fileHashes added under the task id.
         Assert.False(string.IsNullOrEmpty((string?)root["01-x"]!["fileHashes"]![relative]));
     }
