@@ -208,15 +208,62 @@ upstream task that creates it:
 
   **`tests-untouched` guardrail on every implementation task** that has an upstream
   test-author task. Prevents the agent from making tests pass by editing them instead of
-  fixing the implementation. Use the **content-hash pattern**: the test-author task writes
-  `git hash-object` hashes to `GUARDRAILS_STATE_OUT`; the implementation task's guardrail
-  reads them from `GUARDRAILS_STATE_IN` and compares. This is immune to git-commit timing
-  (the harness does NOT commit between tasks — `git diff HEAD` on an untracked test file
-  is always empty, making a git-diff-based check vacuous).
+  fixing the implementation. Uses a **three-part hash-in-state pattern** — immune to
+  git-commit timing (the harness does NOT commit between tasks; `git diff HEAD` on an
+  untracked test file is always empty, making a git-diff-based check vacuous). All three
+  parts are required; together they form a tamper-evident chain.
+
+  **Part 1 — test-author `action.prompt.md`** (append after the task body): instruct the
+  agent to run `git hash-object` on each test file it writes (e.g. via Bash), then write
+  the results to `GUARDRAILS_STATE_OUT`:
+
+  ````markdown
+  After writing the test file(s), record their content hashes so a downstream guardrail
+  can verify they were not edited by the implementation task. For each file, run (e.g. Bash):
+    git hash-object <relative/path/to/TestFile.cs>
+  Capture the trimmed hex output, then write to GUARDRAILS_STATE_OUT:
+  ```json
+  {
+    "<task-id>": {
+      "testFileHashes": {
+        "<relative/path/to/TestFile.cs>": "<hex>"
+      }
+    }
+  }
+  ```
+  ````
+
+  **Part 2 — test-author task `guardrails/NN-state-fragment-written.ps1`** (state-output
+  doctrine: the producing task must carry the fragment-key-present guardrail so a failed
+  hash write is caught here, before the harness merges null into shared state):
 
   ```powershell
-  # catches: "making tests pass" by editing the tests instead of the implementation
-  # Uses content hashes stored by the test-author task (immune to git-commit timing)
+  # catches: test-author task that wrote tests but forgot to publish their hashes to state —
+  #          without this check, the implementation task's tests-untouched guardrail reads null
+  $fragmentPath = $env:GUARDRAILS_STATE_FRAGMENT
+  if (-not $fragmentPath -or -not (Test-Path $fragmentPath)) {
+    Write-Output "no state fragment written — action did not publish any state"
+    exit 1
+  }
+  $fragment = Get-Content $fragmentPath -Raw | ConvertFrom-Json
+  $hashes = $fragment.'<task-id>'.testFileHashes
+  if (-not $hashes -or ($hashes | Get-Member -MemberType NoteProperty).Count -eq 0) {
+    Write-Output "state key '<task-id>.testFileHashes' is missing or empty"
+    exit 1
+  }
+  exit 0
+  ```
+
+  Replace `<task-id>` with the test-author task's folder name (e.g. `01-author-stats-tests`).
+  `GUARDRAILS_STATE_FRAGMENT` is the live pre-merge fragment file — set by the harness only
+  when the action wrote one; the first guard catches the case where the action wrote nothing.
+
+  **Part 3 — implementation task `guardrails/NN-tests-untouched.ps1`**:
+
+  ```powershell
+  # catches: "making tests pass" by editing the tests instead of the implementation;
+  #          reads blob hashes stored by the upstream test-author task — tamper-evident
+  #          regardless of whether the harness has committed the test file
   $stateIn = $env:GUARDRAILS_STATE_IN
   if (-not $stateIn -or -not (Test-Path $stateIn)) {
     Write-Output "GUARDRAILS_STATE_IN not set or missing — cannot verify test file integrity"
@@ -240,19 +287,15 @@ upstream task that creates it:
   exit 0
   ```
 
-  Replace `NN-author-tests-FEATURE` with the actual upstream task's folder name (which is
-  the default state key prefix). The test-author task must write this data — see the action
-  prompt guidance below and `references/example-breakdown.md`.
+  Replace `NN-author-tests-FEATURE` with the actual upstream test-author task's folder name.
+  The `foreach` loop handles multiple test files in one guardrail invocation.
 
-  **Action prompt for test-author tasks.** The `## Task` section must explicitly tell the
-  agent: (a) the exact test file path(s) and any category/trait convention the repo uses;
-  (b) the tests MUST fail against the current code — this is intentional, not a mistake;
-  (c) do NOT implement the behavior, only the tests; (d) after writing the tests, record
-  their content hashes by running `git hash-object <file>` on each test file and writing
-  the results to `GUARDRAILS_STATE_OUT` under `{"NN-author-tests-FEATURE": {"testFileHashes":
-  {"<path>": "<hex>", ...}}}` — a downstream guardrail on the implementation task uses these
-  hashes to verify the tests were not edited. See `references/example-breakdown.md` for
-  the complete worked `action.prompt.md`.
+  **Action prompt for test-author tasks (Part 1 detail).** The `## Task` section must tell
+  the agent: (a) the exact test file path(s) and any category/trait convention the repo
+  uses; (b) the tests MUST fail against the current code — this is intentional, not a
+  mistake; (c) do NOT implement the behavior, only the tests; (d) after writing the tests,
+  compute and publish their hashes per the Part 1 template above. See
+  `references/example-breakdown.md` for the complete worked `action.prompt.md`.
 - Guardrail "schema validates" and no schema exists → insert an author-schema task
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the

@@ -138,6 +138,25 @@ if ($LASTEXITCODE -eq 0) {
 exit 0
 ```
 
+`guardrails/03-state-fragment-written.ps1`
+```powershell
+# catches: test-author task that wrote the test file but forgot to publish its hash to state;
+#          the implementation task's tests-untouched guardrail reads this hash — if missing,
+#          that guardrail silently fails open (reads null, reports "task 01 did not write its hash")
+$fragmentPath = $env:GUARDRAILS_STATE_FRAGMENT
+if (-not $fragmentPath -or -not (Test-Path $fragmentPath)) {
+    Write-Output "no state fragment written — action did not publish any state"
+    exit 1
+}
+$fragment = Get-Content $fragmentPath -Raw | ConvertFrom-Json
+$hashes = $fragment.'01-author-stats-tests'.testFileHashes
+if (-not $hashes -or ($hashes | Get-Member -MemberType NoteProperty).Count -eq 0) {
+    Write-Output "state key '01-author-stats-tests.testFileHashes' is missing or empty"
+    exit 1
+}
+exit 0
+```
+
 ### `tasks/02-implement-stats-flag/`
 
 `task.json`
@@ -237,14 +256,16 @@ exit 0
 >
 > | Task | Action | Guardrails (archetypes) | dependsOn |
 > |---|---|---|---|
-> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8) | — |
-> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4), tests-untouched (1) | 01 |
+> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8), state-fragment-written (state-output) | — |
+> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4), tests-untouched (hash-in-state) | 01 |
 > | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
 > | 04-suite-green | script | full-suite (4, terminal-only) | 02, 03 |
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
-> pass" and those tests didn't exist. Its tests-fail-on-current-code guardrail proves
-> they're not tautological. `guardrails validate add-stats-flag` → OK.
+> pass" and those tests didn't exist. Its `tests-fail-on-current-code` guardrail proves
+> they're not tautological. Its `state-fragment-written` guardrail ensures the blob hash
+> is published to state, which 02's `tests-untouched` guardrail reads to verify the test
+> file was not modified by the implementation task. `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
 > or add, then run `/guardrails-review add-stats-flag` before executing.
