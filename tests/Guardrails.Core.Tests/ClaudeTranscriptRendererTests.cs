@@ -247,4 +247,74 @@ public sealed class ClaudeTranscriptRendererTests
         Assert.Equal("working\n", transcript);
         Assert.DoesNotContain('\r', transcript);
     }
+
+    // ---- StreamingWriter: incremental rendering (issue #41) --------------------------------
+    // CONTRACT: feeding the stream line-by-line through StreamingWriter and calling Complete()
+    // produces output BYTE-IDENTICAL to a batch Render() over the same stream — while writing
+    // the transcript to disk as each line arrives (so "view log" can tail it live).
+
+    [Fact]
+    public void StreamingWriter_LineByLine_IsByteIdenticalToBatchRender()
+    {
+        const string stream =
+            """
+            {"type":"system","subtype":"init","session_id":"abc"}
+            {"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"I'll read the wizard state first."}]}}
+            {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Glob","input":{"pattern":"src/**/*.cs"}}]}}
+            {"type":"user","message":{"content":[{"type":"tool_result","content":"a.cs\nb.cs\nc.cs"}]}}
+            {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"dotnet build","description":"build it"}}]}}
+            {"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"error CS5001: no Main\nmore detail"}]}}
+            {"type":"result","subtype":"success","is_error":false,"result":"Build succeeded.","total_cost_usd":1.31,"num_turns":35}
+            """;
+
+        string batch = ClaudeTranscriptRenderer.Render(stream);
+
+        var buffer = new StringWriter();
+        var streaming = new ClaudeTranscriptRenderer.StreamingWriter(buffer);
+        foreach (string line in stream.Split('\n'))
+        {
+            streaming.Feed(line);
+        }
+
+        streaming.Complete();
+
+        Assert.Equal(batch, buffer.ToString());
+    }
+
+    [Fact]
+    public void StreamingWriter_ObjectSplitAcrossFeeds_RendersOnceComplete()
+    {
+        // A single JSON object split between two stream chunks (the chunk boundary fell inside the
+        // object, not on its newline). StreamingWriter must buffer the partial line and render the
+        // object only once the closing brace arrives — nothing before, the full fragment after.
+        const string firstHalf =
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",";
+        const string secondHalf =
+            "\"text\":\"split across chunks\"}]}}";
+
+        var buffer = new StringWriter();
+        var streaming = new ClaudeTranscriptRenderer.StreamingWriter(buffer);
+
+        streaming.Feed(firstHalf);
+        Assert.Equal(string.Empty, buffer.ToString()); // nothing rendered from the partial object
+
+        streaming.Feed(secondHalf);
+        streaming.Complete();
+
+        Assert.Equal("split across chunks\n", buffer.ToString());
+    }
+
+    [Fact]
+    public void StreamingWriter_NoContent_WritesNothing()
+    {
+        // Only telemetry fed → no transcript content → no trailing newline (matches Render == "").
+        var buffer = new StringWriter();
+        var streaming = new ClaudeTranscriptRenderer.StreamingWriter(buffer);
+
+        streaming.Feed("{\"type\":\"system\",\"subtype\":\"init\"}");
+        streaming.Feed("{\"type\":\"rate_limit_event\",\"rate_limit_info\":{}}");
+        streaming.Complete();
+
+        Assert.Equal(string.Empty, buffer.ToString());
+    }
 }

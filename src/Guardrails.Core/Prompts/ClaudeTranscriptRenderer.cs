@@ -76,26 +76,160 @@ public static class ClaudeTranscriptRenderer
 
         using (document)
         {
-            JsonElement root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("type", out JsonElement typeElement) ||
-                typeElement.ValueKind != JsonValueKind.String)
+            RenderDocument(document.RootElement, text);
+        }
+    }
+
+    /// <summary>Map one parsed stream object to its transcript fragment (shared by batch and streaming).</summary>
+    private static void RenderDocument(JsonElement root, StringBuilder text)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("type", out JsonElement typeElement) ||
+            typeElement.ValueKind != JsonValueKind.String)
+        {
+            return;
+        }
+
+        switch (typeElement.GetString())
+        {
+            case "assistant":
+                RenderAssistant(root, text);
+                break;
+            case "user":
+                RenderUser(root, text);
+                break;
+            case "result":
+                RenderResult(root, text);
+                break;
+            // system, rate_limit_event, etc. — telemetry, dropped.
+        }
+    }
+
+    /// <summary>
+    /// Stateful, streaming counterpart to <see cref="Render"/>: feed raw stream lines as they
+    /// arrive and the transcript is written to the wrapped <see cref="TextWriter"/> incrementally,
+    /// so a "view log" tail sees the transcript grow in real time rather than appearing only when
+    /// the task finishes (issue #41). Two properties hold:
+    /// <list type="bullet">
+    /// <item><b>Chunk-boundary safe.</b> Lines are buffered until they parse as a complete JSON
+    ///   object, so an object split between two stream chunks still renders once its closing brace
+    ///   arrives (newline-delimited JSON normally lands one object per line, but this is defensive).</item>
+    /// <item><b>Byte-identical at completion.</b> After <see cref="Complete"/>, the written file
+    ///   equals <see cref="Render"/> over the same concatenated stream: a pending-newline counter
+    ///   carries the 3+→blank-line collapse across feeds, and the trailing newline is finalized in
+    ///   <see cref="Complete"/> exactly as <c>Normalize</c> does.</item>
+    /// </list>
+    /// Not thread-safe: feed from a single sequence of calls (the runner's stdout callback is
+    /// serialized, so this holds there).
+    /// </summary>
+    public sealed class StreamingWriter
+    {
+        // A genuinely malformed line can never complete into valid JSON; cap the buffer so it
+        // can't grow without bound. The raw line is still preserved in claude-stream.jsonl (the
+        // canonical artifact), so dropping it from the transcript loses nothing recoverable.
+        private const int MaxBufferChars = 1_000_000;
+
+        private readonly TextWriter _writer;
+        private readonly StringBuilder _jsonBuffer = new();
+        private int _pendingNewlines;
+        private bool _wroteContent;
+        private bool _completed;
+
+        public StreamingWriter(TextWriter writer) => _writer = writer;
+
+        /// <summary>Feed one raw stream line (newline excluded), as delivered by the process reader.</summary>
+        public void Feed(string line)
+        {
+            // Skip whitespace-only input only when nothing is buffered (matches Render's tolerance);
+            // once a partial object is buffered, every line is part of it until it parses.
+            if (_jsonBuffer.Length == 0 && string.IsNullOrWhiteSpace(line))
             {
                 return;
             }
 
-            switch (typeElement.GetString())
+            if (_jsonBuffer.Length > 0)
             {
-                case "assistant":
-                    RenderAssistant(root, text);
-                    break;
-                case "user":
-                    RenderUser(root, text);
-                    break;
-                case "result":
-                    RenderResult(root, text);
-                    break;
-                // system, rate_limit_event, etc. — telemetry, dropped.
+                _jsonBuffer.Append('\n');
+            }
+
+            _jsonBuffer.Append(line);
+
+            JsonDocument? document = TryParse(_jsonBuffer.ToString());
+            if (document is null)
+            {
+                // Not yet a complete object — could be a chunk boundary; keep buffering. Drop the
+                // buffer if it overflows the cap (malformed, never-closing line).
+                if (_jsonBuffer.Length > MaxBufferChars)
+                {
+                    _jsonBuffer.Clear();
+                }
+
+                return;
+            }
+
+            using (document)
+            {
+                var fragment = new StringBuilder();
+                RenderDocument(document.RootElement, fragment);
+                EmitClamped(fragment.ToString());
+            }
+
+            _jsonBuffer.Clear();
+            _writer.Flush();
+        }
+
+        /// <summary>Finalize the transcript: emit the single trailing newline a non-empty transcript ends with.</summary>
+        public void Complete()
+        {
+            if (_completed)
+            {
+                return;
+            }
+
+            _completed = true;
+            if (_wroteContent)
+            {
+                _writer.Write('\n'); // Normalize ends a non-empty transcript with exactly one newline.
+            }
+
+            _writer.Flush();
+        }
+
+        // Stream a fragment through the same newline policy as Normalize: a run of newlines is
+        // held (not written) until the next non-newline char, then flushed clamped to at most 2
+        // (3+ blank lines collapse to one). Trailing newlines therefore stay pending — which also
+        // gives the trailing-trim for free, finalized by Complete().
+        private void EmitClamped(string fragment)
+        {
+            foreach (char c in fragment)
+            {
+                if (c == '\n')
+                {
+                    _pendingNewlines++;
+                    continue;
+                }
+
+                int run = Math.Min(_pendingNewlines, 2);
+                for (int i = 0; i < run; i++)
+                {
+                    _writer.Write('\n');
+                }
+
+                _pendingNewlines = 0;
+                _writer.Write(c);
+                _wroteContent = true;
+            }
+        }
+
+        private static JsonDocument? TryParse(string candidate)
+        {
+            try
+            {
+                return JsonDocument.Parse(candidate);
+            }
+            catch (JsonException)
+            {
+                return null;
             }
         }
     }
