@@ -32,6 +32,7 @@ public sealed class SchedulerTests
     {
         private readonly ConcurrentDictionary<string, TaskCompletionSource> _gates = new(StringComparer.Ordinal);
         private readonly HashSet<string> _failing = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Exception> _throwing = new(StringComparer.Ordinal);
         private int _live;
 
         public ConcurrentQueue<string> Started { get; } = [];
@@ -39,6 +40,9 @@ public sealed class SchedulerTests
         public bool Gated { get; init; }
 
         public void FailTask(string id) => _failing.Add(id);
+
+        /// <summary>Make <paramref name="id"/>'s execution throw an unexpected (non-cancellation) exception.</summary>
+        public void ThrowOnTask(string id, Exception ex) => _throwing[id] = ex;
 
         public void Complete(string id) => _gates.GetOrAdd(id, NewGate()).TrySetResult();
 
@@ -61,6 +65,11 @@ public sealed class SchedulerTests
             finally
             {
                 Interlocked.Decrement(ref _live);
+            }
+
+            if (_throwing.TryGetValue(task.Id, out Exception? boom))
+            {
+                throw boom;
             }
 
             bool fails = _failing.Contains(task.Id);
@@ -211,6 +220,39 @@ public sealed class SchedulerTests
         Assert.True(report.Cancelled);
         Assert.Equal(TaskOutcome.Cancelled, Result(report, "02-waiting").Outcome);
         Assert.DoesNotContain("02-waiting", executor.Started);
+    }
+
+    [Fact]
+    public async Task UnexpectedExecutorThrow_TerminatesTheRun_AndSurfacesTheFault()
+    {
+        // Regression for the worker loop catching ONLY OperationCanceledException: a task whose
+        // executor throws any OTHER exception used to escape the worker, leaving Remaining never
+        // decremented and the channel never completed, so sibling workers blocked forever and the
+        // whole run HUNG. The fix records the fault, drains siblings, and surfaces it as a harness
+        // error (SSOT §7: a non-zero, non-actionable exit). A bounded timeout makes a regression
+        // fail as a timeout, not a suite hang.
+        PlanDefinition plan = Plan(
+            Task("01-boom"),
+            Task("02-dependent", "01-boom"),
+            Task("03-independent"));
+        var executor = new FakeExecutor();
+        var boom = new InvalidOperationException("no interpreter registered for '.qux'");
+        executor.ThrowOnTask("01-boom", boom);
+
+        // Bind the run to a timeout so a hung (regressed) scheduler trips the deadline rather
+        // than blocking the test host. The fix completes well within this window.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+
+        Task<RunReport> run = Create(plan, executor, new FakeJournal()).RunAsync(plan, deadline.Token);
+        Task finished = await System.Threading.Tasks.Task.WhenAny(run, System.Threading.Tasks.Task.Delay(Timeout.Infinite, deadline.Token));
+
+        Assert.False(deadline.IsCancellationRequested, "the run hung — the scheduler did not terminate after an unexpected executor throw");
+        Assert.Same(run, finished);
+
+        // The fault is surfaced (non-zero/harness-error semantics), not swallowed.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => run);
+        Assert.Same(boom, ex.InnerException);
     }
 
     [Fact]
