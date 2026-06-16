@@ -144,6 +144,28 @@ universal grep-scope anti-pattern warns about (catalogue → anti-patterns). Con
 - **Multi-targeted output.** Same as above — `obj/.../*.AssemblyInfo.cs` and generated
   globbing files can contain unexpected tokens. Source-file scoping sidesteps all of it.
 
+## 6. Test framework — detect it, never default it
+
+There is no "standard" .NET test framework to assume. xUnit is the most common in public
+repos, which is exactly why a model silently reaches for it — and exactly why the breakdown
+must NOT. Resolve the framework from evidence (SKILL.md Step 0 → `$testFramework`; Step 5
+framework-selection rule):
+
+- **Detected:** grep every `*.csproj` for the framework's package reference and mirror it
+  (its versions and test-SDK setup too).
+  ```powershell
+  # which test framework does this repo already use?
+  Get-ChildItem -Recurse -Filter *.csproj |
+    Where-Object { (Get-Content $_ -Raw) -match '<PackageReference[^>]*Include="(xunit|NUnit|MSTest\.TestFramework)"' }
+  # the matched Include token (xunit / NUnit / MSTest.TestFramework) is the framework to use
+  ```
+- **None found (greenfield):** the framework is an unmade decision. Surface it — ask the
+  human (`AskUserQuestion`) in an interactive breakdown, or write the test-bootstrap action
+  with an honest-halt (`needsHuman`) in an unattended one. **Do NOT write a default into
+  this file.** A "xUnit is the .NET greenfield default" rule here would merely relocate the
+  silent guess from the model's weights into the stack file; the choice must stay visible
+  and reviewable per breakdown (this is the #40 → #42 resolution).
+
 ## WPF structural checks (#11 F5/F6)
 
 WPF idioms are verified the same way — match the structural attribute/property, scoped to
