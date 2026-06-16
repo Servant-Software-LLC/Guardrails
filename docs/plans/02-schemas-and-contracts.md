@@ -20,6 +20,7 @@ plan-name/
 ├── guardrails.json              # run configuration (§2)
 ├── guardrails.baseline          # OPTIONAL committed breakdown manifest (§11)
 ├── diagram.md                   # OPTIONAL generated DAG diagram — non-authored (§10)
+├── diagram.html                 # OPTIONAL interactive local viewer — non-authored (§10)
 ├── state/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
@@ -391,15 +392,25 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 
 ---
 
-## 10. Diagram artifact (`diagram.md`)
+## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
 `guardrails graph [folder]` renders the plan's task/guardrail DAG as a Mermaid
-`flowchart TD` and writes it to `<plan-folder>/diagram.md`. The file is a **generated,
-non-authored artifact**: it is NOT part of the plan contract, the loader/validator ignore
-it (a present `diagram.md` at the plan root validates clean), and it is safe to delete and
-regenerate. Nothing is added to `guardrails.json` or its model — `guardrails.json` carries
-`//` comments the loader skips, and rewriting it through System.Text.Json would strip them,
-so the staleness key lives in `diagram.md` instead.
+`flowchart TD` and writes two companion files:
+
+- **`diagram.md`** — the GitHub render artifact: a provenance comment + fenced Mermaid
+  block + structure-only caption. GitHub renders it inline.
+- **`diagram.html`** — the local-navigation companion: a self-contained pan/zoom/fullscreen
+  HTML viewer whose task/guardrail nodes carry `click href` directives pointing to their
+  source under the plan folder. Use `--no-html` to suppress it; a missing HTML file is **not
+  treated as stale** by `--check`. Node clicks require serving the file via a local HTTP
+  server (`python -m http.server`) — browsers block `file://→file://` navigation by default.
+  The `click href` directives are HTML-only: `diagram.md` stays click-free (GitHub sandboxes
+  Mermaid; the targets are `file://`-local). Assets load from CDN (needs internet once);
+  offline inlining is a v2 consideration.
+
+Both files are **generated, non-authored artifacts**: NOT part of the plan contract, safe to
+delete and regenerate, and excluded from `guardrails.baseline`. Nothing is added to
+`guardrails.json` or its model — the staleness key lives in the diagram files instead.
 
 **Shape.** Per task NN: the task node fans out one edge to each of its guardrail nodes; all
 of that task's guardrail nodes merge into a single per-task "Finished" node
@@ -442,18 +453,19 @@ styling.
 
 **Command contract.**
 
-- `guardrails graph [folder]` — render and write `diagram.md`; print the written path; exit
-  `0`. Front-doors through load/validate first: on any load/validate error, print
-  diagnostics and exit `1`.
-- `--stdout` — print the diagram to stdout; write nothing to disk; exit `0`.
+- `guardrails graph [folder]` — render and write `diagram.md` + `diagram.html`; print the
+  written paths; exit `0`. Front-doors through load/validate first: on any load/validate
+  error, print diagnostics and exit `1`.
+- `--no-html` — write only `diagram.md`; skip `diagram.html`. Has no effect with `--stdout`.
+- `--stdout` — print the diagram to stdout; write nothing to disk (neither `diagram.md` nor
+  `diagram.html`); exit `0`.
 - `--check` — write nothing. Recompute `source-sha256`, read the value embedded in an
-  existing `diagram.md`, and exit `0` when present and equal (fresh). When the diagram is
-  **stale or missing**, print one actionable line (`diagram.md is stale …` / `diagram.md
-  missing …`) and exit `2` — the "regenerate" signal, distinct from a genuine error so CI can
-  tell "regenerate the diagram" apart from "the plan is broken". A **load/validate error**
-  (no `guardrails.json`, invalid plan, missing folder) front-doors first and exits `1` with
-  diagnostics, never reaching the freshness check. A missing `diagram.md` counts as stale
-  (exit `2`).
+  existing `diagram.md`, and exit `0` when present and equal (fresh). When `diagram.md` is
+  **stale or missing**, print one actionable line and exit `2` — the "regenerate" signal.
+  When `diagram.html` is **present but carries a different hash**, print one actionable line
+  and exit `2` (a **missing** `diagram.html` is NOT stale — the caller may have used
+  `--no-html`). A **load/validate error** front-doors first and exits `1`, never reaching the
+  freshness check.
 - `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
   formats).
 
@@ -494,9 +506,10 @@ The baseline carries **no timestamp** — its identity is the `files` map alone,
 projection, no git churn — matching the `diagram.md` precedent in §10).
 
 **Included:** `guardrails.json`, every task's `task.json` / `action.*` / `guardrails/*`, and the
-committed `state/seed.json`. **Excluded:** the baseline file itself, the generated `diagram.md`,
-`*.tmp` (atomic-write residue), and harness-owned runtime under `state/` (`state.json`,
-`run.json`, `merge-conflicts.log`, `logs/…`). Hashes are SHA-256 (lowercase hex) over
+committed `state/seed.json`. **Excluded:** the baseline file itself, the generated `diagram.md`
+and `diagram.html`, `*.tmp` (atomic-write residue), and harness-owned runtime under `state/`
+(`state.json`, `run.json`, `merge-conflicts.log`, `logs/…`). Hashes are SHA-256 (lowercase hex)
+over
 **newline-normalized** text (matching `PlanHash`), so CRLF/LF checkouts hash identically.
 
 ### 11.2 Drift classification (LOCAL vs BASE)

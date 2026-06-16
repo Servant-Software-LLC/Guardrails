@@ -18,6 +18,7 @@ namespace Guardrails.Cli.Commands;
 public static partial class GraphCommand
 {
     private const string DiagramFileName = "diagram.md";
+    private const string DiagramHtmlFileName = "diagram.html";
 
     /// <summary>
     /// Exit code returned by <c>--check</c> when <c>diagram.md</c> is stale OR missing — the
@@ -37,12 +38,17 @@ public static partial class GraphCommand
 
         var checkOption = new Option<bool>("--check")
         {
-            Description = "Report whether diagram.md is up to date (exit 0 fresh, 2 stale/missing, 1 on a load/validate error); writes nothing."
+            Description = "Report whether diagram.md (and diagram.html if present) are up to date (exit 0 fresh, 2 stale/missing, 1 on a load/validate error); writes nothing. A missing diagram.html is not stale — only a present-but-hash-mismatched one is."
         };
 
         var stdoutOption = new Option<bool>("--stdout")
         {
             Description = "Print the diagram to stdout instead of writing diagram.md (writes nothing to disk)."
+        };
+
+        var noHtmlOption = new Option<bool>("--no-html")
+        {
+            Description = "Write only diagram.md; skip the interactive diagram.html navigation companion. Has no effect when combined with --stdout (which writes nothing to disk)."
         };
 
         var formatOption = new Option<string>("--format")
@@ -59,19 +65,21 @@ public static partial class GraphCommand
         command.Add(checkOption);
         command.Add(stdoutOption);
         command.Add(formatOption);
+        command.Add(noHtmlOption);
 
         command.SetAction(parseResult =>
         {
             string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
             bool check = parseResult.GetValue(checkOption);
             bool toStdout = parseResult.GetValue(stdoutOption);
-            return Execute(folder, check, toStdout, io);
+            bool noHtml = parseResult.GetValue(noHtmlOption);
+            return Execute(folder, check, toStdout, noHtml, io);
         });
 
         return command;
     }
 
-    private static int Execute(string folder, bool check, bool toStdout, IConsoleIo io)
+    private static int Execute(string folder, bool check, bool toStdout, bool noHtml, IConsoleIo io)
     {
         TextWriter output = io.Out;
 
@@ -85,10 +93,11 @@ public static partial class GraphCommand
         PlanDefinition plan = probe.Plan;
         string sourceHash = GraphSourceHash.Compute(plan);
         string diagramPath = Path.Combine(plan.PlanDirectory, DiagramFileName);
+        string diagramHtmlPath = Path.Combine(plan.PlanDirectory, DiagramHtmlFileName);
 
         if (check)
         {
-            return Check(diagramPath, sourceHash, output);
+            return Check(diagramPath, diagramHtmlPath, sourceHash, output);
         }
 
         string diagram = MermaidRenderer.Render(plan);
@@ -102,6 +111,19 @@ public static partial class GraphCommand
         string document = ComposeDocument(diagram, sourceHash);
         AtomicFile.WriteAllText(diagramPath, document);
         output.WriteLine($"Wrote {diagramPath}");
+
+        // The interactive local-navigation companion (issue #33). diagram.md stays the GitHub
+        // render; diagram.html is the pan/zoom/fullscreen viewer whose nodes click through to
+        // their source under the plan folder. Both carry the same source-sha256 and are excluded
+        // from guardrails.baseline, so neither causes drift. The HTML embeds the interactive
+        // source (clean diagram + click directives); diagram.md stays click-free.
+        if (!noHtml)
+        {
+            string interactive = MermaidRenderer.RenderInteractive(plan);
+            AtomicFile.WriteAllText(diagramHtmlPath, HtmlDiagramRenderer.Render(interactive, sourceHash));
+            output.WriteLine($"Wrote {diagramHtmlPath}");
+        }
+
         return ExitCodes.Success;
     }
 
@@ -114,22 +136,33 @@ public static partial class GraphCommand
     /// before <c>--check</c> is dispatched — so CI can distinguish "regenerate the diagram"
     /// (2) from "the plan is broken" (1).
     /// </summary>
-    private static int Check(string diagramPath, string sourceHash, TextWriter output)
+    private static int Check(string diagramPath, string diagramHtmlPath, string sourceHash, TextWriter output)
     {
+        string regenHint = $"run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}";
+
         if (!File.Exists(diagramPath))
         {
-            output.WriteLine($"{DiagramFileName} missing — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
+            output.WriteLine($"{DiagramFileName} missing — {regenHint}");
             return StaleExitCode;
         }
 
-        string? embedded = ReadEmbeddedHash(File.ReadAllText(diagramPath));
-        if (string.Equals(embedded, sourceHash, StringComparison.Ordinal))
+        if (!string.Equals(ReadEmbeddedHash(File.ReadAllText(diagramPath)), sourceHash, StringComparison.Ordinal))
         {
-            return ExitCodes.Success;
+            output.WriteLine($"{DiagramFileName} is stale — {regenHint}");
+            return StaleExitCode;
         }
 
-        output.WriteLine($"{DiagramFileName} is stale — run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}");
-        return StaleExitCode;
+        // diagram.html is optional (it is skipped by --no-html), so a MISSING one is not staleness.
+        // But a PRESENT one carrying a different source-sha256 has drifted from diagram.md/the plan
+        // and must regenerate — it shares the same staleness key (issue #33).
+        if (File.Exists(diagramHtmlPath) &&
+            !string.Equals(ReadEmbeddedHash(File.ReadAllText(diagramHtmlPath)), sourceHash, StringComparison.Ordinal))
+        {
+            output.WriteLine($"{DiagramHtmlFileName} is stale — {regenHint}");
+            return StaleExitCode;
+        }
+
+        return ExitCodes.Success;
     }
 
     /// <summary>

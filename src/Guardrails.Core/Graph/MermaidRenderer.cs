@@ -28,16 +28,46 @@ public static class MermaidRenderer
 
         var sb = new StringBuilder();
         AppendLf(sb, "flowchart TD");
-
         AppendNodesAndEdges(plan, sb);
+        AppendClassDefs(sb);
+        return sb.ToString();
+    }
 
-        // --- class definitions (three colors) -----------------------------------------
-        // Cosmetic only: deliberately EXCLUDED from the staleness key (see SemanticContent).
+    /// <summary>
+    /// Render the plan PLUS <c>click</c> directives that open each node's source under the plan
+    /// folder — a task node opens its task folder, a guardrail node opens its guardrail file
+    /// (issue #33). Used ONLY for the local <c>diagram.html</c> viewer:
+    /// <list type="bullet">
+    ///   <item>GitHub renders Mermaid in a sandboxed mode that disables clicks, so these would be
+    ///         inert in <c>diagram.md</c> — and the targets are <c>file://</c>-local anyway.</item>
+    ///   <item>They are deliberately NOT in <c>diagram.md</c> and NOT in the staleness hash
+    ///         (<see cref="SemanticContent"/>); the targets are derived deterministically from the
+    ///         same plan, as plan-relative forward-slash paths, so the output is byte-identical on
+    ///         every OS (no timestamp, no absolute path).</item>
+    /// </list>
+    /// </summary>
+    public static string RenderInteractive(PlanDefinition plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        var sb = new StringBuilder();
+        AppendLf(sb, "flowchart TD");
+        IReadOnlyDictionary<string, string> nodeIdBase = AppendNodesAndEdges(plan, sb);
+        AppendClassDefs(sb);
+        AppendClickDirectives(plan, nodeIdBase, sb);
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The three cosmetic <c>classDef</c> lines (colors). Shared by <see cref="Render"/> and
+    /// <see cref="RenderInteractive"/>; deliberately EXCLUDED from the staleness key (see
+    /// <see cref="SemanticContent"/>), which is why <see cref="SemanticContent"/> does not call it.
+    /// </summary>
+    private static void AppendClassDefs(StringBuilder sb)
+    {
         AppendLf(sb, "  classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;");
         AppendLf(sb, "  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;");
         AppendLf(sb, "  classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;");
-
-        return sb.ToString();
     }
 
     /// <summary>
@@ -59,10 +89,12 @@ public static class MermaidRenderer
 
     /// <summary>
     /// Append the nodes + intra-task edges + dependency edges (the semantic content) for the
-    /// plan, in ordinal task order. The single shared emitter behind both <see cref="Render"/>
-    /// and <see cref="SemanticContent"/>.
+    /// plan, in ordinal task order. The single shared emitter behind <see cref="Render"/>,
+    /// <see cref="SemanticContent"/>, and <see cref="RenderInteractive"/>. Returns the
+    /// task-id → node-id-base map so the caller can emit click directives against the SAME node
+    /// ids (the emitted bytes are unchanged whether or not the caller uses the return value).
     /// </summary>
-    private static void AppendNodesAndEdges(PlanDefinition plan, StringBuilder sb)
+    private static IReadOnlyDictionary<string, string> AppendNodesAndEdges(PlanDefinition plan, StringBuilder sb)
     {
         var graph = new DependencyGraph(plan.Tasks);
 
@@ -111,7 +143,50 @@ public static class MermaidRenderer
                 AppendLf(sb, $"  done_{nodeIdBase[dependency.Id]} --> task_{nodeIdBase[dependentId]}");
             }
         }
+
+        return nodeIdBase;
     }
+
+    /// <summary>
+    /// Append <c>click</c> directives (HTML-viewer only; see <see cref="RenderInteractive"/>):
+    /// each task node opens its task FOLDER (<c>tasks/&lt;id&gt;/</c>), each guardrail node opens
+    /// its guardrail FILE — both as plan-relative, forward-slash <c>file://</c> targets resolved
+    /// relative to <c>diagram.html</c> at the plan root, opened in a new tab (<c>_blank</c>) so the
+    /// diagram stays put. Emitted in the same ordinal/sorted order as the nodes for determinism.
+    /// </summary>
+    private static void AppendClickDirectives(
+        PlanDefinition plan, IReadOnlyDictionary<string, string> nodeIdBase, StringBuilder sb)
+    {
+        foreach (TaskNode task in plan.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal))
+        {
+            string @base = nodeIdBase[task.Id];
+            string taskDir = ToPlanRelative(plan.PlanDirectory, task.Directory);
+            AppendLf(sb, $"  click task_{@base} href \"{taskDir}/\" \"{ClickTooltip(task.Id)}\" _blank");
+
+            int ordinal = 0;
+            foreach (GuardrailDefinition guardrail in task.Guardrails
+                         .OrderBy(g => g.Name, StringComparer.Ordinal))
+            {
+                string grPath = ToPlanRelative(plan.PlanDirectory, guardrail.Path);
+                AppendLf(sb, $"  click gr_{@base}_{ordinal} href \"{grPath}\" \"{ClickTooltip(guardrail.Name)}\" _blank");
+                ordinal++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A plan-folder-relative, forward-slash path for a <c>click href</c> target. Forward slashes
+    /// (not OS separators) keep the generated <c>diagram.html</c> byte-identical across OSes and
+    /// make the href resolve relative to <c>diagram.html</c> at the plan root.
+    /// </summary>
+    private static string ToPlanRelative(string planDirectory, string absolutePath) =>
+        Path.GetRelativePath(planDirectory, absolutePath)
+            .Replace('\\', '/')
+            .Replace("\"", "%22", StringComparison.Ordinal); // " is legal in Linux filenames; URL-encode to keep the click directive parseable
+
+    /// <summary>Make a label safe inside a double-quoted Mermaid <c>click</c> tooltip.</summary>
+    private static string ClickTooltip(string text) =>
+        text.Replace("\"", "&quot;", StringComparison.Ordinal);
 
     /// <summary>
     /// Append <paramref name="line"/> followed by an explicit <c>'\n'</c>. Used everywhere a

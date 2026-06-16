@@ -37,14 +37,17 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `guardrails.json` (run config) + `state/` (seed, merged state, journal, logs) +
   `tasks/<NN-verb-object>/` (one folder per task) + an optional generated
   `diagram.md` (see below).
-- **Diagram** `diagram.md` (optional, plan-folder root): a generated Mermaid
-  `flowchart TD` of the task/guardrail DAG, written by `guardrails graph`. NOT part of
-  the plan contract (loader/validator ignore it) and never hand-edited. Its provenance
-  comment embeds a `source-sha256` over the diagram's drawn labels + DAG shape (as
-  emitted by the renderer), excluding cosmetic `classDef` styling — it changes when a
-  task/dependency/guardrail or a node label (e.g. a guardrail `description`) changes, and
-  is unaffected by action kind; `guardrails graph --check` exits 0 fresh, 2 stale/missing
-  (the "regenerate" signal), 1 on a load/validate error. See SSOT §10.
+- **Diagram** — two companion files written by `guardrails graph` at the plan-folder root,
+  both generated, non-authored, and excluded from `guardrails.baseline`:
+  - `diagram.md`: Mermaid `flowchart TD` (GitHub render artifact). First line is a
+    `<!-- guardrails:graph v1 source-sha256=<hash> -->` provenance comment. NOT part of the
+    plan contract; safe to delete and regenerate.
+  - `diagram.html`: interactive local-navigation companion (pan/zoom/fullscreen + Mermaid
+    `click href` directives pointing to task/guardrail source). Suppressed by `--no-html`.
+    Node clicks require a local HTTP server — browsers block `file://→file://` by default.
+  Both share the same `source-sha256` key. `guardrails graph --check` exits 0 (fresh), 2
+  (stale/missing — a present but hash-mismatched `diagram.html` is stale; a missing one is
+  not), 1 (load/validate error). See SSOT §10.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
   `exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
   Zero guardrails = validation error.
