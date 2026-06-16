@@ -42,10 +42,19 @@ public sealed class ClaudePromptRunner : IPromptRunner
         var parser = new ClaudeStreamParser();
         var streamLines = new List<string>();
 
+        // Open claude-stream.jsonl for incremental writes before launching the process so
+        // the "view log" link can tail it in real time (issue #41). AutoFlush ensures each
+        // line is visible on disk as it arrives rather than after the process exits.
+        // OutputDataReceived events are serialized by AsyncStreamReader, so no lock needed.
+        Directory.CreateDirectory(Path.GetDirectoryName(invocation.StreamLogPath)!);
+        await using var streamWriter = new StreamWriter(invocation.StreamLogPath, append: false);
+        streamWriter.AutoFlush = true;
+
         void Tee(string line)
         {
             streamLines.Add(line);
             parser.Feed(line);
+            streamWriter.WriteLine(line);
         }
 
         ProcessResult process = await _processRunner.RunAsync(
@@ -57,15 +66,14 @@ public sealed class ClaudePromptRunner : IPromptRunner
             stdoutLineSink: Tee,
             cancellationToken).ConfigureAwait(false);
 
-        // Tee the raw stream to claude-stream.jsonl (SSOT §8).
-        string rawStream = string.Join('\n', streamLines);
-        AtomicFile.WriteAllText(invocation.StreamLogPath, rawStream);
+        // claude-stream.jsonl is fully written line-by-line above; no batch write needed.
 
         // Derive the CLI-equivalent transcript.md deterministically from the same stream
         // (issue #27): the raw JSONL is the debug artifact; the transcript is what humans
         // skim and what dependent tasks read (issue #26).
         if (invocation.TranscriptLogPath is { } transcriptPath)
         {
+            string rawStream = string.Join('\n', streamLines);
             AtomicFile.WriteAllText(transcriptPath, ClaudeTranscriptRenderer.Render(rawStream));
         }
 
