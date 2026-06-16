@@ -282,26 +282,86 @@ public sealed class ClaudeTranscriptRendererTests
     }
 
     [Fact]
-    public void StreamingWriter_ObjectSplitAcrossFeeds_RendersOnceComplete()
+    public void StreamingWriter_FullCoverage_IsByteIdenticalToBatch()
     {
-        // A single JSON object split between two stream chunks (the chunk boundary fell inside the
-        // object, not on its newline). StreamingWriter must buffer the partial line and render the
-        // object only once the closing brace arrives — nothing before, the full fragment after.
-        const string firstHalf =
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",";
-        const string secondHalf =
-            "\"text\":\"split across chunks\"}]}}";
+        // The load-bearing byte-identity test: a stream that exercises EVERY path the streaming
+        // newline-carry and garbage-skip have to get right, all in one feed sequence:
+        //   - an assistant/text block (RenderAssistant appends "\n\n") immediately followed by the
+        //     terminal `result` line (RenderResult prepends "\n"), so the bytes before the result
+        //     bullet are a run of THREE newlines ("...prose\n\n" + "\n⏺...") that Normalize/
+        //     EmitClamped must collapse to a single blank line. In the streaming path that 3-run is
+        //     carried ACROSS feeds: the text feed leaves two pending newlines, the result feed adds
+        //     a third, and the clamp to 2 fires only when the bullet char is finally written — the
+        //     exact cross-feed carry.
+        //   - a text value with an EMBEDDED newline (multi-line prose) rendered verbatim;
+        //   - an interleaved GARBAGE / non-JSON line that must be skipped (per-line independence:
+        //     it must not poison the valid line that follows it);
+        //   - a tool_use and a tool_result.
+        const string stream =
+            """
+            {"type":"assistant","message":{"content":[{"type":"text","text":"first block of prose"}]}}
+            this is not json — it must be skipped, not glued onto the next line
+            {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"x.cs"}}]}}
+            {"type":"user","message":{"content":[{"type":"tool_result","content":"out1\nout2\nout3"}]}}
+            {"type":"assistant","message":{"content":[{"type":"text","text":"second block\nwith an embedded newline"}]}}
+            {"type":"result","subtype":"success","is_error":false,"result":"all done","total_cost_usd":0.42,"num_turns":7}
+            """;
+
+        string batch = ClaudeTranscriptRenderer.Render(stream);
+
+        // Guard the guard #1 — the 3+→blank-line collapse genuinely fired. Pre-collapse, the bytes
+        // before "⏺" were the text block's trailing "\n\n" then RenderResult's leading "\n" = a run
+        // of THREE '\n'. After collapse the output shows exactly ONE blank line ("...newline\n\n⏺"),
+        // and — the discriminating check — NO run of 3+ newlines survives anywhere. If a refactor
+        // stopped collapsing, that 3+ run would reappear and BOTH of these would fail.
+        Assert.Contains("with an embedded newline\n\n⏺ all done\n", batch);
+        Assert.DoesNotContain("\n\n\n", batch);
+        // Guard the guard #2 — the embedded newline survived as multi-line prose (a 2-newline run is
+        // legal and must be preserved; only 3+ collapse).
+        Assert.Contains("second block\nwith an embedded newline", batch);
+        // Guard the guard #3 — the garbage line left no trace (per-line independence held).
+        Assert.DoesNotContain("not json", batch);
 
         var buffer = new StringWriter();
         var streaming = new ClaudeTranscriptRenderer.StreamingWriter(buffer);
+        foreach (string line in stream.Split('\n'))
+        {
+            streaming.Feed(line);
+        }
 
-        streaming.Feed(firstHalf);
-        Assert.Equal(string.Empty, buffer.ToString()); // nothing rendered from the partial object
-
-        streaming.Feed(secondHalf);
         streaming.Complete();
 
-        Assert.Equal("split across chunks\n", buffer.ToString());
+        Assert.Equal(batch, buffer.ToString());
+    }
+
+    [Fact]
+    public void StreamingWriter_PartialJsonLine_IsSkipped_LikeBatch()
+    {
+        // A line that is NOT a complete JSON object on its own must be skipped — exactly as batch
+        // Render skips it — and must not poison the valid lines around it. (This replaces the old
+        // "object split across feeds" test: AsyncStreamReader delivers complete lines, so the
+        // streaming writer no longer buffers partial objects; per-line independence is the contract.)
+        const string stream =
+            """
+            {"type":"assistant","message":{"content":[{"type":"text","text":"before"}]}}
+            {"type":"assistant","message":{"content":[{"type":"text",
+            {"type":"assistant","message":{"content":[{"type":"text","text":"after"}]}}
+            """;
+
+        string batch = ClaudeTranscriptRenderer.Render(stream);
+
+        var buffer = new StringWriter();
+        var streaming = new ClaudeTranscriptRenderer.StreamingWriter(buffer);
+        foreach (string line in stream.Split('\n'))
+        {
+            streaming.Feed(line);
+        }
+
+        streaming.Complete();
+
+        // The partial middle line is dropped; the valid lines before and after both render.
+        Assert.Equal(batch, buffer.ToString());
+        Assert.Equal("before\n\nafter\n", buffer.ToString());
     }
 
     [Fact]
@@ -313,6 +373,19 @@ public sealed class ClaudeTranscriptRendererTests
 
         streaming.Feed("{\"type\":\"system\",\"subtype\":\"init\"}");
         streaming.Feed("{\"type\":\"rate_limit_event\",\"rate_limit_info\":{}}");
+        streaming.Complete();
+
+        Assert.Equal(string.Empty, buffer.ToString());
+    }
+
+    [Fact]
+    public void StreamingWriter_CompleteWithoutFeeds_WritesNothing()
+    {
+        // Complete() with zero feeds must write nothing (no spurious trailing newline) — matches
+        // Render("") == "".
+        var buffer = new StringWriter();
+        var streaming = new ClaudeTranscriptRenderer.StreamingWriter(buffer);
+
         streaming.Complete();
 
         Assert.Equal(string.Empty, buffer.ToString());

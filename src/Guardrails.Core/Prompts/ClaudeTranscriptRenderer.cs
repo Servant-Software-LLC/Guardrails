@@ -111,9 +111,13 @@ public static class ClaudeTranscriptRenderer
     /// so a "view log" tail sees the transcript grow in real time rather than appearing only when
     /// the task finishes (issue #41). Two properties hold:
     /// <list type="bullet">
-    /// <item><b>Chunk-boundary safe.</b> Lines are buffered until they parse as a complete JSON
-    ///   object, so an object split between two stream chunks still renders once its closing brace
-    ///   arrives (newline-delimited JSON normally lands one object per line, but this is defensive).</item>
+    /// <item><b>Per-line independence.</b> Each fed line is one newline-delimited JSON object,
+    ///   parsed and rendered on its own as it arrives (whitespace-only and unparseable lines are
+    ///   skipped). This mirrors <see cref="Render"/>, which is itself a per-line parse-and-skip over
+    ///   the <c>\n</c>-split stream — so byte-identity to <see cref="Render"/> holds BY CONSTRUCTION,
+    ///   and a malformed line cannot poison a later valid one. The process reader (AsyncStreamReader)
+    ///   delivers complete lines, never partial chunks, so there is no "object split across feeds"
+    ///   case to defend against.</item>
     /// <item><b>Byte-identical at completion.</b> After <see cref="Complete"/>, the written file
     ///   equals <see cref="Render"/> over the same concatenated stream: a pending-newline counter
     ///   carries the 3+→blank-line collapse across feeds, and the trailing newline is finalized in
@@ -124,13 +128,7 @@ public static class ClaudeTranscriptRenderer
     /// </summary>
     public sealed class StreamingWriter
     {
-        // A genuinely malformed line can never complete into valid JSON; cap the buffer so it
-        // can't grow without bound. The raw line is still preserved in claude-stream.jsonl (the
-        // canonical artifact), so dropping it from the transcript loses nothing recoverable.
-        private const int MaxBufferChars = 1_000_000;
-
         private readonly TextWriter _writer;
-        private readonly StringBuilder _jsonBuffer = new();
         private int _pendingNewlines;
         private bool _wroteContent;
         private bool _completed;
@@ -140,31 +138,22 @@ public static class ClaudeTranscriptRenderer
         /// <summary>Feed one raw stream line (newline excluded), as delivered by the process reader.</summary>
         public void Feed(string line)
         {
-            // Skip whitespace-only input only when nothing is buffered (matches Render's tolerance);
-            // once a partial object is buffered, every line is part of it until it parses.
-            if (_jsonBuffer.Length == 0 && string.IsNullOrWhiteSpace(line))
+            // One line == one independent JSON object (mirrors RenderLine exactly): skip
+            // whitespace-only lines, skip lines that don't parse on their own, render the rest.
+            // A trailing '\r' on a CRLF stream needs no handling — JsonDocument.Parse treats it as
+            // trailing whitespace, and rendered fragments come from parsed JSON values (content
+            // newlines are JSON-escaped, not raw), so it cannot reach the output. Do NOT re-add
+            // cross-line buffering "to be safe": it would break per-line independence (a malformed
+            // line would poison later valid ones) and diverge from Render.
+            if (string.IsNullOrWhiteSpace(line))
             {
                 return;
             }
 
-            if (_jsonBuffer.Length > 0)
-            {
-                _jsonBuffer.Append('\n');
-            }
-
-            _jsonBuffer.Append(line);
-
-            JsonDocument? document = TryParse(_jsonBuffer.ToString());
+            JsonDocument? document = TryParse(line);
             if (document is null)
             {
-                // Not yet a complete object — could be a chunk boundary; keep buffering. Drop the
-                // buffer if it overflows the cap (malformed, never-closing line).
-                if (_jsonBuffer.Length > MaxBufferChars)
-                {
-                    _jsonBuffer.Clear();
-                }
-
-                return;
+                return; // tolerant: skip garbage / partial lines, exactly like RenderLine
             }
 
             using (document)
@@ -174,7 +163,6 @@ public static class ClaudeTranscriptRenderer
                 EmitClamped(fragment.ToString());
             }
 
-            _jsonBuffer.Clear();
             _writer.Flush();
         }
 

@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
+using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
@@ -62,6 +63,52 @@ public sealed class FakeClaudeRunTests
         string transcript = File.ReadAllText(transcriptPath);
         Assert.Contains("⏺ fake done", transcript);
         Assert.DoesNotContain("total_cost_usd", transcript); // telemetry stripped
+    }
+
+    [Fact]
+    public async Task StreamingWrite_ProducesSameArtifacts_AsBatchOnExit_WouldHave()
+    {
+        // Pins the PR #44 streaming write path against the OLD batch-on-exit behaviour: after a
+        // real run through the fake CLI, the two log artifacts must hold exactly what a write-once-
+        // after-exit path would have produced. Concretely:
+        //   (a) claude-stream.jsonl equals the joined stream lines the fake emitted (every raw line
+        //       teed, in order, newline-terminated);
+        //   (b) transcript.md equals ClaudeTranscriptRenderer.Render(<that stream>) — i.e. the
+        //       incremental StreamingWriter produced byte-for-byte what a batch Render after exit
+        //       would have.
+        // A future revert to "render once on exit" cannot pass this silently: it would have to
+        // produce the identical bytes, which is the whole guarantee.
+        //
+        // NOTE: a mid-run "file already non-empty before the process exits" assertion was considered
+        // and SKIPPED. The fake CLI is a short-lived script that emits its single line and exits;
+        // observing the file strictly mid-process would need a deterministic gate (a sentinel-file
+        // handshake where the fake blocks until the harness signals) that the harness does not
+        // provide today, so it would require significant new fake-CLI + harness plumbing. The
+        // after-completion byte-equality below is the required floor and is sufficient to catch a
+        // revert to batch-on-exit.
+        using var plan = new FakeClaudePlanBuilder()
+            .AddPromptTask("01-generate", mode: "fragment", cost: "0.0150");
+
+        RunReport report = await RunAsync(plan.PlanDir);
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+
+        string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
+        string streamPath = Path.Combine(attemptDir, "claude-stream.jsonl");
+        string transcriptPath = Path.Combine(attemptDir, "transcript.md");
+        Assert.True(File.Exists(streamPath));
+        Assert.True(File.Exists(transcriptPath));
+
+        // (a) claude-stream.jsonl is the raw fake stream: the fake emits exactly one result line,
+        // teed verbatim and newline-terminated. Build the expectation from the SAME inputs the fake
+        // uses (cost 0.0150) so a change to either side is caught.
+        string stream = File.ReadAllText(streamPath);
+        const string expectedLine =
+            "{\"type\":\"result\",\"is_error\":false,\"result\":\"fake done\",\"total_cost_usd\":0.0150,\"num_turns\":2}";
+        Assert.Equal(expectedLine, stream.Replace("\r\n", "\n").TrimEnd('\n'));
+
+        // (b) transcript.md == batch Render over that exact stream (streaming == batch-on-exit).
+        string transcript = File.ReadAllText(transcriptPath);
+        Assert.Equal(ClaudeTranscriptRenderer.Render(stream), transcript);
     }
 
     [Fact]
