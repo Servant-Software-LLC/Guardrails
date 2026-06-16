@@ -83,10 +83,11 @@ What is the task's primary deliverable?
 ├── A file/artifact            → file-exists (always) + the strongest content check available:
 │                                schema-validates > file-contains-regex > prompt-judge
 ├── Code (library/feature)     → build-passes + specific-tests-pass (--filter THIS task's tests)
-│                                + tests-untouched (IMPLEMENTATION task: recomputes Get-FileHash
-│                                │  and compares to the SHA-256 the HARNESS recorded from the
-│                                │  test-author task's captureHashes — agent never shells out;
-│                                │  see SKILL.md Step 5; required whenever a test-author exists)
+│                                + tests-untouched (ON THE IMPLEMENTATION/EDITING task: recomputes
+│                                │  Get-FileHash and compares to the SHA-256 the HARNESS recorded
+│                                │  from the test-author task's captureHashes — agent never shells
+│                                │  out; see SKILL.md Step 5 and the placement rule below; required
+│                                │  whenever a test-author exists)
 │                                └─ INSERT a test-author task upstream BY DEFAULT (SKILL Step 2
 │                                   TDD rule); skip only if tests already exist or behavior is
 │                                   too simple for unit tests — state why in task description
@@ -103,6 +104,22 @@ What is the task's primary deliverable?
 │                                prompt-judge ONLY for genuine subjective quality, never alone
 └── Refactor (no new behavior) → build-passes + existing-tests-still-pass (the suite IS the guardrail)
 ```
+
+**`tests-untouched` placement — doctrine.** `tests-untouched` belongs on the
+**EDITING/implementation task** — the one that must not modify the tests — NOT on a
+downstream-only task. A task's own guardrails run against its **pre-merge snapshot**
+(`GUARDRAILS_STATE_IN`, taken at attempt start), so the implementation task's guardrail compares
+the recorded hash against the test files *as they stand at the moment that task is verified* —
+catching the edit on the exact task that could have made it. Placing the check on a later
+read-only task is strictly weaker: it can only observe drift after the fact and cannot attribute
+it. Put `tests-untouched` on the task with workspace write access to the tests.
+
+The recorded hash is **contract-protected against cross-task forgery.** Single-writer-per-key is
+enforced at the merge step (SSOT §6.2, issue #48): a task may only write top-level keys equal to
+its own id, so no intervening task can republish `{ "<test-author-id>": { "fileHashes": … } }` to
+poison the stored hash — a foreign-id fragment is rejected and the attempt fails. The
+`tests-untouched` SCRIPT is unchanged (it still reads `<test-author-id>.fileHashes` from
+`GUARDRAILS_STATE_IN` and recomputes with `Get-FileHash`); it is simply now contract-protected.
 
 **State-output leaf — the fragment-key contract.** When a task's action publishes a key
 to the state fragment (written to `GUARDRAILS_STATE_OUT`) that a downstream task later

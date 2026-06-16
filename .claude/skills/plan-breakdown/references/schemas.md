@@ -109,8 +109,10 @@ validation error.
 `captureHashes` lists files the harness hashes (SHA-256, uppercase hex, raw bytes) into
 `{ "<taskId>": { "fileHashes": { "<path>": "<hex>" } } }` after the action succeeds — computed in
 harness code, so the agent never runs a shell command to produce it. A `tests-untouched` guardrail
-on a downstream task reads it back and recomputes with `Get-FileHash -Algorithm SHA256`. See
-SKILL.md Step 5.
+on a downstream task reads it back and recomputes with `Get-FileHash -Algorithm SHA256`. Because
+single-writer-per-key is enforced (SSOT §6.2), no intervening task can forge or overwrite
+`<taskId>.fileHashes` by writing under another task's id — the recorded hash is contract-protected
+against cross-task poisoning (issue #48). See SKILL.md Step 5.
 
 ## Prompt files (`.prompt.md`)
 
@@ -130,7 +132,10 @@ survive if a human runs the prompt outside the harness.
 - Deterministic guardrail: exit 0 = pass; on failure print ONE actionable line to stdout.
 - Prompt guardrail: write `{ "pass": bool, "reason": string }` to `GUARDRAILS_VERDICT_OUT`.
 - Action state: read `GUARDRAILS_STATE_IN` (snapshot), write a JSON object fragment to
-  `GUARDRAILS_STATE_OUT`; namespace keys under the task id. Invalid fragment = attempt fails.
+  `GUARDRAILS_STATE_OUT`. **Single-writer-per-key is ENFORCED (SSOT §6.2):** a fragment's
+  top-level keys must each be the task's OWN id (reserved keys — none in v1). A foreign task id
+  or any arbitrary shared key makes the fragment invalid — it is rejected (not stripped), the
+  attempt fails, and nothing merges. Invalid (non-object/unparseable) fragment = attempt fails too.
 - Retry: attempt ≥ 2 receives `GUARDRAILS_FEEDBACK` (path to feedback.md).
 - Guardrails see `GUARDRAILS_ACTION_STDOUT/_STDERR/_RESULT` and `GUARDRAILS_STATE_FRAGMENT`.
 - cwd of every child process = `workspace`. Plan-folder paths arrive absolute via env vars.
