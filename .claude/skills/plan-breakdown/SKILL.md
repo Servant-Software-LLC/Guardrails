@@ -136,12 +136,14 @@ A task is right-sized when ALL hold:
 
    Collapse to a single task only when (a) tests for this behavior **already exist** in
    the repo, or (b) the behavior is too simple to have meaningful unit tests — state the
-   reason explicitly in the edge justification. When in doubt, split: the test-author
+   reason explicitly in the task description or breakdown report. When in doubt, split: the test-author
    task is cheap and its `tests-fail-on-current-code` guardrail is the strongest
    anti-tautology check the skill has.
 
-Heuristic: a typical feature plan yields **5–15 tasks**. Under 3 or over 25 →
-re-examine, and tell the user why if it stands.
+Heuristic: a typical feature plan yields **5–15 tasks**. TDD splitting doubles code
+tasks (each code item becomes two tasks); this does not count against the threshold.
+Under 3 or over 25 tasks after applying TDD → re-examine, and tell the user why if
+it stands.
 
 ## Step 3 — Determine the DAG (`dependsOn`)
 
@@ -198,30 +200,58 @@ upstream task that creates it:
   Three things follow automatically:
 
   **Test-author task guardrails.** `tests-fail-on-current-code` (archetype #8) is
-  required. Add `tests-build` only when the new tests compile against current code (e.g.
-  they exercise a CLI flag or file output that already exists). When the tests reference
-  not-yet-existing symbols (a new type, method, or property), drop `tests-build` —
-  compile failure already satisfies the non-tautology check; a separate build guardrail
-  would fail at the same moment and add noise without adding signal.
+  required. Keep `tests-build` unless the new tests reference not-yet-existing symbols (a
+  new type, method, or constant) that make the project un-compilable against current code —
+  in that case drop it, since a build guardrail that always fails due to missing symbols
+  adds noise without signal. When tests exercise only existing API surface (a CLI flag, a
+  file path, a response code), keep `tests-build`.
 
   **`tests-untouched` guardrail on every implementation task** that has an upstream
   test-author task. Prevents the agent from making tests pass by editing them instead of
-  fixing the implementation. Scope the git-diff to the exact test file(s) the test-author
-  task wrote:
+  fixing the implementation. Use the **content-hash pattern**: the test-author task writes
+  `git hash-object` hashes to `GUARDRAILS_STATE_OUT`; the implementation task's guardrail
+  reads them from `GUARDRAILS_STATE_IN` and compares. This is immune to git-commit timing
+  (the harness does NOT commit between tasks — `git diff HEAD` on an untracked test file
+  is always empty, making a git-diff-based check vacuous).
 
   ```powershell
   # catches: "making tests pass" by editing the tests instead of the implementation
-  $changed = git diff --name-only HEAD -- tests/MyProject/MyFeatureTests.cs
-  if ($changed) { Write-Output "MyFeatureTests.cs was modified by the implementation task"; exit 1 }
+  # Uses content hashes stored by the test-author task (immune to git-commit timing)
+  $stateIn = $env:GUARDRAILS_STATE_IN
+  if (-not $stateIn -or -not (Test-Path $stateIn)) {
+    Write-Output "GUARDRAILS_STATE_IN not set or missing — cannot verify test file integrity"
+    exit 1
+  }
+  $state = Get-Content $stateIn -Raw | ConvertFrom-Json
+  $storedHashes = $state.'NN-author-tests-FEATURE'.testFileHashes
+  if (-not $storedHashes) {
+    Write-Output "State key 'NN-author-tests-FEATURE.testFileHashes' missing — test-author task may not have written its state"
+    exit 1
+  }
+  $failures = @()
+  foreach ($file in $storedHashes.PSObject.Properties.Name) {
+    $stored = $storedHashes.$file
+    if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
+    $current = (git hash-object $file 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0) { $failures += "Could not hash $file"; continue }
+    if ($current -ne $stored.Trim()) { $failures += "$file was modified (expected $stored, got $current)" }
+  }
+  if ($failures) { Write-Output ($failures -join "; "); exit 1 }
   exit 0
   ```
 
+  Replace `NN-author-tests-FEATURE` with the actual upstream task's folder name (which is
+  the default state key prefix). The test-author task must write this data — see the action
+  prompt guidance below and `references/example-breakdown.md`.
+
   **Action prompt for test-author tasks.** The `## Task` section must explicitly tell the
-  agent three things: (a) the exact test file path and any category/trait convention the
-  repo uses; (b) the tests MUST fail (or fail to compile) against the current code — this
-  is intentional, not a mistake; compile failure counts as satisfying
-  `tests-fail-on-current-code`; (c) do NOT implement the behavior, only the tests and any
-  minimal stub needed to make intent legible. See `references/example-breakdown.md` for
+  agent: (a) the exact test file path(s) and any category/trait convention the repo uses;
+  (b) the tests MUST fail against the current code — this is intentional, not a mistake;
+  (c) do NOT implement the behavior, only the tests; (d) after writing the tests, record
+  their content hashes by running `git hash-object <file>` on each test file and writing
+  the results to `GUARDRAILS_STATE_OUT` under `{"NN-author-tests-FEATURE": {"testFileHashes":
+  {"<path>": "<hex>", ...}}}` — a downstream guardrail on the implementation task uses these
+  hashes to verify the tests were not edited. See `references/example-breakdown.md` for
   the complete worked `action.prompt.md`.
 - Guardrail "schema validates" and no schema exists → insert an author-schema task
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
