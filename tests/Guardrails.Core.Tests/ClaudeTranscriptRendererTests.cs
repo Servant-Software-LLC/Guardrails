@@ -142,4 +142,73 @@ public sealed class ClaudeTranscriptRendererTests
 
         Assert.Equal(ClaudeTranscriptRenderer.Render(stream), ClaudeTranscriptRenderer.Render(stream));
     }
+
+    // ---- CRLF→LF normalization pin (safety net: crlf-normalization-unpinned) ---------------
+    // CONTRACT being pinned: a stream-json log read on Windows (CRLF) and on Linux (LF) renders
+    // to a BYTE-IDENTICAL, \r-free transcript. That cross-OS byte-stability is the user-facing
+    // guarantee behind the CRLF-hash bug class fixed in PR #3.
+    //
+    // HONEST CAVEAT (verified empirically — see this change's report): removing the
+    // Replace("\r\n","\n") at ClaudeTranscriptRenderer.cs ~line 49 (stream split) OR ~line 238
+    // (tool_result content split) does NOT change Render's output, so these tests do NOT fail on
+    // that specific line deletion. Two downstream defenses mask it: JsonDocument.Parse treats a
+    // trailing '\r' on a JSONL line as whitespace, and every rendered segment is Trim()'d /
+    // CollapseWhitespace'd, which strips trailing '\r'. The normalizations are therefore
+    // defensive belt-and-suspenders, not the sole guarantor. These tests still pin the OBSERVABLE
+    // contract (CRLF-in == LF-in, no '\r' out); a regression that DID surface '\r' (e.g. a future
+    // refactor that dropped a Trim or appended raw content) would fail here. The byte-stable
+    // GOLDEN-FIXTURE guarantee across OS is enforced separately by the root .gitattributes.
+
+    [Fact]
+    public void CrlfInput_RendersWithoutCarriageReturns()
+    {
+        // A stream whose JSON lines are separated by CRLF, with an embedded CRLF inside a
+        // multi-line tool_result. The rendered transcript must be free of carriage returns.
+        const string crlfStream =
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}\r\n" +
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"x\"}}]}}\r\n" +
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"a\r\nb\r\nc\"}]}}\r\n" +
+            "{\"type\":\"result\",\"is_error\":false,\"result\":\"done\"}\r\n";
+
+        string transcript = ClaudeTranscriptRenderer.Render(crlfStream);
+
+        Assert.DoesNotContain('\r', transcript);
+    }
+
+    [Fact]
+    public void CrlfAndLfInputs_ProduceByteIdenticalTranscripts()
+    {
+        // The same logical stream, once with LF separators and once with CRLF, must render to
+        // byte-identical transcripts. This is the cross-OS stability contract: a Windows
+        // checkout (CRLF) and a Linux checkout (LF) of the same stream produce the same bytes.
+        const string lfStream =
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"line one\"}]}}\n" +
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"dotnet build\"}}]}}\n" +
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"out1\nout2\"}]}}\n" +
+            "{\"type\":\"result\",\"is_error\":false,\"result\":\"all done\"}\n";
+
+        string crlfStream = lfStream.Replace("\n", "\r\n");
+
+        string fromLf = ClaudeTranscriptRenderer.Render(lfStream);
+        string fromCrlf = ClaudeTranscriptRenderer.Render(crlfStream);
+
+        Assert.Equal(fromLf, fromCrlf);
+        Assert.DoesNotContain('\r', fromCrlf);
+    }
+
+    [Fact]
+    public void TrailingCarriageReturn_OnJsonLine_DoesNotBreakParsing()
+    {
+        // A CRLF terminator after a complete JSON object renders the expected prose with no stray
+        // '\r'. (The normalization turns "…}\r\n" into "…}\n"; JsonDocument.Parse also tolerates a
+        // trailing '\r' as whitespace, so this passes with or without the Replace — it is the
+        // observable contract, not a line-deletion tripwire. See the caveat above.)
+        const string stream =
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"working\"}]}}\r\n";
+
+        string transcript = ClaudeTranscriptRenderer.Render(stream);
+
+        Assert.Equal("working\n", transcript);
+        Assert.DoesNotContain('\r', transcript);
+    }
 }

@@ -1,0 +1,23 @@
+# Surgical line-ending pins for line-ending-sensitive, byte-compared assets.
+#
+# WHY: these files are read by tests that compare bytes (schema-drift), feed a
+# cross-platform hash / golden load (the example folder), or are loaded as fixtures.
+# They are already committed with LF in the index; without a pin, a Windows checkout
+# (core.autocrlf=true) materializes them as CRLF in the working tree, while Linux/macOS
+# keep LF — so the SAME test could see different bytes on different OS of the 3-OS CI
+# matrix. Pinning `eol=lf` forces the working tree to LF everywhere, matching the
+# committed bytes, so golden/fixture comparisons are deterministic on all OS.
+#
+# This is intentionally NOT a repo-wide normalization: only the assets below are pinned.
+# Source code, the build, and everything else keep git's default behavior.
+
+# --- SSOT <-> skill schema-drift pair (SchemaDriftTests compares these byte-for-byte) ---
+/docs/plans/02-schemas-and-contracts.md                 eol=lf
+/.claude/skills/plan-breakdown/references/schemas.md     eol=lf
+
+# --- The golden example: loaded/validated/hashed by tests; the diagram.md source-sha and
+#     the JSON manifests must be byte-stable across OS. ---
+/examples/hello-guardrails/** eol=lf
+
+# --- Committed test fixtures (loaded in place by the Core test suite). ---
+/tests/Guardrails.Core.Tests/TestData/** eol=lf
