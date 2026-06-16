@@ -125,6 +125,20 @@ A task is right-sized when ALL hold:
    (≈ ≤ 30–45 min of agent work).
 4. **Retry-cheapness:** a failed guardrail re-runs the whole action. If a one-line
    fix would redo an hour of work, the task is too coarse.
+5. **TDD default for code deliverables.** When the primary deliverable is code (a
+   library, feature, service behavior, or algorithm), the guardrail-boundary rule (rule
+   2) almost always fires: a test-author task's guardrail (`tests-fail-on-current-code`)
+   and the implementation task's guardrail (`specific-tests-pass`) are different in
+   character. Default to splitting into two consecutive tasks:
+
+   1. `NN-author-tests-<feature>` — writes tests encoding the behavior BEFORE it exists
+   2. `NM-implement-<feature>` — makes those tests pass without modifying them
+
+   Collapse to a single task only when (a) tests for this behavior **already exist** in
+   the repo, or (b) the behavior is too simple to have meaningful unit tests — state the
+   reason explicitly in the edge justification. When in doubt, split: the test-author
+   task is cheap and its `tests-fail-on-current-code` guardrail is the strongest
+   anti-tautology check the skill has.
 
 Heuristic: a typical feature plan yields **5–15 tasks**. Under 3 or over 25 →
 re-examine, and tell the user why if it stands.
@@ -179,11 +193,36 @@ optional:
 For every selected guardrail whose precondition doesn't exist yet, generate the
 upstream task that creates it:
 
-- Guardrail "tests X pass" and tests X don't exist → insert `NN-author-tests-X`
-  BEFORE the implementation task. Its own guardrails: tests-build +
-  **tests-fail-on-current-code** (the anti-tautology check). The implementation task
-  gains a guardrail like `tests-untouched` (git-diff the test files) so it can't
-  "pass" by editing the tests.
+- Code task and tests do not yet exist → insert `NN-author-tests-<feature>` BEFORE the
+  implementation task (the TDD default in Step 2 means this fires for most code tasks).
+  Three things follow automatically:
+
+  **Test-author task guardrails.** `tests-fail-on-current-code` (archetype #8) is
+  required. Add `tests-build` only when the new tests compile against current code (e.g.
+  they exercise a CLI flag or file output that already exists). When the tests reference
+  not-yet-existing symbols (a new type, method, or property), drop `tests-build` —
+  compile failure already satisfies the non-tautology check; a separate build guardrail
+  would fail at the same moment and add noise without adding signal.
+
+  **`tests-untouched` guardrail on every implementation task** that has an upstream
+  test-author task. Prevents the agent from making tests pass by editing them instead of
+  fixing the implementation. Scope the git-diff to the exact test file(s) the test-author
+  task wrote:
+
+  ```powershell
+  # catches: "making tests pass" by editing the tests instead of the implementation
+  $changed = git diff --name-only HEAD -- tests/MyProject/MyFeatureTests.cs
+  if ($changed) { Write-Output "MyFeatureTests.cs was modified by the implementation task"; exit 1 }
+  exit 0
+  ```
+
+  **Action prompt for test-author tasks.** The `## Task` section must explicitly tell the
+  agent three things: (a) the exact test file path and any category/trait convention the
+  repo uses; (b) the tests MUST fail (or fail to compile) against the current code — this
+  is intentional, not a mistake; compile failure counts as satisfying
+  `tests-fail-on-current-code`; (c) do NOT implement the behavior, only the tests and any
+  minimal stub needed to make intent legible. See `references/example-breakdown.md` for
+  the complete worked `action.prompt.md`.
 - Guardrail "schema validates" and no schema exists → insert an author-schema task
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
