@@ -78,11 +78,14 @@ as designed, not scope creep.
 
 ### `tasks/01-author-stats-tests/` — **INSERTED TASK**
 
-`task.json`
+`task.json` — declares `captureHashes` so the HARNESS records the test file's SHA-256 into
+state after the action (the agent never computes a hash). The downstream `tests-untouched`
+guardrail reads it back.
 ```jsonc
 {
   "description": "Author failing unit tests that encode the --stats output format (total line + sorted per-category lines)",
-  "dependsOn": []
+  "dependsOn": [],
+  "captureHashes": ["tests/Inventory.Tests/StatsCommandTests.cs"]
 }
 ```
 
@@ -105,17 +108,9 @@ Use the existing test conventions in tests/Inventory.Tests. The tests MUST fail 
 be unable to find the flag) against the current code — they test behavior that does
 not exist yet. Do not implement the flag.
 
-After writing the tests, record their content hashes so a downstream guardrail can verify
-the implementation task did not edit them. For each test file, run:
-  git hash-object tests/Inventory.Tests/StatsCommandTests.cs
-Capture the trimmed hex output, then write to GUARDRAILS_STATE_OUT:
-{
-  "01-author-stats-tests": {
-    "testFileHashes": {
-      "tests/Inventory.Tests/StatsCommandTests.cs": "<hex>"
-    }
-  }
-}
+You do NOT need to hash the test file or write anything to state — the task's
+`captureHashes` declaration makes the harness record its hash automatically.
+Publish nothing to state.
 ```
 
 `guardrails/01-tests-build.ps1`
@@ -138,24 +133,9 @@ if ($LASTEXITCODE -eq 0) {
 exit 0
 ```
 
-`guardrails/03-state-fragment-written.ps1`
-```powershell
-# catches: test-author task that wrote the test file but forgot to publish its hash to state;
-#          the implementation task's tests-untouched guardrail reads this hash — if missing,
-#          that guardrail silently fails open (reads null, reports "task 01 did not write its hash")
-$fragmentPath = $env:GUARDRAILS_STATE_FRAGMENT
-if (-not $fragmentPath -or -not (Test-Path $fragmentPath)) {
-    Write-Output "no state fragment written — action did not publish any state"
-    exit 1
-}
-$fragment = Get-Content $fragmentPath -Raw | ConvertFrom-Json
-$hashes = $fragment.'01-author-stats-tests'.testFileHashes
-if (-not $hashes -or ($hashes | Get-Member -MemberType NoteProperty).Count -eq 0) {
-    Write-Output "state key '01-author-stats-tests.testFileHashes' is missing or empty"
-    exit 1
-}
-exit 0
-```
+(No `state-fragment-written` guardrail is needed: the harness records the hash from
+`captureHashes` itself, and a missing declared file fails the attempt with an actionable
+message — so the hash is always present in state by the time task 02 reads it.)
 
 ### `tasks/02-implement-stats-flag/`
 
@@ -188,27 +168,22 @@ exit 0
 
 `guardrails/03-tests-untouched.ps1`
 ```powershell
-# catches: "making tests pass" by editing the tests instead of the implementation
-# Uses content hashes stored by task 01 — immune to git-commit timing (harness does not
-# commit between tasks; git diff HEAD on an untracked file always returns empty output).
-$stateIn = $env:GUARDRAILS_STATE_IN
-if (-not $stateIn -or -not (Test-Path $stateIn)) {
-  Write-Output "GUARDRAILS_STATE_IN not set or missing — cannot verify test file integrity"
-  exit 1
-}
-$state = Get-Content $stateIn -Raw | ConvertFrom-Json
-$storedHashes = $state.'01-author-stats-tests'.testFileHashes
+# catches: "making tests pass" by editing the tests instead of the implementation.
+# Recomputes Get-FileHash and compares to the SHA-256 the harness recorded for task 01's
+# captureHashes. Get-FileHash is a pwsh cmdlet — a guardrail script runs via the interpreter,
+# not the agent sandbox, so it always works (no git, no allowedTools gate).
+$state = Get-Content $env:GUARDRAILS_STATE_IN -Raw | ConvertFrom-Json
+$storedHashes = $state.'01-author-stats-tests'.fileHashes
 if (-not $storedHashes) {
-  Write-Output "State key '01-author-stats-tests.testFileHashes' missing — task 01 may not have written its state"
+  Write-Output "State key '01-author-stats-tests.fileHashes' missing — was captureHashes declared on task 01?"
   exit 1
 }
 $failures = @()
 foreach ($file in $storedHashes.PSObject.Properties.Name) {
   $stored = $storedHashes.$file
   if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
-  $current = (git hash-object $file 2>$null).Trim()
-  if ($LASTEXITCODE -ne 0) { $failures += "Could not hash $file"; continue }
-  if ($current -ne $stored.Trim()) { $failures += "$file was modified (expected $stored, got $current)" }
+  $current = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
+  if ($current -ne $stored) { $failures += "$file was modified (expected $stored, got $current)" }
 }
 if ($failures) { Write-Output ($failures -join "; "); exit 1 }
 exit 0
@@ -256,16 +231,17 @@ exit 0
 >
 > | Task | Action | Guardrails (archetypes) | dependsOn |
 > |---|---|---|---|
-> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8), state-fragment-written (state-output) | — |
-> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4), tests-untouched (hash-in-state) | 01 |
+> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8); declares `captureHashes` | — |
+> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4), tests-untouched (harness-hash) | 01 |
 > | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
 > | 04-suite-green | script | full-suite (4, terminal-only) | 02, 03 |
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
 > pass" and those tests didn't exist. Its `tests-fail-on-current-code` guardrail proves
-> they're not tautological. Its `state-fragment-written` guardrail ensures the blob hash
-> is published to state, which 02's `tests-untouched` guardrail reads to verify the test
-> file was not modified by the implementation task. `guardrails validate add-stats-flag` → OK.
+> they're not tautological. Its `captureHashes` declaration makes the harness record the
+> test file's SHA-256 into state, which 02's `tests-untouched` guardrail reads (recomputing
+> with `Get-FileHash`) to verify the implementation didn't edit the tests.
+> `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
 > or add, then run `/guardrails-review add-stats-flag` before executing.

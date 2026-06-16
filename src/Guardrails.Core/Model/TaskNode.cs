@@ -33,6 +33,16 @@ public sealed record TaskNode
     /// <summary>Exclusive-workspace flag; null = default by action kind (prompt → true). (Honored from M4.)</summary>
     public bool? Exclusive { get; init; }
 
+    /// <summary>
+    /// Workspace-relative file paths whose SHA-256 (over raw bytes) the harness records into this
+    /// task's state fragment after a successful action, under
+    /// <c>{ "&lt;taskId&gt;": { "fileHashes": { "&lt;path&gt;": "&lt;hex&gt;" } } }</c> (SSOT §3 /
+    /// issue #46). The hash is computed in code — the action agent never shells out — so a
+    /// downstream <c>tests-untouched</c> guardrail can recompute (e.g. <c>Get-FileHash</c>) and
+    /// detect modification. Empty when the task declares none; never null.
+    /// </summary>
+    public IReadOnlyList<string> CaptureHashes { get; init; } = [];
+
     /// <summary>The resolved action for this task.</summary>
     public required ActionDefinition Action { get; init; }
 

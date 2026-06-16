@@ -186,6 +186,30 @@ public sealed class TaskExecutor : ITaskExecutor
                 costUsd: action.CostUsd);
         }
 
+        // --- capture declared file hashes (harness-computed; the agent never shells out) ---
+        // Done after a successful action and BEFORE guardrails, so the fragment a guardrail reads
+        // via GUARDRAILS_STATE_FRAGMENT already carries the hashes, and they merge into state on
+        // success for a downstream tests-untouched guardrail to read (issue #46).
+        if (task.CaptureHashes.Count > 0)
+        {
+            CaptureResult capture = FileHashCapture.Capture(task.Id, task.CaptureHashes, workspace, fragmentOutPath);
+            if (!capture.Succeeded)
+            {
+                string feedback = RetryPolicy.ForMissingCaptureFiles(task, attemptNumber, capture.MissingFiles);
+                return _journaler.FailedAttempt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
+                    AttemptOutcome.ActionFailed,
+                    new TaskResult
+                    {
+                        TaskId = task.Id,
+                        Outcome = TaskOutcome.ActionFailed,
+                        ActionExitCode = action.ExitCode,
+                        Summary = $"declared captureHashes file(s) missing after action: {string.Join(", ", capture.MissingFiles)}"
+                    },
+                    costUsd: action.CostUsd);
+            }
+        }
+
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(

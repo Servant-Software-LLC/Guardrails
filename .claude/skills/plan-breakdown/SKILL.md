@@ -214,94 +214,67 @@ upstream task that creates it:
 
   **`tests-untouched` guardrail on every implementation task** that has an upstream
   test-author task. Prevents the agent from making tests pass by editing them instead of
-  fixing the implementation. Uses a **three-part hash-in-state pattern** — immune to
-  git-commit timing (the harness does NOT commit between tasks; `git diff HEAD` on an
-  untracked test file is always empty, making a git-diff-based check vacuous). All three
-  parts are required; together they form a tamper-evident chain.
+  fixing the implementation. Uses **harness-computed content hashes** (issue #46): the
+  test-author task DECLARES the files to hash; the harness records their SHA-256 into state
+  **in code** — the agent never runs `git hash-object` or any shell command, so a scoped
+  `allowedTools` (e.g. `Bash(dotnet *)` only) can never block the capture (the failure mode
+  that made the old agent-computed pattern hang on `needsHuman`). Two parts:
 
-  **Part 1 — test-author `action.prompt.md`** (append after the task body): instruct the
-  agent to run `git hash-object` on each test file it writes (e.g. via Bash), then write
-  the results to `GUARDRAILS_STATE_OUT`:
+  **Part 1 — test-author `task.json`: declare `captureHashes`.** List every test file the
+  task authors, workspace-relative. After the action succeeds (and before guardrails run),
+  the harness computes each file's SHA-256 (uppercase hex, over raw bytes) and merges it into
+  state under `{ "<task-id>": { "fileHashes": { "<path>": "<hex>" } } }`. No prompt
+  instruction and no shell are involved. If a declared file is missing after the action, the
+  attempt fails with an actionable message naming it.
 
-  ````markdown
-  After writing the test file(s), record their content hashes so a downstream guardrail
-  can verify they were not edited by the implementation task. For each file, run (e.g. Bash):
-    git hash-object <relative/path/to/TestFile.cs>
-  Capture the trimmed hex output, then write to GUARDRAILS_STATE_OUT:
-  ```json
+  ```jsonc
   {
-    "<task-id>": {
-      "testFileHashes": {
-        "<relative/path/to/TestFile.cs>": "<hex>"
-      }
-    }
+    "description": "Author failing tests for <feature>",
+    "dependsOn": ["..."],
+    "stableId": "…",
+    "captureHashes": ["tests/MyProject/MyFeatureTests.cs"]
   }
   ```
-  ````
 
-  **Part 2 — test-author task `guardrails/NN-state-fragment-written.ps1`** (state-output
-  doctrine: the producing task must carry the fragment-key-present guardrail so a failed
-  hash write is caught here, before the harness merges null into shared state):
+  Because the harness (not the agent) writes the hashes, **no `state-fragment-written`
+  guardrail is needed** on the test-author task: a missing declared file already fails the
+  attempt, and a present file is always recorded.
 
-  ```powershell
-  # catches: test-author task that wrote tests but forgot to publish their hashes to state —
-  #          without this check, the implementation task's tests-untouched guardrail reads null
-  $fragmentPath = $env:GUARDRAILS_STATE_FRAGMENT
-  if (-not $fragmentPath -or -not (Test-Path $fragmentPath)) {
-    Write-Output "no state fragment written — action did not publish any state"
-    exit 1
-  }
-  $fragment = Get-Content $fragmentPath -Raw | ConvertFrom-Json
-  $hashes = $fragment.'<task-id>'.testFileHashes
-  if (-not $hashes -or ($hashes | Get-Member -MemberType NoteProperty).Count -eq 0) {
-    Write-Output "state key '<task-id>.testFileHashes' is missing or empty"
-    exit 1
-  }
-  exit 0
-  ```
-
-  Replace `<task-id>` with the test-author task's folder name (e.g. `01-author-stats-tests`).
-  `GUARDRAILS_STATE_FRAGMENT` is the live pre-merge fragment file — set by the harness only
-  when the action wrote one; the first guard catches the case where the action wrote nothing.
-
-  **Part 3 — implementation task `guardrails/NN-tests-untouched.ps1`**:
+  **Part 2 — implementation task `guardrails/NN-tests-untouched.ps1`** reads the recorded
+  hash from `GUARDRAILS_STATE_IN` and recomputes with `Get-FileHash` (a pwsh cmdlet — a
+  guardrail script runs via the interpreter, NOT the agent sandbox, so it always works; no
+  git dependency):
 
   ```powershell
   # catches: "making tests pass" by editing the tests instead of the implementation;
-  #          reads blob hashes stored by the upstream test-author task — tamper-evident
-  #          regardless of whether the harness has committed the test file
-  $stateIn = $env:GUARDRAILS_STATE_IN
-  if (-not $stateIn -or -not (Test-Path $stateIn)) {
-    Write-Output "GUARDRAILS_STATE_IN not set or missing — cannot verify test file integrity"
-    exit 1
-  }
-  $state = Get-Content $stateIn -Raw | ConvertFrom-Json
-  $storedHashes = $state.'NN-author-tests-FEATURE'.testFileHashes
+  #          reads the SHA-256 hashes the harness recorded for the upstream test-author task
+  $state = Get-Content $env:GUARDRAILS_STATE_IN -Raw | ConvertFrom-Json
+  $storedHashes = $state.'NN-author-tests-FEATURE'.fileHashes
   if (-not $storedHashes) {
-    Write-Output "State key 'NN-author-tests-FEATURE.testFileHashes' missing — test-author task may not have written its state"
+    Write-Output "State key 'NN-author-tests-FEATURE.fileHashes' missing — was captureHashes declared on the test-author task?"
     exit 1
   }
   $failures = @()
   foreach ($file in $storedHashes.PSObject.Properties.Name) {
     $stored = $storedHashes.$file
     if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
-    $current = (git hash-object $file 2>$null).Trim()
-    if ($LASTEXITCODE -ne 0) { $failures += "Could not hash $file"; continue }
-    if ($current -ne $stored.Trim()) { $failures += "$file was modified (expected $stored, got $current)" }
+    $current = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
+    if ($current -ne $stored) { $failures += "$file was modified (expected $stored, got $current)" }
   }
   if ($failures) { Write-Output ($failures -join "; "); exit 1 }
   exit 0
   ```
 
-  Replace `NN-author-tests-FEATURE` with the actual upstream test-author task's folder name.
-  The `foreach` loop handles multiple test files in one guardrail invocation.
+  Replace `NN-author-tests-FEATURE` with the upstream test-author task's folder name. The
+  `foreach` handles multiple test files. (`Get-FileHash` and the harness both emit uppercase
+  SHA-256 hex; PowerShell `-ne` is case-insensitive regardless, so the comparison is exact.)
 
-  **Action prompt for test-author tasks (Part 1 detail).** The `## Task` section must tell
-  the agent: (a) the exact test file path(s) and any category/trait convention the repo
-  uses; (b) the tests MUST fail against the current code — this is intentional, not a
-  mistake; (c) do NOT implement the behavior, only the tests; (d) after writing the tests,
-  compute and publish their hashes per the Part 1 template above. See
-  `references/example-breakdown.md` for the complete worked `action.prompt.md`.
+  **Action prompt for test-author tasks.** The `## Task` section must tell the agent: (a) the
+  exact test file path(s) and any category/trait convention the repo uses; (b) the tests MUST
+  fail against the current code — this is intentional, not a mistake; (c) do NOT implement the
+  behavior, only the tests. It does NOT need to compute or write any hash — `captureHashes`
+  handles that in the harness. See `references/example-breakdown.md` for the complete worked
+  `action.prompt.md`.
 - **Test framework is not yet chosen** (`$testFramework = none` from Step 0 and no test
   project exists) → the framework is a real fork (xUnit / NUnit / MSTest; jest / vitest;
   pytest / unittest) that **no one has decided**. Never let the action agent guess it from

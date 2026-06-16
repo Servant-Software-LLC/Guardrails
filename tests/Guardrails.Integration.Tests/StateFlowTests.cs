@@ -129,6 +129,75 @@ public sealed class StateFlowTests
         Assert.Equal("0", result["exitCode"]!.ToJsonString());
     }
 
+    [Fact]
+    public async Task CaptureHashes_RecordsHashIntoState_WithoutAgentComputingIt()
+    {
+        // The action writes a file but publishes NO state and never computes a hash. The harness
+        // records the file's SHA-256 into state from declared captureHashes (issue #46), and a
+        // downstream task reads it from the merged snapshot.
+        const string content = "public class WidgetTests { }";
+        string writeFile = StatePlanBuilder.UsePowerShell
+            ? $$"""
+              [System.IO.File]::WriteAllText((Join-Path (Get-Location) "WidgetTests.cs"), "{{content}}")
+              exit 0
+              """
+            : $$"""
+              printf '%s' '{{content}}' > "WidgetTests.cs"
+              exit 0
+              """;
+
+        string assertHash = StatePlanBuilder.UsePowerShell
+            ? """
+              $state = Get-Content -Raw $env:GUARDRAILS_STATE_IN | ConvertFrom-Json
+              $recorded = $state.'01-author'.fileHashes.'WidgetTests.cs'
+              $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath "WidgetTests.cs").Hash
+              if ($recorded -ne $actual) { Write-Output "hash mismatch: state=$recorded file=$actual"; exit 1 }
+              exit 0
+              """
+            : """
+              recorded=$(grep -o '"WidgetTests.cs": "[0-9A-F]*"' "$GUARDRAILS_STATE_IN" | grep -o '[0-9A-F]\{64\}')
+              actual=$(printf '%s' "$(sha256sum WidgetTests.cs | cut -d' ' -f1)" | tr 'a-f' 'A-F')
+              if [ "$recorded" != "$actual" ]; then echo "hash mismatch: state=$recorded file=$actual"; exit 1; fi
+              exit 0
+              """;
+
+        using var plan = new StatePlanBuilder()
+            .AddTask("01-author", actionBody: writeFile, captureHashes: ["WidgetTests.cs"])
+            .AddTask("02-verify", actionBody: assertHash, dependsOn: "01-author");
+
+        RunReport report = await RunAsync(plan.PlanDir);
+
+        Assert.True(report.AllSucceeded, Summarize(report));
+
+        // The hash is present in merged state, recorded by the harness — the action published nothing.
+        JsonObject state = (JsonObject)JsonNode.Parse(File.ReadAllText(plan.StateJsonPath))!;
+        string? recorded = (string?)state["01-author"]?["fileHashes"]?["WidgetTests.cs"];
+        Assert.False(string.IsNullOrEmpty(recorded));
+        Assert.Matches("^[0-9A-F]{64}$", recorded!);
+    }
+
+    [Fact]
+    public async Task CaptureHashes_MissingDeclaredFile_FailsAttempt_StateUnchanged()
+    {
+        // The action succeeds but does not create the declared file → the attempt fails with an
+        // actionable message; nothing is merged into state.
+        string noFile = StatePlanBuilder.UsePowerShell ? "exit 0" : "exit 0";
+
+        using var plan = new StatePlanBuilder(seedJson: """{ "seeded": true }""")
+            .AddTask("01-author", actionBody: noFile, captureHashes: ["NeverCreated.cs"]);
+
+        RunReport report = await RunAsync(plan.PlanDir);
+
+        Assert.False(report.AllSucceeded);
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.ActionFailed, task.Outcome);
+        Assert.Contains("NeverCreated.cs", task.Summary);
+
+        JsonObject state = (JsonObject)JsonNode.Parse(File.ReadAllText(plan.StateJsonPath))!;
+        Assert.True(state.ContainsKey("seeded"));
+        Assert.False(state.ContainsKey("01-author"));
+    }
+
     private static string Summarize(RunReport report) =>
         string.Join("\n", report.Tasks.Select(t => $"{t.TaskId}: {t.Outcome} ({t.Summary})"));
 }
