@@ -1,0 +1,226 @@
+{
+  "sourceOfTruth": "plan-docs",
+  "head": "8ff6dee",
+  "headNote": "Findings were originally assessed at 4ec33b4 (pre-remediation). This index is updated through 8ff6dee (PR #29 850afde, #30 3eb9e82, #31 8ff6dee), released as v1.0.0-preview.10.",
+  "realityGate": {
+    "buildAndTestsPass": "pass",
+    "walkingSkeletonRuns": "pass",
+    "planBreakdownRoundTrips": "pass",
+    "verdict": "Reality Gate 3/3 PASS — build+tests green; walking skeleton runs end-to-end on real Claude; live /plan-breakdown round-trip verified.",
+    "remediationPr": 29,
+    "remediationMergeCommit": "850afde",
+    "p3BatchPr": 30,
+    "p3BatchMergeCommit": "3eb9e82",
+    "dogfoodPr": 31,
+    "dogfoodMergeCommit": "8ff6dee",
+    "releaseTag": "v1.0.0-preview.10",
+    "releasePublished": "pass",
+    "walkingSkeletonVerifiedOn": "2026-06-15",
+    "walkingSkeletonCostUsd": 0.8759,
+    "planBreakdownVerifiedOn": "2026-06-15",
+    "planBreakdownEvidence": "Independent regeneration of examples/hello-guardrails/hello-guardrails.md following the plan-breakdown skill -> guardrails validate exit 0; guardrails plan -> 3 waves (1->2->3). Manual/dogfood demo, not a CI-runnable test.",
+    "dogfoodCostUsd": 12.6606
+  },
+  "findings": [
+    {
+      "slug": "scheduler-worker-swallows-non-cancellation",
+      "kind": "bug",
+      "priority": "P1",
+      "effort": "M",
+      "route": "guardrails",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #29 (850afde). Worker now records the first non-OCE fault, cancels a run-scoped linked CTS + completes the channel so siblings drain, and RunAsync rethrows after WhenAll -> always terminates with harness-error exit. Regression test UnexpectedExecutorThrow_TerminatesTheRun_AndSurfacesTheFault (proven to hang on pre-fix code)."
+    },
+    {
+      "slug": "golden-roundtrip-test-missing",
+      "kind": "test",
+      "priority": "P1",
+      "effort": "M",
+      "route": "guardrails",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "DETERMINISTIC CI HALF added in PR #29 (GoldenRoundTripTests: load hello-guardrails via PlanLoader, assert PlanValidator clean, lossless structural round-trip + loader determinism). The LIVE /plan-breakdown regeneration (Reality Gate #3) was verified 2026-06-15 (independent regen of hello-guardrails.md -> validate exit 0, plan 3 waves) -> gate now PASS, though it remains a manual/dogfood demo, not a CI-runnable test."
+    },
+    {
+      "slug": "crlf-normalization-unpinned",
+      "kind": "test",
+      "priority": "P2",
+      "effort": "S",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "RESOLVED in PR #29 via root .gitattributes (eol=lf on the drift pair, examples/hello-guardrails/**, test fixtures) + observable-contract CRLF tests. NUANCE: a unit tripwire on the internal Replace(\\r\\n,\\n) is unachievable - the renderer is independently \\r-robust (JSON parse + Trim), so the Replace is redundant defense; .gitattributes is the real net for the CRLF-hash bug class."
+    },
+    {
+      "slug": "schemas-md-duplicate-no-drift-test",
+      "kind": "docs",
+      "priority": "P2",
+      "effort": "S",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": ["golden-roundtrip-test-missing"],
+      "notes": "FIXED in PR #29. promptRunners schema block made byte-identical SSOT<->skill, wrapped in canonical-schema:promptRunners sentinels; SchemaDriftTests asserts equality with an actionable diff on drift."
+    },
+    {
+      "slug": "logs-command-absent-from-ssot",
+      "kind": "docs",
+      "priority": "P2",
+      "effort": "S",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #29. SSOT 02-schemas-and-contracts.md §12 documents the logs command + run --log-server flags (loopback-only bind, routes, defaults). Also added logs to the §7 fixup command list."
+    },
+    {
+      "slug": "dependency-context-stale-attempt-pointer",
+      "kind": "bug",
+      "priority": "P2",
+      "effort": "M",
+      "route": "guardrails",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #29. New CurrentSuccessfulAttempt selects the latest succeeded attempt whose fragment.json audit copy is on disk (current-state provenance), falling back to transcript-only. Regression test DependencyContext_AfterResetRerun_PointsAtCurrentStateAttempt_NotStaleLaterAttempt. LATENT: journal models provenance only implicitly (entry MergeSequence + on-disk fragment.json); a self-describing per-attempt mergeSequence would be a future SSOT change (architect-owned)."
+    },
+    {
+      "slug": "logs-status-mapping-untested-e2e",
+      "kind": "test",
+      "priority": "P3",
+      "effort": "S",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #30 (3eb9e82, commit 04f6ca0). Added an end-to-end test that exercises LogsCommand's real journal->status-word mapping (StatusText switch) instead of injecting a bypassing lambda - changing a status word now fails a test."
+    },
+    {
+      "slug": "readme-exit2-and-command-table-drift",
+      "kind": "docs",
+      "priority": "P3",
+      "effort": "S",
+      "route": "direct",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #30 (3eb9e82, commit 001afa8). README exit-2 description corrected to the SSOT §7 general actionable-signal meaning (needs-human, graph --check stale, lock --check drift, merge conflicts); README command table now lists the registered lock and merge commands."
+    },
+    {
+      "slug": "cost-recorded-not-capped",
+      "kind": "risk-accuracy",
+      "priority": "P3",
+      "effort": "S",
+      "route": "decide",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "RESOLVED in PR #31 (8ff6dee). The per-run cost cap (maxCostUsd) now exists: the scheduler halts new launches once cumulative journaled cost reaches the cap (needs-human 'cost cap reached', dependents blocked); GR2012 validates non-positive caps. Risk row 1 wording corrected (SSOT §2 + skill document the cap). Implemented by the harness dogfooding itself (docs/plans/04-dogfood-cost-cap). The original P3 was a wording/expectation fix; the v2 cap was then built as the first v2 slice."
+    },
+    {
+      "slug": "transcript-truncate-splits-surrogates",
+      "kind": "bug",
+      "priority": "P3",
+      "effort": "S",
+      "route": "direct",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #30 (3eb9e82, commit 21e48bb). ClaudeTranscriptRenderer.Truncate no longer slices mid-surrogate-pair (would emit U+FFFD); truncation respects UTF-16 surrogate boundaries."
+    },
+    {
+      "slug": "transcript-determinism-overclaim",
+      "kind": "docs",
+      "priority": "P3",
+      "effort": "S",
+      "route": "direct",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #30 (3eb9e82, commit 21e48bb). Renderer docstring corrected: output is deterministic for a given input stream (it no longer claims it 'never varies run-to-run' when the input itself varies per run)."
+    },
+    {
+      "slug": "logserver-perf-rereads-file-per-poll",
+      "kind": "perf",
+      "priority": "P3",
+      "effort": "S",
+      "route": "decide",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #30 (3eb9e82, commit 37f4fcf). Log server no longer ReadToEnds the whole file on every ~1s poll; a stale-proof cache avoids redundant full re-reads."
+    },
+    {
+      "slug": "logserver-port-probe-toctou",
+      "kind": "test-flake",
+      "priority": "P3",
+      "effort": "S",
+      "route": "decide",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #30 (3eb9e82, commit 37f4fcf). Race-resilient bind replaces the FreeLoopbackPort probe-then-rebind TOCTOU that could flake under parallel test execution."
+    },
+    {
+      "slug": "p1-dogfood-fix-guardrail",
+      "kind": "bug",
+      "priority": "P1",
+      "effort": "S",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "Already content-hash-based on disk (in-history 3307283); the 2026-06-10 carry-forward was STALE vs current master. PR #29 verified + hardened: fail loudly when git hash-object errors instead of silently comparing empty strings. git diff HEAD appears nowhere in the dogfood folder."
+    },
+    {
+      "slug": "p1-dogfood-execute",
+      "kind": "milestone",
+      "priority": "P1",
+      "effort": "M",
+      "route": "guardrails",
+      "status": "completed",
+      "dependsOn": ["p1-dogfood-fix-guardrail"],
+      "notes": "COMPLETED via PR #31 (8ff6dee). guardrails run docs/plans/04-dogfood-cost-cap drove the per-run cost cap to green end-to-end: 01 authored failing tests (tests-fail-on-current-code proven), 02 implemented to green (Release build + ~CostCap filter 10/10 + tests-untouched guardrails), 03 documented maxCostUsd (honest needs-human halt on a .claude/ write boundary; a human applied the one skill edit and resumed, after which the guardrail verified it), 04 whole-suite Release build+test gate. Final: 4/4 tasks green, total ~$12.66. M7 dogfood exit criterion MET. Shipped in v1.0.0-preview.10."
+    },
+    {
+      "slug": "p1-nuget-release",
+      "kind": "release",
+      "priority": "P1",
+      "effort": "S",
+      "route": "direct",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "NuGet OIDC publish pipeline working; v1.0.0-preview.1 through preview.10 shipped (ServantSoftware.Guardrails). preview.10 (8ff6dee) bundles the P3 batch (#30) + the dogfooded cost-cap feature (#31); release run 27589652767 all green incl. pack+publish."
+    },
+    {
+      "slug": "p2-reality-gate-verify",
+      "kind": "verification",
+      "priority": "P2",
+      "effort": "S",
+      "route": "decide",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "DONE 2026-06-15 against post-remediation master 850afde: guardrails run examples/hello-guardrails/hello-guardrails --fresh --no-ui -> 3/3 green, exit 0, total $0.8759 (Reality Gate #2 -> PASS). Reality Gate #3 (live plan-breakdown round-trip) also verified 2026-06-15 -> full gate now 3/3."
+    },
+    {
+      "slug": "p2-ssot-guardrail-artifacts",
+      "kind": "docs",
+      "priority": "P2",
+      "effort": "S",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "FIXED in PR #29. SSOT §8 now documents composed-prompt.<name>.md, guardrail-<name>.stream.jsonl, .transcript.md, .verdict.json + sanitization; §2 interpreter example corrected (added {args})."
+    },
+    {
+      "slug": "p3-task-executor-split",
+      "kind": "refactor",
+      "priority": "P3",
+      "effort": "M",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "DONE in PR #30 (3eb9e82, commit 988b58a). TaskExecutor split: action dispatch / prompt execution / guardrail execution extracted into focused collaborators; the god-class debt is retired."
+    },
+    {
+      "slug": "p3-prompt-state-integration-test",
+      "kind": "test",
+      "priority": "P3",
+      "effort": "S",
+      "route": "execute-tasks",
+      "status": "completed",
+      "dependsOn": [],
+      "notes": "SUBSTANTIALLY ADDRESSED by PR #29: the dependency-context regression test uses a multi-task FakeClaudePlanBuilder fixture where the dependent reads the dependency's fragment via GUARDRAILS_STATE_IN (new nofragment mode + SetMode). Covers the prompt-pipeline state-passing gap."
+    }
+  ]
+}
