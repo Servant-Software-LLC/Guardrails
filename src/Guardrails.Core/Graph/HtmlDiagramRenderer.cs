@@ -48,9 +48,13 @@ public static class HtmlDiagramRenderer
             .Replace("\r", "\n", StringComparison.Ordinal)
             .TrimEnd('\n');
 
+        // Normalize the full output — the template raw-string literal picks up \r\n when the
+        // file is checked out with CRLF on Windows; the mermaid source is already normalized above.
         return Template
             .Replace("__SOURCE_SHA256__", sourceHash, StringComparison.Ordinal)
-            .Replace("__GRAPH_SOURCE__", source, StringComparison.Ordinal);
+            .Replace("__GRAPH_SOURCE__", source, StringComparison.Ordinal)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
     }
 
     // __SOURCE_SHA256__ is filled with a lowercase-hex hash (no escaping needed). __GRAPH_SOURCE__
