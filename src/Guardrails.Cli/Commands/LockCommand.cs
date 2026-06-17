@@ -87,7 +87,29 @@ public static class LockCommand
         BreakdownManifest manifest = BreakdownManifest.Capture(folder);
         manifest.Write(folder);
         output.WriteLine($"Wrote {BreakdownManifest.BaselineFilePath(folder)} ({manifest.Files.Count} file(s))");
+
+        // A committed baseline is a path→SHA-256 manifest; its high-entropy hashes trip generic
+        // secret scanners (issue #67). Ensure the repo's ggshield config excludes baseline files so
+        // the commit isn't blocked — merging into any existing config, never overwriting it.
+        AnnounceGitGuardian(GitGuardianConfig.EnsureBaselineExclusion(folder), output);
         return ExitCodes.Success;
+    }
+
+    private static void AnnounceGitGuardian(GitGuardianEnsureResult result, TextWriter output)
+    {
+        switch (result.Outcome)
+        {
+            case GitGuardianEnsureOutcome.Created:
+                output.WriteLine($"Created {result.ConfigPath} excluding {GitGuardianConfig.BaselineGlob} from secret scanning");
+                break;
+            case GitGuardianEnsureOutcome.Updated:
+                output.WriteLine($"Updated {result.ConfigPath} to exclude {GitGuardianConfig.BaselineGlob} from secret scanning");
+                break;
+            case GitGuardianEnsureOutcome.SkippedUnparseable:
+                output.WriteLine($"Could not merge {GitGuardianConfig.BaselineGlob} into {result.ConfigPath} (left untouched); add it manually if your scanner flags the baseline");
+                break;
+            // AlreadyPresent / SkippedNoGitRepo: nothing actionable to report.
+        }
     }
 
     /// <summary>

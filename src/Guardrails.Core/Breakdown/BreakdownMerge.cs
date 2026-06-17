@@ -179,6 +179,10 @@ public static class BreakdownMerge
 
         // 5. Re-write the baseline: the merged folder is the new BASE.
         BreakdownManifest.Capture(local).Write(local);
+
+        // 6. Keep the scanner exclusion in step with the baseline write (issue #67) — merges into
+        // any existing .gitguardian.yaml, never overwrites; no-op when there's no git repo.
+        GitGuardianConfig.EnsureBaselineExclusion(local);
     }
 
     // --- matched task -----------------------------------------------------------------

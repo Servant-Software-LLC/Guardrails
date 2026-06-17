@@ -661,6 +661,17 @@ The baseline carries **no timestamp** — its identity is the `files` map alone,
 `guardrails lock` on an unchanged folder rewrites a **byte-identical** file (a deterministic
 projection, no git churn — matching the `diagram.md` precedent in §10).
 
+**Secret-scanner exclusion (issue #67).** Because the baseline is a committed file of pure
+SHA-256 hashes, generic secret scanners (ggshield/GitGuardian) flag a hash as a false-positive
+"high entropy secret" and block the commit. The baseline must stay committed (it is the BASE for
+merge), so whenever the tool **writes** a baseline — `guardrails lock` and the regeneration
+`merge --apply` — it also ensures the enclosing git repo's `.gitguardian.yaml` (or an existing
+`.gitguardian.yml`) excludes `**/guardrails.baseline` from scanning. The exclusion is **merged**
+into any existing config (the right ignored-paths key is chosen for the file's v1/v2 schema; other
+keys are preserved) and is **idempotent**; it is a no-op when there is no enclosing git repo. A
+freshly created config carries an explanatory comment header; the merge path does not preserve
+existing comments.
+
 **Included:** `guardrails.json`, every task's `task.json` / `action.*` / `guardrails/*`, and the
 committed `state/seed.json`. **Excluded:** the baseline file itself, the generated `diagram.md`
 and `diagram.html`, `*.tmp` (atomic-write residue), and harness-owned runtime under `state/`
