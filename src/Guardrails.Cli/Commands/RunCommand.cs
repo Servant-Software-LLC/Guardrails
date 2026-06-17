@@ -173,10 +173,22 @@ public static class RunCommand
 
         // Post-mortem pointer for EVERY task, not just failures: a green task whose guardrails
         // turned out too weak is reviewed from the same on-disk logs (action output, guardrail
-        // stdout, feedback per attempt). One line, so it stays quiet for large plans.
-        string logsRoot = Path.Combine("state", "logs");
+        // stdout, feedback per attempt). The link target is the ABSOLUTE state/logs root so it is
+        // clickable (issue #59); the <task-id>/attempt-N/ layout follows as guidance text.
+        string logsRoot = Path.GetFullPath(Path.Combine(planDirectory, "state", "logs"));
+        string sep = Path.DirectorySeparatorChar.ToString();
+        // Emit a clickable OSC 8 link only when the terminal can actually render one — matching the
+        // live table's gate. Redirection alone is too weak: a non-redirected but hyperlink-incapable
+        // TTY would get raw escape bytes as visible garbage, which Spectre's link capability check
+        // avoids. Also require the target to exist — a full-resume/all-skipped run writes no logs, so
+        // don't advertise a link that 404s. When not linkable the plain absolute path still serves as
+        // copy-pasteable guidance and fixes the #59 regression (it was relative with literal placeholders).
+        bool linkable = !Console.IsOutputRedirected
+                        && AnsiConsole.Profile.Capabilities.Links
+                        && Directory.Exists(logsRoot);
         output.WriteLine();
-        output.WriteLine($"Logs (post-mortem any task — pass or fail): {logsRoot}{Path.DirectorySeparatorChar}<task-id>{Path.DirectorySeparatorChar}attempt-N{Path.DirectorySeparatorChar}");
+        output.WriteLine($"Logs (post-mortem any task — pass or fail): {Hyperlink(logsRoot, linkable)}");
+        output.WriteLine($"  each task's attempts are under <task-id>{sep}attempt-N{sep}");
 
         foreach (TaskResult needsHuman in report.Tasks.Where(t =>
                      t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed
@@ -207,6 +219,27 @@ public static class RunCommand
         {
             output.WriteLine($"Total prompt cost: ${total:F4}");
         }
+    }
+
+    /// <summary>
+    /// Render <paramref name="absolutePath"/> as an OSC 8 hyperlink (clickable in capable terminals —
+    /// Windows Terminal, VS Code, iTerm2) targeting its <c>file://</c> URI, mirroring the per-task
+    /// links in the live table. When <paramref name="enabled"/> is false — output redirected, the
+    /// terminal can't render hyperlinks, or the target doesn't exist — the escape sequence would be
+    /// noise, so emit the plain absolute path instead. The caller owns the capability decision so this
+    /// stays a pure, testable function. Public (not private) because the Cli assembly ships no
+    /// InternalsVisibleTo — same rationale as <see cref="LogsCommand"/>'s test seams.
+    /// </summary>
+    public static string Hyperlink(string absolutePath, bool enabled)
+    {
+        if (!enabled)
+        {
+            return absolutePath;
+        }
+
+        const string esc = "\u001b";
+        string uri = new Uri(absolutePath).AbsoluteUri;
+        return $"{esc}]8;;{uri}{esc}\\{absolutePath}{esc}]8;;{esc}\\";
     }
 
     internal static string StatusLabel(TaskOutcome outcome) => outcome switch
