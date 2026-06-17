@@ -200,7 +200,10 @@ back for that task — which is fine, it is opt-in.
 authored bytes into a runtime baseline store (`state/captured/<author-task-id>/<path>` — harness-owned,
 gitignored, excluded from the lock manifest like the rest of `state/` runtime). The snapshot is taken
 **only on a clean capture** (a successful action whose fragment is valid), strictly **before** the
-author task is journaled `succeeded`. Before **each attempt** of a task that transitively depends on
+author task's own guardrails run — and thus before it is journaled `succeeded`. A baseline is therefore
+written even on an author attempt whose guardrails later FAIL; that is harmless: the author re-snapshots
+(overwrite) on its next clean attempt, and a consumer never restores from an author that never succeeds
+(the author's dependents stay `blocked` and never run). Before **each attempt** of a task that transitively depends on
 a `restoreOnRetry` author, the harness restores any captured file whose current bytes differ from that
 baseline (a no-op on the first attempt). This removes the dead-end where an implementation task edits
 a captured test file: the workspace is not reset between attempts, and an authored test file is
@@ -432,7 +435,9 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
-  explicit way to force a re-run.
+  explicit way to force a re-run. Resetting a task also clears that task's captured
+  baseline store (`state/captured/<task-id>/`, §3.1.1), so the re-run re-snapshots from
+  its fresh authored bytes rather than restoring a stale baseline.
 - `needs-human` — retry budget exhausted. All *transitive* dependents become `blocked`.
   Independent branches keep running.
 - Resume rules (`guardrails run` on an existing journal): `succeeded` → skip;
