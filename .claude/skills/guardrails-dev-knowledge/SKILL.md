@@ -106,6 +106,14 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   non-ASCII in the logs (#55, SSOT §5.1).
 - **Merge-sequence protocol**: `journal.ReserveMergeSequence()` BEFORE
   `stateManager.MergeFragment(...)`; pass the reserved value to `RecordAttempt`.
+- **Recorded action outcome → guardrails** (`TaskExecutor`): a guardrail gets the action's
+  captured result via `GUARDRAILS_ACTION_RESULT` (`action-result.json` = `{kind, exitCode,
+  summary}`), `GUARDRAILS_ACTION_STDOUT`, `GUARDRAILS_ACTION_STDERR` (SSOT §5.1). Doctrine
+  is **verify-don't-replay** (#62): a guardrail may verify a postcondition from this recorded
+  output instead of re-running the action's command — but it's a speed/flake trade-off, sound
+  only against output the action couldn't fabricate (a produced artifact, a runner-written TRX).
+  The recorded `exitCode` is ALWAYS 0 at guardrail time (a non-zero action fails the attempt
+  first), so never expose a `GUARDRAILS_ACTION_EXIT_CODE` env var — it would be tautological.
 - **Claude specifics live ONLY in `Prompts/`** — `ClaudePromptRunner` (flags, invocation),
   `ClaudeStreamParser` (terminal result), and `ClaudeTranscriptRenderer` (the deterministic
   `transcript.md` projection of the raw stream, #27). Verdicts come from files, never exit

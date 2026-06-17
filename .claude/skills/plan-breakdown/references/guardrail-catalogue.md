@@ -40,7 +40,8 @@ Python project.
 > failure OR test failure, either proves non-tautology). Keep tests-build only when
 > the tests compile against current code (e.g. they exercise a CLI flag or file
 > output rather than new API surface).
-| 9 | **prompt-judge** | `.prompt.md` (writes `{pass, reason}` verdict) | **LAST RESORT** — see the demotion gate | Genuinely subjective properties: tone, clarity, design taste |
+| 9 | **verify-recorded-action-result (don't replay)** | script | The action ALREADY ran an expensive command (a build+test) and the postcondition is expressible from what it recorded — verify the recorded output/artifact instead of re-running the command | A wasteful replay of the action's own work — see the dedicated section for the GOOD-vs-BAD-target rules (this is a speed/flake trade-off, NOT a free correctness win) |
+| 10 | **prompt-judge** | `.prompt.md` (writes `{pass, reason}` verdict) | **LAST RESORT** — see the demotion gate | Genuinely subjective properties: tone, clarity, design taste |
 
 ### file-contains: structural vs. keyword matching (universal)
 
@@ -53,6 +54,123 @@ language's declaration syntax instead: `class Foo : IBar` (C#), `implements Foo`
 `extends Bar` (Java/TS), `func (r Recv) Method` (Go). This principle is stack-agnostic;
 the **exact regex per language lives in the stack file** (`references/stacks/<stack>.md`,
 e.g. the C# class-declaration pattern in `stacks/dotnet.md`).
+
+### verify-recorded-action-result: don't replay, but don't trust a log either (#62)
+
+The harness hands every guardrail the action's **already-captured** outcome
+(SSOT §5.1): `$env:GUARDRAILS_ACTION_RESULT` → `action-result.json` =
+`{ kind, exitCode, summary }`, plus `$env:GUARDRAILS_ACTION_STDOUT` /
+`$env:GUARDRAILS_ACTION_STDERR` (the captured streams). So when an action ran an
+**expensive** command — the motivating case is a `dotnet build; dotnet test` action — a
+guardrail can verify the postcondition by *reading what the action recorded* instead of
+**re-running** the whole build+test suite. The replay is what makes the run slow.
+
+**This is a speed/flake trade-off, not a free correctness win.** Replaying re-executes
+reality; reading recorded output trusts a log. Verify-don't-replay is sound **only** when
+the postcondition is expressible from recorded output the action **could not fabricate**.
+Choose the target deliberately:
+
+**GOOD targets** (recorded output the action could not fabricate):
+- An **artifact the action produced** — a built DLL, a generated file. Verify it with the
+  ordinary archetypes: file-exists (#1) / file-contains (#1) / command-exit-code (#2).
+- A **runner-written structured result file** — a TRX / JUnit / coverage file the *test
+  runner* wrote (not the action's prose). Assert it exists and parse it for the pass/fail
+  totals the runner recorded.
+- An **upstream task's state value** read from `GUARDRAILS_STATE_IN` (or the producer's
+  fragment) — already covered by the state-output leaf below.
+- `GUARDRAILS_ACTION_RESULT.kind` — confirms *which kind* of action ran (e.g. `script`).
+  Useful as a cheap sanity assert; it is **not** a substitute for checking the artifact.
+
+**BAD targets — name these as traps, never generate them:**
+- **The action's `exitCode`.** At guardrail time it is **ALWAYS 0** — a non-zero action
+  fails the attempt *before* any guardrail runs (SSOT §5.1, §6.1). `if ($result.exitCode
+  -ne 0)` is a pure **tautology**: it can never fire. (This is also why there is no
+  `GUARDRAILS_ACTION_EXIT_CODE` env var — it would be tautological by construction.)
+- **The action's own self-reported success line in `_STDOUT`.** Grepping
+  `GUARDRAILS_ACTION_STDOUT` for `"Passed!"` / `"Build succeeded"` / `"0 Error(s)"` is an
+  **echo-judge**: the action narrates its own success, so the guardrail trusts the thing
+  it is supposed to check. It is also **format-brittle** — that exact wording rots across
+  SDK / runner versions, so the guardrail silently passes (or spuriously fails) on an
+  upgrade. The runner's *structured* result file (TRX) is the honest read; its *prose
+  stdout* is not.
+
+**When the strong postcondition isn't expressible from recorded output, re-executing
+reality IS the honest gate.** Don't replace a strong replay (e.g. `dotnet test --filter`
+that actually runs the targeted tests) with a weak grep just to save time — a slow honest
+check beats a fast tautology. Reach for verify-recorded-result only when a GOOD target
+above carries the postcondition.
+
+GOOD snippet — verify the runner-written TRX the action's `dotnet test` produced (and a
+produced artifact), NOT the exit code and NOT a stdout success word:
+
+```powershell
+# catches: the build+test action ran but did not produce its built artifact, OR the test
+#          runner recorded failing tests — verified from the recorded TRX, without
+#          re-running the build+test suite (a wasteful replay of the action's own work)
+$result = Get-Content $env:GUARDRAILS_ACTION_RESULT -Raw | ConvertFrom-Json
+if ($result.kind -ne 'script') {
+    Write-Output "expected a script action; recorded kind = '$($result.kind)'"
+    exit 1
+}
+# GOOD target 1: an artifact the action PRODUCED (could not fabricate by narrating success)
+$dll = 'src/MyProj/bin/Release/net8.0/MyProj.dll'
+if (-not (Test-Path $dll)) {
+    Write-Output "build artifact missing: $dll (the action claimed success but produced no DLL)"
+    exit 1
+}
+# GOOD target 2: the TRX the TEST RUNNER wrote — parse its recorded totals, do not re-run tests
+$trx = Get-ChildItem 'TestResults' -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
+       Sort-Object LastWriteTime | Select-Object -Last 1
+if (-not $trx) {
+    Write-Output "no .trx result file under TestResults/ — the action did not record a test run"
+    exit 1
+}
+$counters = ([xml](Get-Content $trx.FullName -Raw)).TestRun.ResultSummary.Counters
+if ([int]$counters.failed -gt 0) {
+    Write-Output "TRX records $($counters.failed) failing test(s) — see $($trx.Name)"
+    exit 1
+}
+# Do NOT add `if ($result.exitCode -ne 0)` (always 0 here — tautology) and do NOT grep
+# $env:GUARDRAILS_ACTION_STDOUT for "Passed!" (echo-judge, SDK-version-brittle).
+exit 0
+```
+
+```bash
+# catches: the build+test action ran but did not produce its built artifact, OR the test
+#          runner recorded failing tests — verified from the recorded TRX, without
+#          re-running the build+test suite (a wasteful replay of the action's own work)
+set -euo pipefail
+kind=$(jq -r '.kind' "$GUARDRAILS_ACTION_RESULT")
+if [ "$kind" != "script" ]; then
+    echo "expected a script action; recorded kind = '$kind'"
+    exit 1
+fi
+# GOOD target 1: an artifact the action PRODUCED
+dll='src/MyProj/bin/Release/net8.0/MyProj.dll'
+if [ ! -f "$dll" ]; then
+    echo "build artifact missing: $dll (the action claimed success but produced no DLL)"
+    exit 1
+fi
+# GOOD target 2: the TRX the TEST RUNNER wrote — read its recorded totals, do not re-run
+trx=$(find TestResults -name '*.trx' -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -n1)
+if [ -z "$trx" ]; then
+    echo "no .trx result file under TestResults/ — the action did not record a test run"
+    exit 1
+fi
+failed=$(grep -oP '(?<=failed=")[0-9]+' "$trx" | head -n1)
+if [ "${failed:-0}" -gt 0 ]; then
+    echo "TRX records $failed failing test(s) — see $(basename "$trx")"
+    exit 1
+fi
+# Do NOT test `jq -r .exitCode "$GUARDRAILS_ACTION_RESULT"` (always 0 here — tautology)
+# and do NOT grep "$GUARDRAILS_ACTION_STDOUT" for "Passed!" (echo-judge, runner-version-brittle).
+exit 0
+```
+
+The action must actually emit a TRX for this to work — `dotnet test --logger "trx"`
+writes one. If the action does not produce a runner-written result file and the only
+"evidence" of success is its prose stdout, you have **no** GOOD target: keep the honest
+replay (`specific-tests-pass`, #4) rather than demoting to an echo-judge.
 
 ## The prompt-judge demotion gate
 
@@ -104,6 +222,14 @@ What is the task's primary deliverable?
 │                                prompt-judge ONLY for genuine subjective quality, never alone
 └── Refactor (no new behavior) → build-passes + existing-tests-still-pass (the suite IS the guardrail)
 ```
+
+**Verify-recorded-result vs. replay (the Code/Refactor branches).** When the *action
+itself* already ran the expensive build+test (e.g. a `dotnet build; dotnet test` action)
+and recorded a GOOD target — a produced artifact or a runner-written TRX — prefer
+**verify-recorded-action-result (#9)** over a guardrail that re-runs the same command.
+This is a speed/flake trade-off, sound only against output the action could not fabricate;
+when no such recorded target exists, keep the honest replay (`specific-tests-pass`, #4).
+See the verify-recorded-action-result section above for the GOOD-vs-BAD-target rules.
 
 **`tests-untouched` placement — doctrine.** `tests-untouched` belongs on the
 **EDITING/implementation task** — the one that must not modify the tests — NOT on a
@@ -166,6 +292,20 @@ should fail before an expensive test run or a paid judge ever starts.
   satisfy it ("status.txt contains DONE"). The action controls the evidence.
 - **Echo-judge**: a prompt-judge evaluating the action's own claim of success (its
   summary, its commit message) rather than the artifact.
+- **Replay-the-action**: a guardrail that **re-runs the action's own command** (e.g. a
+  full `dotnet build; dotnet test`) when the postcondition is **cheaply verifiable from
+  recorded output** — a produced artifact or a runner-written TRX (SSOT §5.1, the
+  verify-recorded-action-result section above). Pure wasted time/flake. Fix: verify the
+  recorded artifact/result instead of replaying. (Counter-caution: replaying is the
+  HONEST gate when no recorded GOOD target carries the postcondition — don't demote a real
+  replay to a weak grep just for speed.)
+- **Echo-judge on action stdout / action-exit-code tautology**: a guardrail that greps
+  `GUARDRAILS_ACTION_STDOUT` for the action's own success string (`"Passed!"`, `"Build
+  succeeded"`) — the action narrates its own success, and the wording rots across runner
+  versions — or that tests `GUARDRAILS_ACTION_RESULT.exitCode -ne 0`, which is a pure
+  tautology because a non-zero action already failed the attempt before any guardrail ran
+  (the recorded exit code is ALWAYS 0 at guardrail time). Fix: read a runner-written
+  structured result (TRX) or a produced artifact, never the action's self-report.
 - **Over-broad**: "all tests pass" on an early task — it fails for unrelated reasons,
   poisons retries with noise, and serializes the DAG. Whole-suite green belongs to one
   terminal integration task.

@@ -307,6 +307,19 @@ codes only distinguish "ran" from "crashed".
 | `GUARDRAILS_ACTION_RESULT` | guardrails | `action-result.json`: `{ "kind", "exitCode", "summary" }` |
 | `GUARDRAILS_VERDICT_OUT` | prompt guardrails | Where the verdict JSON must be written (§4.2) |
 
+**Recorded action outcome — verify, don't replay (issue #62).** `GUARDRAILS_ACTION_RESULT`
+/ `_STDOUT` / `_STDERR` hand a guardrail the action's *already-captured* result, so it can
+verify a postcondition by inspecting what the action produced instead of re-running the
+action's command. Two honesty constraints the guardrail catalogue expands on:
+- The action's `exitCode` here is **always 0** — a non-zero action fails the attempt
+  *before* any guardrail runs — so a guardrail must never re-assert the exit code (a
+  tautology); it verifies recorded *output/artifacts* or upstream state.
+- Verify-don't-replay is a speed/flake trade-off, sound only when the postcondition is
+  expressible from recorded output the action could not fabricate (a produced artifact, a
+  runner-written result file such as a TRX, an upstream state value) — **not** the action's
+  own self-reported success line in `_STDOUT`, which is an echo-judge. When the strong
+  postcondition isn't expressible from recorded output, re-executing reality is the honest gate.
+
 cwd = resolved `workspace`. Process arguments are passed via `ArgumentList`
 (never a concatenated shell string). All child `stdout`/`stderr` is decoded as
 UTF-8 and all `stdin` is written as UTF-8 (no BOM), independent of the host console

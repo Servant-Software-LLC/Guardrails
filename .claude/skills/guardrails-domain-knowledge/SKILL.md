@@ -58,6 +58,13 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   codes are never semantic). Ordered by filename, cheapest first. ALL must pass.
   Every guardrail opens with a `catches:` comment naming the wrong implementation
   it would catch.
+  **Verify-don't-replay (#62):** a guardrail receives the action's recorded outcome —
+  `GUARDRAILS_ACTION_RESULT` (`{kind, exitCode, summary}`), `_STDOUT`, `_STDERR` (SSOT
+  §5.1) — and may verify a postcondition from it instead of re-running the action's
+  command. It's a speed/flake trade-off, sound only against output the action couldn't
+  fabricate (a produced artifact, a runner-written TRX) — never the recorded `exitCode`
+  (always 0 at guardrail time → tautology) or a self-reported success line in `_STDOUT`
+  (echo-judge).
 - **State**: snapshot-in / fragment-out. Attempt gets an immutable snapshot
   (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment
   (`GUARDRAILS_STATE_OUT`); harness (single writer) deep-merges fragments into
