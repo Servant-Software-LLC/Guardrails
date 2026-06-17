@@ -532,18 +532,19 @@ public sealed class StateFlowTests
     }
 
     [Fact]
-    public async Task ScriptTask_Summary_AlwaysShowsCostField_EvenWithNoLlmCost()
+    public async Task ScriptTask_Summary_ShowsExplicitNoLlmCostMarker()
     {
-        // issue #58: a script/terminal action makes no LLM call (CostUsd null). Its success summary
-        // must still carry the cost field ($0.0000), so the last row of a plan doesn't read as a
-        // missing-cost gap next to prompt-action rows.
+        // issue #58: a script action makes no LLM call (CostUsd null). Its success summary must
+        // carry an explicit "no LLM cost (script)" marker — not "$0.0000" (which misreads as an
+        // agent that ran for free) and not an empty gap next to prompt-action rows.
         using var plan = new StatePlanBuilder().AddTask("01-script-gate");
 
         RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
 
         Assert.True(report.AllSucceeded, Summarize(report));
         TaskResult task = Assert.Single(report.Tasks);
-        Assert.Contains("cost $0.0000", task.Summary);
+        Assert.Contains("no LLM cost (script)", task.Summary);
+        Assert.DoesNotContain("cost $", task.Summary); // no misleading dollar figure for a no-call task
     }
 
     private static string Summarize(RunReport report) =>
