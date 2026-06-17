@@ -532,10 +532,10 @@ public sealed class StateFlowTests
     }
 
     [Fact]
-    public async Task ScriptTask_Summary_ShowsExplicitNoLlmCostMarker()
+    public async Task ScriptTask_Summary_ShowsExplicitNoLlmUsedMarker()
     {
-        // issue #58: a script action makes no LLM call (CostUsd null). Its success summary must
-        // carry an explicit "no LLM cost (script)" marker — not "$0.0000" (which misreads as an
+        // issue #58: a script action invokes no model (CostUsd null). Its success summary must
+        // carry an explicit "no LLM used (script)" marker — not "$0.0000" (which misreads as an
         // agent that ran for free) and not an empty gap next to prompt-action rows.
         using var plan = new StatePlanBuilder().AddTask("01-script-gate");
 
@@ -543,7 +543,7 @@ public sealed class StateFlowTests
 
         Assert.True(report.AllSucceeded, Summarize(report));
         TaskResult task = Assert.Single(report.Tasks);
-        Assert.Contains("no LLM cost (script)", task.Summary);
+        Assert.Contains("no LLM used (script)", task.Summary);
         Assert.DoesNotContain("cost $", task.Summary); // no misleading dollar figure for a no-call task
     }
 

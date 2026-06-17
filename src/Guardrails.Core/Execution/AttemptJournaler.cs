@@ -87,11 +87,11 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Guardrails = guardrails.Results,
             // Always show a cost field so the summary column never reads as a reporting gap (issue
-            // #58). A script action makes no LLM call (CostUsd null) — show "no LLM cost (script)"
+            // #58). A script action invokes no model (CostUsd null) — show "no LLM used (script)"
             // rather than "$0.0000", which would misread as "an agent ran and was free". A prompt
             // action shows its real cost.
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed"
-                      + (action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; no LLM cost (script)")
+                      + (action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; no LLM used (script)")
                       + (mergeSequence is null ? "" : $"; merged (seq {mergeSequence})")
         }, FeedbackPath: null);
     }
