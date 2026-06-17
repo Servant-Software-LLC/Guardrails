@@ -308,8 +308,12 @@ codes only distinguish "ran" from "crashed".
 | `GUARDRAILS_VERDICT_OUT` | prompt guardrails | Where the verdict JSON must be written (§4.2) |
 
 cwd = resolved `workspace`. Process arguments are passed via `ArgumentList`
-(never a concatenated shell string). For prompt processes, the same information is
-*embedded in the composed prompt* (agents read instructions, not env vars).
+(never a concatenated shell string). All child `stdout`/`stderr` is decoded as
+UTF-8 and all `stdin` is written as UTF-8 (no BOM), independent of the host console
+code page (e.g. the Windows OEM page CP437/850) — so the captured artifacts (§8)
+round-trip non-ASCII faithfully and match the harness's own UTF-8-no-BOM writes
+(`AtomicFile`). For prompt processes, the same information is *embedded in the
+composed prompt* (agents read instructions, not env vars).
 
 ### 5.2 Interpreter map (built-in defaults)
 
