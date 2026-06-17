@@ -86,8 +86,11 @@ internal sealed class AttemptJournaler
             Outcome = TaskOutcome.Succeeded,
             ActionExitCode = action.ExitCode,
             Guardrails = guardrails.Results,
+            // Always show the cost field, even for a script/terminal action that makes no LLM call
+            // (CostUsd null → $0.0000). Omitting it for such tasks made the summary column read as a
+            // reporting gap on the last row of every plan (issue #58); a uniform field is clearer.
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed"
-                      + (action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "")
+                      + $"; cost ${action.CostUsd ?? 0m:0.0000}"
                       + (mergeSequence is null ? "" : $"; merged (seq {mergeSequence})")
         }, FeedbackPath: null);
     }

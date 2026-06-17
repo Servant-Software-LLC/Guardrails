@@ -531,6 +531,21 @@ public sealed class StateFlowTests
         Assert.Equal("IMPL-CONTENT", File.ReadAllText(Path.Combine(plan.PlanDir, "src", "Impl.txt")));
     }
 
+    [Fact]
+    public async Task ScriptTask_Summary_AlwaysShowsCostField_EvenWithNoLlmCost()
+    {
+        // issue #58: a script/terminal action makes no LLM call (CostUsd null). Its success summary
+        // must still carry the cost field ($0.0000), so the last row of a plan doesn't read as a
+        // missing-cost gap next to prompt-action rows.
+        using var plan = new StatePlanBuilder().AddTask("01-script-gate");
+
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded, Summarize(report));
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Contains("cost $0.0000", task.Summary);
+    }
+
     private static string Summarize(RunReport report) =>
         string.Join("\n", report.Tasks.Select(t => $"{t.TaskId}: {t.Outcome} ({t.Summary})"));
 }
