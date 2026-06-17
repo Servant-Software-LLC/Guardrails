@@ -80,12 +80,17 @@ as designed, not scope creep.
 
 `task.json` — declares `captureHashes` so the HARNESS records the test file's SHA-256 into
 state after the action (the agent never computes a hash). The downstream `tests-untouched`
-guardrail reads it back.
+guardrail reads it back. It also sets `restoreOnRetry: true`, which makes the harness snapshot
+the authored test bytes and restore them to baseline before any downstream retry — so an
+implementation agent that edits the test to game `02-stats-tests-pass` starts its next attempt
+against the pristine, authored test (the #51 self-heal). `restoreOnRetry` requires a non-empty
+`captureHashes` (else GR2014).
 ```jsonc
 {
   "description": "Author failing unit tests that encode the --stats output format (total line + sorted per-category lines)",
   "dependsOn": [],
-  "captureHashes": ["tests/Inventory.Tests/StatsCommandTests.cs"]
+  "captureHashes": ["tests/Inventory.Tests/StatsCommandTests.cs"],
+  "restoreOnRetry": true
 }
 ```
 
@@ -246,7 +251,9 @@ exit 0
 > pass" and those tests didn't exist. Its `tests-fail-on-current-code` guardrail proves
 > they're not tautological. Its `captureHashes` declaration makes the harness record the
 > test file's SHA-256 into state, which 02's `tests-untouched` guardrail reads (recomputing
-> with `Get-FileHash`) to verify the implementation didn't edit the tests.
+> with `Get-FileHash`) to verify the implementation didn't edit the tests; its
+> `restoreOnRetry: true` makes the harness restore the authored test to baseline before any
+> retry of 02, so a dirtied test never dead-ends the run (the #51 self-heal).
 > `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
