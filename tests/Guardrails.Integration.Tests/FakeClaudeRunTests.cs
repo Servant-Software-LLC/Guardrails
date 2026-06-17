@@ -52,6 +52,11 @@ public sealed class FakeClaudeRunTests
         Assert.Equal(AttemptOutcome.Succeeded, attempt.Outcome);
         Assert.Equal(0.0150m, attempt.CostUsd);
 
+        // The summary shows the real cost — and never the script marker (issue #58/#60): cost-bearing
+        // prompt rows are unaffected by the no-LLM marker.
+        Assert.Contains("cost $0.0150", task.Summary);
+        Assert.DoesNotContain("no LLM used (script)", task.Summary);
+
         // The composed prompt and the raw stream were teed (SSOT §8).
         string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
         Assert.True(File.Exists(Path.Combine(attemptDir, "composed-prompt.md")));
@@ -63,6 +68,30 @@ public sealed class FakeClaudeRunTests
         string transcript = File.ReadAllText(transcriptPath);
         Assert.Contains("⏺ fake done", transcript);
         Assert.DoesNotContain("total_cost_usd", transcript); // telemetry stripped
+    }
+
+    [Fact]
+    public async Task PromptAction_NullCost_Summary_SaysCostNotReported_NotScript()
+    {
+        // Regression for #60's core hazard: a succeeded PROMPT action can have a null CostUsd when
+        // the `result` line omits total_cost_usd (proven by ClaudeStreamParserTests). The summary
+        // marker keys off action KIND, so this must read "cost not reported" — NEVER "no LLM used
+        // (script)", which would falsely claim no model ran on a task that did invoke Claude.
+        using var plan = new FakeClaudePlanBuilder()
+            .AddPromptTask("01-generate", mode: "fragment", cost: "none");
+
+        RunReport report = await RunAsync(plan.PlanDir);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+
+        // Cost genuinely captured as null (the omitted-field case), not 0.
+        AttemptRecord attempt = Journal(plan.PlanDir).Tasks["01-generate"].Attempts[^1];
+        Assert.Null(attempt.CostUsd);
+
+        Assert.Contains("cost not reported", task.Summary);
+        Assert.DoesNotContain("no LLM used (script)", task.Summary);
+        Assert.DoesNotContain("script", task.Summary);
     }
 
     [Fact]
