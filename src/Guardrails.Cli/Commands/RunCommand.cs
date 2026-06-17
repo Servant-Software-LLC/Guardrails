@@ -177,8 +177,17 @@ public static class RunCommand
         // clickable (issue #59); the <task-id>/attempt-N/ layout follows as guidance text.
         string logsRoot = Path.GetFullPath(Path.Combine(planDirectory, "state", "logs"));
         string sep = Path.DirectorySeparatorChar.ToString();
+        // Emit a clickable OSC 8 link only when the terminal can actually render one — matching the
+        // live table's gate. Redirection alone is too weak: a non-redirected but hyperlink-incapable
+        // TTY would get raw escape bytes as visible garbage, which Spectre's link capability check
+        // avoids. Also require the target to exist — a full-resume/all-skipped run writes no logs, so
+        // don't advertise a link that 404s. When not linkable the plain absolute path still serves as
+        // copy-pasteable guidance and fixes the #59 regression (it was relative with literal placeholders).
+        bool linkable = !Console.IsOutputRedirected
+                        && AnsiConsole.Profile.Capabilities.Links
+                        && Directory.Exists(logsRoot);
         output.WriteLine();
-        output.WriteLine($"Logs (post-mortem any task — pass or fail): {Hyperlink(logsRoot)}");
+        output.WriteLine($"Logs (post-mortem any task — pass or fail): {Hyperlink(logsRoot, linkable)}");
         output.WriteLine($"  each task's attempts are under <task-id>{sep}attempt-N{sep}");
 
         foreach (TaskResult needsHuman in report.Tasks.Where(t =>
@@ -215,13 +224,15 @@ public static class RunCommand
     /// <summary>
     /// Render <paramref name="absolutePath"/> as an OSC 8 hyperlink (clickable in capable terminals —
     /// Windows Terminal, VS Code, iTerm2) targeting its <c>file://</c> URI, mirroring the per-task
-    /// links in the live table. When stdout is redirected (CI, a file, output-capturing tests) the
-    /// escape sequence would be noise, so emit the plain absolute path instead. (Capability probes
-    /// may consult <see cref="Console"/> directly per the IConsoleIo contract.)
+    /// links in the live table. When <paramref name="enabled"/> is false — output redirected, the
+    /// terminal can't render hyperlinks, or the target doesn't exist — the escape sequence would be
+    /// noise, so emit the plain absolute path instead. The caller owns the capability decision so this
+    /// stays a pure, testable function. Public (not private) because the Cli assembly ships no
+    /// InternalsVisibleTo — same rationale as <see cref="LogsCommand"/>'s test seams.
     /// </summary>
-    private static string Hyperlink(string absolutePath)
+    public static string Hyperlink(string absolutePath, bool enabled)
     {
-        if (Console.IsOutputRedirected)
+        if (!enabled)
         {
             return absolutePath;
         }
