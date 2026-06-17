@@ -27,7 +27,7 @@ Until all three are true, any status report's verdict is capped at
 
 ## v2 bets (named from day one; NOT v1 scope)
 
-The four items that turn "useful for one agentic engineer" into "adopted by teams".
+The bets that turn "useful for one agentic engineer" into "adopted by teams".
 Each slots into an existing v1 seam — none invalidates the architecture:
 
 1. **Worktree-per-task parallelism** — git worktree per task with merge-on-success
@@ -50,6 +50,15 @@ Each slots into an existing v1 seam — none invalidates the architecture:
 4. **Cost caps** — per-task/per-run token budget ceilings that trip needs-human
    instead of spending unattended (per-attempt cost is already logged in v1).
    *Seam: RetryPolicy/TaskExecutor budget check.*
+5. **E2E web-UI verification** — drive a served UI through its multi-step flow in a
+   headless browser and assert the terminal observable (#78), closing the gap above
+   #64 (exe starts and serves) and #66 (UI built and served) — which both stop at a
+   single request. **Explicitly deferred from v1: the external browser-driver
+   dependency (Playwright/Cypress, `playwright install`) and the flakiest guardrail
+   archetype are not v1 scope.** Until it lands, an absent E2E driver is surfaced
+   (report + honest-halt), never silently scaffolded. *Seam: `$e2eStack` detection in
+   `plan-breakdown` Step 0 + a new `interaction-flow` guardrail archetype +
+   `references/e2e/<driver>.md`.*
 
 ## Seeded risk register (uber-report carries these every run)
 
