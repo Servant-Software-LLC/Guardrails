@@ -199,6 +199,24 @@ optional:
   consume? Add the stack file's reference-chain guardrail on the CONSUMER's project file
   (`stacks/dotnet.md §2`). Builds pass independently, so without this an agent can define a
   local copy of the interface and pass.
+- **Executable entry-point wiring** — does the plan describe a **server or CLI executable
+  outcome** (signals below)? Component tasks (scaffold, handler, routes) each compile and
+  unit-test green, and the terminal whole-solution build passes — yet *nothing wires the
+  entry point to the handler*, so the binary builds and serves nothing. Unit tests cannot
+  catch a missing `new Launcher().StartAsync()`. Two artifacts close this, generated in
+  Step 5: a **wiring task** guarded by a static grep that the entry point references the
+  launcher (catalogue → entry-point-wiring; `stacks/dotnet.md §7`), and after it a **live
+  smoke-test task** that actually starts the binary, hits a route, and asserts a response
+  (archetype #7 port/endpoint-answers; the start/poll/assert/teardown script in
+  `stacks/dotnet.md §8`). The signals (any one):
+  - plan phrases: "CLI entrypoint", "starts a server", "serves … to the browser",
+    "loopback HTTP", "prints a URL", "listens on", "health endpoint";
+  - a `.csproj` using `Microsoft.NET.Sdk.Web` or declaring `<OutputType>Exe</OutputType>`;
+  - an explicit smoke-test statement in the plan (see Step 5's authoring note).
+
+  This catches "the exe does what the plan says" vs merely "the code compiles" — the one
+  gap a green build and passing unit tests leave open. (Scope: starting-and-serving ONLY;
+  whether the served UI is *correct content* is a separate concern — issue #66.)
 - **Structural impl / keyword match** — any "implements/extends/declares" check uses the
   stack file's declaration regex (`stacks/dotnet.md §3`), never a bare type-name grep.
 - **Grep scope** — every file-content guardrail is scoped to the one file this task owns
@@ -342,6 +360,36 @@ upstream task that creates it:
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
   guardrail owns start/stop itself with a timeout.
+- **Server/executable plan (Step 4 entry-point-wiring signal fired) → insert a wiring task
+  AND a live smoke-test task.** A plan that decomposes into component tasks (scaffold the
+  exe project, implement the handler/launcher, implement the routes) verifies each component
+  in isolation but never that the binary *starts and serves*. Insert TWO tasks, both after
+  the components exist:
+  1. **`NN-wire-entrypoint-to-<launcher>`** — connects the entry point to the main
+     handler/launcher (e.g. `Program.cs` instantiates and starts `Launcher`). Guard it with
+     the structural-grep on the ENTRY-POINT file (`stacks/dotnet.md §7`): the entry point must
+     reference the launcher type — a build passes with a `Program.cs` that ignores the
+     launcher entirely, so file-exists + build do NOT cover this. Depends on the
+     entry-point-scaffold task and the launcher-implementation task (both artifacts must
+     exist to wire them).
+  2. **`NM-smoke-test-<service>`** — the only guardrail that proves the exe does what the
+     plan says. Its guardrail (archetype #7, the script in `stacks/dotnet.md §8`) STARTS the
+     built binary as a background process, POLLS a known route (`/health`,
+     `/current-step`, whatever the plan names) until it answers or a timeout elapses, ASSERTS
+     HTTP 200, and ALWAYS stops the process in a `finally`. Depends on the wiring task (and
+     the route-implementation task). This is a `port/endpoint-answers` guardrail that owns
+     its own start/stop — no separate launch-script ancestor is required, but the route it
+     polls MUST be produced by an ancestor (artifact-ancestry: a smoke-test that polls
+     `/current-step` needs the task that implements `/current-step` upstream).
+
+  Place both AFTER the component tasks and BEFORE (or folded into) the terminal
+  whole-solution build — the smoke-test verifies runtime behaviour the build never reaches.
+  Authoring note for the plan: a server/executable plan should carry one explicit sentence —
+  *"the entry point must be end-to-end smoke-testable: run it, hit a route, get a
+  response"* — naming the route to poll and the expected status. When the plan is silent on
+  the route, surface it in the breakdown report (Step 7) as a decision the human must confirm
+  rather than guessing a route. (Scope: starts-and-serves ONLY — generating the served UI
+  itself is issue #66, a separate concern; do not insert UI-authoring tasks here.)
 - A downstream task reads a state key (`GUARDRAILS_STATE_IN`) → the producing ancestor
   must (a) actually write that key, and (b) carry the fragment-key-present guardrail
   (Step 4 state-output leaf) so a run can't silently feed the downstream task a null.
@@ -494,6 +542,7 @@ to preserve edits against).
 - [ ] Any task that writes a downstream-read state key carries the fragment-key-present guardrail.
 - [ ] New module/project added to a build descriptor → registration guardrail on the descriptor itself.
 - [ ] Abstraction consumed by a later task → cross-module reference guardrail on the consumer.
+- [ ] Server/executable plan (entry-point-wiring signal) → a wiring task (entry-point-references-launcher grep) AND a live smoke-test task (start → poll route → assert 200 → stop in `finally`) inserted; the polled route is produced by an ancestor.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
 - [ ] Inserted test-author tasks include tests-fail-on-current-code; implementation tasks guard tests-untouched.
