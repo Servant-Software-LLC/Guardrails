@@ -158,13 +158,20 @@ internal sealed record ActionRun
     public string? FailureFeedback { get; init; }
     public string FailureSummary { get; init; } = "action failed";
 
-    // For log artifacts (action-result.json) we reuse the ProcessResult shape; prompt
-    // actions synthesize one with a 0/1 exit code reflecting success.
+    // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
+    // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
+    // issue #62) and surface stderr in action-failure feedback. A PROMPT action leaves these empty —
+    // its "stdout" is the stream-json teed to claude-stream.jsonl, not a plain stream.
+    public string StandardOutput { get; init; } = string.Empty;
+    public string StandardError { get; init; } = string.Empty;
+
+    // For log artifacts (action-result.json + action-stdout/stderr.log) we reuse the ProcessResult
+    // shape; prompt actions synthesize an exit code (0/1) reflecting success and carry no plain streams.
     public ProcessResult AsProcessResult() => new()
     {
         ExitCode = ExitCode ?? (Succeeded ? 0 : 1),
-        StandardOutput = string.Empty,
-        StandardError = string.Empty,
+        StandardOutput = StandardOutput,
+        StandardError = StandardError,
         TimedOut = TimedOut,
         Duration = TimeSpan.Zero
     };
@@ -174,6 +181,8 @@ internal sealed record ActionRun
         Succeeded = result.Succeeded,
         ExitCode = result.ExitCode,
         TimedOut = result.TimedOut,
+        StandardOutput = result.StandardOutput,
+        StandardError = result.StandardError,
         NeedsHumanQuestion = needsHuman,
         FailureSummary = result.TimedOut ? "action timed out" : $"action exited {result.ExitCode}"
     };

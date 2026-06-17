@@ -583,7 +583,7 @@ public sealed class StateFlowTests
                 exit 1
               }
               $stdout = Get-Content -Raw $env:GUARDRAILS_ACTION_STDOUT
-              if ($stdout -notmatch '{{token}}') {
+              if ([string]::IsNullOrEmpty($stdout) -or -not $stdout.Contains('{{token}}')) {
                 Write-Output "recorded GUARDRAILS_ACTION_STDOUT did not contain token '{{token}}'; saw: $stdout"
                 exit 1
               }
