@@ -46,6 +46,18 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   satisfy it? (Action controls the evidence.)
 - **Echo-judge**: does a prompt-judge read the action's claims (summary, report
   *about* the work) instead of the raw artifact?
+- **Replay-the-action**: does a guardrail re-run the action's own command (a full
+  `dotnet build; dotnet test`) when the postcondition is expressible from recorded
+  output — a produced artifact or a runner-written TRX (`GUARDRAILS_ACTION_RESULT` /
+  `_STDOUT`, SSOT §5.1)? If so, suggest **verify-recorded-action-result** (#9): assert the
+  artifact / parse the TRX instead of replaying. (Counter-check: a replay is the HONEST
+  gate when no recorded GOOD target carries the postcondition — don't flag it then.)
+- **Action-exit-code tautology / echo-judge on action stdout**: does a guardrail test
+  `GUARDRAILS_ACTION_RESULT.exitCode -ne 0` (a tautology — the recorded exit code is
+  ALWAYS 0 at guardrail time; a non-zero action failed the attempt before guardrails ran),
+  or grep `GUARDRAILS_ACTION_STDOUT` for the action's own success word (`"Passed!"`,
+  `"Build succeeded"` — an echo-judge, also SDK-version-brittle)? Fix: read a
+  runner-written structured result (TRX) or a produced artifact, never the self-report.
 - **Judge-where-deterministic-possible**: for every `.prompt.md` guardrail, name the
   deterministic archetype that could replace it, or confirm none can (the 4-question
   demotion gate).

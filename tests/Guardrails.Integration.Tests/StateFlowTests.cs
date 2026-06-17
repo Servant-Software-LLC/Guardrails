@@ -547,6 +547,64 @@ public sealed class StateFlowTests
         Assert.DoesNotContain("cost $", task.Summary); // no misleading dollar figure for a no-call task
     }
 
+    [Fact]
+    public async Task Guardrail_ReadsRecordedActionResultAndStdout_WithoutReRunningAction()
+    {
+        // issue #62: the harness exposes the action's recorded outcome to its guardrail via
+        // GUARDRAILS_ACTION_RESULT (→ action-result.json {kind, exitCode, summary}) and
+        // GUARDRAILS_ACTION_STDOUT (→ the captured action stdout). This proves that channel
+        // end-to-end: the guardrail reads the RECORDED result, it never re-runs the action.
+        //
+        // Honesty guards against a tautology/echo-judge:
+        //   - it asserts kind == "script" (a genuine read of the recorded result shape) rather than
+        //     re-deriving exitCode, which the harness would have to have set non-zero to fail anyway;
+        //   - it asserts the recorded STDOUT contains the deterministic token the action printed —
+        //     a token the guardrail has no other way to know, so reading it proves it saw the
+        //     recorded stdout rather than replaying the action.
+        const string token = "GUARDRAILS_RECORDED_OK_a1b2c3";
+
+        string printToken = StatePlanBuilder.UsePowerShell
+            ? $"""
+              Write-Output '{token}'
+              exit 0
+              """
+            : $"""
+              echo '{token}'
+              exit 0
+              """;
+
+        // The guardrail reads ONLY the recorded env pointers. If either read fails its assertion it
+        // exits 1 with an actionable message; both succeeding exits 0.
+        string readRecorded = StatePlanBuilder.UsePowerShell
+            ? $$"""
+              $result = Get-Content -Raw $env:GUARDRAILS_ACTION_RESULT | ConvertFrom-Json
+              if ($result.kind -ne 'script') {
+                Write-Output "expected recorded action kind 'script' but read '$($result.kind)' from GUARDRAILS_ACTION_RESULT"
+                exit 1
+              }
+              $stdout = Get-Content -Raw $env:GUARDRAILS_ACTION_STDOUT
+              if ([string]::IsNullOrEmpty($stdout) -or -not $stdout.Contains('{{token}}')) {
+                Write-Output "recorded GUARDRAILS_ACTION_STDOUT did not contain token '{{token}}'; saw: $stdout"
+                exit 1
+              }
+              exit 0
+              """
+            : $$"""
+              grep -q '"kind": "script"' "$GUARDRAILS_ACTION_RESULT" || { echo "expected recorded action kind 'script' in GUARDRAILS_ACTION_RESULT"; exit 1; }
+              grep -q '{{token}}' "$GUARDRAILS_ACTION_STDOUT" || { echo "recorded GUARDRAILS_ACTION_STDOUT did not contain token '{{token}}'"; exit 1; }
+              exit 0
+              """;
+
+        using var plan = new StatePlanBuilder()
+            .AddTask("01-recorded", actionBody: printToken, guardrailBody: readRecorded);
+
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        // Green run ⇒ the guardrail genuinely read the recorded action result and stdout via the
+        // env-var channel (it never re-ran the action to obtain them).
+        Assert.True(report.AllSucceeded, Summarize(report));
+    }
+
     private static string Summarize(RunReport report) =>
         string.Join("\n", report.Tasks.Select(t => $"{t.TaskId}: {t.Outcome} ({t.Summary})"));
 }
