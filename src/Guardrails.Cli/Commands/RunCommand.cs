@@ -173,10 +173,13 @@ public static class RunCommand
 
         // Post-mortem pointer for EVERY task, not just failures: a green task whose guardrails
         // turned out too weak is reviewed from the same on-disk logs (action output, guardrail
-        // stdout, feedback per attempt). One line, so it stays quiet for large plans.
-        string logsRoot = Path.Combine("state", "logs");
+        // stdout, feedback per attempt). The link target is the ABSOLUTE state/logs root so it is
+        // clickable (issue #59); the <task-id>/attempt-N/ layout follows as guidance text.
+        string logsRoot = Path.GetFullPath(Path.Combine(planDirectory, "state", "logs"));
+        string sep = Path.DirectorySeparatorChar.ToString();
         output.WriteLine();
-        output.WriteLine($"Logs (post-mortem any task — pass or fail): {logsRoot}{Path.DirectorySeparatorChar}<task-id>{Path.DirectorySeparatorChar}attempt-N{Path.DirectorySeparatorChar}");
+        output.WriteLine($"Logs (post-mortem any task — pass or fail): {Hyperlink(logsRoot)}");
+        output.WriteLine($"  each task's attempts are under <task-id>{sep}attempt-N{sep}");
 
         foreach (TaskResult needsHuman in report.Tasks.Where(t =>
                      t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed
@@ -207,6 +210,25 @@ public static class RunCommand
         {
             output.WriteLine($"Total prompt cost: ${total:F4}");
         }
+    }
+
+    /// <summary>
+    /// Render <paramref name="absolutePath"/> as an OSC 8 hyperlink (clickable in capable terminals —
+    /// Windows Terminal, VS Code, iTerm2) targeting its <c>file://</c> URI, mirroring the per-task
+    /// links in the live table. When stdout is redirected (CI, a file, output-capturing tests) the
+    /// escape sequence would be noise, so emit the plain absolute path instead. (Capability probes
+    /// may consult <see cref="Console"/> directly per the IConsoleIo contract.)
+    /// </summary>
+    private static string Hyperlink(string absolutePath)
+    {
+        if (Console.IsOutputRedirected)
+        {
+            return absolutePath;
+        }
+
+        const string esc = "\u001b";
+        string uri = new Uri(absolutePath).AbsoluteUri;
+        return $"{esc}]8;;{uri}{esc}\\{absolutePath}{esc}]8;;{esc}\\";
     }
 
     internal static string StatusLabel(TaskOutcome outcome) => outcome switch
