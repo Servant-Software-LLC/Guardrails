@@ -566,7 +566,16 @@ Per `references/schemas.md`, exactly:
    failure. Then **embed the generated Mermaid
    block inline** (paste the ```mermaid``` fence from `diagram.md`) so the human sees the
    DAG in chat, and **state the `<folder>/diagram.md` path** explicitly so they can render
-   it in GitHub or VS Code.
+   it in GitHub or VS Code. Finally, as the **last line of the report**, print a clickable
+   link to the interactive viewer `<folder>/diagram.html` (the pan/zoom/fullscreen companion
+   `guardrails graph` wrote in step 3) so the reviewer can open it without hunting for it.
+   Emit it as an **OSC 8 hyperlink** whose visible text is the absolute `file://` URL — so a
+   capable terminal (Windows Terminal, iTerm2, VS Code) renders it clickable and any other
+   shows the raw, still-actionable URL. Use the same escape shape `guardrails run` uses for
+   its `Logs` link (`RunCommand.Hyperlink`): `ESC]8;;<uri>ESC\<text>ESC]8;;ESC\`, with both
+   `<uri>` and `<text>` set to `file://` + the absolute path to `diagram.html`. For example:
+   `Diagram (interactive): file:///C:/path/to/<plan-folder>/diagram.html`. Build the URL from
+   the absolute folder path so it resolves regardless of the shell's working directory.
 5. Close with, verbatim in spirit:
 
    > **This is a draft.** Review the folder — especially the guardrails — edit,
@@ -647,6 +656,6 @@ to preserve edits against).
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
-- [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline).
+- [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); a clickable OSC 8 link to `diagram.html` (visible text = the absolute `file://` URL) printed as the report's last line.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.
