@@ -13,10 +13,16 @@ public static class RunReset
 {
     /// <summary>
     /// Full fresh reset (SSOT §6.1 / M3 scope): delete <c>run.json</c>, <c>state.json</c>,
-    /// the <c>logs/</c> tree and <c>merge-conflicts.log</c>, then re-seed <c>state.json</c>
-    /// from <c>seed.json</c> (or <c>{}</c>). The committed <c>seed.json</c> and task folders
-    /// are left untouched.
+    /// the <c>logs/</c> tree, <c>merge-conflicts.log</c> and the <c>captured/</c> baseline store,
+    /// then re-seed <c>state.json</c> from <c>seed.json</c> (or <c>{}</c>). The committed
+    /// <c>seed.json</c> and task folders are left untouched.
     /// </summary>
+    /// <remarks>
+    /// <c>captured/</c> (issue #51, the restore-on-retry baselines) MUST be wiped: a stale baseline
+    /// surviving <c>--fresh</c> would revert a legitimately re-authored file on the next run, before
+    /// any task re-snapshots its current bytes. It is harness-owned runtime state like the rest of
+    /// <c>state/</c>, never committed.
+    /// </remarks>
     public static void Fresh(string planDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(planDirectory);
@@ -26,6 +32,7 @@ public static class RunReset
         DeleteFileIfExists(Path.Combine(stateDir, "state.json"));
         DeleteFileIfExists(Path.Combine(stateDir, "merge-conflicts.log"));
         DeleteDirectoryIfExists(Path.Combine(stateDir, "logs"));
+        DeleteDirectoryIfExists(Path.Combine(stateDir, "captured"));
 
         // Re-seed immediately so a subsequent run starts from the seed-derived state.
         new StateManager(planDirectory).Initialize();
@@ -33,8 +40,9 @@ public static class RunReset
 
     /// <summary>
     /// Reset a single task to <c>pending</c> (keeping attempt history), so the next
-    /// <c>run</c> re-executes just that task. Returns false if the task is unknown to the
-    /// journal (the caller reports it).
+    /// <c>run</c> re-executes just that task. Also clears that task's captured baseline subdir
+    /// (issue #51) so a re-run re-snapshots the file's current bytes rather than reverting to a
+    /// stale baseline. Returns false if the task is unknown to the journal (the caller reports it).
     /// </summary>
     public static bool Task(PlanDefinition plan, string taskId)
     {
@@ -52,6 +60,7 @@ public static class RunReset
         }
 
         journal.ResetTask(taskId);
+        DeleteDirectoryIfExists(Path.Combine(plan.PlanDirectory, "state", "captured", taskId));
         return true;
     }
 

@@ -57,6 +57,8 @@ public sealed class StatePlanBuilder : IDisposable
         string? guardrailBody = null,
         bool? exclusive = null,
         IReadOnlyList<string>? captureHashes = null,
+        bool restoreOnRetry = false,
+        (string Name, string Body)? secondGuardrail = null,
         params string[] dependsOn)
     {
         string taskDir = Path.Combine(_root, "tasks", id);
@@ -75,16 +77,26 @@ public sealed class StatePlanBuilder : IDisposable
             ? string.Empty
             : $",\n  \"captureHashes\": [{string.Join(", ", captureHashes.Select(p => $"\"{p}\""))}]";
 
+        string restoreLine = restoreOnRetry ? ",\n  \"restoreOnRetry\": true" : string.Empty;
+
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
               "description": "fixture task {{id}}",
-              "dependsOn": {{dependsJson}}{{exclusiveLine}}{{captureLine}}
+              "dependsOn": {{dependsJson}}{{exclusiveLine}}{{captureLine}}{{restoreLine}}
             }
             """);
 
         WriteScript(Path.Combine(taskDir, ActionFileName), actionBody ?? Succeed());
         WriteScript(Path.Combine(taskDir, "guardrails", GuardrailFileName), guardrailBody ?? Succeed());
+
+        // An optional SECOND guardrail (e.g. the real two-guardrail shape: tests-pass + tests-untouched).
+        // Named by the caller so ordinal filename order is explicit; the extension is OS-picked.
+        if (secondGuardrail is { } second)
+        {
+            string ext = UsePowerShell ? ".ps1" : ".sh";
+            WriteScript(Path.Combine(taskDir, "guardrails", second.Name + ext), second.Body);
+        }
 
         return this;
     }

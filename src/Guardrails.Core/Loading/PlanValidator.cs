@@ -29,6 +29,7 @@ public sealed class PlanValidator
         ValidateStableIdFormat(plan, diagnostics);
         ValidateCostCap(plan, diagnostics);
         ValidateCaptureHashPaths(plan, diagnostics);
+        ValidateRestoreOnRetry(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
@@ -134,13 +135,13 @@ public sealed class PlanValidator
     /// </summary>
     private static void ValidateCaptureHashPaths(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
-        string workspaceRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(plan.Workspace));
-
         foreach (TaskNode task in plan.Tasks)
         {
             foreach (string entry in task.CaptureHashes)
             {
-                if (EscapesWorkspace(workspaceRoot, entry))
+                // The same containment boundary the harness's restore/snapshot code asserts against
+                // (WorkspaceContainment) — resolved against the plan workspace, never a per-task cwd.
+                if (WorkspaceContainment.Escapes(plan.Workspace, entry))
                 {
                     diagnostics.Add(Error(DiagnosticCodes.CaptureHashEscapesWorkspace, task.Directory,
                         $"Task '{task.Id}' declares captureHashes entry '{entry}', which is not a " +
@@ -152,35 +153,25 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// True when <paramref name="entry"/> is not safely contained by <paramref name="workspaceRoot"/>:
-    /// it is rooted (absolute or drive-rooted such as <c>/etc</c> or <c>C:\x</c>), or its normalized
-    /// resolution against the workspace leaves the workspace root. Comparison is on a directory
-    /// boundary so a sibling like <c>workspace-evil</c> never counts as inside <c>workspace</c>.
+    /// <c>restoreOnRetry: true</c> (SSOT §3.1 / issue #51) acts ONLY on a task's <c>captureHashes</c>
+    /// files — it snapshots their authored bytes and restores them before a downstream retry. Opting
+    /// in with an empty/absent <c>captureHashes</c> leaves it nothing to act on, almost certainly an
+    /// authoring slip — a GR2014 ERROR naming the task.
     /// </summary>
-    private static bool EscapesWorkspace(string workspaceRoot, string entry)
+    private static void ValidateRestoreOnRetry(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
-        // A rooted entry ignores the workspace base entirely under Path.Combine — reject outright.
-        if (Path.IsPathRooted(entry))
+        foreach (TaskNode task in plan.Tasks)
         {
-            return true;
+            if (task.RestoreOnRetry && task.CaptureHashes.Count == 0)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.RestoreOnRetryWithoutCaptureHashes, task.Directory,
+                    $"Task '{task.Id}' declares restoreOnRetry: true but has no captureHashes. " +
+                    "restoreOnRetry restores the bytes of captured files before a downstream retry, " +
+                    "so it requires a non-empty captureHashes to act on. Add the file(s) to " +
+                    "captureHashes, or remove restoreOnRetry."));
+            }
         }
-
-        string resolved = Path.TrimEndingDirectorySeparator(
-            Path.GetFullPath(Path.Combine(workspaceRoot, entry)));
-
-        if (string.Equals(resolved, workspaceRoot, PathComparison))
-        {
-            // Resolves to the workspace root itself (e.g. "." or "sub/.."). Not a file inside it,
-            // but it does not escape — leave that to the harness's missing-file path; not GR2013.
-            return false;
-        }
-
-        string prefix = workspaceRoot + Path.DirectorySeparatorChar;
-        return !resolved.StartsWith(prefix, PathComparison);
     }
-
-    private static StringComparison PathComparison =>
-        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
     private static void ValidateDependencies(PlanDefinition plan, List<Diagnostic> diagnostics)
     {

@@ -63,8 +63,12 @@ public static class RetryPolicy
         // When a tests-untouched guardrail failed, the agent edited the authored test file (almost
         // always to force a tests-pass guardrail green). The harness has restored that file to its
         // authored baseline for the next attempt (issue #51), so steer the agent to fix the
-        // IMPLEMENTATION — and DROP the "do not break the passing guardrails" line, since a
-        // tests-pass achieved by editing the tests is exactly what must not be preserved.
+        // IMPLEMENTATION and emit the "Do NOT edit the test file(s)" block, then RETURN.
+        //
+        // Returning here suppresses the WHOLE "Guardrails that PASSED (do not break these)" footer —
+        // not just a tests-pass entry. That is deliberate: a tests-pass guardrail that went green by
+        // editing the tests is exactly what must NOT be preserved, and after restore the passing set
+        // is recomputed next attempt anyway, so listing "do not break these" here would be misleading.
         bool testsUntouchedFailed = results.Any(r => !r.Passed && IsTestsUntouched(r.Name));
         if (testsUntouchedFailed)
         {
