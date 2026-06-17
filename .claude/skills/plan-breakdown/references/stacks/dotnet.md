@@ -9,7 +9,7 @@ instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
 Every stack file answers the same six standard questions first (§1–§6), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
-(§7–§8 server/executable wiring + smoke-test, then WPF). Each pattern's PowerShell example
+(§7–§8 server/executable wiring + smoke-test, §9 UI-presence, then WPF). Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
 file the task owns.
@@ -307,9 +307,107 @@ launches the built app as a child), kill the tree. Under pwsh 7+,
 it; when in doubt, launch the **published binary directly** (no `dotnet run` host layer) so
 there is exactly one process to stop. Keep the `finally` unconditional either way.
 
-Scope note: this proves the exe **starts and serves** — not that the served content is
-*correct UI* (issue #66, a separate concern). Do not bolt UI-content assertions onto the
-smoke-test.
+Scope note: this proves the exe **starts and serves** — not that the *described UI* was
+built and returned as real markup. That is §9 (UI-presence), which **reuses this exact
+lifecycle** and adds one body assertion. Keep this §8 form as the pure starts-and-serves
+check; when the plan is UI-facing, use §9's extended form on the smoke-test task instead of
+running two process managers.
+
+## 9. UI-presence — the described UI exists on disk and is actually served (#66)
+
+The catalogue's UI-presence archetype for a .NET web executable. A plan promising a
+browser-served screen ("serves a wizard", "the user completes the form") can decompose to
+JSON endpoints + unit tests and pass §8's smoke-test while serving **no UI at all** — the
+root returns 200 with JSON, never an HTML page. Two deterministic guardrails close this, on
+the inserted `build-ui-<screen>` task (SKILL.md Step 5). **Neither is a prompt-judge** —
+presence and wiring, never visual taste.
+
+### 9a. Asset-exists — the page/asset was actually written
+
+A `file-exists` check (archetype #1) on the page the screen needs, scoped to the one file
+the UI task owns (grep-scope rule, §5). For a static `wwwroot` page:
+
+```powershell
+# catches: a UI plan that built only backend endpoints - the HTML page the screen needs
+#          was never written, so the app serves a JSON API with no frontend
+$page = "src/Wizard.Cli/wwwroot/wizard.html"
+if (-not (Test-Path $page)) {
+    Write-Output "$page does not exist - the wizard UI page was never built (backend-only build)"
+    exit 1
+}
+exit 0
+```
+
+For an **embedded-resource** UI (the page is compiled into the assembly, not served from
+`wwwroot`), assert the resource is declared in the project file instead of probing disk —
+the file exists at author time but ships inside the DLL:
+
+```powershell
+# catches: the UI page exists in source but is not embedded, so it is absent at runtime
+$csproj = "src/Wizard.Cli/Wizard.Cli.csproj"
+if ((Get-Content $csproj -Raw) -notmatch '<EmbeddedResource[^>]*wizard\.html') {
+    Write-Output "Wizard.Cli.csproj does not embed wizard.html as a resource - it will be absent at runtime"
+    exit 1
+}
+exit 0
+```
+
+Use whichever matches how the plan serves the UI. The asset-exists check is necessary but
+not sufficient — a page file can exist and still never be served (wrong route, not mapped as
+static files); §9b proves it actually reaches the browser.
+
+### 9b. Served-markup-contains — the served root returns the real UI, not JSON or a 404
+
+This **extends §8's smoke-test** — it does NOT re-implement process management. Take the §8
+script verbatim (start the binary, bounded poll, `finally` teardown, deterministic port,
+**and its leading `# catches:` line** — the assembled guardrail still opens with one, e.g.
+`# catches: the UI route answers but serves non-UI content (JSON / placeholder / 404 body)
+instead of the described page`) and change exactly two things: poll the **UI route** (`/`,
+`/wizard`), and after asserting the response answers, **assert its body contains a known UI
+string** the `build-ui-<screen>` task produced. Asserting HTTP 200 alone is the trap §8
+warns about for UI plans — a JSON API returns 200 from `/`. The delta from §8 is the inner
+success test (the elided `...` lines are §8's scaffold, unchanged):
+
+```powershell
+# (identical §8 start / bounded-poll / finally-teardown scaffold; only the success test differs)
+#   $route   = "/"                       # the UI route an ancestor maps (artifact-ancestry)
+#   $uiMarker = 'id="wizard-step"'       # a known element/string from wizard.html (the UI task built it)
+    ...
+        try {
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+            if ($resp.StatusCode -eq 200 -and $resp.Content -match [regex]::Escape($uiMarker)) {
+                $ok = $true; break
+            }
+            # 200 with the wrong body is the #66 failure: served, but not the described UI
+            $lastError = "HTTP $($resp.StatusCode), body did not contain '$uiMarker' (served non-UI content?)"
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+    ...
+    if (-not $ok) {
+        Write-Output "served-markup: GET $url did not return the wizard UI within ${timeoutSeconds}s (last: $lastError)"
+        exit 1
+    }
+```
+
+Three adaptations, each **stated in the breakdown report**:
+
+- **UI route.** Poll the route that serves the *page*, not a JSON API route. It MUST be
+  produced by an ancestor task (artifact-ancestry) — the static-files mapping or the page
+  handler.
+- **UI marker.** `$uiMarker` is a stable, known string from the page the UI task built — a
+  heading, an `id`/`data-` attribute, a step label. Use `[regex]::Escape` so an HTML string
+  with regex metacharacters matches literally. The marker MUST come from the markup an
+  ancestor produces; if the plan names no concrete element, surface it in the report as a
+  human decision — do not invent one.
+- **Single process.** Fold this into the existing §8 smoke-test guardrail (one start/stop) when
+  the plan already has an executable smoke-test; only stand up a separate guardrail if none
+  exists. Running two process managers against the same binary risks a port collision between
+  them.
+
+Scope note: this proves the *described UI is present and served* — not that it is *visually
+good* (out of scope; a prompt-judge here is forbidden, per the catalogue's UI-presence
+section). Presence and wiring is the deliverable.
 
 ## WPF structural checks (#11 F5/F6)
 
