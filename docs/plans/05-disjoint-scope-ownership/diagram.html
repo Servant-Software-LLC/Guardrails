@@ -1,0 +1,255 @@
+<!-- guardrails:graph v1 source-sha256=989abba895aada57fa27c2452c2fc3971a2e65a4e14240dd83c6d4cbe519523b -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guardrails — task/guardrail DAG</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f14; color: #d6deeb;
+               font-family: system-ui, sans-serif; overflow: hidden; }
+  #bar { position: fixed; top: 8px; left: 8px; z-index: 10; display: flex; gap: 6px; }
+  #bar button { background: #121a24; color: #d6deeb; border: 1px solid #243343;
+                border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  #bar button:hover { border-color: #7fdbff; }
+  #stage { width: 100vw; height: 100vh; }
+  #stage svg { width: 100vw; height: 100vh; max-width: none !important; }
+  #hint { position: fixed; bottom: 8px; left: 8px; color: #5b6b7b; font-size: 12px;
+          max-width: 90vw; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="fit">Fit</button>
+  <button id="zin">+</button>
+  <button id="zout">&minus;</button>
+  <button id="fs">Fullscreen</button>
+</div>
+<div id="stage"></div>
+<div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
+  Node clicks open source files &mdash; serve via a local HTTP server (e.g.
+  <code>python -m http.server</code>) for clicks to work; browsers block
+  <code>file://&rarr;file://</code> navigation by default.
+  On GitHub, diagram.md renders instead.</div>
+
+<script type="text/plain" id="graph-source">flowchart TD
+  task_01_author_writescope_tests["01-author-writescope-tests"]:::task
+  gr_01_author_writescope_tests_0["01-tests-fail-on-current-code"]:::guardrail
+  task_01_author_writescope_tests --> gr_01_author_writescope_tests_0
+  gr_01_author_writescope_tests_0 --> done_01_author_writescope_tests
+  done_01_author_writescope_tests["01-author-writescope-tests ✓ Finished"]:::done
+  task_02_implement_writescope["02-implement-writescope"]:::task
+  gr_02_implement_writescope_0["01-build"]:::guardrail
+  task_02_implement_writescope --> gr_02_implement_writescope_0
+  gr_02_implement_writescope_0 --> done_02_implement_writescope
+  gr_02_implement_writescope_1["02-writescope-declares-overlaps"]:::guardrail
+  task_02_implement_writescope --> gr_02_implement_writescope_1
+  gr_02_implement_writescope_1 --> done_02_implement_writescope
+  gr_02_implement_writescope_2["03-writescope-tests-pass"]:::guardrail
+  task_02_implement_writescope --> gr_02_implement_writescope_2
+  gr_02_implement_writescope_2 --> done_02_implement_writescope
+  gr_02_implement_writescope_3["04-tests-untouched"]:::guardrail
+  task_02_implement_writescope --> gr_02_implement_writescope_3
+  gr_02_implement_writescope_3 --> done_02_implement_writescope
+  done_02_implement_writescope["02-implement-writescope ✓ Finished"]:::done
+  task_03_author_scopelock_tests["03-author-scopelock-tests"]:::task
+  gr_03_author_scopelock_tests_0["01-tests-fail-on-current-code"]:::guardrail
+  task_03_author_scopelock_tests --> gr_03_author_scopelock_tests_0
+  gr_03_author_scopelock_tests_0 --> done_03_author_scopelock_tests
+  done_03_author_scopelock_tests["03-author-scopelock-tests ✓ Finished"]:::done
+  task_04_implement_scopelock_scheduler["04-implement-scopelock-scheduler"]:::task
+  gr_04_implement_scopelock_scheduler_0["01-build"]:::guardrail
+  task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_0
+  gr_04_implement_scopelock_scheduler_0 --> done_04_implement_scopelock_scheduler
+  gr_04_implement_scopelock_scheduler_1["02-scheduler-uses-scopelock"]:::guardrail
+  task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_1
+  gr_04_implement_scopelock_scheduler_1 --> done_04_implement_scopelock_scheduler
+  gr_04_implement_scopelock_scheduler_2["03-scopelock-scheduler-tests-pass"]:::guardrail
+  task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_2
+  gr_04_implement_scopelock_scheduler_2 --> done_04_implement_scopelock_scheduler
+  gr_04_implement_scopelock_scheduler_3["04-tests-untouched"]:::guardrail
+  task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_3
+  gr_04_implement_scopelock_scheduler_3 --> done_04_implement_scopelock_scheduler
+  done_04_implement_scopelock_scheduler["04-implement-scopelock-scheduler ✓ Finished"]:::done
+  task_05_author_scope_validation_tests["05-author-scope-validation-tests"]:::task
+  gr_05_author_scope_validation_tests_0["01-tests-fail-on-current-code"]:::guardrail
+  task_05_author_scope_validation_tests --> gr_05_author_scope_validation_tests_0
+  gr_05_author_scope_validation_tests_0 --> done_05_author_scope_validation_tests
+  done_05_author_scope_validation_tests["05-author-scope-validation-tests ✓ Finished"]:::done
+  task_06_implement_scope_validation["06-implement-scope-validation"]:::task
+  gr_06_implement_scope_validation_0["01-build"]:::guardrail
+  task_06_implement_scope_validation --> gr_06_implement_scope_validation_0
+  gr_06_implement_scope_validation_0 --> done_06_implement_scope_validation
+  gr_06_implement_scope_validation_1["02-diagnostic-codes-declared"]:::guardrail
+  task_06_implement_scope_validation --> gr_06_implement_scope_validation_1
+  gr_06_implement_scope_validation_1 --> done_06_implement_scope_validation
+  gr_06_implement_scope_validation_2["03-scope-validation-tests-pass"]:::guardrail
+  task_06_implement_scope_validation --> gr_06_implement_scope_validation_2
+  gr_06_implement_scope_validation_2 --> done_06_implement_scope_validation
+  gr_06_implement_scope_validation_3["04-tests-untouched"]:::guardrail
+  task_06_implement_scope_validation --> gr_06_implement_scope_validation_3
+  gr_06_implement_scope_validation_3 --> done_06_implement_scope_validation
+  done_06_implement_scope_validation["06-implement-scope-validation ✓ Finished"]:::done
+  task_07_author_enforcer_detect_tests["07-author-enforcer-detect-tests"]:::task
+  gr_07_author_enforcer_detect_tests_0["01-tests-fail-on-current-code"]:::guardrail
+  task_07_author_enforcer_detect_tests --> gr_07_author_enforcer_detect_tests_0
+  gr_07_author_enforcer_detect_tests_0 --> done_07_author_enforcer_detect_tests
+  done_07_author_enforcer_detect_tests["07-author-enforcer-detect-tests ✓ Finished"]:::done
+  task_08_implement_enforcer_detect["08-implement-enforcer-detect"]:::task
+  gr_08_implement_enforcer_detect_0["01-build"]:::guardrail
+  task_08_implement_enforcer_detect --> gr_08_implement_enforcer_detect_0
+  gr_08_implement_enforcer_detect_0 --> done_08_implement_enforcer_detect
+  gr_08_implement_enforcer_detect_1["02-enforcer-wired-into-executor"]:::guardrail
+  task_08_implement_enforcer_detect --> gr_08_implement_enforcer_detect_1
+  gr_08_implement_enforcer_detect_1 --> done_08_implement_enforcer_detect
+  gr_08_implement_enforcer_detect_2["03-enforcer-detect-tests-pass"]:::guardrail
+  task_08_implement_enforcer_detect --> gr_08_implement_enforcer_detect_2
+  gr_08_implement_enforcer_detect_2 --> done_08_implement_enforcer_detect
+  gr_08_implement_enforcer_detect_3["04-tests-untouched"]:::guardrail
+  task_08_implement_enforcer_detect --> gr_08_implement_enforcer_detect_3
+  gr_08_implement_enforcer_detect_3 --> done_08_implement_enforcer_detect
+  done_08_implement_enforcer_detect["08-implement-enforcer-detect ✓ Finished"]:::done
+  task_09_author_enforcer_revert_tests["09-author-enforcer-revert-tests"]:::task
+  gr_09_author_enforcer_revert_tests_0["01-tests-fail-on-current-code"]:::guardrail
+  task_09_author_enforcer_revert_tests --> gr_09_author_enforcer_revert_tests_0
+  gr_09_author_enforcer_revert_tests_0 --> done_09_author_enforcer_revert_tests
+  done_09_author_enforcer_revert_tests["09-author-enforcer-revert-tests ✓ Finished"]:::done
+  task_10_implement_enforcer_revert["10-implement-enforcer-revert"]:::task
+  gr_10_implement_enforcer_revert_0["01-build"]:::guardrail
+  task_10_implement_enforcer_revert --> gr_10_implement_enforcer_revert_0
+  gr_10_implement_enforcer_revert_0 --> done_10_implement_enforcer_revert
+  gr_10_implement_enforcer_revert_1["02-revert-method-and-reset-wipe"]:::guardrail
+  task_10_implement_enforcer_revert --> gr_10_implement_enforcer_revert_1
+  gr_10_implement_enforcer_revert_1 --> done_10_implement_enforcer_revert
+  gr_10_implement_enforcer_revert_2["03-revert-tests-pass"]:::guardrail
+  task_10_implement_enforcer_revert --> gr_10_implement_enforcer_revert_2
+  gr_10_implement_enforcer_revert_2 --> done_10_implement_enforcer_revert
+  gr_10_implement_enforcer_revert_3["04-tests-untouched"]:::guardrail
+  task_10_implement_enforcer_revert --> gr_10_implement_enforcer_revert_3
+  gr_10_implement_enforcer_revert_3 --> done_10_implement_enforcer_revert
+  done_10_implement_enforcer_revert["10-implement-enforcer-revert ✓ Finished"]:::done
+  task_11_switch_over_skills["11-switch-over-skills"]:::task
+  gr_11_switch_over_skills_0["01-plan-breakdown-emits-writescope"]:::guardrail
+  task_11_switch_over_skills --> gr_11_switch_over_skills_0
+  gr_11_switch_over_skills_0 --> done_11_switch_over_skills
+  gr_11_switch_over_skills_1["02-golden-example-drops-triad"]:::guardrail
+  task_11_switch_over_skills --> gr_11_switch_over_skills_1
+  gr_11_switch_over_skills_1 --> done_11_switch_over_skills
+  gr_11_switch_over_skills_2["03-golden-round-trip-passes"]:::guardrail
+  task_11_switch_over_skills --> gr_11_switch_over_skills_2
+  gr_11_switch_over_skills_2 --> done_11_switch_over_skills
+  done_11_switch_over_skills["11-switch-over-skills ✓ Finished"]:::done
+  task_12_retire_triad["12-retire-triad"]:::task
+  gr_12_retire_triad_0["01-build"]:::guardrail
+  task_12_retire_triad --> gr_12_retire_triad_0
+  gr_12_retire_triad_0 --> done_12_retire_triad
+  gr_12_retire_triad_1["02-triad-removed-from-source"]:::guardrail
+  task_12_retire_triad --> gr_12_retire_triad_1
+  gr_12_retire_triad_1 --> done_12_retire_triad
+  gr_12_retire_triad_2["03-single-writer-preserved"]:::guardrail
+  task_12_retire_triad --> gr_12_retire_triad_2
+  gr_12_retire_triad_2 --> done_12_retire_triad
+  done_12_retire_triad["12-retire-triad ✓ Finished"]:::done
+  task_13_suite_green["13-suite-green"]:::task
+  gr_13_suite_green_0["01-solution-builds-release"]:::guardrail
+  task_13_suite_green --> gr_13_suite_green_0
+  gr_13_suite_green_0 --> done_13_suite_green
+  gr_13_suite_green_1["02-full-suite-green"]:::guardrail
+  task_13_suite_green --> gr_13_suite_green_1
+  gr_13_suite_green_1 --> done_13_suite_green
+  done_13_suite_green["13-suite-green ✓ Finished"]:::done
+  done_01_author_writescope_tests --> task_02_implement_writescope
+  done_02_implement_writescope --> task_03_author_scopelock_tests
+  done_02_implement_writescope --> task_05_author_scope_validation_tests
+  done_02_implement_writescope --> task_07_author_enforcer_detect_tests
+  done_03_author_scopelock_tests --> task_04_implement_scopelock_scheduler
+  done_05_author_scope_validation_tests --> task_06_implement_scope_validation
+  done_06_implement_scope_validation --> task_11_switch_over_skills
+  done_07_author_enforcer_detect_tests --> task_08_implement_enforcer_detect
+  done_08_implement_enforcer_detect --> task_09_author_enforcer_revert_tests
+  done_09_author_enforcer_revert_tests --> task_10_implement_enforcer_revert
+  done_10_implement_enforcer_revert --> task_11_switch_over_skills
+  done_10_implement_enforcer_revert --> task_12_retire_triad
+  done_11_switch_over_skills --> task_12_retire_triad
+  done_12_retire_triad --> task_13_suite_green
+  classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
+  classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  click task_01_author_writescope_tests href "tasks/01-author-writescope-tests/" "01-author-writescope-tests" _blank
+  click gr_01_author_writescope_tests_0 href "tasks/01-author-writescope-tests/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
+  click task_02_implement_writescope href "tasks/02-implement-writescope/" "02-implement-writescope" _blank
+  click gr_02_implement_writescope_0 href "tasks/02-implement-writescope/guardrails/01-build.ps1" "01-build" _blank
+  click gr_02_implement_writescope_1 href "tasks/02-implement-writescope/guardrails/02-writescope-declares-overlaps.ps1" "02-writescope-declares-overlaps" _blank
+  click gr_02_implement_writescope_2 href "tasks/02-implement-writescope/guardrails/03-writescope-tests-pass.ps1" "03-writescope-tests-pass" _blank
+  click gr_02_implement_writescope_3 href "tasks/02-implement-writescope/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
+  click task_03_author_scopelock_tests href "tasks/03-author-scopelock-tests/" "03-author-scopelock-tests" _blank
+  click gr_03_author_scopelock_tests_0 href "tasks/03-author-scopelock-tests/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
+  click task_04_implement_scopelock_scheduler href "tasks/04-implement-scopelock-scheduler/" "04-implement-scopelock-scheduler" _blank
+  click gr_04_implement_scopelock_scheduler_0 href "tasks/04-implement-scopelock-scheduler/guardrails/01-build.ps1" "01-build" _blank
+  click gr_04_implement_scopelock_scheduler_1 href "tasks/04-implement-scopelock-scheduler/guardrails/02-scheduler-uses-scopelock.ps1" "02-scheduler-uses-scopelock" _blank
+  click gr_04_implement_scopelock_scheduler_2 href "tasks/04-implement-scopelock-scheduler/guardrails/03-scopelock-scheduler-tests-pass.ps1" "03-scopelock-scheduler-tests-pass" _blank
+  click gr_04_implement_scopelock_scheduler_3 href "tasks/04-implement-scopelock-scheduler/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
+  click task_05_author_scope_validation_tests href "tasks/05-author-scope-validation-tests/" "05-author-scope-validation-tests" _blank
+  click gr_05_author_scope_validation_tests_0 href "tasks/05-author-scope-validation-tests/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
+  click task_06_implement_scope_validation href "tasks/06-implement-scope-validation/" "06-implement-scope-validation" _blank
+  click gr_06_implement_scope_validation_0 href "tasks/06-implement-scope-validation/guardrails/01-build.ps1" "01-build" _blank
+  click gr_06_implement_scope_validation_1 href "tasks/06-implement-scope-validation/guardrails/02-diagnostic-codes-declared.ps1" "02-diagnostic-codes-declared" _blank
+  click gr_06_implement_scope_validation_2 href "tasks/06-implement-scope-validation/guardrails/03-scope-validation-tests-pass.ps1" "03-scope-validation-tests-pass" _blank
+  click gr_06_implement_scope_validation_3 href "tasks/06-implement-scope-validation/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
+  click task_07_author_enforcer_detect_tests href "tasks/07-author-enforcer-detect-tests/" "07-author-enforcer-detect-tests" _blank
+  click gr_07_author_enforcer_detect_tests_0 href "tasks/07-author-enforcer-detect-tests/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
+  click task_08_implement_enforcer_detect href "tasks/08-implement-enforcer-detect/" "08-implement-enforcer-detect" _blank
+  click gr_08_implement_enforcer_detect_0 href "tasks/08-implement-enforcer-detect/guardrails/01-build.ps1" "01-build" _blank
+  click gr_08_implement_enforcer_detect_1 href "tasks/08-implement-enforcer-detect/guardrails/02-enforcer-wired-into-executor.ps1" "02-enforcer-wired-into-executor" _blank
+  click gr_08_implement_enforcer_detect_2 href "tasks/08-implement-enforcer-detect/guardrails/03-enforcer-detect-tests-pass.ps1" "03-enforcer-detect-tests-pass" _blank
+  click gr_08_implement_enforcer_detect_3 href "tasks/08-implement-enforcer-detect/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
+  click task_09_author_enforcer_revert_tests href "tasks/09-author-enforcer-revert-tests/" "09-author-enforcer-revert-tests" _blank
+  click gr_09_author_enforcer_revert_tests_0 href "tasks/09-author-enforcer-revert-tests/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
+  click task_10_implement_enforcer_revert href "tasks/10-implement-enforcer-revert/" "10-implement-enforcer-revert" _blank
+  click gr_10_implement_enforcer_revert_0 href "tasks/10-implement-enforcer-revert/guardrails/01-build.ps1" "01-build" _blank
+  click gr_10_implement_enforcer_revert_1 href "tasks/10-implement-enforcer-revert/guardrails/02-revert-method-and-reset-wipe.ps1" "02-revert-method-and-reset-wipe" _blank
+  click gr_10_implement_enforcer_revert_2 href "tasks/10-implement-enforcer-revert/guardrails/03-revert-tests-pass.ps1" "03-revert-tests-pass" _blank
+  click gr_10_implement_enforcer_revert_3 href "tasks/10-implement-enforcer-revert/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
+  click task_11_switch_over_skills href "tasks/11-switch-over-skills/" "11-switch-over-skills" _blank
+  click gr_11_switch_over_skills_0 href "tasks/11-switch-over-skills/guardrails/01-plan-breakdown-emits-writescope.ps1" "01-plan-breakdown-emits-writescope" _blank
+  click gr_11_switch_over_skills_1 href "tasks/11-switch-over-skills/guardrails/02-golden-example-drops-triad.ps1" "02-golden-example-drops-triad" _blank
+  click gr_11_switch_over_skills_2 href "tasks/11-switch-over-skills/guardrails/03-golden-round-trip-passes.ps1" "03-golden-round-trip-passes" _blank
+  click task_12_retire_triad href "tasks/12-retire-triad/" "12-retire-triad" _blank
+  click gr_12_retire_triad_0 href "tasks/12-retire-triad/guardrails/01-build.ps1" "01-build" _blank
+  click gr_12_retire_triad_1 href "tasks/12-retire-triad/guardrails/02-triad-removed-from-source.ps1" "02-triad-removed-from-source" _blank
+  click gr_12_retire_triad_2 href "tasks/12-retire-triad/guardrails/03-single-writer-preserved.ps1" "03-single-writer-preserved" _blank
+  click task_13_suite_green href "tasks/13-suite-green/" "13-suite-green" _blank
+  click gr_13_suite_green_0 href "tasks/13-suite-green/guardrails/01-solution-builds-release.ps1" "01-solution-builds-release" _blank
+  click gr_13_suite_green_1 href "tasks/13-suite-green/guardrails/02-full-suite-green.ps1" "02-full-suite-green" _blank</script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+
+const graph = document.getElementById('graph-source').textContent;
+// securityLevel 'loose' is required for the `click ... href` directives to open node sources;
+// the content is the user's own local plan, served from file:// — not untrusted input.
+mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', flowchart: { useMaxWidth: false } });
+
+let pz = null;
+try {
+  const { svg } = await mermaid.render('dag', graph);
+  document.getElementById('stage').innerHTML = svg;
+  const el = document.querySelector('#stage svg');
+  el.setAttribute('width', '100vw');
+  el.setAttribute('height', '100vh');
+  pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
+                        minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
+  window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
+} catch (e) {
+  document.getElementById('stage').innerHTML =
+    '<p style="padding:1rem">Could not render the diagram (offline? the renderer loads from a CDN). ' +
+    'The DAG source is embedded in this page, and diagram.md renders on GitHub.</p>';
+}
+
+document.getElementById('fit').onclick  = () => { if (pz) { pz.fit(); pz.center(); } };
+document.getElementById('zin').onclick  = () => { if (pz) pz.zoomBy(1.3); };
+document.getElementById('zout').onclick = () => { if (pz) pz.zoomBy(0.77); };
+document.getElementById('fs').onclick   = () => document.documentElement.requestFullscreen();
+</script>
+</body>
+</html>

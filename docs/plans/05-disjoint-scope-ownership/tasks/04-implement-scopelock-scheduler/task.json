@@ -1,0 +1,5 @@
+{
+  "description": "Implement ScopeLock (generalizing WorkspaceLock) in src/Guardrails.Core/Execution/ScopeLock.cs, rewire Scheduler.cs to resolve each task's writeScope and admit on disjointness, add writeScope to TaskNode + loader, and remove the exclusive field — so the M2 tests pass",
+  "dependsOn": ["03-author-scopelock-tests"],
+  "stableId": "sl04im"
+}

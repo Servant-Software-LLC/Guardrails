@@ -1,0 +1,5 @@
+{
+  "description": "Switch the skills to writeScope (M6): plan-breakdown emits an explicit writeScope per task (narrow / [] for gates / justified universal) + read-after-write edges and STOPS emitting captureHashes/tests-untouched/restoreOnRetry; guardrails-review challenges scopes both directions; update catalogue + example-breakdown + schemas + domain-knowledge; re-prove the golden round-trip",
+  "dependsOn": ["06-implement-scope-validation", "10-implement-enforcer-revert"],
+  "stableId": "sk11im"
+}

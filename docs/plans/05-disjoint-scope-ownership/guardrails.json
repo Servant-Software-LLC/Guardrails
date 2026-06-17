@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "maxParallelism": 4,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  // workspace = the Guardrails repo root, three levels up from this plan folder
+  // (docs/plans/05-disjoint-scope-ownership/). This is a SELF-HOSTING dogfood: the
+  // tasks modify src/, tests/, .claude/skills/, and docs/plans/ in the repo itself.
+  // All build/test/grep guardrails run from the repo root.
+  "workspace": "../../..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)", "Bash(git *)"],
+      "maxTurns": 60,
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 15
+      }
+    }
+  }
+}

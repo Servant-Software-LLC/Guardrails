@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests for WorkspaceScopeEnforcer detect-only: snapshot + post-action content-hash diff honoring enforcementIgnore; an out-of-scope write FAILS the attempt; an in-scope edit passes; a no-op touch passes (M4 exit, detection before revert)",
+  "dependsOn": ["02-implement-writescope"],
+  "stableId": "en07ta",
+  "captureHashes": [
+    "tests/Guardrails.Core.Tests/WorkspaceScopeEnforcerTests.cs"
+  ],
+  "restoreOnRetry": true
+}

@@ -1,0 +1,5 @@
+{
+  "description": "Implement M5 revert: WorkspaceScopeEnforcer.RevertOutOfScope (delete out-of-scope creates, restore modify/delete from git baseline for tracked + state/scope-baseline/ for untracked), scope-enforcement.log, wire revert into TaskExecutor, and wipe state/scope-baseline/ in RunReset on --fresh/reset — so the M5 tests pass",
+  "dependsOn": ["09-author-enforcer-revert-tests"],
+  "stableId": "rv10im"
+}

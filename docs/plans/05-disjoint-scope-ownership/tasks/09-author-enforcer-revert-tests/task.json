@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests for M5 revert: RevertOutOfScope restores out-of-scope create (delete it) / modify / delete (restore bytes) via git baseline for tracked + state/scope-baseline/ for untracked; the #51 scenario (attempt 1 fails, attempt 2 starts clean and succeeds); --fresh/reset wipes state/scope-baseline/",
+  "dependsOn": ["08-implement-enforcer-detect"],
+  "stableId": "rv09ta",
+  "captureHashes": [
+    "tests/Guardrails.Core.Tests/ScopeRevertTests.cs"
+  ],
+  "restoreOnRetry": true
+}

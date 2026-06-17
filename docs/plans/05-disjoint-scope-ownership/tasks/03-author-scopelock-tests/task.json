@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests for ScopeLock admission/FIFO-fairness and the Scheduler rewire — three independent narrow-scope tasks run concurrently (overlapping execution windows on a fake runner), two universal-scope tasks do NOT overlap (M2 exit)",
+  "dependsOn": ["02-implement-writescope"],
+  "stableId": "sl03ta",
+  "captureHashes": [
+    "tests/Guardrails.Core.Tests/ScopeLockTests.cs",
+    "tests/Guardrails.Core.Tests/ScopeSchedulerTests.cs"
+  ],
+  "restoreOnRetry": true
+}

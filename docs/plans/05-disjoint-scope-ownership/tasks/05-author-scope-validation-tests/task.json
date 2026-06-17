@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests for the three scope diagnostics: GR2015 (ERROR — a task depending on a test-author with no excluding writeScope), GR2016 (WARNING — overlapping scopes among independents), GR2017 (ERROR — malformed glob: ?, brace, negation)",
+  "dependsOn": ["02-implement-writescope"],
+  "stableId": "vl05ta",
+  "captureHashes": [
+    "tests/Guardrails.Core.Tests/ScopeValidationTests.cs"
+  ],
+  "restoreOnRetry": true
+}

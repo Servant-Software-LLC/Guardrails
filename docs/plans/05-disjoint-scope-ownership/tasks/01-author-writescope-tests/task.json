@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests for the WriteScope value type and the Overlaps(a,b) pure function — the M1 overlap truth-table (empty [] disjoint from all incl. universal; universal overlaps every non-empty scope; dir == dir/**; sibling src/FeatureX does NOT match src/Feature/**)",
+  "dependsOn": [],
+  "stableId": "ws01ta",
+  "captureHashes": [
+    "tests/Guardrails.Core.Tests/WriteScopeTests.cs"
+  ],
+  "restoreOnRetry": true
+}

@@ -1,0 +1,5 @@
+{
+  "description": "Retire the test-protection triad (M7, clean removal): remove captureHashes/tests-untouched/restoreOnRetry from the schema, loader, FileHashCapture capture-into-fragment path, RetryPolicy tests-untouched feedback, and CapturedFileStore (or retain only the byte-store the enforcer reuses); delete SSOT §3.1/§3.1.1; regenerate 04-dogfood-cost-cap to the writeScope pattern. #48 single-writer-per-key stays untouched",
+  "dependsOn": ["10-implement-enforcer-revert", "11-switch-over-skills"],
+  "stableId": "rt12im"
+}

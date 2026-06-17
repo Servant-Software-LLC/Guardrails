@@ -1,0 +1,5 @@
+{
+  "description": "Implement the WriteScope value type + Overlaps(a,b) pure function in src/Guardrails.Core/Execution/WriteScope.cs (next to WorkspaceContainment) so the M1 WriteScope tests pass — empty/universal short-circuits, glob subset parse, conservative overlap; no I/O",
+  "dependsOn": ["01-author-writescope-tests"],
+  "stableId": "ws02im"
+}

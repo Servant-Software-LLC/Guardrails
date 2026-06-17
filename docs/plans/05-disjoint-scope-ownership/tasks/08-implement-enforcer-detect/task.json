@@ -1,0 +1,5 @@
+{
+  "description": "Implement WorkspaceScopeEnforcer detect-only in src/Guardrails.Core/Execution/WorkspaceScopeEnforcer.cs (snapshot + post-action content-hash diff, enforcementIgnore), wire the detect seam into TaskExecutor.RunAttemptAsync to FAIL on out-of-scope writes, add enforcementIgnore to RunConfig — so the M4 tests pass",
+  "dependsOn": ["07-author-enforcer-detect-tests"],
+  "stableId": "en08im"
+}

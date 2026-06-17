@@ -1,0 +1,5 @@
+{
+  "description": "Implement GR2015/GR2016/GR2017 in Loading/DiagnosticCodes.cs + Loading/PlanValidator.cs (subsumption guard error, independent-overlap warning, malformed-glob error), reusing DependencyGraph and WorkspaceContainment, so the M3 tests pass",
+  "dependsOn": ["05-author-scope-validation-tests"],
+  "stableId": "vl06im"
+}
