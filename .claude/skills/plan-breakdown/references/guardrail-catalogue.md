@@ -221,9 +221,55 @@ inserted tasks (SKILL.md Step 5), close the gap:
 - **One actionable failure line.** "smoke-test: GET http://127.0.0.1:5005/health did not
   return 200 within 15s (last: connection refused)" converges; "smoke-test failed" loops.
 
-This is **starts-and-serves verification ONLY.** Whether the served page is the *correct
-UI content* is a separate concern (issue #66) — do not fold UI-correctness checks into the
-smoke-test.
+This is **starts-and-serves verification ONLY.** Whether the served page is the *described
+UI* — built at all, and returned as real markup — is the **UI-presence** archetype below.
+The two compose: this smoke-test proves the exe serves *something*; the served-markup half
+of UI-presence proves that *something* is the UI the plan described. Don't duplicate the
+process management — the served-markup check *extends* this lifecycle with one body
+assertion (see below).
+
+## UI-presence — the described UI was built and is actually served (#66)
+
+A plan whose outcome is **user-facing UI** — "serves a multi-step wizard to the browser",
+"a page the user completes", "master/detail view", "tri-state tree", a screen the user
+*sees and operates* — has a failure mode distinct from #64's. With #64 in place the binary
+starts and a route answers 200; the unit tests pass; the build is green. And still **no UI
+exists**: every task decomposed to a JSON HTTP endpoint or a unit test, not one produced an
+HTML page, stylesheet, client JS, or a `wwwroot`. The shipped artifact is a working JSON API
+with no human-facing frontend, and the run is 100% green because nothing ever asserted a UI
+artifact. This is the **most expensive false-green the skill can emit** — a plan promising a
+frontend that decomposes to zero frontend tasks.
+
+#64 would only have *caught* that no real UI is served (its smoke-test asserts a 200, which a
+JSON root satisfies); it never *builds* the screens. #66 ensures the work to build the UI is
+generated in the first place, AND that a guardrail asserts the UI is present and served. The
+fix is a **UI-implementation task** per described screen (SKILL.md Step 5) plus a **pair of
+deterministic guardrails** — never a prompt-judge:
+
+1. **Asset-exists (archetype #1, file-exists).** A static check that the page/asset the
+   screen needs is present on disk (or as a declared embedded resource) — `wwwroot/wizard.html`,
+   its stylesheet, its client JS. Scoped to the one file the UI task owns (grep-scope rule). It
+   catches the green-build run where no frontend file was ever written. The exact .NET realization
+   (`wwwroot/<page>.html` existence, or the embedded-resource manifest check) is `stacks/dotnet.md §9`.
+2. **Served-markup-contains (archetype #7, EXTENDING the §64 smoke-test).** The deterministic
+   proof that the served root returns the **real UI markup**, not a placeholder, a 404 body, or
+   JSON. It reuses the smoke-test's exact lifecycle — start the binary, poll the UI route, tear
+   down in `finally` — and adds **one assertion**: the response body **contains a known UI
+   element/string** from the page (a heading, a known `id`/`data-` attribute, a wizard step
+   label). Asserting HTTP 200 alone is not enough — a JSON API returns 200 from `/`. This is
+   **not a second process manager**: fold the body assertion into the existing smoke-test
+   guardrail so the process starts once; only stand up a separate one if no executable
+   smoke-test exists. The known string MUST come from the markup the UI task produces
+   (artifact-ancestry). The .NET realization (the §8 lifecycle with the body-contains assertion)
+   is `stacks/dotnet.md §9`.
+
+**Determinism is mandatory here.** UI-presence is *presence and wiring*, never *visual
+quality*. The asset-exists grep and the served-markup string are both deterministic; a
+prompt-judge "does this look like a good UI" is OUT OF SCOPE and forbidden — it is exactly
+the subjective vibes the demotion gate rejects, and worse, it cannot catch the failure
+(a frontend can "look good" and still bind to no backend; a present, wired page that
+contains the asserted element is the deliverable). The cross-check that a *described* UI
+mapped to *some* build-ui task lives in SKILL.md Step 7.0 (exit-criteria self-review).
 
 ## The prompt-judge demotion gate
 
@@ -271,6 +317,13 @@ What is the task's primary deliverable?
 │                                 ASSERT 200, STOP in a finally) — the ONLY check that the exe
 │                                 starts and serves vs merely compiles; see the entry-point-wiring
 │                                 section below + stacks/dotnet.md §7–§8
+├── A user-facing UI            → asset-exists (#1: the page/asset file is on disk, e.g.
+│    (screen/page served to       wwwroot/<page>.html, scoped to the UI file) + served-markup-contains
+│    the browser)                 (#7 EXTENDING the smoke-test: same start/poll/teardown, assert the
+│                                 body contains a known UI string — NOT just 200, which JSON satisfies).
+│                                 INSERT a build-ui-<screen> task per screen, ALONGSIDE the backend
+│                                 that serves it. Deterministic only — NO prompt-judge on visual
+│                                 quality; see the UI-presence section below + stacks/dotnet.md §9
 ├── Config/data                → schema-validates; else file-contains on load-bearing keys
 ├── State output (a key a      → fragment-key-present (read $env:GUARDRAILS_STATE_FRAGMENT,
 │    downstream task reads)      parse JSON, assert the key non-null + non-empty; allowed-set
@@ -375,6 +428,22 @@ should fail before an expensive test run or a paid judge ever starts.
   live smoke-test task (start → poll route → assert 200 → stop in `finally`, `stacks/dotnet.md
   §8`) — see the entry-point-wiring section above. Unit tests structurally cannot catch a
   launcher that is implemented but never called.
+- **Backend-only-greenness for a UI plan** (#66) — the single most expensive false-green.
+  The plan describes a **user-facing screen** ("serves a wizard to the browser", "the user
+  completes the form", "master/detail view") and the breakdown emits ONLY JSON HTTP
+  endpoints, DTOs, and their unit tests — **not one task produces an HTML page, stylesheet,
+  client JS, or a `wwwroot`**. Build is green, unit tests pass, and (even with #64's
+  smoke-test) the root returns 200 — because a JSON API answers 200. The run is 100% green
+  and ships **no human-facing UI whatsoever**. This is distinct from compiles-but-never-runs:
+  there the exe served nothing; here the exe serves the *wrong thing* (an API where the plan
+  promised a UI), and the UI was never even built. Fix: insert a `build-ui-<screen>` task per
+  described screen and the UI-presence guardrails — asset-exists (`stacks/dotnet.md §9`) and a
+  served-markup-contains assertion EXTENDING the smoke-test (body contains a known UI string,
+  not just HTTP 200) — see the UI-presence section above. The tell `/guardrails-review` hunts:
+  a plan whose prose promises a frontend whose task folder contains zero frontend artifacts and
+  zero served-markup assertion. **Forbidden "fix":** a prompt-judge "does the UI look good" —
+  it is subjective vibes the demotion gate rejects AND cannot catch the failure; the deliverable
+  is *presence and wiring*, asserted deterministically.
 - **Hidden-state**: the guardrail depends on machine state (network, globally
   installed tools, a developer's home dir) rather than ancestor outputs or the repo.
   Declare required interpreters via `guardrails.json` instead.
