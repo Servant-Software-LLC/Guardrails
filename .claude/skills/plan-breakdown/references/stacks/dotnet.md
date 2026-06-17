@@ -7,10 +7,12 @@ this file when it detects a .NET workspace (`.slnx` / `.sln` / `.csproj`). On a
 JVM/Go/Python project these patterns are wrong or irrelevant — use that stack's file
 instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
-Every stack file answers the same five standard questions, in this order, so the files
-are mirror-able. Each pattern's PowerShell example follows the catalogue's conventions:
-a leading `# catches:` line, one actionable `Write-Output` line on failure, explicit
-`exit 1` / `exit 0`. Scope every grep to the one file the task owns.
+Every stack file answers the same six standard questions first (§1–§6), in this order, so
+the files are mirror-able; stack-specific extensions for particular project kinds follow
+(§7–§8 server/executable wiring + smoke-test, then WPF). Each pattern's PowerShell example
+follows the catalogue's conventions: a leading `# catches:` line, one actionable
+`Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
+file the task owns.
 
 ---
 
@@ -171,6 +173,143 @@ framework-selection rule):
   this file.** A "xUnit is the .NET greenfield default" rule here would merely relocate the
   silent guess from the model's weights into the stack file; the choice must stay visible
   and reviewable per breakdown (this is the #40 → #42 resolution).
+
+## 7. Entry-point wiring — the executable's `Program.cs` must reference the launcher (#64)
+
+The catalogue's entry-point-wiring section: a server/CLI-executable plan decomposes into
+component tasks each guarded by build + unit-tests, but **nothing proves the entry point
+actually starts the handler**. `Program.cs` compiles and the solution builds with a
+top-level `Console.WriteLine("hello")` that never touches the `Launcher` — the launcher is
+implemented, unit-tested, and never called. A build guardrail cannot see this; a structural
+grep on the ENTRY-POINT file can.
+
+Detect the executable first (any one signals an exe outcome):
+
+```powershell
+# is this an executable / web project? (run during breakdown analysis, not as a guardrail)
+Get-ChildItem -Recurse -Filter *.csproj |
+  Where-Object { (Get-Content $_ -Raw) -match '(?i)Sdk\s*=\s*"Microsoft\.NET\.Sdk\.Web"|<OutputType>\s*Exe\s*</OutputType>' }
+```
+
+Then add a **`file-contains` guardrail on the entry-point file** (`Program.cs`, or the file
+holding top-level statements / `Main`) asserting it references the launcher type. Match the
+**construct**, not a bare token — a bare `Launcher` grep passes on a `using`, a comment, or
+an unused field. Require the type used in a `new`/method-call position:
+
+```powershell
+# catches: a Program.cs that builds green but never instantiates/starts the launcher
+#          (the "implemented but never called" gap unit tests cannot see)
+$entry = "src/Wizard.Cli/Program.cs"
+$code  = Get-Content $entry -Raw
+if ($code -notmatch '(?m)new\s+Launcher\b|Launcher\s*\.\s*\w') {
+    Write-Output "$entry does not instantiate or call Launcher - the entry point is not wired to it"
+    exit 1
+}
+exit 0
+```
+
+Use the concrete launcher type the plan names (`Launcher`, `WizardHost`, `App`). The regex
+allows either `new Launcher(...)` (the entry point constructs it) or `Launcher.Run(...)` (a
+static start) — both are real wiring; a `using …Launcher;`, a `// Launcher` comment, or a
+`private Launcher _x;` field declaration are not, and none match. Scope to the single
+entry-point file (grep-scope rule, §5). This grep is **necessary but not sufficient** — it
+proves the call is *written*, not that it *serves*; §8's live smoke-test proves the latter.
+
+## 8. Live smoke-test — start the binary, poll a route, assert 200, tear down (#64)
+
+Archetype #7 (port/endpoint-answers) for a .NET executable. This is the ONE guardrail that
+verifies *the exe does what the plan says* rather than *the code compiles*. It owns the
+process lifecycle: start the binary, poll a known route until it answers or a bounded
+timeout elapses, assert HTTP 200, and **always** kill the process in a `finally`. Put it on
+the inserted smoke-test task (SKILL.md Step 5), downstream of the wiring task and the
+route-implementation task.
+
+Hold it to the catalogue's determinism rules: a **bounded poll** (not a fixed sleep), a
+**deterministic port** (passed to the binary, or parsed from the URL it prints — never
+guessed), **teardown in `finally`** on every exit path, and **one actionable failure line**.
+The pattern below uses pwsh cmdlets that work identically under pwsh on Windows, Linux, and
+macOS (`Start-Process`, `Invoke-WebRequest`, `Stop-Process`):
+
+```powershell
+# catches: the binary builds and unit-tests pass but does not actually start and serve -
+#          e.g. Program.cs never started the launcher, or the route is unrouted (404).
+#          Starts the exe, polls a known route, asserts 200, and ALWAYS tears the process
+#          down in finally so a failed poll never leaks a port-holding server.
+$ErrorActionPreference = 'Stop'
+$project = "src/Wizard.Cli"          # the executable project (or a published binary path)
+$port    = 5099                       # a fixed port the binary is TOLD to use (see note below)
+$route   = "/health"                  # a route an ANCESTOR task implements (artifact-ancestry)
+$baseUrl = "http://127.0.0.1:$port"
+$url     = "$baseUrl$route"
+$timeoutSeconds = 20
+$proc = $null
+try {
+    # Start the binary in the background, telling it which port to bind. Capture its output to
+    # the attempt's scratch dir so a printed URL / startup error is inspectable on failure.
+    $outLog = Join-Path $env:GUARDRAILS_LOG_DIR "smoke-stdout.log"
+    $errLog = Join-Path $env:GUARDRAILS_LOG_DIR "smoke-stderr.log"
+    $proc = Start-Process -FilePath "dotnet" `
+        -ArgumentList @("run", "--project", $project, "--no-build", "--", "--urls", $baseUrl) `
+        -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden
+
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    $lastError = "no response"
+    $ok = $false
+    while ((Get-Date) -lt $deadline) {
+        if ($proc.HasExited) {
+            $lastError = "process exited early (code $($proc.ExitCode)) - see $errLog"
+            break
+        }
+        try {
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5
+            if ($resp.StatusCode -eq 200) { $ok = $true; break }
+            $lastError = "HTTP $($resp.StatusCode)"
+        } catch {
+            $lastError = $_.Exception.Message   # connection refused while still warming up, etc.
+        }
+        Start-Sleep -Milliseconds 250
+    }
+
+    if (-not $ok) {
+        Write-Output "smoke-test: GET $url did not return 200 within ${timeoutSeconds}s (last: $lastError)"
+        exit 1
+    }
+    exit 0
+}
+finally {
+    if ($proc -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+```
+
+Adapt three things per plan, and **state each in the breakdown report**:
+
+- **Launch form.** `dotnet run --project <proj> --no-build` is the portable default and
+  assumes an upstream build guardrail already produced the binary (drop `--no-build` if not).
+  For a published self-contained exe, set `$project` aside and
+  `Start-Process -FilePath "<path>/Wizard.Cli"` (or `.exe` on Windows) directly — same
+  `-PassThru`/redirect/`finally` shape.
+- **Port.** The example passes `--urls http://127.0.0.1:$port` (the ASP.NET host convention
+  for `Microsoft.NET.Sdk.Web`). A plain `<OutputType>Exe` that runs its own listener takes
+  its port differently — pass the plan's actual flag/env var. If the binary instead *prints*
+  the URL it chose (the "prints a URL" plan signal), read `$outLog` after startup and parse
+  the printed `http://…:<port>` rather than fixing `$port` — that is the deterministic read
+  for an ephemeral-port binary. Do not poll a port you only assumed.
+- **Route.** `$route` MUST be implemented by an ancestor task (artifact-ancestry). Use the
+  route the plan names (`/current-step`, `/health`); if the plan names none, surface it as a
+  decision in the breakdown report — do not invent one.
+
+**Teardown caveat.** `Stop-Process -Force` kills the started process; if the binary spawns
+**child** processes (rare for a single self-hosted listener, possible for `dotnet run` which
+launches the built app as a child), kill the tree. Under pwsh 7+,
+`Stop-Process -Id $proc.Id -Force` on the `dotnet` host generally takes the app child with
+it; when in doubt, launch the **published binary directly** (no `dotnet run` host layer) so
+there is exactly one process to stop. Keep the `finally` unconditional either way.
+
+Scope note: this proves the exe **starts and serves** — not that the served content is
+*correct UI* (issue #66, a separate concern). Do not bolt UI-content assertions onto the
+smoke-test.
 
 ## WPF structural checks (#11 F5/F6)
 

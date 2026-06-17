@@ -172,6 +172,59 @@ writes one. If the action does not produce a runner-written result file and the 
 "evidence" of success is its prose stdout, you have **no** GOOD target: keep the honest
 replay (`specific-tests-pass`, #4) rather than demoting to an echo-judge.
 
+## Entry-point wiring + the live smoke-test (server/executable plans) (#64)
+
+A plan whose outcome is a **server or CLI executable** — "a CLI entrypoint that starts a
+loopback HTTP server and serves a wizard", "prints a URL", "listens on a port", a `.csproj`
+with `Microsoft.NET.Sdk.Web` or `<OutputType>Exe</OutputType>` — decomposes cleanly into
+component tasks (scaffold the exe project, implement the launcher, implement the routes),
+and **each component compiles and unit-tests green**. The terminal whole-solution build
+passes too. Yet a real failure slips through every one of those checks: the `Program.cs`
+that never instantiates the `Launcher`. The build is green, the unit tests pass, and the
+server 404s everything — because **no task ever wired the entry point to the handler**, and
+no guardrail ever ran the binary.
+
+A library/test deliverable is fully covered by the TDD cycle (author tests → implement →
+`specific-tests-pass`). An **executable** needs a third kind of check the unit tests
+structurally cannot provide: *does running the binary produce the expected observable
+behaviour?* `new Launcher().StartAsync()` being absent from `Program.cs` is invisible to any
+unit test of `Launcher` — the type works; it's just never called. Two guardrails, on two
+inserted tasks (SKILL.md Step 5), close the gap:
+
+1. **Entry-point-wiring (structural grep).** A `file-contains` guardrail on the
+   ENTRY-POINT file asserting it references the launcher type — `Program.cs` must mention
+   (and start) `Launcher`. This is the universal "structural vs keyword" rule applied to the
+   wiring point; the exact .NET regex is `stacks/dotnet.md §7`. It catches the green-build
+   `Program.cs` that ignores the launcher. (It is necessary but not sufficient — a grep can't
+   prove the wired call actually serves; that's the smoke-test's job.)
+2. **Live smoke-test (archetype #7, port/endpoint-answers).** The only guardrail that
+   verifies *the exe does what the plan says* rather than *the code compiles*. It STARTS the
+   built binary as a background process, POLLS a known route (`/health`, `/current-step`,
+   whatever the plan names) until it answers or a bounded timeout elapses, ASSERTS HTTP 200,
+   and ALWAYS stops the process in a `finally` (so a failed poll still tears the process
+   down). It owns its own start/stop — no separate launch-script ancestor is needed — but the
+   route it polls must be produced by an ancestor (artifact-ancestry). The full
+   cross-platform script (port handling, bounded poll, `finally` teardown, one actionable
+   failure line) is `stacks/dotnet.md §8`.
+
+**Determinism rules for the smoke-test** (it is a live process check, the flakiest archetype
+— hold it to these or it poisons the run with false reds):
+- **Bounded poll, not a fixed sleep.** Retry the route on a short interval up to a hard
+  timeout; a server's warm-up time varies, so a single `sleep 2` is both slower and flakier
+  than "poll every 250 ms for up to 15 s".
+- **Teardown in `finally`.** The process MUST be killed on every exit path — pass, route
+  failure, or exception — or a leaked server holds the port and every subsequent run fails.
+- **Deterministic port.** Tell the binary which port to use (CLI arg / env var) and poll
+  that exact port, OR parse the port from the URL the binary prints to its captured stdout.
+  Never guess. A fixed well-known port risks a collision with a leaked prior run; prefer a
+  port the plan fixes for the exe, or an ephemeral one the binary prints.
+- **One actionable failure line.** "smoke-test: GET http://127.0.0.1:5005/health did not
+  return 200 within 15s (last: connection refused)" converges; "smoke-test failed" loops.
+
+This is **starts-and-serves verification ONLY.** Whether the served page is the *correct
+UI content* is a separate concern (issue #66) — do not fold UI-correctness checks into the
+smoke-test.
+
 ## The prompt-judge demotion gate
 
 For EVERY candidate prompt-judge, ask all four. Any "no" → demote to a deterministic
@@ -213,7 +266,11 @@ What is the task's primary deliverable?
 │                                    captureHashes in task.json; tests-build only if tests
 │                                    compile against current code)
 ├── A runnable script/tool     → file-exists + command-exit-code on a representative invocation
-├── A running service          → port-answers + endpoint-content (curl + contains/schema)
+├── A running service /        → entry-point-wiring (grep: the entry point references the launcher)
+│    server / CLI executable      + port/endpoint-answers (#7: START the binary, POLL a route,
+│                                 ASSERT 200, STOP in a finally) — the ONLY check that the exe
+│                                 starts and serves vs merely compiles; see the entry-point-wiring
+│                                 section below + stacks/dotnet.md §7–§8
 ├── Config/data                → schema-validates; else file-contains on load-bearing keys
 ├── State output (a key a      → fragment-key-present (read $env:GUARDRAILS_STATE_FRAGMENT,
 │    downstream task reads)      parse JSON, assert the key non-null + non-empty; allowed-set
@@ -309,6 +366,15 @@ should fail before an expensive test run or a paid judge ever starts.
 - **Over-broad**: "all tests pass" on an early task — it fails for unrelated reasons,
   poisons retries with noise, and serializes the DAG. Whole-suite green belongs to one
   terminal integration task.
+- **Compiles-but-never-runs** (server/executable plans, #64): the breakdown emits component
+  tasks (scaffold exe, implement launcher, implement routes) each guarded by build +
+  unit-tests, plus a terminal whole-solution build — but **no task wires the entry point to
+  the launcher and no guardrail ever starts the binary**. Every check is green while the
+  server 404s everything (the `Program.cs` that never calls `new Launcher().StartAsync()`).
+  Fix: insert the entry-point-wiring task (structural grep, `stacks/dotnet.md §7`) and the
+  live smoke-test task (start → poll route → assert 200 → stop in `finally`, `stacks/dotnet.md
+  §8`) — see the entry-point-wiring section above. Unit tests structurally cannot catch a
+  launcher that is implemented but never called.
 - **Hidden-state**: the guardrail depends on machine state (network, globally
   installed tools, a developer's home dir) rather than ancestor outputs or the repo.
   Declare required interpreters via `guardrails.json` instead.
