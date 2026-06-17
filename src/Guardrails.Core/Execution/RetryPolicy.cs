@@ -60,6 +60,24 @@ public static class RetryPolicy
             text.AppendLine();
         }
 
+        // When a tests-untouched guardrail failed, the agent edited the authored test file (almost
+        // always to force a tests-pass guardrail green). The harness has restored that file to its
+        // authored baseline for the next attempt (issue #51), so steer the agent to fix the
+        // IMPLEMENTATION — and DROP the "do not break the passing guardrails" line, since a
+        // tests-pass achieved by editing the tests is exactly what must not be preserved.
+        bool testsUntouchedFailed = results.Any(r => !r.Passed && IsTestsUntouched(r.Name));
+        if (testsUntouchedFailed)
+        {
+            text.AppendLine("## Do NOT edit the test file(s)");
+            text.AppendLine("A `tests-untouched` guardrail failed: the authored test file was modified. The harness");
+            text.AppendLine("has restored each affected test file to its authored baseline for this attempt — it is");
+            text.AppendLine("pristine again. Make the ORIGINAL tests pass by fixing the implementation; do not change");
+            text.AppendLine("the tests. If the authored tests are genuinely wrong or incompatible with a reasonable");
+            text.AppendLine("implementation, STOP and write {\"needsHuman\": \"<why>\"} to GUARDRAILS_STATE_OUT instead");
+            text.AppendLine("of editing them.");
+            return text.ToString();
+        }
+
         IReadOnlyList<string> passed = results.Where(r => r.Passed).Select(r => r.Name).ToList();
         if (passed.Count > 0)
         {
@@ -68,6 +86,10 @@ public static class RetryPolicy
 
         return text.ToString();
     }
+
+    /// <summary>A guardrail whose name marks it as a tests-untouched check (doctrine: <c>NN-tests-untouched</c>).</summary>
+    private static bool IsTestsUntouched(string name) =>
+        name.Contains("untouched", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Compose feedback when the action succeeded but one or more declared <c>captureHashes</c>

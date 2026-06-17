@@ -184,6 +184,18 @@ downstream recompute (git `autocrlf` on checkout, or an IDE/formatter rewriting 
 comparison **fail closed** — a spurious "tests changed" block a human then reviews. Safe, but
 possible; it does not silently pass.
 
+**Restore-on-retry.** Beyond hashing, the harness snapshots each captured file's authored bytes
+into a runtime baseline store (`state/captured/<author-task-id>/<path>` — harness-owned, gitignored,
+excluded from the lock manifest like the rest of `state/` runtime). Before **each attempt** of a
+task that transitively depends on the author task, the harness restores any captured file whose
+current bytes differ from that baseline (a no-op on the first attempt). This removes the dead-end
+where an implementation task edits a captured test file: the workspace is not reset between attempts,
+and an authored test file is typically untracked in git, so without restore the dirtied file would
+persist and `tests-untouched` would fail every retry identically. With restore, a retry starts from
+the pristine test file, so an implementation correct against the *original* tests passes. Restore
+only ever touches files named in an upstream `captureHashes` — never other workspace files — and
+each restore is recorded in the attempt's `restored-baseline.log`.
+
 ## 4. Guardrails
 
 Files under `tasks/<id>/guardrails/`, executed in filename sort order (**ordinal**,

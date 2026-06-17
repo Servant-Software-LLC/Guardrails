@@ -272,6 +272,15 @@ upstream task that creates it:
   `foreach` handles multiple test files. (`Get-FileHash` and the harness both emit uppercase
   SHA-256 hex; PowerShell `-ne` is case-insensitive regardless, so the comparison is exact.)
 
+  **Restore-on-retry (harness behavior — issue #51).** Captured files are not just hashed; the
+  harness snapshots their authored bytes and **restores them to baseline before each retry** of a
+  downstream task. So if an implementation task edits a test file (to force a tests-pass guardrail
+  green), `tests-untouched` catches it AND the next attempt starts from the pristine test file —
+  no permanent dead-end. The implementation action prompt should therefore say plainly: **do not
+  edit the authored tests; make them pass by fixing the implementation; if the authored tests are
+  genuinely wrong or incompatible, emit `{"needsHuman": "<why>"}` rather than changing them.** The
+  retry feedback the harness composes already says this on a `tests-untouched` failure.
+
   **Action prompt for test-author tasks.** The `## Task` section must tell the agent: (a) the
   exact test file path(s) and any category/trait convention the repo uses; (b) the tests MUST
   fail against the current code — this is intentional, not a mistake; (c) do NOT implement the

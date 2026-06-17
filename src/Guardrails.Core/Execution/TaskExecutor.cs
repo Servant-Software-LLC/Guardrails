@@ -30,6 +30,9 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly ActionRunner _actionRunner;
     private readonly GuardrailRunner _guardrailRunner;
     private readonly AttemptJournaler _journaler;
+    private readonly DependencyGraph _graph;
+    private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
+    private readonly CapturedFileStore _capturedStore;
 
     public TaskExecutor(
         PlanDefinition plan,
@@ -45,12 +48,13 @@ public sealed class TaskExecutor : ITaskExecutor
         _journal = journal;
         _observer = observer;
 
-        var graph = new DependencyGraph(plan.Tasks);
-        IReadOnlyDictionary<string, TaskNode> tasksById = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        _graph = new DependencyGraph(plan.Tasks);
+        _tasksById = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        _capturedStore = new CapturedFileStore(plan.PlanDirectory);
 
         var scriptRunner = new ScriptUnitRunner(processRunner, interpreterMap);
         var promptSupport = new PromptExecutionSupport(promptRunners);
-        var dependencyContext = new DependencyContextBuilder(plan, journal, graph, tasksById);
+        var dependencyContext = new DependencyContextBuilder(plan, journal, _graph, _tasksById);
 
         _actionRunner = new ActionRunner(plan, scriptRunner, promptSupport, dependencyContext, ResolveTimeout);
         _guardrailRunner = new GuardrailRunner(plan, observer, scriptRunner, promptSupport, ResolveTimeout);
@@ -151,6 +155,14 @@ public sealed class TaskExecutor : ITaskExecutor
             task, attemptNumber, logDir, snapshotPath, fragmentOutPath, previousFeedbackPath);
         string workspace = ResolveWorkingDirectory(task);
 
+        // --- restore ancestor-captured files to baseline (issue #51) ---------------------
+        // The workspace is NOT reset between attempts. If an earlier attempt of THIS task edited a
+        // file an ancestor captured (e.g. a test file, to force a tests-pass guardrail green), it is
+        // still dirty on disk and tests-untouched would fail forever. Restore every captured file of
+        // every ancestor to its authored baseline before the action runs, so a retry starts pristine.
+        // No-op on the first attempt (bytes already match the baseline).
+        RestoreAncestorCaptures(task, workspace, logDir);
+
         // --- action (script or prompt) --------------------------------------------------
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
@@ -209,6 +221,14 @@ public sealed class TaskExecutor : ITaskExecutor
                     costUsd: action.CostUsd);
             }
 
+            // Snapshot the authored bytes so a downstream task that dirties one of these files can be
+            // restored to this baseline before its retry (issue #51). Only on a clean capture — a
+            // malformed fragment falls through to the merge-step rejection below.
+            if (capture.Succeeded)
+            {
+                _capturedStore.Snapshot(task.Id, task.CaptureHashes, workspace);
+            }
+
             // A malformed action fragment is the harness's to reject, not capture's to paper over:
             // capture left the bytes untouched, so we fall through to guardrails + the merge step,
             // which re-reads and rejects them as invalid-fragment — identical to the path a task with
@@ -248,6 +268,35 @@ public sealed class TaskExecutor : ITaskExecutor
         // --- merge fragment (only after every guardrail passed) --------------------------
         return _journaler.CompleteSucceededOrInvalidFragment(
             task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
+    }
+
+    /// <summary>
+    /// Restore every file captured by an ANCESTOR task (via its <c>captureHashes</c>) to the authored
+    /// baseline when the current workspace bytes differ (issue #51). Runs before each attempt's
+    /// action; a no-op on the first attempt. A task never restores its own captured files — only
+    /// those of its transitive dependencies, which it must not modify. Restored paths are recorded
+    /// to <c>restored-baseline.log</c> in the attempt dir for audit.
+    /// </summary>
+    private void RestoreAncestorCaptures(TaskNode task, string workspace, string logDir)
+    {
+        var restored = new List<string>();
+        foreach (string ancestorId in _graph.TransitiveDependenciesOf(task.Id))
+        {
+            if (!_tasksById.TryGetValue(ancestorId, out TaskNode? ancestor) || ancestor.CaptureHashes.Count == 0)
+            {
+                continue;
+            }
+
+            restored.AddRange(_capturedStore.Restore(ancestor.Id, ancestor.CaptureHashes, workspace));
+        }
+
+        if (restored.Count > 0)
+        {
+            AtomicFile.WriteAllText(
+                Path.Combine(logDir, "restored-baseline.log"),
+                "Restored to authored baseline before this attempt (a prior attempt had modified them):\n"
+                    + string.Join('\n', restored.Select(p => $"- {p}")) + "\n");
+        }
     }
 
     // --- log paths -----------------------------------------------------------------------

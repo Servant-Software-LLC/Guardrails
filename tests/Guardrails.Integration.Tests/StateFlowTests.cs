@@ -285,6 +285,112 @@ public sealed class StateFlowTests
         Assert.Equal(AttemptOutcome.InvalidFragment, journal.Tasks["01-author"].Attempts[^1].Outcome);
     }
 
+    [Fact]
+    public async Task CapturedFile_EditedByConsumer_IsRestoredOnRetry_ThenTaskSucceeds()
+    {
+        // issue #51: 01-author captures Tests.txt (content "ORIGINAL"). 02-consumer edits it on its
+        // FIRST attempt only (the cheat tests-untouched catches), then leaves it alone. The harness
+        // restores Tests.txt to baseline before attempt 2, so the content-equals-ORIGINAL guardrail
+        // passes and the task succeeds — the dead-end this fix removes.
+        string writeOriginal = StatePlanBuilder.UsePowerShell
+            ? """
+              $d = Join-Path (Get-Location) 'shared'; New-Item -ItemType Directory -Force $d | Out-Null
+              [System.IO.File]::WriteAllText((Join-Path $d 'Tests.txt'), 'ORIGINAL')
+              exit 0
+              """
+            : """
+              mkdir -p shared; printf 'ORIGINAL' > shared/Tests.txt
+              exit 0
+              """;
+
+        string cheatOnFirstAttempt = StatePlanBuilder.UsePowerShell
+            ? """
+              if ($env:GUARDRAILS_ATTEMPT -eq '1') {
+                [System.IO.File]::AppendAllText((Join-Path (Get-Location) 'shared/Tests.txt'), ' CHEAT')
+              }
+              exit 0
+              """
+            : """
+              if [ "$GUARDRAILS_ATTEMPT" = "1" ]; then printf ' CHEAT' >> shared/Tests.txt; fi
+              exit 0
+              """;
+
+        string untouchedGuardrail = StatePlanBuilder.UsePowerShell
+            ? """
+              $c = [System.IO.File]::ReadAllText((Join-Path (Get-Location) 'shared/Tests.txt'))
+              if ($c -ne 'ORIGINAL') { Write-Output 'Tests.txt was modified'; exit 1 }
+              exit 0
+              """
+            : """
+              if [ "$(cat shared/Tests.txt)" != "ORIGINAL" ]; then echo 'Tests.txt was modified'; exit 1; fi
+              exit 0
+              """;
+
+        using var plan = new StatePlanBuilder(defaultRetries: 2)
+            .AddTask("01-author", actionBody: writeOriginal, captureHashes: ["shared/Tests.txt"])
+            .AddTask("02-consumer", actionBody: cheatOnFirstAttempt, guardrailBody: untouchedGuardrail, dependsOn: "01-author");
+
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded, Summarize(report));
+
+        // The file is back to its authored baseline, and the harness logged the restore on attempt 2.
+        Assert.Equal("ORIGINAL", File.ReadAllText(Path.Combine(plan.PlanDir, "shared", "Tests.txt")));
+        string restoredLog = Path.Combine(plan.PlanDir, "state", "logs", "02-consumer", "attempt-2", "restored-baseline.log");
+        Assert.True(File.Exists(restoredLog), "expected restored-baseline.log on attempt 2");
+        Assert.Contains("shared/Tests.txt", File.ReadAllText(restoredLog));
+    }
+
+    [Fact]
+    public async Task CapturedFile_EditedEveryAttempt_RestoreDoesNotMaskPersistentCheating()
+    {
+        // Counterpart to the self-heal test: a consumer that edits the captured file on EVERY attempt
+        // must still fail. Restore cleans the file before each attempt, but the action re-dirties it,
+        // so tests-untouched fails every time and the task lands on needs-human — restore never lets
+        // active cheating slip through.
+        string writeOriginal = StatePlanBuilder.UsePowerShell
+            ? """
+              $d = Join-Path (Get-Location) 'shared'; New-Item -ItemType Directory -Force $d | Out-Null
+              [System.IO.File]::WriteAllText((Join-Path $d 'Tests.txt'), 'ORIGINAL')
+              exit 0
+              """
+            : """
+              mkdir -p shared; printf 'ORIGINAL' > shared/Tests.txt
+              exit 0
+              """;
+
+        string cheatEveryAttempt = StatePlanBuilder.UsePowerShell
+            ? """
+              [System.IO.File]::AppendAllText((Join-Path (Get-Location) 'shared/Tests.txt'), ' CHEAT')
+              exit 0
+              """
+            : """
+              printf ' CHEAT' >> shared/Tests.txt
+              exit 0
+              """;
+
+        string untouchedGuardrail = StatePlanBuilder.UsePowerShell
+            ? """
+              $c = [System.IO.File]::ReadAllText((Join-Path (Get-Location) 'shared/Tests.txt'))
+              if ($c -ne 'ORIGINAL') { Write-Output 'Tests.txt was modified'; exit 1 }
+              exit 0
+              """
+            : """
+              if [ "$(cat shared/Tests.txt)" != "ORIGINAL" ]; then echo 'Tests.txt was modified'; exit 1; fi
+              exit 0
+              """;
+
+        using var plan = new StatePlanBuilder(defaultRetries: 2)
+            .AddTask("01-author", actionBody: writeOriginal, captureHashes: ["shared/Tests.txt"])
+            .AddTask("02-consumer", actionBody: cheatEveryAttempt, guardrailBody: untouchedGuardrail, dependsOn: "01-author");
+
+        RunReport report = await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        Assert.False(report.AllSucceeded, Summarize(report));
+        TaskResult consumer = report.Tasks.Single(t => t.TaskId == "02-consumer");
+        Assert.Equal(TaskOutcome.GuardrailFailed, consumer.Outcome);
+    }
+
     private static string Summarize(RunReport report) =>
         string.Join("\n", report.Tasks.Select(t => $"{t.TaskId}: {t.Outcome} ({t.Summary})"));
 }
