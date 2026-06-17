@@ -9,8 +9,9 @@ namespace Guardrails.Integration.Tests;
 ///
 /// Scenario control flows through env vars set on the action (which the harness propagates to
 /// guardrails too): <c>FAKE_MODE</c> = fragment | nofragment | needshuman | iserror;
-/// <c>FAKE_COST</c> = a cost string; <c>FAKE_VERDICT</c> = pass | fail (read by guardrail
-/// invocations). <c>nofragment</c> succeeds cleanly but contributes NO state fragment — the
+/// <c>FAKE_COST</c> = a cost string, or <c>none</c> to omit <c>total_cost_usd</c> from the result
+/// line (models a succeeded prompt whose runner reported no cost → null CostUsd); <c>FAKE_VERDICT</c>
+/// = pass | fail (read by guardrail invocations). <c>nofragment</c> succeeds cleanly but contributes NO state fragment — the
 /// shape a task takes when a reset + re-run produces a later succeeded attempt that does not
 /// touch <c>state.json</c>.
 /// </summary>
@@ -188,7 +189,12 @@ public sealed class FakeClaudePlanBuilder : IDisposable
             }
         }
         $err = if ($env:FAKE_MODE -eq 'iserror') { 'true' } else { 'false' }
-        Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","total_cost_usd":' + $cost + ',"num_turns":2}')
+        if ($cost -eq 'none') {
+            # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
+            Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","num_turns":2}')
+        } else {
+            Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","total_cost_usd":' + $cost + ',"num_turns":2}')
+        }
         """;
 
     private static string FakeBashBody() =>
@@ -212,7 +218,12 @@ public sealed class FakeClaudePlanBuilder : IDisposable
           fi
         fi
         if [ "$FAKE_MODE" = "iserror" ]; then err=true; else err=false; fi
-        printf '{"type":"result","is_error":%s,"result":"fake done","total_cost_usd":%s,"num_turns":2}\n' "$err" "$cost"
+        if [ "$cost" = "none" ]; then
+          # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
+          printf '{"type":"result","is_error":%s,"result":"fake done","num_turns":2}\n' "$err"
+        else
+          printf '{"type":"result","is_error":%s,"result":"fake done","total_cost_usd":%s,"num_turns":2}\n' "$err" "$cost"
+        fi
         """;
 
     private static void WriteScript(string path, string content)

@@ -80,6 +80,16 @@ internal sealed class AttemptJournaler
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence);
 
+        // Always show a cost field so the summary column never reads as a reporting gap (issue #58).
+        // Key the marker off the ACTION KIND, not cost-nullness: a succeeded PROMPT action can
+        // legitimately have a null CostUsd (the Claude `result` line omitted total_cost_usd, or a
+        // non-Claude runner reports no cost — see ClaudeStreamParser), so inferring "no LLM used
+        // (script)" from null would lie about a task that DID call a model. A script never invokes a
+        // model; a prompt whose cost wasn't reported says exactly that.
+        string costSegment = task.Action.Kind == ActionKind.Script
+            ? "; no LLM used (script)"
+            : action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
+
         return new AttemptResult(new TaskResult
         {
             TaskId = task.Id,
@@ -87,7 +97,7 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Guardrails = guardrails.Results,
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed"
-                      + (action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "")
+                      + costSegment
                       + (mergeSequence is null ? "" : $"; merged (seq {mergeSequence})")
         }, FeedbackPath: null);
     }
