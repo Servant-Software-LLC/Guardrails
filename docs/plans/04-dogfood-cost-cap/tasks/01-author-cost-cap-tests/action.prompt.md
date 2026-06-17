@@ -44,19 +44,7 @@ BUT these tests MUST NOT COMPILE OR MUST FAIL against the current code, because 
 the point (it proves the tests encode unbuilt behavior). Do NOT implement the feature.
 Do NOT edit any non-test file.
 
-After writing all three test files, record their content hashes so a downstream
-guardrail can verify they were not modified by the implementation task.
-For each file, run `git hash-object <path>` (e.g. Bash with
-  git hash-object tests/Guardrails.Core.Tests/CostCapConfigTests.cs
-); capture the trimmed hex output. Then write this JSON to the path in
-GUARDRAILS_STATE_OUT (which the harness appended to this prompt):
-
-{
-  "01-author-cost-cap-tests": {
-    "testFileHashes": {
-      "tests/Guardrails.Core.Tests/CostCapConfigTests.cs": "<hex>",
-      "tests/Guardrails.Core.Tests/CostCapValidatorTests.cs": "<hex>",
-      "tests/Guardrails.Core.Tests/CostCapSchedulerTests.cs": "<hex>"
-    }
-  }
-}
+You do NOT need to hash the test files or write anything to state — this task's
+`captureHashes` declaration makes the harness record their SHA-256 hashes automatically
+(after the action, before guardrails), so the implementation task's `tests-untouched`
+guardrail can verify they were not modified. Publish nothing to state.
