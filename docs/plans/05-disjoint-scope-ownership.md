@@ -285,7 +285,9 @@ unaffected.
 - **§2 guardrails.json:** add `enforcementIgnore` (defaults) ; remove anything tied to
   the retired triad.
 - **§6.1 `--fresh`/`reset`:** wipe `state/scope-baseline/` (replacing `state/captured/`).
-- **§3.1/§3.1.1:** delete the captureHashes/restoreOnRetry sections.
+- **§3.1/§3.1.1:** delete the captureHashes/restoreOnRetry sections, **and remove their
+  validation rules GR2013 (captureHashes path) and GR2014 (restoreOnRetry-requires-captureHashes)** —
+  they validate fields that no longer exist after M7.
 - Validation: GR2015 (subsumption guard, ERROR), GR2016 (overlapping scopes among
   independents — warning), GR2017 (malformed glob — error). Reuse `WorkspaceContainment`
   for escape checks.
@@ -379,8 +381,9 @@ implementation tasks (TDD-by-default).
   Scope: remove `captureHashes`/`tests-untouched`/`restoreOnRetry` from the schema,
   loader, `FileHashCapture` capture-into-fragment path, `RetryPolicy` tests-untouched
   feedback, and `CapturedFileStore` (or rename/retain only the byte-store reused by the
-  enforcer); delete the SSOT §3.1/§3.1.1 sections; regenerate the dogfood plan
-  (`04-dogfood-cost-cap`) to the new pattern.
+  enforcer); **remove validation rules GR2013/GR2014** (they validate the now-deleted
+  fields); delete the SSOT §3.1/§3.1.1 sections; regenerate the dogfood plan
+  (`04-dogfood-cost-cap`) to the new pattern. (#48 single-writer-per-key stays.)
   Exit: no `captureHashes`/`tests-untouched`/`restoreOnRetry` references remain; full
   suite green; dogfood plan regenerated and validate-clean. #48 single-writer untouched.
   Depends on M5, M6 (and the GR2015 guard from M3). Size: M.
