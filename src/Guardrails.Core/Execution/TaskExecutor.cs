@@ -240,6 +240,12 @@ public sealed class TaskExecutor : ITaskExecutor
             // captureHashes must not change whether such a task fails.
         }
 
+        // --- inject harness-computed action result into fragment (issue #62) -----------
+        // Writes actionExitCode + actionKind under the task's own key so guardrails can read
+        // the outcome via GUARDRAILS_STATE_FRAGMENT and downstream tasks see it in their
+        // GUARDRAILS_STATE_IN snapshot — the parallel-safe path (env vars are process-scoped).
+        ActionResultCapture.Inject(task.Id, action.ExitCode ?? 0, ActionKindLabel(task), fragmentOutPath);
+
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
