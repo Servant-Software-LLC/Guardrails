@@ -104,7 +104,10 @@ ProjectReference check stops the local-copy escape; this regex stops the comment
   ```powershell
   # catches: code that doesn't compile
   dotnet build PoC/ConformedSources/WorksoftMigrator.Desktop --nologo -v q
-  if ($LASTEXITCODE -ne 0) { Write-Output "WorksoftMigrator.Desktop does not build"; exit 1 }
+  if ($LASTEXITCODE -ne 0) {
+      Write-Output "WorksoftMigrator.Desktop does not build"
+      exit 1
+  }
   exit 0
   ```
 - **Build the whole solution** belongs to ONE terminal integration task only (catalogue:
@@ -112,7 +115,10 @@ ProjectReference check stops the local-copy escape; this regex stops the comment
   ```powershell
   # catches: a project that builds alone but breaks the solution (e.g. unregistered or a broken ref)
   dotnet build PoC/ConformedSources/WorksoftMigrator.slnx -c Release --nologo
-  if ($LASTEXITCODE -ne 0) { Write-Output "solution build failed"; exit 1 }
+  if ($LASTEXITCODE -ne 0) {
+      Write-Output "solution build failed"
+      exit 1
+  }
   exit 0
   ```
 - **Tests:** filter to THIS task's tests (`dotnet test <proj> --filter "Category=Stats" --nologo`),

@@ -175,7 +175,12 @@ optional:
 - Every candidate prompt-judge passes the 4-question demotion gate or is demoted.
   A judge is never a task's only guardrail.
 - Deterministic guardrails print ONE actionable failure line to stdout (it becomes
-  retry feedback).
+  retry feedback). Write the failure branch as a **multi-line `if` block** — the
+  `Write-Output` reason and its `exit 1` each on their own indented line; never collapse
+  the body onto the `if` line with `;` (`if (...) { Write-Output "..."; exit 1 }`). That
+  reason line is what a human reviews and what the next attempt reads as feedback, so it
+  must stand on its own line and be easy to scan. Applies to every archetype, build /
+  exit-code checks included.
 - "All tests pass" appears ONLY on a terminal integration task.
 
 **Route through these doctrine checks every task (the decision tree's newer leaves):**
@@ -276,7 +281,10 @@ upstream task that creates it:
     $current = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
     if ($current -ne $stored) { $failures += "$file was modified (expected $stored, got $current)" }
   }
-  if ($failures) { Write-Output ($failures -join "; "); exit 1 }
+  if ($failures) {
+    Write-Output ($failures -join "; ")
+    exit 1
+  }
   exit 0
   ```
 
