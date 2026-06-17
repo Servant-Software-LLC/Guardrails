@@ -32,8 +32,13 @@ Each slots into an existing v1 seam — none invalidates the architecture:
 
 1. **Worktree-per-task parallelism** — git worktree per task with merge-on-success
    replaces the v1 `exclusive`-by-default compromise; unlocks genuinely concurrent
-   prompt tasks on one repo. *Seam: Scheduler/workspace resolution (workspace becomes
-   per-task; merge step on `Succeeded`).*
+   prompt tasks on one repo. Split into two layered issues: **#54 worktree mechanics
+   + halt-on-conflict baseline** (worktree lifecycle, `WorkspaceLock`-exclusive
+   merge-back, merge-queue visibility) and **#57 AI merge-conflict resolution** (a
+   resolver sub-agent reconciles conflicts by default, gated by re-running the
+   incoming task's guardrails, with its own in-progress UX + post-mortem log folder).
+   *Seam: Scheduler/workspace resolution (workspace becomes per-task; merge step on
+   `Succeeded`).*
 2. **CI mode** — `guardrails run --ci` inside GitHub Actions emitting check runs /
    PR-per-task; journal published as a shared artifact. *Seam: an `IProgressSink`
    implementation + exit-code consumer; no core changes.*
@@ -51,7 +56,7 @@ Each slots into an existing v1 seam — none invalidates the architecture:
 1. Claude CLI contract instability — quarantined in `ClaudePromptRunner`; verdict
    files not exit codes; max-turns/timeout cost breakers.
 2. Parallel tasks sharing one workspace — prompt actions exclusive-by-default;
-   honest docs; worktrees are the v2 fix.
+   honest docs; worktrees are the v2 fix (#54 mechanics, #57 AI merge resolution).
 3. Plausible-but-weak generated guardrails — "catches:" comments, prompt-judge
    demotion gate, tests-fail-on-stub, human review, `guardrails-review`, dogfooding.
 4. Retry divergence (attempt N builds on attempt N−1's wreckage) — low default
