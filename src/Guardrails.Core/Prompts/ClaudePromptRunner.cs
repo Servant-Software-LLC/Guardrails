@@ -1,3 +1,4 @@
+using System.Text;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
@@ -16,6 +17,15 @@ namespace Guardrails.Core.Prompts;
 /// </summary>
 public sealed class ClaudePromptRunner : IPromptRunner
 {
+    /// <summary>
+    /// Pin the two persisted log artifacts to UTF-8 (no BOM) explicitly (issue #55). The
+    /// no-arg <see cref="StreamWriter"/> overloads already default to this, but the symptom of
+    /// #55 — mojibake — lived in exactly these files, so stating the encoding keeps a future edit
+    /// from silently regressing them to a BOM/code-page default. Matches <see cref="State.AtomicFile"/>
+    /// and <see cref="ProcessRunner"/>'s decode.
+    /// </summary>
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     private readonly ProcessRunner _processRunner;
     private readonly string _command;
 
@@ -52,13 +62,13 @@ public sealed class ClaudePromptRunner : IPromptRunner
         // because nothing hashes or guardrail-gates them: the verdict never comes from these files —
         // it comes from the parsed `result` line + exit code (see `completed` below).
         Directory.CreateDirectory(Path.GetDirectoryName(invocation.StreamLogPath)!);
-        await using var streamWriter = new StreamWriter(invocation.StreamLogPath, append: false) { AutoFlush = true };
+        await using var streamWriter = new StreamWriter(invocation.StreamLogPath, append: false, Utf8NoBom) { AutoFlush = true };
 
         // transcript.md is rendered incrementally from the same lines via StreamingWriter, which
         // parses each line independently and is byte-identical to a batch Render at Complete().
         // StreamingWriter flushes itself, so this writer needs no AutoFlush.
         StreamWriter? transcriptFile = invocation.TranscriptLogPath is { } transcriptPath
-            ? new StreamWriter(transcriptPath, append: false)
+            ? new StreamWriter(transcriptPath, append: false, Utf8NoBom)
             : null;
         ClaudeTranscriptRenderer.StreamingWriter? transcript =
             transcriptFile is null ? null : new ClaudeTranscriptRenderer.StreamingWriter(transcriptFile);

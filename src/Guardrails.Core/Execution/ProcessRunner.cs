@@ -15,13 +15,20 @@ public sealed class ProcessRunner
     public const int TimeoutExitCode = -1;
 
     /// <summary>
-    /// UTF-8 (no BOM) for every redirected stream (issue #55). Without an explicit encoding, .NET
-    /// decodes a redirected child's stdout/stderr with <see cref="Console.OutputEncoding"/> — on
-    /// Windows the OEM console code page (CP437/850), NOT UTF-8 — so UTF-8 output from a child (e.g.
-    /// Claude's em dash <c>—</c> = bytes <c>E2 80 94</c>) is mis-decoded into mojibake (<c>ΓÇö</c>)
-    /// and persisted that way to claude-stream.jsonl / transcript.md / *.log. Pinning UTF-8 makes
-    /// capture host-console-independent and round-trip-faithful; the no-BOM form matches
-    /// <see cref="State.AtomicFile"/> so what we read is what we write.
+    /// UTF-8 for every redirected stream (issue #55). Without an explicit encoding, .NET decodes a
+    /// redirected child's stdout/stderr with <see cref="Console.OutputEncoding"/> — on Windows the
+    /// host OEM console code page (CP437/850), NOT UTF-8 — so UTF-8 output from a child (e.g. Claude's
+    /// em dash <c>—</c> = bytes <c>E2 80 94</c>) is mis-decoded into mojibake (<c>ΓÇö</c>) and
+    /// persisted that way to claude-stream.jsonl / transcript.md / *.log. Pinning UTF-8 makes capture
+    /// host-console-independent and round-trip-faithful.
+    /// <para>
+    /// The no-BOM form is load-bearing specifically on the <see cref="ProcessStartInfo.StandardInputEncoding"/>
+    /// (encode) path: a BOM-emitting encoder would prepend <c>EF BB BF</c> to the child's stdin,
+    /// corrupting the head of a composed prompt fed to <c>claude -p</c>. On the stdout/stderr (decode)
+    /// paths the BOM flag is irrelevant — a decoder strips a leading BOM either way — but one shared
+    /// no-BOM instance keeps all three streams consistent and matches the harness's own UTF-8-no-BOM
+    /// writes (<see cref="State.AtomicFile"/>).
+    /// </para>
     /// </summary>
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 

@@ -100,7 +100,10 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;
   interpreter resolution via `InterpreterMap` with injectable `IExecutableProbe`
-  (tests use `FakeExecutableProbe`, never the real PATH).
+  (tests use `FakeExecutableProbe`, never the real PATH). Child streams are pinned
+  UTF-8 (no BOM) in `ProcessRunner` (stdout/stderr decode + stdin encode) — never
+  rely on `Console.OutputEncoding`, which is the Windows OEM code page and corrupts
+  non-ASCII in the logs (#55, SSOT §5.1).
 - **Merge-sequence protocol**: `journal.ReserveMergeSequence()` BEFORE
   `stateManager.MergeFragment(...)`; pass the reserved value to `RecordAttempt`.
 - **Claude specifics live ONLY in `Prompts/`** — `ClaudePromptRunner` (flags, invocation),
