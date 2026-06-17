@@ -95,8 +95,12 @@ public static class BreakdownMerge
     /// When the fallback puts it on a DIFFERENT volume (e.g. <c>%TEMP%</c> on C: while the plan is on
     /// F:), the swap-in is a recursive copy instead, because <c>Directory.Move</c> cannot cross
     /// volumes; the backup-then-restore-on-failure guarantee holds either way.
+    ///
+    /// <para>After re-writing the baseline, when <paramref name="output"/> is supplied it prints a
+    /// GitGuardian baseline-exclusion suggestion (issue #67) if the repo's scanner config doesn't
+    /// already cover it. That is advisory only — read-only, never edits the config, never throws.</para>
     /// </summary>
-    public static void Apply(MergePlan plan, string localFolder, string remoteFolder)
+    public static void Apply(MergePlan plan, string localFolder, string remoteFolder, TextWriter? output = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         if (plan.HasConflicts)
@@ -179,6 +183,14 @@ public static class BreakdownMerge
 
         // 5. Re-write the baseline: the merged folder is the new BASE.
         BreakdownManifest.Capture(local).Write(local);
+
+        // 6. Detect-and-suggest the scanner exclusion alongside the baseline write (issue #67):
+        // read-only, advisory only — it never edits the user's .gitguardian.yaml and never throws.
+        // No-op when there's no git repo or when an output sink wasn't provided.
+        if (output is not null)
+        {
+            GitGuardianConfig.SuggestBaselineExclusion(local, output);
+        }
     }
 
     // --- matched task -----------------------------------------------------------------

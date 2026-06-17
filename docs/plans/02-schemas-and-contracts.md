@@ -661,6 +661,23 @@ The baseline carries **no timestamp** — its identity is the `files` map alone,
 `guardrails lock` on an unchanged folder rewrites a **byte-identical** file (a deterministic
 projection, no git churn — matching the `diagram.md` precedent in §10).
 
+**Secret-scanner exclusion suggestion (issue #67).** Because the baseline is a committed file of
+pure SHA-256 hashes, generic secret scanners (ggshield/GitGuardian) flag a hash as a false-positive
+"high entropy secret" and block the commit. The baseline must stay committed (it is the BASE for
+merge), so whenever the tool **writes** a baseline — `guardrails lock` and the regeneration
+`merge --apply` — it **detects** whether the enclosing git repo's GitGuardian config already
+excludes `**/guardrails.baseline` and, when it does not, **prints a copy-pasteable suggestion**. The
+tool is **read-only and advisory here: it never modifies, creates, or edits the user's scanner
+config** — it only inspects and suggests. The detection prefers `.gitguardian.yaml` over an existing
+`.gitguardian.yml` (ggshield precedence) and reads the v2 `secret.ignored-paths` and v1 top-level
+`paths-ignore` keys, treating reasonable spellings (`**/guardrails.baseline`, `guardrails.baseline`,
+`./guardrails.baseline`) as already-covered so it never nags. The suggestion is **targeted** when a
+config exists (naming the file and the exact key for its v1/v2 schema), a **create-this-file** block
+when no config exists, and a **generic** line when the config can't be read. It only ever prints, so
+it can never affect the exit code, and a read/parse error never escapes into `lock`/`merge` (no
+failure coupling). It is a no-op (prints nothing) when there is no enclosing git repo or when the
+exclusion is already present.
+
 **Included:** `guardrails.json`, every task's `task.json` / `action.*` / `guardrails/*`, and the
 committed `state/seed.json`. **Excluded:** the baseline file itself, the generated `diagram.md`
 and `diagram.html`, `*.tmp` (atomic-write residue), and harness-owned runtime under `state/`

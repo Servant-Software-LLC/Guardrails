@@ -87,6 +87,12 @@ public static class LockCommand
         BreakdownManifest manifest = BreakdownManifest.Capture(folder);
         manifest.Write(folder);
         output.WriteLine($"Wrote {BreakdownManifest.BaselineFilePath(folder)} ({manifest.Files.Count} file(s))");
+
+        // A committed baseline is a path→SHA-256 manifest; its high-entropy hashes trip generic
+        // secret scanners (issue #67). DETECT whether the repo's ggshield config already excludes
+        // baseline files and, if not, PRINT a copy-pasteable suggestion. This is advisory only — it
+        // never edits the user's scanner config and never affects the exit code.
+        GitGuardianConfig.SuggestBaselineExclusion(folder, output);
         return ExitCodes.Success;
     }
 
