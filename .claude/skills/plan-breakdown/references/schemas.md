@@ -94,7 +94,11 @@ a .NET plan, not blanket `Bash`.
                             // Leave null unless you have a reason.
   "captureHashes": [        // optional; workspace-relative files whose SHA-256 the HARNESS
     "tests/MyProj/FooTests.cs"  // records into state after a successful action — the agent
-  ]                         // never hashes anything. Missing file ⇒ attempt fails. (tests-untouched)
+  ],                        // never hashes anything. Missing file ⇒ attempt fails. (tests-untouched)
+  "restoreOnRetry": true    // optional bool, default false; only meaningful WITH captureHashes.
+                            // true ⇒ the harness also snapshots the captured files' authored bytes
+                            // and restores them to baseline before each downstream retry (the #51
+                            // self-heal). true with empty/absent captureHashes ⇒ GR2014.
 }
 ```
 
@@ -113,6 +117,15 @@ on a downstream task reads it back and recomputes with `Get-FileHash -Algorithm 
 single-writer-per-key is enforced (SSOT §6.2), no intervening task can forge or overwrite
 `<taskId>.fileHashes` by writing under another task's id — the recorded hash is contract-protected
 against cross-task poisoning (issue #48). See SKILL.md Step 5.
+
+`restoreOnRetry` (optional bool, default **false**) is only meaningful **with** `captureHashes`. By
+default `captureHashes` hashes for tamper-detection ONLY — nothing is snapshotted or restored.
+Setting `restoreOnRetry: true` opts the captured files into **restore-on-retry**: the harness also
+snapshots their authored bytes and restores any that differ from baseline before **each downstream
+retry**, so an implementation agent that dirtied an authored test starts its next attempt pristine
+(the #51 self-heal). `restoreOnRetry: true` with an empty/absent `captureHashes` has nothing to act
+on and is a **GR2014** validation error. The `tests-untouched` doctrine sets **both** fields on the
+test-author task (SKILL.md Step 5). See SSOT §3.1.1.
 
 ## Prompt files (`.prompt.md`)
 

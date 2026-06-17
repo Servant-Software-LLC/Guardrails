@@ -109,6 +109,10 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   "captureHashes": [           // optional; workspace-relative files whose SHA-256 the HARNESS
     "tests/MyProj/FooTests.cs" //   records into state after a successful action (§3.1) — the
   ],                           //   agent never computes a hash. Missing file ⇒ attempt fails.
+  "restoreOnRetry": false,     // optional, default false; opt-in to restore-on-retry for the
+                               //   captureHashes files above (§3.1). true ⇒ also snapshot their
+                               //   authored bytes and restore them before a downstream retry.
+                               //   true with empty/absent captureHashes = validation error (GR2014).
   "action": {                  // OPTIONAL — omit to use convention discovery:
                                //   exactly ONE file named action.* in the task folder;
                                //   zero or multiple action.* files = validation error
@@ -183,6 +187,49 @@ race under `maxParallelism > 1`. It sidesteps the **git-blob** normalization haz
 downstream recompute (git `autocrlf` on checkout, or an IDE/formatter rewriting the file) makes the
 comparison **fail closed** — a spurious "tests changed" block a human then reviews. Safe, but
 possible; it does not silently pass.
+
+### 3.1.1 `restoreOnRetry` — opt-in baseline restore
+
+`restoreOnRetry` is an optional task-level boolean (default **false**) that sits alongside
+`captureHashes`. **By default, `captureHashes` ONLY hashes** for tamper-detection (above) — nothing
+is snapshotted and nothing is restored. Setting `restoreOnRetry: true` on the **author** task opts
+that task's captured files into restore-on-retry; with it off, the dirtied-file dead-end below is
+back for that task — which is fine, it is opt-in.
+
+**What `restoreOnRetry: true` does.** Beyond hashing, the harness snapshots each captured file's
+authored bytes into a runtime baseline store (`state/captured/<author-task-id>/<path>` — harness-owned,
+gitignored, excluded from the lock manifest like the rest of `state/` runtime). The snapshot is taken
+**only on a clean capture** (a successful action whose fragment is valid), strictly **before** the
+author task's own guardrails run — and thus before it is journaled `succeeded`. A baseline is therefore
+written even on an author attempt whose guardrails later FAIL; that is harmless: the author re-snapshots
+(overwrite) on its next clean attempt, and a consumer never restores from an author that never succeeds
+(the author's dependents stay `blocked` and never run). Before **each attempt** of a task that transitively depends on
+a `restoreOnRetry` author, the harness restores any captured file whose current bytes differ from that
+baseline (a no-op on the first attempt). This removes the dead-end where an implementation task edits
+a captured test file: the workspace is not reset between attempts, and an authored test file is
+typically untracked in git, so without restore the dirtied file would persist and `tests-untouched`
+would fail every retry identically. With restore, a retry starts from the pristine test file, so an
+implementation correct against the *original* tests passes.
+
+**Scope and validation.** Restore only ever touches files named in an upstream `restoreOnRetry`
+`captureHashes` — never other workspace files. `restoreOnRetry: true` with an empty/absent
+`captureHashes` has nothing to act on and is a **`GR2014`** validation error naming the task. When
+**two** ancestor authors capture the same relative path, restore is **last-write-wins in ancestor-id
+ordinal order** (each baseline is keyed under its own author id, so they never collide in the store;
+the consumer restores ancestors in ordinal id order, so the highest-sorting author's bytes win).
+
+**Resolved against the workspace.** Both snapshot and restore resolve each captured path against the
+**plan workspace** — the canonical base the `GR2013` check validated — never against a consumer
+task's per-task `workingDirectory`. The harness additionally re-asserts workspace containment before
+every write (defense-in-depth): a path that would escape the workspace is **not** written and is
+recorded as un-restorable. Each restore — and any captured file the harness could **not** restore
+(missing baseline, or a containment skip) — is recorded in the attempt's `restored-baseline.log`, so
+the audit log is loud exactly when restore could not protect the workspace, not only on success.
+
+**Resume.** Because the snapshot is taken only on a clean capture and *before* the author is journaled
+`succeeded`, a crash mid-snapshot re-runs the author on resume and re-snapshots from scratch — the
+baseline is consistent on crash-resume. `guardrails run --fresh` deletes `state/captured/` (§6.1) so a
+stale baseline can never revert a legitimately re-authored file on the next run.
 
 ## 4. Guardrails
 
@@ -280,6 +327,22 @@ substitution tokens (`{args}` defaults to appending after the script path).
 `guardrails validate` reports any extension used by the plan whose interpreter is
 not resolvable on PATH.
 
+### 5.3 Harness writes to the workspace — exactly one case
+
+The harness is otherwise a **read-only** actor on the workspace: actions and guardrails write
+workspace files; the harness reads them (hashes, captures, lock manifest) and owns only `state/`.
+There is **exactly one** exception, bounded here so a future feature cannot quietly widen it:
+
+> **The harness writes a workspace file only when restoring a `restoreOnRetry` `captureHashes`
+> file to its authored baseline before an attempt (§3.1.1) — and never otherwise.** Each such write
+> targets a path that (a) appears in an upstream `restoreOnRetry` task's `captureHashes`, (b) resolves
+> against the plan workspace, and (c) passes the same workspace-containment check as `GR2013`
+> immediately before the write. A path failing any of these is **not** written and is logged as
+> un-restorable.
+
+Any new capability that needs the harness to write workspace files must be added to this list with
+its own containment analysis — the default remains that the harness does not mutate the workspace.
+
 ---
 
 ## 6. State
@@ -289,7 +352,10 @@ not resolvable on PATH.
 - `state/seed.json` (optional, **committed**): initial state authored with the plan.
 - `state/state.json` (runtime, gitignored): the merged state. Created at run start
   from `seed.json` (or `{}`) when missing. `guardrails run --fresh` deletes runtime
-  state (journal, state.json, logs) and re-seeds.
+  state and re-seeds. The `--fresh` deletion list is: `run.json`, `state.json`,
+  `merge-conflicts.log`, the `logs/` tree, and the `captured/` baseline store (§3.1.1) —
+  the captured store MUST be wiped or a stale baseline would revert a legitimately
+  re-authored file on the next run, before any task re-snapshots its current bytes.
 - The **harness is the single writer** of `state.json`. Child processes never touch it.
 
 ### 6.2 Fragments (snapshot in, fragment out)
@@ -369,7 +435,9 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
-  explicit way to force a re-run.
+  explicit way to force a re-run. Resetting a task also clears that task's captured
+  baseline store (`state/captured/<task-id>/`, §3.1.1), so the re-run re-snapshots from
+  its fresh authored bytes rather than restoring a stale baseline.
 - `needs-human` — retry budget exhausted. All *transitive* dependents become `blocked`.
   Independent branches keep running.
 - Resume rules (`guardrails run` on an existing journal): `succeeded` → skip;

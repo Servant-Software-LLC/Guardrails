@@ -26,6 +26,66 @@ public sealed class PlanLoaderTests
         GuardrailDefinition guardrail = Assert.Single(task.Guardrails);
         Assert.Equal("01-it-worked", guardrail.Name);
         Assert.Equal(ActionKind.Script, guardrail.Kind);
+
+        // restoreOnRetry defaults to false when absent (issue #51, FIX A).
+        Assert.False(task.RestoreOnRetry);
+    }
+
+    [Fact]
+    public void RestoreOnRetry_RoundTripsFromTaskJson()
+    {
+        // restoreOnRetry: true is carried onto the TaskNode; alongside captureHashes (mirrors how
+        // captureHashes is loaded). A task that omits it stays false.
+        string planDir = WriteInlinePlan(
+            optInTaskJson: """
+            {
+              "description": "author the tests",
+              "captureHashes": ["tests/Foo.cs"],
+              "restoreOnRetry": true
+            }
+            """,
+            plainTaskJson: """
+            {
+              "description": "plain task",
+              "captureHashes": ["tests/Bar.cs"]
+            }
+            """);
+
+        try
+        {
+            PlanLoadResult result = new PlanLoader().Load(planDir);
+            Assert.False(result.HasErrors, DiagnosticDump(result));
+
+            TaskNode optIn = result.Plan!.Tasks.Single(t => t.Id == "01-opt-in");
+            TaskNode plain = result.Plan!.Tasks.Single(t => t.Id == "02-plain");
+            Assert.True(optIn.RestoreOnRetry);
+            Assert.Equal(["tests/Foo.cs"], optIn.CaptureHashes);
+            Assert.False(plain.RestoreOnRetry);
+        }
+        finally
+        {
+            Directory.Delete(planDir, recursive: true);
+        }
+    }
+
+    private static string WriteInlinePlan(string optInTaskJson, string plainTaskJson)
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-loader-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(planDir);
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"), """{ "version": 1, "workspace": "." }""");
+
+        WriteTask(planDir, "01-opt-in", optInTaskJson);
+        WriteTask(planDir, "02-plain", plainTaskJson);
+        return planDir;
+    }
+
+    private static void WriteTask(string planDir, string id, string taskJson)
+    {
+        string taskDir = Path.Combine(planDir, "tasks", id);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+        File.WriteAllText(Path.Combine(taskDir, "task.json"), taskJson);
+        File.WriteAllText(Path.Combine(taskDir, "action.sh"), "#!/usr/bin/env bash\nexit 0\n");
+        File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.sh"), "#!/usr/bin/env bash\nexit 0\n");
     }
 
     [Fact]

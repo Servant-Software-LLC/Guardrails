@@ -223,19 +223,31 @@ upstream task that creates it:
   `allowedTools` (e.g. `Bash(dotnet *)` only) can never block the capture (the failure mode
   that made the old agent-computed pattern hang on `needsHuman`). Two parts:
 
-  **Part 1 — test-author `task.json`: declare `captureHashes`.** List every test file the
-  task authors, workspace-relative. After the action succeeds (and before guardrails run),
-  the harness computes each file's SHA-256 (uppercase hex, over raw bytes) and merges it into
-  state under `{ "<task-id>": { "fileHashes": { "<path>": "<hex>" } } }`. No prompt
-  instruction and no shell are involved. If a declared file is missing after the action, the
-  attempt fails with an actionable message naming it.
+  **Part 1 — test-author `task.json`: declare `captureHashes` AND `restoreOnRetry: true`.**
+  List every test file the task authors, workspace-relative. Two task-level fields work
+  together here (SSOT §3.1 / §3.1.1):
+
+  - **`captureHashes`** records each file's SHA-256 (uppercase hex, over raw bytes) into state
+    under `{ "<task-id>": { "fileHashes": { "<path>": "<hex>" } } }` after the action succeeds
+    (and before guardrails run) — the tamper-detection input the downstream `tests-untouched`
+    check reads. No prompt instruction and no shell are involved. If a declared file is missing
+    after the action, the attempt fails with an actionable message naming it.
+  - **`restoreOnRetry: true`** makes the harness ALSO snapshot those files' authored bytes and
+    **restore them to baseline before any downstream retry**. So an implementation agent that
+    edited the authored test to game a tests-pass guardrail starts its next attempt against the
+    pristine, authored test (the self-heal that closes #51). This is **opt-in**: `captureHashes`
+    alone hashes for tamper-detection only — nothing is snapshotted or restored. The
+    `tests-untouched` use WANTS the restore, so set both. `restoreOnRetry: true` **requires** a
+    non-empty `captureHashes` (`restoreOnRetry: true` with an empty/absent `captureHashes` is a
+    **GR2014** validation error).
 
   ```jsonc
   {
     "description": "Author failing tests for <feature>",
     "dependsOn": ["..."],
     "stableId": "…",
-    "captureHashes": ["tests/MyProject/MyFeatureTests.cs"]
+    "captureHashes": ["tests/MyProject/MyFeatureTests.cs"],
+    "restoreOnRetry": true
   }
   ```
 
@@ -271,6 +283,27 @@ upstream task that creates it:
   Replace `NN-author-tests-FEATURE` with the upstream test-author task's folder name. The
   `foreach` handles multiple test files. (`Get-FileHash` and the harness both emit uppercase
   SHA-256 hex; PowerShell `-ne` is case-insensitive regardless, so the comparison is exact.)
+
+  **Restore-on-retry (harness behavior — issue #51; opt-in via `restoreOnRetry: true`).** When the
+  test-author task sets `restoreOnRetry: true` (Part 1), its captured files are not just hashed: the
+  harness snapshots their authored bytes and **restores them to baseline before each retry** of a
+  downstream task. So if an implementation task edits a test file (to force a tests-pass guardrail
+  green), `tests-untouched` catches it AND the next attempt starts from the pristine test file —
+  no permanent dead-end. Without `restoreOnRetry: true` the file is hashed but never restored, so a
+  dirtied test would persist and `tests-untouched` would fail every retry identically — which is why
+  the `tests-untouched` doctrine sets both fields. The implementation action prompt should therefore
+  say plainly: **do not edit the authored tests; make them pass by fixing the implementation; if the
+  authored tests are genuinely wrong or incompatible, emit `{"needsHuman": "<why>"}` rather than
+  changing them.** The retry feedback the harness composes already says this on a `tests-untouched`
+  failure.
+
+  **Reserved filename — `untouched`.** The harness's restore-and-feedback path keys on the guardrail
+  *name*: `RetryPolicy.IsTestsUntouched` fires the "Do NOT edit the test file(s)" retry feedback for
+  any failing guardrail whose name contains the substring **`untouched`** (case-insensitive). The
+  substring `untouched` in a guardrail filename is therefore **RESERVED for test-file integrity
+  checks** — name your test-integrity guardrail `NN-tests-untouched.ps1` so the special feedback
+  fires, and do NOT name an unrelated guardrail `*untouched*` (it would spuriously trigger the
+  restore-and-feedback path for a non-test failure).
 
   **Action prompt for test-author tasks.** The `## Task` section must tell the agent: (a) the
   exact test file path(s) and any category/trait convention the repo uses; (b) the tests MUST

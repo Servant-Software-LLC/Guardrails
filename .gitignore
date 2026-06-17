@@ -12,4 +12,5 @@ nupkg/
 **/state/run.json
 **/state/logs/
 **/state/merge-conflicts.log
+**/state/captured/
 examples/**/out/

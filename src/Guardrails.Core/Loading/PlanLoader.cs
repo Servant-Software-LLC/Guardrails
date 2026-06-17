@@ -306,6 +306,7 @@ public sealed class PlanLoader
                 .Where(p => !string.IsNullOrWhiteSpace(p))
                 .Select(p => p.Trim().Replace('\\', '/'))
                 .ToList(),
+            RestoreOnRetry = raw.RestoreOnRetry ?? false,
             Action = action,
             Guardrails = guardrails
         };

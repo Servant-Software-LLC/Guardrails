@@ -96,4 +96,11 @@ public static class DiagnosticCodes
     /// hashes/reads the file, so an escaping path could reach outside the workspace — an ERROR.
     /// </summary>
     public const string CaptureHashEscapesWorkspace = "GR2013";
+
+    /// <summary>
+    /// A task declares <c>restoreOnRetry: true</c> but has an empty/absent <c>captureHashes</c>
+    /// (SSOT §3.1 / issue #51). Restore-on-retry acts ONLY on captured files, so opting in without
+    /// any captured file is a no-op the author almost certainly did not intend — an ERROR naming the task.
+    /// </summary>
+    public const string RestoreOnRetryWithoutCaptureHashes = "GR2014";
 }

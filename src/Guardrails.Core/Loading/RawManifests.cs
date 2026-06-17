@@ -61,6 +61,10 @@ internal sealed class RawTask
     // action (issue #46) — the agent never computes the hash itself.
     public List<string>? CaptureHashes { get; set; }
 
+    // Opt-in to baseline restore-on-retry for this task's captureHashes files (issue #51).
+    // Default false: captureHashes then only hashes. True ⇒ also snapshot + restore on retry.
+    public bool? RestoreOnRetry { get; set; }
+
     public RawAction? Action { get; set; }
 }
 

@@ -112,6 +112,75 @@ public sealed class PlanValidatorTests
         Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.CaptureHashEscapesWorkspace);
     }
 
+    [Fact]
+    public void RestoreOnRetry_WithoutCaptureHashes_ReportsGr2014()
+    {
+        // FIX A (issue #51): restoreOnRetry acts only on captured files; opting in with an empty
+        // captureHashes is a no-op authoring slip → GR2014 naming the task.
+        PlanDefinition plan = PlanWithRestoreOnRetry("10-impl", restoreOnRetry: true, captureHashes: []);
+
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(plan);
+
+        Diagnostic diag = Assert.Single(diagnostics, d => d.Code == DiagnosticCodes.RestoreOnRetryWithoutCaptureHashes);
+        Assert.Contains("10-impl", diag.Message);
+    }
+
+    [Fact]
+    public void RestoreOnRetry_WithCaptureHashes_NoGr2014()
+    {
+        PlanDefinition plan = PlanWithRestoreOnRetry("10-author", restoreOnRetry: true, captureHashes: ["tests/Foo.cs"]);
+
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.RestoreOnRetryWithoutCaptureHashes);
+    }
+
+    [Fact]
+    public void CaptureHashes_WithoutRestoreOnRetry_NoGr2014()
+    {
+        // The default: captureHashes-only is fine; GR2014 fires only when restoreOnRetry is set.
+        PlanDefinition plan = PlanWithRestoreOnRetry("10-author", restoreOnRetry: false, captureHashes: []);
+
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.RestoreOnRetryWithoutCaptureHashes);
+    }
+
+    private static PlanDefinition PlanWithRestoreOnRetry(string id, bool restoreOnRetry, string[] captureHashes)
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-gr2014-" + Guid.NewGuid().ToString("N"));
+        var node = new TaskNode
+        {
+            Id = id,
+            Directory = Path.Combine(planDir, "tasks", id),
+            Description = "fixture",
+            CaptureHashes = captureHashes,
+            RestoreOnRetry = restoreOnRetry,
+            Action = new ActionDefinition
+            {
+                Path = Path.Combine(planDir, "tasks", id, "action.ps1"),
+                Kind = ActionKind.Script
+            },
+            Guardrails =
+            [
+                new GuardrailDefinition
+                {
+                    Name = "01-check",
+                    Path = Path.Combine(planDir, "tasks", id, "guardrails", "01-check.ps1"),
+                    Kind = ActionKind.Script
+                }
+            ]
+        };
+
+        return new PlanDefinition
+        {
+            PlanDirectory = planDir,
+            Config = new RunConfig { Version = 1 },
+            Tasks = [node],
+            Workspace = Path.Combine(planDir, "workspace")
+        };
+    }
+
     /// <summary>
     /// Build an in-memory script-only plan whose single task declares the given captureHashes, so the
     /// GR2013 check runs in isolation (real interpreter probing is satisfied by FakeExecutableProbe.All
