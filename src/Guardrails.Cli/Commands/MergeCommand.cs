@@ -132,7 +132,7 @@ public static class MergeCommand
 
         try
         {
-            BreakdownMerge.Apply(plan, folder, remote);
+            BreakdownMerge.Apply(plan, folder, remote, output);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {

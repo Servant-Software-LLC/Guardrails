@@ -1,34 +1,30 @@
-using Guardrails.Core.State;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
 
 namespace Guardrails.Core.Breakdown;
 
-/// <summary>The outcome of ensuring the GitGuardian baseline exclusion (issue #67).</summary>
-public enum GitGuardianEnsureOutcome
+/// <summary>The outcome of checking the GitGuardian baseline exclusion (issue #67).</summary>
+public enum GitGuardianSuggestOutcome
 {
-    /// <summary>No config existed; a fresh <c>.gitguardian.yaml</c> was written.</summary>
-    Created,
-
-    /// <summary>A config existed; the baseline exclusion was merged into it.</summary>
-    Updated,
-
-    /// <summary>A config already excluded the baseline glob; nothing changed.</summary>
-    AlreadyPresent,
-
-    /// <summary>No enclosing git repository was found; nothing was written.</summary>
+    /// <summary>No enclosing git repository was found; nothing was printed.</summary>
     SkippedNoGitRepo,
 
-    /// <summary>A config existed but could not be safely parsed/merged; it was left untouched.</summary>
-    SkippedUnparseable
+    /// <summary>A config already excludes the baseline glob; nothing was printed.</summary>
+    AlreadyExcluded,
+
+    /// <summary>A config existed but could not be parsed; a GENERIC suggestion was printed.</summary>
+    SkippedUnparseable,
+
+    /// <summary>A targeted (or create) suggestion was printed; the user's config was NOT modified.</summary>
+    SuggestionPrinted
 }
 
-/// <summary>The result of <see cref="GitGuardianConfig.EnsureBaselineExclusion"/>.</summary>
-public sealed record GitGuardianEnsureResult(GitGuardianEnsureOutcome Outcome, string? ConfigPath);
+/// <summary>The result of <see cref="GitGuardianConfig.SuggestBaselineExclusion"/>.</summary>
+public sealed record GitGuardianSuggestResult(GitGuardianSuggestOutcome Outcome, string? ConfigPath);
 
 /// <summary>
-/// Ensures the repository's GitGuardian/ggshield config excludes <c>guardrails.baseline</c> files
-/// from secret scanning (issue #67).
+/// Detects whether the repository's GitGuardian/ggshield config excludes <c>guardrails.baseline</c>
+/// files from secret scanning and, when it does not, PRINTS a copy-pasteable suggestion (issue #67).
 ///
 /// <para><c>guardrails.baseline</c> is a committed, machine-generated <c>relativePath → SHA-256</c>
 /// manifest (see <see cref="BreakdownManifest"/>). A SHA-256 hex digest is a high-entropy string
@@ -36,13 +32,14 @@ public sealed record GitGuardianEnsureResult(GitGuardianEnsureOutcome Outcome, s
 /// block commits. The baseline MUST stay committed (it is the BASE for <c>guardrails merge</c>),
 /// so the fix is a scanner path-exclude, not a gitignore.</para>
 ///
-/// <para>This is called whenever the tool writes a baseline (<c>guardrails lock</c> and the
-/// regeneration <c>merge --apply</c>). It walks up from the plan folder to the enclosing git repo
-/// root and ensures <c>.gitguardian.yaml</c> (or an existing <c>.gitguardian.yml</c>) lists
-/// <c>**/guardrails.baseline</c> under the appropriate ignored-paths key. It MERGES — it never
-/// overwrites an existing config's other keys, and it is idempotent. Comments in an existing file
-/// are not preserved on the merge path (YAML round-trip); a freshly created file carries an
-/// explanatory comment header.</para>
+/// <para>This is <b>read-only and advisory</b>: it never writes, edits, or creates the user's
+/// scanner config — it only inspects and suggests. It is called whenever the tool writes a baseline
+/// (<c>guardrails lock</c> and the regeneration <c>merge --apply</c>), AFTER the baseline is written.
+/// It walks up from the plan folder to the enclosing git repo root and inspects
+/// <c>.gitguardian.yaml</c> (or an existing <c>.gitguardian.yml</c>), checking the v2
+/// <c>secret.ignored-paths</c> and v1 top-level <c>paths-ignore</c> keys for the baseline path.
+/// A read/parse error never escapes into <c>lock</c>/<c>merge</c> — it degrades to a generic
+/// suggestion.</para>
 /// </summary>
 public static class GitGuardianConfig
 {
@@ -58,41 +55,67 @@ public static class GitGuardianConfig
 
     /// <summary>v1 ggshield key: top-level <c>paths-ignore</c>.</summary>
     private const string PathsIgnoreKey = "paths-ignore";
-    private const string VersionKey = "version";
 
-    private const string FreshFileContent =
-        "# ggshield / GitGuardian configuration\n" +
-        "#\n" +
-        "# guardrails.baseline files are committed, machine-generated breakdown manifests:\n" +
-        "# a relativePath -> SHA-256 mapping. SHA-256 hex digests are high-entropy strings that the\n" +
-        "# generic-secret detector flags as a false positive. They are NOT secrets, and the file must\n" +
-        "# stay committed (it is the BASE for `guardrails merge`), so baseline files are excluded from\n" +
-        "# secret scanning rather than gitignored.\n" +
-        "version: 2\n" +
-        "secret:\n" +
-        "  ignored-paths:\n" +
-        "    - \"" + BaselineGlob + "\"\n";
+    /// <summary>The bare baseline filename, used for conservative already-excluded matching.</summary>
+    private const string BaselineFileName = "guardrails.baseline";
 
     /// <summary>
-    /// Ensure the git repo enclosing <paramref name="startDirectory"/> has a GitGuardian config that
-    /// excludes <see cref="BaselineGlob"/> from secret scanning. No-op (with a descriptive outcome)
-    /// when there is no enclosing git repo, when the exclusion is already present, or when an existing
-    /// config cannot be safely merged.
+    /// Spellings we treat as already covering the baseline, so we don't nag when the user has it under
+    /// any reasonable form. Compared ordinally after a conservative normalization (see <see cref="Covers"/>).
     /// </summary>
-    public static GitGuardianEnsureResult EnsureBaselineExclusion(string startDirectory)
+    private static readonly string[] CoveredForms =
+    [
+        BaselineGlob,                  // **/guardrails.baseline
+        BaselineFileName,              // guardrails.baseline
+        "./" + BaselineFileName,       // ./guardrails.baseline
+    ];
+
+    /// <summary>
+    /// Inspect the git repo enclosing <paramref name="startDirectory"/> and, when its GitGuardian
+    /// config does not already exclude <see cref="BaselineGlob"/>, PRINT a copy-pasteable suggestion to
+    /// <paramref name="output"/>. This NEVER writes or modifies the user's config and NEVER throws:
+    /// any read/parse error degrades to a generic suggestion. Returns a descriptive outcome:
+    /// <list type="bullet">
+    /// <item><see cref="GitGuardianSuggestOutcome.SkippedNoGitRepo"/> — no enclosing git repo; prints nothing.</item>
+    /// <item><see cref="GitGuardianSuggestOutcome.AlreadyExcluded"/> — the config already covers the baseline; prints nothing.</item>
+    /// <item><see cref="GitGuardianSuggestOutcome.SkippedUnparseable"/> — the config could not be read/parsed; prints a generic suggestion.</item>
+    /// <item><see cref="GitGuardianSuggestOutcome.SuggestionPrinted"/> — a targeted (config present) or create (config absent) suggestion was printed.</item>
+    /// </list>
+    /// </summary>
+    public static GitGuardianSuggestResult SuggestBaselineExclusion(string startDirectory, TextWriter output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+
+        try
+        {
+            return Inspect(startDirectory, output);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or YamlException)
+        {
+            // Failure coupling is forbidden: a config we couldn't read must never break lock/merge.
+            // Degrade to the generic suggestion so the user still learns the baseline may be flagged.
+            PrintGenericSuggestion(output);
+            return new GitGuardianSuggestResult(GitGuardianSuggestOutcome.SkippedUnparseable, null);
+        }
+    }
+
+    private static GitGuardianSuggestResult Inspect(string startDirectory, TextWriter output)
     {
         string? gitRoot = FindGitRoot(Path.GetFullPath(startDirectory));
         if (gitRoot is null)
         {
-            return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.SkippedNoGitRepo, null);
+            // The baseline-as-secret problem only exists inside a scanned git repo — say nothing.
+            return new GitGuardianSuggestResult(GitGuardianSuggestOutcome.SkippedNoGitRepo, null);
         }
 
-        string configPath = ResolveConfigPath(gitRoot);
+        string? configPath = ResolveExistingConfigPath(gitRoot);
 
-        if (!File.Exists(configPath))
+        if (configPath is null)
         {
-            AtomicFile.WriteAllText(configPath, FreshFileContent);
-            return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.Created, configPath);
+            // No scanner config at all → suggest the minimal file to create (but never create it).
+            PrintCreateSuggestion(gitRoot, output);
+            return new GitGuardianSuggestResult(
+                GitGuardianSuggestOutcome.SuggestionPrinted, Path.Combine(gitRoot, PrimaryFileName));
         }
 
         object? root;
@@ -102,84 +125,136 @@ public static class GitGuardianConfig
         }
         catch (YamlException)
         {
-            return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.SkippedUnparseable, configPath);
+            PrintGenericSuggestion(output);
+            return new GitGuardianSuggestResult(GitGuardianSuggestOutcome.SkippedUnparseable, configPath);
         }
 
-        // An empty/whitespace-only file is equivalent to no config — write the fresh, commented form.
-        if (root is null)
-        {
-            AtomicFile.WriteAllText(configPath, FreshFileContent);
-            return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.Created, configPath);
-        }
-
-        // Anything that is not a YAML mapping (a scalar or a sequence at the root) is not a shape we
-        // can safely extend — leave the user's file untouched rather than risk clobbering it.
+        // An empty/whitespace-only or non-mapping file (scalar/sequence at root) is not a shape we can
+        // reason about precisely. It plainly does not exclude the baseline, so suggest the v2 add-line.
         if (root is not IDictionary<object, object> map)
         {
-            return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.SkippedUnparseable, configPath);
+            PrintV2AddSuggestion(configPath, output);
+            return new GitGuardianSuggestResult(GitGuardianSuggestOutcome.SuggestionPrinted, configPath);
         }
 
-        IList<object>? targetList = ResolveOrCreateIgnoredPathsList(map);
-        if (targetList is null)
+        if (AlreadyExcludes(map))
         {
-            // An existing `secret`/`paths-ignore` key held an unexpected (non-mapping/non-sequence)
-            // value — don't clobber it.
-            return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.SkippedUnparseable, configPath);
+            return new GitGuardianSuggestResult(GitGuardianSuggestOutcome.AlreadyExcluded, configPath);
         }
 
-        if (targetList.Any(item => item is string s && string.Equals(s, BaselineGlob, StringComparison.Ordinal)))
+        // Present but missing the exclusion → a targeted suggestion naming the file and the exact key
+        // for that config's schema. A v1 file (top-level paths-ignore) gets the v1 line; otherwise v2.
+        if (HasV1PathsIgnore(map))
         {
-            return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.AlreadyPresent, configPath);
+            PrintV1AddSuggestion(configPath, output);
+        }
+        else
+        {
+            PrintV2AddSuggestion(configPath, output);
         }
 
-        targetList.Add(BaselineGlob);
-        AtomicFile.WriteAllText(configPath, new SerializerBuilder().Build().Serialize(map));
-        return new GitGuardianEnsureResult(GitGuardianEnsureOutcome.Updated, configPath);
+        return new GitGuardianSuggestResult(GitGuardianSuggestOutcome.SuggestionPrinted, configPath);
     }
+
+    // --- already-excluded detection ---------------------------------------------------
 
     /// <summary>
-    /// Find the existing ignored-paths sequence to extend, creating one if absent, while respecting
-    /// the file's existing schema. Returns <c>null</c> when an existing <c>secret</c>/<c>paths-ignore</c>
-    /// key holds an unexpected value (so the caller skips rather than clobbers).
-    /// Priority: existing v2 <c>secret.ignored-paths</c> → existing v1 top-level <c>paths-ignore</c> →
-    /// otherwise introduce a v2 <c>secret.ignored-paths</c> (and <c>version: 2</c> if absent).
+    /// True when the config already excludes the baseline under either schema's ignored-paths key.
+    /// Reads v2 <c>secret.ignored-paths</c> and v1 top-level <c>paths-ignore</c> only — read-only.
     /// </summary>
-    private static IList<object>? ResolveOrCreateIgnoredPathsList(IDictionary<object, object> map)
+    private static bool AlreadyExcludes(IDictionary<object, object> map)
     {
-        // 1. Existing v2 secret mapping.
-        if (TryGetValue(map, SecretKey, out object? secretObj))
+        if (TryGetValue(map, SecretKey, out object? secretObj) &&
+            secretObj is IDictionary<object, object> secretMap &&
+            TryGetValue(secretMap, IgnoredPathsKey, out object? v2Ignored) &&
+            SequenceCoversBaseline(v2Ignored))
         {
-            if (secretObj is not IDictionary<object, object> secretMap)
-            {
-                return null;
-            }
-
-            if (TryGetValue(secretMap, IgnoredPathsKey, out object? ignored))
-            {
-                return ignored as IList<object>; // null when it isn't a sequence → caller skips
-            }
-
-            var created = new List<object>();
-            secretMap[IgnoredPathsKey] = created;
-            return created;
+            return true;
         }
 
-        // 2. Existing v1 top-level paths-ignore.
-        if (TryGetValue(map, PathsIgnoreKey, out object? v1))
-        {
-            return v1 as IList<object>;
-        }
-
-        // 3. Neither present — introduce the v2 shape, declaring version 2 only if the file had none.
-        if (!TryGetValue(map, VersionKey, out _))
-        {
-            map[VersionKey] = 2;
-        }
-
-        var freshList = new List<object>();
-        map[SecretKey] = new Dictionary<object, object> { [IgnoredPathsKey] = freshList };
-        return freshList;
+        return TryGetValue(map, PathsIgnoreKey, out object? v1Ignored) && SequenceCoversBaseline(v1Ignored);
     }
+
+    private static bool HasV1PathsIgnore(IDictionary<object, object> map) =>
+        TryGetValue(map, PathsIgnoreKey, out _);
+
+    private static bool SequenceCoversBaseline(object? value) =>
+        value is IEnumerable<object> seq && seq.Any(item => item is string s && Covers(s));
+
+    /// <summary>
+    /// Conservative already-covered check: normalize the entry (trim, strip a leading <c>./</c>, drop a
+    /// trailing slash) and accept any of the reasonable spellings — <c>**/guardrails.baseline</c>,
+    /// <c>guardrails.baseline</c>, <c>./guardrails.baseline</c> — plus any glob that ends in the baseline
+    /// filename (e.g. <c>**/guardrails.baseline</c>, <c>*/guardrails.baseline</c>). The goal is to avoid
+    /// nagging a user who has already excluded it under a form we'd accept; we err toward "covered".
+    /// </summary>
+    private static bool Covers(string entry)
+    {
+        string normalized = entry.Trim();
+        if (normalized.StartsWith("./", StringComparison.Ordinal))
+        {
+            normalized = normalized[2..];
+        }
+
+        if (CoveredForms.Any(form => string.Equals(NormalizeForm(form), normalized, StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        // Any glob whose final path segment is the baseline filename also covers it (e.g. */ or **/).
+        return normalized.EndsWith("/" + BaselineFileName, StringComparison.Ordinal)
+            || string.Equals(normalized, BaselineFileName, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeForm(string form) =>
+        form.StartsWith("./", StringComparison.Ordinal) ? form[2..] : form;
+
+    // --- suggestion printing ----------------------------------------------------------
+
+    private static void PrintCreateSuggestion(string gitRoot, TextWriter output)
+    {
+        string path = Path.Combine(gitRoot, PrimaryFileName);
+        output.WriteLine(
+            $"Suggestion: {BaselineFileName} is a high-entropy SHA-256 manifest that secret scanners " +
+            "(ggshield/GitGuardian) may flag. No scanner config was found; if you use one, create " +
+            $"{path} with:");
+        output.WriteLine();
+        output.WriteLine("    version: 2");
+        output.WriteLine("    secret:");
+        output.WriteLine("      ignored-paths:");
+        output.WriteLine($"        - \"{BaselineGlob}\"");
+        output.WriteLine();
+    }
+
+    private static void PrintV2AddSuggestion(string configPath, TextWriter output)
+    {
+        output.WriteLine(
+            $"Suggestion: {configPath} does not exclude {BaselineFileName} from secret scanning. " +
+            $"Add \"{BaselineGlob}\" under secret.ignored-paths:");
+        output.WriteLine();
+        output.WriteLine("    secret:");
+        output.WriteLine("      ignored-paths:");
+        output.WriteLine($"        - \"{BaselineGlob}\"");
+        output.WriteLine();
+    }
+
+    private static void PrintV1AddSuggestion(string configPath, TextWriter output)
+    {
+        output.WriteLine(
+            $"Suggestion: {configPath} does not exclude {BaselineFileName} from secret scanning. " +
+            $"Add \"{BaselineGlob}\" under paths-ignore:");
+        output.WriteLine();
+        output.WriteLine("    paths-ignore:");
+        output.WriteLine($"      - \"{BaselineGlob}\"");
+        output.WriteLine();
+    }
+
+    private static void PrintGenericSuggestion(TextWriter output) =>
+        output.WriteLine(
+            $"Suggestion: couldn't read .gitguardian.yaml; if your scanner flags {BaselineFileName}, " +
+            $"add \"{BaselineGlob}\" to its ignored paths.");
+
+    // --- repo / config discovery ------------------------------------------------------
 
     /// <summary>Walk up from <paramref name="startDir"/> to the nearest ancestor containing <c>.git</c>.</summary>
     private static string? FindGitRoot(string startDir)
@@ -197,11 +272,21 @@ public static class GitGuardianConfig
         return null;
     }
 
-    /// <summary>Prefer an existing <c>.gitguardian.yml</c>; otherwise default to <c>.gitguardian.yaml</c>.</summary>
-    private static string ResolveConfigPath(string gitRoot)
+    /// <summary>
+    /// Find an existing scanner config at the repo root, or <c>null</c> when none exists. When BOTH
+    /// <c>.gitguardian.yaml</c> and <c>.gitguardian.yml</c> are present, prefer <c>.yaml</c> — that is
+    /// ggshield's own precedence.
+    /// </summary>
+    private static string? ResolveExistingConfigPath(string gitRoot)
     {
+        string yaml = Path.Combine(gitRoot, PrimaryFileName);
+        if (File.Exists(yaml))
+        {
+            return yaml;
+        }
+
         string yml = Path.Combine(gitRoot, AltFileName);
-        return File.Exists(yml) ? yml : Path.Combine(gitRoot, PrimaryFileName);
+        return File.Exists(yml) ? yml : null;
     }
 
     private static bool TryGetValue(IDictionary<object, object> map, string key, out object? value)
