@@ -76,14 +76,38 @@ same rule.
 `task.json` gains `writeScope`: an ordered list of **workspace-relative globs** the task
 may create/modify/delete.
 
-- **Absent/empty `writeScope` = universal (`**`) = "writes anywhere" = today's
-  `exclusive`.** This is the safe default: a task that declares nothing serializes with
-  everything, so an un-annotated plan behaves exactly as today. Concurrency is **opt-in**
-  — earned by declaring a narrow scope.
-- Glob subset: literal segments, `*` (within a segment), `**` (any depth). A bare
-  `dir` or `dir/` means `dir/**`. **No** `?`, brace-expansion, or negation in v1
-  (negation makes intersection undecidable-in-practice).
-- Scopes must stay inside the workspace (reuse `WorkspaceContainment`).
+`writeScope` is itself a **guardrail** — a declared, harness-enforced postcondition ("this
+task touches only these paths"). It is a *required* part of specifying a task (like its
+guardrails), not an optional concurrency hint; concurrency is the free side effect of
+declaring it. `plan-breakdown` declares one for **every** task (§7).
+
+Three meaningful values:
+
+- **Narrow** — e.g. `["src/Feature/**", "tests/Feature/**"]`. The common case; runs
+  concurrently with any task whose scope it does not intersect.
+- **Empty `[]` — "writes nothing."** For a pure verification/gate task (its action only
+  builds/tests, producing nothing but ignored build artifacts) or a state-only task (it
+  writes a `GUARDRAILS_STATE_OUT` fragment, no workspace file). Maximally concurrent
+  (disjoint from *every* scope, including universal) **and** strictest enforcement (any
+  workspace write is a violation → reverted + fail). A strong guardrail for gate tasks:
+  "you verify, you don't produce." (Yes — gate and state-only tasks legitimately write no
+  repo file; they get `[]`, not universal.)
+- **Universal `["**"]`** — a genuinely repo-wide / cross-cutting task (a broad refactor).
+  Serializes with everything. Must be **justified**, never a lazy default — `guardrails-review`
+  challenges a broad/universal scope (§7).
+
+An **absent** `writeScope` is treated as universal, but only as a fallback for an
+un-annotated hand-written plan; `plan-breakdown` never leaves it absent, and review flags
+an absent/universal scope to be justified or narrowed (`validate` may warn on absence).
+
+Glob expressiveness — workspace-relative, with wildcards:
+- **a folder and all sub-folders:** `src/Feature/**` (shorthand: `src/Feature`).
+- **by file extension:** `**/*.cs` (all C# anywhere), `src/**/*.json`.
+- **one level only:** `src/Feature/*`. **a specific file:** `src/Feature/Thing.cs`.
+
+Subset: literal segments, `*` (within a segment), `**` (any depth); a bare `dir`/`dir/`
+means `dir/**`. **No** `?`, brace-expansion, or negation in v1 (negation makes intersection
+undecidable-in-practice). Scopes must stay inside the workspace (`WorkspaceContainment`).
 
 ### 4.2 Concurrency rule
 
@@ -105,7 +129,9 @@ worker count independently; the two gates compose.
 ### 4.4 Overlap algorithm — conservative ("when in doubt, serialize")
 
 A pure function `WriteScope.Overlaps(a, b)` next to `WorkspaceContainment`:
-1. Universal short-circuit: if either side contains `**`, they overlap.
+0. Empty short-circuit: if *either* side is empty `[]` (writes nothing), they are
+   **disjoint** (an empty path-set intersects nothing — including `**`).
+1. Universal short-circuit: otherwise, if either side contains `**`, they overlap.
 2. Pairwise glob comparison: walk segments in lockstep; two literals overlap iff equal;
    `*`/`**` overlaps any literal; `**` absorbs the tail.
 3. **Conservative bias:** anything the walker can't *prove* disjoint is treated as
@@ -119,8 +145,9 @@ Since we don't preserve back-compat, `exclusive` is **removed** and re-expressed
 `writeScope`:
 - `exclusive: true` ⇒ `writeScope: ["**"]` (universal).
 - A script's old "shared" default (concurrent with other shared tasks) is simply: declare
-  a narrow scope, or accept universal. The default for any task with no `writeScope` is
-  universal (serializes) — safe. `plan-breakdown` declares scopes to earn concurrency.
+  a narrow scope (or `[]` for a gate). An *absent* `writeScope` resolves to universal
+  (serializes) — safe, but `plan-breakdown` never leaves it absent: it declares an explicit
+  scope for every task as a safety/ownership guardrail (§7), with concurrency the byproduct.
 - The `exclusive` field is deleted from the schema and the loader (clean removal).
 
 ## 5. Mechanism B — checked enforcement with revert
@@ -215,30 +242,43 @@ unaffected.
 ## 7. Skills (full vertical)
 
 **`plan-breakdown`:**
-- Emit `writeScope` per task, derived from what each task *produces* (the same output
-  analysis it already does for guardrails). An implementation task building `src/Feature`
-  ⇒ `writeScope: ["src/Feature/**"]` (excluding the test-author's `tests/Feature/**`).
-- **Conservative default:** when the skill cannot confidently bound a task's writes (a
-  broad refactor), it **omits** `writeScope` (= universal = serializes). Never guess
-  narrow — a wrong-narrow scope is an unsoundness; an omitted scope is merely slow.
-- Add `dependsOn` edges for read-after-write: if task B's narrow-scoped action reads
-  files task A produces, emit `B dependsOn A`.
+- **Declare an explicit `writeScope` for EVERY task** — derived from what the task
+  produces (the same output analysis the skill already does for its guardrails). The
+  motivation is **safety/ownership** (a guardrail bounding what the task can touch), *not*
+  concurrency — concurrency is the free side effect. The skill must *think through* what
+  each task writes: an implementation task building `src/Feature` ⇒ `["src/Feature/**"]`
+  (excluding the test-author's `tests/Feature/**`); a pure build/test gate ⇒ `[]`; a
+  genuinely repo-wide refactor ⇒ `["**"]` **with a one-line justification** in the task
+  description.
+- **Never punt to universal out of laziness.** The discipline: declare the *narrowest
+  scope that covers every file the task intends to write*. Too-narrow fails legitimate
+  writes (enforcement reverts them), so be **correct**, not minimal; too-broad is a weak
+  guardrail the review challenges. Universal is for genuinely cross-cutting work only.
+- Add `dependsOn` edges for read-after-write: if task B's action reads files task A
+  produces, emit `B dependsOn A` (write-scope protects writers; the DAG protects readers).
 - **Stop emitting** `captureHashes` / `tests-untouched` / `restoreOnRetry`.
 
-**`guardrails-review`:** flag (a) overlapping scopes among independent tasks (lost
-parallelism), (b) a task whose scope could be narrowed to gain concurrency, (c) a
-narrow-scoped task whose prompt references files another independent task writes (missing
-read-after-write edge — the heuristic catch for §6's gap).
+**`guardrails-review`** — attacks `writeScope` as a guardrail, in BOTH directions:
+- **Too broad / universal (the laziness check):** a `["**"]` or absent scope on a task
+  whose outputs are actually bounded → challenge it ("weak ownership guardrail — narrow it
+  to what the task really writes, or justify the repo-wide scope"). A broad scope both
+  loses concurrency and weakens protection.
+- **Too narrow:** a scope omitting a path the task's action plainly must write →
+  enforcement would revert legitimate work; flag the omission.
+- **Missing read-after-write edge:** a narrow-scoped task whose prompt references files
+  another independent task writes, with no `dependsOn` → the heuristic catch for §6's gap.
+- **Overlapping scopes among independent tasks:** lost parallelism / a plan smell.
 
 ## 8. Schema / contract changes (SSOT `02-schemas-and-contracts.md`)
 
 - **§3 task.json:** add `writeScope`; **remove** `exclusive`, `captureHashes`,
   `restoreOnRetry`.
-- **New §3.2 "writeScope — enforced disjoint ownership":** the disjointness rule;
-  absent/empty = universal; the glob subset + conservative overlap algorithm; the
-  revert/enforcement semantics; the read-after-write contract ("a task that reads
-  another's output MUST `dependsOn` it; write-scope protects writers, the DAG protects
-  readers"); GR2015.
+- **New §3.2 "writeScope — enforced disjoint ownership":** the disjointness rule; the
+  three values (narrow / empty `[]` = writes-nothing / universal `["**"]`) and that an
+  *absent* field is the universal legacy fallback; the glob subset + conservative overlap
+  algorithm; the revert/enforcement semantics; the read-after-write contract ("a task that
+  reads another's output MUST `dependsOn` it; write-scope protects writers, the DAG
+  protects readers"); GR2015.
 - **§5.3 "harness writes the workspace":** today "exactly one case" (restoreOnRetry) — now
   **exactly one case (the scope-revert)**, since restoreOnRetry is removed and replaced.
   Containment analysis for the revert write path.
@@ -255,26 +295,36 @@ read-after-write edge — the heuristic catch for §6's gap).
 - **§6 gap → GR2015 (error):** the only residual soundness concern; closed by strict
   validation + skill doctrine. Do not consider the triad retired until GR2015 ships.
 - **#48 stays:** state ownership is a separate invariant; not touched.
-- **Revert blast radius:** revert *writes* the workspace (bigger than a read-only
-  guardrail). It only ever restores *pre-attempt bytes* of *out-of-scope* paths (never
-  synthesizes content); in-scope files are provably never touched. This is why **detection
-  ships before revert** (M4 before M5) — the dangerous write path lands after detection is
-  trusted.
-- **Enforcement walk cost** on a large workspace is the v1 shared-workspace tax;
-  `enforcementIgnore` is the lever. (A future worktree story would make scope physical and
-  retire the walk — explicitly out of scope here.)
+- **Revert is deterministic harness code** — a pure snapshot → content-diff → restore. No
+  prompt, no AI, no judgement: it restores the exact pre-attempt bytes of out-of-scope
+  paths (tracked files via `git checkout --`, untracked via the byte baseline) and deletes
+  out-of-scope creations. It never synthesizes content and provably never touches an
+  in-scope file.
+- **Revert blast radius:** because revert *writes* the workspace (unlike a read-only
+  guardrail), the write path is the one place a scope-matching bug could undo legitimate
+  work — so **detection ships before revert** (M4 before M5), landing the write path only
+  after detection is trusted, and `WorkspaceContainment` re-checks every restore target.
+- **Enforcement walk cost:** the snapshot/diff hashes the non-ignored workspace tree each
+  attempt. On a large repo this is real; `enforcementIgnore` (excluding `bin/`, `obj/`,
+  `node_modules/`, `.git/`, `state/`) is the lever, plus an mtime hint to skip re-hashing
+  unchanged files. Bounded and tunable.
 
 ## 10. Milestones (walking-skeleton first; the `/plan-breakdown` input)
 
-Each milestone is independently shippable and testable. Test-author tasks precede
-implementation tasks (TDD-by-default). The harness builds these in dependency order.
+The milestones are a *logical* decomposition (each a coherent, testable unit), **not**
+human checkpoints. The harness runs all seven autonomously in DAG dependency order, in one
+go — there is **no** human gate between milestones. It halts only on a genuine
+`needs-human` (a guardrail it cannot pass after its retries, or a critical decision the
+design didn't settle), never at a milestone boundary. Test-author tasks precede
+implementation tasks (TDD-by-default).
 
 - **M1 — `WriteScope` type + overlap function (the pure core).**
   Scope: `WriteScope` value type (parse, universal sentinel, glob subset) + `Overlaps(a,b)`
   pure function, next to `WorkspaceContainment`.
   Exit: an exhaustive overlap truth-table passes — `["src/A/**"]` vs `["src/B/**"]` =
-  disjoint; vs `["**"]` = overlap; `dir` ≡ `dir/**`; sibling `src/FeatureX` does NOT match
-  `src/Feature/**`. Unit-only, no I/O. Size: S.
+  disjoint; vs `["**"]` = overlap; **`[]` (writes-nothing) is disjoint from every scope
+  including `["**"]`**; `["**"]` overlaps every non-empty scope; `dir` ≡ `dir/**`; sibling
+  `src/FeatureX` does NOT match `src/Feature/**`. Unit-only, no I/O. Size: S.
   Key files: `src/Guardrails.Core/Execution/WriteScope.cs`, tests.
 
 - **M2 — `ScopeLock` + scheduler rewire (the concurrency win).**
@@ -314,8 +364,10 @@ implementation tasks (TDD-by-default). The harness builds these in dependency or
   `State/RunReset.cs`, SSOT §5.3/§6.1.
 
 - **M6 — skills switch-over (full vertical).**
-  Scope: `plan-breakdown` emits `writeScope` + read-after-write edges and stops emitting
-  the triad; `guardrails-review` adds the overlap / narrowable / missing-edge flags;
+  Scope: `plan-breakdown` declares an explicit `writeScope` for **every** task (narrow / `[]`
+  for gates / justified `["**"]`), adds read-after-write edges, and stops emitting the
+  triad; `guardrails-review` challenges scopes in both directions (too-broad/universal =
+  weak guardrail, too-narrow = reverts legit work) plus missing-edge / overlap flags;
   catalogue + example-breakdown + schemas updated; golden round-trip re-proven.
   Exit: `/plan-breakdown` on a TDD plan produces `writeScope` on the impl task, no
   `tests-untouched`, validates clean (GR2015 satisfied); review flags a deliberately
