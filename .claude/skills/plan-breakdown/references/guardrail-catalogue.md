@@ -201,17 +201,16 @@ What is the task's primary deliverable?
 ├── A file/artifact            → file-exists (always) + the strongest content check available:
 │                                schema-validates > file-contains-regex > prompt-judge
 ├── Code (library/feature)     → build-passes + specific-tests-pass (--filter THIS task's tests)
-│                                + tests-untouched (ON THE IMPLEMENTATION/EDITING task: recomputes
-│                                │  Get-FileHash and compares to the SHA-256 the HARNESS recorded
-│                                │  from the test-author task's captureHashes — agent never shells
-│                                │  out; see SKILL.md Step 5 and the placement rule below; required
-│                                │  whenever a test-author exists)
 │                                └─ INSERT a test-author task upstream BY DEFAULT (SKILL Step 2
 │                                   TDD rule); skip only if tests already exist or behavior is
 │                                   too simple for unit tests — state why in task description
-│                                   (test-author: tests-fail-on-current-code (8) + declares
-│                                    captureHashes in task.json; tests-build only if tests
-│                                    compile against current code)
+│                                   (test-author: tests-fail-on-current-code (8); tests-build
+│                                    only if tests compile against current code)
+│                                   Both tasks declare writeScope in task.json (SKILL Step 5):
+│                                   test-author → narrow to its test file(s); implementation →
+│                                   narrow to its source tree. GR2015 enforces the TDD pair
+│                                   guarantee: the implementation's scope must not subsume the
+│                                   test-author's output files.
 ├── A runnable script/tool     → file-exists + command-exit-code on a representative invocation
 ├── A running service          → port-answers + endpoint-content (curl + contains/schema)
 ├── Config/data                → schema-validates; else file-contains on load-bearing keys
@@ -231,21 +230,27 @@ This is a speed/flake trade-off, sound only against output the action could not 
 when no such recorded target exists, keep the honest replay (`specific-tests-pass`, #4).
 See the verify-recorded-action-result section above for the GOOD-vs-BAD-target rules.
 
-**`tests-untouched` placement — doctrine.** `tests-untouched` belongs on the
-**EDITING/implementation task** — the one that must not modify the tests — NOT on a
-downstream-only task. A task's own guardrails run against its **pre-merge snapshot**
-(`GUARDRAILS_STATE_IN`, taken at attempt start), so the implementation task's guardrail compares
-the recorded hash against the test files *as they stand at the moment that task is verified* —
-catching the edit on the exact task that could have made it. Placing the check on a later
-read-only task is strictly weaker: it can only observe drift after the fact and cannot attribute
-it. Put `tests-untouched` on the task with workspace write access to the tests.
+**`writeScope` — TDD pair doctrine.** The `writeScope` field in `task.json` bounds which
+workspace files a task may write; the harness enforces it at runtime. For a TDD pair:
+- **test-author task** → narrow scope to the test file(s) it authors (e.g.
+  `["tests/MyProject/MyFeatureTests.cs"]`). The task's `specific-tests-pass` guardrail on
+  the implementation task can then safely reference those files — they are contract-protected
+  against modification by the implementation task.
+- **implementation task** → narrow scope to the source tree it writes (e.g.
+  `["src/MyProject/**"]`). GR2015 fires if this scope would subsume the test-author's
+  outputs — that is the mechanical guarantee the implementation cannot overwrite the authored
+  tests. Never set the implementation task's scope to `["**"]` when a test-author exists.
 
-The recorded hash is **contract-protected against cross-task forgery.** Single-writer-per-key is
-enforced at the merge step (SSOT §6.2, issue #48): a task may only write top-level keys equal to
-its own id, so no intervening task can republish `{ "<test-author-id>": { "fileHashes": … } }` to
-poison the stored hash — a foreign-id fragment is rejected and the attempt fails. The
-`tests-untouched` SCRIPT is unchanged (it still reads `<test-author-id>.fileHashes` from
-`GUARDRAILS_STATE_IN` and recomputes with `Get-FileHash`); it is simply now contract-protected.
+`writeScope: []` (empty) is correct for pure gate/state tasks that write no workspace files
+(build checks, terminal suites, state-publish-only actions). `writeScope: ["**"]` (universal)
+is only for genuinely repo-wide tasks (cross-cutting renames etc.) and requires a one-line
+justification in the task description. GR2016 (WARNING) flags overlapping scopes among
+independent tasks; GR2017 (ERROR) rejects malformed globs (?, brace, negation).
+
+**Read-after-write edges.** When task B reads files task A produces (artifact dependency),
+declare `dependsOn: [..., "A"]` on task B — the artifact-ancestry rule (SKILL.md Step 5).
+`writeScope` makes these dependencies explicit and checkable: if A writes into a path
+B later reads, B must depend on A so the harness serializes them correctly.
 
 **State-output leaf — the fragment-key contract.** When a task's action publishes a key
 to the state fragment (written to `GUARDRAILS_STATE_OUT`) that a downstream task later

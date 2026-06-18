@@ -206,7 +206,7 @@ upstream task that creates it:
 
 - Code task and tests do not yet exist → insert `NN-author-tests-<feature>` BEFORE the
   implementation task (the TDD default in Step 2 means this fires for most code tasks).
-  Three things follow automatically:
+  Two things follow from this insertion:
 
   **Test-author task guardrails.** `tests-fail-on-current-code` (archetype #8) is
   required. Keep `tests-build` unless the new tests reference not-yet-existing symbols (a
@@ -215,101 +215,18 @@ upstream task that creates it:
   adds noise without signal. When tests exercise only existing API surface (a CLI flag, a
   file path, a response code), keep `tests-build`.
 
-  **`tests-untouched` guardrail on every implementation task** that has an upstream
-  test-author task. Prevents the agent from making tests pass by editing them instead of
-  fixing the implementation. Uses **harness-computed content hashes** (issue #46): the
-  test-author task DECLARES the files to hash; the harness records their SHA-256 into state
-  **in code** — the agent never runs `git hash-object` or any shell command, so a scoped
-  `allowedTools` (e.g. `Bash(dotnet *)` only) can never block the capture (the failure mode
-  that made the old agent-computed pattern hang on `needsHuman`). Two parts:
-
-  **Part 1 — test-author `task.json`: declare `captureHashes` AND `restoreOnRetry: true`.**
-  List every test file the task authors, workspace-relative. Two task-level fields work
-  together here (SSOT §3.1 / §3.1.1):
-
-  - **`captureHashes`** records each file's SHA-256 (uppercase hex, over raw bytes) into state
-    under `{ "<task-id>": { "fileHashes": { "<path>": "<hex>" } } }` after the action succeeds
-    (and before guardrails run) — the tamper-detection input the downstream `tests-untouched`
-    check reads. No prompt instruction and no shell are involved. If a declared file is missing
-    after the action, the attempt fails with an actionable message naming it.
-  - **`restoreOnRetry: true`** makes the harness ALSO snapshot those files' authored bytes and
-    **restore them to baseline before any downstream retry**. So an implementation agent that
-    edited the authored test to game a tests-pass guardrail starts its next attempt against the
-    pristine, authored test (the self-heal that closes #51). This is **opt-in**: `captureHashes`
-    alone hashes for tamper-detection only — nothing is snapshotted or restored. The
-    `tests-untouched` use WANTS the restore, so set both. `restoreOnRetry: true` **requires** a
-    non-empty `captureHashes` (`restoreOnRetry: true` with an empty/absent `captureHashes` is a
-    **GR2014** validation error).
-
-  ```jsonc
-  {
-    "description": "Author failing tests for <feature>",
-    "dependsOn": ["..."],
-    "stableId": "…",
-    "captureHashes": ["tests/MyProject/MyFeatureTests.cs"],
-    "restoreOnRetry": true
-  }
-  ```
-
-  Because the harness (not the agent) writes the hashes, **no `state-fragment-written`
-  guardrail is needed** on the test-author task: a missing declared file already fails the
-  attempt, and a present file is always recorded.
-
-  **Part 2 — implementation task `guardrails/NN-tests-untouched.ps1`** reads the recorded
-  hash from `GUARDRAILS_STATE_IN` and recomputes with `Get-FileHash` (a pwsh cmdlet — a
-  guardrail script runs via the interpreter, NOT the agent sandbox, so it always works; no
-  git dependency):
-
-  ```powershell
-  # catches: "making tests pass" by editing the tests instead of the implementation;
-  #          reads the SHA-256 hashes the harness recorded for the upstream test-author task
-  $state = Get-Content $env:GUARDRAILS_STATE_IN -Raw | ConvertFrom-Json
-  $storedHashes = $state.'NN-author-tests-FEATURE'.fileHashes
-  if (-not $storedHashes) {
-    Write-Output "State key 'NN-author-tests-FEATURE.fileHashes' missing — was captureHashes declared on the test-author task?"
-    exit 1
-  }
-  $failures = @()
-  foreach ($file in $storedHashes.PSObject.Properties.Name) {
-    $stored = $storedHashes.$file
-    if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
-    $current = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
-    if ($current -ne $stored) { $failures += "$file was modified (expected $stored, got $current)" }
-  }
-  if ($failures) { Write-Output ($failures -join "; "); exit 1 }
-  exit 0
-  ```
-
-  Replace `NN-author-tests-FEATURE` with the upstream test-author task's folder name. The
-  `foreach` handles multiple test files. (`Get-FileHash` and the harness both emit uppercase
-  SHA-256 hex; PowerShell `-ne` is case-insensitive regardless, so the comparison is exact.)
-
-  **Restore-on-retry (harness behavior — issue #51; opt-in via `restoreOnRetry: true`).** When the
-  test-author task sets `restoreOnRetry: true` (Part 1), its captured files are not just hashed: the
-  harness snapshots their authored bytes and **restores them to baseline before each retry** of a
-  downstream task. So if an implementation task edits a test file (to force a tests-pass guardrail
-  green), `tests-untouched` catches it AND the next attempt starts from the pristine test file —
-  no permanent dead-end. Without `restoreOnRetry: true` the file is hashed but never restored, so a
-  dirtied test would persist and `tests-untouched` would fail every retry identically — which is why
-  the `tests-untouched` doctrine sets both fields. The implementation action prompt should therefore
-  say plainly: **do not edit the authored tests; make them pass by fixing the implementation; if the
-  authored tests are genuinely wrong or incompatible, emit `{"needsHuman": "<why>"}` rather than
-  changing them.** The retry feedback the harness composes already says this on a `tests-untouched`
-  failure.
-
-  **Reserved filename — `untouched`.** The harness's restore-and-feedback path keys on the guardrail
-  *name*: `RetryPolicy.IsTestsUntouched` fires the "Do NOT edit the test file(s)" retry feedback for
-  any failing guardrail whose name contains the substring **`untouched`** (case-insensitive). The
-  substring `untouched` in a guardrail filename is therefore **RESERVED for test-file integrity
-  checks** — name your test-integrity guardrail `NN-tests-untouched.ps1` so the special feedback
-  fires, and do NOT name an unrelated guardrail `*untouched*` (it would spuriously trigger the
-  restore-and-feedback path for a non-test failure).
+  **`writeScope` for the TDD pair.** Both tasks declare an explicit `writeScope` in their
+  `task.json` — narrow to what each actually writes:
+  - test-author task: `"writeScope": ["tests/MyProject/MyFeatureTests.cs"]` (just the test file(s))
+  - implementation task: `"writeScope": ["src/MyProject/**"]` (the source tree it writes)
+  GR2015 (ERROR) fires if the implementation task's scope would subsume a test-author
+  dependency's outputs — the mechanical guarantee that the implementation cannot overwrite
+  the authored tests. See the full `writeScope` rules in Step 6.
 
   **Action prompt for test-author tasks.** The `## Task` section must tell the agent: (a) the
   exact test file path(s) and any category/trait convention the repo uses; (b) the tests MUST
   fail against the current code — this is intentional, not a mistake; (c) do NOT implement the
-  behavior, only the tests. It does NOT need to compute or write any hash — `captureHashes`
-  handles that in the harness. See `references/example-breakdown.md` for the complete worked
+  behavior, only the tests. See `references/example-breakdown.md` for the complete worked
   `action.prompt.md`.
 - **Test framework is not yet chosen** (`$testFramework = none` from Step 0 and no test
   project exists) → the framework is a real fork (xUnit / NUnit / MSTest; jest / vitest;
@@ -353,7 +270,18 @@ Per `references/schemas.md`, exactly:
   the `promptRunners` block with a resolvable default is REQUIRED** (else GR2008).
   Scope `allowedTools` to what the actions genuinely need.
 - `task.json` per task: `description` (one actionable line), `dependsOn`, a **`stableId`**
-  (see below), and overrides only when justified. One `action.*` file per task folder.
+  (see below), `writeScope` (see below), and overrides only when justified. One `action.*` file per task folder.
+- **`writeScope` — every task declares one.** A list of workspace-relative glob patterns
+  bounding which files the task may write:
+  - **Narrow globs** for what the task actually writes: `["src/Inventory.Cli/**"]`, `["tests/Inventory.Tests/StatsCommandTests.cs"]`, `["README.md"]`.
+  - **`[]`** (empty) for pure build/test-gate and state-only tasks that write no workspace files.
+  - **`["**"]`** (universal) ONLY for genuinely repo-wide tasks (e.g. a cross-cutting rename).
+    Requires a one-line justification in the task `description`. The harness enforces disjointness:
+    GR2015 (ERROR) = implementation task's scope subsumes a test-author dependency's outputs;
+    GR2016 (WARNING) = overlapping scopes among independent tasks;
+    GR2017 (ERROR) = malformed globs (?, brace, negation).
+  - **Read-after-write edges:** if task B reads files task A produces, declare `dependsOn: [..., "A"]`
+    on task B (artifact-dependency rule; name the file ancestry in the edge justification).
 - **`stableId` — mint one per task by default.** It is the identity key the regeneration merge
   (§11) uses to track a task across renumber/rename. The schema marks it OPTIONAL (a task without
   one falls back to its folder name for identity), but the breakdown mints one per task so
@@ -488,7 +416,9 @@ to preserve edits against).
 - [ ] Abstraction consumed by a later task → cross-module reference guardrail on the consumer.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
-- [ ] Inserted test-author tasks include tests-fail-on-current-code; implementation tasks guard tests-untouched.
+- [ ] Inserted test-author tasks include tests-fail-on-current-code.
+- [ ] Every task declares `writeScope` — narrow globs for what it writes; `[]` for pure gate/state tasks; `["**"]` with a one-line description justification only for genuinely repo-wide tasks.
+- [ ] Read-after-write `dependsOn` edges present: if task B reads files task A produces, B dependsOn A.
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.

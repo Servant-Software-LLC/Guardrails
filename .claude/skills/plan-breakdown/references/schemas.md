@@ -88,17 +88,17 @@ a .NET plan, not blanket `Bash`.
                             // absent ⇒ identity falls back to the folder name (§3);
                             // duplicate ⇒ GR2010; must match ^[a-z0-9][a-z0-9._-]*$ ⇒ GR2011.
   "dependsOn": ["01-other-task"],                                // REQUIRED (may be [])
+  "writeScope": ["src/MyProj/**"],  // REQUIRED — list of workspace-relative glob patterns
+                            // bounding which files this task may write. Use [] for pure
+                            // build/test-gate tasks; ["**"] only for repo-wide tasks (requires
+                            // a justification in description). GR2015 (ERROR): an implementation
+                            // task's scope must not subsume a test-author dependency's outputs.
+                            // GR2016 (WARNING): overlapping scopes among independent tasks.
+                            // GR2017 (ERROR): malformed globs (?, brace, negation).
   "retries": 3,             // optional; overrides defaultRetries
   "timeoutSeconds": 3600,   // optional
-  "exclusive": null,        // optional; default: prompt action → true, script → false.
+  "exclusive": null         // optional; default: prompt action → true, script → false.
                             // Leave null unless you have a reason.
-  "captureHashes": [        // optional; workspace-relative files whose SHA-256 the HARNESS
-    "tests/MyProj/FooTests.cs"  // records into state after a successful action — the agent
-  ],                        // never hashes anything. Missing file ⇒ attempt fails. (tests-untouched)
-  "restoreOnRetry": true    // optional bool, default false; only meaningful WITH captureHashes.
-                            // true ⇒ the harness also snapshots the captured files' authored bytes
-                            // and restores them to baseline before each downstream retry (the #51
-                            // self-heal). true with empty/absent captureHashes ⇒ GR2014.
 }
 ```
 
@@ -110,22 +110,13 @@ the plan ⇒ GR2010; a value not matching `^[a-z0-9][a-z0-9._-]*$` ⇒ GR2011. O
 when the task folder has exactly one `action.*` file (the convention); zero or multiple =
 validation error.
 
-`captureHashes` lists files the harness hashes (SHA-256, uppercase hex, raw bytes) into
-`{ "<taskId>": { "fileHashes": { "<path>": "<hex>" } } }` after the action succeeds — computed in
-harness code, so the agent never runs a shell command to produce it. A `tests-untouched` guardrail
-on a downstream task reads it back and recomputes with `Get-FileHash -Algorithm SHA256`. Because
-single-writer-per-key is enforced (SSOT §6.2), no intervening task can forge or overwrite
-`<taskId>.fileHashes` by writing under another task's id — the recorded hash is contract-protected
-against cross-task poisoning (issue #48). See SKILL.md Step 5.
-
-`restoreOnRetry` (optional bool, default **false**) is only meaningful **with** `captureHashes`. By
-default `captureHashes` hashes for tamper-detection ONLY — nothing is snapshotted or restored.
-Setting `restoreOnRetry: true` opts the captured files into **restore-on-retry**: the harness also
-snapshots their authored bytes and restores any that differ from baseline before **each downstream
-retry**, so an implementation agent that dirtied an authored test starts its next attempt pristine
-(the #51 self-heal). `restoreOnRetry: true` with an empty/absent `captureHashes` has nothing to act
-on and is a **GR2014** validation error. The `tests-untouched` doctrine sets **both** fields on the
-test-author task (SKILL.md Step 5). See SSOT §3.1.1.
+`writeScope` bounds which workspace files a task may write. The harness detects actual writes
+(content-hash diff at attempt end) and enforces the scope: out-of-scope writes fail the attempt
+and are reverted. Every task must declare it — the breakdown's job is to derive the correct scope
+per task from what that task's action actually writes. The three diagnostics enforce plan-level
+soundness: **GR2015** (ERROR) catches an implementation task whose scope would subsume a
+test-author dependency's outputs — the TDD pair guarantee; **GR2016** (WARNING) flags overlapping
+scopes among parallel tasks; **GR2017** (ERROR) rejects malformed globs. See SKILL.md Step 6.
 
 ## Prompt files (`.prompt.md`)
 
@@ -148,7 +139,7 @@ survive if a human runs the prompt outside the harness.
   `GUARDRAILS_STATE_OUT`. **Single-writer-per-key is ENFORCED (SSOT §6.2):** a fragment's
   top-level keys must each be the task's OWN id (reserved keys — none in v1). A foreign task id
   or any arbitrary shared key makes the fragment invalid — it is rejected (not stripped), the
-  attempt fails, and nothing merges. Invalid (non-object/unparseable) fragment = attempt fails too.
+  attempt fails and nothing merges. Invalid (non-object/unparseable) fragment = attempt fails too.
 - Retry: attempt ≥ 2 receives `GUARDRAILS_FEEDBACK` (path to feedback.md).
 - Guardrails see `GUARDRAILS_ACTION_STDOUT/_STDERR/_RESULT` and `GUARDRAILS_STATE_FRAGMENT`.
 - cwd of every child process = `workspace`. Plan-folder paths arrive absolute via env vars.

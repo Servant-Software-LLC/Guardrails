@@ -65,9 +65,30 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
 - **Coverage gap**: the action's stated completion criteria exceed what guardrails
   verify — name the unverified criterion. (E.g. action says "sorted by category";
   no guardrail checks sorting.)
-- **Tests gameable**: implementation tasks whose tests can be edited by the same
-  action (no tests-untouched guardrail); inserted test tasks missing
-  tests-fail-on-current-code.
+- **writeScope too broad**: an implementation task declares `writeScope: ["**"]` (or
+  a glob that covers a test-author dependency's output files). This is the cheapest
+  way to game TDD integrity — a universal scope lets the action silently overwrite the
+  authored tests. Flag: either GR2015 fires (subsumption detected at validate time) or
+  the scope is wide enough to cover the tests in practice. Fix: narrow the scope to the
+  source tree the task actually writes.
+- **writeScope too narrow**: a task's declared scope excludes files it legitimately
+  needs to write (e.g. a scaffold task that must write both `src/` AND `tests/` but
+  only declares one). The harness would revert the out-of-scope writes, so the task
+  would silently undo its own work on retry. Verify the scope matches the full set of
+  files the action prompt instructs the agent to write.
+- **Missing read-after-write edge**: task B's action reads a file that task A's
+  `writeScope` claims to write, but B does not `dependsOn` A. The harness may run
+  them in the same wave, so B sees a stale or missing file. Fix: add `A` to B's
+  `dependsOn` with a one-line artifact-dependency justification.
+- **Overlapping scopes among independents (GR2016)**: two tasks in the same wave
+  share overlapping `writeScope` globs. The harness will warn (GR2016) but allow the
+  run; if both tasks write to the overlapping area concurrently, the result is a race.
+  Flag any overlap where concurrent writes are plausible. Fix: narrow or disjoint the
+  scopes, or add a dependency edge to serialize them.
+- **Tests gameable**: an implementation task whose `writeScope` subsumes the
+  test-author dependency's output files (GR2015 would fire at validate time — look for
+  scopes broad enough to cover the test path even if GR2015 doesn't trigger); inserted
+  test tasks missing `tests-fail-on-current-code`.
 - **Unactionable failures**: guardrails that fail without printing a usable reason
   (retry feedback quality).
 - **Grep-scope contamination**: a file-content guardrail that greps the project tree
@@ -125,4 +146,6 @@ changes to it.
 - [ ] Every BLOCKER names the concrete wrong implementation, not a vibe.
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Coverage gaps cite the exact unverified completion criterion.
+- [ ] writeScope checked in both directions: too-broad (subsumes test-author outputs or uses universal ["**"] unjustified) and too-narrow (excludes files the action legitimately writes).
+- [ ] Missing read-after-write edges identified (task B reads files A's writeScope claims to produce, with no A→B edge).
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.

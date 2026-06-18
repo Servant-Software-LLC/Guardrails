@@ -78,19 +78,17 @@ as designed, not scope creep.
 
 ### `tasks/01-author-stats-tests/` — **INSERTED TASK**
 
-`task.json` — declares `captureHashes` so the HARNESS records the test file's SHA-256 into
-state after the action (the agent never computes a hash). The downstream `tests-untouched`
-guardrail reads it back. It also sets `restoreOnRetry: true`, which makes the harness snapshot
-the authored test bytes and restore them to baseline before any downstream retry — so an
-implementation agent that edits the test to game `02-stats-tests-pass` starts its next attempt
-against the pristine, authored test (the #51 self-heal). `restoreOnRetry` requires a non-empty
-`captureHashes` (else GR2014).
+`task.json` — declares a narrow `writeScope` scoped to just the test file it authors.
+The harness enforces that no other task writes to this path while this task holds the
+scope. GR2015 will fire if the implementation task (02) declares a scope that subsumes
+this file — the mechanical guarantee that the implementation cannot overwrite the tests.
+
 ```jsonc
 {
   "description": "Author failing unit tests that encode the --stats output format (total line + sorted per-category lines)",
+  "stableId": "p2r8xt",
   "dependsOn": [],
-  "captureHashes": ["tests/Inventory.Tests/StatsCommandTests.cs"],
-  "restoreOnRetry": true
+  "writeScope": ["tests/Inventory.Tests/StatsCommandTests.cs"]
 }
 ```
 
@@ -112,9 +110,6 @@ Author unit tests in `tests/Inventory.Tests/StatsCommandTests.cs` (trait/categor
 Use the existing test conventions in tests/Inventory.Tests. The tests MUST fail (or
 be unable to find the flag) against the current code — they test behavior that does
 not exist yet. Do not implement the flag.
-
-You do NOT need to hash the test file or write anything to state — the task's
-`captureHashes` declaration makes the harness record its hash automatically.
 Publish nothing to state.
 ```
 
@@ -138,17 +133,18 @@ if ($LASTEXITCODE -eq 0) {
 exit 0
 ```
 
-(No `state-fragment-written` guardrail is needed: the harness records the hash from
-`captureHashes` itself, and a missing declared file fails the attempt with an actionable
-message — so the hash is always present in state by the time task 02 reads it.)
-
 ### `tasks/02-implement-stats-flag/`
 
-`task.json`
+`task.json` — `writeScope` is scoped to the CLI source tree. GR2015 validates that
+`src/Inventory.Cli/**` does NOT subsume `tests/Inventory.Tests/StatsCommandTests.cs`
+(it doesn't — disjoint paths), so the TDD pair passes validation.
+
 ```jsonc
 {
-  "description": "Implement --stats in src/Inventory.Cli so the Stats tests pass",
-  "dependsOn": ["01-author-stats-tests"]
+  "description": "Implement --stats in src/Inventory.Cli so the Stats tests pass without modifying tests",
+  "stableId": "m7k3nw",
+  "dependsOn": ["01-author-stats-tests"],
+  "writeScope": ["src/Inventory.Cli/**"]
 }
 ```
 
@@ -171,40 +167,16 @@ if ($LASTEXITCODE -ne 0) { Write-Output "Stats tests failing - flag not implemen
 exit 0
 ```
 
-`guardrails/03-tests-untouched.ps1`
-```powershell
-# catches: "making tests pass" by editing the tests instead of the implementation.
-# Recomputes Get-FileHash and compares to the SHA-256 the harness recorded for task 01's
-# captureHashes. Get-FileHash is a pwsh cmdlet — a guardrail script runs via the interpreter,
-# not the agent sandbox, so it always works (no git, no allowedTools gate).
-$state = Get-Content $env:GUARDRAILS_STATE_IN -Raw | ConvertFrom-Json
-$storedHashes = $state.'01-author-stats-tests'.fileHashes
-if (-not $storedHashes) {
-  Write-Output "State key '01-author-stats-tests.fileHashes' missing — was captureHashes declared on task 01?"
-  exit 1
-}
-$failures = @()
-foreach ($file in $storedHashes.PSObject.Properties.Name) {
-  $stored = $storedHashes.$file
-  if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
-  $current = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
-  if ($current -ne $stored) { $failures += "$file was modified (expected $stored, got $current)" }
-}
-if ($failures) { Write-Output ($failures -join "; "); exit 1 }
-exit 0
-```
-
-The recorded hash is contract-protected: no intervening task can forge
-`01-author-stats-tests.fileHashes` to poison this check, because the harness enforces
-single-writer-per-key — a task may only write top-level keys equal to its own id (SSOT §6.2,
-issue #48). The script above (the `captureHashes` → `Get-FileHash` recompute) is unchanged; it is
-simply now backed by that contract.
+(No tests-untouched guardrail is needed: the harness enforces `writeScope` at attempt
+end — any write to `tests/Inventory.Tests/StatsCommandTests.cs` by task 02 would be
+detected as out-of-scope and the attempt would fail with an actionable scope-violation
+message. The scope boundary is the test-integrity check.)
 
 ### `tasks/03-update-readme/`
 
 `task.json`
 ```jsonc
-{ "description": "Document --stats in README.md", "dependsOn": ["02-implement-stats-flag"] }
+{ "description": "Document --stats in README.md", "stableId": "b5h2qf", "dependsOn": ["02-implement-stats-flag"], "writeScope": ["README.md"] }
 ```
 
 `action.prompt.md` — harness-contract header, then: document the flag with a usage
@@ -223,7 +195,7 @@ exit 0
 
 `task.json`
 ```jsonc
-{ "description": "Whole test suite green (terminal gate)", "dependsOn": ["02-implement-stats-flag", "03-update-readme"] }
+{ "description": "Whole test suite green (terminal gate)", "stableId": "z9c1vd", "dependsOn": ["02-implement-stats-flag", "03-update-readme"], "writeScope": [] }
 ```
 
 `action.ps1` → `exit 0` (a pure verification task; the guardrail is the point).
@@ -240,21 +212,19 @@ exit 0
 
 > Breakdown of `add-stats-flag.md` → `add-stats-flag/` — **4 tasks** (plan listed 2):
 >
-> | Task | Action | Guardrails (archetypes) | dependsOn |
-> |---|---|---|---|
-> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8); declares `captureHashes` | — |
-> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4), tests-untouched (harness-hash) | 01 |
-> | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
-> | 04-suite-green | script | full-suite (4, terminal-only) | 02, 03 |
+> | Task | Action | Guardrails (archetypes) | writeScope | dependsOn |
+> |---|---|---|---|---|
+> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8) | `["tests/Inventory.Tests/StatsCommandTests.cs"]` | — |
+> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4) | `["src/Inventory.Cli/**"]` | 01 |
+> | 03-update-readme | prompt | readme-mentions-flag (1) | `["README.md"]` | 02 |
+> | 04-suite-green | script | full-suite (4, terminal-only) | `[]` | 02, 03 |
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
 > pass" and those tests didn't exist. Its `tests-fail-on-current-code` guardrail proves
-> they're not tautological. Its `captureHashes` declaration makes the harness record the
-> test file's SHA-256 into state, which 02's `tests-untouched` guardrail reads (recomputing
-> with `Get-FileHash`) to verify the implementation didn't edit the tests; its
-> `restoreOnRetry: true` makes the harness restore the authored test to baseline before any
-> retry of 02, so a dirtied test never dead-ends the run (the #51 self-heal).
-> `guardrails validate add-stats-flag` → OK.
+> they're not tautological. Its `writeScope: ["tests/Inventory.Tests/StatsCommandTests.cs"]`
+> and 02's `writeScope: ["src/Inventory.Cli/**"]` are disjoint — GR2015 passes, confirming
+> the implementation task cannot overwrite the authored tests (the harness enforces this at
+> runtime). `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
 > or add, then run `/guardrails-review add-stats-flag` before executing.
@@ -279,6 +249,7 @@ Violations, by rule:
   says it did — gate question 4.
 - **No inserted test task**, so nothing proves the output format — the deterministic
   evidence the plan offered ("format: one line total: N…") was thrown away.
+- **No writeScope declared** — the harness cannot enforce which files the task may write.
 - A doc typo retry would re-run the whole implementation — retry-cheapness violated.
 
 A wrong implementation that prints unsorted categories, mislabels the total, and
