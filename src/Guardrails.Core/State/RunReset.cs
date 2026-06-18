@@ -33,6 +33,7 @@ public static class RunReset
         DeleteFileIfExists(Path.Combine(stateDir, "merge-conflicts.log"));
         DeleteDirectoryIfExists(Path.Combine(stateDir, "logs"));
         DeleteDirectoryIfExists(Path.Combine(stateDir, "captured"));
+        DeleteDirectoryIfExists(Path.Combine(stateDir, "scope-baseline"));
 
         // Re-seed immediately so a subsequent run starts from the seed-derived state.
         new StateManager(planDirectory).Initialize();

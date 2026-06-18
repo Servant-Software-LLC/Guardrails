@@ -44,7 +44,6 @@ BUT these tests MUST NOT COMPILE OR MUST FAIL against the current code, because 
 the point (it proves the tests encode unbuilt behavior). Do NOT implement the feature.
 Do NOT edit any non-test file.
 
-You do NOT need to hash the test files or write anything to state — this task's
-`captureHashes` declaration makes the harness record their SHA-256 hashes automatically
-(after the action, before guardrails), so the implementation task's `tests-untouched`
-guardrail can verify they were not modified. Publish nothing to state.
+Publish nothing to state. The harness's `writeScope` enforcement on the implementation
+task (`src/Guardrails.Core/**`, `src/Guardrails.Cli/**`) ensures your test files cannot
+be modified by that task — no manual hashing or state write is required.

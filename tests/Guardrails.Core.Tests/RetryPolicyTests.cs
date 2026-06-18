@@ -45,27 +45,6 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
-    public void TestsUntouchedFailure_TellsAgentNotToEditTests_AndDropsDoNotBreakLine()
-    {
-        // issue #51: when tests-untouched fails, the harness has restored the test file to baseline;
-        // the feedback must steer the agent to fix the implementation (or escalate), and must NOT
-        // tell it to preserve the tests-pass guardrail it gamed by editing the tests.
-        var results = new List<GuardrailResult>
-        {
-            new() { Name = "01-builds", Passed = true },
-            new() { Name = "02-tests-pass", Passed = true },
-            new() { Name = "03-tests-untouched", Passed = false, Reason = "WizardNavigationTests.cs was modified" }
-        };
-
-        string feedback = RetryPolicy.ForGuardrailFailures(Task("07-impl"), attempt: 2, results);
-
-        Assert.Contains("Do NOT edit the test file", feedback);
-        Assert.Contains("restored", feedback);            // tells the agent the file is pristine again
-        Assert.Contains("needsHuman", feedback);           // the escape hatch when tests are wrong
-        Assert.DoesNotContain("do not break these", feedback); // the misleading line is suppressed
-    }
-
-    [Fact]
     public void GuardrailFailure_IncludesFullOutput_NotJustFirstLine()
     {
         // Regression for issue #26 Gap 1: a build guardrail with 9 errors must surface ALL of

@@ -5,7 +5,7 @@ namespace Guardrails.Integration.Tests;
 
 /// <summary>
 /// M4 parallel-execution end-to-end tests with real processes: diamond DAG runs
-/// branches concurrently, and <c>exclusive: true</c> tasks never overlap anything.
+/// branches concurrently (disjoint write-scopes), and universal-scope tasks never overlap.
 /// Overlap is proven with start/end timestamp files, not timing guesses.
 /// </summary>
 public sealed class ParallelRunTests
@@ -56,10 +56,10 @@ public sealed class ParallelRunTests
     public async Task Diamond_IndependentBranches_RunConcurrently()
     {
         using var plan = new StatePlanBuilder(maxParallelism: 4)
-            .AddTask("01-root")
-            .AddTask("02-left", actionBody: MarkingAction("left"), dependsOn: "01-root")
-            .AddTask("03-right", actionBody: MarkingAction("right"), dependsOn: "01-root")
-            .AddTask("04-join", dependsOn: ["02-left", "03-right"]);
+            .AddTask("01-root", writeScope: ["marks/root*"])
+            .AddTask("02-left", actionBody: MarkingAction("left"), writeScope: ["marks/left*"], dependsOn: "01-root")
+            .AddTask("03-right", actionBody: MarkingAction("right"), writeScope: ["marks/right*"], dependsOn: "01-root")
+            .AddTask("04-join", writeScope: [], dependsOn: ["02-left", "03-right"]);
 
         RunReport report = await RunAsync(plan.PlanDir);
 
@@ -69,17 +69,17 @@ public sealed class ParallelRunTests
     }
 
     [Fact]
-    public async Task ExclusiveTask_NeverOverlapsAnotherTask()
+    public async Task UniversalScopeTask_NeverOverlapsAnotherTask()
     {
         using var plan = new StatePlanBuilder(maxParallelism: 4)
-            .AddTask("01-a", actionBody: MarkingAction("a"))
-            .AddTask("02-b", actionBody: MarkingAction("b"), exclusive: true)
-            .AddTask("03-c", actionBody: MarkingAction("c"));
+            .AddTask("01-a", actionBody: MarkingAction("a"), writeScope: ["marks/a*"])
+            .AddTask("02-b", actionBody: MarkingAction("b"), writeScope: ["**"])
+            .AddTask("03-c", actionBody: MarkingAction("c"), writeScope: ["marks/c*"]);
 
         RunReport report = await RunAsync(plan.PlanDir);
 
         Assert.True(report.AllSucceeded);
-        Assert.False(Overlap(plan.PlanDir, "b", "a"), "exclusive task overlapped a shared task");
-        Assert.False(Overlap(plan.PlanDir, "b", "c"), "exclusive task overlapped a shared task");
+        Assert.False(Overlap(plan.PlanDir, "b", "a"), "universal-scope task overlapped a narrow-scope task");
+        Assert.False(Overlap(plan.PlanDir, "b", "c"), "universal-scope task overlapped a narrow-scope task");
     }
 }

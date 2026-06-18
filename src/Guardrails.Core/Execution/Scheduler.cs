@@ -11,9 +11,9 @@ namespace Guardrails.Core.Execution;
 /// <c>maxParallelism</c> workers. A task that ends <c>needs-human</c> (or otherwise
 /// non-green) blocks its TRANSITIVE dependents immediately while independent branches
 /// keep running — every completed task is durable progress in the journal, and one run
-/// surfaces every needs-human halt instead of one per run. Tasks with
-/// <c>exclusive: true</c> (the default for prompt actions) hold the
-/// <see cref="WorkspaceLock"/> exclusively and run alone.
+/// surfaces every needs-human halt instead of one per run. Tasks with disjoint
+/// <see cref="TaskNode.WriteScope"/> run concurrently; overlapping scopes serialize via
+/// <see cref="ScopeLock"/>. <c>maxParallelism</c> caps workers independently.
 /// </summary>
 public sealed class Scheduler
 {
@@ -24,7 +24,7 @@ public sealed class Scheduler
     private readonly int _maxParallelism;
 
     private readonly object _gate = new();
-    private readonly WorkspaceLock _workspaceLock = new();
+    private readonly ScopeLock _scopeLock = new();
 
     // First unexpected (non-cancellation) executor fault wins; surfaced after WhenAll so the
     // run terminates deterministically with a harness error instead of hanging (see WorkerLoopAsync).
@@ -152,8 +152,11 @@ public sealed class Scheduler
                     continue;
                 }
 
-                bool exclusive = task.Exclusive ?? task.Action.Kind == ActionKind.Prompt;
-                await _workspaceLock.AcquireAsync(exclusive, cancellationToken).ConfigureAwait(false);
+                WriteScope scope = task.WriteScope is null
+                    ? WriteScope.Parse(["**"])
+                    : WriteScope.Parse(task.WriteScope);
+
+                await _scopeLock.AcquireWithCancellationAsync(scope, cancellationToken).ConfigureAwait(false);
 
                 TaskResult result;
                 try
@@ -162,7 +165,7 @@ public sealed class Scheduler
                 }
                 finally
                 {
-                    _workspaceLock.Release(exclusive);
+                    _scopeLock.Release(scope);
                 }
 
                 OnSettled(context, task, result);

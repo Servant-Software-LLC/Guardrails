@@ -1,11 +1,11 @@
 namespace Guardrails.Core.Execution;
 
 /// <summary>
-/// The single OS-correct definition of "does this path stay inside the workspace?" — shared by
-/// <see cref="Loading.PlanValidator"/> (the GR2013 <c>captureHashes</c> check) and
-/// <see cref="CapturedFileStore"/> (the FIX B / issue #51 defense-in-depth assert before any
-/// workspace write). Keeping ONE implementation means the harness's only workspace-writing code
-/// uses exactly the boundary the validator enforced, so the two can never drift.
+/// The single OS-correct definition of "does this path stay inside the workspace?" — used by
+/// <see cref="Loading.PlanValidator"/> (scope-glob validation) and
+/// <see cref="WorkspaceScopeEnforcer"/> (defense-in-depth assert before any workspace write).
+/// Keeping ONE implementation means the harness's only workspace-writing code uses exactly the
+/// boundary the validator enforced, so the two can never drift.
 /// </summary>
 internal static class WorkspaceContainment
 {

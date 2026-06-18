@@ -103,16 +103,13 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
   "retries": 3,                // optional; overrides defaultRetries
   "timeoutSeconds": 3600,      // optional; whole-attempt ceiling (action + guardrails)
-  "exclusive": null,           // optional; null/absent = default by action kind:
-                               //   prompt action  → true  (runs alone — sole workspace access)
-                               //   exe/script     → false
-  "captureHashes": [           // optional; workspace-relative files whose SHA-256 the HARNESS
-    "tests/MyProj/FooTests.cs" //   records into state after a successful action (§3.1) — the
-  ],                           //   agent never computes a hash. Missing file ⇒ attempt fails.
-  "restoreOnRetry": false,     // optional, default false; opt-in to restore-on-retry for the
-                               //   captureHashes files above (§3.1). true ⇒ also snapshot their
-                               //   authored bytes and restore them before a downstream retry.
-                               //   true with empty/absent captureHashes = validation error (GR2014).
+  "writeScope": [              // optional; workspace-relative glob patterns this task may write.
+    "src/MyProject/**"         //   Absent/null = universal ["**"] at runtime. Two tasks may run
+  ],                           //   concurrently only when their scopes are disjoint (§3.2).
+                               //   Empty [] = gate task (read-only, runs after all writers).
+                               //   GR2017: malformed globs (?, brace, negation) are errors.
+                               //   GR2015: scope overlapping an ancestor's scope = error.
+                               //   GR2016: independent-task scope overlap = warning.
   "action": {                  // OPTIONAL — omit to use convention discovery:
                                //   exactly ONE file named action.* in the task folder;
                                //   zero or multiple action.* files = validation error
@@ -143,93 +140,41 @@ a real id can never collide with the merge's synthetic `folder:<name>` identity 
 disallowed). `validate` does not *require* one. Absent ⇒ task identity falls back to the folder
 name — see §11.3 for why minting one is still recommended.
 
-### 3.1 `captureHashes` — harness-computed content hashes
+### 3.2 `writeScope` — disjoint-scope ownership
 
-`captureHashes` is an optional list of **workspace-relative file paths**. After a task's action
-succeeds (and **before** its guardrails run), the harness computes each listed file's **SHA-256
-over its raw bytes** (uppercase hex) and merges the result into the task's state fragment under:
+`writeScope` is an optional list of **workspace-relative glob patterns** that declares which paths
+this task is allowed to write. The harness uses it for two purposes:
 
-```jsonc
-{ "<taskId>": { "fileHashes": { "<relative/path>": "<UPPERCASE-SHA-256-HEX>" } } }
-```
+1. **Scheduling.** Two tasks may run concurrently only when their scopes are provably disjoint. A
+   task with an absent `writeScope` is treated as universal `["**"]` at scheduling time — it runs
+   alone, after all its predecessors and before any successors. An explicitly declared empty `[]`
+   is a gate task (read-only): it runs alone too, but signals intent rather than implying universal
+   write access.
 
-The hashes then merge into `state.json` like any fragment, so a downstream task reads them via
-`GUARDRAILS_STATE_IN`. The hash is computed **in harness code** — the action agent never runs
-`git hash-object`, `Get-FileHash`, or any shell command, so a scoped `allowedTools` (or an offline
-sandbox) can never block it. If a declared file does not exist after the action, the attempt
-**fails** with an actionable message naming the missing path (the action claimed success but did
-not produce a declared output); nothing is recorded.
+2. **Enforcement.** Before the action starts, the harness snapshots the workspace. After the action
+   succeeds and before guardrails run, it diffs the workspace and **reverts** any write outside the
+   declared scope (created files are deleted; modified or deleted files are restored from the git
+   baseline for tracked files, or from `state/scope-baseline/` for untracked files). If any
+   out-of-scope write was detected, the attempt fails with feedback naming the violating paths.
 
-**Paths are workspace-relative and validated.** Each `captureHashes` entry must be a
-workspace-relative path that stays inside the workspace. `validate` rejects an absolute path, a
-drive- or root-rooted path, or any entry whose normalized resolution escapes the workspace root
-(e.g. `../../etc/passwd`) as a `GR2013` error naming the offending task and path.
+**Glob format.** Only `*` and `**` wildcards are supported. `?`, brace expansion (`{a,b}`), and
+negation (`!`) are not — a malformed glob is a **`GR2017`** validation error. `src/Foo/**` matches
+all files under `src/Foo/`; `src/Foo/Bar.cs` matches that exact file; `**` matches everything.
 
-**Merge ordering — capture overlays the action's own fragment.** Capture does not replace the
-fragment the action wrote to `GUARDRAILS_STATE_OUT`; it **overlays** onto it. The harness reads the
-action's pending fragment, sets `{ "<taskId>": { "fileHashes": { … } } }`, and writes the result
-back, **preserving the action's own-namespace keys** (other keys under `<taskId>`). For a path that
-appears in **both** the action's own `fileHashes` and the harness capture, **the harness-computed
-value takes precedence** (it overwrites the action's). A non-object or unparseable action fragment
-still triggers the **invalid-fragment** attempt failure (§6.2) — capture leaves those bytes
-untouched and never papers over them, so declaring `captureHashes` does not change whether a task
-with a malformed fragment fails. Capture writes only under the task's own id, so a capture-overlaid
-fragment satisfies single-writer-per-key (§6.2) by construction; a **foreign** top-level key in the
-action's own fragment makes the whole attempt fail at the merge step (§6.2) regardless of capture.
+**Validation.** Three scope diagnostics run at `validate` time:
+- **`GR2015` (error):** a task's effective writeScope overlaps a transitive ancestor's declared
+  scope — the downstream task would write into paths the ancestor owns, risking state corruption in
+  a retry scenario. Declare a disjoint scope.
+- **`GR2016` (warning):** two independent tasks (no DAG path between them) have overlapping
+  writeScopes — they will be serialized at runtime, defeating the concurrency the scheduler could
+  otherwise exploit.
+- **`GR2017` (error):** a glob entry contains an unsupported wildcard (`?`, brace, negation).
 
-The canonical use is the `tests-untouched` guardrail: a test-author task declares the test files
-in `captureHashes`, and the implementation task's guardrail recomputes with
-`Get-FileHash -Algorithm SHA256` (a pwsh cmdlet, run by the interpreter — not the agent sandbox)
-and compares. SHA-256-over-raw-bytes is chosen so the harness (`SHA256.HashData`) and a guardrail
-(`Get-FileHash`) agree exactly, with no git dependency and no shared git-index mutation that could
-race under `maxParallelism > 1`. It sidesteps the **git-blob** normalization hazard, but it is an
-**exact raw-byte match**: a line-ending normalization that touches the file between capture and the
-downstream recompute (git `autocrlf` on checkout, or an IDE/formatter rewriting the file) makes the
-comparison **fail closed** — a spurious "tests changed" block a human then reviews. Safe, but
-possible; it does not silently pass.
-
-### 3.1.1 `restoreOnRetry` — opt-in baseline restore
-
-`restoreOnRetry` is an optional task-level boolean (default **false**) that sits alongside
-`captureHashes`. **By default, `captureHashes` ONLY hashes** for tamper-detection (above) — nothing
-is snapshotted and nothing is restored. Setting `restoreOnRetry: true` on the **author** task opts
-that task's captured files into restore-on-retry; with it off, the dirtied-file dead-end below is
-back for that task — which is fine, it is opt-in.
-
-**What `restoreOnRetry: true` does.** Beyond hashing, the harness snapshots each captured file's
-authored bytes into a runtime baseline store (`state/captured/<author-task-id>/<path>` — harness-owned,
-gitignored, excluded from the lock manifest like the rest of `state/` runtime). The snapshot is taken
-**only on a clean capture** (a successful action whose fragment is valid), strictly **before** the
-author task's own guardrails run — and thus before it is journaled `succeeded`. A baseline is therefore
-written even on an author attempt whose guardrails later FAIL; that is harmless: the author re-snapshots
-(overwrite) on its next clean attempt, and a consumer never restores from an author that never succeeds
-(the author's dependents stay `blocked` and never run). Before **each attempt** of a task that transitively depends on
-a `restoreOnRetry` author, the harness restores any captured file whose current bytes differ from that
-baseline (a no-op on the first attempt). This removes the dead-end where an implementation task edits
-a captured test file: the workspace is not reset between attempts, and an authored test file is
-typically untracked in git, so without restore the dirtied file would persist and `tests-untouched`
-would fail every retry identically. With restore, a retry starts from the pristine test file, so an
-implementation correct against the *original* tests passes.
-
-**Scope and validation.** Restore only ever touches files named in an upstream `restoreOnRetry`
-`captureHashes` — never other workspace files. `restoreOnRetry: true` with an empty/absent
-`captureHashes` has nothing to act on and is a **`GR2014`** validation error naming the task. When
-**two** ancestor authors capture the same relative path, restore is **last-write-wins in ancestor-id
-ordinal order** (each baseline is keyed under its own author id, so they never collide in the store;
-the consumer restores ancestors in ordinal id order, so the highest-sorting author's bytes win).
-
-**Resolved against the workspace.** Both snapshot and restore resolve each captured path against the
-**plan workspace** — the canonical base the `GR2013` check validated — never against a consumer
-task's per-task `workingDirectory`. The harness additionally re-asserts workspace containment before
-every write (defense-in-depth): a path that would escape the workspace is **not** written and is
-recorded as un-restorable. Each restore — and any captured file the harness could **not** restore
-(missing baseline, or a containment skip) — is recorded in the attempt's `restored-baseline.log`, so
-the audit log is loud exactly when restore could not protect the workspace, not only on success.
-
-**Resume.** Because the snapshot is taken only on a clean capture and *before* the author is journaled
-`succeeded`, a crash mid-snapshot re-runs the author on resume and re-snapshots from scratch — the
-baseline is consistent on crash-resume. `guardrails run --fresh` deletes `state/captured/` (§6.1) so a
-stale baseline can never revert a legitimately re-authored file on the next run.
+**`state/scope-baseline/`.** The harness snapshots out-of-scope workspace bytes to
+`state/scope-baseline/` at the start of each attempt (harness-owned, gitignored, excluded from the
+lock manifest). This lets untracked files be restored on revert. `guardrails run --fresh` deletes
+`state/scope-baseline/` (§6.1) so a stale baseline cannot resurrect an out-of-scope file on the
+next run.
 
 ## 4. Guardrails
 
@@ -350,12 +295,11 @@ The harness is otherwise a **read-only** actor on the workspace: actions and gua
 workspace files; the harness reads them (hashes, captures, lock manifest) and owns only `state/`.
 There is **exactly one** exception, bounded here so a future feature cannot quietly widen it:
 
-> **The harness writes a workspace file only when restoring a `restoreOnRetry` `captureHashes`
-> file to its authored baseline before an attempt (§3.1.1) — and never otherwise.** Each such write
-> targets a path that (a) appears in an upstream `restoreOnRetry` task's `captureHashes`, (b) resolves
-> against the plan workspace, and (c) passes the same workspace-containment check as `GR2013`
-> immediately before the write. A path failing any of these is **not** written and is logged as
-> un-restorable.
+> **The harness writes a workspace file only when reverting an out-of-scope write at the end of
+> a failed attempt — and never otherwise.** Each such write targets a path that (a) was written
+> outside the task's declared `writeScope`, (b) resolves against the plan workspace, and (c) passes
+> the same workspace-containment check immediately before the write. A path failing any of these is
+> **not** written and is logged as un-revertable.
 
 Any new capability that needs the harness to write workspace files must be added to this list with
 its own containment analysis — the default remains that the harness does not mutate the workspace.

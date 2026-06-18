@@ -60,62 +60,12 @@ public static class RetryPolicy
             text.AppendLine();
         }
 
-        // When a tests-untouched guardrail failed, the agent edited the authored test file (almost
-        // always to force a tests-pass guardrail green). The harness has restored that file to its
-        // authored baseline for the next attempt (issue #51), so steer the agent to fix the
-        // IMPLEMENTATION and emit the "Do NOT edit the test file(s)" block, then RETURN.
-        //
-        // Returning here suppresses the WHOLE "Guardrails that PASSED (do not break these)" footer —
-        // not just a tests-pass entry. That is deliberate: a tests-pass guardrail that went green by
-        // editing the tests is exactly what must NOT be preserved, and after restore the passing set
-        // is recomputed next attempt anyway, so listing "do not break these" here would be misleading.
-        bool testsUntouchedFailed = results.Any(r => !r.Passed && IsTestsUntouched(r.Name));
-        if (testsUntouchedFailed)
-        {
-            text.AppendLine("## Do NOT edit the test file(s)");
-            text.AppendLine("A `tests-untouched` guardrail failed: the authored test file was modified. The harness");
-            text.AppendLine("has restored each affected test file to its authored baseline for this attempt — it is");
-            text.AppendLine("pristine again. Make the ORIGINAL tests pass by fixing the implementation; do not change");
-            text.AppendLine("the tests. If the authored tests are genuinely wrong or incompatible with a reasonable");
-            text.AppendLine("implementation, STOP and write {\"needsHuman\": \"<why>\"} to GUARDRAILS_STATE_OUT instead");
-            text.AppendLine("of editing them.");
-            return text.ToString();
-        }
-
         IReadOnlyList<string> passed = results.Where(r => r.Passed).Select(r => r.Name).ToList();
         if (passed.Count > 0)
         {
             text.AppendLine($"Guardrails that PASSED (do not break these): {string.Join(", ", passed)}");
         }
 
-        return text.ToString();
-    }
-
-    /// <summary>A guardrail whose name marks it as a tests-untouched check (doctrine: <c>NN-tests-untouched</c>).</summary>
-    private static bool IsTestsUntouched(string name) =>
-        name.Contains("untouched", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Compose feedback when the action succeeded but one or more declared <c>captureHashes</c>
-    /// files did not exist afterward (issue #46). The harness records hashes in code, so the only
-    /// failure mode is a missing file — name them so the retry creates them at the declared paths.
-    /// </summary>
-    public static string ForMissingCaptureFiles(TaskNode task, int attempt, IReadOnlyList<string> missingFiles)
-    {
-        var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
-        text.AppendLine("## Declared output file(s) missing");
-        text.AppendLine("The action reported success, but these files declared in this task's");
-        text.AppendLine("`captureHashes` do not exist at the expected workspace-relative paths:");
-        text.AppendLine();
-        foreach (string missing in missingFiles)
-        {
-            text.AppendLine($"- {missing}");
-        }
-
-        text.AppendLine();
-        text.AppendLine("Create each file at exactly that path. The harness hashes them automatically");
-        text.AppendLine("once they exist — you do NOT need to compute or write any hash yourself.");
         return text.ToString();
     }
 

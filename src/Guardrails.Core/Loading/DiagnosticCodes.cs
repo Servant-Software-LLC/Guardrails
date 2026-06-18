@@ -89,18 +89,13 @@ public static class DiagnosticCodes
     /// </summary>
     public const string CostCapNonPositive = "GR2012";
 
-    /// <summary>
-    /// A <c>captureHashes</c> entry (SSOT §3.1) is not a safe workspace-relative path: it is
-    /// absolute, drive- or root-rooted, or its normalized resolution escapes the workspace root
-    /// (e.g. <c>../../etc/passwd</c>). The harness resolves each entry against the workspace and
-    /// hashes/reads the file, so an escaping path could reach outside the workspace — an ERROR.
-    /// </summary>
-    public const string CaptureHashEscapesWorkspace = "GR2013";
+    // --- Scope-ownership (Plan 05 §8 / §10) — M3 --------------------------------
+    /// <summary>A downstream task's writeScope overlaps a narrow-scoped ancestor's outputs (M3).</summary>
+    public const string WriteScopeSubsumptionViolation = "GR2015";
 
-    /// <summary>
-    /// A task declares <c>restoreOnRetry: true</c> but has an empty/absent <c>captureHashes</c>
-    /// (SSOT §3.1 / issue #51). Restore-on-retry acts ONLY on captured files, so opting in without
-    /// any captured file is a no-op the author almost certainly did not intend — an ERROR naming the task.
-    /// </summary>
-    public const string RestoreOnRetryWithoutCaptureHashes = "GR2014";
+    /// <summary>Two independent tasks (no DAG edge) have overlapping writeScopes (M3).</summary>
+    public const string IndependentTaskScopeOverlap = "GR2016";
+
+    /// <summary>A writeScope glob entry is malformed (contains ?, brace expansion, or negation) (M3).</summary>
+    public const string MalformedWriteScopeGlob = "GR2017";
 }

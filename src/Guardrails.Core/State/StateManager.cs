@@ -190,8 +190,7 @@ public sealed class StateManager
         // Single-writer-per-key (SSOT §6.2, issue #48): every top-level key must be the writing
         // task's OWN id (Ordinal — matches duplicate-id detection and task.Id = folder name) or a
         // harness reserved key (none in v1). A foreign task id or an arbitrary shared key would let
-        // one task poison another's namespace (e.g. the captured tests-untouched hashes), so we
-        // REJECT — not strip — the whole fragment. The attempt then fails as invalid-fragment,
+        // one task poison another's namespace, so we REJECT — not strip — the whole fragment. The attempt then fails as invalid-fragment,
         // retries with feedback, and nothing is merged. An empty fragment passes vacuously.
         // A task overwriting its OWN namespace is allowed (self-inflicted, not cross-task poisoning);
         // `needsHuman` is exempt because it short-circuits before this merge runs.

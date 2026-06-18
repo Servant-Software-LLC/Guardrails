@@ -7,7 +7,7 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails plan [folder]</c> — print the execution waves the scheduler will
 /// follow: wave 0 has no dependencies; wave N waits on wave N−1. Tasks within a wave run
-/// in parallel up to <c>maxParallelism</c>, except <c>[exclusive]</c> tasks, which run alone.
+/// in parallel up to <c>maxParallelism</c> when their write-scopes are disjoint.
 /// Defaults to the current directory when the folder is omitted.
 /// </summary>
 public static class PlanCommand
@@ -51,11 +51,9 @@ public static class PlanCommand
             output.WriteLine($"Wave {i}:");
             foreach (TaskNode task in waves[i])
             {
-                bool exclusive = task.Exclusive ?? task.Action.Kind == ActionKind.Prompt;
                 string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
-                string flags = exclusive ? " [exclusive]" : string.Empty;
                 string deps = task.DependsOn.Count == 0 ? "" : $"  (after: {string.Join(", ", task.DependsOn)})";
-                output.WriteLine($"  {task.Id,-36} {kind,-7}{flags}{deps}");
+                output.WriteLine($"  {task.Id,-36} {kind,-7}{deps}");
             }
 
             output.WriteLine();

@@ -48,9 +48,18 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   Both share the same `source-sha256` key. `guardrails graph --check` exits 0 (fresh), 2
   (stale/missing — a present but hash-mismatched `diagram.html` is stale; a missing one is
   not), 1 (load/validate error). See SSOT §10.
-- **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
-  `exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
+- **Task** = `task.json` (`description`, `dependsOn`, `writeScope`, optional `retries`/
+  `timeoutSeconds`/`exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
   Zero guardrails = validation error.
+  **`writeScope`** (required): a list of workspace-relative glob patterns bounding which files
+  the task may write. `[]` for pure gate/state tasks that write no workspace files; narrow
+  globs (e.g. `["src/MyProj/**"]`) for everything else; `["**"]` (universal) only for
+  genuinely repo-wide work and must be justified in the description. The harness enforces
+  this at attempt time and reverts out-of-scope writes on retry (M5+).
+  GR2015 (ERROR) fires when an implementation task's scope subsumes a test-author's output —
+  the key GR2015 invariant that makes tests a real guardrail, not a tautology.
+  Retired (skills no longer emit; harness still recognises until M7): `captureHashes` /
+  `tests-untouched` / `restoreOnRetry`.
 - **Action kinds**: `.prompt.md` → LLM (via pluggable `IPromptRunner`; v1 = Claude Code
   CLI headless); anything else → process via the interpreter map.
 - **Guardrails**: deterministic (exit 0 = pass; failure reason on stdout) or prompt

@@ -26,7 +26,7 @@ public static class PlanFixtures
     };
 
     public static TaskNode Exclusive(string id, params string[] dependsOn) =>
-        Task(id, dependsOn) with { Exclusive = true };
+        Task(id, dependsOn) with { WriteScope = ["**"] };
 
     public static PlanDefinition Plan(params TaskNode[] tasks) => new()
     {

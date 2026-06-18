@@ -56,4 +56,12 @@ public sealed record RunConfig
     /// </summary>
     public IReadOnlyDictionary<string, PromptRunnerConfig> PromptRunners { get; init; } =
         new Dictionary<string, PromptRunnerConfig>();
+
+    /// <summary>
+    /// Workspace-relative glob patterns excluded from scope-enforcement diffing (§5.2 of Plan 05).
+    /// Files matching these are never tracked in the snapshot or reported as violations.
+    /// Default: <c>state/</c>, <c>.git/</c>, <c>**/bin/**</c>, <c>**/obj/**</c>, <c>**/node_modules/**</c>.
+    /// </summary>
+    public IReadOnlyList<string> EnforcementIgnore { get; init; } =
+        ["state/", ".git/", "**/bin/**", "**/obj/**", "**/node_modules/**"];
 }

@@ -28,14 +28,15 @@ public sealed class PlanValidator
         ValidateStableIdsUnique(plan, diagnostics);
         ValidateStableIdFormat(plan, diagnostics);
         ValidateCostCap(plan, diagnostics);
-        ValidateCaptureHashPaths(plan, diagnostics);
-        ValidateRestoreOnRetry(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
+        ValidateWriteScopeGlobs(plan, diagnostics);
+        ValidateWriteScopeSubsumption(plan, diagnostics);
+        ValidateIndependentScopeOverlap(plan, diagnostics);
 
         return diagnostics;
     }
@@ -121,55 +122,6 @@ public sealed class PlanValidator
             diagnostics.Add(Error(DiagnosticCodes.CostCapNonPositive, plan.PlanDirectory,
                 $"maxCostUsd is {cap}, but a cost cap must be positive; a zero or negative cap would " +
                 "halt the run before any work could run."));
-        }
-    }
-
-    /// <summary>
-    /// Every <c>captureHashes</c> entry (SSOT §3.1) must be a safe workspace-relative path. The
-    /// harness resolves each as <c>Path.GetFullPath(Path.Combine(workspace, entry))</c> and then
-    /// hashes/reads the file, so an absolute path, a drive- or root-rooted path, or a path that
-    /// normalizes outside the workspace (e.g. <c>../../etc/passwd</c>) would reach outside the
-    /// workspace — a GR2013 ERROR naming the offending task and path. Resolution uses the plan's
-    /// configured workspace root (the action's per-task <c>workingDirectory</c> is the rare override
-    /// that only ever narrows the cwd; the workspace root is the canonical containment boundary).
-    /// </summary>
-    private static void ValidateCaptureHashPaths(PlanDefinition plan, List<Diagnostic> diagnostics)
-    {
-        foreach (TaskNode task in plan.Tasks)
-        {
-            foreach (string entry in task.CaptureHashes)
-            {
-                // The same containment boundary the harness's restore/snapshot code asserts against
-                // (WorkspaceContainment) — resolved against the plan workspace, never a per-task cwd.
-                if (WorkspaceContainment.Escapes(plan.Workspace, entry))
-                {
-                    diagnostics.Add(Error(DiagnosticCodes.CaptureHashEscapesWorkspace, task.Directory,
-                        $"Task '{task.Id}' declares captureHashes entry '{entry}', which is not a " +
-                        "workspace-relative path: it is absolute/rooted or escapes the workspace root. " +
-                        "captureHashes paths must stay inside the workspace."));
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// <c>restoreOnRetry: true</c> (SSOT §3.1 / issue #51) acts ONLY on a task's <c>captureHashes</c>
-    /// files — it snapshots their authored bytes and restores them before a downstream retry. Opting
-    /// in with an empty/absent <c>captureHashes</c> leaves it nothing to act on, almost certainly an
-    /// authoring slip — a GR2014 ERROR naming the task.
-    /// </summary>
-    private static void ValidateRestoreOnRetry(PlanDefinition plan, List<Diagnostic> diagnostics)
-    {
-        foreach (TaskNode task in plan.Tasks)
-        {
-            if (task.RestoreOnRetry && task.CaptureHashes.Count == 0)
-            {
-                diagnostics.Add(Error(DiagnosticCodes.RestoreOnRetryWithoutCaptureHashes, task.Directory,
-                    $"Task '{task.Id}' declares restoreOnRetry: true but has no captureHashes. " +
-                    "restoreOnRetry restores the bytes of captured files before a downstream retry, " +
-                    "so it requires a non-empty captureHashes to act on. Add the file(s) to " +
-                    "captureHashes, or remove restoreOnRetry."));
-            }
         }
     }
 
@@ -338,6 +290,117 @@ public sealed class PlanValidator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// GR2017 (error): a writeScope glob containing <c>?</c>, brace expansion, or negation is
+    /// unsupported. Each glob is validated individually by attempting <see cref="WriteScope.Parse"/>;
+    /// an <see cref="ArgumentException"/> from the parser means the glob is malformed.
+    /// </summary>
+    private static void ValidateWriteScopeGlobs(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.WriteScope is null) continue;
+
+            foreach (string glob in task.WriteScope)
+            {
+                try
+                {
+                    WriteScope.Parse([glob]);
+                }
+                catch (ArgumentException ex)
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.MalformedWriteScopeGlob, task.Directory,
+                        $"Task '{task.Id}' declares a malformed writeScope glob '{glob}': {ex.Message}"));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// GR2015 (error): a task whose effective writeScope overlaps a transitive ancestor's declared
+    /// scope. An absent writeScope is treated as universal (<c>["**"]</c>) per Plan 05 §4.1.
+    /// Tasks with malformed globs (caught by GR2017) are skipped here.
+    /// </summary>
+    private static void ValidateWriteScopeSubsumption(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        var graph = new Graph.DependencyGraph(plan.Tasks);
+        var byId = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            WriteScope? effectiveScope = TryParseEffectiveScope(task.WriteScope);
+            if (effectiveScope is null) continue; // malformed globs; GR2017 covers
+
+            foreach (string ancestorId in graph.TransitiveDependenciesOf(task.Id))
+            {
+                if (!byId.TryGetValue(ancestorId, out TaskNode? ancestor)) continue;
+                if (ancestor.WriteScope is null || ancestor.WriteScope.Count == 0) continue;
+
+                WriteScope? ancestorScope = TryParseEffectiveScope(ancestor.WriteScope);
+                if (ancestorScope is null) continue; // malformed; skip
+
+                if (WriteScope.Overlaps(effectiveScope.Value, ancestorScope.Value))
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.WriteScopeSubsumptionViolation, task.Directory,
+                        $"Task '{task.Id}' depends (directly or transitively) on '{ancestor.Id}', " +
+                        $"which declares writeScope '{string.Join(", ", ancestor.WriteScope)}', but " +
+                        $"'{task.Id}' does not exclude those paths from its own writeScope. " +
+                        "Declare a disjoint writeScope on the dependent task."));
+                    break; // one error per (task) is enough; further ancestors would be redundant
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// GR2016 (warning): two independent tasks (no DAG path between them) whose writeScopes overlap.
+    /// Only tasks with explicitly declared (non-null) scopes are checked; absent scopes are not
+    /// included because they apply to un-annotated plans where overlap is expected.
+    /// Tasks with malformed globs (caught by GR2017) are skipped here.
+    /// </summary>
+    private static void ValidateIndependentScopeOverlap(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        var graph = new Graph.DependencyGraph(plan.Tasks);
+
+        var annotated = plan.Tasks
+            .Where(t => t.WriteScope is not null)
+            .Select(t => (Task: t, Scope: TryParseEffectiveScope(t.WriteScope)))
+            .Where(x => x.Scope is not null)
+            .ToList();
+
+        for (int i = 0; i < annotated.Count; i++)
+        for (int j = i + 1; j < annotated.Count; j++)
+        {
+            var (taskA, scopeA) = annotated[i];
+            var (taskB, scopeB) = annotated[j];
+
+            var ancestorsOfA = graph.TransitiveDependenciesOf(taskA.Id);
+            var ancestorsOfB = graph.TransitiveDependenciesOf(taskB.Id);
+            bool dependent = ancestorsOfA.Contains(taskB.Id) || ancestorsOfB.Contains(taskA.Id);
+            if (dependent) continue;
+
+            if (WriteScope.Overlaps(scopeA!.Value, scopeB!.Value))
+            {
+                diagnostics.Add(Warning(DiagnosticCodes.IndependentTaskScopeOverlap, plan.PlanDirectory,
+                    $"Tasks '{taskA.Id}' and '{taskB.Id}' are independent (no DAG path between them) " +
+                    "but their writeScopes overlap. They will be serialized at runtime, " +
+                    "preventing concurrent execution. Consider disjoint writeScopes or adding a dependency."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Parse a raw writeScope list into a <see cref="WriteScope"/>. A <c>null</c> list (absent in
+    /// task.json) is treated as universal <c>["**"]</c> per Plan 05 §4.1. Returns <c>null</c> if
+    /// any glob is malformed (ArgumentException from the parser); callers skip those tasks.
+    /// </summary>
+    private static WriteScope? TryParseEffectiveScope(IReadOnlyList<string>? globs)
+    {
+        if (globs is null) return WriteScope.Parse(["**"]);
+        try { return WriteScope.Parse(globs); }
+        catch (ArgumentException) { return null; }
     }
 
     private static Diagnostic Error(string code, string path, string message) => new()

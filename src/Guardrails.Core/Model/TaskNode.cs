@@ -30,28 +30,12 @@ public sealed record TaskNode
     /// <summary>Whole-attempt timeout ceiling in seconds; null = use <c>defaultTimeoutSeconds</c>.</summary>
     public int? TimeoutSeconds { get; init; }
 
-    /// <summary>Exclusive-workspace flag; null = default by action kind (prompt → true). (Honored from M4.)</summary>
-    public bool? Exclusive { get; init; }
-
     /// <summary>
-    /// Workspace-relative file paths whose SHA-256 (over raw bytes) the harness records into this
-    /// task's state fragment after a successful action, under
-    /// <c>{ "&lt;taskId&gt;": { "fileHashes": { "&lt;path&gt;": "&lt;hex&gt;" } } }</c> (SSOT §3 /
-    /// issue #46). The hash is computed in code — the action agent never shells out — so a
-    /// downstream <c>tests-untouched</c> guardrail can recompute (e.g. <c>Get-FileHash</c>) and
-    /// detect modification. Empty when the task declares none; never null.
+    /// Workspace-relative glob patterns the task may write. Loaded raw from the task.json
+    /// <c>writeScope</c> field; <c>null</c> means absent (equivalent to universal <c>["**"]</c>
+    /// at runtime). Two tasks may run concurrently only when their parsed scopes are disjoint.
     /// </summary>
-    public IReadOnlyList<string> CaptureHashes { get; init; } = [];
-
-    /// <summary>
-    /// Opt-in to baseline restore-on-retry for this task's <c>captureHashes</c> files (SSOT §3.1 /
-    /// issue #51). Default <c>false</c>: <c>captureHashes</c> then ONLY hashes for tamper-detection.
-    /// When <c>true</c>, the harness ALSO snapshots each captured file's authored bytes on a clean
-    /// capture and restores them (to that baseline) before every attempt of a downstream task that
-    /// transitively depends on this one — so an implementation agent that dirtied the authored test
-    /// starts the next attempt pristine. Requires a non-empty <c>captureHashes</c> (GR2014).
-    /// </summary>
-    public bool RestoreOnRetry { get; init; }
+    public IReadOnlyList<string>? WriteScope { get; init; }
 
     /// <summary>The resolved action for this task.</summary>
     public required ActionDefinition Action { get; init; }

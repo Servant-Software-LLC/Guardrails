@@ -55,9 +55,7 @@ public sealed class StatePlanBuilder : IDisposable
         string id,
         string? actionBody = null,
         string? guardrailBody = null,
-        bool? exclusive = null,
-        IReadOnlyList<string>? captureHashes = null,
-        bool restoreOnRetry = false,
+        IReadOnlyList<string>? writeScope = null,
         (string Name, string Body)? secondGuardrail = null,
         params string[] dependsOn)
     {
@@ -69,21 +67,15 @@ public sealed class StatePlanBuilder : IDisposable
             ? "[]"
             : "[" + string.Join(", ", dependsOn.Select(d => $"\"{d}\"")) + "]";
 
-        string exclusiveLine = exclusive is null
+        string writeScopeLine = writeScope is null
             ? string.Empty
-            : $",\n  \"exclusive\": {(exclusive.Value ? "true" : "false")}";
-
-        string captureLine = captureHashes is null || captureHashes.Count == 0
-            ? string.Empty
-            : $",\n  \"captureHashes\": [{string.Join(", ", captureHashes.Select(p => $"\"{p}\""))}]";
-
-        string restoreLine = restoreOnRetry ? ",\n  \"restoreOnRetry\": true" : string.Empty;
+            : $",\n  \"writeScope\": [{string.Join(", ", writeScope.Select(g => $"\"{g}\""))}]";
 
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
               "description": "fixture task {{id}}",
-              "dependsOn": {{dependsJson}}{{exclusiveLine}}{{captureLine}}{{restoreLine}}
+              "dependsOn": {{dependsJson}}{{writeScopeLine}}
             }
             """);
 

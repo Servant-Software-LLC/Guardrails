@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Loading;
@@ -124,7 +125,10 @@ public sealed class PlanLoader
             Interpreters = interpreters,
             PromptRunnerNames = runners.Names,
             DefaultPromptRunner = runners.Default,
-            PromptRunners = runners.Runners
+            PromptRunners = runners.Runners,
+            EnforcementIgnore = raw.EnforcementIgnore is not null
+                ? [.. raw.EnforcementIgnore]
+                : ["state/", ".git/", "**/bin/**", "**/obj/**", "**/node_modules/**"]
         };
     }
 
@@ -301,12 +305,7 @@ public sealed class PlanLoader
             DependsOn = raw.DependsOn ?? [],
             Retries = raw.Retries,
             TimeoutSeconds = raw.TimeoutSeconds,
-            Exclusive = raw.Exclusive,
-            CaptureHashes = (raw.CaptureHashes ?? [])
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .Select(p => p.Trim().Replace('\\', '/'))
-                .ToList(),
-            RestoreOnRetry = raw.RestoreOnRetry ?? false,
+            WriteScope = raw.WriteScope,
             Action = action,
             Guardrails = guardrails
         };

@@ -19,6 +19,8 @@ internal sealed class RawRunConfig
     // runner-config objects (RawPromptRunner). Bound as raw JSON and walked property by
     // property so the "default" pointer and the runner objects can be told apart.
     public JsonElement? PromptRunners { get; set; }
+
+    public List<string>? EnforcementIgnore { get; set; }
 }
 
 /// <summary>Raw shape of one <c>promptRunners.&lt;name&gt;</c> config object (SSOT §2/§9).</summary>
@@ -55,15 +57,10 @@ internal sealed class RawTask
     public List<string>? DependsOn { get; set; }
     public int? Retries { get; set; }
     public int? TimeoutSeconds { get; set; }
-    public bool? Exclusive { get; set; }
 
-    // Workspace-relative files whose SHA-256 the harness records into state after a successful
-    // action (issue #46) — the agent never computes the hash itself.
-    public List<string>? CaptureHashes { get; set; }
-
-    // Opt-in to baseline restore-on-retry for this task's captureHashes files (issue #51).
-    // Default false: captureHashes then only hashes. True ⇒ also snapshot + restore on retry.
-    public bool? RestoreOnRetry { get; set; }
+    // Workspace-relative glob patterns the task may write (Plan 05 M2). An absent field
+    // resolves to universal ["**"]. Supersedes the retired `exclusive` field.
+    public List<string>? WriteScope { get; set; }
 
     public RawAction? Action { get; set; }
 }

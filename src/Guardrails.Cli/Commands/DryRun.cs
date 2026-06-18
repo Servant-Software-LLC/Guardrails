@@ -8,7 +8,7 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails run &lt;folder&gt; --dry-run</c> — validate the plan, print the execution
 /// waves (identical to <c>plan</c>), the per-task action resolution (kind, runner,
-/// exclusive, retry budget), and which tasks a resume would SKIP (read from the journal
+/// retry budget), and which tasks a resume would SKIP (read from the journal
 /// without normalizing or persisting it). Exits 0 having run nothing and touched no state.
 /// </summary>
 public static class DryRun
@@ -58,11 +58,9 @@ public static class DryRun
             output.WriteLine($"Wave {i}:");
             foreach (TaskNode task in waves[i])
             {
-                bool exclusive = IsExclusive(task);
                 string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
-                string flags = exclusive ? " [exclusive]" : string.Empty;
                 string deps = task.DependsOn.Count == 0 ? "" : $"  (after: {string.Join(", ", task.DependsOn)})";
-                output.WriteLine($"  {task.Id,-36} {kind,-7}{flags}{deps}");
+                output.WriteLine($"  {task.Id,-36} {kind,-7}{deps}");
             }
 
             output.WriteLine();
@@ -72,19 +70,18 @@ public static class DryRun
     private static void PrintResolution(PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses, TextWriter output)
     {
         output.WriteLine("Per-task resolution:");
-        output.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"EXCLUSIVE",-10} {"RETRY BUDGET",-13} RESUME");
-        output.WriteLine(new string('-', 100));
+        output.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"RETRY BUDGET",-13} RESUME");
+        output.WriteLine(new string('-', 90));
 
         foreach (TaskNode task in plan.Tasks)
         {
-            bool exclusive = IsExclusive(task);
             string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
             string runner = task.Action.Kind == ActionKind.Prompt ? ResolveRunner(plan, task) : "-";
             int retries = task.Retries ?? plan.Config.DefaultRetries;
             int budget = 1 + retries; // SSOT §2: defaultRetries are AFTER the first attempt.
             string resume = WouldSkip(task, statuses) ? "SKIP (succeeded)" : "run";
 
-            output.WriteLine($"  {task.Id,-36} {kind,-7} {runner,-10} {(exclusive ? "yes" : "no"),-10} {budget,-13} {resume}");
+            output.WriteLine($"  {task.Id,-36} {kind,-7} {runner,-10} {budget,-13} {resume}");
         }
 
         output.WriteLine();
@@ -101,12 +98,6 @@ public static class DryRun
             ? "Resume: no tasks would be skipped (no journaled successes; a real run would execute every task)."
             : $"Resume: {skips.Count} task(s) would be SKIPPED (already succeeded): {string.Join(", ", skips)}.");
     }
-
-    /// <summary>
-    /// Exclusivity resolution mirrors the scheduler/plan command: explicit <c>exclusive</c>
-    /// wins; otherwise prompt actions are exclusive by default (SSOT §3).
-    /// </summary>
-    private static bool IsExclusive(TaskNode task) => task.Exclusive ?? task.Action.Kind == ActionKind.Prompt;
 
     /// <summary>
     /// The runner a prompt task would use: its explicit <c>action.runner</c>, else
