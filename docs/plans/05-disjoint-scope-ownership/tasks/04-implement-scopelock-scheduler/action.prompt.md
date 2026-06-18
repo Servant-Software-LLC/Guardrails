@@ -24,7 +24,19 @@ so the `ScopeLock`/`ScopeScheduler` tests pass:
   (`src/Guardrails.Core/Loading/PlanLoader.cs` / `PlanJson.cs`): an ordered list of
   workspace-relative globs; an ABSENT field resolves to universal `["**"]`.
 - Remove the `exclusive` field from `TaskNode` and the loader (clean removal, no
-  back-compat): `exclusive: true` is re-expressed as `writeScope: ["**"]`.
+  back-compat): `exclusive: true` is re-expressed as `writeScope: ["**"]`. (`exclusive`
+  becomes the `writeScope` field this task wires onto `TaskNode`/the loader.)
+
+Update the EXISTING consumers this removal breaks — the build of `src/Guardrails.Core`
+will stay green while the test projects will not compile, so you MUST also update:
+- `tests/Guardrails.Core.Tests/GoldenRoundTripTests.cs` — its `t.Exclusive` references.
+- `tests/Guardrails.Core.Tests/PlanFixtures.cs` — the `Exclusive()` helper used by the
+  scheduler/cost-cap tests; re-express it in terms of `writeScope`.
+- `tests/Guardrails.Core.Tests/WorkspaceLockTests.cs` — its 5 tests construct
+  `new WorkspaceLock()`. `WorkspaceLock` is **replaced** by `ScopeLock` (the design
+  generalizes it), so `WorkspaceLockTests.cs` is superseded by the ScopeLock tests
+  authored upstream in task 03 — delete it or rewrite it against `ScopeLock`; do NOT
+  leave a dangling `WorkspaceLock` reference behind.
 
 Make the `FullyQualifiedName~ScopeLock` and `FullyQualifiedName~ScopeScheduler` tests
 pass WITHOUT modifying the test files. Do NOT touch the WriteScope tests/implementation

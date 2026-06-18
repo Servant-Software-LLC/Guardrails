@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=989abba895aada57fa27c2452c2fc3971a2e65a4e14240dd83c6d4cbe519523b -->
+<!-- guardrails:graph v1 source-sha256=6158b0d344c03b9d2e3932d38b619b4da6799cc86e92ba18737ec976df370854 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -64,12 +64,15 @@
   gr_04_implement_scopelock_scheduler_1["02-scheduler-uses-scopelock"]:::guardrail
   task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_1
   gr_04_implement_scopelock_scheduler_1 --> done_04_implement_scopelock_scheduler
-  gr_04_implement_scopelock_scheduler_2["03-scopelock-scheduler-tests-pass"]:::guardrail
+  gr_04_implement_scopelock_scheduler_2["03-solution-compiles"]:::guardrail
   task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_2
   gr_04_implement_scopelock_scheduler_2 --> done_04_implement_scopelock_scheduler
   gr_04_implement_scopelock_scheduler_3["04-tests-untouched"]:::guardrail
   task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_3
   gr_04_implement_scopelock_scheduler_3 --> done_04_implement_scopelock_scheduler
+  gr_04_implement_scopelock_scheduler_4["05-scopelock-scheduler-tests-pass"]:::guardrail
+  task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_4
+  gr_04_implement_scopelock_scheduler_4 --> done_04_implement_scopelock_scheduler
   done_04_implement_scopelock_scheduler["04-implement-scopelock-scheduler ✓ Finished"]:::done
   task_05_author_scope_validation_tests["05-author-scope-validation-tests"]:::task
   gr_05_author_scope_validation_tests_0["01-tests-fail-on-current-code"]:::guardrail
@@ -146,9 +149,15 @@
   gr_12_retire_triad_1["02-triad-removed-from-source"]:::guardrail
   task_12_retire_triad --> gr_12_retire_triad_1
   gr_12_retire_triad_1 --> done_12_retire_triad
-  gr_12_retire_triad_2["03-single-writer-preserved"]:::guardrail
+  gr_12_retire_triad_2["03-solution-compiles"]:::guardrail
   task_12_retire_triad --> gr_12_retire_triad_2
   gr_12_retire_triad_2 --> done_12_retire_triad
+  gr_12_retire_triad_3["04-dogfood-plan-regenerated"]:::guardrail
+  task_12_retire_triad --> gr_12_retire_triad_3
+  gr_12_retire_triad_3 --> done_12_retire_triad
+  gr_12_retire_triad_4["05-single-writer-preserved"]:::guardrail
+  task_12_retire_triad --> gr_12_retire_triad_4
+  gr_12_retire_triad_4 --> done_12_retire_triad
   done_12_retire_triad["12-retire-triad ✓ Finished"]:::done
   task_13_suite_green["13-suite-green"]:::task
   gr_13_suite_green_0["01-solution-builds-release"]:::guardrail
@@ -187,8 +196,9 @@
   click task_04_implement_scopelock_scheduler href "tasks/04-implement-scopelock-scheduler/" "04-implement-scopelock-scheduler" _blank
   click gr_04_implement_scopelock_scheduler_0 href "tasks/04-implement-scopelock-scheduler/guardrails/01-build.ps1" "01-build" _blank
   click gr_04_implement_scopelock_scheduler_1 href "tasks/04-implement-scopelock-scheduler/guardrails/02-scheduler-uses-scopelock.ps1" "02-scheduler-uses-scopelock" _blank
-  click gr_04_implement_scopelock_scheduler_2 href "tasks/04-implement-scopelock-scheduler/guardrails/03-scopelock-scheduler-tests-pass.ps1" "03-scopelock-scheduler-tests-pass" _blank
+  click gr_04_implement_scopelock_scheduler_2 href "tasks/04-implement-scopelock-scheduler/guardrails/03-solution-compiles.ps1" "03-solution-compiles" _blank
   click gr_04_implement_scopelock_scheduler_3 href "tasks/04-implement-scopelock-scheduler/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
+  click gr_04_implement_scopelock_scheduler_4 href "tasks/04-implement-scopelock-scheduler/guardrails/05-scopelock-scheduler-tests-pass.ps1" "05-scopelock-scheduler-tests-pass" _blank
   click task_05_author_scope_validation_tests href "tasks/05-author-scope-validation-tests/" "05-author-scope-validation-tests" _blank
   click gr_05_author_scope_validation_tests_0 href "tasks/05-author-scope-validation-tests/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_06_implement_scope_validation href "tasks/06-implement-scope-validation/" "06-implement-scope-validation" _blank
@@ -217,7 +227,9 @@
   click task_12_retire_triad href "tasks/12-retire-triad/" "12-retire-triad" _blank
   click gr_12_retire_triad_0 href "tasks/12-retire-triad/guardrails/01-build.ps1" "01-build" _blank
   click gr_12_retire_triad_1 href "tasks/12-retire-triad/guardrails/02-triad-removed-from-source.ps1" "02-triad-removed-from-source" _blank
-  click gr_12_retire_triad_2 href "tasks/12-retire-triad/guardrails/03-single-writer-preserved.ps1" "03-single-writer-preserved" _blank
+  click gr_12_retire_triad_2 href "tasks/12-retire-triad/guardrails/03-solution-compiles.ps1" "03-solution-compiles" _blank
+  click gr_12_retire_triad_3 href "tasks/12-retire-triad/guardrails/04-dogfood-plan-regenerated.ps1" "04-dogfood-plan-regenerated" _blank
+  click gr_12_retire_triad_4 href "tasks/12-retire-triad/guardrails/05-single-writer-preserved.ps1" "05-single-writer-preserved" _blank
   click task_13_suite_green href "tasks/13-suite-green/" "13-suite-green" _blank
   click gr_13_suite_green_0 href "tasks/13-suite-green/guardrails/01-solution-builds-release.ps1" "01-solution-builds-release" _blank
   click gr_13_suite_green_1 href "tasks/13-suite-green/guardrails/02-full-suite-green.ps1" "02-full-suite-green" _blank</script>

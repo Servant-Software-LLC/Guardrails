@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=989abba895aada57fa27c2452c2fc3971a2e65a4e14240dd83c6d4cbe519523b -->
+<!-- guardrails:graph v1 source-sha256=6158b0d344c03b9d2e3932d38b619b4da6799cc86e92ba18737ec976df370854 -->
 
 ```mermaid
 flowchart TD
@@ -33,12 +33,15 @@ flowchart TD
   gr_04_implement_scopelock_scheduler_1["02-scheduler-uses-scopelock"]:::guardrail
   task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_1
   gr_04_implement_scopelock_scheduler_1 --> done_04_implement_scopelock_scheduler
-  gr_04_implement_scopelock_scheduler_2["03-scopelock-scheduler-tests-pass"]:::guardrail
+  gr_04_implement_scopelock_scheduler_2["03-solution-compiles"]:::guardrail
   task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_2
   gr_04_implement_scopelock_scheduler_2 --> done_04_implement_scopelock_scheduler
   gr_04_implement_scopelock_scheduler_3["04-tests-untouched"]:::guardrail
   task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_3
   gr_04_implement_scopelock_scheduler_3 --> done_04_implement_scopelock_scheduler
+  gr_04_implement_scopelock_scheduler_4["05-scopelock-scheduler-tests-pass"]:::guardrail
+  task_04_implement_scopelock_scheduler --> gr_04_implement_scopelock_scheduler_4
+  gr_04_implement_scopelock_scheduler_4 --> done_04_implement_scopelock_scheduler
   done_04_implement_scopelock_scheduler["04-implement-scopelock-scheduler ✓ Finished"]:::done
   task_05_author_scope_validation_tests["05-author-scope-validation-tests"]:::task
   gr_05_author_scope_validation_tests_0["01-tests-fail-on-current-code"]:::guardrail
@@ -115,9 +118,15 @@ flowchart TD
   gr_12_retire_triad_1["02-triad-removed-from-source"]:::guardrail
   task_12_retire_triad --> gr_12_retire_triad_1
   gr_12_retire_triad_1 --> done_12_retire_triad
-  gr_12_retire_triad_2["03-single-writer-preserved"]:::guardrail
+  gr_12_retire_triad_2["03-solution-compiles"]:::guardrail
   task_12_retire_triad --> gr_12_retire_triad_2
   gr_12_retire_triad_2 --> done_12_retire_triad
+  gr_12_retire_triad_3["04-dogfood-plan-regenerated"]:::guardrail
+  task_12_retire_triad --> gr_12_retire_triad_3
+  gr_12_retire_triad_3 --> done_12_retire_triad
+  gr_12_retire_triad_4["05-single-writer-preserved"]:::guardrail
+  task_12_retire_triad --> gr_12_retire_triad_4
+  gr_12_retire_triad_4 --> done_12_retire_triad
   done_12_retire_triad["12-retire-triad ✓ Finished"]:::done
   task_13_suite_green["13-suite-green"]:::task
   gr_13_suite_green_0["01-solution-builds-release"]:::guardrail
