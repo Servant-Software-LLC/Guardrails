@@ -116,6 +116,22 @@ Anything with **no observable deliverable** ("think about performance", "conside
 edge cases") is flagged: it either merges into a neighboring task's guardrail or is
 reported to the human as non-executable plan content. Never invent a task for it.
 
+**A user-facing UI outcome IS a deliverable — record the UI surface, not just the
+backend that would serve it.** When a plan describes something the *user sees or
+operates* — "the user sees…", "a page that…", "served to the browser", "wizard
+screen", "master/detail view", "tri-state tree", "next/back navigation", "renders…",
+"a form/dashboard/grid" — that screen/page/component is a **first-class deliverable in
+its own right**, NOT decoration on a backend route. The failure this guards against
+(issue #66) is silent: UI language maps onto the nearest *backend* capability (the
+route/handler/DTO that would feed the screen), that backend gets decomposed, and the
+**UI surface is dropped** — the run goes fully green producing a JSON API with no
+human-facing frontend. So for every UI-facing phrase, add a **distinct row** for the
+UI artifact (`wizard.html` + its client JS/CSS, or the framework component) ALONGSIDE
+any backend row that serves it — never collapse the two into one backend row. The
+backend that serves a screen and the screen itself are two deliverables with two
+different completion evidences; Step 4's UI-facing doctrine check and Step 5's
+UI-implementation insertion act on these rows.
+
 ## Step 2 — Size the tasks
 
 A task is right-sized when ALL hold:
@@ -175,7 +191,12 @@ optional:
 - Every candidate prompt-judge passes the 4-question demotion gate or is demoted.
   A judge is never a task's only guardrail.
 - Deterministic guardrails print ONE actionable failure line to stdout (it becomes
-  retry feedback).
+  retry feedback). Write the failure branch as a **multi-line `if` block** — the
+  `Write-Output` reason and its `exit 1` each on their own indented line; never collapse
+  the body onto the `if` line with `;` (`if (...) { Write-Output "..."; exit 1 }`). That
+  reason line is what a human reviews and what the next attempt reads as feedback, so it
+  must stand on its own line and be easy to scan. Applies to every archetype, build /
+  exit-code checks included.
 - "All tests pass" appears ONLY on a terminal integration task.
 
 **Route through these doctrine checks every task (the decision tree's newer leaves):**
@@ -194,6 +215,46 @@ optional:
   consume? Add the stack file's reference-chain guardrail on the CONSUMER's project file
   (`stacks/dotnet.md §2`). Builds pass independently, so without this an agent can define a
   local copy of the interface and pass.
+- **Executable entry-point wiring** — does the plan describe a **server or CLI executable
+  outcome** (signals below)? Component tasks (scaffold, handler, routes) each compile and
+  unit-test green, and the terminal whole-solution build passes — yet *nothing wires the
+  entry point to the handler*, so the binary builds and serves nothing. Unit tests cannot
+  catch a missing `new Launcher().StartAsync()`. Two artifacts close this, generated in
+  Step 5: a **wiring task** guarded by a static grep that the entry point references the
+  launcher (catalogue → entry-point-wiring; `stacks/dotnet.md §7`), and after it a **live
+  smoke-test task** that actually starts the binary, hits a route, and asserts a response
+  (archetype #7 port/endpoint-answers; the start/poll/assert/teardown script in
+  `stacks/dotnet.md §8`). The signals (any one):
+  - plan phrases: "CLI entrypoint", "starts a server", "serves … to the browser",
+    "loopback HTTP", "prints a URL", "listens on", "health endpoint";
+  - a `.csproj` using `Microsoft.NET.Sdk.Web` or declaring `<OutputType>Exe</OutputType>`;
+  - an explicit smoke-test statement in the plan (see Step 5's authoring note).
+
+  This catches "the exe does what the plan says" vs merely "the code compiles" — the one
+  gap a green build and passing unit tests leave open. (Scope: starting-and-serving ONLY;
+  whether the *described UI was actually built and is served* is the next doctrine check —
+  the two compose: this one proves the exe serves *something*, the UI-facing check proves
+  the *something* is the UI the plan described.)
+- **UI-facing deliverable** — does the plan describe a **user-facing screen/page/visual
+  component served to the browser** (the Step 1 UI signals: "the user sees…", "a page
+  that…", "served to the browser", "wizard screen", "master/detail view", "tri-state
+  tree", "renders…", a form/dashboard/grid)? The component tasks decompose to backend
+  routes/handlers/DTOs and unit tests — each green — and (with the entry-point-wiring check
+  above) the binary even starts and serves. Yet **no task built the UI itself**: there is no
+  HTML page, stylesheet, client JS, or `wwwroot`, and the served root returns JSON or a
+  placeholder. A green build + passing unit tests + a 200 from `/` cannot catch a missing
+  frontend — the route answers, it just answers with no UI. Two artifacts close this,
+  generated in Step 5: a **UI-implementation task** per described screen (produces the
+  HTML/JS/CSS or framework component that renders it and binds to the backend contract) and
+  a pair of **UI-presence guardrails** — (a) a static asset-exists check that the page/asset
+  file is present (catalogue → UI-presence; `stacks/dotnet.md §9`), and (b) a **served-markup
+  assertion that EXTENDS the §8 smoke-test** (the same start/poll/teardown lifecycle, with an
+  added assertion that the response body contains a known UI element/string from the page —
+  not merely HTTP 200). Both are deterministic (asset grep; served-markup contains a known
+  string) — never a prompt-judge "does this look like a good UI"; visual quality is out of
+  scope, *presence and wiring of the described UI* is the deliverable. The exit-criteria
+  self-review in Step 7 is the backstop: a plan promising a frontend that decomposed to zero
+  UI tasks fails its own review.
 - **Structural impl / keyword match** — any "implements/extends/declares" check uses the
   stack file's declaration regex (`stacks/dotnet.md §3`), never a bare type-name grep.
 - **Grep scope** — every file-content guardrail is scoped to the one file this task owns
@@ -251,6 +312,72 @@ upstream task that creates it:
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
   guardrail owns start/stop itself with a timeout.
+- **Server/executable plan (Step 4 entry-point-wiring signal fired) → insert a wiring task
+  AND a live smoke-test task.** A plan that decomposes into component tasks (scaffold the
+  exe project, implement the handler/launcher, implement the routes) verifies each component
+  in isolation but never that the binary *starts and serves*. Insert TWO tasks, both after
+  the components exist:
+  1. **`NN-wire-entrypoint-to-<launcher>`** — connects the entry point to the main
+     handler/launcher (e.g. `Program.cs` instantiates and starts `Launcher`). Guard it with
+     the structural-grep on the ENTRY-POINT file (`stacks/dotnet.md §7`): the entry point must
+     reference the launcher type — a build passes with a `Program.cs` that ignores the
+     launcher entirely, so file-exists + build do NOT cover this. Depends on the
+     entry-point-scaffold task and the launcher-implementation task (both artifacts must
+     exist to wire them).
+  2. **`NM-smoke-test-<service>`** — the only guardrail that proves the exe does what the
+     plan says. Its guardrail (archetype #7, the script in `stacks/dotnet.md §8`) STARTS the
+     built binary as a background process, POLLS a known route (`/health`,
+     `/current-step`, whatever the plan names) until it answers or a timeout elapses, ASSERTS
+     HTTP 200, and ALWAYS stops the process in a `finally`. Depends on the wiring task (and
+     the route-implementation task). This is a `port/endpoint-answers` guardrail that owns
+     its own start/stop — no separate launch-script ancestor is required, but the route it
+     polls MUST be produced by an ancestor (artifact-ancestry: a smoke-test that polls
+     `/current-step` needs the task that implements `/current-step` upstream).
+
+  Place both AFTER the component tasks and BEFORE (or folded into) the terminal
+  whole-solution build — the smoke-test verifies runtime behaviour the build never reaches.
+  Authoring note for the plan: a server/executable plan should carry one explicit sentence —
+  *"the entry point must be end-to-end smoke-testable: run it, hit a route, get a
+  response"* — naming the route to poll and the expected status. When the plan is silent on
+  the route, surface it in the breakdown report (Step 7) as a decision the human must confirm
+  rather than guessing a route. (Scope: starts-and-serves ONLY — *generating the described
+  UI itself* is the next insertion bullet, which composes with these two: the wiring+smoke
+  tasks prove the exe serves; the UI tasks build and assert the UI that gets served.)
+- **UI-facing plan (Step 4 UI-facing-deliverable check fired) → insert a UI-implementation
+  task per described screen AND UI-presence guardrails.** A plan describing a browser-served
+  screen decomposes into backend routes/handlers/DTOs (each unit-tested green) but produces
+  no frontend — the most expensive false-green: a 100%-green run that ships a JSON API with
+  no human-facing UI. For each distinct UI surface the Step 1 scratch table recorded, insert:
+  1. **`NN-build-ui-<screen>`** — produces the HTML/JS/CSS (or framework component) that
+     renders the screen and binds to the backend contract its sibling backend task serves.
+     This is ALONGSIDE the backend task, never instead of it. Guard it with **(a) an
+     asset-exists check** that the page/asset file is present on disk (e.g.
+     `wwwroot/wizard.html`, or the declared embedded resource) — `file-exists` archetype #1,
+     scoped to the one file this task owns (`stacks/dotnet.md §9`). It catches the green-build
+     run where no frontend file was ever written. Depends on the backend-contract task it
+     binds to (artifact-ancestry: the markup references routes an ancestor implements) — but
+     keep the dependency as sparse as the DAG rule allows (a static page that only *names* a
+     route it will call need not wait on that route's implementation; a page generated *from*
+     the contract does).
+  2. **A served-markup guardrail that EXTENDS the §8 smoke-test** — NOT a second process
+     manager. The smoke-test already starts the binary, polls a route, asserts 200, and tears
+     down in `finally`; the UI-presence version reuses that exact lifecycle and adds **one
+     assertion**: the response body of the UI route (`/`, `/wizard`, whatever the plan serves)
+     **contains a known UI element/string from the page** (a heading, a known `id`/`data-`
+     attribute, a wizard step label) — proving the served root returns the real UI markup, not
+     a placeholder, a 404 body, or JSON. Place this on the existing smoke-test task (fold the
+     content assertion into its guardrail) when the plan has one, so the process is started
+     once; only stand up a separate smoke-test task if no executable smoke-test already exists.
+     The known string MUST come from the UI the `NN-build-ui-<screen>` task produces
+     (artifact-ancestry). The full .NET realization — asset-exists grep plus the §8 lifecycle
+     with the body-contains assertion — is `stacks/dotnet.md §9`.
+
+  Place the UI-implementation task(s) alongside their backend siblings and the served-markup
+  assertion after the wiring task (the entry point must serve before its body can be asserted).
+  The guardrails are deterministic by mandate: an asset-exists grep and a body-contains string —
+  **never** a prompt-judge on visual quality (out of scope). When the plan names no concrete UI
+  element to assert on (no heading, id, or label to grep for), surface it in the breakdown report
+  (Step 7) as a decision the human must confirm — do not invent a string.
 - A downstream task reads a state key (`GUARDRAILS_STATE_IN`) → the producing ancestor
   must (a) actually write that key, and (b) carry the fragment-key-present guardrail
   (Step 4 state-output leaf) so a run can't silently feed the downstream task a null.
@@ -325,6 +452,22 @@ Per `references/schemas.md`, exactly:
 
 ## Step 7 — Self-validate and report
 
+0. **Exit-criteria self-review — a UI plan that built zero UI fails its own review.**
+   Before validating, cross-check the plan's exit/acceptance criteria against what the
+   tasks actually produce. The load-bearing case (issue #66): if an exit criterion is
+   phrased as a **user action in a UI** — "the user can complete the wizard in the
+   browser", "navigate the master/detail view", "see the dashboard" — then **some task
+   must produce that UI** (a `NN-build-ui-<screen>` task with a UI-presence guardrail).
+   A plan that promises a frontend but decomposed to **zero UI-implementation tasks** is
+   the signal that the UI surface was silently dropped onto a backend route (the Step 1
+   failure). Do NOT proceed to a clean report: either insert the missing UI task(s) and
+   guardrails (loop back to Steps 4–5), or — if you cannot (the plan is too vague about
+   the screen to build it) — **flag it loudly in the report as a self-review failure**:
+   name the exit criterion, state that no task builds the UI it names, and present it as
+   a blocking decision the human must resolve before `guardrails run`. The same shape
+   applies to any exit criterion naming an observable a guardrail should but doesn't
+   cover; the UI case is just the one #66 makes most expensive (a fully-green run with no
+   frontend).
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
@@ -340,10 +483,24 @@ Per `references/schemas.md`, exactly:
    the human should confirm** — chief among them any test-framework or E2E-driver choice:
    state which was used and why (detected in repo / named in the plan / asked via
    `AskUserQuestion` / left as a needs-human halt). A wrong framework poisons every
-   downstream test task, so it must never be buried. Then **embed the generated Mermaid
+   downstream test task, so it must never be buried. **If the plan was UI-facing**, state
+   the outcome of the Step 7.0 exit-criteria self-review: each UI surface, the
+   `NN-build-ui-<screen>` task that builds it, its UI-presence guardrail (asset-exists +
+   served-markup string asserted), and the known UI string the served-markup check greps
+   for — or, if a screen could not be built from the plan, the blocking self-review
+   failure. Then **embed the generated Mermaid
    block inline** (paste the ```mermaid``` fence from `diagram.md`) so the human sees the
    DAG in chat, and **state the `<folder>/diagram.md` path** explicitly so they can render
-   it in GitHub or VS Code.
+   it in GitHub or VS Code. Finally, as the **last line of the report**, print a clickable
+   link to the interactive viewer `<folder>/diagram.html` (the pan/zoom/fullscreen companion
+   `guardrails graph` wrote in step 3) so the reviewer can open it without hunting for it.
+   Emit it as an **OSC 8 hyperlink** whose visible text is the absolute `file://` URL — so a
+   capable terminal (Windows Terminal, iTerm2, VS Code) renders it clickable and any other
+   shows the raw, still-actionable URL. Use the same escape shape `guardrails run` uses for
+   its `Logs` link (`RunCommand.Hyperlink`): `ESC]8;;<uri>ESC\<text>ESC]8;;ESC\`, with both
+   `<uri>` and `<text>` set to `file://` + the absolute path to `diagram.html`. For example:
+   `Diagram (interactive): file:///C:/path/to/<plan-folder>/diagram.html`. Build the URL from
+   the absolute folder path so it resolves regardless of the shell's working directory.
 5. Close with, verbatim in spirit:
 
    > **This is a draft.** Review the folder — especially the guardrails — edit,
@@ -414,6 +571,8 @@ to preserve edits against).
 - [ ] Any task that writes a downstream-read state key carries the fragment-key-present guardrail.
 - [ ] New module/project added to a build descriptor → registration guardrail on the descriptor itself.
 - [ ] Abstraction consumed by a later task → cross-module reference guardrail on the consumer.
+- [ ] Server/executable plan (entry-point-wiring signal) → a wiring task (entry-point-references-launcher grep) AND a live smoke-test task (start → poll route → assert 200 → stop in `finally`) inserted; the polled route is produced by an ancestor.
+- [ ] UI-facing plan (described screen/page/browser-served component) → a `build-ui-<screen>` task per surface (alongside its backend, not instead of it) AND UI-presence guardrails: asset-exists (scoped to the page/asset file) + a served-markup assertion EXTENDING the §8 smoke-test (body contains a known UI string, not just HTTP 200), both deterministic — no prompt-judge on visual quality. Exit-criterion naming a UI action ⇒ a task builds that UI, or the Step 7.0 self-review failure is reported.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
 - [ ] Inserted test-author tasks include tests-fail-on-current-code.
@@ -424,6 +583,6 @@ to preserve edits against).
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
-- [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline).
+- [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); a clickable OSC 8 link to `diagram.html` (visible text = the absolute `file://` URL) printed as the report's last line.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.

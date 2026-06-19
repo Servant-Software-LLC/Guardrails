@@ -49,7 +49,7 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (stale/missing — a present but hash-mismatched `diagram.html` is stale; a missing one is
   not), 1 (load/validate error). See SSOT §10.
 - **Task** = `task.json` (`description`, `dependsOn`, `writeScope`, optional `retries`/
-  `timeoutSeconds`/`exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
+  `timeoutSeconds`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
   Zero guardrails = validation error.
   **`writeScope`** (required): a list of workspace-relative glob patterns bounding which files
   the task may write. `[]` for pure gate/state tasks that write no workspace files; narrow
@@ -58,8 +58,9 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   this at attempt time and reverts out-of-scope writes on retry (M5+).
   GR2015 (ERROR) fires when an implementation task's scope subsumes a test-author's output —
   the key GR2015 invariant that makes tests a real guardrail, not a tautology.
-  Retired (skills no longer emit; harness still recognises until M7): `captureHashes` /
-  `tests-untouched` / `restoreOnRetry`.
+  Removed (no longer in the schema; the harness no longer recognises them — a `task.json`
+  carrying one is invalid): `captureHashes` / `tests-untouched` / `restoreOnRetry`. Their
+  test-integrity role is now served by `writeScope` enforcement.
 - **Action kinds**: `.prompt.md` → LLM (via pluggable `IPromptRunner`; v1 = Claude Code
   CLI headless); anything else → process via the interpreter map.
 - **Guardrails**: deterministic (exit 0 = pass; failure reason on stdout) or prompt
@@ -101,9 +102,11 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `needs-human` ("cost cap reached") and its transitive dependents `blocked` (the same
   halt path above); an in-flight attempt is never interrupted. Absent ⇒ no cap; a
   non-positive cap is a validation error (GR2012). See SSOT §2.
-- Prompt actions default `exclusive: true` (sole workspace access) — two agents
-  editing one repo concurrently is the #1 real-world failure mode. Deterministic
-  actions default shared.
+- Concurrent tasks are isolated by **disjoint `writeScope`**, not workspace-exclusive
+  locking (the retired `exclusive` field + `WorkspaceLock` are gone): the `ScopeLock`
+  serializes only tasks whose scopes overlap, and the harness reverts any out-of-scope
+  write per task — two agents editing one repo concurrently (the #1 real-world failure
+  mode) is made safe by scope disjointness rather than by forcing them serial.
 - Resume: `succeeded` is terminal (use `guardrails reset` to force);
   `needs-human`/`failed`/`blocked` → fresh budget; crashed `running` → `pending`.
 - Harness exit codes: 0 green · 1 error · 2 needs-human · 3 cancelled.
@@ -178,8 +181,9 @@ frozen at breakdown.
   branches finish; resume pre-pass), `TaskExecutor` retry loop (budget = 1 + retries;
   `feedback.md` written per failed attempt and delivered via `GUARDRAILS_FEEDBACK`
   from attempt 2; budget exhaustion → `needs-human`; cancellation → attempt outcome
-  `cancelled`, task journaled `pending`), FIFO shared/exclusive `WorkspaceLock`
-  (prompt actions exclusive by default per §3), `guardrails plan` (waves preview),
+  `cancelled`, task journaled `pending`); concurrency isolation is the `ScopeLock` +
+  per-task `writeScope` model (§3 — the original M4 `WorkspaceLock`/`exclusive`-by-default
+  is retired, superseded by disjoint scopes per plan 05/06), `guardrails plan` (waves preview),
   Spectre live table UI (plain-line fallback when non-interactive or `--no-ui`),
   exit code 3 on cancellation. `SerialExecutor` is gone — `Scheduler` with
   maxParallelism 1 is serial mode; test fixtures pin `defaultRetries: 0` to keep
@@ -230,7 +234,7 @@ frozen at breakdown.
   every attempt's `costUsd`; the `run` summary and `status` print `Total prompt cost:
   $X.XXXX`, omitted when no attempt recorded a cost (deterministic plans stay quiet).
   `guardrails run --dry-run`: validates, prints the waves preview + per-task resolution
-  (kind/runner/exclusive/retry-budget) + journal-aware resume SKIPs, then exits 0 having
+  (kind/runner/retry-budget/resume) + journal-aware resume SKIPs, then exits 0 having
   run nothing and touched no state (reads `run.json` read-only — no `LoadOrCreate`).
   Validation depth: `validate` probes each DECLARED prompt runner's `command` on PATH as a
   **warning** (GR2009, not an error — the plan may run elsewhere). Packaging: PackageId

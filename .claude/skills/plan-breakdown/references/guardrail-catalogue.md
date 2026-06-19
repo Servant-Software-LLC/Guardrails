@@ -172,6 +172,105 @@ writes one. If the action does not produce a runner-written result file and the 
 "evidence" of success is its prose stdout, you have **no** GOOD target: keep the honest
 replay (`specific-tests-pass`, #4) rather than demoting to an echo-judge.
 
+## Entry-point wiring + the live smoke-test (server/executable plans) (#64)
+
+A plan whose outcome is a **server or CLI executable** — "a CLI entrypoint that starts a
+loopback HTTP server and serves a wizard", "prints a URL", "listens on a port", a `.csproj`
+with `Microsoft.NET.Sdk.Web` or `<OutputType>Exe</OutputType>` — decomposes cleanly into
+component tasks (scaffold the exe project, implement the launcher, implement the routes),
+and **each component compiles and unit-tests green**. The terminal whole-solution build
+passes too. Yet a real failure slips through every one of those checks: the `Program.cs`
+that never instantiates the `Launcher`. The build is green, the unit tests pass, and the
+server 404s everything — because **no task ever wired the entry point to the handler**, and
+no guardrail ever ran the binary.
+
+A library/test deliverable is fully covered by the TDD cycle (author tests → implement →
+`specific-tests-pass`). An **executable** needs a third kind of check the unit tests
+structurally cannot provide: *does running the binary produce the expected observable
+behaviour?* `new Launcher().StartAsync()` being absent from `Program.cs` is invisible to any
+unit test of `Launcher` — the type works; it's just never called. Two guardrails, on two
+inserted tasks (SKILL.md Step 5), close the gap:
+
+1. **Entry-point-wiring (structural grep).** A `file-contains` guardrail on the
+   ENTRY-POINT file asserting it references the launcher type — `Program.cs` must mention
+   (and start) `Launcher`. This is the universal "structural vs keyword" rule applied to the
+   wiring point; the exact .NET regex is `stacks/dotnet.md §7`. It catches the green-build
+   `Program.cs` that ignores the launcher. (It is necessary but not sufficient — a grep can't
+   prove the wired call actually serves; that's the smoke-test's job.)
+2. **Live smoke-test (archetype #7, port/endpoint-answers).** The only guardrail that
+   verifies *the exe does what the plan says* rather than *the code compiles*. It STARTS the
+   built binary as a background process, POLLS a known route (`/health`, `/current-step`,
+   whatever the plan names) until it answers or a bounded timeout elapses, ASSERTS HTTP 200,
+   and ALWAYS stops the process in a `finally` (so a failed poll still tears the process
+   down). It owns its own start/stop — no separate launch-script ancestor is needed — but the
+   route it polls must be produced by an ancestor (artifact-ancestry). The full
+   cross-platform script (port handling, bounded poll, `finally` teardown, one actionable
+   failure line) is `stacks/dotnet.md §8`.
+
+**Determinism rules for the smoke-test** (it is a live process check, the flakiest archetype
+— hold it to these or it poisons the run with false reds):
+- **Bounded poll, not a fixed sleep.** Retry the route on a short interval up to a hard
+  timeout; a server's warm-up time varies, so a single `sleep 2` is both slower and flakier
+  than "poll every 250 ms for up to 15 s".
+- **Teardown in `finally`.** The process MUST be killed on every exit path — pass, route
+  failure, or exception — or a leaked server holds the port and every subsequent run fails.
+- **Deterministic port.** Tell the binary which port to use (CLI arg / env var) and poll
+  that exact port, OR parse the port from the URL the binary prints to its captured stdout.
+  Never guess. A fixed well-known port risks a collision with a leaked prior run; prefer a
+  port the plan fixes for the exe, or an ephemeral one the binary prints.
+- **One actionable failure line.** "smoke-test: GET http://127.0.0.1:5005/health did not
+  return 200 within 15s (last: connection refused)" converges; "smoke-test failed" loops.
+
+This is **starts-and-serves verification ONLY.** Whether the served page is the *described
+UI* — built at all, and returned as real markup — is the **UI-presence** archetype below.
+The two compose: this smoke-test proves the exe serves *something*; the served-markup half
+of UI-presence proves that *something* is the UI the plan described. Don't duplicate the
+process management — the served-markup check *extends* this lifecycle with one body
+assertion (see below).
+
+## UI-presence — the described UI was built and is actually served (#66)
+
+A plan whose outcome is **user-facing UI** — "serves a multi-step wizard to the browser",
+"a page the user completes", "master/detail view", "tri-state tree", a screen the user
+*sees and operates* — has a failure mode distinct from #64's. With #64 in place the binary
+starts and a route answers 200; the unit tests pass; the build is green. And still **no UI
+exists**: every task decomposed to a JSON HTTP endpoint or a unit test, not one produced an
+HTML page, stylesheet, client JS, or a `wwwroot`. The shipped artifact is a working JSON API
+with no human-facing frontend, and the run is 100% green because nothing ever asserted a UI
+artifact. This is the **most expensive false-green the skill can emit** — a plan promising a
+frontend that decomposes to zero frontend tasks.
+
+#64 would only have *caught* that no real UI is served (its smoke-test asserts a 200, which a
+JSON root satisfies); it never *builds* the screens. #66 ensures the work to build the UI is
+generated in the first place, AND that a guardrail asserts the UI is present and served. The
+fix is a **UI-implementation task** per described screen (SKILL.md Step 5) plus a **pair of
+deterministic guardrails** — never a prompt-judge:
+
+1. **Asset-exists (archetype #1, file-exists).** A static check that the page/asset the
+   screen needs is present on disk (or as a declared embedded resource) — `wwwroot/wizard.html`,
+   its stylesheet, its client JS. Scoped to the one file the UI task owns (grep-scope rule). It
+   catches the green-build run where no frontend file was ever written. The exact .NET realization
+   (`wwwroot/<page>.html` existence, or the embedded-resource manifest check) is `stacks/dotnet.md §9`.
+2. **Served-markup-contains (archetype #7, EXTENDING the §64 smoke-test).** The deterministic
+   proof that the served root returns the **real UI markup**, not a placeholder, a 404 body, or
+   JSON. It reuses the smoke-test's exact lifecycle — start the binary, poll the UI route, tear
+   down in `finally` — and adds **one assertion**: the response body **contains a known UI
+   element/string** from the page (a heading, a known `id`/`data-` attribute, a wizard step
+   label). Asserting HTTP 200 alone is not enough — a JSON API returns 200 from `/`. This is
+   **not a second process manager**: fold the body assertion into the existing smoke-test
+   guardrail so the process starts once; only stand up a separate one if no executable
+   smoke-test exists. The known string MUST come from the markup the UI task produces
+   (artifact-ancestry). The .NET realization (the §8 lifecycle with the body-contains assertion)
+   is `stacks/dotnet.md §9`.
+
+**Determinism is mandatory here.** UI-presence is *presence and wiring*, never *visual
+quality*. The asset-exists grep and the served-markup string are both deterministic; a
+prompt-judge "does this look like a good UI" is OUT OF SCOPE and forbidden — it is exactly
+the subjective vibes the demotion gate rejects, and worse, it cannot catch the failure
+(a frontend can "look good" and still bind to no backend; a present, wired page that
+contains the asserted element is the deliverable). The cross-check that a *described* UI
+mapped to *some* build-ui task lives in SKILL.md Step 7.0 (exit-criteria self-review).
+
 ## The prompt-judge demotion gate
 
 For EVERY candidate prompt-judge, ask all four. Any "no" → demote to a deterministic
@@ -212,7 +311,18 @@ What is the task's primary deliverable?
 │                                   guarantee: the implementation's scope must not subsume the
 │                                   test-author's output files.
 ├── A runnable script/tool     → file-exists + command-exit-code on a representative invocation
-├── A running service          → port-answers + endpoint-content (curl + contains/schema)
+├── A running service /        → entry-point-wiring (grep: the entry point references the launcher)
+│    server / CLI executable      + port/endpoint-answers (#7: START the binary, POLL a route,
+│                                 ASSERT 200, STOP in a finally) — the ONLY check that the exe
+│                                 starts and serves vs merely compiles; see the entry-point-wiring
+│                                 section below + stacks/dotnet.md §7–§8
+├── A user-facing UI            → asset-exists (#1: the page/asset file is on disk, e.g.
+│    (screen/page served to       wwwroot/<page>.html, scoped to the UI file) + served-markup-contains
+│    the browser)                 (#7 EXTENDING the smoke-test: same start/poll/teardown, assert the
+│                                 body contains a known UI string — NOT just 200, which JSON satisfies).
+│                                 INSERT a build-ui-<screen> task per screen, ALONGSIDE the backend
+│                                 that serves it. Deterministic only — NO prompt-judge on visual
+│                                 quality; see the UI-presence section below + stacks/dotnet.md §9
 ├── Config/data                → schema-validates; else file-contains on load-bearing keys
 ├── State output (a key a      → fragment-key-present (read $env:GUARDRAILS_STATE_FRAGMENT,
 │    downstream task reads)      parse JSON, assert the key non-null + non-empty; allowed-set
@@ -314,6 +424,31 @@ should fail before an expensive test run or a paid judge ever starts.
 - **Over-broad**: "all tests pass" on an early task — it fails for unrelated reasons,
   poisons retries with noise, and serializes the DAG. Whole-suite green belongs to one
   terminal integration task.
+- **Compiles-but-never-runs** (server/executable plans, #64): the breakdown emits component
+  tasks (scaffold exe, implement launcher, implement routes) each guarded by build +
+  unit-tests, plus a terminal whole-solution build — but **no task wires the entry point to
+  the launcher and no guardrail ever starts the binary**. Every check is green while the
+  server 404s everything (the `Program.cs` that never calls `new Launcher().StartAsync()`).
+  Fix: insert the entry-point-wiring task (structural grep, `stacks/dotnet.md §7`) and the
+  live smoke-test task (start → poll route → assert 200 → stop in `finally`, `stacks/dotnet.md
+  §8`) — see the entry-point-wiring section above. Unit tests structurally cannot catch a
+  launcher that is implemented but never called.
+- **Backend-only-greenness for a UI plan** (#66) — the single most expensive false-green.
+  The plan describes a **user-facing screen** ("serves a wizard to the browser", "the user
+  completes the form", "master/detail view") and the breakdown emits ONLY JSON HTTP
+  endpoints, DTOs, and their unit tests — **not one task produces an HTML page, stylesheet,
+  client JS, or a `wwwroot`**. Build is green, unit tests pass, and (even with #64's
+  smoke-test) the root returns 200 — because a JSON API answers 200. The run is 100% green
+  and ships **no human-facing UI whatsoever**. This is distinct from compiles-but-never-runs:
+  there the exe served nothing; here the exe serves the *wrong thing* (an API where the plan
+  promised a UI), and the UI was never even built. Fix: insert a `build-ui-<screen>` task per
+  described screen and the UI-presence guardrails — asset-exists (`stacks/dotnet.md §9`) and a
+  served-markup-contains assertion EXTENDING the smoke-test (body contains a known UI string,
+  not just HTTP 200) — see the UI-presence section above. The tell `/guardrails-review` hunts:
+  a plan whose prose promises a frontend whose task folder contains zero frontend artifacts and
+  zero served-markup assertion. **Forbidden "fix":** a prompt-judge "does the UI look good" —
+  it is subjective vibes the demotion gate rejects AND cannot catch the failure; the deliverable
+  is *presence and wiring*, asserted deterministically.
 - **Hidden-state**: the guardrail depends on machine state (network, globally
   installed tools, a developer's home dir) rather than ancestor outputs or the repo.
   Declare required interpreters via `guardrails.json` instead.

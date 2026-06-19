@@ -117,7 +117,10 @@ Publish nothing to state.
 ```powershell
 # catches: test code that doesn't compile (a "test" that can't run verifies nothing)
 dotnet build tests/Inventory.Tests --nologo -v q
-if ($LASTEXITCODE -ne 0) { Write-Output "tests/Inventory.Tests does not build"; exit 1 }
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "tests/Inventory.Tests does not build"
+    exit 1
+}
 exit 0
 ```
 
@@ -163,7 +166,10 @@ Publish nothing to state.
 ```powershell
 # catches: an implementation whose output deviates from the specified format
 dotnet test tests/Inventory.Tests --filter "Category=Stats" --nologo
-if ($LASTEXITCODE -ne 0) { Write-Output "Stats tests failing - flag not implemented to spec"; exit 1 }
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "Stats tests failing - flag not implemented to spec"
+    exit 1
+}
 exit 0
 ```
 
@@ -186,8 +192,14 @@ example matching the real output.
 ```powershell
 # catches: claimed doc update that never landed or doesn't mention the flag
 $readme = Get-Content README.md -Raw
-if ($readme -notmatch '--stats') { Write-Output "README.md does not mention --stats"; exit 1 }
-if ($readme -notmatch 'total:') { Write-Output "README.md lacks a usage example showing the output"; exit 1 }
+if ($readme -notmatch '--stats') {
+    Write-Output "README.md does not mention --stats"
+    exit 1
+}
+if ($readme -notmatch 'total:') {
+    Write-Output "README.md lacks a usage example showing the output"
+    exit 1
+}
 exit 0
 ```
 
@@ -204,7 +216,10 @@ exit 0
 ```powershell
 # catches: the --stats work regressing anything elsewhere in the suite
 dotnet test --nologo
-if ($LASTEXITCODE -ne 0) { Write-Output "full suite has failures after the --stats work"; exit 1 }
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "full suite has failures after the --stats work"
+    exit 1
+}
 exit 0
 ```
 
