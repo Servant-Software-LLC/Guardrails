@@ -98,6 +98,10 @@ diagnostic code is assigned against the *actual current* `DiagnosticCodes.cs` (h
 | **Per-guardrail `scope` emission**; **writeScope assignment**; **TDD test-exclusion**; broad-scope smell; missing-gate BLOCKER; scope-overlap WEAK | **skill** — `plan-breakdown` / `guardrails-review` |
 | **NET-NEW global serialize-merges lock** (`SemaphoreSlim(1,1)` integration lock — there is no existing merge lock today; today's serializers are per-store `lock(_gate)` + the `WorkspaceLock` admission gate, which this plan DELETES) | **harness** — build the integration lock in `Scheduler` as a milestone deliverable |
 | `--merge-on-success` (plan branch → user's original branch; AI-merge **withheld** here) | **harness** — `Cli` flag + `RunConfig`; end-of-run hook in `Scheduler` |
+| **Scoped revert on a write-scope CHECK failure** (`git checkout <taskBase> -- <out-of-scope-paths>` in the task's PRIVATE worktree; KEEP in-scope WIP; retry with the offending-file list in the prompt) | **harness** — `WriteScopeCheck` + `TaskExecutor` retry loop; SSOT §3.4 |
+| **Source-branch console indicator** (info when fork source is `main`/`master` case-insensitive, WARNING otherwise) | **harness** — `Scheduler`/`Cli` run-start UX; SSOT §2 note |
+| **`runOnCurrentBranch` + dirty-tree pre-flight prompt** (interactive: prompt; non-interactive: refuse/halt unless `--yes`) | **harness** — run-start pre-flight gate in `Scheduler`; SSOT §2 |
+| **AI triage on attempt-exhaustion needs-human** (advisory prompt → diagnoses tool-vs-local → writes `logs/<runId>/<task-id>/feedback.md`; needs-human message points to it; optional opt-in GH auto-file) | **harness + schema** — `Execution/NeedsHumanTriage` over `IPromptRunner` + an `ai-triage` profile; `feedback.md` log artifact; SSOT §8/§9.2 — and a later milestone |
 | Git-required validation gate; **all new GR codes FRESH (GR2015+)** against the actual live `DiagnosticCodes.cs` (highest live = GR2014, both taken by the triad) | **harness** — `Loading/PlanValidator.cs`, `Loading/DiagnosticCodes.cs` |
 | **Logs layout** — `logs/` elevated to a sibling of `state/`, divided by `runId` | **harness + schema** — `State/` log path resolution; SSOT §1, §8 |
 | **Disk v1:** chain-reuse (the big lever) + shared `.git/objects` (free) + reset-based cheap retries | **harness** — the reuse topology IS the disk lever; `maxParallelism` default **3** |
@@ -170,8 +174,22 @@ durable **merge target** and the **terminal-gate site**. `runId` lives in the wo
 names and the commit trailers, **not** the branch name (so the branch is the human-facing feature
 branch the PO wants; a re-run reuses the branch and resumes onto it). A `runOnCurrentBranch` opt-in
 makes the plan branch *be* the current branch — but the harness still integrates via a
-harness-owned worktree on it, **never the user's live checkout**. `--merge-on-success` now means
+harness-owned worktree on it, **never the user's live checkout**. **When `runOnCurrentBranch` is set
+AND the current branch has uncommitted changes (a dirty working tree), the harness runs a run-start
+pre-flight gate that PROMPTS the user for explicit permission to continue before starting** (PO #6,
+detailed in §5) — because the end-of-run integration merges the harness-owned worktree back into the
+current branch, and a dirty tree invites merge complications. `--merge-on-success` now means
 "merge the plan branch into the original branch" (§5).
+
+**Source-branch indicator in the console (PO #2).** At run start the harness prints **which branch the
+plan branch was forked off** (the user's HEAD branch at run start — the eventual `--merge-on-success`
+target). If that source branch name is `master` or `main` (**case-insensitive**), it is rendered as
+plain informational text (e.g. `Forking plan branch guardrails/<plan-name> off main`). If it is
+**anything else**, it is rendered as a **WARNING** — visually distinct (the harness's warning style),
+because forking off a non-trunk branch means the run will integrate into, and `--merge-on-success` will
+deliver onto, a branch that is itself in flight (e.g. `Forking off feature/x — NOT main/master; the
+plan branch descends from in-flight work`). The indicator is informational-vs-warning purely by this
+name test; it never blocks the run.
 
 **Three kinds of worktree, all harness-owned, all under one temp root, all wiped by `--fresh` and
 pruned on resume:**
@@ -211,6 +229,48 @@ pruned on resume:**
 - **Free a worktree** when its segment is merged into its successor (the inherit-one path consumes
   it) or when the chain tail FF-integrates into the plan branch and has no further downstream.
 
+**Dive down the chain as far as it stays linear (PO #3, the reuse-maximizing rule).** YES — the harness
+follows a **single-upstream (linear) chain as far as it remains linear**, reusing the **one** segment
+worktree for every hop (the maximum-reuse behavior the PO asked for). A segment ends only at a real
+topology change: a fan-out (inherit-one + fork-the-rest) or a fan-in (a task with ≥2 upstreams stops
+the dive — it forks a private union worktree instead). So a pure linear chain of N tasks = exactly ONE
+worktree carrying all N.
+
+**This does NOT violate per-task FF-integration — the two ideas are complementary (PO #3, second
+topic).** The segment worktree is the **execution locus**: it advances commit-on-top for each next
+chain task (reuse). Independently, **each task's commit FF-integrates into the plan branch as that task
+completes** (§3). These are not in tension — they describe two different things at two different sites:
+the segment worktree holds *where the next task runs*; the plan branch holds *everything completed so
+far*. After task K of a chain completes, the plan branch reflects tasks 1..K (each FF'd) **while** the
+segment worktree is already working task K+1 on top of K's tip. So "the plan branch assumes all the
+changes of a task as it completes" and "the segment worktree is reused for the next chain task" are
+simultaneously true. **One wrinkle the PO should see:** if a sibling fan-in advanced the plan branch
+*between* two chain tasks, the next chain task's integration is a **real non-FF merge** (re-verified),
+not a fast-forward — the FF is the common linear case, not a guarantee; the §3 settle handles both.
+
+**Worktree lifecycle / context-switching (PO #4 — create / pass-along / expire, made explicit).** A
+segment worktree has exactly three lifecycle transitions:
+- **CREATE** — a *root* task (no upstream) or a *fork-the-rest* sibling forks a **new** segment
+  worktree off the plan-branch tip (root) or the producer's recorded sha (fork-the-rest). A task in a
+  **separate line** (not a descendant of any live worktree) always CREATES a new worktree forked off
+  the **CURRENT plan-branch tip** — which already contains every integrated task so far.
+- **PASS-ALONG (reuse)** — when a segment's task completes and has **exactly one** descendant that can
+  inherit the tree (a linear hop, or the inherit-one successor of a fan-out), the **same** worktree is
+  passed to that descendant, which runs on top of the prior tip. No new tree, no re-checkout.
+- **EXPIRE** — when a segment's chain **ENDS** (its task has no remaining descendant to inherit the
+  tree — e.g. a leaf, or a fan-out producer whose inherit-one successor has already taken the tree and
+  the remaining siblings forked their own), the worktree is **discarded** (`git worktree remove
+  --force`) after its final task FF-integrates into the plan branch.
+
+**Answering the PO's exact scenario (#4):** *"3 active worktrees, a task ends, the next ready task is
+not a descendant but in a completely separate line — does that worktree expire and a new one based on
+the current merged-in plan-branch state get created?"* **YES.** The just-finished worktree, having no
+descendant to pass itself to, **EXPIRES** (its work is already FF-integrated into the plan branch). The
+separate-line ready task is **not** a descendant of any live worktree, so it gets a **NEW** worktree
+forked off the **current plan-branch tip** — which includes all integrated work, including the
+just-finished task's. There is no "move a worktree sideways to an unrelated task": reuse only ever
+flows down a single-upstream descent; a separate line always starts fresh from the plan-branch tip.
+
 **Worktree count peaks at the DAG's maximum antichain width** (the most tasks runnable in parallel
 at once), capped by `maxParallelism` — **NOT 1**, and I state this honestly: a pure linear chain is
 one worktree, but a wide fan-out at `maxParallelism: 3` is up to 3 segment worktrees + the
@@ -218,9 +278,15 @@ integration worktree + any transient fan-in tree. Reuse minimizes *creation chur
 checkout cost), not the peak count.
 
 **Retries preserve upstream work by construction.** A failed attempt does **not** discard-and-recreate
-the worktree (plan 07's model). Instead the harness `git reset --hard <taskBase>` + `git clean -fd`
-(Decision 7). **`taskBase` is defined precisely as the segment-worktree commit sha captured at the
-moment the worktree was (re)assigned to THIS task attempt** — recorded in the `WorktreeHandle`, never
+the worktree (plan 07's model). For a **generic** action/guardrail failure the harness `git reset
+--hard <taskBase>` + `git clean -fd` (Decision 7) — discarding only the failing task's WIP while
+keeping every committed upstream/sibling ancestor of `taskBase`. For a **write-scope CHECK failure**
+the harness instead does a **scoped revert of only the out-of-scope paths** (`git checkout <taskBase>
+-- <paths>`) and **KEEPS the task's in-scope WIP**, retrying with feedback that names the violation —
+the "fix, don't restart" path (fully specified in §2.3). Both retries are safe for the same reason:
+upstream work is **committed** in `taskBase`, so neither can lose it. **`taskBase` is defined precisely
+as the segment-worktree commit sha captured at the moment the worktree was (re)assigned to THIS task
+attempt** — recorded in the `WorktreeHandle`, never
 re-derived from "HEAD's parent" (which would be wrong after a commit-on-top or an inherited-chain FF
 advanced the tip). It is the post-ancestor commit for a root/linear task, or the post-fan-in union
 commit for a fan-in task. `taskBase` is **distinct from the plan-branch `preHead`** (the integration
@@ -289,9 +355,16 @@ at run start, load-bearing for `--merge-on-success` and divergence detection), a
 ### 2. Write-scope CHECK (deterministic, read-only — disjoint-scope reborn as a guardrail)
 
 `writeScope` returns as a **per-task declared write surface** that the harness verifies with a
-**deterministic, read-only check**. It is **not** the isolation mechanism (worktrees are) and it
-**never reverts** (the rejected shared-workspace enforcer's irreversible-corruption class is gone by
-construction — there is no enforcer, only a read-only diff membership test).
+**deterministic read-only check** (a `git diff` membership test) and, on a failure, a **scoped,
+git-driven revert of ONLY the out-of-scope paths in the task's OWN private segment worktree**. It is
+**not** the isolation mechanism (worktrees are). The scoped revert is the "fix, don't restart"
+mechanism — it reverts the paths that escaped the surface to their `taskBase` content and **keeps the
+task's in-scope work**, then retries with feedback naming the violation (§2.3 below). This is
+**categorically NOT** the rejected shared-workspace enforcer's irreversible cross-task corruption
+class: the matcher itself **writes nothing** (it is a pure diff membership test), and the only writer
+is a `git checkout <taskBase> -- <out-of-scope-paths>` acting **in the task's private worktree where
+no concurrent sibling exists** — so the #88 corruption vector is structurally impossible here (§2.3
+proves the bounded blast radius).
 
 **The check (a harness built-in, sibling of the §3.3 integration-gate check):**
 
@@ -303,8 +376,10 @@ construction — there is no enforcer, only a read-only diff membership test).
   the deterministic check is the gate, not the prompt.
 - Computes `git diff --name-status <taskBase>..<segmentHEAD>` in the task's segment worktree (the
   task's own contribution, isolated from upstream commits by the `taskBase` anchor). **Every** A/M/D
-  path must satisfy `IsInScope(path, writeScope)`. A violation ⇒ **guardrail-failure** → retry with
-  feedback naming the out-of-scope paths → eventual needs-human. **Deletions:** the deleted path
+  path must satisfy `IsInScope(path, writeScope)`. A violation ⇒ **guardrail-failure** → the harness
+  **reverts ONLY the out-of-scope paths to their `taskBase` content** (`git checkout <taskBase> --
+  <out-of-scope-paths>`, KEEPING the in-scope work) → retries with feedback naming the violation and
+  the exact offending-file list (§2.3) → eventual needs-human. **Deletions:** the deleted path
   must be in scope. **Renames:** the check does **NOT** use `git`'s `-M` rename detection; a rename
   presents as a paired **D + A**, and **both** the old and new path must be in scope.
 
@@ -403,17 +478,33 @@ tree), so diff paths and scope globs share a base. The shared-workspace plan nee
 `workingDirectory`-rejection validation to keep the bases aligned; the worktree model makes the bases
 coincide **by construction**, so that machinery is **not** carried here.
 
-**Matcher blast-radius downgrade (stated ONCE, here, at the point of claim).** Because the CHECK
-**writes nothing**, a matcher bug on the CHECK's verdict path is confined to **one task's own verdict**
-(a false-red blocks a legitimate task; a missed-catch passes that task's own out-of-scope edit) —
-**never** the rejected shared-workspace enforcer's irreversible cross-task corruption (there is no
-enforcer to corrupt a sibling). **This downgrade applies to `IsInScope`-the-CHECK only.** It does
-**NOT** apply to `Overlaps`-the-scheduling-hint: an under-detecting `Overlaps` can put two genuinely
-colliding tasks in parallel, whose later union, if AI-resolved by dropping a hunk, can compose into a
-broken integration (§4, and the §DA self-critique). So `Overlaps` **retains cross-task reach** and
-therefore keeps the **full fuzz rigor** (both properties in 2.2), even though the CHECK's verdict path
-is downgraded. The reader does not have to find this qualification 500 lines later — it is stated at
-the claim.
+**Matcher blast-radius (stated ONCE, here, at the point of claim — and honest about the scoped
+revert).** The matcher now drives **two** effects: the CHECK verdict (`IsInScope` over each diff path)
+**and** the scoped revert (`git checkout <taskBase> -- <paths IsInScope reports out-of-scope>`). Both
+are bounded to **the task's OWN private segment worktree** — there is **no enforcer acting for one task
+on another's files**, so a matcher bug **cannot** reproduce the rejected shared-workspace enforcer's
+irreversible cross-task corruption (#88). Concretely, by bug direction:
+- **Over-match (matcher wrongly reports an IN-scope path as out-of-scope):** the scoped revert undoes a
+  *legitimate, in-scope* file, and the retry-with-feedback tells the agent to redo it — **bounded to a
+  wasted-attempt false-red on the task's own work**, recoverable next attempt. It never touches a
+  sibling.
+- **Under-match (matcher wrongly reports an out-of-scope path as IN-scope):** the path is **not**
+  reverted and the CHECK passes it green — but this is **the same path the CHECK itself passed**, so
+  there is no inconsistency between verdict and revert; the residual is exactly the §2-stated
+  "missed-catch" (a real out-of-scope edit ships into the task's segment), caught later by the
+  **merge-back re-verify** and the terminal gate, never silent cross-task corruption.
+- **Why the revert is git-safe, not a hand-rolled byte-restore:** it reverts to a **known-good
+  `taskBase` COMMIT** via `git checkout` (git computes the bytes), not the enforcer's hand-rolled hash
+  capture/byte-restore that corrupted concurrent siblings in plan 05. A `git checkout` of a committed
+  tree object cannot half-write or cross-contaminate.
+
+**This applies to `IsInScope`-the-CHECK + its scoped revert only.** It does **NOT** apply to
+`Overlaps`-the-scheduling-hint: an under-detecting `Overlaps` can put two genuinely colliding tasks in
+parallel, whose later union, if AI-resolved by dropping a hunk, can compose into a broken integration
+(§4, and the §DA self-critique). So `Overlaps` **retains cross-task reach** and therefore keeps the
+**full fuzz rigor** (both properties in 2.2), even though the CHECK + its scoped revert are bounded to
+the task's own private tree. The reader does not have to find this qualification 500 lines later — it is
+stated at the claim.
 
 #### 2.2 The proof harness (a milestone gate, not a suggestion)
 
@@ -438,6 +529,63 @@ reproducible so a counterexample replays:
 Both callers (`IsInScope` and the membership half of `Overlaps`) derive from **one** shared
 segment-match helper (DRY on a primitive with cross-task reach); the fuzz tests are what catch a
 future drift if they ever stop sharing it.
+
+#### 2.3 On a scope violation — scoped revert + fix-don't-restart retry (PO #1)
+
+When the CHECK fails (one or more diff paths are out-of-scope), the harness does **NOT** discard the
+attempt and **NOT** `reset --hard <taskBase>` the whole tree. It performs a **targeted, git-driven
+remediation in the task's OWN private segment worktree**, then retries with precise feedback:
+
+1. **Revert ONLY the offending paths.** `git checkout <taskBase> -- <out-of-scope-path …>` restores
+   each out-of-scope path to its `taskBase` content. The task's **in-scope work is KEPT** — the agent
+   does not redo the parts it got right. (A rename that escaped scope is a paired D+A; both paths are
+   reverted, so the file returns to its `taskBase` name and content.)
+2. **Inject the violation into attempt N+1's prompt.** The feedback (`feedback.md`, delivered via
+   `GUARDRAILS_FEEDBACK` from attempt 2) states **(a)** that attempt N fell outside its declared
+   `writeScope`, **(b)** the **exact list of files** that caused the violation, and **(c)** that those
+   files have been reverted to their base so the retry must not touch them again. This is what stops
+   attempt 2 from repeating attempt 1's exact violation — the PO's requirement.
+3. **Exhaustion ⇒ needs-human**, as for any guardrail-class failure.
+
+**Why this is the "fix, don't restart" model, and why it is SAFE (reconciling the earlier
+reset-to-taskBase wording).** Two retry mechanisms now coexist and must be told apart:
+
+- **Generic action/guardrail failure (not a scope escape):** `git reset --hard <taskBase> + git clean
+  -fd` (§1, §3) — discards the task's WIP and re-runs the action from base. This is sound because
+  **upstream work is COMMITTED in `taskBase`** (an ancestor of the reset target), so the reset loses
+  only the *failing task's own uncommitted WIP*, never upstream/sibling commits. The original
+  "reset-to-taskBase retry" recommendation existed to protect **UPSTREAM** work from being lost — and
+  that goal is met by `taskBase` being a committed anchor, **not** by discarding the task's own WIP.
+- **Scope-CHECK failure (this section):** a **scoped** revert of only the escaped paths, **KEEPING**
+  the task's in-scope WIP. Because keeping the task's uncommitted in-scope WIP cannot lose upstream
+  work (upstream is committed in `taskBase` regardless of the task's WIP), keeping it is safe — there
+  is no reason to throw away good work to protect upstream that is already protected by the commit.
+  This is strictly the "fix, don't restart" philosophy applied at the finest granularity the violation
+  allows.
+
+So the doc's earlier reset-to-taskBase recommendation **still applies to generic failures** (where the
+action wholesale went wrong and a clean re-run is the cheapest path), and **does NOT apply to the scope
+escape** (where a scalpel beats a sledgehammer). There is no remaining case where a scope violation
+should `reset --hard` the whole tree.
+
+**Categorically safe — this is NOT plan-05's enforcer returning (the load-bearing framing).** The
+remediation acts **in the task's PRIVATE segment worktree** — by §1's scheduler invariant a segment
+worktree is single-task-at-a-time and never a concurrent sibling's tree, so the #88 "acting for A,
+corrupted B's concurrent edits" class is **structurally impossible**, not merely mitigated. The revert
+is a `git checkout` of a **known-good `taskBase` COMMIT** (git computes the bytes from a tree object),
+**not** the plan-05 enforcer's hand-rolled hash-capture/byte-restore that corrupted siblings. And a
+**matcher bug is bounded to the task's own retry base** (the §2.1 blast-radius analysis): over-match
+reverts a legit in-scope file the agent simply redoes next attempt; under-match leaves a path the
+CHECK *also* passed green (caught later by merge-back re-verify), never a sibling. The scoped revert
+adds **zero** cross-task reach.
+
+**Honest residual carried from the original design — retry divergence.** Because attempt N+1 builds on
+attempt N's KEPT in-scope WIP (plus the scoped revert), it is not a from-scratch attempt; attempt N's
+choices can subtly bias attempt N+1 ("retry divergence"). This is the **accepted original-design
+tradeoff** of fix-don't-restart everywhere in Guardrails — bounded by the **low retry budget**, the
+**precise scope-violation feedback** (which actively steers away from the prior mistake), and the
+**full per-attempt logs**. It is the same tradeoff the harness already makes for ordinary
+guardrail-feedback retries; the scoped revert does not worsen it.
 
 **The TDD test-protection replacement.** `plan-breakdown` assigns each task a `writeScope` from its
 primary artifact(s). For a TDD pair, the **test-author task owns the test files**, and the
@@ -710,6 +858,21 @@ here** (Decision 3): a conflict, a failed post-merge re-verify, or a dirty user 
 the user's own commits. (This is the one place v1 runs a merge that can hit a human; bounded:
 at-most-once, only on opt-in, only after a green run.)
 
+**Pre-flight gate when `runOnCurrentBranch` + a dirty working tree (PO #6).** `runOnCurrentBranch`
+makes the plan branch the current branch, so the end-of-run integration merges the harness-owned
+worktree **back into the current branch**. If that branch has **uncommitted changes at run start**, the
+harness runs a **run-start pre-flight check** and, in interactive mode, **PROMPTS for explicit
+permission to continue** before launching any task — surfacing exactly which files are dirty — so the
+user can stash/commit first and avoid merge complications at the end-of-run integration. The prompt is
+**only** raised for the `runOnCurrentBranch` + dirty-tree combination; a clean tree, or the default
+fresh-plan-branch mode (which never writes the current branch), skips it. **Non-interactive / unattended
+mode** (no TTY, or `--yes`/CI): the harness does **NOT** silently proceed — it **REFUSES and halts at
+the pre-flight gate** with a clear diagnostic (`runOnCurrentBranch with a dirty working tree requires
+confirmation; commit/stash or re-run interactively`), consistent with honest-halt. (An explicit
+`--yes`/auto-confirm flag is the documented escape hatch for unattended runs that accept the risk.)
+This gate is independent of `--merge-on-success`: `runOnCurrentBranch` integrates into the current
+branch at end-of-run regardless, which is why the dirty-tree check is at run start, not deferred.
+
 ### 6. How narrow scopes → small clean merges → cheaper unions (the cross-angle thesis)
 
 The three mechanisms compose into **one causal chain**, which is the PO's core insight made
@@ -794,6 +957,52 @@ per-attempt file set (§8 SSOT) is unchanged — only the parent path moves. `GU
 resolves under `logs/<runId>/...`. (I considered "divide by runId but keep under `state/`" — it gets
 (ii) but not (i); the PO explicitly asked for *findable*, so the elevation wins. Flagged Decision 5.)
 
+### 9. AI triage on needs-human — advisory diagnosis + `feedback.md` (PO #7)
+
+When a task reaches **`needs-human` via attempt exhaustion** (not a clean `needsHuman` short-circuit —
+that is the agent already asking a human, no triage needed), the harness runs **one AI triage step** to
+help the human, and surfaces its output on the task. This is a **new feature**, sized into a later
+milestone (M6.5, below).
+
+**What it does.** The triage step is a **constrained prompt action behind the existing `IPromptRunner`
+seam** (the same seam as `claude` and the AI-merge worker; a distinct `ai-triage` prompt profile under
+`promptRunners`). Given the failed task — its `task.json`, every attempt's action output, the
+**guardrail outputs** that kept failing, and the **larger run context** (which other tasks are green /
+blocked, the run config) — it:
+1. **Examines** the task, its attempts, and the run situation.
+2. **Diagnoses the root cause as one of two classes:**
+   - a **Guardrails-tool problem** — a harness or skill limitation the task hit (e.g. a guardrail
+     contract the harness can't express, a worktree/merge edge case, a `plan-breakdown` mis-generation)
+     → **warrants a GitHub issue against the Guardrails repo**, so the triage drafts a ready-to-file
+     issue **title + body**; or
+   - a problem **local to the current repo** — the plan, the code, or the tests for *this* project (a
+     genuinely hard task, a contradictory guardrail set, a real bug) → no Guardrails issue; the
+     diagnosis is for the local human.
+3. **Writes `feedback.md` at the task level in the logs** — `logs/<runId>/<task-id>/feedback.md` —
+   capturing the diagnosis, the evidence it drew on, and (if a tool problem) the drafted GH-issue
+   title+body ready to file.
+4. The task's **`needs-human` message DISPLAYS / points to** this `feedback.md` (the run summary and
+   `status` table render the path, OSC-8-linked where the terminal supports it), so the human lands on
+   the diagnosis immediately.
+
+**It is ADVISORY — a prompt PROPOSES, a file (and the human) certifies.** The triage **gates nothing**:
+the task is *already* `needs-human` before triage runs; triage cannot change that verdict, cannot
+re-open the task, cannot mark anything done. It honors the **verdict-from-files contract** — it writes a
+**structured `feedback.md`**, and its `PromptResult.IsError`/exit code is **never** read as a verdict
+(a failed triage prompt just means "no feedback.md was produced", logged, and the task is still plainly
+`needs-human`). This keeps invariant 1 intact: the only thing a prompt is trusted to do here is
+*describe*, never *certify*. It also cannot burn the task's retry budget (the task is already terminal).
+
+**Decision flagged — auto-file the GH issue, or only draft it?** See **Decision 8** below. **Recommend:
+draft-and-surface in `feedback.md` by default (auto-file OFF)**; auto-filing to a remote repo from an
+unattended run risks duplicate/spam issues, and the whole point of `needs-human` is that a human is
+about to look — let them confirm with one click. Auto-file is an **explicit opt-in** (default off).
+
+**Cost.** Triage is one extra prompt invocation **only on a task that already exhausted its retries** —
+a rare, already-expensive event — charged against `maxCostUsd` like any prompt; if the cost cap is
+already reached, triage is skipped (the task is `needs-human` either way). It runs **off** the
+integration lock (it writes only a log file, touches no worktree, no state fragment).
+
 ---
 
 ## Decisions flagged for the product owner
@@ -802,7 +1011,8 @@ Each with my recommendation. These are the load-bearing choices where I diverge 
 reading of the brief, or where a real schema cost is incurred.
 
 **Decision 1 — Continuous FF-integration into the plan branch vs the PO's literal "merge at the
-chain tail only."** **Recommend: continuous FF-integration.** The PO's reuse model implies a segment
+chain tail only."** **Recommend: continuous FF-integration. ✅ ACCEPTED — the PO confirmed: "the
+divergence is the right call."** This decision is no longer open. The PO's reuse model implies a segment
 worktree merges into the plan branch only when its chain ends. I integrate *every* task — but a
 linear chain produces **fast-forward integrations** that are **free** (no union, no re-verify; the
 plan-branch tip just advances to an already-verified commit), so the **worktree-reuse intent is
@@ -863,6 +1073,19 @@ Stage-2 test must pin that a retry with `-fd` does not leave a stale-artifact fa
 whose retry passes only because a prior attempt's `bin/` output lingered) — if that test ever fails,
 the build guardrail's own clean step is the fix, not `-fdx` globally. Recommend `-fd` with that test
 as the guard.
+
+**Decision 8 — AI triage on needs-human: auto-file the GH issue, or draft-and-surface only? (PO #7,
+the new feature in §9).** **Recommend: draft-and-surface in `feedback.md` by default; auto-file is an
+explicit opt-in, default OFF.** The tension the PO named: auto-filing a GH issue against the Guardrails
+repo aligns with "run long unattended" (the human comes back to a filed issue), but **auto-filing to a
+remote repo from an unattended run risks duplicates and spam** — the same tool limitation hit by N
+tasks across M runs files N×M near-identical issues with no human in the loop to dedupe. Since reaching
+`needs-human` already means a human is about to look, the safer default is to **draft** the issue
+(title+body) into `feedback.md` and let the human file it with one click. The opt-in
+(`triageAutoFile: true`, default `false`, gated behind a configured repo + token) is for users who
+genuinely want unattended filing and accept the dedupe risk. The triage itself is **advisory either
+way** — it never gates the task, which is already `needs-human` (§9, invariant 1 preserved). If the PO
+wants zero new remote surface in v1, ship draft-only and defer auto-file entirely to v2.
 
 ---
 
@@ -925,6 +1148,17 @@ The feature false-greened twice. So, plainly — what this costs and where it is
    granularity smell and OMITS the field rather than emitting a vacuous `**`; `guardrails-review`
    flags vacuous/over-broad scope (BLOCKER/WEAK) and scope-intent mismatch (WEAK). These are
    imperfect mitigations of a real residual — a determined-loose scope is theater the review may miss.
+   **The scoped revert (PO #1) costs a wasted attempt on over-match** — if the matcher wrongly reports
+   an in-scope path out-of-scope, the revert undoes legit work the agent then redoes, burning one retry;
+   this is a bounded false-red on the task's own work, not corruption. And **retry divergence** (attempt
+   N+1 builds on N's kept in-scope WIP) is the accepted original-design tradeoff (low retries + precise
+   scope-violation feedback + full logs) — the scoped revert does not worsen it.
+5b. **AI-triage cost on needs-human (PO #7).** Each task that exhausts retries pays **one extra prompt
+   invocation** for the advisory triage (diagnosis + `feedback.md`), charged against `maxCostUsd`. It
+   fires only on an already-rare, already-expensive event (a fully-exhausted task) and is skipped if the
+   cost cap is already reached. The honest limit: the triage diagnosis can be **wrong** (tool-vs-local
+   mis-call) — bounded by keeping it advisory (it gates nothing) and by **draft-only GH issues by
+   default** (auto-file is opt-in, default off, to avoid unattended duplicate/spam issues).
 6. **Where this is simply WRONG.** Non-git workspace → validation error (no silent fallback). A
    workspace that tracks build output → the merge surface churns artifacts (mitigated by `state/`
    outside the merge + the W3 porcelain check). A flailing agent escaping its worktree by absolute
@@ -952,12 +1186,23 @@ The feature false-greened twice. So, plainly — what this costs and where it is
      fuzz rigor including the completeness property (W-5/W-6).
    - **(g)** The matcher's permissive-bug fix must be proven by a tests-FAIL-on-the-naive-matcher fuzz
      gate first, or "fixed" is unverified.
+   - **(h)** The **scoped revert** on a write-scope CHECK failure (PO #1) writes — but ONLY the task's
+     own private worktree, via `git checkout` of a committed `taskBase` (NOT the plan-05 enforcer; #88
+     structurally impossible because the segment worktree is single-task-at-a-time). It keeps the task's
+     in-scope WIP (safe: upstream is committed in `taskBase`) and feeds attempt N+1 the offending-file
+     list. Bounded blast radius; accepted retry-divergence tradeoff.
+   - **(i)** The **AI triage on needs-human** (PO #7) is **advisory** — a prompt proposes a diagnosis
+     into `feedback.md`, never certifies (the task is already `needs-human`); exit code is never a
+     verdict (invariant 1 preserved). GH auto-file is **opt-in, default off**, to avoid unattended
+     duplicate/spam issues (Decision 8).
 
 ---
 
 ## Devil's-advocate self-critique
 
-The prior two designs false-greened. I am my own harshest critic on the five hazards the brief names.
+The prior two designs false-greened. I am my own harshest critic on the original five hazards the brief
+names, plus the two surfaces the PO's PR-#107 review added — the **scoped revert** (hazard 5a) and the
+**AI triage on needs-human** (hazard 6).
 
 **1. AI-merge residuals — "the byte-producer + blast-radius + re-verify still let a broken union
 pass."** *Conceded as the sharpest hazard, with the B-3 fix now applied.* The dropped-hunk hole is
@@ -1040,12 +1285,31 @@ and a fan-in private worktree is owned by exactly one fan-in task. So the hazard
 `taskBase` correctly + never share a tree," both of which are testable invariants, not hopes.
 
 **5. The matcher — "the permissive-bug downgrade from cross-task corruption to own-false-red is
-not actually true, because the scheduler uses `Overlaps` as a hint."** *The subtlest hazard, and I
-concede the scheduler interaction needs care.* The downgrade (stated at the point of claim in §2.1, not
-buried here — W-5) rests on the check **writing nothing** — a mis-scoped `IsInScope` can only false-red
-(block a legitimate task) or miss-catch (pass an out-of-scope edit), both confined to **one task's own
-verdict**; neither writes another task's files (the rejected shared-workspace corruption vector is
-*structurally* gone because there is no enforcer). **Where the adversary has a point:** the scheduler's
+not actually true, because (a) the CHECK now drives a scoped REVERT that writes, and (b) the scheduler
+uses `Overlaps` as a hint."** *The subtlest hazard, sharpened by PO #1's scoped revert, and I take both
+halves head-on.*
+
+**(a) The scoped revert writes — does that resurrect the plan-05 enforcer?** **No, and this is the
+load-bearing distinction.** The matcher now drives two effects (verdict + scoped revert), but **both act
+ONLY in the task's OWN private segment worktree**, which by §1's scheduler invariant is
+single-task-at-a-time and is **never** a concurrent sibling's tree. The plan-05 enforcer's #88
+corruption was "acting for task A, it hand-rolled a byte-restore that clobbered task B's concurrent
+edits" — that requires a **shared** workspace and a **hand-rolled** restore. Here there is **no shared
+workspace** (physical worktree isolation) and **no hand-rolled restore** (`git checkout <taskBase> --
+<paths>` lets git compute the bytes from a committed tree object). So the #88 class is **structurally
+impossible**, not merely mitigated. The matcher-bug blast radius under the revert is bounded by
+direction: **over-match** reverts a legit in-scope file → the agent redoes it next attempt (a
+wasted-attempt false-red on the task's own work); **under-match** leaves a path the CHECK *also* passed
+green → not reverted, no verdict/revert inconsistency, caught later by the merge-back re-verify. In no
+case does the scoped revert reach a sibling's bytes. The honest statement is therefore *not* "the check
+writes nothing" (it does, now) but "**the check's revert writes only the task's own private tree, via
+git, to a known-good committed base — zero cross-task reach.**"
+
+**(b) The `Overlaps` scheduler-hint half.** The remaining downgrade (stated at the point of claim in
+§2.1, not buried here — W-5) is that a mis-scoped `IsInScope`-the-CHECK can only false-red (block a
+legitimate task) or miss-catch (pass an out-of-scope edit), both confined to **one task's own verdict +
+its own private-tree revert**; neither reaches another task's files (the rejected shared-workspace
+corruption vector is *structurally* gone because there is no enforcer and no shared tree). **Where the adversary has a point:** the scheduler's
 `Overlaps` hint. If `Overlaps` is **buggy and returns false** for two genuinely-overlapping scopes, the
 scheduler may run them **concurrently**, raising the chance of a real fan-in/non-FF conflict later — but
 that conflict is then **caught by git + AI-merge + re-verify**, not by the scope check, so the
@@ -1070,6 +1334,24 @@ are a milestone gate, and the fuzz suite **must be proven to FAIL against a deli
 permissive matcher first** — a fuzz suite that passes against the naive matcher proves nothing, which
 is exactly how a permissive segment-matcher ships undetected.
 
+**6. AI triage on needs-human — "a prompt is now in the needs-human path; does it strain invariant 1,
+or auto-file spam?"** *Conceded as a new prompt in the loop (PO #7, §9), handled by keeping it strictly
+advisory.* The triage prompt **certifies nothing**: the task is **already** `needs-human` (via attempt
+exhaustion) before triage runs — triage cannot change that verdict, cannot re-open the task, cannot mark
+anything done, and **cannot burn retry budget** (the task is terminal). It honors verdict-from-files —
+it writes a structured `feedback.md`; its `PromptResult.IsError`/exit code is **never** read as a
+verdict (a failed triage just means "no feedback.md", logged, task still plainly `needs-human`). So
+invariant 1 holds: the prompt *proposes a diagnosis*, a file (and the human) *certifies* — the prompt is
+never alone and never a gate. **The sharpest residual the adversary finds:** the triage's tool-vs-local
+diagnosis can be **wrong** (it may call a real local bug a "Guardrails tool problem", or vice versa),
+and if **auto-file were ON** that mis-diagnosis becomes a spurious GH issue — possibly duplicated across
+many tasks/runs. That is exactly why **Decision 8 recommends draft-only by default** (auto-file is an
+explicit opt-in): a wrong draft costs the human one glance, not a polluted issue tracker. A second
+residual: the triage reads guardrail outputs and attempt logs, so a genuinely confusing failure yields a
+confusing diagnosis — but a *confusing advisory note on an honestly-halted task* is strictly better than
+today's bare "needs-human" with no diagnosis, and it never masks the halt. Net: the triage adds help,
+not a verdict; it is the honest-halt made *more* useful, not softened.
+
 **Net:** the design survives self-critique with the claim scoped honestly — **worktrees isolate
 (real, free); the write-scope check is hygiene + test-protection, only partly correctness; FF makes
 linear chains free; fan-in/sibling unions get git→AI→re-verify with the deterministic re-verify as
@@ -1088,7 +1370,16 @@ reset-retry is safe *iff* `taskBase` is captured-at-assignment (≠ `preHead`) A
 onto a live reused segment branch (two tested scheduler invariants — §1); (6) the CHECK's bug is
 downgraded to own-false-red/missed-catch, but `Overlaps`-the-scheduling-hint retains cross-task reach
 (composes with AI-merge) and keeps full fuzz rigor including the completeness property (W-5/W-6); (7)
-the matcher's permissive-bug fix must be proven by a tests-FAIL-on-the-naive-matcher fuzz gate. **And
+the matcher's permissive-bug fix must be proven by a tests-FAIL-on-the-naive-matcher fuzz gate; (8) the
+**scoped revert** on a write-scope CHECK failure (PO #1) writes — but ONLY the task's own private
+worktree, via `git checkout` of a committed `taskBase`, with zero cross-task reach (NOT the plan-05
+enforcer; #88 structurally impossible), and a matcher bug is bounded to the task's own retry base
+(over-match redoes a legit file; under-match leaves a path the CHECK also passed, caught by merge-back
+re-verify) — fix-don't-restart, keeping in-scope WIP is safe because upstream is committed in
+`taskBase`; (9) the **AI triage on needs-human** (PO #7) is advisory only — a prompt proposes a
+diagnosis into `feedback.md`, never certifies (the task is already `needs-human`), exit code never a
+verdict (invariant 1 preserved), and GH auto-file is opt-in/default-off to avoid unattended issue spam.
+**And
 the feasibility realities the design now states plainly:** the AI-merge worker needs a new merge env
 contract + a distinct prompt profile (not the existing seam returning bytes); the mid-DAG re-verify is
 a NEW attempt-decoupled public seam (not the `internal sealed`, attempt-bound `GuardrailRunner`); and
@@ -1439,7 +1730,11 @@ plan-name/
 >   `guardrails/<plan-name>`) is written only by the harness's integration (§5.3).
 > - `runOnCurrentBranch` (default `false`) makes the plan branch the current branch instead of a fresh
 >   `guardrails/<plan-name>`; the harness still integrates via a harness-owned worktree, never the
->   user's live checkout.
+>   user's live checkout. **Pre-flight (§5):** if `runOnCurrentBranch` is set AND the current branch has
+>   uncommitted changes, the harness PROMPTS for explicit permission at run start (interactive) or
+>   REFUSES and halts (non-interactive, unless an explicit `--yes`/auto-confirm is given) — because the
+>   end-of-run integration merges back into the current branch and a dirty tree invites merge
+>   complications.
 > - `mergeOnSuccess` (default `false`; CLI `--merge-on-success` overrides) opts into end-of-run
 >   delivery of the plan branch into the user's original branch. **AI-merge is withheld at this
 >   boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts to `needs-human`
