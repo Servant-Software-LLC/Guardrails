@@ -7,6 +7,21 @@
 - If you cannot proceed without a human decision, write
   {"needsHuman": "<question>"} to the state-out path and stop.
 
+## Windows-Git test portability (REQUIRED — these tests create a real git repo)
+This suite runs on Windows with Git-for-Windows. Two behaviors have ALREADY caused needs-human
+halts (issues #116/#109 and task 14); your tests MUST handle both:
+- **Recreate emptied directories before writing into them.** `git rm`/`git mv` that empties a
+  directory makes Git-for-Windows prune it, so a later `File.WriteAllText` into that path throws
+  `DirectoryNotFoundException`. Call `Directory.CreateDirectory(dir)` first.
+- **Strip read-only before deleting the repo.** Git marks `.git/objects` loose objects read-only, so
+  `Directory.Delete(root, recursive: true)` throws `UnauthorizedAccessException` (NOT IOException) on
+  Windows. In your IDisposable teardown, set every file to `FileAttributes.Normal`, then delete in a
+  broad `catch`.
+- For rollback use `git reset --hard <preHead>`, NOT `git merge --abort` (W3: `--abort` fails rc=128
+  on a dirtied tracked path).
+Copy the proven-safe `TempGitRepo` helper from
+`tests/Guardrails.Integration.Tests/WriteScopeCheckTests.cs` instead of hand-rolling one.
+
 ## Task
 Author xUnit.v3 tests in the single new file
 `tests/Guardrails.Integration.Tests/MergeLockAndSettleTests.cs` (class name exactly
