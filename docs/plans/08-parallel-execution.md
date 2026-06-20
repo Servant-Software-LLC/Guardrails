@@ -993,7 +993,7 @@ re-open the task, cannot mark anything done. It honors the **verdict-from-files 
 `needs-human`). This keeps invariant 1 intact: the only thing a prompt is trusted to do here is
 *describe*, never *certify*. It also cannot burn the task's retry budget (the task is already terminal).
 
-**Decision flagged — auto-file the GH issue, or only draft it?** See **Decision 8** below. **Recommend:
+**Decision (PO-confirmed, §Decisions #8) — auto-file the GH issue, or only draft it?** **Resolved:
 draft-and-surface in `feedback.md` by default (auto-file OFF)**; auto-filing to a remote repo from an
 unattended run risks duplicate/spam issues, and the whole point of `needs-human` is that a human is
 about to look — let them confirm with one click. Auto-file is an **explicit opt-in** (default off).
@@ -1075,8 +1075,8 @@ the build guardrail's own clean step is the fix, not `-fdx` globally. Recommend 
 as the guard.
 
 **Decision 8 — AI triage on needs-human: auto-file the GH issue, or draft-and-surface only? (PO #7,
-the new feature in §9).** **Recommend: draft-and-surface in `feedback.md` by default; auto-file is an
-explicit opt-in, default OFF.** The tension the PO named: auto-filing a GH issue against the Guardrails
+the new feature in §9). — PO-CONFIRMED: draft-and-surface in `feedback.md` by default; auto-file is an
+explicit opt-in, default OFF (shipped in v1, gated behind a configured repo + token).** The tension the PO named: auto-filing a GH issue against the Guardrails
 repo aligns with "run long unattended" (the human comes back to a filed issue), but **auto-filing to a
 remote repo from an unattended run risks duplicates and spam** — the same tool limitation hit by N
 tasks across M runs files N×M near-identical issues with no human in the loop to dedupe. Since reaching
@@ -1084,8 +1084,9 @@ tasks across M runs files N×M near-identical issues with no human in the loop t
 (title+body) into `feedback.md` and let the human file it with one click. The opt-in
 (`triageAutoFile: true`, default `false`, gated behind a configured repo + token) is for users who
 genuinely want unattended filing and accept the dedupe risk. The triage itself is **advisory either
-way** — it never gates the task, which is already `needs-human` (§9, invariant 1 preserved). If the PO
-wants zero new remote surface in v1, ship draft-only and defer auto-file entirely to v2.
+way** — it never gates the task, which is already `needs-human` (§9, invariant 1 preserved). **PO chose
+draft-and-surface with the opt-in auto-file included in v1 (default off)** — so auto-file ships as the
+gated opt-in above (a `triageAutoFile: true` config behind a configured repo + token), not deferred to v2.
 
 ---
 
