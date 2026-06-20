@@ -1,17 +1,37 @@
-# catches: a thin OR permissive-aligned proof harness. Three failure modes this gate reddens:
+# catches: a thin OR permissive-aligned proof harness. Four failure modes this gate reddens:
 #          (a) the harness fails-to-compile (passing tests-fail-on-current-code vacuously) but never
 #              encodes the 27-row table - assert the distinctive permissive-trap globs are present and
 #              that >=27 InlineData rows exist;
 #          (b) the harness encodes the trap globs but asserts them with a PERMISSIVE expectation
 #              (row 1 src/Feat*/** vs src/OtherDir/Z.cs asserting true, etc.) so a naive permissive
-#              matcher PASSES the table. The old bare-"a false exists somewhere" clause did NOT close
-#              this: a table whose trap rows assert TRUE plus one unrelated false row passed it, and
-#              paired with a permissive WriteScope.cs in task 12, 03-matcher-tests-pass went green and
-#              the permissive matcher shipped. We now PIN each trap glob to a false InlineData row -
-#              the trap globs are exactly the §2.1 divergence rows whose CORRECT IsInScope is false but
-#              whose permissive (prefix/suffix-discarding) result is true, so pinning them false makes
-#              the table reject a permissive matcher (task 12's tests-pass then fails for it);
-#          (c) the fuzz harness is vacuous - assert BOTH §2.2 property method names exist (not the bare
+#              matcher PASSES the table.
+#          (c) THE 2ND-REVIEW BLOCKER (decoy-false-row attack, proven end-to-end): the OLD clause only
+#              required a trap glob and a `false` to co-occur in ONE InlineData(...) call. An author can
+#              pin each trap glob to a `false` row on a NON-discriminating path - e.g.
+#              InlineData("src/Feat*/**", "zzz/nope.cs", false) - where the path's first literal segment
+#              (zzz) mismatches so BOTH a correct AND a permissive matcher return false (they AGREE, so
+#              the row does not discriminate). The decoy table then passes the old gate, a permissive
+#              WriteScope.cs in task 12 passes 03-matcher-tests-pass, and a green write-scope CHECK ships
+#              over real out-of-scope writes - the keystone false-green this whole plan exists to prevent.
+#              CLOSURE: require each trap glob in its EXACT §2.1(d) DISCRIMINATING row - glob AND its
+#              canonical path AND `false`, all literal - so the row is one where the CORRECT matcher
+#              returns false but a permissive (prefix/suffix/second-*-discarding) matcher returns true.
+#              The four canonical discriminating rows (read from §2.1(d) of 08-parallel-execution.md):
+#                row  1: src/Feat*/**  vs  src/OtherDir/Z.cs   -> false (literal prefix Feat must match)
+#                row 19: src/*Tests/** vs  src/UnitTestsExtra/X.cs -> false (literal SUFFIX Tests at end)
+#                row 21: src/*-*.cs    vs  src/foobar.cs       -> false (literal - between the two *s)
+#                row 23: a/**/b/**     vs  a/x/c/y.cs          -> false (literal b between the two **s)
+#              Pinning these canonical paths (not any false-agreeing decoy path) is what makes the table
+#              REJECT a permissive matcher, so task 12's tests-pass then fails for a permissive WriteScope.
+#              (Behavioral alternative considered & rejected: a TEMP permissive WriteScope.cs stub +
+#              dotnet test asserting RED is the §2.1(e) milestone, but at guardrail-author time the test
+#              file is freshly written by an agent whose IsInScope/Overlaps CALL SHAPES are unknown, so a
+#              signature-mismatch COMPILE failure is indistinguishable from a genuine table-rejection -
+#              the gate's pass condition (non-zero exit) would itself false-green on a compile error the
+#              gate cannot prevent. The canonical-triple pin below is fully deterministic and read-only
+#              and closes the exact demonstrated decoy. Lead may revisit the behavioral gate if the
+#              authored call shape is later fixed.)
+#          (d) the fuzz harness is vacuous - assert BOTH §2.2 property method names exist (not the bare
 #              token "Overlaps"): MembershipImpliesOverlap AND OverlapsCompleteness.
 #          Scoped to the one file this task owns (grep-scope rule). This is the §2.1(e) "RED against a
 #          naive permissive matcher" milestone gate's structural backstop.
@@ -36,36 +56,43 @@ if ($inlineCount -lt 27) {
     exit 1
 }
 
-# (b) THE BLOCKER FIX: each permissive-trap glob must appear in an InlineData(...) row that asserts
-#     IsInScope == false. The trap glob's CANONICAL §2.1(d) row is a false row (Feat*->row 1,
-#     *Tests->row 19, *-*->row 21, a/**/b/**->row 23); their permissive result is true. A table that
-#     asserts these true (or omits the false row) would pass a permissive matcher - that is exactly the
-#     hole the reviewer gamed. Match an InlineData(...) call CONTAINING the trap glob AND ending in a
-#     false argument (allow $false / whitespace). A literal ')' inside a path would defeat [^)]* - none
-#     of the §2.1 paths contain one, and a trap row that genuinely needed one would simply have to be
-#     written without it; this stays deterministic and read-only.
-# Glob -> escaped-substring that must appear inside the trap row's InlineData literal.
-$trapRows = @{
-    'Feat*'     = 'Feat\*'
-    '*Tests'    = '\*Tests'
-    '*-*'       = '\*-\*'
-    'a/**/b/**' = 'a/\*\*/b/\*\*'
-}
+# (c) THE 2ND-REVIEW BLOCKER FIX: each permissive-trap glob must appear in its EXACT §2.1(d)
+#     DISCRIMINATING row - glob AND canonical path AND false, all literal, on a SINGLE non-commented
+#     line. A decoy-false-row on a non-discriminating path (e.g. "zzz/nope.cs") no longer satisfies the
+#     gate, because the canonical path is hard-required. Each canonical path is a literal with NO ')' in
+#     it, so [^)]* between the literals cannot leap an InlineData boundary. Comment-evasion is rejected:
+#     a line whose first non-whitespace is '//' does not count (a commented-out row is not an encoded
+#     test). We scan line-by-line so the canonical glob+path+false must all sit on ONE real InlineData
+#     line. Match is OrdinalIgnoreCase to tolerate the SegmentComparison-style casing the table uses.
+$lines = $text -split "`r?`n"
+
+# glob-label -> @(escaped-glob, escaped-canonical-path) ; both must appear, then a literal false, on the
+# SAME uncommented InlineData line.
+$canonical = @(
+    @{ Label = 'src/Feat*/** vs src/OtherDir/Z.cs (row 1)';        Glob = 'src/Feat\*/\*\*';   Path = 'src/OtherDir/Z\.cs' },
+    @{ Label = 'src/*Tests/** vs src/UnitTestsExtra/X.cs (row 19)'; Glob = 'src/\*Tests/\*\*';  Path = 'src/UnitTestsExtra/X\.cs' },
+    @{ Label = 'src/*-*.cs vs src/foobar.cs (row 21)';             Glob = 'src/\*-\*\.cs';     Path = 'src/foobar\.cs' },
+    @{ Label = 'a/**/b/** vs a/x/c/y.cs (row 23)';                 Glob = 'a/\*\*/b/\*\*';     Path = 'a/x/c/y\.cs' }
+)
+
 $notPinned = @()
-foreach ($glob in $trapRows.Keys) {
-    $escaped = $trapRows[$glob]
-    # InlineData( ...<trap glob>... , [$]?false )   on a single line, no ')' before the close.
-    $pattern = "InlineData\([^)]*$escaped[^)]*,\s*\`$?false\s*\)"
-    if ($text -notmatch $pattern) {
-        $notPinned += $glob
+foreach ($row in $canonical) {
+    # InlineData( ...<glob>... <path>... , false )  - glob before path (the §2.1(d) row order:
+    # scope glob first, then path), no ')' before the close, trailing false ($false tolerated).
+    $pattern = "InlineData\(\s*`"[^`")]*$($row.Glob)[^`")]*`"\s*,\s*`"[^`")]*$($row.Path)[^`")]*`"\s*,\s*\`$?false\s*\)"
+    $found = $false
+    foreach ($line in $lines) {
+        if ($line -match '^\s*//') { continue }      # comment-evasion: a commented row is not encoded
+        if ($line -match $pattern) { $found = $true; break }
     }
+    if (-not $found) { $notPinned += $row.Label }
 }
 if ($notPinned.Count -gt 0) {
-    Write-Output "WriteScopeMatcherTests does not pin trap glob(s) [$($notPinned -join ', ')] to a FALSE InlineData row - their §2.1(d) canonical expectation is IsInScope==false; without a false row a permissive (prefix/suffix-discarding) matcher passes the table. Add the canonical false row for each."
+    Write-Output ("WriteScopeMatcherTests does not pin the §2.1(d) DISCRIMINATING row(s): [" + ($notPinned -join '; ') + "]. Each trap glob must appear with its EXACT canonical path asserting IsInScope==false, on one uncommented InlineData line. A decoy-false-row on a non-discriminating path (where a correct AND a permissive matcher both return false) does NOT make the table reject a permissive matcher - the canonical path is what discriminates. Add the exact §2.1(d) rows: src/Feat*/** vs src/OtherDir/Z.cs; src/*Tests/** vs src/UnitTestsExtra/X.cs; src/*-*.cs vs src/foobar.cs; a/**/b/** vs a/x/c/y.cs - each ending in false.")
     exit 1
 }
 
-# (c) BOTH seeded fuzz properties must be real methods, not the bare token 'Overlaps'.
+# (d) BOTH seeded fuzz properties must be real methods, not the bare token 'Overlaps'.
 foreach ($prop in @('MembershipImpliesOverlap', 'OverlapsCompleteness')) {
     if ($text -notmatch $prop) {
         Write-Output "WriteScopeMatcherTests is missing the §2.2 fuzz property '$prop' - a 5-row/vacuous-fuzz harness must not pass the matcher milestone (both MembershipImpliesOverlap AND OverlapsCompleteness are required)"

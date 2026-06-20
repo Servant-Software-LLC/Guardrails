@@ -24,6 +24,13 @@ false-green gates - author them precisely:
   harness `git reset --hard preHead` (plan-branch HEAD == preHead, no merge commit), the task is
   needs-human, AND the B1 four-effect rollback holds: journaled needs-human (not Succeeded); NO fragment
   in `state.json`; `mergeSequence` NOT consumed; the user branch untouched.
+- **settle-ordering (B1 split-brain) — name this test method exactly `Fragment_Written_Before_Commit`:**
+  the fixed success order is (1) state-fragment merge → (2) git integration commit → (3) journal
+  `Succeeded` + consume `mergeSequence`. Pin that the state fragment is written BEFORE the git
+  integration commit (reversing this re-introduces the B1 split-brain), so a journal-before-commit /
+  commit-before-fragment implementation is REJECTED. (The scenarios-present guardrail greps for the
+  vocabulary `mergeSequence`, `fragment`, a needs-human term, and that exact method name, so the test
+  and the guardrail must agree.)
 
 These reference the not-yet-existing settle refactor + the new lock, so the project will not compile
 against current code - that is the intended "fails on current code" signal. Do NOT implement the settle

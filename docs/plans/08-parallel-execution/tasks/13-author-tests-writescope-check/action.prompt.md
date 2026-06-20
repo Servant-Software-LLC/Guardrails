@@ -19,12 +19,21 @@ check (`git diff --name-status <taskBase>..<HEAD>` membership against a declared
 - A **rename** presents as a paired **D + A** (no git `-M`); BOTH the old and new path must be in scope,
   else it fails.
 - A **deletion**'s path must be in scope.
-- **TDD test-exclusion (the triad replacement):** an implementation task whose `writeScope` EXCLUDES the
-  test files, editing a test file → the check FAILS.
+- **TDD test-exclusion (the triad replacement) — name this test method exactly `TestFileExcludedFromScope`:**
+  an implementation task whose `writeScope` EXCLUDES the test files, editing a test file → the check
+  FAILS. (The scenarios-present guardrail greps for that exact method name, so the test and the
+  guardrail must agree - a bare "test … scope" keyword is no longer sufficient.)
 - A task with **no** `writeScope` runs with **NO** check (the off-switch).
 - The check is READ-ONLY in the verdict path: assert it does not itself rewrite tracked files when it
-  passes. (The scoped revert on FAILURE is task 14's behaviour; if you assert it here, gate that
-  assertion so it only runs once the revert exists, or leave it to task 14's own tests.)
+  passes.
+- **Scoped-revert keeps in-scope WIP — name this test method exactly `ScopedRevert_KeepsInScopeWip`:**
+  after a scope-violating attempt (a diff that touches one IN-scope file AND one OUT-of-scope file),
+  the check's scoped revert restores ONLY the out-of-scope file to its `taskBase` content while the
+  in-scope file KEEPS its attempt content (the PO's "fix, don't restart"). This pins that an
+  over-reverting implementation (e.g. `git checkout <taskBase> -- .`) is REJECTED. The scoped revert is
+  implemented by task 14 (which makes this whole `WriteScopeCheckTests` suite pass without editing it),
+  so author the test here against the not-yet-existing `WriteScopeCheck`; do NOT gate or omit it. The
+  scenarios-present guardrail greps for that exact method name.
 
 These tests reference the not-yet-existing `WriteScopeCheck`, so the project will not compile against
 current code - that is the intended "fails on current code" signal. Do NOT implement the check - tests

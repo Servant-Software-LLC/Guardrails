@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=1a2896ccf82f926d81f68b48bf95842906c69e0c3e66e99418ddadc388dbbadb -->
+<!-- guardrails:graph v1 source-sha256=4bb247b4c06ba3676ee385b19574e4ceffb9a623162e5286e59859c097f5d15d -->
 
 ```mermaid
 flowchart TD
@@ -42,6 +42,9 @@ flowchart TD
   gr_04_deserialize_scheduler_begin_triad_teardown_2["03-seam-suite-still-green"]:::guardrail
   task_04_deserialize_scheduler_begin_triad_teardown --> gr_04_deserialize_scheduler_begin_triad_teardown_2
   gr_04_deserialize_scheduler_begin_triad_teardown_2 --> done_04_deserialize_scheduler_begin_triad_teardown
+  gr_04_deserialize_scheduler_begin_triad_teardown_3["04-exclusive-gate-removed-from-scheduler"]:::guardrail
+  task_04_deserialize_scheduler_begin_triad_teardown --> gr_04_deserialize_scheduler_begin_triad_teardown_3
+  gr_04_deserialize_scheduler_begin_triad_teardown_3 --> done_04_deserialize_scheduler_begin_triad_teardown
   done_04_deserialize_scheduler_begin_triad_teardown["04-deserialize-scheduler-begin-triad-teardown ✓ Finished"]:::done
   task_05_author_tests_git_worktree_lifecycle["05-author-tests-git-worktree-lifecycle"]:::task
   gr_05_author_tests_git_worktree_lifecycle_0["01-tests-fail-on-current-code"]:::guardrail
@@ -260,6 +263,9 @@ flowchart TD
   gr_26_implement_ai_merge_worker_2["03-tests-untouched"]:::guardrail
   task_26_implement_ai_merge_worker --> gr_26_implement_ai_merge_worker_2
   gr_26_implement_ai_merge_worker_2 --> done_26_implement_ai_merge_worker
+  gr_26_implement_ai_merge_worker_3["04-deterministic-gates-present"]:::guardrail
+  task_26_implement_ai_merge_worker --> gr_26_implement_ai_merge_worker_3
+  gr_26_implement_ai_merge_worker_3 --> done_26_implement_ai_merge_worker
   done_26_implement_ai_merge_worker["26-implement-ai-merge-worker ✓ Finished"]:::done
   task_27_update_plan_breakdown_skill["27-update-plan-breakdown-skill"]:::task
   gr_27_update_plan_breakdown_skill_0["01-skill-emits-new-mechanisms"]:::guardrail

@@ -15,10 +15,11 @@ if ($text -notmatch 'IReVerifier') {
     Write-Output "ReVerifierSeamTests does not reference IReVerifier - the seam under test is missing"
     exit 1
 }
-# The attempt-decoupling negative: the test must reference the GUARDRAILS_ACTION_* attempt env to assert
-# it is absent/empty in the re-verify context. Without this, the attempt-decoupling point is unverified.
-if ($text -notmatch 'GUARDRAILS_ACTION_') {
-    Write-Output "ReVerifierSeamTests does not reference GUARDRAILS_ACTION_* - the attempt-decoupling negative (the re-verify seam must NOT read the attempt action env) is not encoded"
+# The attempt-decoupling negative, pinned to a NAMED method (a bare 'GUARDRAILS_ACTION_' string is
+# satisfied by a comment - the 2nd review proved that gap). The test method must exist and assert the
+# re-verify context does NOT expose GUARDRAILS_ACTION_STDOUT/_STDERR/_RESULT.
+if ($text -notmatch 'ReVerify_DoesNotReadActionEnv') {
+    Write-Output "ReVerifierSeamTests is missing the named method 'ReVerify_DoesNotReadActionEnv' - the attempt-decoupling negative (the re-verify seam must NOT read the attempt action env GUARDRAILS_ACTION_STDOUT/_STDERR/_RESULT) is not pinned structurally. A bare 'GUARDRAILS_ACTION_' string is satisfied by a comment."
     exit 1
 }
 exit 0

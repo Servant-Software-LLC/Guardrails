@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=1a2896ccf82f926d81f68b48bf95842906c69e0c3e66e99418ddadc388dbbadb -->
+<!-- guardrails:graph v1 source-sha256=4bb247b4c06ba3676ee385b19574e4ceffb9a623162e5286e59859c097f5d15d -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -73,6 +73,9 @@
   gr_04_deserialize_scheduler_begin_triad_teardown_2["03-seam-suite-still-green"]:::guardrail
   task_04_deserialize_scheduler_begin_triad_teardown --> gr_04_deserialize_scheduler_begin_triad_teardown_2
   gr_04_deserialize_scheduler_begin_triad_teardown_2 --> done_04_deserialize_scheduler_begin_triad_teardown
+  gr_04_deserialize_scheduler_begin_triad_teardown_3["04-exclusive-gate-removed-from-scheduler"]:::guardrail
+  task_04_deserialize_scheduler_begin_triad_teardown --> gr_04_deserialize_scheduler_begin_triad_teardown_3
+  gr_04_deserialize_scheduler_begin_triad_teardown_3 --> done_04_deserialize_scheduler_begin_triad_teardown
   done_04_deserialize_scheduler_begin_triad_teardown["04-deserialize-scheduler-begin-triad-teardown ✓ Finished"]:::done
   task_05_author_tests_git_worktree_lifecycle["05-author-tests-git-worktree-lifecycle"]:::task
   gr_05_author_tests_git_worktree_lifecycle_0["01-tests-fail-on-current-code"]:::guardrail
@@ -291,6 +294,9 @@
   gr_26_implement_ai_merge_worker_2["03-tests-untouched"]:::guardrail
   task_26_implement_ai_merge_worker --> gr_26_implement_ai_merge_worker_2
   gr_26_implement_ai_merge_worker_2 --> done_26_implement_ai_merge_worker
+  gr_26_implement_ai_merge_worker_3["04-deterministic-gates-present"]:::guardrail
+  task_26_implement_ai_merge_worker --> gr_26_implement_ai_merge_worker_3
+  gr_26_implement_ai_merge_worker_3 --> done_26_implement_ai_merge_worker
   done_26_implement_ai_merge_worker["26-implement-ai-merge-worker ✓ Finished"]:::done
   task_27_update_plan_breakdown_skill["27-update-plan-breakdown-skill"]:::task
   gr_27_update_plan_breakdown_skill_0["01-skill-emits-new-mechanisms"]:::guardrail
@@ -376,6 +382,7 @@
   click gr_04_deserialize_scheduler_begin_triad_teardown_0 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/01-restore-seam-removed-from-executor.ps1" "01-restore-seam-removed-from-executor" _blank
   click gr_04_deserialize_scheduler_begin_triad_teardown_1 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/02-core-builds.ps1" "02-core-builds" _blank
   click gr_04_deserialize_scheduler_begin_triad_teardown_2 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/03-seam-suite-still-green.ps1" "03-seam-suite-still-green" _blank
+  click gr_04_deserialize_scheduler_begin_triad_teardown_3 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/04-exclusive-gate-removed-from-scheduler.ps1" "04-exclusive-gate-removed-from-scheduler" _blank
   click task_05_author_tests_git_worktree_lifecycle href "tasks/05-author-tests-git-worktree-lifecycle/" "05-author-tests-git-worktree-lifecycle" _blank
   click gr_05_author_tests_git_worktree_lifecycle_0 href "tasks/05-author-tests-git-worktree-lifecycle/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click gr_05_author_tests_git_worktree_lifecycle_1 href "tasks/05-author-tests-git-worktree-lifecycle/guardrails/02-lifecycle-scenarios-present.ps1" "02-lifecycle-scenarios-present" _blank
@@ -456,6 +463,7 @@
   click gr_26_implement_ai_merge_worker_0 href "tasks/26-implement-ai-merge-worker/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click gr_26_implement_ai_merge_worker_1 href "tasks/26-implement-ai-merge-worker/guardrails/02-ai-merge-tests-pass.ps1" "02-ai-merge-tests-pass" _blank
   click gr_26_implement_ai_merge_worker_2 href "tasks/26-implement-ai-merge-worker/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
+  click gr_26_implement_ai_merge_worker_3 href "tasks/26-implement-ai-merge-worker/guardrails/04-deterministic-gates-present.ps1" "04-deterministic-gates-present" _blank
   click task_27_update_plan_breakdown_skill href "tasks/27-update-plan-breakdown-skill/" "27-update-plan-breakdown-skill" _blank
   click gr_27_update_plan_breakdown_skill_0 href "tasks/27-update-plan-breakdown-skill/guardrails/01-skill-emits-new-mechanisms.ps1" "01-skill-emits-new-mechanisms" _blank
   click gr_27_update_plan_breakdown_skill_1 href "tasks/27-update-plan-breakdown-skill/guardrails/02-worked-example-uses-writescope-not-triad.ps1" "02-worked-example-uses-writescope-not-triad" _blank
