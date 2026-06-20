@@ -1,0 +1,5 @@
+{
+  "description": "Implement resume reconciliation (trailer-on-every-integrated-commit, integrated set = trailer-bearing commits reachable from the plan-branch TIP only - W-1; branch -D guardrails/<runId>/* before any trailer read) and the reset --hard <taskBase> + git clean -fd retry (taskBase captured at assignment, distinct from preHead) - making ResumeAndResetRetryTests pass without editing them",
+  "stableId": "p08i20",
+  "dependsOn": ["19-author-tests-resume-and-reset-retry"]
+}

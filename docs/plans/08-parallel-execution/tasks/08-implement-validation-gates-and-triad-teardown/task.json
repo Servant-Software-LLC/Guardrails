@@ -1,0 +1,5 @@
+{
+  "description": "Implement M2's validation gates (GR2015 not-git, GR2016 MAX_PATH, GR2017 missing gate, GR2018 empty integration set) and complete triad teardown part 2: delete WorkspaceLock + the exclusive admission gate, remove TaskNode.Exclusive/CaptureHashes/RestoreOnRetry, delete the two triad validators, retire the GR2013/GR2014 triad meanings, and add TaskNode.IntegrationGate - making ParallelValidationGateTests pass without editing them",
+  "stableId": "p08i08",
+  "dependsOn": ["06-implement-git-worktree-provider-and-reuse-topology", "07-author-tests-validation-gates-and-triad-removal"]
+}

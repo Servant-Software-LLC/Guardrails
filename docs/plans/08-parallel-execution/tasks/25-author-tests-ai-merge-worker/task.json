@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for the AI-merge worker (byte producer behind IPromptRunner via the NEW GUARDRAILS_MERGE_BASE/_OURS/_THEIRS/_OUT on-disk env contract; PromptResult.IsError/exit code NEVER a verdict): a fake AI runner writes canned merged bytes to _OUT and the union settles via re-verify; an out-of-bounds write is detected, discarded (reset --hard), needs-human; a left marker is detected, needs-human; budget exhausted after 1 retry → needs-human; and the load-bearing B-3 gate - an AI-deleted colliding-sibling hunk is caught because the colliding sibling's FULL guardrail set re-runs unconditionally",
+  "stableId": "p08t25",
+  "dependsOn": ["22-implement-merge-on-success", "24-implement-guardrail-scope-field"],
+  "captureHashes": ["tests/Guardrails.Integration.Tests/AiMergeWorkerTests.cs"],
+  "restoreOnRetry": true
+}

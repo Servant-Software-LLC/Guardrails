@@ -1,0 +1,5 @@
+{
+  "description": "Update the guardrails-domain-knowledge skill to reflect plan 08: worktree isolation + reuse/chaining, the write-scope CHECK (read-only), FF vs re-verified union integration, the AI-merge byte-producer + deterministic re-verify, the integration-guardrail set + terminal gate, and the triad removal",
+  "stableId": "p08i29",
+  "dependsOn": ["26-implement-ai-merge-worker"]
+}

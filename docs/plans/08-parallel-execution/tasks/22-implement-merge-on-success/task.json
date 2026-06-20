@@ -1,0 +1,5 @@
+{
+  "description": "Implement --merge-on-success (CLI flag + RunConfig.MergeOnSuccess + the end-of-run plan-branch-into-user-branch delivery hook in Scheduler, ff-only when possible else a re-verified real merge, AI-merge withheld - a conflict / failed re-verify / dirty user tree halts to needs-human with the plan branch intact) - making MergeOnSuccessTests pass without editing them",
+  "stableId": "p08i22",
+  "dependsOn": ["20-implement-resume-reconciliation-and-reset-retry", "21-author-tests-merge-on-success"]
+}

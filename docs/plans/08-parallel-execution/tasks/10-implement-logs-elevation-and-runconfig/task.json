@@ -1,0 +1,5 @@
+{
+  "description": "Implement M2's logs elevation (move per-attempt logs to logs/<runId>/<task-id>/attempt-N/, a sibling of state/, and resolve GUARDRAILS_LOG_DIR there) and the RunConfig additions (maxParallelism default 3, worktreeRoot, runOnCurrentBranch, mergeOnSuccess) - making LogsAndRunConfigTests pass without editing them",
+  "stableId": "p08i10",
+  "dependsOn": ["06-implement-git-worktree-provider-and-reuse-topology", "09-author-tests-logs-elevation-and-runconfig"]
+}

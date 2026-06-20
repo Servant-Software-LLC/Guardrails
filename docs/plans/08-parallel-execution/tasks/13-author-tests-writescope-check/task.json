@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for the WriteScopeCheck built-in: an out-of-scope edit fails (deterministic, read-only git diff membership), a rename = paired D+A (both paths in scope), a deletion's path must be in scope, an implementation scope that excludes test files catches an edit to a test file (the TDD triad replacement), and an absent writeScope runs no check",
+  "stableId": "p08t13",
+  "dependsOn": ["12-implement-writescope-matcher"],
+  "captureHashes": ["tests/Guardrails.Integration.Tests/WriteScopeCheckTests.cs"],
+  "restoreOnRetry": true
+}

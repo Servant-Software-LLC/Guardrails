@@ -1,0 +1,6 @@
+{
+  "description": "Terminal integration gate: the whole Guardrails.sln builds in Release in solution context after all harness milestones (M1-M5) land - catching a project that builds alone but breaks the solution",
+  "stableId": "p08g30",
+  "dependsOn": ["26-implement-ai-merge-worker"],
+  "integrationGate": true
+}

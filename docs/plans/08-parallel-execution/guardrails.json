@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "maxParallelism": 3,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 2400,
+  "guardrailMode": "failFast",
+  "workspace": "../../..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)", "Bash(git *)"],
+      "maxTurns": 80,
+      "model": null,
+      "extraArgs": [],
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 20
+      }
+    }
+  }
+}

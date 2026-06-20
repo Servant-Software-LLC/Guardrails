@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for M2's logs elevation (per-attempt logs resolve under logs/<runId>/<task-id>/attempt-N/, a sibling of state/) and the RunConfig additions (maxParallelism default 3, worktreeRoot, runOnCurrentBranch, mergeOnSuccess) - exercised through the public config-load + log-path-resolution surface",
+  "stableId": "p08t09",
+  "dependsOn": ["04-deserialize-scheduler-begin-triad-teardown"],
+  "captureHashes": ["tests/Guardrails.Core.Tests/LogsAndRunConfigTests.cs"],
+  "restoreOnRetry": true
+}

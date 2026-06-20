@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for the real GitWorktreeProvider lifecycle: plan branch guardrails/<plan-name> off the user HEAD, a linear chain reuses ONE segment worktree, a fan-out forks-the-rest off the producer's RECORDED sha (W-2, not the inheritor's advanced tip), worktrees discarded/pruned, and the user's branch left untouched",
+  "stableId": "p08t05",
+  "dependsOn": ["04-deserialize-scheduler-begin-triad-teardown"],
+  "captureHashes": ["tests/Guardrails.Integration.Tests/GitWorktreeLifecycleTests.cs"],
+  "restoreOnRetry": true
+}

@@ -1,0 +1,5 @@
+{
+  "description": "Implement Execution/WriteScope.cs (IsInScope / Overlaps / segment-matcher) fresh to the §2.1 spec - real segment-glob parsing with literal prefix/suffix, multiple-* per segment, bounded mid-**, leading **/ and *-matches-empty - so the full 27-row truth table and both fuzz properties pass (and the suite that was red against the naive matcher goes green), without editing the tests",
+  "stableId": "p08i12",
+  "dependsOn": ["11-author-tests-writescope-matcher-truth-table-and-fuzz"]
+}

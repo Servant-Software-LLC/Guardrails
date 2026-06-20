@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for resume reconciliation (resume-after-FF-before-journal reads the task succeeded purely from the plain FF'd commit's trailer; resume-ignores-stale-segment-ref - a trailer on a surviving segment ref that never FF'd is NOT authoritative, branch -D runs before any trailer read - W-1) and reset-retry (retry-preserves-upstream-commits: reset --hard <taskBase> keeps the upstream's committed file, taskBase ≠ preHead; -fd keeps ignored build caches with no stale-artifact false-green)",
+  "stableId": "p08t19",
+  "dependsOn": ["18-implement-merge-lock-and-ff-and-union-settle"],
+  "captureHashes": ["tests/Guardrails.Integration.Tests/ResumeAndResetRetryTests.cs"],
+  "restoreOnRetry": true
+}

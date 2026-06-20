@@ -1,0 +1,5 @@
+{
+  "description": "Update the guardrails-review skill to add the plan-08 probes: vacuous/over-broad writeScope (BLOCKER/WEAK), scope-intent mismatch (WEAK), independent-sibling scope OVERLAP (WEAK), implementation-scope-includes-its-test-files (BLOCKER), missing terminal integrationGate (BLOCKER), and thin gate / no integration-scoped guardrail (BLOCKER)",
+  "stableId": "p08i28",
+  "dependsOn": ["26-implement-ai-merge-worker"]
+}

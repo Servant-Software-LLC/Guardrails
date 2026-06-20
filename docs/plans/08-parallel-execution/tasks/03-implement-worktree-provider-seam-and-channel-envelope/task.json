@@ -1,0 +1,5 @@
+{
+  "description": "Implement the IWorktreeProvider seam + WorktreeHandle/IntegrationHandle + FakeWorktreeProvider, change ITaskExecutor.ExecuteAsync to take the assigned WorktreeHandle, and replace the bare-TaskNode scheduler channel with a per-task envelope - making WorktreeProviderSeamTests pass without editing them",
+  "stableId": "p08i03",
+  "dependsOn": ["02-author-tests-worktree-provider-seam"]
+}

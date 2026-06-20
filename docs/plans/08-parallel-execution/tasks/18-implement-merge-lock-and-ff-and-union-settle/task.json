@@ -1,0 +1,5 @@
+{
+  "description": "Implement the net-new SemaphoreSlim(1,1) serialize-merges lock in Scheduler, the FF-integration (free, trailer on the plain commit), the non-FF union re-verify (via IReVerifier on the merged bytes) with the B1 atomic settle (fragment → git commit → journal+mergeSequence) and the reset --hard preHead universal rollback, plus the terminal-gate re-verify on the final HEAD - making MergeLockAndSettleTests pass without editing them",
+  "stableId": "p08i18",
+  "dependsOn": ["17-author-tests-merge-lock-and-ff-and-union-settle"]
+}

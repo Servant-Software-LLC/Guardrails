@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for M2's validation gates (GR2015 non-git workspace, GR2017 missing integrationGate sink, GR2018 empty integration set, GR2016 MAX_PATH warning) and the triad teardown (the two triad validators gone, GR2013/GR2014 no longer meaning the triad checks) - exercised through the public PlanValidator path so they compile against current code",
+  "stableId": "p08t07",
+  "dependsOn": ["04-deserialize-scheduler-begin-triad-teardown"],
+  "captureHashes": ["tests/Guardrails.Core.Tests/ParallelValidationGateTests.cs"],
+  "restoreOnRetry": true
+}

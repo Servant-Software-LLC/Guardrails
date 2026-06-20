@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for the per-guardrail scope field (scope: \"integration\" | \"local\", default local) parsed from the deterministic sidecar key and the prompt frontmatter, and the integration-guardrail-set filter on IReVerifier (an integration-scoped guardrail re-runs at every union; a distant non-colliding task's local guardrail re-runs only if the merge touched its files; a colliding sibling's local guardrail re-runs regardless - the B-3 split; the terminal gate runs the same integration set)",
+  "stableId": "p08t23",
+  "dependsOn": ["16-implement-reverifier-seam"],
+  "captureHashes": ["tests/Guardrails.Core.Tests/GuardrailScopeTests.cs"],
+  "restoreOnRetry": true
+}

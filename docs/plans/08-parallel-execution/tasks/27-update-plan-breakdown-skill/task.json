@@ -1,0 +1,5 @@
+{
+  "description": "Update the plan-breakdown skill to emit writeScope per task (TDD test-exclusion; OMIT for un-scopable tasks; no vacuous **), scope: \"integration\" on the build/test guardrails, the terminal integrationGate sink, and to STOP emitting the captureHashes/restoreOnRetry/exclusive triad",
+  "stableId": "p08i27",
+  "dependsOn": ["26-implement-ai-merge-worker"]
+}
