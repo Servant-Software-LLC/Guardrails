@@ -24,15 +24,17 @@ public sealed class PlanValidator
     {
         var diagnostics = new List<Diagnostic>();
 
+        ValidateWorkspaceIsGitRoot(plan, diagnostics);
+        ValidateMaxPathRisk(plan, diagnostics);
         ValidateTaskIdsUnique(plan, diagnostics);
         ValidateStableIdsUnique(plan, diagnostics);
         ValidateStableIdFormat(plan, diagnostics);
         ValidateCostCap(plan, diagnostics);
-        ValidateCaptureHashPaths(plan, diagnostics);
-        ValidateRestoreOnRetry(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
+        ValidateIntegrationGatePresent(plan, diagnostics);
+        ValidateIntegrationGateNonEmpty(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
@@ -125,50 +127,144 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// Every <c>captureHashes</c> entry (SSOT §3.1) must be a safe workspace-relative path. The
-    /// harness resolves each as <c>Path.GetFullPath(Path.Combine(workspace, entry))</c> and then
-    /// hashes/reads the file, so an absolute path, a drive- or root-rooted path, or a path that
-    /// normalizes outside the workspace (e.g. <c>../../etc/passwd</c>) would reach outside the
-    /// workspace — a GR2013 ERROR naming the offending task and path. Resolution uses the plan's
-    /// configured workspace root (the action's per-task <c>workingDirectory</c> is the rare override
-    /// that only ever narrows the cwd; the workspace root is the canonical containment boundary).
+    /// The plan workspace must reside within a git repository (plan 08 M2, SSOT §1). The harness
+    /// creates per-run worktrees (plan branch, segment worktrees) which require a git repository
+    /// to exist. A workspace completely outside any git repository — no <c>.git</c> in the directory
+    /// or any ancestor — cannot host worktrees → GR2015 ERROR. Only fires when <c>worktreeRoot</c>
+    /// is configured (worktrees are only needed when parallel-worktree execution is requested).
+    /// Skipped when the workspace directory does not yet exist (other structural errors are caught
+    /// by the loader).
     /// </summary>
-    private static void ValidateCaptureHashPaths(PlanDefinition plan, List<Diagnostic> diagnostics)
+    private static void ValidateWorkspaceIsGitRoot(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
-        foreach (TaskNode task in plan.Tasks)
+        if (plan.Config.WorktreeRoot is null)
         {
-            foreach (string entry in task.CaptureHashes)
+            return;
+        }
+
+        string workspace = plan.Workspace;
+        if (!Directory.Exists(workspace))
+        {
+            return;
+        }
+
+        try
+        {
+            if (!IsInsideGitRepo(workspace))
             {
-                // The same containment boundary the harness's restore/snapshot code asserts against
-                // (WorkspaceContainment) — resolved against the plan workspace, never a per-task cwd.
-                if (WorkspaceContainment.Escapes(plan.Workspace, entry))
-                {
-                    diagnostics.Add(Error(DiagnosticCodes.CaptureHashEscapesWorkspace, task.Directory,
-                        $"Task '{task.Id}' declares captureHashes entry '{entry}', which is not a " +
-                        "workspace-relative path: it is absolute/rooted or escapes the workspace root. " +
-                        "captureHashes paths must stay inside the workspace."));
-                }
+                diagnostics.Add(Error(DiagnosticCodes.WorkspaceNotGitRoot, workspace,
+                    $"Workspace '{workspace}' is not a git repository and is not inside one. " +
+                    "The harness requires a git repository to create per-run worktrees (plan branch, " +
+                    "segment worktrees). Run 'git init' in the workspace or point it at a path inside " +
+                    "an existing git repository (SSOT §1, plan 08 §1)."));
             }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Cannot probe the directory ancestry — skip GR2015 rather than a false positive.
+        }
+    }
+
+    private static bool IsInsideGitRepo(string directory)
+    {
+        DirectoryInfo? dir = new DirectoryInfo(directory);
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, ".git")) ||
+                File.Exists(Path.Combine(dir.FullName, ".git")))
+            {
+                return true;
+            }
+
+            dir = dir.Parent;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A configured <c>worktreeRoot</c> whose path length is large risks exceeding the Windows
+    /// MAX_PATH limit of 260 characters when combined with harness-managed suffixes (segment
+    /// worktrees, task subdirectories, guardrail files). Windows-only; POSIX has no 260-char limit.
+    /// Emits GR2016 WARNING (not error — the plan may work if <c>core.longpaths</c> is enabled).
+    /// </summary>
+    private static void ValidateMaxPathRisk(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string? worktreeRoot = plan.Config.WorktreeRoot;
+        if (worktreeRoot is null)
+        {
+            return;
+        }
+
+        // Harness-managed suffix: /<planName>/<segment>/tasks/<taskId>/guardrails/<file> — ~60+ chars.
+        // A worktreeRoot longer than 200 chars puts typical paths at risk of exceeding MAX_PATH (260).
+        if (worktreeRoot.Length > 200)
+        {
+            diagnostics.Add(Warning(DiagnosticCodes.MaxPathRisk, plan.PlanDirectory,
+                $"worktreeRoot '{worktreeRoot}' is {worktreeRoot.Length} characters long; combined " +
+                "with harness-managed suffixes (segment worktrees, task subdirs, guardrail files) " +
+                "this risks exceeding the Windows MAX_PATH limit (260 chars). " +
+                "Mitigate with: git config --system core.longpaths true (SSOT §2, plan 08 §1)."));
         }
     }
 
     /// <summary>
-    /// <c>restoreOnRetry: true</c> (SSOT §3.1 / issue #51) acts ONLY on a task's <c>captureHashes</c>
-    /// files — it snapshots their authored bytes and restores them before a downstream retry. Opting
-    /// in with an empty/absent <c>captureHashes</c> leaves it nothing to act on, almost certainly an
-    /// authoring slip — a GR2014 ERROR naming the task.
+    /// A plan with a parallel topology — ≥2 leaf tasks (tasks with no dependents) or any fan-in
+    /// task (a task with ≥2 upstreams) — must declare exactly one <c>integrationGate:true</c> sink
+    /// (plan 08 M2, SSOT §3.3). The terminal gate is the whole-repo soundness boundary; omitting it
+    /// leaves parallel branches unverified at the integration level → GR2017 ERROR.
     /// </summary>
-    private static void ValidateRestoreOnRetry(PlanDefinition plan, List<Diagnostic> diagnostics)
+    private static void ValidateIntegrationGatePresent(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (plan.Tasks.Any(t => t.IntegrationGate))
+        {
+            return;
+        }
+
+        var dependedOn = new HashSet<string>(plan.Tasks.SelectMany(t => t.DependsOn), StringComparer.Ordinal);
+        int leafCount = plan.Tasks.Count(t => !dependedOn.Contains(t.Id));
+        bool hasMultipleLeaves = leafCount >= 2;
+        bool hasFanIn = plan.Tasks.Any(t => t.DependsOn.Count >= 2);
+
+        if (hasMultipleLeaves || hasFanIn)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.MissingIntegrationGate, plan.PlanDirectory,
+                "Plan has a parallel topology (≥2 leaf tasks or a fan-in task) but no " +
+                "integrationGate:true sink. The terminal gate is the whole-repo soundness boundary " +
+                "for parallel execution; add a final task with integrationGate:true and at least one " +
+                "guardrail declaring scope:\"integration\" (SSOT §3.3, plan 08 §3)."));
+        }
+    }
+
+    /// <summary>
+    /// Every <c>integrationGate:true</c> sink must carry at least one guardrail with
+    /// <c>scope:"integration"</c> (plan 08 M2, SSOT §3.3/§4.3). An empty integration-guardrail
+    /// set provides no whole-repo soundness check — a gate that verifies nothing → GR2018 ERROR.
+    /// </summary>
+    private static void ValidateIntegrationGateNonEmpty(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
         foreach (TaskNode task in plan.Tasks)
         {
-            if (task.RestoreOnRetry && task.CaptureHashes.Count == 0)
+            if (!task.IntegrationGate)
             {
-                diagnostics.Add(Error(DiagnosticCodes.RestoreOnRetryWithoutCaptureHashes, task.Directory,
-                    $"Task '{task.Id}' declares restoreOnRetry: true but has no captureHashes. " +
-                    "restoreOnRetry restores the bytes of captured files before a downstream retry, " +
-                    "so it requires a non-empty captureHashes to act on. Add the file(s) to " +
-                    "captureHashes, or remove restoreOnRetry."));
+                continue;
+            }
+
+            bool hasIntegrationGuardrail = task.Guardrails.Any(g =>
+                string.Equals(g.Scope, "integration", StringComparison.OrdinalIgnoreCase));
+
+            if (!hasIntegrationGuardrail)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.IntegrationGateEmpty, task.Directory,
+                    $"Task '{task.Id}' is an integrationGate:true sink but has no guardrail with " +
+                    "scope:\"integration\". The terminal gate must carry at least one integration-scoped " +
+                    "guardrail to be a sound soundness boundary. Add a guardrail sidecar declaring " +
+                    "scope:\"integration\" (SSOT §3.3/§4.3, plan 08 §3)."));
             }
         }
     }

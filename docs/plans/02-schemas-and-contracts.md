@@ -25,8 +25,9 @@ plan-name/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
 │   ├── run.json                 # run journal — harness-owned, gitignored (§7)
-│   ├── merge-conflicts.log      # harness-owned, gitignored (§6.3)
-│   └── logs/<task-id>/attempt-N/   # per-attempt artifacts (§8)
+│   └── merge-conflicts.log      # harness-owned, gitignored (§6.3)
+├── logs/
+│   └── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
 └── tasks/
     └── <NN-verb-object>/        # task id = folder name, kebab-case, NN = topological hint
         ├── task.json            # task manifest (§3)
@@ -40,6 +41,29 @@ plan-name/
 Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 `dependsOn` is the truth for ordering.
 
+**Workspace must be a git repository top-level.** Parallel execution never writes the user's
+checkout. At run start the harness creates a **plan branch** `guardrails/<plan-name>` off the
+user's current HEAD and a **harness-owned integration worktree** on it; this is the sole merge
+target and the terminal-gate site for the run. Each task runs in a **segment worktree**: a linear
+chain **reuses one** segment worktree passed along the chain; a fan-out **inherits one** chain and
+**forks the rest** off the producer's committed tip; a fan-in **forks one** upstream and merges the
+others in. `runId` lives in worktree directory names and commit trailers, **not** the branch name.
+`guardrails validate` and a run pre-flight reject a non-git-top-level workspace (**`GR2015`**, a
+FRESH code — the old plan-07 draft cited `GR2013`, which is **taken on `master`** by the live triad
+`CaptureHashEscapesWorkspace`). The harness creates all worktrees under a **harness-owned root
+outside the workspace** — default `<temp>/guardrails-worktrees/<workspace-hash>/<runId>/`,
+overridable via `guardrails.json: worktreeRoot`. Worktrees + the plan branch are runtime state
+(wiped by `--fresh`, pruned on resume; the integration worktree is reattached, not pruned). The
+user's own working tree and branch are **read-only for the entire run**; the only optional write to
+the user's branch is `--merge-on-success` (§5.3). A `runOnCurrentBranch` opt-in makes the plan
+branch the current branch but still integrates via a harness-owned worktree, never the user's live
+checkout.
+
+The per-attempt log tree moves out of `state/` to a top-level `logs/` sibling, **divided by
+`runId`** (`logs/<runId>/<task-id>/attempt-N/`), so logs are findable and a re-run's logs never
+interleave with a prior run's. `state/` holds only harness-owned mutable run state; `logs/` is
+append-only audit. `--fresh` clears `logs/` for the abandoned run.
+
 ---
 
 ## 2. `guardrails.json` (run configuration)
@@ -47,12 +71,15 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 ```jsonc
 {
   "version": 1,                       // required; schema version of this file
-  "maxParallelism": 4,                // default 4
+  "maxParallelism": 3,                // default 3 in worktree mode (chain-reuse keeps a linear chain to ONE tree)
   "defaultRetries": 2,                // retries AFTER the first attempt; default 2
   "defaultTimeoutSeconds": 1800,      // per-attempt ceiling when nothing narrower applies
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
+  "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/guardrails-worktrees/<hash>/<runId>/
+  "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
+  "mergeOnSuccess": false,            // OPTIONAL; if true AND the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here)
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
     ".ps1": ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{script}", "{args}"]
   },
@@ -92,6 +119,24 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   its transitive dependents `blocked`, via the same halt path as any other needs-human task. An
   attempt already in flight is never interrupted — the cap gates new launches, not running work.
   Absent ⇒ no cap. A present non-positive value is a validation error (GR2012).
+- `worktreeRoot` overrides where the integration + segment worktrees are created. Each task's child
+  processes run with cwd = its segment worktree; the integration worktree (plan branch
+  `guardrails/<plan-name>`) is written only by the harness's integration (§5.3).
+- `runOnCurrentBranch` (default `false`) makes the plan branch the current branch instead of a fresh
+  `guardrails/<plan-name>`; the harness still integrates via a harness-owned worktree, never the
+  user's live checkout. **Pre-flight:** if `runOnCurrentBranch` is set AND the current branch has
+  uncommitted changes, the harness PROMPTS for explicit permission at run start (interactive) or
+  REFUSES and halts (non-interactive, unless an explicit `--yes`/auto-confirm is given) — because the
+  end-of-run integration merges back into the current branch and a dirty tree invites merge
+  complications. **GR2016** (warning): a deep `worktreeRoot` + deep source tree risks exceeding
+  Windows MAX_PATH (260 chars); document `core.longpaths` as the mitigation.
+- `mergeOnSuccess` (default `false`; CLI `--merge-on-success` overrides) opts into end-of-run
+  delivery of the plan branch into the user's original branch. **AI-merge is withheld at this
+  boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts to `needs-human`
+  with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the user's commits.
+- `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
+  peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
+  disk-constrained box; raise on a fast/large `worktreeRoot` volume.
 
 ## 3. `tasks/<id>/task.json`
 
@@ -101,18 +146,14 @@ Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
   "stableId": "k3f9a1",        // optional; stable task identity for the regeneration merge (§11)
                                //   format ^[a-z0-9][a-z0-9._-]*$ (GR2011); unique (GR2010)
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
+  "integrationGate": false,    // optional, default false; marks a terminal whole-repo integration gate (§3.3)
+  "writeScope": ["src/Foo/"],  // optional; the deterministic READ-ONLY write-scope check (§3.4). Absent ⇒ NO check.
+                               //   every path the task's diff (git diff --name-status <taskBase>..<HEAD>)
+                               //   adds/modifies/deletes/renames must be IN scope, or the task fails and
+                               //   retries with feedback. The check NEVER reverts. Renames = paired D+A
+                               //   (both in scope). A vacuous "**" / bare top-level dir is a granularity smell.
   "retries": 3,                // optional; overrides defaultRetries
   "timeoutSeconds": 3600,      // optional; whole-attempt ceiling (action + guardrails)
-  "exclusive": null,           // optional; null/absent = default by action kind:
-                               //   prompt action  → true  (runs alone — sole workspace access)
-                               //   exe/script     → false
-  "captureHashes": [           // optional; workspace-relative files whose SHA-256 the HARNESS
-    "tests/MyProj/FooTests.cs" //   records into state after a successful action (§3.1) — the
-  ],                           //   agent never computes a hash. Missing file ⇒ attempt fails.
-  "restoreOnRetry": false,     // optional, default false; opt-in to restore-on-retry for the
-                               //   captureHashes files above (§3.1). true ⇒ also snapshot their
-                               //   authored bytes and restore them before a downstream retry.
-                               //   true with empty/absent captureHashes = validation error (GR2014).
   "action": {                  // OPTIONAL — omit to use convention discovery:
                                //   exactly ONE file named action.* in the task folder;
                                //   zero or multiple action.* files = validation error
@@ -143,93 +184,68 @@ a real id can never collide with the merge's synthetic `folder:<name>` identity 
 disallowed). `validate` does not *require* one. Absent ⇒ task identity falls back to the folder
 name — see §11.3 for why minting one is still recommended.
 
-### 3.1 `captureHashes` — harness-computed content hashes
+*(Former §3.1/§3.1.1 — the `captureHashes`/`restoreOnRetry` triad — are **removed in this change**,
+along with the harness `CapturedFileStore`/`FileHashCapture`/`RestoreAncestorCaptures`/`WorkspaceLock`
+and the GR2013/GR2014 triad diagnostic meanings. Test files are now protected by (i) physical
+worktree isolation and (ii) the §3.4 write-scope check: an implementation task's `writeScope` excludes
+the test files, so an edit to them fails the deterministic check.)*
 
-`captureHashes` is an optional list of **workspace-relative file paths**. After a task's action
-succeeds (and **before** its guardrails run), the harness computes each listed file's **SHA-256
-over its raw bytes** (uppercase hex) and merges the result into the task's state fragment under:
+### 3.2 Worktree task semantics
 
-```jsonc
-{ "<taskId>": { "fileHashes": { "<relative/path>": "<UPPERCASE-SHA-256-HEX>" } } }
-```
+The harness creates one integration worktree per run (plan branch `guardrails/<plan-name>`) — the
+sole merge target. Each task runs in a **segment worktree**: a linear chain reuses one segment
+worktree (the downstream task commits on top of the upstream's tip in the SAME tree — no inter-hop
+merge, no inter-hop re-verify, sound because no union is formed); a fan-out inherits one chain and
+forks the rest off the producer's committed tip; a fan-in forks one upstream and merges the others
+in (§5.3 union). A failed attempt does NOT discard the worktree — the harness `git reset --hard
+<taskBase> + git clean -fd` (preserving every upstream/sibling commit in the tree; `taskBase` is the
+task's start commit, distinct from the plan-branch `preHead`). A task that depends on another reads
+the producer's MERGED outputs (its worktree descends from the producer's committed tip). No
+cross-task `actionExitCode` channel exists. The user's checkout is never written; the plan branch's
+trailer-bearing commits (plain FF'd commits AND merge commits) are the durable resume record (§7).
 
-The hashes then merge into `state.json` like any fragment, so a downstream task reads them via
-`GUARDRAILS_STATE_IN`. The hash is computed **in harness code** — the action agent never runs
-`git hash-object`, `Get-FileHash`, or any shell command, so a scoped `allowedTools` (or an offline
-sandbox) can never block it. If a declared file does not exist after the action, the attempt
-**fails** with an actionable message naming the missing path (the action claimed success but did
-not produce a declared output); nothing is recorded.
+### 3.3 Terminal integration gate (`integrationGate`)
 
-**Paths are workspace-relative and validated.** Each `captureHashes` entry must be a
-workspace-relative path that stays inside the workspace. `validate` rejects an absolute path, a
-drive- or root-rooted path, or any entry whose normalized resolution escapes the workspace root
-(e.g. `../../etc/passwd`) as a `GR2013` error naming the offending task and path.
+`integrationGate: true` marks a task as the terminal whole-repo integration gate — the final
+soundness boundary run once on the fully merged plan-branch HEAD after all other tasks succeed. The
+gate task's guardrails are exactly the run's **integration-guardrail set** (§4.3): all guardrails
+declared `scope: "integration"` across the plan, typically the whole-repo build and the full test
+suite.
 
-**Merge ordering — capture overlays the action's own fragment.** Capture does not replace the
-fragment the action wrote to `GUARDRAILS_STATE_OUT`; it **overlays** onto it. The harness reads the
-action's pending fragment, sets `{ "<taskId>": { "fileHashes": { … } } }`, and writes the result
-back, **preserving the action's own-namespace keys** (other keys under `<taskId>`). For a path that
-appears in **both** the action's own `fileHashes` and the harness capture, **the harness-computed
-value takes precedence** (it overwrites the action's). A non-object or unparseable action fragment
-still triggers the **invalid-fragment** attempt failure (§6.2) — capture leaves those bytes
-untouched and never papers over them, so declaring `captureHashes` does not change whether a task
-with a malformed fragment fails. Capture writes only under the task's own id, so a capture-overlaid
-fragment satisfies single-writer-per-key (§6.2) by construction; a **foreign** top-level key in the
-action's own fragment makes the whole attempt fail at the merge step (§6.2) regardless of capture.
+**Hard validation requirements** (both are errors, not warnings, because the terminal gate is the
+sole whole-repo soundness boundary for FF chains and AI-resolved unions):
 
-The canonical use is the `tests-untouched` guardrail: a test-author task declares the test files
-in `captureHashes`, and the implementation task's guardrail recomputes with
-`Get-FileHash -Algorithm SHA256` (a pwsh cmdlet, run by the interpreter — not the agent sandbox)
-and compares. SHA-256-over-raw-bytes is chosen so the harness (`SHA256.HashData`) and a guardrail
-(`Get-FileHash`) agree exactly, with no git dependency and no shared git-index mutation that could
-race under `maxParallelism > 1`. It sidesteps the **git-blob** normalization hazard, but it is an
-**exact raw-byte match**: a line-ending normalization that touches the file between capture and the
-downstream recompute (git `autocrlf` on checkout, or an IDE/formatter rewriting the file) makes the
-comparison **fail closed** — a spurious "tests changed" block a human then reviews. Safe, but
-possible; it does not silently pass.
+- **GR2017** (error): a plan with ≥2 leaf tasks, or any fan-in task, MUST declare **exactly one**
+  `integrationGate: true` sink. A plan with a single linear chain and no fan-in may omit it. Missing
+  gate on a multi-leaf/fan-in plan → `validate` error naming the missing sink.
+- **GR2018** (error): the `integrationGate` sink MUST carry **at least one** `scope: "integration"`
+  guardrail (§4.3). An integration gate with no integration-scoped guardrail would verify nothing —
+  the gate is the terminal soundness boundary and must not be empty.
 
-### 3.1.1 `restoreOnRetry` — opt-in baseline restore
+### 3.4 Write-scope check (`writeScope`)
 
-`restoreOnRetry` is an optional task-level boolean (default **false**) that sits alongside
-`captureHashes`. **By default, `captureHashes` ONLY hashes** for tamper-detection (above) — nothing
-is snapshotted and nothing is restored. Setting `restoreOnRetry: true` on the **author** task opts
-that task's captured files into restore-on-retry; with it off, the dirtied-file dead-end below is
-back for that task — which is fine, it is opt-in.
-
-**What `restoreOnRetry: true` does.** Beyond hashing, the harness snapshots each captured file's
-authored bytes into a runtime baseline store (`state/captured/<author-task-id>/<path>` — harness-owned,
-gitignored, excluded from the lock manifest like the rest of `state/` runtime). The snapshot is taken
-**only on a clean capture** (a successful action whose fragment is valid), strictly **before** the
-author task's own guardrails run — and thus before it is journaled `succeeded`. A baseline is therefore
-written even on an author attempt whose guardrails later FAIL; that is harmless: the author re-snapshots
-(overwrite) on its next clean attempt, and a consumer never restores from an author that never succeeds
-(the author's dependents stay `blocked` and never run). Before **each attempt** of a task that transitively depends on
-a `restoreOnRetry` author, the harness restores any captured file whose current bytes differ from that
-baseline (a no-op on the first attempt). This removes the dead-end where an implementation task edits
-a captured test file: the workspace is not reset between attempts, and an authored test file is
-typically untracked in git, so without restore the dirtied file would persist and `tests-untouched`
-would fail every retry identically. With restore, a retry starts from the pristine test file, so an
-implementation correct against the *original* tests passes.
-
-**Scope and validation.** Restore only ever touches files named in an upstream `restoreOnRetry`
-`captureHashes` — never other workspace files. `restoreOnRetry: true` with an empty/absent
-`captureHashes` has nothing to act on and is a **`GR2014`** validation error naming the task. When
-**two** ancestor authors capture the same relative path, restore is **last-write-wins in ancestor-id
-ordinal order** (each baseline is keyed under its own author id, so they never collide in the store;
-the consumer restores ancestors in ordinal id order, so the highest-sorting author's bytes win).
-
-**Resolved against the workspace.** Both snapshot and restore resolve each captured path against the
-**plan workspace** — the canonical base the `GR2013` check validated — never against a consumer
-task's per-task `workingDirectory`. The harness additionally re-asserts workspace containment before
-every write (defense-in-depth): a path that would escape the workspace is **not** written and is
-recorded as un-restorable. Each restore — and any captured file the harness could **not** restore
-(missing baseline, or a containment skip) — is recorded in the attempt's `restored-baseline.log`, so
-the audit log is loud exactly when restore could not protect the workspace, not only on success.
-
-**Resume.** Because the snapshot is taken only on a clean capture and *before* the author is journaled
-`succeeded`, a crash mid-snapshot re-runs the author on resume and re-snapshots from scratch — the
-baseline is consistent on crash-resume. `guardrails run --fresh` deletes `state/captured/` (§6.1) so a
-stale baseline can never revert a legitimately re-authored file on the next run.
+`writeScope` is an optional list of **workspace-relative path prefixes / globs** declaring the
+surface a task is permitted to add/modify/delete/rename. It drives a **deterministic, read-only
+harness check** (no revert, ever): after the task's action and **before** its own `guardrails/`,
+the harness computes `git diff --name-status <taskBase>..<segmentHEAD>` in the task's segment
+worktree and asserts every changed path satisfies `IsInScope(path, writeScope)`. A violation is a
+guardrail-class failure (retry with feedback naming the out-of-scope paths; eventual `needs-human`).
+**Absent ⇒ no check** (the off-switch — a task that can't be confidently scoped omits the field and
+is reported as a broad surface, never given a vacuous `**`). **Renames** are NOT detected via git
+`-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
+the deleted path must be in scope. The declared scope is also injected into the action prompt
+(advisory) — the deterministic check is the gate. `validate` rejects a scope entry that escapes the
+workspace (**GR2019**, error) and warns on a vacuous/over-broad scope (**GR2020**, warning;
+`plan-breakdown` should omit rather than emit a vacuous scope). **TDD test-protection:** a
+test-author task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES
+the test files, so the check deterministically enforces "the implementation may not write the tests"
+(the replacement for the `captureHashes`/`tests-untouched`/`restoreOnRetry` triad **that this same
+change deletes** — the triad was live on `master`). The matcher (`IsInScope`/`Overlaps`/segment-matcher)
+is specified in full in plan 08 §2.1 (glob grammar, the 27-row truth table) and carries the §2.2
+proof harness (the 27-row table + the two fuzz properties: membership-implies-overlap AND
+`Overlaps`-completeness). It is read-only, so a matcher bug can only false-red or miss-catch ONE
+task's own verdict — never write another task's files; `Overlaps` (the scheduler hint) retains
+cross-task reach and keeps the full fuzz rigor.
 
 ## 4. Guardrails
 
@@ -285,6 +301,26 @@ to the file at `GUARDRAILS_VERDICT_OUT`. Missing file, invalid JSON, or missing
 CLI exit codes are never used for semantic pass/fail of prompt guardrails — exit
 codes only distinguish "ran" from "crashed".
 
+### 4.3 Guardrail scope (`scope: "integration" | "local"`)
+
+A guardrail declares an optional `scope` (deterministic sidecar key §4.1, or prompt frontmatter
+§4.2): `"local"` (default) or `"integration"`. The run's **integration-guardrail set** = the union
+of all `scope: "integration"` guardrails across the plan (typically the whole-repo build + the
+whole test suite). At **every union point** (a fan-in or a non-FF plan-branch integration, §5.3), on
+the merged bytes, BEFORE the merge commit and BEFORE any downstream action, the harness re-runs (via
+the attempt-decoupled re-verify seam): (1) the union task's full guardrail set; (2) **every colliding
+sibling's FULL guardrail set — UNCONDITIONALLY, with NO touched-files filter** (the AI may have
+dropped a colliding sibling's contribution, leaving the sibling's test file untouched — a
+touched-files skip would miss exactly that); and (3) the integration-guardrail set. **The
+touched-files local-skip applies ONLY to a distant, NON-colliding task's `local` guardrails** (re-run
+only if the merge touched that task's files); it is **never** applied to a colliding sibling. The
+terminal `integrationGate` sink (§3.3) runs the **same** integration set on the final merged HEAD —
+the terminal gate and the per-union re-verify are one mechanism at two scopes. Because the re-verify
+runs on arbitrary union bytes outside any attempt lifecycle, it uses a **public attempt-decoupled
+re-verify seam** (NOT the attempt-bound internal guardrail runner). `plan-breakdown` marks the
+build/test guardrails `scope: "integration"`; `guardrails-review` flags an integration-sensitive plan
+with no integration-scoped guardrail (BLOCKER).
+
 ---
 
 ## 5. Child-process contract
@@ -300,12 +336,16 @@ codes only distinguish "ran" from "crashed".
 | `GUARDRAILS_STATE_IN` | all | Read-only merged-state **snapshot copy** taken at attempt start; immutable for the attempt |
 | `GUARDRAILS_STATE_OUT` | actions | Path the action may write its JSON fragment to (§6.2). Not pre-created; absence after success = "nothing to contribute" |
 | `GUARDRAILS_STATE_FRAGMENT` | guardrails | Path of the action's (not-yet-merged) fragment, if the action wrote one — lets a guardrail validate proposed state |
-| `GUARDRAILS_LOG_DIR` | all | `state/logs/<task>/attempt-N/` — scratch space welcome |
+| `GUARDRAILS_LOG_DIR` | all | `logs/<runId>/<task>/attempt-N/` — scratch space welcome |
 | `GUARDRAILS_FEEDBACK` | actions, attempt ≥ 2 | Path to `feedback.md` describing the previous attempt's failures |
 | `GUARDRAILS_ACTION_STDOUT` | guardrails | The action's captured stdout file |
 | `GUARDRAILS_ACTION_STDERR` | guardrails | The action's captured stderr file |
 | `GUARDRAILS_ACTION_RESULT` | guardrails | `action-result.json`: `{ "kind", "exitCode", "summary" }` |
 | `GUARDRAILS_VERDICT_OUT` | prompt guardrails | Where the verdict JSON must be written (§4.2) |
+| `GUARDRAILS_MERGE_BASE` | AI-merge worker | Path to the merge-base copy of the conflicted file on disk (§9.1) |
+| `GUARDRAILS_MERGE_OURS` | AI-merge worker | Path to the "ours" copy of the conflicted file on disk (§9.1) |
+| `GUARDRAILS_MERGE_THEIRS` | AI-merge worker | Path to the "theirs" copy of the conflicted file on disk (§9.1) |
+| `GUARDRAILS_MERGE_OUT` | AI-merge worker | Path the worker writes its resolved merged bytes to (§9.1); the harness reads this file |
 
 **Recorded action outcome — verify, don't replay (issue #62).** `GUARDRAILS_ACTION_RESULT`
 / `_STDOUT` / `_STDERR` hand a guardrail the action's *already-captured* result, so it can
@@ -344,21 +384,60 @@ substitution tokens (`{args}` defaults to appending after the script path).
 `guardrails validate` reports any extension used by the plan whose interpreter is
 not resolvable on PATH.
 
-### 5.3 Harness writes to the workspace — exactly one case
+### 5.3 Harness writes to the workspace — two bounded cases
 
-The harness is otherwise a **read-only** actor on the workspace: actions and guardrails write
-workspace files; the harness reads them (hashes, captures, lock manifest) and owns only `state/`.
-There is **exactly one** exception, bounded here so a future feature cannot quietly widen it:
+**The harness writes only the harness-owned integration worktree (plan branch
+`guardrails/<plan-name>`), via integration, after a task's action and guardrails succeed in its
+segment worktree — and never otherwise. The user's checkout is read-only for the entire run.**
 
-> **The harness writes a workspace file only when restoring a `restoreOnRetry` `captureHashes`
-> file to its authored baseline before an attempt (§3.1.1) — and never otherwise.** Each such write
-> targets a path that (a) appears in an upstream `restoreOnRetry` task's `captureHashes`, (b) resolves
-> against the plan workspace, and (c) passes the same workspace-containment check as `GR2013`
-> immediately before the write. A path failing any of these is **not** written and is logged as
-> un-restorable.
+There are two kinds of integration. **(A) Fast-forward** (a linear chain's commit, no sibling has
+advanced the plan branch): `git merge --ff-only` — **no new union, no re-verify** (the bytes already
+passed the task's guardrails in the segment worktree). **(B) Union** (a fan-in, or a non-FF
+integration where a sibling raced): a real merge that MUST be re-verified on the merged bytes before
+the commit.
 
-Any new capability that needs the harness to write workspace files must be added to this list with
-its own containment analysis — the default remains that the harness does not mutate the workspace.
+**Union resolution: git auto-merge → AI-merge → human.** `git merge --no-commit`; on conflict, the
+**AI-merge worker** (a constrained prompt behind `IPromptRunner`, §9.1) produces merged BYTES only,
+trusted via two **deterministic** checks — (i) no conflict markers remain (`git diff --check`),
+(ii) blast-radius: it modified only the git-reported-conflicted files (`git status --porcelain`); an
+out-of-bounds write or a remaining marker ⇒ discard (`reset --hard`) + needs-human. 1 retry. The AI
+resolves harness-internal unions only; it is **withheld** at the `--merge-on-success` user-branch
+boundary.
+
+**The verdict (identical for clean-auto and AI-resolved) is the deterministic re-verify:** re-run
+the union task's own guardrails + the run's **integration-guardrail set** (§4.3) on the `--no-commit`
+merged bytes, then assert `git status --porcelain` shows only the staged merge (W3 read-only check).
+Any re-verify fail / remaining conflict / dirtied tracked file ⇒ `git reset --hard preHead`;
+`needs-human`; write no fragment, consume no `mergeSequence`. AI-merge + its re-verify run in the
+fan-in's **private forked worktree OFF the serialize lock**; only the integration of the verified
+result into the plan branch is **under the lock**, with a staleness re-verify against the current
+plan-branch bytes.
+
+**The atomic settle (state + git + journal as one ordered unit, under the serialize lock).** On
+success, in this FIXED order: (1) deep-merge the task's fragment into `state.json`; (2) `git commit`
+the integration (the FF move for case A, the merge commit for case B) carrying the parseable
+`Guardrails-Task: <taskId>` / `Guardrails-Run: <runId>` trailer — **written on the plain FF'd commit
+as well as on merge commits**, so resume can read FF integrations (§7); (3) consume the
+`mergeSequence` + journal `Succeeded`. The fragment merge precedes the commit so the resume pre-pass
+can never treat a task succeeded-by-commit while its state is missing. Every non-success path is a
+single `git reset --hard preHead` (NOT `merge --abort`, which fails rc=128 on the dirtied-tracked
+path) — leaving state, git, and journal all UNCHANGED, never half-merged, and the user's checkout
+untouched. A git/IO failure during integration is a `needs-human` halt routed through the normal
+failed path, never an uncaught throw.
+
+**Retry preserves upstream work:** a failed attempt is `git reset --hard <taskBase> + git clean -fd`
+in its segment worktree (keeping every upstream/sibling commit; `taskBase ≠ preHead`), not a
+discard-and-recreate.
+
+**Run end (opt-in delivery).** When the run drains wholly green AND `mergeOnSuccess`/
+`--merge-on-success` is set, the harness merges the plan branch into the user's original branch
+(ff-only when possible, else a real merge whose re-verify must pass). **AI-merge is NOT used here.**
+A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch intact — never a
+force-overwrite. Default OFF leaves the plan branch for the user to review and merge.
+
+Any new capability that needs the harness to write outside the integration worktree or the opt-in
+end-of-run delivery to the user's branch must be added to this section with its own containment
+analysis — the default remains that the harness does not mutate the user's checkout.
 
 ---
 
@@ -370,9 +449,7 @@ its own containment analysis — the default remains that the harness does not m
 - `state/state.json` (runtime, gitignored): the merged state. Created at run start
   from `seed.json` (or `{}`) when missing. `guardrails run --fresh` deletes runtime
   state and re-seeds. The `--fresh` deletion list is: `run.json`, `state.json`,
-  `merge-conflicts.log`, the `logs/` tree, and the `captured/` baseline store (§3.1.1) —
-  the captured store MUST be wiped or a stale baseline would revert a legitimately
-  re-authored file on the next run, before any task re-snapshots its current bytes.
+  `merge-conflicts.log`, and the `logs/<runId>/` tree for the abandoned run.
 - The **harness is the single writer** of `state.json`. Child processes never touch it.
 
 ### 6.2 Fragments (snapshot in, fragment out)
@@ -442,7 +519,7 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | cancelled | invalid-fragment | needs-human
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
-          "logDir": "state/logs/01-write-greeting-script/attempt-1"
+          "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1"
         }
       ]
     }
@@ -452,9 +529,7 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
-  explicit way to force a re-run. Resetting a task also clears that task's captured
-  baseline store (`state/captured/<task-id>/`, §3.1.1), so the re-run re-snapshots from
-  its fresh authored bytes rather than restoring a stale baseline.
+  explicit way to force a re-run.
 - `needs-human` — retry budget exhausted. All *transitive* dependents become `blocked`.
   Independent branches keep running.
 - Resume rules (`guardrails run` on an existing journal): `succeeded` → skip;
@@ -484,7 +559,7 @@ argument is passed through unchanged, so a genuinely bad path still produces the
 ## 8. Per-attempt log layout
 
 ```
-state/logs/<task-id>/attempt-N/
+logs/<runId>/<task-id>/attempt-N/
 ├── state-in.json            # the snapshot given to this attempt
 ├── action-stdout.log / action-stderr.log
 ├── action-result.json
@@ -545,6 +620,35 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 - A prompt action may signal an unresolvable decision by writing
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
   as needs-human immediately (no retry burn).
+
+### 9.1 AI-merge worker
+
+The AI-merge worker resolves a git merge conflict during a union (§5.3 case B). It is a **constrained
+prompt action behind `IPromptRunner`** (the same seam as `claude`). **The existing `IPromptRunner`
+contract returns metadata only** (`PromptResult` = `{Completed, IsError, ResultText, CostUsd,
+NumTurns, Summary}`) — **there is no byte channel.** So the worker uses the existing **on-disk file
+convention** (the runner writes a file, the harness reads it) via a **NEW merge env contract**, and a
+**distinctly named merge prompt profile** (NOT a `guardrailOverrides`-shaped profile — that is a
+guardrail-verifier concept). **It is a BYTE PRODUCER, never a VERDICT PRODUCER:**
+
+- **Merge env contract (new):** `GUARDRAILS_MERGE_BASE`, `GUARDRAILS_MERGE_OURS`,
+  `GUARDRAILS_MERGE_THEIRS` (the three-way inputs on disk) and `GUARDRAILS_MERGE_OUT` (the path the
+  worker writes the resolution to). The harness reads `GUARDRAILS_MERGE_OUT` after the run.
+- **Input:** the conflicted files (with markers) + base/ours/theirs on disk, and the colliding
+  upstream tasks' intents (their `task.description` + `writeScope`) composed into the prompt string.
+- **Output:** the merged bytes only, written to `GUARDRAILS_MERGE_OUT`. A rationale is logged
+  (NON-gating, never read as a verdict). `PromptResult.IsError` and the exit code are **not** the
+  verdict.
+- **Trust:** two deterministic checks — no conflict markers remain (`git diff --check`); blast-radius
+  (modified only the git-reported-conflicted files, `git status --porcelain`). A violation ⇒ discard
+  (`reset --hard`) + `needs-human`.
+- **Budget:** 1 retry (2 attempts). Escalate to `needs-human` on markers-left / out-of-bounds /
+  re-verify-fail / budget. The AI's exit code is never a verdict.
+
+Its cost is charged against `maxCostUsd` like any prompt attempt. It is configured under
+`promptRunners` as a **reserved merge runner profile** (e.g. `ai-merge`) — a distinct merge profile
+named for what it is (read the conflict, write only `GUARDRAILS_MERGE_OUT`), **not** a
+`guardrailOverrides` block.
 
 ---
 

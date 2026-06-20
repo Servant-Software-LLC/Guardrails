@@ -138,9 +138,19 @@
     "tasks/29-update-domain-knowledge-skill/task.json": "19a9387948ff5a395c0c94e3eb5dbd3e4b95e28c48cd6728af9d55cc0abe4fef",
     "tasks/30-build-solution-gate/action.ps1": "2d223bd7d301d53b3b96d377908d7818068281a9b534cb47b8c2691352a019e0",
     "tasks/30-build-solution-gate/guardrails/01-solution-builds.ps1": "c1885e380f718d47d1995bfc681b24c8412afd01949e535f3c2f35bdaa4a7a9c",
-    "tasks/30-build-solution-gate/task.json": "bfeb1932ccd1e31e168b7899474e4de1f66bf1505a40a6c47896d494ead0afd1",
+    "tasks/30-build-solution-gate/task.json": "8e027613ee95eb650d5add4ebbdf8bf434aef7b24ed08d8ee28cfaaed70ba5e7",
     "tasks/31-full-suite-green-gate/action.ps1": "d5ab0486d9403ecc8c4fa00f615d145d8d1633976bbc176fb1970736f9fe7a04",
     "tasks/31-full-suite-green-gate/guardrails/01-full-suite.ps1": "2575d29712442d4d2eafd358b5c4b442ddfb47884de1ea12e2bd3fb0af00cbd1",
-    "tasks/31-full-suite-green-gate/task.json": "13d42b07ee9594f08597f5f5c083f4e70b009ef12f5a6c2337adf597180c8265"
+    "tasks/31-full-suite-green-gate/task.json": "5632e675b57e78fca9622e464229d63ddd7e891ebfc258f6874e3c0e928acfd3",
+    "tasks/32-author-tests-needs-human-triage/action.prompt.md": "421290175070b1347e24026ccfdf47f51680883121f194931cdec6ec8b9e6241",
+    "tasks/32-author-tests-needs-human-triage/guardrails/01-tests-fail-on-current-code.ps1": "6da4f2c18cebbbe1c87e3dd651f3a787b45415ea17b0554b8f954c947e0953c7",
+    "tasks/32-author-tests-needs-human-triage/guardrails/02-triage-scenarios-present.ps1": "7bb0b197681c8417372b3e10e3f571c94cd5f7865b76d193e846c8f412704879",
+    "tasks/32-author-tests-needs-human-triage/task.json": "21fcc706765714920b14626400ba5269b1a55e7fa0b37d76b2c7fae61fe1e0f2",
+    "tasks/33-implement-needs-human-triage/action.prompt.md": "a7157ee0605d397dfceba22e130652a4600478e575a49f2cd4c01c52673e176e",
+    "tasks/33-implement-needs-human-triage/guardrails/01-core-builds.ps1": "dffb8228074cc34cdc0f4a053457a8826e3973a974ff29b0ba301d5d71329dc7",
+    "tasks/33-implement-needs-human-triage/guardrails/02-triage-class-exists.ps1": "669960a69a96b42323ff746a9ce2f6f3d2c549785d517b98eca75126dc62d515",
+    "tasks/33-implement-needs-human-triage/guardrails/03-triage-tests-pass.ps1": "a44eb8181c817e63320c1233957081ded68a73cc17b6d1dc75b2ddc85934ea68",
+    "tasks/33-implement-needs-human-triage/guardrails/04-tests-untouched.ps1": "fb361d702fe4187421dc4e62e80f08f2937086ce0554506ed647f5293d8f94f9",
+    "tasks/33-implement-needs-human-triage/task.json": "54a3b7f790987715c9ddd31b79952f8574c3dc104d2863800186612aec62a984"
   }
 }

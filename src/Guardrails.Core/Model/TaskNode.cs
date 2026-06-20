@@ -30,9 +30,6 @@ public sealed record TaskNode
     /// <summary>Whole-attempt timeout ceiling in seconds; null = use <c>defaultTimeoutSeconds</c>.</summary>
     public int? TimeoutSeconds { get; init; }
 
-    /// <summary>Exclusive-workspace flag; null = default by action kind (prompt → true). (Honored from M4.)</summary>
-    public bool? Exclusive { get; init; }
-
     /// <summary>
     /// Workspace-relative file paths whose SHA-256 (over raw bytes) the harness records into this
     /// task's state fragment after a successful action, under
@@ -58,4 +55,11 @@ public sealed record TaskNode
 
     /// <summary>The resolved guardrails, in filename sort order. At least one (validated).</summary>
     public required IReadOnlyList<GuardrailDefinition> Guardrails { get; init; }
+
+    /// <summary>
+    /// When true, this task is the terminal integration gate for the plan (plan 08 M2, SSOT §3.3).
+    /// A multi-leaf or fan-in plan must have exactly one such sink, which must carry at least one
+    /// guardrail with <c>scope:"integration"</c>. Default false (no gate role).
+    /// </summary>
+    public bool IntegrationGate { get; init; }
 }

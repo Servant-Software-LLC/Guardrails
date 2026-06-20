@@ -1,6 +1,6 @@
 {
   "description": "Terminal integration gate: the whole test suite (unit + integration + skill meta-tests) is green after all milestones land - the only place whole-suite green belongs, catching cross-milestone regressions and any skill/example drift",
   "stableId": "p08g31",
-  "dependsOn": ["30-build-solution-gate", "27-update-plan-breakdown-skill", "28-update-guardrails-review-skill", "29-update-domain-knowledge-skill"],
+  "dependsOn": ["30-build-solution-gate", "27-update-plan-breakdown-skill", "28-update-guardrails-review-skill", "29-update-domain-knowledge-skill", "33-implement-needs-human-triage"],
   "integrationGate": true
 }

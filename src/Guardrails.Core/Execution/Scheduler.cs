@@ -11,20 +11,18 @@ namespace Guardrails.Core.Execution;
 /// <c>maxParallelism</c> workers. A task that ends <c>needs-human</c> (or otherwise
 /// non-green) blocks its TRANSITIVE dependents immediately while independent branches
 /// keep running — every completed task is durable progress in the journal, and one run
-/// surfaces every needs-human halt instead of one per run. Tasks with
-/// <c>exclusive: true</c> (the default for prompt actions) hold the
-/// <see cref="WorkspaceLock"/> exclusively and run alone.
+/// surfaces every needs-human halt instead of one per run.
 /// </summary>
 public sealed class Scheduler
 {
     private readonly PlanDefinition _plan;
     private readonly ITaskExecutor _executor;
     private readonly ISchedulerJournal _journal;
+    private readonly IWorktreeProvider? _worktreeProvider;
     private readonly IRunObserver _observer;
     private readonly int _maxParallelism;
 
     private readonly object _gate = new();
-    private readonly WorkspaceLock _workspaceLock = new();
 
     // First unexpected (non-cancellation) executor fault wins; surfaced after WhenAll so the
     // run terminates deterministically with a harness error instead of hanging (see WorkerLoopAsync).
@@ -34,12 +32,14 @@ public sealed class Scheduler
         PlanDefinition plan,
         ITaskExecutor executor,
         ISchedulerJournal journal,
+        IWorktreeProvider? worktreeProvider = null,
         IRunObserver? observer = null,
         int? maxParallelism = null)
     {
         _plan = plan;
         _executor = executor;
         _journal = journal;
+        _worktreeProvider = worktreeProvider;
         _observer = observer ?? IRunObserver.Null;
         _maxParallelism = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
     }
@@ -62,7 +62,13 @@ public sealed class Scheduler
         var byId = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
         var settled = new Dictionary<string, TaskResult>(StringComparer.Ordinal);
         var pendingDeps = new Dictionary<string, int>(StringComparer.Ordinal);
-        var channel = Channel.CreateUnbounded<TaskNode>();
+        var channel = Channel.CreateUnbounded<TaskEnvelope>();
+
+        // Create the integration handle once for this run (M1 seam; M2 will do real git).
+        IntegrationHandle? integ = _worktreeProvider?.CreateIntegration(
+            planName: Path.GetFileName(plan.PlanDirectory),
+            runId: Guid.NewGuid().ToString("N")[..8],
+            cancellationToken);
 
         // --- resume pre-pass: journaled successes are green without re-running ----------
         var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
@@ -99,11 +105,25 @@ public sealed class Scheduler
             return BuildReport(plan, settled, cancelled: false);
         }
 
+        // Pre-create worktree handles for every task that will run. Handles are built upfront
+        // (single-threaded, before workers start) so OnSettled can enqueue them without needing
+        // a CancellationToken or taking extra locks.
+        var handles = new Dictionary<string, WorktreeHandle>(StringComparer.Ordinal);
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (!preSettledGreen.Contains(task.Id))
+            {
+                handles[task.Id] = _worktreeProvider != null && integ != null
+                    ? _worktreeProvider.CreateSegment(task.Id, attempt: 1, integ, cancellationToken)
+                    : new WorktreeHandle();
+            }
+        }
+
         foreach (TaskNode task in plan.Tasks)
         {
             if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
             {
-                channel.Writer.TryWrite(task);
+                channel.Writer.TryWrite(new TaskEnvelope(task, handles[task.Id]));
             }
         }
 
@@ -112,7 +132,7 @@ public sealed class Scheduler
         // cancellation AND an unexpected executor fault cancels it internally, so sibling
         // workers drain instead of blocking forever on a channel that would never complete.
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining);
+        var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining, handles, integ);
         int workerCount = Math.Min(_maxParallelism, remaining);
         Task[] workers = Enumerable.Range(0, workerCount)
             .Select(_ => Task.Run(() => WorkerLoopAsync(context, runCts), CancellationToken.None))
@@ -138,8 +158,11 @@ public sealed class Scheduler
         CancellationToken cancellationToken = runCts.Token;
         try
         {
-            await foreach (TaskNode task in context.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (TaskEnvelope envelope in context.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
+                TaskNode task = envelope.Task;
+                WorktreeHandle handle = envelope.Handle;
+
                 // Per-run cost cap (SSOT §2 / plan 04): if the journal's cumulative cost has reached
                 // the configured cap, do NOT launch this attempt. Settle the task needs-human and let
                 // OnSettled block its transitive dependents via the existing halt path. The check is
@@ -148,24 +171,13 @@ public sealed class Scheduler
                 // launches.
                 if (CostCapHaltFor(task) is { } capped)
                 {
-                    OnSettled(context, task, capped);
+                    OnSettled(context, task, capped, handle);
                     continue;
                 }
 
-                bool exclusive = task.Exclusive ?? task.Action.Kind == ActionKind.Prompt;
-                await _workspaceLock.AcquireAsync(exclusive, cancellationToken).ConfigureAwait(false);
+                TaskResult result = await _executor.ExecuteAsync(task, handle, cancellationToken).ConfigureAwait(false);
 
-                TaskResult result;
-                try
-                {
-                    result = await _executor.ExecuteAsync(task, cancellationToken).ConfigureAwait(false);
-                }
-                finally
-                {
-                    _workspaceLock.Release(exclusive);
-                }
-
-                OnSettled(context, task, result);
+                OnSettled(context, task, result, handle);
             }
         }
         catch (OperationCanceledException)
@@ -211,13 +223,19 @@ public sealed class Scheduler
         };
     }
 
-    private void OnSettled(RunContext context, TaskNode task, TaskResult result)
+    private void OnSettled(RunContext context, TaskNode task, TaskResult result, WorktreeHandle handle)
     {
         var newlyReady = new List<TaskNode>();
         var newlyBlocked = new List<TaskResult>();
 
         lock (_gate)
         {
+            // Integrate under the gate so the provider's counter is serialized across workers.
+            if (result.IsGreen && _worktreeProvider is { } provider && context.Integ is { } integ)
+            {
+                provider.Integrate(handle, integ, CancellationToken.None);
+            }
+
             context.Settled[task.Id] = result;
             context.Remaining--;
 
@@ -270,7 +288,8 @@ public sealed class Scheduler
 
         foreach (TaskNode ready in newlyReady)
         {
-            context.Channel.Writer.TryWrite(ready);
+            WorktreeHandle readyHandle = context.Handles.GetValueOrDefault(ready.Id) ?? new WorktreeHandle();
+            context.Channel.Writer.TryWrite(new TaskEnvelope(ready, readyHandle));
         }
     }
 
@@ -295,20 +314,27 @@ public sealed class Scheduler
         return new RunReport { Tasks = results, Cancelled = cancelled };
     }
 
+    /// <summary>Per-task channel item pairing a task with its assigned worktree handle.</summary>
+    private readonly record struct TaskEnvelope(TaskNode Task, WorktreeHandle Handle);
+
     /// <summary>Mutable shared state of one run, guarded by the scheduler's gate.</summary>
     private sealed class RunContext(
         DependencyGraph graph,
         IReadOnlyDictionary<string, TaskNode> byId,
         Dictionary<string, TaskResult> settled,
         Dictionary<string, int> pendingDeps,
-        Channel<TaskNode> channel,
-        int remaining)
+        Channel<TaskEnvelope> channel,
+        int remaining,
+        IReadOnlyDictionary<string, WorktreeHandle> handles,
+        IntegrationHandle? integ)
     {
         public DependencyGraph Graph { get; } = graph;
         public IReadOnlyDictionary<string, TaskNode> ById { get; } = byId;
         public Dictionary<string, TaskResult> Settled { get; } = settled;
         public Dictionary<string, int> PendingDeps { get; } = pendingDeps;
-        public Channel<TaskNode> Channel { get; } = channel;
+        public Channel<TaskEnvelope> Channel { get; } = channel;
         public int Remaining { get; set; } = remaining;
+        public IReadOnlyDictionary<string, WorktreeHandle> Handles { get; } = handles;
+        public IntegrationHandle? Integ { get; } = integ;
     }
 }

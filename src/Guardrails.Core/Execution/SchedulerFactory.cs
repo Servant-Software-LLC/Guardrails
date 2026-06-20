@@ -33,6 +33,6 @@ public static class SchedulerFactory
         PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
         var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry);
 
-        return new Scheduler(plan, executor, journal, observer);
+        return new Scheduler(plan, executor, journal, observer: observer);
     }
 }

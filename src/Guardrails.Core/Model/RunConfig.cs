@@ -46,6 +46,25 @@ public sealed record RunConfig
     /// </summary>
     public IReadOnlySet<string> PromptRunnerNames { get; init; } = new HashSet<string>();
 
+    /// <summary>
+    /// Root directory under which per-run worktrees are created (SSOT §2, plan 08 §1).
+    /// Null (the default) means the harness picks a managed path under TEMP.
+    /// Field exists for the model contract; the loader does not yet read it from JSON (M2).
+    /// </summary>
+    public string? WorktreeRoot { get; init; }
+
+    /// <summary>
+    /// When true, agent tasks run against the current branch rather than a plan branch (SSOT §2).
+    /// Default false. Field exists for the model contract; the loader does not yet read it from JSON (M2).
+    /// </summary>
+    public bool RunOnCurrentBranch { get; init; }
+
+    /// <summary>
+    /// When true, the harness auto-merges each segment worktree back on success (SSOT §5.3).
+    /// Default false. Field exists for the model contract; the loader does not yet read it from JSON (M2).
+    /// </summary>
+    public bool MergeOnSuccess { get; init; }
+
     /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
     public string? DefaultPromptRunner { get; init; }
 

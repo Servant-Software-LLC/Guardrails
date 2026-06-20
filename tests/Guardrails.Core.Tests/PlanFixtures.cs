@@ -25,9 +25,6 @@ public static class PlanFixtures
         ]
     };
 
-    public static TaskNode Exclusive(string id, params string[] dependsOn) =>
-        Task(id, dependsOn) with { Exclusive = true };
-
     public static PlanDefinition Plan(params TaskNode[] tasks) => new()
     {
         PlanDirectory = "/fake/plan",

@@ -90,17 +90,45 @@ public static class DiagnosticCodes
     public const string CostCapNonPositive = "GR2012";
 
     /// <summary>
-    /// A <c>captureHashes</c> entry (SSOT §3.1) is not a safe workspace-relative path: it is
-    /// absolute, drive- or root-rooted, or its normalized resolution escapes the workspace root
-    /// (e.g. <c>../../etc/passwd</c>). The harness resolves each entry against the workspace and
-    /// hashes/reads the file, so an escaping path could reach outside the workspace — an ERROR.
+    /// A <c>captureHashes</c> entry (SSOT §3.1) is not a safe workspace-relative path.
+    /// RETIRED in plan 08 M2: the triad (captureHashes / exclusive / restoreOnRetry) teardown removed
+    /// the ValidateCaptureHashPaths check. GR2013 no longer carries this meaning; do not reuse.
     /// </summary>
     public const string CaptureHashEscapesWorkspace = "GR2013";
 
     /// <summary>
-    /// A task declares <c>restoreOnRetry: true</c> but has an empty/absent <c>captureHashes</c>
-    /// (SSOT §3.1 / issue #51). Restore-on-retry acts ONLY on captured files, so opting in without
-    /// any captured file is a no-op the author almost certainly did not intend — an ERROR naming the task.
+    /// A task declares <c>restoreOnRetry: true</c> but has no <c>captureHashes</c>.
+    /// RETIRED in plan 08 M2: the triad (captureHashes / exclusive / restoreOnRetry) teardown removed
+    /// the ValidateRestoreOnRetry check. GR2014 no longer carries this meaning; do not reuse.
     /// </summary>
     public const string RestoreOnRetryWithoutCaptureHashes = "GR2014";
+
+    /// <summary>
+    /// The plan workspace is not inside a git repository (plan 08 M2, SSOT §1). The harness
+    /// must create per-run worktrees (plan branch, segment worktrees), which requires the workspace
+    /// to reside within a git repository. An ERROR — the harness cannot proceed without git.
+    /// </summary>
+    public const string WorkspaceNotGitRoot = "GR2015";
+
+    /// <summary>
+    /// The configured <c>worktreeRoot</c> path is long enough that harness-managed paths may
+    /// exceed the Windows MAX_PATH limit of 260 characters (plan 08 M2, SSOT §2). A WARNING —
+    /// the plan may work but is at risk; enable long-path support with
+    /// <c>git config --system core.longpaths true</c>.
+    /// </summary>
+    public const string MaxPathRisk = "GR2016";
+
+    /// <summary>
+    /// A multi-leaf or fan-in plan has no <c>integrationGate:true</c> sink (plan 08 M2, SSOT §3.3).
+    /// The terminal gate is the whole-repo soundness boundary for parallel execution; omitting it
+    /// leaves parallel branches unverified at the integration level — an ERROR.
+    /// </summary>
+    public const string MissingIntegrationGate = "GR2017";
+
+    /// <summary>
+    /// An <c>integrationGate:true</c> sink carries no guardrail with <c>scope:"integration"</c>
+    /// (plan 08 M2, SSOT §3.3/§4.3). A terminal gate with an empty integration-guardrail set
+    /// verifies nothing — an ERROR; the gate task must have at least one integration-scoped guardrail.
+    /// </summary>
+    public const string IntegrationGateEmpty = "GR2018";
 }

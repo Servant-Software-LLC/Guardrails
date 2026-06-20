@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=4bb247b4c06ba3676ee385b19574e4ceffb9a623162e5286e59859c097f5d15d -->
+<!-- guardrails:graph v1 source-sha256=c87e385ab1de51d3f57fdef390d27d61a5985eb6f2be5f9abef891b38bb40f26 -->
 
 ```mermaid
 flowchart TD
@@ -295,6 +295,28 @@ flowchart TD
   task_31_full_suite_green_gate --> gr_31_full_suite_green_gate_0
   gr_31_full_suite_green_gate_0 --> done_31_full_suite_green_gate
   done_31_full_suite_green_gate["31-full-suite-green-gate ✓ Finished"]:::done
+  task_32_author_tests_needs_human_triage["32-author-tests-needs-human-triage"]:::task
+  gr_32_author_tests_needs_human_triage_0["01-tests-fail-on-current-code"]:::guardrail
+  task_32_author_tests_needs_human_triage --> gr_32_author_tests_needs_human_triage_0
+  gr_32_author_tests_needs_human_triage_0 --> done_32_author_tests_needs_human_triage
+  gr_32_author_tests_needs_human_triage_1["02-triage-scenarios-present"]:::guardrail
+  task_32_author_tests_needs_human_triage --> gr_32_author_tests_needs_human_triage_1
+  gr_32_author_tests_needs_human_triage_1 --> done_32_author_tests_needs_human_triage
+  done_32_author_tests_needs_human_triage["32-author-tests-needs-human-triage ✓ Finished"]:::done
+  task_33_implement_needs_human_triage["33-implement-needs-human-triage"]:::task
+  gr_33_implement_needs_human_triage_0["01-core-builds"]:::guardrail
+  task_33_implement_needs_human_triage --> gr_33_implement_needs_human_triage_0
+  gr_33_implement_needs_human_triage_0 --> done_33_implement_needs_human_triage
+  gr_33_implement_needs_human_triage_1["02-triage-class-exists"]:::guardrail
+  task_33_implement_needs_human_triage --> gr_33_implement_needs_human_triage_1
+  gr_33_implement_needs_human_triage_1 --> done_33_implement_needs_human_triage
+  gr_33_implement_needs_human_triage_2["03-triage-tests-pass"]:::guardrail
+  task_33_implement_needs_human_triage --> gr_33_implement_needs_human_triage_2
+  gr_33_implement_needs_human_triage_2 --> done_33_implement_needs_human_triage
+  gr_33_implement_needs_human_triage_3["04-tests-untouched"]:::guardrail
+  task_33_implement_needs_human_triage --> gr_33_implement_needs_human_triage_3
+  gr_33_implement_needs_human_triage_3 --> done_33_implement_needs_human_triage
+  done_33_implement_needs_human_triage["33-implement-needs-human-triage ✓ Finished"]:::done
   done_01_update_ssot_schema_contract --> task_02_author_tests_worktree_provider_seam
   done_02_author_tests_worktree_provider_seam --> task_03_implement_worktree_provider_seam_and_channel_envelope
   done_03_implement_worktree_provider_seam_and_channel_envelope --> task_04_deserialize_scheduler_begin_triad_teardown
@@ -308,6 +330,7 @@ flowchart TD
   done_08_implement_validation_gates_and_triad_teardown --> task_11_author_tests_writescope_matcher_truth_table_and_fuzz
   done_09_author_tests_logs_elevation_and_runconfig --> task_10_implement_logs_elevation_and_runconfig
   done_10_implement_logs_elevation_and_runconfig --> task_15_author_tests_reverifier_seam
+  done_10_implement_logs_elevation_and_runconfig --> task_32_author_tests_needs_human_triage
   done_11_author_tests_writescope_matcher_truth_table_and_fuzz --> task_12_implement_writescope_matcher
   done_12_implement_writescope_matcher --> task_13_author_tests_writescope_check
   done_13_author_tests_writescope_check --> task_14_implement_writescope_check_and_scoped_revert
@@ -329,10 +352,14 @@ flowchart TD
   done_26_implement_ai_merge_worker --> task_28_update_guardrails_review_skill
   done_26_implement_ai_merge_worker --> task_29_update_domain_knowledge_skill
   done_26_implement_ai_merge_worker --> task_30_build_solution_gate
+  done_26_implement_ai_merge_worker --> task_33_implement_needs_human_triage
   done_27_update_plan_breakdown_skill --> task_31_full_suite_green_gate
   done_28_update_guardrails_review_skill --> task_31_full_suite_green_gate
   done_29_update_domain_knowledge_skill --> task_31_full_suite_green_gate
   done_30_build_solution_gate --> task_31_full_suite_green_gate
+  done_32_author_tests_needs_human_triage --> task_33_implement_needs_human_triage
+  done_33_implement_needs_human_triage --> task_30_build_solution_gate
+  done_33_implement_needs_human_triage --> task_31_full_suite_green_gate
   classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;

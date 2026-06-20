@@ -49,7 +49,7 @@ public sealed class CostCapSchedulerTests
     {
         public ConcurrentQueue<string> Started { get; } = [];
 
-        public Task<TaskResult> ExecuteAsync(TaskNode task, CancellationToken cancellationToken)
+        public Task<TaskResult> ExecuteAsync(TaskNode task, WorktreeHandle worktree, CancellationToken cancellationToken)
         {
             Started.Enqueue(task.Id);
             // Fully qualified: `using static PlanFixtures` brings a `Task(...)` method into scope,
@@ -64,7 +64,7 @@ public sealed class CostCapSchedulerTests
     }
 
     private static Scheduler Create(PlanDefinition plan, RecordingExecutor executor, FakeJournal journal) =>
-        new(plan, executor, journal, IRunObserver.Null, maxParallelism: 4);
+        new(plan, executor, journal, observer: IRunObserver.Null, maxParallelism: 4);
 
     private static PlanDefinition WithCap(PlanDefinition plan, decimal? cap) =>
         plan with { Config = plan.Config with { MaxCostUsd = cap } };

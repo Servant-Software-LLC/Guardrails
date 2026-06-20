@@ -84,7 +84,6 @@ public sealed class GoldenRoundTripTests
             DependsOn = t.DependsOn.ToList(),
             Retries = t.Retries,
             TimeoutSeconds = t.TimeoutSeconds,
-            Exclusive = t.Exclusive,
             Action = new ActionSnapshot
             {
                 Path = Rel(planDir, t.Action.Path),
@@ -155,7 +154,6 @@ public sealed class GoldenRoundTripTests
         public List<string> DependsOn { get; init; } = [];
         public int? Retries { get; init; }
         public int? TimeoutSeconds { get; init; }
-        public bool? Exclusive { get; init; }
         public ActionSnapshot Action { get; init; } = new();
         public List<GuardrailSnapshot> Guardrails { get; init; } = [];
     }

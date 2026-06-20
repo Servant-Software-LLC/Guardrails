@@ -24,4 +24,12 @@ public sealed record GuardrailDefinition
 
     /// <summary>Per-guardrail timeout ceiling in seconds; null = inherit from task/config.</summary>
     public int? TimeoutSeconds { get; init; }
+
+    /// <summary>
+    /// Optional scope tag from the guardrail metadata sidecar (plan 08 M2, SSOT §4.3).
+    /// The only value currently meaningful to the harness is <c>"integration"</c>, which marks
+    /// this guardrail as the whole-repo soundness check run at an <c>integrationGate</c> sink.
+    /// Null when the sidecar omits the field or there is no sidecar.
+    /// </summary>
+    public string? Scope { get; init; }
 }
