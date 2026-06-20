@@ -127,14 +127,23 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// The plan workspace must reside within a git repository (plan 08 M2, SSOT §1). The harness
-    /// creates per-run worktrees (plan branch, segment worktrees) which require a git repository
-    /// to exist. A workspace completely outside any git repository — no <c>.git</c> in the directory
-    /// or any ancestor — cannot host worktrees → GR2015 ERROR. Skipped when the workspace directory
-    /// does not yet exist (other structural errors are caught by the loader).
+    /// The plan workspace must reside within a git repository — but ONLY in worktree mode
+    /// (<c>maxParallelism &gt; 1</c>), per the PO decision. Parallel tasks need per-segment worktree
+    /// isolation, which requires a git repository (plan branch, segment worktrees) → GR2015 ERROR
+    /// when the workspace is outside any git repo. A SERIAL run (<c>maxParallelism == 1</c>) uses the
+    /// shared-workspace model: no worktrees, no concurrency, no isolation/corruption risk, so git is
+    /// NOT required and GR2015 is not emitted. Skipped when the workspace directory does not yet exist
+    /// (other structural errors are caught by the loader).
     /// </summary>
     private static void ValidateWorkspaceIsGitRoot(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
+        // git required only in worktree mode (maxParallelism>1), PO decision; serial runs use the
+        // shared workspace.
+        if (plan.Config.MaxParallelism <= 1)
+        {
+            return;
+        }
+
         string workspace = plan.Workspace;
         if (!Directory.Exists(workspace))
         {
@@ -147,9 +156,10 @@ public sealed class PlanValidator
             {
                 diagnostics.Add(Error(DiagnosticCodes.WorkspaceNotGitRoot, workspace,
                     $"Workspace '{workspace}' is not a git repository and is not inside one. " +
-                    "The harness requires a git repository to create per-run worktrees (plan branch, " +
-                    "segment worktrees). Run 'git init' in the workspace or point it at a path inside " +
-                    "an existing git repository (SSOT §1, plan 08 §1)."));
+                    "Worktree mode (maxParallelism > 1) requires a git repository to create per-run " +
+                    "worktrees (plan branch, segment worktrees). Run 'git init' in the workspace, point " +
+                    "it at a path inside an existing git repository, or set maxParallelism to 1 to run " +
+                    "serially in the shared workspace (SSOT §1, plan 08 §1)."));
             }
         }
         catch (UnauthorizedAccessException)
@@ -209,11 +219,21 @@ public sealed class PlanValidator
     /// <summary>
     /// A plan with a parallel topology — ≥2 leaf tasks (tasks with no dependents) or any fan-in
     /// task (a task with ≥2 upstreams) — must declare exactly one <c>integrationGate:true</c> sink
-    /// (plan 08 M2, SSOT §3.3). The terminal gate is the whole-repo soundness boundary; omitting it
-    /// leaves parallel branches unverified at the integration level → GR2017 ERROR.
+    /// (plan 08 M2, SSOT §3.3) — but ONLY in worktree mode (<c>maxParallelism &gt; 1</c>), per the
+    /// PO decision. The terminal gate verifies the merged union of *parallel* branches; a SERIAL
+    /// run (<c>maxParallelism == 1</c>) uses the shared workspace and has no parallel branches to
+    /// merge, so the hard requirement does not apply and GR2017 is not emitted. In worktree mode,
+    /// omitting the gate leaves parallel branches unverified at the integration level → GR2017 ERROR.
     /// </summary>
     private static void ValidateIntegrationGatePresent(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
+        // Gate required only in worktree mode (maxParallelism>1), PO decision; a serial run uses the
+        // shared workspace and merges no parallel branches, so there is nothing for the gate to verify.
+        if (plan.Config.MaxParallelism <= 1)
+        {
+            return;
+        }
+
         if (plan.Tasks.Any(t => t.IntegrationGate))
         {
             return;
@@ -236,11 +256,22 @@ public sealed class PlanValidator
 
     /// <summary>
     /// Every <c>integrationGate:true</c> sink must carry at least one guardrail with
-    /// <c>scope:"integration"</c> (plan 08 M2, SSOT §3.3/§4.3). An empty integration-guardrail
-    /// set provides no whole-repo soundness check — a gate that verifies nothing → GR2018 ERROR.
+    /// <c>scope:"integration"</c> (plan 08 M2, SSOT §3.3/§4.3) — but ONLY in worktree mode
+    /// (<c>maxParallelism &gt; 1</c>), per the PO decision. The integration gate verifies the
+    /// merged union of *parallel* branches; a SERIAL run (<c>maxParallelism == 1</c>) uses the
+    /// shared workspace and merges no parallel branches, so the requirement does not apply and
+    /// GR2018 is not emitted. In worktree mode, an empty integration-guardrail set provides no
+    /// whole-repo soundness check — a gate that verifies nothing → GR2018 ERROR.
     /// </summary>
     private static void ValidateIntegrationGateNonEmpty(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
+        // Gate verification required only in worktree mode (maxParallelism>1), PO decision; a serial
+        // run merges no parallel branches, so there is nothing for the gate to verify.
+        if (plan.Config.MaxParallelism <= 1)
+        {
+            return;
+        }
+
         foreach (TaskNode task in plan.Tasks)
         {
             if (!task.IntegrationGate)

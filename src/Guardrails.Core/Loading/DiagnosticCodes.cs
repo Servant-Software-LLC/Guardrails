@@ -90,9 +90,12 @@ public static class DiagnosticCodes
     public const string CostCapNonPositive = "GR2012";
 
     /// <summary>
-    /// The plan workspace is not inside a git repository (plan 08 M2, SSOT §1). The harness
-    /// must create per-run worktrees (plan branch, segment worktrees), which requires the workspace
-    /// to reside within a git repository. An ERROR — the harness cannot proceed without git.
+    /// The plan workspace is not inside a git repository (plan 08 M2, SSOT §1). Emitted ONLY in
+    /// worktree mode (<c>maxParallelism &gt; 1</c>, the PO decision): parallel tasks need per-segment
+    /// worktree isolation (plan branch, segment worktrees), which requires the workspace to reside
+    /// within a git repository. An ERROR — the harness cannot create worktrees without git. A SERIAL
+    /// run (<c>maxParallelism == 1</c>) uses the shared workspace and does NOT require git, so this is
+    /// not emitted there.
     /// </summary>
     public const string WorkspaceNotGitRoot = "GR2015";
 

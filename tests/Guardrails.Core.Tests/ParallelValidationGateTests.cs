@@ -42,18 +42,31 @@ public sealed class ParallelValidationGateTests : IDisposable
     // =========================================================================
 
     [Fact]
-    public void NonGitWorkspace_ProducesGr2015_Error()
+    public void NonGitWorkspace_WorktreeMode_ProducesGr2015_Error()
     {
-        // SSOT §1, plan 08 §1: the workspace must be a git repository top-level so the
-        // harness can create worktrees (plan branch, segment worktrees). A workspace with
-        // no .git must be rejected at validate time (and run pre-flight) → GR2015 error.
+        // SSOT §1, plan 08 §1, PO decision: git is required ONLY in worktree mode
+        // (maxParallelism > 1) — parallel tasks need per-segment worktree isolation, which
+        // needs a git repository (plan branch, segment worktrees). A non-git workspace in
+        // worktree mode must be rejected at validate time → GR2015 error.
         // _tempRoot is a freshly created directory with no .git — guaranteed non-git root.
-        PlanDefinition plan = InMemoryPlan(workspace: _tempRoot, ScriptTask("01-a"));
+        PlanDefinition plan = InMemoryPlan(workspace: _tempRoot, maxParallelism: 3, ScriptTask("01-a"));
 
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        // FAILS on current code: ValidateWorkspaceIsGitRoot is not yet implemented.
         Assert.Contains(diagnostics, d => d.Code == Gr2015 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void NonGitWorkspace_SerialMode_ProducesNoGr2015()
+    {
+        // PO decision: a SERIAL run (maxParallelism == 1) uses the shared-workspace model —
+        // no worktrees, no concurrency, no isolation/corruption risk — so git is NOT required.
+        // The same non-git workspace that fails in worktree mode must produce NO GR2015 here.
+        PlanDefinition plan = InMemoryPlan(workspace: _tempRoot, maxParallelism: 1, ScriptTask("01-a"));
+
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2015);
     }
 
     // =========================================================================
@@ -96,47 +109,86 @@ public sealed class ParallelValidationGateTests : IDisposable
     // =========================================================================
 
     [Fact]
-    public void MultiLeafPlan_WithoutIntegrationGateSink_ProducesGr2017_Error()
+    public void MultiLeafPlan_WorktreeMode_WithoutIntegrationGateSink_ProducesGr2017_Error()
     {
-        // SSOT §3.3, plan 08 §3: a plan with ≥2 leaf tasks (tasks no other task depends on)
-        // MUST declare exactly one integrationGate:true sink. The terminal gate is the sole
-        // whole-repo soundness boundary for FF chains (per-hop re-verify is replaced by it);
-        // missing it on a multi-leaf plan → GR2017 error.
+        // SSOT §3.3, plan 08 §3, PO decision: the integration-gate requirement fires ONLY in
+        // worktree mode (maxParallelism > 1). The terminal gate verifies the merged union of the
+        // parallel branches; a multi-leaf plan run in parallel with no integrationGate:true sink
+        // leaves those branches unverified at the integration level → GR2017 error.
         //
         // DAG:  01-root → 02-leaf-a  (leaf — no task depends on it)
         //               → 03-leaf-b  (leaf — no task depends on it)
-        // Two leaves, no integrationGate task → GR2017.
+        // Two leaves, no integrationGate task, maxParallelism>1 → GR2017.
         PlanDefinition plan = InMemoryPlan(
+            "/fake/workspace",
+            maxParallelism: 3,
             ScriptTask("01-root"),
             ScriptTask("02-leaf-a", "01-root"),
             ScriptTask("03-leaf-b", "01-root"));
 
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        // FAILS on current code: ValidateIntegrationGatePresent is not yet implemented.
         Assert.Contains(diagnostics, d => d.Code == Gr2017 && d.Severity == DiagnosticSeverity.Error);
     }
 
     [Fact]
-    public void FanInPlan_WithoutIntegrationGateSink_ProducesGr2017_Error()
+    public void MultiLeafPlan_SerialMode_WithoutIntegrationGateSink_ProducesNoGr2017()
     {
-        // SSOT §3.3, plan 08 §3: a plan with any fan-in task (a task with ≥2 upstreams,
-        // which triggers a real union merge + re-verify path) MUST have an
-        // integrationGate:true sink. The fan-in's per-union re-verify is not the whole-repo
-        // check; the terminal gate must additionally exist.
+        // PO decision: a SERIAL run (maxParallelism == 1) uses the shared-workspace model — there
+        // are no parallel branches to merge, so the integration gate has nothing to verify and the
+        // hard requirement does not apply. The same multi-leaf no-gate plan that fails in worktree
+        // mode must produce NO GR2017 here.
+        PlanDefinition plan = InMemoryPlan(
+            "/fake/workspace",
+            maxParallelism: 1,
+            ScriptTask("01-root"),
+            ScriptTask("02-leaf-a", "01-root"),
+            ScriptTask("03-leaf-b", "01-root"));
+
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2017);
+    }
+
+    [Fact]
+    public void FanInPlan_WorktreeMode_WithoutIntegrationGateSink_ProducesGr2017_Error()
+    {
+        // SSOT §3.3, plan 08 §3, PO decision: in worktree mode (maxParallelism > 1) a plan with any
+        // fan-in task (≥2 upstreams → a real union merge + re-verify path) MUST have an
+        // integrationGate:true sink. The fan-in's per-union re-verify is not the whole-repo check;
+        // the terminal gate must additionally exist.
         //
         // DAG:  01-a → 03-fanin  (2 upstreams → fan-in)
         //       02-b ↗
-        // One leaf but it IS the fan-in; no integrationGate task → GR2017.
+        // One leaf but it IS the fan-in; no integrationGate task, maxParallelism>1 → GR2017.
         PlanDefinition plan = InMemoryPlan(
+            "/fake/workspace",
+            maxParallelism: 3,
             ScriptTask("01-a"),
             ScriptTask("02-b"),
             ScriptTask("03-fanin", "01-a", "02-b"));
 
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        // FAILS on current code: ValidateIntegrationGatePresent is not yet implemented.
         Assert.Contains(diagnostics, d => d.Code == Gr2017 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void FanInPlan_SerialMode_WithoutIntegrationGateSink_ProducesNoGr2017()
+    {
+        // PO decision: a SERIAL run (maxParallelism == 1) never executes branches in parallel, so
+        // even a fan-in topology merges no concurrent worktrees — the integration gate has nothing
+        // to verify. The same fan-in no-gate plan that fails in worktree mode produces NO GR2017 here.
+        PlanDefinition plan = InMemoryPlan(
+            "/fake/workspace",
+            maxParallelism: 1,
+            ScriptTask("01-a"),
+            ScriptTask("02-b"),
+            ScriptTask("03-fanin", "01-a", "02-b"));
+
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2017);
     }
 
     // =========================================================================
@@ -144,27 +196,26 @@ public sealed class ParallelValidationGateTests : IDisposable
     // =========================================================================
 
     [Fact]
-    public void IntegrationGateSink_WithoutScopeIntegrationGuardrail_ProducesGr2018_Error()
+    public void IntegrationGateSink_WorktreeMode_WithoutScopeIntegrationGuardrail_ProducesGr2018_Error()
     {
-        // SSOT §3.3/§4.3, plan 08 §3: the integrationGate:true sink MUST carry at least
-        // one guardrail declared scope:"integration". Without it the terminal gate verifies
-        // nothing — an empty integration-guardrail set is not a sound soundness boundary → GR2018.
+        // SSOT §3.3/§4.3, plan 08 §3, PO decision: in worktree mode (maxParallelism > 1) the
+        // integrationGate:true sink MUST carry at least one guardrail declared scope:"integration".
+        // Without it the terminal gate verifies nothing — an empty integration-guardrail set is not
+        // a sound soundness boundary → GR2018.
         //
-        // Uses disk loading because task.json carries the integrationGate:true field, which
-        // is currently unknown to the loader (RawTask/TaskNode). M2 adds the field; until
-        // then the current loader silently ignores it and the validator cannot emit GR2018.
-        // The gate task's guardrail has no scope:"integration" sidecar (M2 will also add
-        // the scope field to RawGuardrailSidecar/GuardrailDefinition for the validator to read).
+        // Uses disk loading because task.json carries the integrationGate:true field. The gate
+        // task's guardrail has no scope:"integration" sidecar. guardrails.json declares
+        // maxParallelism>1 to put the plan in worktree mode where the gate requirement applies.
         string planDir = Path.Combine(_tempRoot, "gr2018-no-scope");
         WriteDiskPlan(
             planDir,
-            guardrailsJson: "{ \"version\": 1 }",
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
             tasks:
             [
                 ("01-a", "{ \"description\": \"task a\", \"dependsOn\": [] }"),
                 ("02-b", "{ \"description\": \"task b\", \"dependsOn\": [] }"),
-                // integrationGate:true — currently ignored by the loader; the guardrail
-                // written by WriteDiskPlan has no scope:"integration" in any sidecar.
+                // integrationGate:true; the guardrail written by WriteDiskPlan has no
+                // scope:"integration" in any sidecar.
                 ("03-gate",
                     "{ \"description\": \"integration gate\", \"dependsOn\": [\"01-a\", \"02-b\"], \"integrationGate\": true }")
             ]);
@@ -172,9 +223,32 @@ public sealed class ParallelValidationGateTests : IDisposable
         PlanDefinition plan = LoadPlan(planDir);
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        // FAILS on current code: integrationGate is not exposed on TaskNode (loader ignores
-        // it) and ValidateIntegrationGateNonEmpty is not yet implemented.
         Assert.Contains(diagnostics, d => d.Code == Gr2018 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void IntegrationGateSink_SerialMode_WithoutScopeIntegrationGuardrail_ProducesNoGr2018()
+    {
+        // PO decision: a SERIAL run (maxParallelism == 1) merges no parallel branches, so the
+        // integration gate has nothing to verify and the scope:"integration" requirement does not
+        // apply. The same integrationGate:true sink with no integration-scoped guardrail that fails
+        // in worktree mode must produce NO GR2018 here.
+        string planDir = Path.Combine(_tempRoot, "gr2018-serial-no-scope");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 1 }",
+            tasks:
+            [
+                ("01-a", "{ \"description\": \"task a\", \"dependsOn\": [] }"),
+                ("02-b", "{ \"description\": \"task b\", \"dependsOn\": [] }"),
+                ("03-gate",
+                    "{ \"description\": \"integration gate\", \"dependsOn\": [\"01-a\", \"02-b\"], \"integrationGate\": true }")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2018);
     }
 
     // =========================================================================
@@ -188,11 +262,19 @@ public sealed class ParallelValidationGateTests : IDisposable
     /// Build an in-memory plan with the given workspace root and tasks. No disk I/O.
     /// </summary>
     private static PlanDefinition InMemoryPlan(string workspace, params TaskNode[] tasks) =>
+        InMemoryPlan(workspace, maxParallelism: 3, tasks);
+
+    /// <summary>
+    /// Build an in-memory plan with an explicit workspace root and maxParallelism. The
+    /// maxParallelism overload exists for the GR2015 gate, which is conditional on worktree
+    /// mode (maxParallelism > 1) per the PO decision; serial runs (== 1) skip the git check.
+    /// </summary>
+    private static PlanDefinition InMemoryPlan(string workspace, int maxParallelism, params TaskNode[] tasks) =>
         new()
         {
             PlanDirectory = workspace,
             Workspace = workspace,
-            Config = new RunConfig { Version = 1 },
+            Config = new RunConfig { Version = 1, MaxParallelism = maxParallelism },
             Tasks = tasks
         };
 

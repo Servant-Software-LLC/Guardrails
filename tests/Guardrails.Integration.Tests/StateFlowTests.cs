@@ -25,6 +25,17 @@ public sealed class StateFlowTests
         return await scheduler.RunAsync(load.Plan!, cancellationToken);
     }
 
+    /// <summary>
+    /// The per-attempt log directory under the plan-08 M2/M3 layout:
+    /// <c>&lt;planDir&gt;/logs/&lt;runId&gt;/&lt;task&gt;/attempt-N/</c> (TaskExecutor.AttemptLogDir).
+    /// The runId is read from the run journal the test produced (RunJournal RunId), never hard-coded.
+    /// </summary>
+    private static string AttemptDir(string planDir, string taskId, int attempt) =>
+        Path.Combine(
+            planDir, "logs",
+            JournalReader.Read(RunJournal.PathFor(planDir)).RunId,
+            taskId, $"attempt-{attempt}");
+
     [Fact]
     public async Task FragmentOut_FlowsToDownstreamStateIn_AndMerges()
     {
@@ -142,7 +153,7 @@ public sealed class StateFlowTests
 
         // The retry feedback names the exact offending key.
         string feedback = File.ReadAllText(
-            Path.Combine(plan.PlanDir, "state", "logs", "02-poisoner", "attempt-1", "feedback.md"));
+            Path.Combine(AttemptDir(plan.PlanDir, "02-poisoner", 1), "feedback.md"));
         Assert.Contains("01-producer", feedback);
     }
 
@@ -159,7 +170,7 @@ public sealed class StateFlowTests
         using var plan = new StatePlanBuilder().AddTask("01-task", actionBody: writeFragment);
         await RunAsync(plan.PlanDir, TestContext.Current.CancellationToken);
 
-        string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-task", "attempt-1");
+        string attemptDir = AttemptDir(plan.PlanDir, "01-task", 1);
         Assert.True(File.Exists(Path.Combine(attemptDir, "state-in.json")), "state-in.json");
         Assert.True(File.Exists(Path.Combine(attemptDir, "action-stdout.log")), "action-stdout.log");
         Assert.True(File.Exists(Path.Combine(attemptDir, "action-stderr.log")), "action-stderr.log");

@@ -102,7 +102,7 @@ diagnostic code is assigned against the *actual current* `DiagnosticCodes.cs` (h
 | **Source-branch console indicator** (info when fork source is `main`/`master` case-insensitive, WARNING otherwise) | **harness** — `Scheduler`/`Cli` run-start UX; SSOT §2 note |
 | **`runOnCurrentBranch` + dirty-tree pre-flight prompt** (interactive: prompt; non-interactive: refuse/halt unless `--yes`) | **harness** — run-start pre-flight gate in `Scheduler`; SSOT §2 |
 | **AI triage on attempt-exhaustion needs-human** (advisory prompt → diagnoses tool-vs-local → writes `logs/<runId>/<task-id>/feedback.md`; needs-human message points to it; optional opt-in GH auto-file) | **harness + schema** — `Execution/NeedsHumanTriage` over `IPromptRunner` + an `ai-triage` profile; `feedback.md` log artifact; SSOT §8/§9.2 — and a later milestone |
-| Git-required validation gate; **all new GR codes FRESH (GR2015+)** against the actual live `DiagnosticCodes.cs` (highest live = GR2014, both taken by the triad) | **harness** — `Loading/PlanValidator.cs`, `Loading/DiagnosticCodes.cs` |
+| Git-required validation gate (**worktree mode only, `maxParallelism > 1`**); **all new GR codes FRESH (GR2015+)** against the actual live `DiagnosticCodes.cs` (highest live = GR2014, both taken by the triad) | **harness** — `Loading/PlanValidator.cs`, `Loading/DiagnosticCodes.cs` |
 | **Logs layout** — `logs/` elevated to a sibling of `state/`, divided by `runId` | **harness + schema** — `State/` log path resolution; SSOT §1, §8 |
 | **Disk v1:** chain-reuse (the big lever) + shared `.git/objects` (free) + reset-based cheap retries | **harness** — the reuse topology IS the disk lever; `maxParallelism` default **3** |
 | **Worktree pooling / copy-on-write / sparse checkout** as *additional* disk mitigations | **v2 / out of scope** — honestly DEFERRED (NTFS has no reflink; the gate worktree needs the whole repo). Named in §Honest costs |
@@ -150,15 +150,19 @@ AI a byte producer the deterministic re-verify gates.
 5. **Honest halts — nothing marked done unverified; needs-human is a feature.** Respected and
    extended: an unresolvable conflict, an AI-merge that leaves markers or writes out of bounds, a
    failed re-verify (clean-auto OR AI path), a write-scope violation that exhausts retries, and a
-   non-git workspace are all honest halts. The plan branch carries only the integrations that passed
+   non-git workspace **in worktree mode (`maxParallelism > 1`)** are all honest halts. (A serial run on
+   a non-git workspace is not a halt — it uses the shared-workspace model.) The plan branch carries only
+   the integrations that passed
    re-verify; `--merge-on-success` refuses a run the terminal gate did not certify.
 6. **Plain files, light setup — no databases, daemons, or SaaS in v1.** Respected: git is the only
-   added hard dependency (already universal, no daemon). The AI-merge worker reuses the existing
+   added hard dependency, **and only in worktree mode (`maxParallelism > 1`)** — a serial run keeps the
+   pre-plan-08 model with no git requirement (already universal where present, no daemon). The AI-merge worker reuses the existing
    `IPromptRunner` / Claude CLI seam and its **on-disk file convention** (the runner writes a file;
    the harness reads it) — **no new external dependency** — but it does need a NEW *merge* env
    contract (`GUARDRAILS_MERGE_BASE`/`_OURS`/`_THEIRS`/`_OUT`) and a distinct merge prompt profile
    layered on that convention (the existing `PromptResult` returns metadata, not bytes — §4 step 2).
-   The honest tension carried from plan 07: git becomes a hard requirement, and AI-merge adds prompt
+   The honest tension carried from plan 07: git becomes a hard requirement **in worktree mode
+   (`maxParallelism > 1`)**, and AI-merge adds prompt
    *cost* to the integration path (named in §Honest costs).
 
 ---
@@ -167,7 +171,20 @@ AI a byte producer the deterministic re-verify gates.
 
 ### 1. Branch + worktree lifecycle (one model: isolate, reuse, integrate)
 
-**The plan branch.** At run start the harness creates a branch named after the plan,
+**Worktree mode is CONDITIONAL on `maxParallelism > 1` — everything in §1, §3, §4 below describes
+worktree mode.** A **parallel** run (`maxParallelism > 1`) needs per-task isolation, so the harness
+runs in worktree mode: plan branch + segment/integration worktrees + merge-back + the atomic settle, as
+specified throughout this document. A **serial** run (`maxParallelism == 1`) has no concurrency and
+therefore no isolation/corruption risk, so it uses the **shared-workspace execution model** — the
+pre-plan-08 execution path: tasks run directly in the user's workspace, with **no worktree provider, no
+plan branch, no git requirement, and no cross-branch merge**. The scheduler/executor **branches on
+`maxParallelism`** at run start: `> 1` selects the worktree path (worktree-per-task/segment +
+integration/merge-back + the atomic settle of §3–§4); `== 1` selects the serial shared-workspace path.
+The M3/M4 scheduler-integration work builds this as a **conditional** branch, NOT always-on worktrees.
+The remainder of §1 (and §3/§4) describes the worktree path; wherever a passage assumes always-worktree,
+read it as scoped to worktree mode (`maxParallelism > 1`).
+
+**The plan branch (worktree mode).** At run start the harness creates a branch named after the plan,
 `<plan-name>` (e.g. `guardrails/<plan-name>` to namespace it), off the user's current HEAD, and a
 **harness-owned plan/integration worktree** on it at `<root>/_integration`. This worktree is the
 durable **merge target** and the **terminal-gate site**. `runId` lives in the worktree directory
@@ -638,10 +655,13 @@ plan 08 has **one** chance — the terminal gate. So "no wider than plan 07's re
 the terminal gate's integration set actually exercises the cross-hop interactions** that plan 07's
 per-hop re-verifies would have caught. A weak or thin terminal gate makes plan 08's residual **wider**
 than plan 07's, not equal. Therefore this plan makes a **missing or thin terminal integration gate a
-HARD validation ERROR** (fresh GR codes — see §Schema-changes), not advisory: a multi-leaf or
+HARD validation ERROR in worktree mode (`maxParallelism > 1`)** (fresh GR codes — see §Schema-changes),
+not advisory: a multi-leaf or
 fan-in-bearing plan with no `integrationGate` sink fails `validate` (**GR2017**), and a plan whose
 `integrationGate` sink carries no `scope: "integration"` guardrail fails `validate` (**GR2018**, the
-empty-integration-set case). The trade — N free FF-integrations vs N per-hop re-verifies
+empty-integration-set case). (In **serial mode** these do not fire — no parallel-branch union exists to
+verify; a terminal gate stays good practice there, not a validation error.) The trade — N free
+FF-integrations vs N per-hop re-verifies
 — is deliberate and is a real reduction in *per-hop* integration verification, paid for by a terminal
 gate that validation now FORCES to exist and to be non-empty. Flagged so it is not mistaken for a
 pure win, and so the conditional is not buried.
@@ -1095,8 +1115,11 @@ gated opt-in above (a `triageAutoFile: true` config behind a configured repo + t
 The feature false-greened twice. So, plainly — what this costs and where it is the wrong tool.
 
 1. **Disk amplification (mitigated by reuse, NOT eliminated) — the honest peak-disk math the PO
-   accepted (N-3).** `maxParallelism` defaults to **3** because the product owner explicitly chose it
-   for demos; this is kept. The honest cost of that choice, stated so the PO sees what they accepted:
+   accepted (N-3). This cost applies ONLY to parallel runs (`maxParallelism > 1`); a serial run uses
+   the shared-workspace model and pays NO worktree disk cost and has NO git requirement.**
+   `maxParallelism` defaults to **3** because the product owner explicitly chose it
+   for demos; this is kept. The honest cost of that choice, stated so the PO sees what they accepted (at
+   the demo default of 3, i.e. in worktree mode):
    the **peak working-tree count ≈ (antichain-width + 1 integration worktree + transient fan-in
    trees)**, so **peak disk ≈ (antichain-width + 1 + transient fan-in) × working-tree-size**. At
    `maxParallelism: 3` with a fan-in in flight that is up to ~`(3 + 1 + 1) × working-tree-size` of
@@ -1160,13 +1183,20 @@ The feature false-greened twice. So, plainly — what this costs and where it is
    cost cap is already reached. The honest limit: the triage diagnosis can be **wrong** (tool-vs-local
    mis-call) — bounded by keeping it advisory (it gates nothing) and by **draft-only GH issues by
    default** (auto-file is opt-in, default off, to avoid unattended duplicate/spam issues).
-6. **Where this is simply WRONG.** Non-git workspace → validation error (no silent fallback). A
+6. **Where this is simply WRONG.** Non-git workspace **in worktree mode (`maxParallelism > 1`)** →
+   validation error (no silent fallback); a serial run on a non-git workspace is fine (shared-workspace
+   model). A
    workspace that tracks build output → the merge surface churns artifacts (mitigated by `state/`
    outside the merge + the W3 porcelain check). A flailing agent escaping its worktree by absolute
    path → physical isolation protects the *tree*, not the *filesystem* (the same residual every
    sandbox has; `allowedTools` is the real boundary, orthogonal).
-7. **Git + AI as preconditions.** "Light setup" now includes git, *and* AI-merge adds prompt cost to
-   the integration path — reasonable for the audience, but not nothing.
+7. **Git + AI as preconditions — for parallel runs only.** "Light setup" includes git **only in
+   worktree mode (`maxParallelism > 1`)**, *and* AI-merge adds prompt cost to
+   the integration path — reasonable for the audience, but not nothing. A **serial run
+   (`maxParallelism == 1`) keeps the simpler pre-plan-08 model**: no git requirement, no worktrees, no
+   merge, no AI-merge. The soundness story is preserved at both settings: worktree isolation makes the
+   #88-class concurrent-sibling corruption **structurally impossible for parallel runs**, and a serial
+   run is **safe by sequentiality** (one task at a time ⇒ no concurrent write ⇒ no isolation needed).
 8. **Net residual carried into the handoff (promoted to decision altitude — N-2).** The PO and the
    implementing agents should see these in the body, not buried in the self-critique:
    - **(a)** AI-merge re-runs the colliding siblings' full guardrails (closing the dropped-hunk hole,
@@ -1537,19 +1567,27 @@ frees them). The teardown line items appear explicitly in M1 (channel/handle + c
   teardown part 2.** `GitWorktreeProvider` (plan branch `guardrails/<plan-name>` + integration worktree
   off the user's HEAD; **segment worktrees with reuse** — root fork, linear reuse, fan-out inherit-one +
   fork-the-rest off the **recorded sha** (W-2), fan-in fork; discard/prune); `TaskExecutor` cwd →
-  segment worktree; **git-required validation (FRESH GR2015)**; `TaskNode.IntegrationGate` +
+  segment worktree; **git-required validation, CONDITIONAL on `maxParallelism > 1` (FRESH GR2015)** —
+  GR2015 fires only in worktree mode; a serial run (`maxParallelism == 1`) validates on a non-git
+  workspace; `TaskNode.IntegrationGate` +
   terminal-gate validation (**FRESH GR2017 for missing gate; FRESH GR2018 for empty integration set**,
-  W-4); MAX_PATH warning (**FRESH GR2016**); `worktreeRoot` config; **`maxParallelism` default 3** (PO
+  W-4), **both ALSO conditional on `maxParallelism > 1`** (no parallel-branch union to verify in serial
+  mode); MAX_PATH warning (**FRESH GR2016**); `worktreeRoot` config; **`maxParallelism` default 3** (PO
   choice; honest peak-disk math in §Honest costs); **logs layout elevated to `logs/<runId>/...`**
-  (Decision 5). **Triad teardown part 2 (and the GR retirement):** delete `WorkspaceLock` + the
+  (Decision 5). **The worktree lifecycle itself is gated on `maxParallelism > 1`:** the
+  `GitWorktreeProvider`/plan-branch path is taken only for a parallel run; a serial run takes the
+  shared-workspace path (no provider, no plan branch). **Triad teardown part 2 (and the GR retirement):** delete `WorkspaceLock` + the
   `exclusive` admission gate, `TaskNode.Exclusive/CaptureHashes/RestoreOnRetry`, the two validators
   `ValidateCaptureHashes`/`ValidateRestoreOnRetry`; **RETIRE the GR2013/GR2014 triad meanings** in the
   same change (the codes are now free; reassign their constant names or remove them). **No integration
-  yet** — tasks run in reused segment worktrees and are discarded. **Exit:** a linear chain reuses ONE
-  worktree; a fan-out forks lazily off the recorded sha; the user's branch is untouched; non-git fails
-  GR2015; a multi-leaf/fan-in plan without a gate sink fails GR2017; an empty-integration-set gate fails
-  GR2018; logs land under `logs/<runId>/`; the triad is gone and GR2013/GR2014 no longer mean the triad
-  checks. Size: L.
+  yet** — tasks run in reused segment worktrees and are discarded. **Exit:** with `maxParallelism > 1`,
+  a linear chain reuses ONE
+  worktree; a fan-out forks lazily off the recorded sha; the user's branch is untouched; a non-git
+  workspace fails GR2015; a multi-leaf/fan-in plan without a gate sink fails GR2017; an
+  empty-integration-set gate fails GR2018. With `maxParallelism == 1`, the run takes the
+  shared-workspace path (no worktrees, no plan branch) and **GR2015/GR2017/GR2018 do NOT fire** (a
+  non-git serial run validates and runs). logs land under `logs/<runId>/`; the triad is gone and
+  GR2013/GR2014 no longer mean the triad checks. Size: L.
   Agent: `guardrails-harness-developer` + `guardrails-test-author`.
   filesTouched: `Execution/GitWorktreeProvider.cs`, `Execution/WorktreeManager.cs` (reuse topology,
   recorded-sha fork), `Execution/TaskExecutor.cs`, `Execution/Scheduler.cs` (plan branch at run start;
@@ -1602,10 +1640,20 @@ frees them). The teardown line items appear explicitly in M1 (channel/handle + c
   by trailer-on-every-integrated-commit + plan-branch-tip-only (W-1, `branch -D` before trailer read);
   `reset --hard <taskBase> + clean -fd` retry; `--merge-on-success` (AI-merge withheld here);
   terminal-gate re-verify on the final HEAD via `IReVerifier`; `RunReset` takes `IWorktreeProvider`.
+  **The scheduler/executor MUST branch on `maxParallelism`:** the entire worktree path above (plan
+  branch, segment worktrees, the integration lock, FF/non-FF settle, merge-back, terminal-gate
+  re-verify, `--merge-on-success`) is taken **only when `maxParallelism > 1`**. When
+  `maxParallelism == 1` the run takes the **serial shared-workspace path** — the pre-plan-08 execution
+  model, with **no worktree provider, no plan branch, no integration lock, and no merge/settle**. Build
+  the conditional dispatch, not always-on worktrees.
   (Triad store deletes `CapturedFileStore`/`FileHashCapture` are done in M2; M4 only ensures nothing
-  re-references them.) **Exit:** the FF-is-free, non-FF-union-re-verifies (B1 four-effect),
+  re-references them.) **Exit:** with `maxParallelism > 1`, the FF-is-free, non-FF-union-re-verifies
+  (B1 four-effect),
   retry-preserves-upstream-commits, resume-after-FF-before-journal, resume-ignores-stale-segment-ref
-  (W-1), and merge-on-success tests pass; `IReVerifier` runs with no attempt context. Depends on M3.
+  (W-1), and merge-on-success tests pass; `IReVerifier` runs with no attempt context. **With
+  `maxParallelism == 1`, the run completes on the shared-workspace path with no worktrees/plan
+  branch/merge** (a regression-guard test pins that serial mode bypasses the integration machinery
+  entirely). Depends on M3.
   Size: L (XL if not split).
   Agent: `guardrails-harness-developer` + `guardrails-test-author` (tests FIRST).
   filesTouched: `Execution/IReVerifier.cs` (new, public attempt-decoupled), `Execution/Integrator.cs`
@@ -1676,16 +1724,23 @@ plan 07's edits; where plan 07 and this plan both touch a section, **this plan's
 
 Replace the plan-07 layout block and add:
 
-> **Workspace must be a git repository top-level.** Parallel execution never writes the user's
-> checkout. At run start the harness creates a **plan branch** `guardrails/<plan-name>` off the
+> **Worktree mode requires a git repository top-level (parallel runs only).** **Worktree mode is
+> CONDITIONAL on `maxParallelism > 1`.** A **parallel** run (`maxParallelism > 1`) needs per-task
+> isolation, so it runs in worktree mode and never writes the user's checkout; a **serial** run
+> (`maxParallelism == 1`) has no concurrency, so it uses the **shared-workspace** execution model (the
+> pre-plan-08 path) — no worktrees, no git requirement, no plan branch, no cross-branch merge. A
+> serial run is sound by sequentiality: with one task at a time there is no concurrent-sibling write,
+> so the #88 corruption class cannot arise and isolation is unnecessary. **In worktree mode** the
+> harness creates a **plan branch** `guardrails/<plan-name>` off the
 > user's current HEAD and a **harness-owned integration worktree** on it; this is the sole merge
 > target and the terminal-gate site for the run. Each task runs in a **segment worktree**: a linear
 > chain **reuses one** segment worktree passed along the chain; a fan-out **inherits one** chain and
 > **forks the rest** off the producer's committed tip; a fan-in **forks one** upstream and merges the
 > others in. `runId` lives in worktree directory names and commit trailers, **not** the branch name.
-> `guardrails validate` and a run pre-flight reject a non-git-top-level workspace (**`GR2015`**, a
-> FRESH code — the old plan-07 draft cited `GR2013`, which is **taken on `master`** by the live triad
-> `CaptureHashEscapesWorkspace`). The
+> **In worktree mode** `guardrails validate` and a run pre-flight reject a non-git-top-level workspace
+> (**`GR2015`**, a FRESH code — the old plan-07 draft cited `GR2013`, which is **taken on `master`** by
+> the live triad `CaptureHashEscapesWorkspace`); **a serial run validates and runs on a non-git
+> workspace** (GR2015 does not fire when `maxParallelism == 1`). The
 > harness creates all worktrees under a **harness-owned root outside the workspace** — default
 > `<temp>/guardrails-worktrees/<workspace-hash>/<runId>/`, overridable via `guardrails.json:
 > worktreeRoot`. Worktrees + the plan branch are runtime state (wiped by `--fresh`, pruned on resume;
@@ -1742,7 +1797,11 @@ plan-name/
 >   with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the user's commits.
 > - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
 >   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
->   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
+>   disk-constrained box; raise on a fast/large `worktreeRoot` volume. **`maxParallelism` is also the
+>   mode switch:** `> 1` selects **worktree mode** (everything in this §2 block — `worktreeRoot`,
+>   `runOnCurrentBranch`, `mergeOnSuccess`, the plan branch, the git precondition GR2015 — applies);
+>   `== 1` selects the **serial shared-workspace model** (the pre-plan-08 path), where none of the
+>   worktree/plan-branch/merge config applies and **git is not required**.
 
 ### §3 `tasks/<id>/task.json` — REMOVE the triad/`exclusive`; ADD `integrationGate` + `writeScope`
 
@@ -1760,11 +1819,15 @@ plan-name/
 
 - Add **§3.3 "Terminal integration gate (`integrationGate`)"** — *carried from plan 07 §3.3*, with two
   clarifications: (a) the gate task's guardrails are exactly the run's **integration-guardrail set**
-  (§4.3) — the `scope: "integration"` guardrails — run on the final HEAD; (b) **a multi-leaf or
-  fan-in-bearing plan MUST declare exactly one `integrationGate` sink** (missing ⇒ `validate` error
-  **GR2017**), and that sink **MUST carry ≥1 `scope: "integration"` guardrail** (empty integration set
-  ⇒ `validate` error **GR2018**) — these are HARD errors because the terminal gate is the sole
-  whole-repo soundness boundary for FF chains and AI-resolved unions (W-4).
+  (§4.3) — the `scope: "integration"` guardrails — run on the final HEAD; (b) **in worktree mode
+  (`maxParallelism > 1`) a multi-leaf or fan-in-bearing plan MUST declare exactly one `integrationGate`
+  sink** (missing ⇒ `validate` error **GR2017**), and that sink **MUST carry ≥1 `scope: "integration"`
+  guardrail** (empty integration set ⇒ `validate` error **GR2018**) — these are HARD errors because the
+  terminal gate is the sole whole-repo soundness boundary for FF chains and AI-resolved unions (W-4).
+  **In serial mode (`maxParallelism == 1`) GR2017/GR2018 do NOT fire** — there is no parallel-branch
+  union to verify, so the absence of a gate is not a validation error. A terminal whole-repo gate
+  remains good practice in serial mode (it catches a jointly-inconsistent chain in one place), just not
+  a hard requirement.
 
 - Add **§3.4 "Write-scope check (`writeScope`)"**:
 
@@ -1800,9 +1863,12 @@ plan-name/
 > worktree isolation and (ii) the §3.4 write-scope check: an implementation task's `writeScope` excludes
 > the test files, so an edit to them fails the deterministic check.)*
 
-- Add **§3.2 "Worktree task semantics"** — *carried from plan 07 §3.2*, amended for reuse:
+- Add **§3.2 "Worktree task semantics"** — *carried from plan 07 §3.2*, amended for reuse (this section
+  describes **worktree mode** only, `maxParallelism > 1`; a serial run uses the shared-workspace model
+  and none of the worktree/plan-branch/merge machinery below applies):
 
-> The harness creates one integration worktree per run (plan branch `guardrails/<plan-name>`) — the
+> **In worktree mode (`maxParallelism > 1`):** the harness creates one integration worktree per run
+> (plan branch `guardrails/<plan-name>`) — the
 > sole merge target. Each task runs in a **segment worktree**: a linear chain reuses one segment
 > worktree (the downstream task commits on top of the upstream's tip in the SAME tree — no inter-hop
 > merge, no inter-hop re-verify, sound because no union is formed); a fan-out inherits one chain and
@@ -1936,10 +2002,10 @@ Plan 07's SSOT edits were **never applied**. Therefore:
 
 | Code | Severity | Meaning |
 |---|---|---|
-| **GR2015** | error | workspace is not a git repository top-level (run pre-flight + `validate`) |
-| **GR2016** | warning | Windows MAX_PATH risk (deep worktree root + deep source) |
-| **GR2017** | error | a multi-leaf or fan-in-bearing plan declares no terminal `integrationGate` sink (W-4 — the terminal gate is the sole whole-repo soundness boundary, so its absence is HARD) |
-| **GR2018** | error | an `integrationGate` sink carries no `scope: "integration"` guardrail (empty integration set — the gate would verify nothing) |
+| **GR2015** | error | **worktree mode only (`maxParallelism > 1`):** workspace is not a git repository top-level (run pre-flight + `validate`). Does NOT fire for a serial run (`maxParallelism == 1`), which uses the shared-workspace model and validates/runs on a non-git workspace. |
+| **GR2016** | warning | Windows MAX_PATH risk (deep worktree root + deep source) — worktree mode only |
+| **GR2017** | error | **worktree mode only (`maxParallelism > 1`):** a multi-leaf or fan-in-bearing plan declares no terminal `integrationGate` sink (W-4 — the terminal gate is the sole whole-repo soundness boundary, so its absence is HARD). A serial run has no parallel-branch union to verify, so it does NOT fire (a terminal whole-repo gate remains good practice, not a validation error). |
+| **GR2018** | error | **worktree mode only (`maxParallelism > 1`):** an `integrationGate` sink carries no `scope: "integration"` guardrail (empty integration set — the gate would verify nothing). Does NOT fire for a serial run. |
 | **GR2019** | error | a `writeScope` entry escapes the workspace root (`../…`, absolute, drive-rooted) |
 | **GR2020** | warning | a vacuous/over-broad `writeScope` (`**` or a bare top-level dir); narrow or omit it (broadness is a smell, not a hard fault) |
 
