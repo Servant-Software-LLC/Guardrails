@@ -4,25 +4,14 @@ using Guardrails.Core.Model;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// RED tests for plan 08 M2 validation gates, all exercised through the existing
-/// public <see cref="PlanValidator"/> / plan-load path. These tests MUST fail against
-/// current code — the gates are not yet implemented and the triad validators
-/// (<c>ValidateCaptureHashPaths</c>, <c>ValidateRestoreOnRetry</c>) still run.
-/// Do NOT implement the validator changes; implement M2 to make them pass.
+/// Tests for plan 08 M2 validation gates, all exercised through the existing
+/// public <see cref="PlanValidator"/> / plan-load path.
 ///
 /// Encoded gates (SSOT §1/§2/§3.3/§4.3, plan 08 §1/§3):
 ///   GR2015 — workspace is NOT a git repository top-level (error)
 ///   GR2016 — deep worktreeRoot + deep source tree on Windows risks MAX_PATH (warning)
 ///   GR2017 — multi-leaf or fan-in plan with no integrationGate sink (error)
 ///   GR2018 — integrationGate sink has no scope:"integration" guardrail (error, empty set)
-///
-/// Triad teardown (plan 08 §1, former SSOT §3.1/§3.1.1 removed):
-///   <c>ValidateCaptureHashPaths</c> / <c>ValidateRestoreOnRetry</c> no longer run.
-///   GR2013 / GR2014 no longer carry their triad meanings.
-///   Encoded as: "the fields are ignored, no triad diagnostic is emitted."
-///
-/// Diagnostic code constants GR2015–GR2018 are not yet added to DiagnosticCodes.cs,
-/// so they are referenced here as string literals so this file compiles against current code.
 /// </summary>
 public sealed class ParallelValidationGateTests : IDisposable
 {
@@ -189,46 +178,6 @@ public sealed class ParallelValidationGateTests : IDisposable
     }
 
     // =========================================================================
-    // Triad teardown — captureHashes / restoreOnRetry / exclusive fields are
-    // ignored after teardown; GR2013/GR2014 no longer carry their triad meanings.
-    // Encoded decision: "the fields are ignored, no triad diagnostic is emitted."
-    // =========================================================================
-
-    [Fact]
-    public void TriadTeardown_CaptureHashesWithEscapingPath_Gr2013_NotEmitted()
-    {
-        // SSOT former §3.1/§3.1.1 (removed in plan 08), plan 08 "triad teardown":
-        // ValidateCaptureHashPaths no longer runs after teardown. A task declaring
-        // captureHashes — even with a workspace-escaping path that currently triggers
-        // GR2013 (CaptureHashEscapesWorkspace) — must produce NO GR2013 after teardown.
-        // Decision: fields are ignored, no triad diagnostic is emitted.
-        //
-        // FAILS on current code: ValidateCaptureHashPaths still runs and emits GR2013.
-        PlanDefinition plan = BuildPlanWithCaptureHashes("10-impl", ["../../etc/passwd"]);
-
-        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
-
-        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.CaptureHashEscapesWorkspace);
-    }
-
-    [Fact]
-    public void TriadTeardown_RestoreOnRetryWithoutCaptureHashes_Gr2014_NotEmitted()
-    {
-        // SSOT former §3.1 (removed in plan 08), plan 08 "triad teardown":
-        // ValidateRestoreOnRetry no longer runs after teardown. A task declaring
-        // restoreOnRetry:true with an empty captureHashes — which currently triggers
-        // GR2014 (RestoreOnRetryWithoutCaptureHashes) — must produce NO GR2014 after teardown.
-        // Decision: fields are ignored, no triad diagnostic is emitted.
-        //
-        // FAILS on current code: ValidateRestoreOnRetry still runs and emits GR2014.
-        PlanDefinition plan = BuildPlanWithRestoreOnRetry("10-impl", restoreOnRetry: true, captureHashes: []);
-
-        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
-
-        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.RestoreOnRetryWithoutCaptureHashes);
-    }
-
-    // =========================================================================
     // Private helpers
     // =========================================================================
 
@@ -304,88 +253,5 @@ public sealed class ParallelValidationGateTests : IDisposable
         PlanLoadResult result = new PlanLoader().Load(dir);
         Assert.NotNull(result.Plan);
         return result.Plan!;
-    }
-
-    /// <summary>
-    /// Build an in-memory plan whose single task declares the given captureHashes paths.
-    /// Uses fake string paths only — no disk I/O. The workspace is a fake temp-style path
-    /// so <c>WorkspaceContainment.Escapes</c> can evaluate the captureHashes entries.
-    /// </summary>
-    private static PlanDefinition BuildPlanWithCaptureHashes(string id, string[] captureHashes)
-    {
-        string planDir = Path.Combine(Path.GetTempPath(), "gr-m2-capture-" + Guid.NewGuid().ToString("N"));
-        return new PlanDefinition
-        {
-            PlanDirectory = planDir,
-            Workspace = Path.Combine(planDir, "workspace"),
-            Config = new RunConfig { Version = 1 },
-            Tasks =
-            [
-                new TaskNode
-                {
-                    Id = id,
-                    Directory = Path.Combine(planDir, "tasks", id),
-                    Description = "fixture",
-                    CaptureHashes = captureHashes,
-                    Action = new ActionDefinition
-                    {
-                        Path = Path.Combine(planDir, "tasks", id, "action.ps1"),
-                        Kind = ActionKind.Script
-                    },
-                    Guardrails =
-                    [
-                        new GuardrailDefinition
-                        {
-                            Name = "01-check",
-                            Path = Path.Combine(planDir, "tasks", id, "guardrails", "01-check.ps1"),
-                            Kind = ActionKind.Script
-                        }
-                    ]
-                }
-            ]
-        };
-    }
-
-    /// <summary>
-    /// Build an in-memory plan whose single task sets <c>restoreOnRetry</c> and
-    /// <c>captureHashes</c> as given. Uses fake string paths only — no disk I/O.
-    /// </summary>
-    private static PlanDefinition BuildPlanWithRestoreOnRetry(
-        string id,
-        bool restoreOnRetry,
-        string[] captureHashes)
-    {
-        string planDir = Path.Combine(Path.GetTempPath(), "gr-m2-restore-" + Guid.NewGuid().ToString("N"));
-        return new PlanDefinition
-        {
-            PlanDirectory = planDir,
-            Workspace = Path.Combine(planDir, "workspace"),
-            Config = new RunConfig { Version = 1 },
-            Tasks =
-            [
-                new TaskNode
-                {
-                    Id = id,
-                    Directory = Path.Combine(planDir, "tasks", id),
-                    Description = "fixture",
-                    CaptureHashes = captureHashes,
-                    RestoreOnRetry = restoreOnRetry,
-                    Action = new ActionDefinition
-                    {
-                        Path = Path.Combine(planDir, "tasks", id, "action.ps1"),
-                        Kind = ActionKind.Script
-                    },
-                    Guardrails =
-                    [
-                        new GuardrailDefinition
-                        {
-                            Name = "01-check",
-                            Path = Path.Combine(planDir, "tasks", id, "guardrails", "01-check.ps1"),
-                            Kind = ActionKind.Script
-                        }
-                    ]
-                }
-            ]
-        };
     }
 }

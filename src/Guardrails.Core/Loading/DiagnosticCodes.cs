@@ -90,20 +90,6 @@ public static class DiagnosticCodes
     public const string CostCapNonPositive = "GR2012";
 
     /// <summary>
-    /// A <c>captureHashes</c> entry (SSOT §3.1) is not a safe workspace-relative path.
-    /// RETIRED in plan 08 M2: the triad (captureHashes / exclusive / restoreOnRetry) teardown removed
-    /// the ValidateCaptureHashPaths check. GR2013 no longer carries this meaning; do not reuse.
-    /// </summary>
-    public const string CaptureHashEscapesWorkspace = "GR2013";
-
-    /// <summary>
-    /// A task declares <c>restoreOnRetry: true</c> but has no <c>captureHashes</c>.
-    /// RETIRED in plan 08 M2: the triad (captureHashes / exclusive / restoreOnRetry) teardown removed
-    /// the ValidateRestoreOnRetry check. GR2014 no longer carries this meaning; do not reuse.
-    /// </summary>
-    public const string RestoreOnRetryWithoutCaptureHashes = "GR2014";
-
-    /// <summary>
     /// The plan workspace is not inside a git repository (plan 08 M2, SSOT §1). The harness
     /// must create per-run worktrees (plan branch, segment worktrees), which requires the workspace
     /// to reside within a git repository. An ERROR — the harness cannot proceed without git.

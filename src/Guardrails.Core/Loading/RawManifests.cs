@@ -14,6 +14,8 @@ internal sealed class RawRunConfig
     public string? GuardrailMode { get; set; }
     public string? Workspace { get; set; }
     public string? WorktreeRoot { get; set; }
+    public bool? RunOnCurrentBranch { get; set; }
+    public bool? MergeOnSuccess { get; set; }
     public Dictionary<string, List<string>>? Interpreters { get; set; }
 
     // promptRunners is a heterogeneous map: a "default" string pointer plus named
@@ -56,14 +58,6 @@ internal sealed class RawTask
     public List<string>? DependsOn { get; set; }
     public int? Retries { get; set; }
     public int? TimeoutSeconds { get; set; }
-
-    // Workspace-relative files whose SHA-256 the harness records into state after a successful
-    // action (issue #46) — the agent never computes the hash itself.
-    public List<string>? CaptureHashes { get; set; }
-
-    // Opt-in to baseline restore-on-retry for this task's captureHashes files (issue #51).
-    // Default false: captureHashes then only hashes. True ⇒ also snapshot + restore on retry.
-    public bool? RestoreOnRetry { get; set; }
 
     // Terminal integration gate marker (plan 08 M2, SSOT §3.3). Default false.
     public bool? IntegrationGate { get; set; }

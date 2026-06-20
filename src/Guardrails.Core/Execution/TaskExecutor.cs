@@ -33,7 +33,6 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly AttemptJournaler _journaler;
     private readonly DependencyGraph _graph;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
-    private readonly CapturedFileStore _capturedStore;
 
     public TaskExecutor(
         PlanDefinition plan,
@@ -51,7 +50,6 @@ public sealed class TaskExecutor : ITaskExecutor
 
         _graph = new DependencyGraph(plan.Tasks);
         _tasksById = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
-        _capturedStore = new CapturedFileStore(plan.PlanDirectory);
 
         var scriptRunner = new ScriptUnitRunner(processRunner, interpreterMap);
         var promptSupport = new PromptExecutionSupport(promptRunners);
@@ -191,47 +189,6 @@ public sealed class TaskExecutor : ITaskExecutor
                 costUsd: action.CostUsd);
         }
 
-        // --- capture declared file hashes (harness-computed; the agent never shells out) ---
-        // Done after a successful action and BEFORE guardrails, so the fragment a guardrail reads
-        // via GUARDRAILS_STATE_FRAGMENT already carries the hashes, and they merge into state on
-        // success for a downstream tests-untouched guardrail to read (issue #46).
-        if (task.CaptureHashes.Count > 0)
-        {
-            CaptureResult capture = FileHashCapture.Capture(task.Id, task.CaptureHashes, workspace, fragmentOutPath);
-            if (capture.IsMissing)
-            {
-                string feedback = RetryPolicy.ForMissingCaptureFiles(task, attemptNumber, capture.MissingFiles);
-                return _journaler.FailedAttempt(
-                    task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
-                    AttemptOutcome.ActionFailed,
-                    new TaskResult
-                    {
-                        TaskId = task.Id,
-                        Outcome = TaskOutcome.ActionFailed,
-                        ActionExitCode = action.ExitCode,
-                        Summary = $"declared captureHashes file(s) missing after action: {string.Join(", ", capture.MissingFiles)}"
-                    },
-                    costUsd: action.CostUsd);
-            }
-
-            // Snapshot the authored bytes so a downstream task that dirties one of these files can be
-            // restored to this baseline before its retry (issue #51). OPT-IN: only when this task set
-            // restoreOnRetry (FIX A) — captureHashes alone hashes for tamper-detection, nothing more.
-            // Only on a clean capture — a malformed fragment falls through to the merge-step rejection
-            // below. Resolved against the plan workspace (FIX B), the GR2013-validated base — NOT the
-            // task's per-task workingDirectory, so the bytes are read from the file GR2013 validated.
-            if (capture.Succeeded && task.RestoreOnRetry)
-            {
-                _capturedStore.Snapshot(task.Id, task.CaptureHashes, _plan.Workspace);
-            }
-
-            // A malformed action fragment is the harness's to reject, not capture's to paper over:
-            // capture left the bytes untouched, so we fall through to guardrails + the merge step,
-            // which re-reads and rejects them as invalid-fragment — identical to the path a task with
-            // a malformed fragment and NO captureHashes takes (SSOT §3.1 / §6.2). Declaring
-            // captureHashes must not change whether such a task fails.
-        }
-
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
@@ -269,10 +226,10 @@ public sealed class TaskExecutor : ITaskExecutor
     // --- log paths -----------------------------------------------------------------------
 
     private string AttemptLogDir(string taskId, int attempt) =>
-        Path.Combine(_plan.PlanDirectory, "state", "logs", taskId, $"attempt-{attempt}");
+        Path.Combine(_plan.PlanDirectory, "logs", _journal.Document.RunId, taskId, $"attempt-{attempt}");
 
-    private static string RelativeLogDir(string taskId, int attempt) =>
-        Path.Combine("state", "logs", taskId, $"attempt-{attempt}").Replace('\\', '/');
+    private string RelativeLogDir(string taskId, int attempt) =>
+        $"logs/{_journal.Document.RunId}/{taskId}/attempt-{attempt}";
 
     // --- env + cwd + timeout ---------------------------------------------------------------
 

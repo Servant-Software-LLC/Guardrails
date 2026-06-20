@@ -11,8 +11,8 @@ public sealed record RunConfig
     /// <summary>Schema version of <c>guardrails.json</c> (required field; SSOT §2).</summary>
     public required int Version { get; init; }
 
-    /// <summary>Worker count for the scheduler. Default 4. (Parallelism is M4; serial in M2.)</summary>
-    public int MaxParallelism { get; init; } = 4;
+    /// <summary>Worker count for the scheduler. Default 3 (SSOT §2).</summary>
+    public int MaxParallelism { get; init; } = 3;
 
     /// <summary>Retries after the first attempt. Default 2. (Retry is M4; not honored in M2.)</summary>
     public int DefaultRetries { get; init; } = 2;

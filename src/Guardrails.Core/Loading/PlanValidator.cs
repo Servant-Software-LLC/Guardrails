@@ -130,18 +130,11 @@ public sealed class PlanValidator
     /// The plan workspace must reside within a git repository (plan 08 M2, SSOT §1). The harness
     /// creates per-run worktrees (plan branch, segment worktrees) which require a git repository
     /// to exist. A workspace completely outside any git repository — no <c>.git</c> in the directory
-    /// or any ancestor — cannot host worktrees → GR2015 ERROR. Only fires when <c>worktreeRoot</c>
-    /// is configured (worktrees are only needed when parallel-worktree execution is requested).
-    /// Skipped when the workspace directory does not yet exist (other structural errors are caught
-    /// by the loader).
+    /// or any ancestor — cannot host worktrees → GR2015 ERROR. Skipped when the workspace directory
+    /// does not yet exist (other structural errors are caught by the loader).
     /// </summary>
     private static void ValidateWorkspaceIsGitRoot(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
-        if (plan.Config.WorktreeRoot is null)
-        {
-            return;
-        }
-
         string workspace = plan.Workspace;
         if (!Directory.Exists(workspace))
         {

@@ -30,7 +30,9 @@ if (-not (Test-Path $taskNode)) {
 }
 $tn = Get-Content $taskNode -Raw
 foreach ($field in @('Exclusive', 'CaptureHashes', 'RestoreOnRetry')) {
-    if ($tn -match "(?m)public\s+[^\s]+\s+$field\s*\{\s*get") {
+    # accessor-order-insensitive (#112): match the property declaration up to its `{`, NOT a leading
+    # `get` - a retained `{ init; get; }` field must still trip this, which `\{\s*get` missed.
+    if ($tn -match "(?m)public\s+[^\s]+\s+$field\s*\{") {
         Write-Output "TaskNode.cs still declares the triad property '$field' - it must be removed"
         exit 1
     }

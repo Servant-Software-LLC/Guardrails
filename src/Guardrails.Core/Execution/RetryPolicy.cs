@@ -95,30 +95,6 @@ public static class RetryPolicy
     private static bool IsTestsUntouched(string name) =>
         name.Contains("untouched", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// Compose feedback when the action succeeded but one or more declared <c>captureHashes</c>
-    /// files did not exist afterward (issue #46). The harness records hashes in code, so the only
-    /// failure mode is a missing file — name them so the retry creates them at the declared paths.
-    /// </summary>
-    public static string ForMissingCaptureFiles(TaskNode task, int attempt, IReadOnlyList<string> missingFiles)
-    {
-        var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
-        text.AppendLine("## Declared output file(s) missing");
-        text.AppendLine("The action reported success, but these files declared in this task's");
-        text.AppendLine("`captureHashes` do not exist at the expected workspace-relative paths:");
-        text.AppendLine();
-        foreach (string missing in missingFiles)
-        {
-            text.AppendLine($"- {missing}");
-        }
-
-        text.AppendLine();
-        text.AppendLine("Create each file at exactly that path. The harness hashes them automatically");
-        text.AppendLine("once they exist — you do NOT need to compute or write any hash yourself.");
-        return text.ToString();
-    }
-
     /// <summary>Compose feedback for an attempt rejected because its state fragment was invalid (SSOT §6.2).</summary>
     public static string ForInvalidFragment(TaskNode task, int attempt, string reason)
     {
