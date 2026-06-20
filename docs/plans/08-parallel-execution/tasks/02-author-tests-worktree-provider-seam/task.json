@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for the IWorktreeProvider seam, the WorktreeHandle/IntegrationHandle types, the FakeWorktreeProvider, and the per-task channel envelope (TaskNode + assigned WorktreeHandle) - encoding M1's de-serialize-with-handles behavior before it exists",
+  "stableId": "p08t02",
+  "dependsOn": ["01-update-ssot-schema-contract"],
+  "captureHashes": ["tests/Guardrails.Core.Tests/WorktreeProviderSeamTests.cs"],
+  "restoreOnRetry": true
+}

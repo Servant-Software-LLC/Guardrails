@@ -1,0 +1,5 @@
+{
+  "description": "Implement plan 08 §9 AI triage on needs-human: Execution/NeedsHumanTriage over the existing IPromptRunner seam + a distinct ai-triage prompt profile; runs ONCE on attempt-exhaustion (NOT on agent-emitted {needsHuman}, NOT mid-retry); diagnoses tool-vs-local; writes the TASK-LEVEL logs/<runId>/<task-id>/feedback.md; points the task's needs-human message at that path; opt-in triageAutoFile (default OFF - drafts the GH issue into feedback.md only). Strictly ADVISORY: gates nothing, PromptResult.IsError/exit code is NEVER a verdict (a failed triage just means no feedback.md, logged). Adds the SSOT §9.2 note to docs/plans/02-schemas-and-contracts.md in the same change. Makes NeedsHumanTriageTests pass without editing them",
+  "stableId": "p08i33",
+  "dependsOn": ["32-author-tests-needs-human-triage", "26-implement-ai-merge-worker"]
+}

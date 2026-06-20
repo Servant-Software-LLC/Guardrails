@@ -1,0 +1,5 @@
+{
+  "description": "Implement the public attempt-decoupled IReVerifier seam (Execution/IReVerifier.cs + a concrete implementation) that runs a given guardrail set against arbitrary worktree bytes with no attempt lifecycle, no logDir, no action result - making ReVerifierSeamTests pass without editing them",
+  "stableId": "p08i16",
+  "dependsOn": ["15-author-tests-reverifier-seam"]
+}

@@ -219,7 +219,7 @@ public sealed class PromptRunnerConfigTests : IDisposable
         IReadOnlyList<Diagnostic> diagnostics =
             new PlanValidator(FakeExecutableProbe.With("bash")).Validate(result.Plan!);
 
-        Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error && d.Code != DiagnosticCodes.WorkspaceNotGitRoot);
     }
 
     [Fact]

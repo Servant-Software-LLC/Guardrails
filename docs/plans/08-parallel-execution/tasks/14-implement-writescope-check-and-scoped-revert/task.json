@@ -1,0 +1,5 @@
+{
+  "description": "Implement Execution/WriteScopeCheck.cs (keyed on task.json.writeScope presence; runs after the action and before the task's guardrails as a deterministic read-only git-diff membership test) plus the TaskNode.WriteScope field, the GR2019/GR2020 scope validation, the scoped revert on failure (git checkout <taskBase> -- <out-of-scope paths>, keeping in-scope WIP), and wire it into TaskExecutor - making WriteScopeCheckTests pass without editing them",
+  "stableId": "p08i14",
+  "dependsOn": ["13-author-tests-writescope-check"]
+}

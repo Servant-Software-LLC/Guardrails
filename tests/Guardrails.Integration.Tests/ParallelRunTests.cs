@@ -68,18 +68,4 @@ public sealed class ParallelRunTests
             "independent diamond branches did not overlap — parallelism is not happening");
     }
 
-    [Fact]
-    public async Task ExclusiveTask_NeverOverlapsAnotherTask()
-    {
-        using var plan = new StatePlanBuilder(maxParallelism: 4)
-            .AddTask("01-a", actionBody: MarkingAction("a"))
-            .AddTask("02-b", actionBody: MarkingAction("b"), exclusive: true)
-            .AddTask("03-c", actionBody: MarkingAction("c"));
-
-        RunReport report = await RunAsync(plan.PlanDir);
-
-        Assert.True(report.AllSucceeded);
-        Assert.False(Overlap(plan.PlanDir, "b", "a"), "exclusive task overlapped a shared task");
-        Assert.False(Overlap(plan.PlanDir, "b", "c"), "exclusive task overlapped a shared task");
-    }
 }

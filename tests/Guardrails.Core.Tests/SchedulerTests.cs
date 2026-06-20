@@ -46,7 +46,7 @@ public sealed class SchedulerTests
 
         public void Complete(string id) => _gates.GetOrAdd(id, NewGate()).TrySetResult();
 
-        public async Task<TaskResult> ExecuteAsync(TaskNode task, CancellationToken cancellationToken)
+        public async Task<TaskResult> ExecuteAsync(TaskNode task, WorktreeHandle worktree, CancellationToken cancellationToken)
         {
             Started.Enqueue(task.Id);
             int now = Interlocked.Increment(ref _live);
@@ -86,7 +86,7 @@ public sealed class SchedulerTests
     }
 
     private static Scheduler Create(PlanDefinition plan, FakeExecutor executor, FakeJournal journal, int parallelism = 4) =>
-        new(plan, executor, journal, IRunObserver.Null, parallelism);
+        new(plan, executor, journal, observer: IRunObserver.Null, maxParallelism: parallelism);
 
     [Fact]
     public async Task TopologicalOrder_DependencyAlwaysStartsBeforeDependent()

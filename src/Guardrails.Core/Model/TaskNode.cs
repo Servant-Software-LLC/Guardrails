@@ -30,32 +30,16 @@ public sealed record TaskNode
     /// <summary>Whole-attempt timeout ceiling in seconds; null = use <c>defaultTimeoutSeconds</c>.</summary>
     public int? TimeoutSeconds { get; init; }
 
-    /// <summary>Exclusive-workspace flag; null = default by action kind (prompt → true). (Honored from M4.)</summary>
-    public bool? Exclusive { get; init; }
-
-    /// <summary>
-    /// Workspace-relative file paths whose SHA-256 (over raw bytes) the harness records into this
-    /// task's state fragment after a successful action, under
-    /// <c>{ "&lt;taskId&gt;": { "fileHashes": { "&lt;path&gt;": "&lt;hex&gt;" } } }</c> (SSOT §3 /
-    /// issue #46). The hash is computed in code — the action agent never shells out — so a
-    /// downstream <c>tests-untouched</c> guardrail can recompute (e.g. <c>Get-FileHash</c>) and
-    /// detect modification. Empty when the task declares none; never null.
-    /// </summary>
-    public IReadOnlyList<string> CaptureHashes { get; init; } = [];
-
-    /// <summary>
-    /// Opt-in to baseline restore-on-retry for this task's <c>captureHashes</c> files (SSOT §3.1 /
-    /// issue #51). Default <c>false</c>: <c>captureHashes</c> then ONLY hashes for tamper-detection.
-    /// When <c>true</c>, the harness ALSO snapshots each captured file's authored bytes on a clean
-    /// capture and restores them (to that baseline) before every attempt of a downstream task that
-    /// transitively depends on this one — so an implementation agent that dirtied the authored test
-    /// starts the next attempt pristine. Requires a non-empty <c>captureHashes</c> (GR2014).
-    /// </summary>
-    public bool RestoreOnRetry { get; init; }
-
     /// <summary>The resolved action for this task.</summary>
     public required ActionDefinition Action { get; init; }
 
     /// <summary>The resolved guardrails, in filename sort order. At least one (validated).</summary>
     public required IReadOnlyList<GuardrailDefinition> Guardrails { get; init; }
+
+    /// <summary>
+    /// When true, this task is the terminal integration gate for the plan (plan 08 M2, SSOT §3.3).
+    /// A multi-leaf or fan-in plan must have exactly one such sink, which must carry at least one
+    /// guardrail with <c>scope:"integration"</c>. Default false (no gate role).
+    /// </summary>
+    public bool IntegrationGate { get; init; }
 }

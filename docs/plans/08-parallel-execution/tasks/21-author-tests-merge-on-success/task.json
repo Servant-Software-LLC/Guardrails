@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for --merge-on-success: a green run merges the plan branch into the user's original branch (ff-only when possible), and AI-merge is WITHHELD at this boundary - a user branch advanced mid-run with a conflicting commit halts to needs-human with the plan branch intact (never an AI auto-resolve of the user's own commits), default OFF leaves the plan branch for the user",
+  "stableId": "p08t21",
+  "dependsOn": ["18-implement-merge-lock-and-ff-and-union-settle"],
+  "captureHashes": ["tests/Guardrails.Integration.Tests/MergeOnSuccessTests.cs"],
+  "restoreOnRetry": true
+}

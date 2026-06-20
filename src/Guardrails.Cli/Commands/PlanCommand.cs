@@ -51,11 +51,9 @@ public static class PlanCommand
             output.WriteLine($"Wave {i}:");
             foreach (TaskNode task in waves[i])
             {
-                bool exclusive = task.Exclusive ?? task.Action.Kind == ActionKind.Prompt;
                 string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
-                string flags = exclusive ? " [exclusive]" : string.Empty;
                 string deps = task.DependsOn.Count == 0 ? "" : $"  (after: {string.Join(", ", task.DependsOn)})";
-                output.WriteLine($"  {task.Id,-36} {kind,-7}{flags}{deps}");
+                output.WriteLine($"  {task.Id,-36} {kind,-7}{deps}");
             }
 
             output.WriteLine();

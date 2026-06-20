@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for the net-new SemaphoreSlim(1,1) serialize-merges lock, FF-integration-is-free (a linear chain settles via merge --ff-only, NO merge commit, NO re-verify, each FF'd commit carries the Guardrails-Task/Run trailer), and the non-FF union re-verify with the B1 four-effect rollback (merged bytes that fail to build → re-verify FAILS → reset --hard preHead → needs-human, no fragment, mergeSequence not consumed, user branch untouched)",
+  "stableId": "p08t17",
+  "dependsOn": ["16-implement-reverifier-seam"],
+  "captureHashes": ["tests/Guardrails.Integration.Tests/MergeLockAndSettleTests.cs"],
+  "restoreOnRetry": true
+}

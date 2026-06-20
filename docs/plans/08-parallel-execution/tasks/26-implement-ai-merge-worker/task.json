@@ -1,0 +1,5 @@
+{
+  "description": "Implement Execution/AiMergeResolver over IPromptRunner with the NEW GUARDRAILS_MERGE_BASE/_OURS/_THEIRS/_OUT on-disk env contract and a distinct ai-merge prompt profile, the two deterministic checks (no markers via git diff --check; blast-radius via git status --porcelain), the 1-retry budget + needs-human escalation, and wire it into the §4 union path OFF the global lock with the verdict = the IReVerifier re-verify (colliding siblings' FULL set unconditionally - B-3) - making AiMergeWorkerTests pass without editing them",
+  "stableId": "p08i26",
+  "dependsOn": ["25-author-tests-ai-merge-worker"]
+}

@@ -115,12 +115,15 @@ public sealed class PlanLoader
         return new RunConfig
         {
             Version = raw.Version.Value,
-            MaxParallelism = raw.MaxParallelism ?? 4,
+            MaxParallelism = raw.MaxParallelism ?? 3,
             DefaultRetries = raw.DefaultRetries ?? 2,
             MaxCostUsd = raw.MaxCostUsd,
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
             GuardrailMode = mode,
             Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,
+            WorktreeRoot = string.IsNullOrWhiteSpace(raw.WorktreeRoot) ? null : raw.WorktreeRoot.Trim(),
+            RunOnCurrentBranch = raw.RunOnCurrentBranch ?? false,
+            MergeOnSuccess = raw.MergeOnSuccess ?? false,
             Interpreters = interpreters,
             PromptRunnerNames = runners.Names,
             DefaultPromptRunner = runners.Default,
@@ -301,12 +304,7 @@ public sealed class PlanLoader
             DependsOn = raw.DependsOn ?? [],
             Retries = raw.Retries,
             TimeoutSeconds = raw.TimeoutSeconds,
-            Exclusive = raw.Exclusive,
-            CaptureHashes = (raw.CaptureHashes ?? [])
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .Select(p => p.Trim().Replace('\\', '/'))
-                .ToList(),
-            RestoreOnRetry = raw.RestoreOnRetry ?? false,
+            IntegrationGate = raw.IntegrationGate ?? false,
             Action = action,
             Guardrails = guardrails
         };
@@ -478,7 +476,8 @@ public sealed class PlanLoader
         {
             Description = sidecar.Description,
             Args = sidecar.Args ?? [],
-            TimeoutSeconds = sidecar.TimeoutSeconds
+            TimeoutSeconds = sidecar.TimeoutSeconds,
+            Scope = string.IsNullOrWhiteSpace(sidecar.Scope) ? null : sidecar.Scope.Trim().ToLowerInvariant()
         };
     }
 

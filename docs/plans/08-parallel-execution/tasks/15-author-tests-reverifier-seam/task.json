@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for the NEW public attempt-decoupled IReVerifier seam: given a worktree path + a guardrail set, it runs those guardrails against the bytes on disk and returns pass/fail with NO dependence on an attempt logDir, attempt number, or action result (no GUARDRAILS_ACTION_* env) - the seam both the terminal gate and every union re-verify will call",
+  "stableId": "p08t15",
+  "dependsOn": ["10-implement-logs-elevation-and-runconfig", "14-implement-writescope-check-and-scoped-revert"],
+  "captureHashes": ["tests/Guardrails.Core.Tests/ReVerifierSeamTests.cs"],
+  "restoreOnRetry": true
+}

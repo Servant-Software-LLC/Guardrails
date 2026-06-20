@@ -1,0 +1,5 @@
+{
+  "description": "Implement GitWorktreeProvider with the real plan-branch + segment-worktree lifecycle and the reuse/chaining topology (root fork, linear reuse, fan-out inherit-one + fork-the-rest off the recorded sha, fan-in fork, discard/prune), making GitWorktreeLifecycleTests pass without editing them",
+  "stableId": "p08i06",
+  "dependsOn": ["05-author-tests-git-worktree-lifecycle"]
+}

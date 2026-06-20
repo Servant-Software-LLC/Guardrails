@@ -31,6 +31,15 @@ public sealed class FakeClaudeRunTests
     private static JournalDocument Journal(string planDir) =>
         JournalReader.Read(RunJournal.PathFor(planDir));
 
+    /// <summary>
+    /// The per-attempt log directory under the plan-08 M2/M3 layout:
+    /// <c>&lt;planDir&gt;/logs/&lt;runId&gt;/&lt;task&gt;/attempt-N/</c> (TaskExecutor.AttemptLogDir).
+    /// The runId is resolved from the run journal the test produced (RunJournal RunId), never
+    /// hard-coded — it is stable across resumes within one state/run.json.
+    /// </summary>
+    private static string AttemptDir(string planDir, string taskId, int attempt) =>
+        Path.Combine(planDir, "logs", Journal(planDir).RunId, taskId, $"attempt-{attempt}");
+
     [Fact]
     public async Task PromptAction_Green_FragmentMerged_AndCostRecorded()
     {
@@ -58,7 +67,7 @@ public sealed class FakeClaudeRunTests
         Assert.DoesNotContain("no LLM used (script)", task.Summary);
 
         // The composed prompt and the raw stream were teed (SSOT §8).
-        string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
+        string attemptDir = AttemptDir(plan.PlanDir, "01-generate", 1);
         Assert.True(File.Exists(Path.Combine(attemptDir, "composed-prompt.md")));
         Assert.True(File.Exists(Path.Combine(attemptDir, "claude-stream.jsonl")));
 
@@ -121,7 +130,7 @@ public sealed class FakeClaudeRunTests
         RunReport report = await RunAsync(plan.PlanDir);
         Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
 
-        string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
+        string attemptDir = AttemptDir(plan.PlanDir, "01-generate", 1);
         string streamPath = Path.Combine(attemptDir, "claude-stream.jsonl");
         string transcriptPath = Path.Combine(attemptDir, "transcript.md");
         Assert.True(File.Exists(streamPath));
@@ -153,12 +162,12 @@ public sealed class FakeClaudeRunTests
         Assert.All(report.Tasks, t => Assert.Equal(TaskOutcome.Succeeded, t.Outcome));
 
         string composed = File.ReadAllText(
-            Path.Combine(plan.PlanDir, "state", "logs", "02-dependent", "attempt-1", "composed-prompt.md"));
+            Path.Combine(AttemptDir(plan.PlanDir, "02-dependent", 1), "composed-prompt.md"));
 
         Assert.Contains("## Context from completed dependency tasks", composed);
         Assert.Contains("01-foundation", composed);
         string ancestorTranscript = Path.Combine(
-            plan.PlanDir, "state", "logs", "01-foundation", "attempt-1", "transcript.md");
+            AttemptDir(plan.PlanDir, "01-foundation", 1), "transcript.md");
         Assert.Contains(ancestorTranscript, composed);
     }
 
@@ -179,7 +188,7 @@ public sealed class FakeClaudeRunTests
         RunReport first = await RunAsync(plan.PlanDir);
         Assert.All(first.Tasks, t => Assert.Equal(TaskOutcome.Succeeded, t.Outcome));
 
-        string foundationAttempt1 = Path.Combine(plan.PlanDir, "state", "logs", "01-foundation", "attempt-1");
+        string foundationAttempt1 = AttemptDir(plan.PlanDir, "01-foundation", 1);
         Assert.True(File.Exists(Path.Combine(foundationAttempt1, "fragment.json")),
             "attempt-1 should have merged a fragment (current-state provenance)");
 
@@ -197,14 +206,14 @@ public sealed class FakeClaudeRunTests
         RunReport second = await RunAsync(plan.PlanDir);
         Assert.All(second.Tasks, t => Assert.Equal(TaskOutcome.Succeeded, t.Outcome));
 
-        string foundationAttempt2 = Path.Combine(plan.PlanDir, "state", "logs", "01-foundation", "attempt-2");
+        string foundationAttempt2 = AttemptDir(plan.PlanDir, "01-foundation", 2);
         Assert.True(File.Exists(Path.Combine(foundationAttempt2, "transcript.md")),
             "attempt-2 ran and produced a transcript (the stale pointer the bug would cite)");
         Assert.False(File.Exists(Path.Combine(foundationAttempt2, "fragment.json")),
             "attempt-2 contributed no fragment, so it is NOT the current-state provenance");
 
         string composed = File.ReadAllText(
-            Path.Combine(plan.PlanDir, "state", "logs", "02-dependent", "attempt-2", "composed-prompt.md"));
+            Path.Combine(AttemptDir(plan.PlanDir, "02-dependent", 2), "composed-prompt.md"));
 
         Assert.Contains("## Context from completed dependency tasks", composed);
 
@@ -228,10 +237,10 @@ public sealed class FakeClaudeRunTests
         await RunAsync(plan.PlanDir);
 
         string attempt2Prompt = File.ReadAllText(
-            Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-2", "composed-prompt.md"));
+            Path.Combine(AttemptDir(plan.PlanDir, "01-generate", 2), "composed-prompt.md"));
 
         Assert.Contains("### Prior attempt logs", attempt2Prompt);
-        string attempt1Dir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
+        string attempt1Dir = AttemptDir(plan.PlanDir, "01-generate", 1);
         Assert.Contains(Path.Combine(attempt1Dir, "transcript.md"), attempt2Prompt);
         Assert.Contains(Path.Combine(attempt1Dir, "feedback.md"), attempt2Prompt);
     }
@@ -249,7 +258,7 @@ public sealed class FakeClaudeRunTests
         Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
 
         // The verdict file was written to the attempt dir (SSOT §8).
-        string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
+        string attemptDir = AttemptDir(plan.PlanDir, "01-generate", 1);
         Assert.True(File.Exists(Path.Combine(attemptDir, "guardrail-01-verdict.verdict.json")));
     }
 
@@ -273,7 +282,7 @@ public sealed class FakeClaudeRunTests
 
         // The verdict reason reached the first attempt's feedback.md (input to attempt 2).
         string feedback = File.ReadAllText(
-            Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1", "feedback.md"));
+            Path.Combine(AttemptDir(plan.PlanDir, "01-generate", 1), "feedback.md"));
         Assert.Contains("the thing is wrong: fix the X", feedback);
     }
 
@@ -298,7 +307,7 @@ public sealed class FakeClaudeRunTests
         Assert.Equal(0.0020m, entry.Attempts[0].CostUsd);          // cost still recorded
 
         // No verdict file was written — guardrails were skipped entirely.
-        string attemptDir = Path.Combine(plan.PlanDir, "state", "logs", "01-generate", "attempt-1");
+        string attemptDir = AttemptDir(plan.PlanDir, "01-generate", 1);
         Assert.False(File.Exists(Path.Combine(attemptDir, "guardrail-01-verdict.verdict.json")));
 
         // The needsHuman fragment was NOT merged into state.

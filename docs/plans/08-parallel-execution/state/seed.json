@@ -1,0 +1,11 @@
+{
+  "plan": "08-parallel-execution",
+  "solution": "Guardrails.sln",
+  "coreProject": "src/Guardrails.Core/Guardrails.Core.csproj",
+  "cliProject": "src/Guardrails.Cli/Guardrails.Cli.csproj",
+  "coreTestsProject": "tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj",
+  "integrationTestsProject": "tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj",
+  "testFramework": "xunit.v3",
+  "ssotDoc": "docs/plans/02-schemas-and-contracts.md",
+  "planDoc": "docs/plans/08-parallel-execution.md"
+}

@@ -1,0 +1,5 @@
+{
+  "description": "De-serialize the scheduler and BEGIN triad teardown: remove the RestoreAncestorCaptures capture/restore seam call from TaskExecutor and drop the exclusive admission gate from Scheduler, so independent tasks run with overlapping windows against the FakeWorktreeProvider with no exclusive serialization",
+  "stableId": "p08i04",
+  "dependsOn": ["03-implement-worktree-provider-seam-and-channel-envelope"]
+}

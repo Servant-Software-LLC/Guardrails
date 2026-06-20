@@ -1,0 +1,5 @@
+{
+  "description": "Apply plan 08's Schema-changes block verbatim to the SSOT (docs/plans/02-schemas-and-contracts.md): plan branch + worktree layout + elevated logs (§1), worktreeRoot/runOnCurrentBranch/mergeOnSuccess/maxParallelism 3 (§2), remove the triad and add integrationGate + writeScope (§3), guardrail scope (§4.3), FF/union settle + AI-merge (§5.3), AI-merge worker (§9.1), retire GR2013/GR2014 triad meanings and add fresh GR2015-GR2020",
+  "stableId": "p08c01",
+  "dependsOn": []
+}

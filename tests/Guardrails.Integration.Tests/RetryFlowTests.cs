@@ -23,6 +23,18 @@ public sealed class RetryFlowTests
         return await scheduler.RunAsync(load.Plan!);
     }
 
+    /// <summary>
+    /// The per-attempt log directory under the plan-08 M2/M3 layout:
+    /// <c>&lt;planDir&gt;/logs/&lt;runId&gt;/&lt;task&gt;/attempt-N/</c> (TaskExecutor.AttemptLogDir).
+    /// The runId is read from the run journal the test produced (RunJournal RunId), never hard-coded
+    /// — it stays stable across resumes within one state/run.json.
+    /// </summary>
+    private static string AttemptDir(string planDir, string taskId, int attempt) =>
+        Path.Combine(
+            planDir, "logs",
+            JournalReader.Read(RunJournal.PathFor(planDir)).RunId,
+            taskId, $"attempt-{attempt}");
+
     /// <summary>A guardrail that fails until the action has run N times (counter file driven).</summary>
     private static string PassOnRun(int n) => StatePlanBuilder.UsePowerShell
         ? $$"""
@@ -80,8 +92,8 @@ public sealed class RetryFlowTests
         Assert.Contains("Do NOT start over", feedback);
 
         // feedback.md persisted in attempt 1's log dir; attempt 2 exists.
-        Assert.True(File.Exists(Path.Combine(plan.PlanDir, "state", "logs", "01-flaky", "attempt-1", "feedback.md")));
-        Assert.True(Directory.Exists(Path.Combine(plan.PlanDir, "state", "logs", "01-flaky", "attempt-2")));
+        Assert.True(File.Exists(Path.Combine(AttemptDir(plan.PlanDir, "01-flaky", 1), "feedback.md")));
+        Assert.True(Directory.Exists(AttemptDir(plan.PlanDir, "01-flaky", 2)));
     }
 
     [Fact]
@@ -121,6 +133,6 @@ public sealed class RetryFlowTests
 
         Assert.True(second.AllSucceeded);
         // Attempt numbering continued across runs (attempt-2 exists).
-        Assert.True(Directory.Exists(Path.Combine(plan.PlanDir, "state", "logs", "01-fixable", "attempt-2")));
+        Assert.True(Directory.Exists(AttemptDir(plan.PlanDir, "01-fixable", 2)));
     }
 }

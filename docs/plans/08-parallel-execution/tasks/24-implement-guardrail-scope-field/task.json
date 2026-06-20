@@ -1,0 +1,5 @@
+{
+  "description": "Implement the per-guardrail scope field on GuardrailDefinition + its sidecar/frontmatter parsing, and the integration-guardrail-set filter on IReVerifier (the colliding-sibling-unconditional vs distant-non-colliding-touched-files split - B-3) - making GuardrailScopeTests pass without editing them",
+  "stableId": "p08i24",
+  "dependsOn": ["23-author-tests-guardrail-scope-field"]
+}

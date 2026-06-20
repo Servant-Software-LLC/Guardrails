@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests for plan 08 §9 AI triage on needs-human: a constrained ai-triage prompt action behind the existing IPromptRunner seam that runs ONCE when a task reaches needs-human via ATTEMPT EXHAUSTION (not on an agent-emitted {needsHuman}, not mid-retry), diagnoses tool-vs-local, writes logs/<runId>/<task-id>/feedback.md, points the needs-human message at that path, is strictly ADVISORY (a thrown/error triage never changes the verdict and never blocks; PromptResult.IsError/exit code is never a verdict), and whose GH-issue auto-file is OFF by default (drafts only). References the not-yet-existing NeedsHumanTriage so the project will not compile against current code (real compile-coupling)",
+  "stableId": "p08t32",
+  "dependsOn": ["10-implement-logs-elevation-and-runconfig"],
+  "captureHashes": ["tests/Guardrails.Integration.Tests/NeedsHumanTriageTests.cs"],
+  "restoreOnRetry": true
+}

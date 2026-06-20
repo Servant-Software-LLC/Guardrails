@@ -1,0 +1,7 @@
+{
+  "description": "Author the write-scope matcher proof harness: the full 27-row IsInScope truth table (data-driven, pinned verbatim) plus the TWO seeded fuzz properties (membership-implies-overlap AND Overlaps-completeness/no-false-negatives) - encoding the §2.1/§2.2 spec before WriteScope.cs exists, and proven to FAIL against a deliberately-naive permissive matcher first",
+  "stableId": "p08t11",
+  "dependsOn": ["08-implement-validation-gates-and-triad-teardown"],
+  "captureHashes": ["tests/Guardrails.Core.Tests/WriteScopeMatcherTests.cs"],
+  "restoreOnRetry": true
+}
