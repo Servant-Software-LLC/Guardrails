@@ -1,0 +1,5 @@
+{
+  "description": "Write out/world.txt with a greeting (independent leaf B of the diamond)",
+  "dependsOn": [],
+  "writeScope": ["out/world.txt"]
+}
