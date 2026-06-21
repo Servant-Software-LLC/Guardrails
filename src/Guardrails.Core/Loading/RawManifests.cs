@@ -16,6 +16,7 @@ internal sealed class RawRunConfig
     public string? WorktreeRoot { get; set; }
     public bool? RunOnCurrentBranch { get; set; }
     public bool? MergeOnSuccess { get; set; }
+    public bool? TriageAutoFile { get; set; }
     public Dictionary<string, List<string>>? Interpreters { get; set; }
 
     // promptRunners is a heterogeneous map: a "default" string pointer plus named

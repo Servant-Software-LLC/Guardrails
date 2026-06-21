@@ -45,6 +45,11 @@ public static class RunCommand
             Description = "Port for the local log server (default 0 = an automatically chosen free port). Bound to localhost only."
         };
 
+        var mergeOnSuccessOption = new Option<bool>("--merge-on-success")
+        {
+            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess on regardless of guardrails.json."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
@@ -52,6 +57,7 @@ public static class RunCommand
         command.Add(dryRunOption);
         command.Add(noLogServerOption);
         command.Add(logPortOption);
+        command.Add(mergeOnSuccessOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -61,20 +67,21 @@ public static class RunCommand
             bool dryRun = parseResult.GetValue(dryRunOption);
             bool noLogServer = parseResult.GetValue(noLogServerOption);
             int logPort = parseResult.GetValue(logPortOption);
+            bool mergeOnSuccess = parseResult.GetValue(mergeOnSuccessOption);
 
             if (dryRun)
             {
                 return DryRun.Execute(folder, io);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -82,6 +89,14 @@ public static class RunCommand
             PlanProbe.PrintDiagnostics(probe.Diagnostics, io.Out);
             io.Out.WriteLine("\nValidation failed; nothing was run.");
             return ExitCodes.HarnessError;
+        }
+
+        // --merge-on-success forces end-of-run delivery on (SSOT §5.3 / §2: "CLI --merge-on-success
+        // overrides"). The flag only augments — it can turn the config value on, never off — so a
+        // plan that already set mergeOnSuccess: true is unaffected.
+        if (mergeOnSuccess && !probe.Plan.Config.MergeOnSuccess)
+        {
+            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MergeOnSuccess = true } } };
         }
 
         if (fresh)

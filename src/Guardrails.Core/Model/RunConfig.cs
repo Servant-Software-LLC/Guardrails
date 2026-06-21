@@ -65,6 +65,14 @@ public sealed record RunConfig
     /// </summary>
     public bool MergeOnSuccess { get; init; }
 
+    /// <summary>
+    /// Opt-in auto-file of the needs-human triage GH issue (SSOT §9, plan 08 Decision 8). Default
+    /// false — triage only DRAFTS the issue into <c>feedback.md</c> and files nothing to a remote.
+    /// When true (and gated behind a configured GH repo + token) the harness auto-files; flows to
+    /// <see cref="Execution.NeedsHumanTriage"/>'s <c>autoFile</c> argument.
+    /// </summary>
+    public bool TriageAutoFile { get; init; }
+
     /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
     public string? DefaultPromptRunner { get; init; }
 

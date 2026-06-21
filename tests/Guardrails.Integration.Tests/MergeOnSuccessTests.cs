@@ -1,4 +1,7 @@
+using System.CommandLine;
 using System.Diagnostics;
+using Guardrails.Cli;
+using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
@@ -682,5 +685,54 @@ public sealed class MergeOnSuccessTests
         {
             try { Directory.Delete(planDir, recursive: true); } catch { }
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 5 (F11a) — the CLI --merge-on-success flag turns on user-branch delivery even when
+    // guardrails.json leaves mergeOnSuccess at its default (false). Drives the REAL `run` command
+    // (SSOT §2/§5.3: "CLI --merge-on-success overrides").
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// F11a: <c>guardrails run --merge-on-success</c> forces end-of-run delivery on. The plan's
+    /// <c>guardrails.json</c> has <c>mergeOnSuccess: false</c> (absent default), so without the flag
+    /// the user's branch would stay at its original HEAD; WITH the flag a wholly-green run
+    /// fast-forwards the user's branch to the plan tip — proving the flag (not the config) drove the
+    /// delivery. Mirrors <see cref="MergeOnSuccess_FF_AdvancesUserBranchToTip"/> but through the CLI.
+    /// </summary>
+    [Fact]
+    public async Task Cli_MergeOnSuccessFlag_DeliversToUserBranch_WhenConfigDefaultOff()
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+        string originalBranch = repo.CurrentBranch();
+
+        // mergeOnSuccess defaults to false in the JSON — only the CLI flag turns delivery on.
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: false,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        int exitCode = await InvokeCliAsync("run", planDir, "--merge-on-success", "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+
+        // The user's branch advanced to the plan tip via fast-forward (delivery happened) ...
+        Assert.NotEqual(initialHead, repo.HeadSha());
+        // ... with no merge commit (FF preserves linear history) ...
+        Assert.Empty(TempGitRepo.Git(repo.RepoPath, "log", "--merges", "--format=%H").Trim());
+        // ... and the user stays on their original named branch (not detached).
+        Assert.Equal(originalBranch, repo.CurrentBranch());
+    }
+
+    /// <summary>
+    /// Drive the real <c>run</c> command pipeline. Output goes to a discarded
+    /// <see cref="StringConsoleIo"/> so nothing touches the process-global console (parallel-safe).
+    /// </summary>
+    private static async Task<int> InvokeCliAsync(params string[] args)
+    {
+        var io = new StringConsoleIo();
+        var root = new RootCommand("merge-on-success cli test root");
+        root.Add(RunCommand.Create(io));
+        return await root.Parse(args).InvokeAsync();
     }
 }

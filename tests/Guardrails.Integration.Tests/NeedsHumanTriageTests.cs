@@ -340,4 +340,51 @@ public sealed class NeedsHumanTriageTests
         // call or GH-API client — neither of which is wired in the default configuration).
         Assert.Single(runner.Calls);
     }
+
+    /// <summary>
+    /// F13: the <c>triageAutoFile</c> config field (SSOT §9 / Decision 8) round-trips through
+    /// <see cref="RunConfig"/> and REACHES the triage. The injected <see cref="NeedsHumanTriage"/>
+    /// is constructed with the default <c>autoFile: false</c>, yet <c>guardrails.json</c> sets
+    /// <c>triageAutoFile: true</c> — so the produced <c>feedback.md</c> must record auto-file as
+    /// ENABLED, proving the per-run config value (not the constructor default) drove the outcome
+    /// via the <c>TaskExecutor</c> → <c>NeedsHumanTriage.RunAsync(autoFile:)</c> flow.
+    /// </summary>
+    [Fact]
+    public async Task Triage_AutoFileFromConfig_ReachesTriage()
+    {
+        const string toolResult =
+            """{"diagnosis":"guardrails-tool","ghIssueTitle":"Guardrails: config-driven auto-file","ghIssueBody":"Repro: ..."}""";
+
+        var runner = new RecordingRunner("ai-triage") { CannedResultText = toolResult };
+        // Constructor default is autoFile:false — the config value must override it at the call site.
+        var triage = new NeedsHumanTriage(runner);
+
+        using var plan = new StatePlanBuilder(defaultRetries: 0)
+            .AddTask("01-doomed", guardrailBody: StatePlanBuilder.Fail("fails"));
+
+        // Opt the plan into auto-file via guardrails.json (the production source of the flag).
+        File.WriteAllText(Path.Combine(plan.PlanDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": ".",
+              "defaultRetries": 0,
+              "maxParallelism": 1,
+              "triageAutoFile": true
+            }
+            """);
+
+        await RunWithTriageAsync(plan.PlanDir, triage, TestContext.Current.CancellationToken);
+
+        string feedbackPath = Path.Combine(TaskLogDir(plan.PlanDir, "01-doomed"), "feedback.md");
+        Assert.True(File.Exists(feedbackPath), "feedback.md must be written by triage");
+
+        string content = File.ReadAllText(feedbackPath);
+
+        // The config value reached the triage: the drafted issue records auto-file as ENABLED,
+        // not the constructor's disabled default.
+        Assert.Contains("**Auto-file**: enabled", content);
+        Assert.DoesNotContain("**Auto-file**: disabled", content);
+    }
 }

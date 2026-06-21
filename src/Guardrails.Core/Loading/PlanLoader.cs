@@ -124,6 +124,7 @@ public sealed class PlanLoader
             WorktreeRoot = string.IsNullOrWhiteSpace(raw.WorktreeRoot) ? null : raw.WorktreeRoot.Trim(),
             RunOnCurrentBranch = raw.RunOnCurrentBranch ?? false,
             MergeOnSuccess = raw.MergeOnSuccess ?? false,
+            TriageAutoFile = raw.TriageAutoFile ?? false,
             Interpreters = interpreters,
             PromptRunnerNames = runners.Names,
             DefaultPromptRunner = runners.Default,

@@ -35,13 +35,20 @@ public sealed class NeedsHumanTriage
     /// output (runner error or no result text).
     /// Callers MUST catch all exceptions — this is advisory and must not abort the run.
     /// </summary>
+    /// <param name="autoFile">
+    /// Effective auto-file flag for THIS run, flowed from <see cref="Model.RunConfig.TriageAutoFile"/>
+    /// (SSOT §9, Decision 8). Null (the default) falls back to the constructor's value, so existing
+    /// callers keep their behavior; <c>TaskExecutor</c> passes the per-run config value explicitly.
+    /// </param>
     internal async Task<string?> RunAsync(
         TaskNode task,
         string taskLogDir,
         string planDirectory,
         string workspace,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool? autoFile = null)
     {
+        bool effectiveAutoFile = autoFile ?? _autoFile;
         Directory.CreateDirectory(taskLogDir);
 
         string prompt = BuildTriagePrompt(task);
@@ -63,7 +70,7 @@ public sealed class NeedsHumanTriage
         if (!result.Completed || result.IsError || result.ResultText is null)
             return null;
 
-        string feedbackContent = BuildFeedbackContent(task, result.ResultText);
+        string feedbackContent = BuildFeedbackContent(task, result.ResultText, effectiveAutoFile);
         string feedbackPath = Path.Combine(taskLogDir, "feedback.md");
         File.WriteAllText(feedbackPath, feedbackContent, Encoding.UTF8);
         return feedbackPath;
@@ -77,7 +84,7 @@ public sealed class NeedsHumanTriage
         """{"diagnosis":"guardrails-tool","ghIssueTitle":"...","ghIssueBody":"..."}""" + "\n" +
         """{"diagnosis":"local-repo","analysis":"..."}""";
 
-    private static string BuildFeedbackContent(TaskNode task, string resultText)
+    private static string BuildFeedbackContent(TaskNode task, string resultText, bool autoFile)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"# AI Triage: Task '{task.Id}'");
@@ -92,7 +99,14 @@ public sealed class NeedsHumanTriage
                 sb.AppendLine($"**Diagnosis**: {diag.GetString()}");
 
             if (root.TryGetProperty("ghIssueTitle", out JsonElement title))
+            {
                 sb.AppendLine($"**GitHub Issue**: {title.GetString()}");
+                // SSOT §9 (Decision 8): auto-file is opt-in. The drafted issue records the mode so
+                // the human (and tests) can see whether it was filed or left as a draft.
+                sb.AppendLine(autoFile
+                    ? "**Auto-file**: enabled — issue will be filed to the configured GH repo."
+                    : "**Auto-file**: disabled — drafted only; nothing filed to a remote.");
+            }
 
             if (root.TryGetProperty("ghIssueBody", out JsonElement body))
             {

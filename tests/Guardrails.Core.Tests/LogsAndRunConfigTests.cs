@@ -115,6 +115,27 @@ public sealed class LogsAndRunConfigTests : IDisposable
         Assert.True(result.Plan!.Config.MergeOnSuccess);
     }
 
+    [Fact]
+    public void TriageAutoFile_DefaultsFalse_WhenAbsentFromConfig()
+    {
+        // SSOT §9 / Decision 8: triageAutoFile is opt-in and defaults to OFF.
+        PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan("""{ "version": 1 }"""));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
+        Assert.False(result.Plan!.Config.TriageAutoFile);
+    }
+
+    [Fact]
+    public void TriageAutoFile_RoundTrips_WhenTrue()
+    {
+        // SSOT §9: an explicit opt-in surfaces on RunConfig.TriageAutoFile.
+        const string json = """{ "version": 1, "triageAutoFile": true }""";
+        PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan(json));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
+        Assert.True(result.Plan!.Config.TriageAutoFile);
+    }
+
     // ── §8 per-attempt log layout ──────────────────────────────────────────────────────────────
 
     [Fact]

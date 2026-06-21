@@ -126,7 +126,8 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 string taskLogDir = TaskLevelLogDir(task.Id);
                 triageFeedbackPath = await _triage.RunAsync(
-                    task, taskLogDir, _plan.PlanDirectory, _plan.Workspace, cancellationToken)
+                    task, taskLogDir, _plan.PlanDirectory, _plan.Workspace, cancellationToken,
+                    autoFile: _plan.Config.TriageAutoFile)
                     .ConfigureAwait(false);
             }
             catch
