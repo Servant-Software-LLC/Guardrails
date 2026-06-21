@@ -78,19 +78,16 @@ as designed, not scope creep.
 
 ### `tasks/01-author-stats-tests/` — **INSERTED TASK**
 
-`task.json` — declares `captureHashes` so the HARNESS records the test file's SHA-256 into
-state after the action (the agent never computes a hash). The downstream `tests-untouched`
-guardrail reads it back. It also sets `restoreOnRetry: true`, which makes the harness snapshot
-the authored test bytes and restore them to baseline before any downstream retry — so an
-implementation agent that edits the test to game `02-stats-tests-pass` starts its next attempt
-against the pristine, authored test (the #51 self-heal). `restoreOnRetry` requires a non-empty
-`captureHashes` (else GR2014).
+`task.json` — declares a `writeScope` covering the one test file this task authors. That scope
+is the test-author half of the TDD test-protection: this task may write the test file; the
+implementation task (02) declares a `writeScope` that EXCLUDES it, so the harness's deterministic
+write-scope check (SSOT §3.4) catches an implementation that edits the tests instead of fixing the
+code. No `captureHashes`, no `restoreOnRetry`, no downstream `tests-untouched` guardrail.
 ```jsonc
 {
   "description": "Author failing unit tests that encode the --stats output format (total line + sorted per-category lines)",
   "dependsOn": [],
-  "captureHashes": ["tests/Inventory.Tests/StatsCommandTests.cs"],
-  "restoreOnRetry": true
+  "writeScope": ["tests/Inventory.Tests/StatsCommandTests.cs"]
 }
 ```
 
@@ -113,9 +110,7 @@ Use the existing test conventions in tests/Inventory.Tests. The tests MUST fail 
 be unable to find the flag) against the current code — they test behavior that does
 not exist yet. Do not implement the flag.
 
-You do NOT need to hash the test file or write anything to state — the task's
-`captureHashes` declaration makes the harness record its hash automatically.
-Publish nothing to state.
+You do NOT need to hash the test file or write anything to state. Publish nothing to state.
 ```
 
 `guardrails/01-tests-build.ps1`
@@ -141,17 +136,21 @@ if ($LASTEXITCODE -eq 0) {
 exit 0
 ```
 
-(No `state-fragment-written` guardrail is needed: the harness records the hash from
-`captureHashes` itself, and a missing declared file fails the attempt with an actionable
-message — so the hash is always present in state by the time task 02 reads it.)
+(No `state-fragment-written` guardrail is needed: this task publishes nothing to state. Its
+test files are protected downstream by task 02's `writeScope` excluding them, not by any state
+hand-off.)
 
 ### `tasks/02-implement-stats-flag/`
 
-`task.json`
+`task.json` — declares a `writeScope` scoped to the implementation source that EXCLUDES the test
+file task 01 owns. The harness's deterministic write-scope check (SSOT §3.4) then fails this task
+if its diff touches `tests/Inventory.Tests/StatsCommandTests.cs` — "the implementation may not write
+the tests", enforced without any hash compare or `tests-untouched` guardrail.
 ```jsonc
 {
   "description": "Implement --stats in src/Inventory.Cli so the Stats tests pass",
-  "dependsOn": ["01-author-stats-tests"]
+  "dependsOn": ["01-author-stats-tests"],
+  "writeScope": ["src/Inventory.Cli/"]
 }
 ```
 
@@ -177,37 +176,11 @@ if ($LASTEXITCODE -ne 0) {
 exit 0
 ```
 
-`guardrails/03-tests-untouched.ps1`
-```powershell
-# catches: "making tests pass" by editing the tests instead of the implementation.
-# Recomputes Get-FileHash and compares to the SHA-256 the harness recorded for task 01's
-# captureHashes. Get-FileHash is a pwsh cmdlet — a guardrail script runs via the interpreter,
-# not the agent sandbox, so it always works (no git, no allowedTools gate).
-$state = Get-Content $env:GUARDRAILS_STATE_IN -Raw | ConvertFrom-Json
-$storedHashes = $state.'01-author-stats-tests'.fileHashes
-if (-not $storedHashes) {
-  Write-Output "State key '01-author-stats-tests.fileHashes' missing — was captureHashes declared on task 01?"
-  exit 1
-}
-$failures = @()
-foreach ($file in $storedHashes.PSObject.Properties.Name) {
-  $stored = $storedHashes.$file
-  if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
-  $current = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
-  if ($current -ne $stored) { $failures += "$file was modified (expected $stored, got $current)" }
-}
-if ($failures) {
-  Write-Output ($failures -join "; ")
-  exit 1
-}
-exit 0
-```
-
-The recorded hash is contract-protected: no intervening task can forge
-`01-author-stats-tests.fileHashes` to poison this check, because the harness enforces
-single-writer-per-key — a task may only write top-level keys equal to its own id (SSOT §6.2,
-issue #48). The script above (the `captureHashes` → `Get-FileHash` recompute) is unchanged; it is
-simply now backed by that contract.
+No `tests-untouched` guardrail is needed. This task's `writeScope` (`src/Inventory.Cli/`) EXCLUDES
+`tests/Inventory.Tests/StatsCommandTests.cs`, so the harness's deterministic write-scope check
+(SSOT §3.4) fails the task if its diff edits the test file — "make the tests pass without modifying
+them", enforced by a read-only `git diff` membership test rather than a hash compare. No shared-state
+hash exists to forge, so the cross-task poisoning surface is gone entirely.
 
 ### `tasks/03-update-readme/`
 
@@ -236,9 +209,17 @@ exit 0
 
 ### `tasks/04-suite-green/` — terminal integration task
 
-`task.json`
+`task.json` — sets `integrationGate: true` (SSOT §3.3): this is the run's terminal whole-repo
+integration gate, the lone sink the two leaf tasks (02, 03) fan into. The plan has ≥2 leaf tasks
+and a fan-in, so validation requires **exactly one** `integrationGate: true` sink (GR2017) carrying
+**at least one** `scope: "integration"` guardrail (GR2018) — `01-full-suite` below is that guardrail.
+A terminal whole-suite gate is a genuinely repo-wide task, so it declares **no `writeScope`**.
 ```jsonc
-{ "description": "Whole test suite green (terminal gate)", "dependsOn": ["02-implement-stats-flag", "03-update-readme"] }
+{
+  "description": "Whole test suite green (terminal gate)",
+  "dependsOn": ["02-implement-stats-flag", "03-update-readme"],
+  "integrationGate": true
+}
 ```
 
 `action.ps1` → `exit 0` (a pure verification task; the guardrail is the point).
@@ -254,25 +235,35 @@ if ($LASTEXITCODE -ne 0) {
 exit 0
 ```
 
+`guardrails/01-full-suite.json` — marks the whole-suite check `scope: "integration"` (SSOT §4.3),
+so it joins the run's integration-guardrail set re-run at every union point and on the terminal
+gate's merged HEAD. This is the `scope: "integration"` guardrail GR2018 requires on the gate sink.
+```jsonc
+{
+  "description": "Whole test suite green",
+  "scope": "integration"
+}
+```
+
 ## Step 7 — the closing report (what the skill says to the user)
 
 > Breakdown of `add-stats-flag.md` → `add-stats-flag/` — **4 tasks** (plan listed 2):
 >
 > | Task | Action | Guardrails (archetypes) | dependsOn |
 > |---|---|---|---|
-> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8); declares `captureHashes` | — |
-> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4), tests-untouched (harness-hash) | 01 |
+> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8); `writeScope` owns the test file | — |
+> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4); `writeScope` excludes the test file | 01 |
 > | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
-> | 04-suite-green | script | full-suite (4, terminal-only) | 02, 03 |
+> | 04-suite-green | script | full-suite (4, terminal-only, `scope: "integration"`); `integrationGate: true` | 02, 03 |
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
 > pass" and those tests didn't exist. Its `tests-fail-on-current-code` guardrail proves
-> they're not tautological. Its `captureHashes` declaration makes the harness record the
-> test file's SHA-256 into state, which 02's `tests-untouched` guardrail reads (recomputing
-> with `Get-FileHash`) to verify the implementation didn't edit the tests; its
-> `restoreOnRetry: true` makes the harness restore the authored test to baseline before any
-> retry of 02, so a dirtied test never dead-ends the run (the #51 self-heal).
-> `guardrails validate add-stats-flag` → OK.
+> they're not tautological. The TDD pair's `writeScope` declarations protect the tests
+> deterministically: task 01 owns `tests/Inventory.Tests/StatsCommandTests.cs` in its scope;
+> task 02's scope (`src/Inventory.Cli/`) EXCLUDES it, so the harness's read-only write-scope
+> check (SSOT §3.4) fails 02 if its diff edits the tests — no hashing, no `tests-untouched`
+> guardrail. `04-suite-green` is the terminal `integrationGate: true` sink the two leaves fan
+> into; its full-suite check is `scope: "integration"`. `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
 > or add, then run `/guardrails-review add-stats-flag` before executing.

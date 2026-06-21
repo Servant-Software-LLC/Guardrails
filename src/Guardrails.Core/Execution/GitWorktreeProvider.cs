@@ -16,6 +16,10 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     private readonly string _worktreeRoot;
     private IntegrationHandle? _integration;
 
+    // Saved before a non-FF --no-commit merge so RollbackMerge can reset --hard to this sha.
+    // Safe as a field because Integrate is serialized by the Scheduler's _integrationLock.
+    private string _preMergeIntegHead = "";
+
     public GitWorktreeProvider(string repoPath, string worktreeRoot)
     {
         _repoPath = repoPath;
@@ -29,13 +33,19 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         string originalHead = Git("rev-parse", "HEAD").Trim();
         string planBranch = $"guardrails/{planName}";
 
-        // Create plan branch off user's current HEAD without switching to it.
-        Git("branch", planBranch);
+        // B1_1/F1: CreateIntegration must be IDEMPOTENT for an existing plan branch so a resumed
+        // run (after a journal loss/reset) attaches to the durable plan branch instead of throwing
+        // on `git branch <existing>`. Create the plan branch only when it does not already exist.
+        if (!BranchExists(planBranch))
+        {
+            Git("branch", planBranch);
+        }
 
-        // Create the integration worktree checked out on the plan branch.
-        string integPath = Path.Combine(_worktreeRoot, runId, "_integration");
-        Directory.CreateDirectory(Path.GetDirectoryName(integPath)!);
-        Git("worktree", "add", integPath, planBranch);
+        // Reuse an integration worktree already checked out on the plan branch (a prior run's,
+        // surviving the journal reset) — git refuses to check the same branch out twice, so a
+        // resume must adopt the existing checkout rather than add a second one.
+        string integPath = ExistingWorktreeForBranch(planBranch)
+            ?? AddIntegrationWorktree(runId, planBranch);
 
         _integration = new IntegrationHandle
         {
@@ -63,7 +73,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             SegmentBranchName = segBranch,
             TaskBase = planHead,
             RecordedCommitSha = "",
-            PlanBranchHead = planHead
+            PlanBranchHead = planHead,
+            TaskId = taskId
         };
     }
 
@@ -122,8 +133,70 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// <inheritdoc />
     public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct)
     {
-        // M4 – FF/merge logic is not yet implemented.
-        throw new NotImplementedException("Integration merge is implemented in M4.");
+        string integPath = integ.IntegrationWorktreePath;
+        string segBranch = segment.SegmentBranchName;
+        string taskId = string.IsNullOrEmpty(segment.TaskId) ? segBranch : segment.TaskId;
+
+        // Stage and commit all changes in the segment (--allow-empty for tasks that only write
+        // to GUARDRAILS_STATE_OUT with no file changes in the working tree).
+        GitIn(segment.WorktreePath, "add", "-A");
+        string commitMsg = $"Guardrails-Task: {taskId}\nGuardrails-Run: {integ.RunId}";
+        GitIn(segment.WorktreePath, "commit", "--allow-empty", "-m", commitMsg);
+
+        // C2: capture the segment's commit sha so a downstream fan-out ForkFromTip forks off the
+        // producer's recorded sha (W-2), never a live rev-parse of an inheritor-advanced branch.
+        // The segment commit is a real, reachable object regardless of the FF/non-FF outcome below.
+        segment.RecordedCommitSha = GitIn(segment.WorktreePath, "rev-parse", "HEAD").Trim();
+
+        // Try fast-forward merge into the integration worktree.
+        try
+        {
+            GitIn(integPath, "merge", "--ff-only", segBranch);
+            return IntegrationResult.FastForward;
+        }
+        catch (InvalidOperationException)
+        {
+            // FF-only failed; fall through to non-FF merge.
+        }
+
+        // Non-FF: save the integration HEAD for potential rollback, then do a --no-commit merge
+        // so the Scheduler can run re-verify on the merged bytes before committing.
+        _preMergeIntegHead = GitIn(integPath, "rev-parse", "HEAD").Trim();
+        var (_, mergeExit) = TryGitIn(integPath, "merge", "--no-commit", "--no-ff", segBranch);
+        if (mergeExit == 0) return IntegrationResult.Merged;
+
+        // Non-zero exit: check whether MERGE_HEAD exists (= conflict) vs some other git error.
+        var (_, mergeHeadExit) = TryGitIn(integPath, "rev-parse", "MERGE_HEAD");
+        if (mergeHeadExit == 0) return IntegrationResult.Conflict;
+
+        throw new InvalidOperationException(
+            $"git merge --no-commit --no-ff {segBranch} (in {integPath}) failed unexpectedly.");
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// B2: commit the staged (<c>merge --no-commit</c>) union in the integration worktree as a
+    /// merge commit carrying the <c>Guardrails-Task:</c>/<c>Guardrails-Run:</c> trailers, so the
+    /// settled task leaves a first-parent trailer on the plan branch exactly like the FF path.
+    /// Called by the Scheduler only after the union re-verify passes. Clears the rollback anchor.
+    /// </remarks>
+    public string CommitStagedMerge(IntegrationHandle integ, string taskId, CancellationToken ct)
+    {
+        string commitMsg = $"Guardrails-Task: {taskId}\nGuardrails-Run: {integ.RunId}";
+        GitIn(integ.IntegrationWorktreePath, "commit", "-m", commitMsg);
+        _preMergeIntegHead = "";
+        return GitIn(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
+    }
+
+    /// <inheritdoc />
+    public void RollbackMerge(IntegrationHandle integ, CancellationToken ct)
+    {
+        // Reset the integration worktree to the pre-merge HEAD, clearing the staged merge state.
+        if (!string.IsNullOrEmpty(_preMergeIntegHead))
+        {
+            GitIn(integ.IntegrationWorktreePath, "reset", "--hard", _preMergeIntegHead);
+            _preMergeIntegHead = "";
+        }
     }
 
     /// <inheritdoc />
@@ -141,15 +214,278 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// <inheritdoc />
     public MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct)
     {
-        // M5 – not yet implemented.
-        throw new NotImplementedException("MergePlanBranchIntoUserBranch is implemented in M5.");
+        // F4: never run git over uncommitted user work. A dirty working tree refuses the merge —
+        // even an ff-only merge that adds only new files (no textual conflict with the dirty paths)
+        // would silently interleave the user's WIP with the plan's output. Halt to needs-human.
+        if (IsWorkingTreeDirty())
+        {
+            return MergeOnSuccessResult.DirtyWorkingTree;
+        }
+
+        // Try fast-forward first — the common case when the user's branch didn't advance.
+        try
+        {
+            Git("merge", "--ff-only", integ.PlanBranchName);
+            return MergeOnSuccessResult.FastForwarded;
+        }
+        catch (InvalidOperationException)
+        {
+            // FF failed: user branch advanced mid-run. AI-merge is withheld (SSOT §5.3).
+        }
+
+        // Attempt a real merge to detect whether a conflict actually exists.
+        try
+        {
+            Git("merge", "--no-commit", integ.PlanBranchName);
+        }
+        catch (InvalidOperationException)
+        {
+            // Conflict detected — abort cleanly and leave the user's branch untouched.
+            try { Git("merge", "--abort"); } catch (InvalidOperationException) { /* already clean */ }
+            return MergeOnSuccessResult.Conflict;
+        }
+
+        // No conflict: commit the merge.
+        Git("commit", "--no-edit");
+        return MergeOnSuccessResult.Merged;
     }
 
-    private string Git(params string[] args)
+    /// <summary>
+    /// F3 / <c>--fresh</c> + crash recovery: delete every stale SEGMENT/fork branch
+    /// (<c>guardrails/&lt;runId&gt;/&lt;task&gt;/attempt-N</c> and <c>guardrails/&lt;runId&gt;/fork/…</c>)
+    /// in the repo at <paramref name="repoPath"/>, plus any of their registered worktrees rooted
+    /// under <paramref name="worktreeRoot"/>. A plan branch (<c>guardrails/&lt;plan-name&gt;</c>,
+    /// exactly two path components) is NOT a segment branch and is left untouched. Best-effort and
+    /// static so <see cref="State.RunReset"/> can prune without constructing a run-scoped provider;
+    /// any individual git failure is swallowed so a partial repo never aborts a fresh reset.
+    /// </summary>
+    public static void PruneStaleSegmentBranches(string repoPath, string worktreeRoot)
+    {
+        string[] segmentBranches;
+        try
+        {
+            // List ALL local branches without a glob (avoids git wildmatch path-separator
+            // ambiguity) and filter in C#: a segment/fork branch is guardrails/<runId>/<rest…>
+            // (≥ 3 '/'-separated components); a plan branch guardrails/<plan-name> has exactly 2
+            // and is preserved.
+            segmentBranches = GitIn(repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Where(s => s.StartsWith("guardrails/", StringComparison.Ordinal) && s.Count(c => c == '/') >= 2)
+                .ToArray();
+        }
+        catch (InvalidOperationException)
+        {
+            // Not a git repo, or git unavailable — nothing to prune.
+            return;
+        }
+
+        if (segmentBranches.Length == 0) return;
+
+        // Remove any registered worktrees first (a checked-out branch cannot be deleted) by
+        // reconstructing the path from the branch convention guardrails/<rest> → <worktreeRoot>/<rest>.
+        foreach (string branch in segmentBranches)
+        {
+            string[] relParts = branch["guardrails/".Length..].Split('/');
+            string worktreePath = Path.Combine([worktreeRoot, .. relParts]);
+            if (Directory.Exists(worktreePath))
+            {
+                try { GitIn(repoPath, "worktree", "remove", "--force", worktreePath); }
+                catch (InvalidOperationException) { /* not a registered worktree; pruned below */ }
+            }
+        }
+
+        try { GitIn(repoPath, "worktree", "prune"); } catch (InvalidOperationException) { /* best-effort */ }
+
+        foreach (string branch in segmentBranches)
+        {
+            try { GitIn(repoPath, "branch", "-D", branch); } catch (InvalidOperationException) { /* best-effort */ }
+        }
+    }
+
+    /// <summary>
+    /// W-1 protection (a): delete all <c>guardrails/&lt;runId&gt;/*</c> branches (and their
+    /// worktrees) before any resume logic reads trailers, so stale segment refs cannot
+    /// be mistaken for integrated work. The integration branch (<c>guardrails/&lt;planName&gt;</c>)
+    /// does not match the prefix and is left untouched.
+    /// </summary>
+    public void PruneStaleRunBranches(string runId, IntegrationHandle integ)
+    {
+        string branchPrefix = $"guardrails/{runId}/";
+
+        // List ALL local branches without a glob pattern (avoids cross-path-separator ambiguity
+        // with git's wildmatch) and filter by the run-scoped prefix in C#.
+        string[] staleBranches = Git("for-each-ref", "--format=%(refname:short)", "refs/heads")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.StartsWith(branchPrefix, StringComparison.Ordinal))
+            .ToArray();
+
+        if (staleBranches.Length == 0) return;
+
+        // Remove worktrees by reconstructing the path from the branch name convention:
+        // guardrails/<runId>/<rest> → <_worktreeRoot>/<runId>/<rest>
+        foreach (string branch in staleBranches)
+        {
+            string[] relParts = branch[branchPrefix.Length..].Split('/');
+            string worktreePath = Path.Combine([_worktreeRoot, runId, .. relParts]);
+            if (Directory.Exists(worktreePath))
+            {
+                try { Git("worktree", "remove", "--force", worktreePath); }
+                catch (InvalidOperationException) { /* not a registered worktree; pruned below */ }
+            }
+        }
+
+        // Clean up any stale worktree registrations (path removed but git entry lingers).
+        Git("worktree", "prune");
+
+        foreach (string branch in staleBranches)
+        {
+            Git("branch", "-D", branch);
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// B1_1/F1 resume reconciliation: walk the plan-branch first-parent history and collect EVERY
+    /// task id bearing a <c>Guardrails-Task:</c> trailer reachable from the tip, regardless of which
+    /// run committed it. The plan branch is the durable cross-run resume truth (only THIS plan's
+    /// integrations land on it), so a task already integrated there must not be re-run after a
+    /// journal loss/reset — even though a resumed run carries a fresh runId. Read-only.
+    /// </remarks>
+    public IReadOnlySet<string> ReconcileFromPlanBranch(IntegrationHandle integ) =>
+        CollectTrailerTasks(integ.PlanBranchName, runIdFilter: null);
+
+    /// <summary>
+    /// W-1 protection (b): like <see cref="ReconcileFromPlanBranch(IntegrationHandle)"/> but counts
+    /// only commits whose <c>Guardrails-Run:</c> matches <paramref name="runId"/> — used where a
+    /// single run's own integrations must be isolated from earlier runs' trailers.
+    /// </summary>
+    public IReadOnlySet<string> ReconcileFromPlanBranch(IntegrationHandle integ, string runId) =>
+        CollectTrailerTasks(integ.PlanBranchName, runId);
+
+    /// <summary>
+    /// Walk <paramref name="planBranch"/>'s first-parent history and collect task ids from
+    /// <c>Guardrails-Task:</c> trailers. When <paramref name="runIdFilter"/> is non-null, only
+    /// commits whose <c>Guardrails-Run:</c> matches are counted; when null, every trailer counts.
+    /// </summary>
+    private IReadOnlySet<string> CollectTrailerTasks(string planBranch, string? runIdFilter)
+    {
+        string log = Git("log", "--first-parent", "--format=%B", planBranch);
+        var settled = new HashSet<string>(StringComparer.Ordinal);
+        string? currentTask = null;
+        string? currentRun = null;
+
+        void Flush()
+        {
+            if (currentTask != null && (runIdFilter is null || currentRun == runIdFilter))
+                settled.Add(currentTask);
+            currentTask = null;
+            currentRun = null;
+        }
+
+        foreach (string rawLine in log.Split('\n'))
+        {
+            string line = rawLine.Trim();
+
+            if (string.IsNullOrEmpty(line))
+            {
+                Flush();
+                continue;
+            }
+
+            if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
+                currentTask = line["Guardrails-Task: ".Length..];
+            else if (line.StartsWith("Guardrails-Run: ", StringComparison.Ordinal))
+                currentRun = line["Guardrails-Run: ".Length..];
+        }
+
+        // Flush any trailing block (log output may not end with a blank line).
+        Flush();
+        return settled;
+    }
+
+    /// <summary>
+    /// Reset the segment to <c>handle.TaskBase</c> (the upstream's recorded commit sha,
+    /// captured at assignment — NOT the plan-branch <c>PlanBranchHead</c>) and clean
+    /// untracked non-ignored files. Git-ignored build caches survive (<c>-fd</c> not
+    /// <c>-fdx</c> — Decision 7: keeps warm artifacts so retries don't pay cold rebuilds).
+    /// </summary>
+    public void ResetForRetry(WorktreeHandle handle) =>
+        ResetSegment(handle.WorktreePath, handle.TaskBase);
+
+    /// <summary>
+    /// Reset a segment worktree to <paramref name="taskBase"/> and clean untracked non-ignored
+    /// files (Decision 7: <c>-fd</c>, not <c>-fdx</c>, so warm build caches survive). Static so
+    /// the attempt loop in <see cref="TaskExecutor"/> can reset a retry segment without holding a
+    /// provider reference (F2) — the same git operations the provider uses.
+    /// </summary>
+    public static void ResetSegment(string worktreePath, string taskBase)
+    {
+        GitIn(worktreePath, "reset", "--hard", taskBase);
+        GitIn(worktreePath, "clean", "-fd");
+    }
+
+    /// <summary>
+    /// True when the user's checkout (<c>_repoPath</c>) has uncommitted changes to TRACKED files
+    /// — staged or unstaged (<c>git status --porcelain --untracked-files=no</c> non-empty). F4 /
+    /// run-start pre-flight. Untracked files are EXCLUDED: the harness writes its own runtime state
+    /// (<c>state/</c>, <c>logs/</c>) under the plan folder inside the repo, which would otherwise
+    /// flag every real run as dirty; and an untracked file cannot be silently interleaved by a
+    /// fast-forward (git errors on an untracked-file collision, handled by the merge path). The F4
+    /// hazard is specifically a tracked modification (e.g. an unstaged edit to a committed file)
+    /// that an ff-only merge would silently fold in alongside the plan's output.
+    /// </summary>
+    private bool IsWorkingTreeDirty() =>
+        Git("status", "--porcelain", "--untracked-files=no").Trim().Length > 0;
+
+    /// <summary>True when local branch <paramref name="branch"/> already exists (resume idempotency).</summary>
+    private bool BranchExists(string branch)
+    {
+        var (_, exit) = TryGitIn(_repoPath, "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}");
+        return exit == 0;
+    }
+
+    /// <summary>
+    /// The absolute path of the worktree that already has <paramref name="branch"/> checked out, or
+    /// null when no worktree holds it. Parses <c>git worktree list --porcelain</c> (its
+    /// <c>worktree</c> + <c>branch refs/heads/&lt;name&gt;</c> record pairs).
+    /// </summary>
+    private string? ExistingWorktreeForBranch(string branch)
+    {
+        string listing = Git("worktree", "list", "--porcelain");
+        string? currentPath = null;
+        foreach (string rawLine in listing.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (line.StartsWith("worktree ", StringComparison.Ordinal))
+                currentPath = line["worktree ".Length..].Trim();
+            else if (line.StartsWith("branch ", StringComparison.Ordinal))
+            {
+                string refName = line["branch ".Length..].Trim();
+                if (refName == $"refs/heads/{branch}" && currentPath is not null)
+                    return currentPath;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Add a fresh integration worktree on <paramref name="planBranch"/> and return its path.</summary>
+    private string AddIntegrationWorktree(string runId, string planBranch)
+    {
+        string integPath = Path.Combine(_worktreeRoot, runId, "_integration");
+        Directory.CreateDirectory(Path.GetDirectoryName(integPath)!);
+        Git("worktree", "add", integPath, planBranch);
+        return integPath;
+    }
+
+    private string Git(params string[] args) => GitIn(_repoPath, args);
+
+    private static string GitIn(string workingDir, params string[] args)
     {
         var psi = new ProcessStartInfo("git")
         {
-            WorkingDirectory = _repoPath,
+            WorkingDirectory = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
@@ -161,7 +497,24 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         proc.WaitForExit();
         if (proc.ExitCode != 0)
             throw new InvalidOperationException(
-                $"git {string.Join(" ", args)} (in {_repoPath}) exited {proc.ExitCode}: {stderr.Trim()}");
+                $"git {string.Join(" ", args)} (in {workingDir}) exited {proc.ExitCode}: {stderr.Trim()}");
         return stdout;
+    }
+
+    private static (string stdout, int exitCode) TryGitIn(string workingDir, params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var arg in args) psi.ArgumentList.Add(arg);
+        using var proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+        return (stdout, proc.ExitCode);
     }
 }

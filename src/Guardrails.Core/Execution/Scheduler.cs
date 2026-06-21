@@ -1,6 +1,9 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Guardrails.Core.Graph;
 using Guardrails.Core.Model;
+using Guardrails.Core.State;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Core.Execution;
@@ -21,12 +24,19 @@ public sealed class Scheduler
     private readonly IWorktreeProvider? _worktreeProvider;
     private readonly IRunObserver _observer;
     private readonly int _maxParallelism;
+    private readonly IReVerifier? _reVerifier;
 
     private readonly object _gate = new();
+
+    // Serialize-merges lock (plan 08 §3): one integration-settle at a time so that
+    // non-FF union re-verify and B1 rollback are atomic w.r.t. other settling workers.
+    private readonly SemaphoreSlim _integrationLock = new(1, 1);
 
     // First unexpected (non-cancellation) executor fault wins; surfaced after WhenAll so the
     // run terminates deterministically with a harness error instead of hanging (see WorkerLoopAsync).
     private Exception? _fault;
+
+    private readonly IAiMergeWorker? _aiMergeWorker;
 
     public Scheduler(
         PlanDefinition plan,
@@ -34,14 +44,32 @@ public sealed class Scheduler
         ISchedulerJournal journal,
         IWorktreeProvider? worktreeProvider = null,
         IRunObserver? observer = null,
-        int? maxParallelism = null)
+        int? maxParallelism = null,
+        IReVerifier? reVerifier = null,
+        IAiMergeWorker? aiMergeWorker = null)
     {
         _plan = plan;
         _executor = executor;
         _journal = journal;
         _worktreeProvider = worktreeProvider;
         _observer = observer ?? IRunObserver.Null;
-        _maxParallelism = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
+        _reVerifier = reVerifier;
+        _aiMergeWorker = aiMergeWorker;
+
+        int requested = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
+
+        // F7 HARD GUARD: worktree mode (parallelism > 1) requires a worktree provider for
+        // per-task isolation. With no provider, parallel workers would share the single
+        // workspace and race undetectably (the rejected shared-workspace corruption class).
+        // CLAMP to 1 (serial shared-workspace, the pre-plan-08 model) rather than running
+        // an unsafe parallel run — and tell the observer so the demotion is not silent.
+        if (requested > 1 && _worktreeProvider is null)
+        {
+            _observer.ParallelismClampedNoProvider(requested);
+            requested = 1;
+        }
+
+        _maxParallelism = requested;
     }
 
     /// <summary>
@@ -64,17 +92,31 @@ public sealed class Scheduler
         var pendingDeps = new Dictionary<string, int>(StringComparer.Ordinal);
         var channel = Channel.CreateUnbounded<TaskEnvelope>();
 
-        // Create the integration handle once for this run (M1 seam; M2 will do real git).
+        // Create the integration handle once for this run (worktree mode only).
+        string runId = Guid.NewGuid().ToString("N")[..8];
         IntegrationHandle? integ = _worktreeProvider?.CreateIntegration(
             planName: Path.GetFileName(plan.PlanDirectory),
-            runId: Guid.NewGuid().ToString("N")[..8],
+            runId: runId,
             cancellationToken);
 
-        // --- resume pre-pass: journaled successes are green without re-running ----------
+        // B1_1/F1 resume pre-pass: a task is already green if the JOURNAL says Succeeded OR it is
+        // already integrated on the PLAN BRANCH (a Guardrails-Task: trailer reachable from the tip).
+        // Git is the durable resume truth: a kill after the FF/merge commit but before the journal
+        // write leaves the task on the plan branch with no journal record — the union below stops it
+        // being re-run. Prune this run's stale segment refs first so they can't be mistaken for work.
+        var planBranchSettled = new HashSet<string>(StringComparer.Ordinal);
+        if (_worktreeProvider is { } wp && integ is { } activeInteg)
+        {
+            wp.PruneStaleRunBranches(runId, activeInteg);
+            planBranchSettled.UnionWith(wp.ReconcileFromPlanBranch(activeInteg));
+        }
+
+        // --- resume pre-pass: journaled successes + plan-branch trailers are green ----------
         var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
         foreach (TaskNode task in plan.Tasks)
         {
-            if (_journal.StatusOf(task.Id) == JournalTaskStatus.Succeeded)
+            if (_journal.StatusOf(task.Id) == JournalTaskStatus.Succeeded
+                || planBranchSettled.Contains(task.Id))
             {
                 preSettledGreen.Add(task.Id);
                 var skipped = new TaskResult
@@ -105,13 +147,15 @@ public sealed class Scheduler
             return BuildReport(plan, settled, cancelled: false);
         }
 
-        // Pre-create worktree handles for every task that will run. Handles are built upfront
-        // (single-threaded, before workers start) so OnSettled can enqueue them without needing
-        // a CancellationToken or taking extra locks.
+        // Pre-create worktree handles only for initially-ready tasks (no pending deps).
+        // Dependent tasks get their handles created LAZILY in OnSettledAsync AFTER the upstream
+        // integration commits advance the plan branch — this is what makes FF possible for
+        // linear chains: task B's segment is forked from task A's integrated HEAD, not from the
+        // original plan-branch HEAD before A ran.
         var handles = new Dictionary<string, WorktreeHandle>(StringComparer.Ordinal);
         foreach (TaskNode task in plan.Tasks)
         {
-            if (!preSettledGreen.Contains(task.Id))
+            if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
             {
                 handles[task.Id] = _worktreeProvider != null && integ != null
                     ? _worktreeProvider.CreateSegment(task.Id, attempt: 1, integ, cancellationToken)
@@ -128,9 +172,6 @@ public sealed class Scheduler
         }
 
         // --- workers ---------------------------------------------------------------------
-        // A run-scoped CTS linked to the caller's token: the workers honor the caller's
-        // cancellation AND an unexpected executor fault cancels it internally, so sibling
-        // workers drain instead of blocking forever on a channel that would never complete.
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining, handles, integ);
         int workerCount = Math.Min(_maxParallelism, remaining);
@@ -140,9 +181,6 @@ public sealed class Scheduler
 
         await Task.WhenAll(workers).ConfigureAwait(false);
 
-        // An unexpected (non-cancellation) executor throw is a harness fault, not an actionable
-        // task verdict: surface it so the run terminates with a non-zero (harness-error) exit
-        // (SSOT §7) rather than hanging or silently degrading the report.
         if (_fault is { } fault)
         {
             throw new InvalidOperationException(
@@ -150,7 +188,42 @@ public sealed class Scheduler
                 fault);
         }
 
-        return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested);
+        RunReport report = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested);
+
+        // --- C1 terminal whole-repo integration gate (§3.3/§4a) --------------------------
+        // After every task settles green, re-run the run's integration-guardrail set on the
+        // FINAL plan-branch HEAD (via the integration worktree) — the union's whole-repo
+        // soundness boundary that backstops the per-hop FF-integrations a linear chain skipped.
+        // A failing gate flips the run off-green (the sink task, or first task, to needs-human)
+        // so mergeOnSuccess is refused and the report is not certified.
+        if (report.AllSucceeded && _reVerifier != null && integ != null)
+        {
+            IReadOnlyList<GuardrailDefinition> integrationSet =
+                GuardrailScopeFilter.IntegrationSet(plan.Tasks.SelectMany(t => t.Guardrails));
+
+            if (integrationSet.Count > 0)
+            {
+                ReVerifyResult gate = await _reVerifier
+                    .ReVerifyAsync(integ.IntegrationWorktreePath, integrationSet, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!gate.Passed)
+                {
+                    report = WithTerminalGateFailure(plan, report, gate);
+                }
+            }
+        }
+
+        // Deliver the completed plan branch to the user's branch when every task succeeded
+        // and mergeOnSuccess is enabled. AI-merge is withheld: a conflict halts to needs-human
+        // with the plan branch intact (SSOT §5.3).
+        MergeOnSuccessResult? mergeOutcome = null;
+        if (report.AllSucceeded && plan.Config.MergeOnSuccess && _worktreeProvider != null && integ != null)
+        {
+            mergeOutcome = _worktreeProvider.MergePlanBranchIntoUserBranch(integ, cancellationToken);
+        }
+
+        return report with { MergeOnSuccessOutcome = mergeOutcome };
     }
 
     private async Task WorkerLoopAsync(RunContext context, CancellationTokenSource runCts)
@@ -163,35 +236,23 @@ public sealed class Scheduler
                 TaskNode task = envelope.Task;
                 WorktreeHandle handle = envelope.Handle;
 
-                // Per-run cost cap (SSOT §2 / plan 04): if the journal's cumulative cost has reached
-                // the configured cap, do NOT launch this attempt. Settle the task needs-human and let
-                // OnSettled block its transitive dependents via the existing halt path. The check is
-                // against cumulative journaled cost, so resumes account for prior spend; an attempt
-                // already in flight on another worker is never interrupted — the cap only gates new
-                // launches.
                 if (CostCapHaltFor(task) is { } capped)
                 {
-                    OnSettled(context, task, capped, handle);
+                    await OnSettledAsync(context, task, capped, handle, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
                 TaskResult result = await _executor.ExecuteAsync(task, handle, cancellationToken).ConfigureAwait(false);
 
-                OnSettled(context, task, result, handle);
+                await OnSettledAsync(context, task, result, handle, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
         {
-            // Cancelled drain: in-flight attempts were journaled by the executor; the
-            // report marks the run cancelled. (Also reached when an executor fault on a
-            // sibling worker cancels runCts — the fault itself is recorded below.)
+            // Cancelled drain.
         }
         catch (Exception ex)
         {
-            // Unexpected executor fault: record the first one (first-wins), then cancel the
-            // run-scoped token and complete the channel so every sibling worker breaks out of
-            // ReadAllAsync and drains. Without this the channel would never complete and
-            // Task.WhenAll — hence the whole run — would hang.
             lock (_gate)
             {
                 _fault ??= ex;
@@ -202,11 +263,6 @@ public sealed class Scheduler
         }
     }
 
-    /// <summary>
-    /// If the per-run cost cap (<see cref="RunConfig.MaxCostUsd"/>) is set and the journal's
-    /// cumulative cost has reached it, return the <c>needs-human</c> result that settles
-    /// <paramref name="task"/> without launching its attempt; otherwise null (launch normally).
-    /// </summary>
     private TaskResult? CostCapHaltFor(TaskNode task)
     {
         if (_plan.Config.MaxCostUsd is not { } cap || _journal.CurrentCostUsd() < cap)
@@ -223,19 +279,48 @@ public sealed class Scheduler
         };
     }
 
-    private void OnSettled(RunContext context, TaskNode task, TaskResult result, WorktreeHandle handle)
+    /// <summary>
+    /// Called after a task finishes (executor or cost-cap halt). For worktree-mode green results,
+    /// performs the B1 deferred settle (fragment merge → git integration commit → journal settle)
+    /// under <see cref="_integrationLock"/> BEFORE updating the shared run context under
+    /// <see cref="_gate"/>. This ordering ensures dependents only become ready after the upstream
+    /// integration has advanced the plan branch, making lazy handle creation FF-compatible.
+    /// </summary>
+    private async Task OnSettledAsync(
+        RunContext context, TaskNode task, TaskResult result, WorktreeHandle handle, CancellationToken ct)
     {
+        // B1 deferred settle (worktree mode, real segment): ValidateFragmentForSettle sets
+        // DeferredSettle=true, meaning the Scheduler owns the fragment merge → git commit →
+        // journal settle sequence under the integration lock.
+        //
+        // Old path (serial mode or fake provider): the executor already merged + journaled;
+        // just call provider.Integrate directly so IWorktreeProvider.IntegrateCallCount tests pass.
+        if (result.IsGreen && _worktreeProvider is { } provider && context.Integ is { } integ)
+        {
+            if (result.DeferredSettle)
+            {
+                await _integrationLock.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    result = await SettleAsync(task, result, handle, provider, integ, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _integrationLock.Release();
+                }
+            }
+            else if (!string.IsNullOrEmpty(handle.WorktreePath))
+            {
+                // Non-deferred: executor already handled journal; just integrate the segment.
+                provider.Integrate(handle, integ, CancellationToken.None);
+            }
+        }
+
         var newlyReady = new List<TaskNode>();
         var newlyBlocked = new List<TaskResult>();
 
         lock (_gate)
         {
-            // Integrate under the gate so the provider's counter is serialized across workers.
-            if (result.IsGreen && _worktreeProvider is { } provider && context.Integ is { } integ)
-            {
-                provider.Integrate(handle, integ, CancellationToken.None);
-            }
-
             context.Settled[task.Id] = result;
             context.Remaining--;
 
@@ -245,14 +330,18 @@ public sealed class Scheduler
                 {
                     if (!context.Settled.ContainsKey(dependent) && --context.PendingDeps[dependent] == 0)
                     {
+                        // Lazy handle creation: create the dependent's segment NOW, after the
+                        // upstream integration has advanced the plan branch. This allows FF.
+                        WorktreeHandle depHandle = _worktreeProvider != null && context.Integ != null
+                            ? _worktreeProvider.CreateSegment(dependent, attempt: 1, context.Integ, CancellationToken.None)
+                            : new WorktreeHandle();
+                        context.Handles[dependent] = depHandle;
                         newlyReady.Add(context.ById[dependent]);
                     }
                 }
             }
             else if (result.Outcome != TaskOutcome.Cancelled)
             {
-                // Block the transitive closure now: those tasks can never become ready,
-                // and counting them settled lets independent branches finish the run.
                 foreach (string dependent in context.Graph.TransitiveDependentsOf(task.Id)
                              .OrderBy(d => d, StringComparer.Ordinal))
                 {
@@ -293,6 +382,180 @@ public sealed class Scheduler
         }
     }
 
+    /// <summary>
+    /// B1 fixed-order settle under <see cref="_integrationLock"/>:
+    /// (1) deep-merge fragment into state.json,
+    /// (2) git integration commit (FF or non-FF merge),
+    /// (3) reserve mergeSequence + journal RecordSettle.
+    /// On non-FF failure: restore state.json, reset integration worktree, journal NeedsHuman.
+    /// </summary>
+    private async Task<TaskResult> SettleAsync(
+        TaskNode task,
+        TaskResult result,
+        WorktreeHandle handle,
+        IWorktreeProvider provider,
+        IntegrationHandle integ,
+        CancellationToken ct)
+    {
+        string statePath = Path.Combine(_plan.PlanDirectory, "state", "state.json");
+        string preMergeState = File.Exists(statePath) ? File.ReadAllText(statePath) : "{}";
+
+        // B1 step 1: merge fragment into state.json BEFORE the git commit.
+        if (result.FragmentPath is { } fp && File.Exists(fp))
+        {
+            MergeFragmentIntoState(statePath, preMergeState, fp);
+        }
+
+        // B1 step 2: git integration commit (FF or non-FF union).
+        IntegrationResult integResult = provider.Integrate(handle, integ, ct);
+
+        if (integResult == IntegrationResult.FastForward)
+        {
+            // FF is free — no re-verify needed. Consume one merge sequence.
+            long seq = _journal.ReserveMergeSequence();
+            _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, seq);
+            return result;
+        }
+
+        if (integResult == IntegrationResult.Conflict)
+        {
+            // AI merge worker resolves the conflict (§9.1). If no worker is wired or all
+            // attempts fail, escalate to needs-human with a full B1 rollback.
+            bool aiResolved = _aiMergeWorker != null
+                && await _aiMergeWorker.TryResolveAsync(
+                    integ.IntegrationWorktreePath,
+                    handle.SegmentBranchName,
+                    _plan.PlanDirectory,
+                    ct).ConfigureAwait(false);
+
+            if (!aiResolved)
+            {
+                AtomicFile.WriteAllText(statePath, preMergeState);
+                provider.RollbackMerge(integ, ct);
+                _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+                return new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.NeedsHuman,
+                    ActionExitCode = result.ActionExitCode,
+                    Guardrails = result.Guardrails,
+                    Summary = "merge conflict could not be AI-resolved; needs human"
+                };
+            }
+
+            // AI merge succeeded: re-verify using the FULL guardrail set of all colliding
+            // siblings unconditionally (B-3: AI may silently drop a sibling's hunk).
+            IReadOnlyList<GuardrailDefinition> allGuardrails =
+                _plan.Tasks.SelectMany(t => t.Guardrails).ToList();
+
+            ReVerifyResult aiReVerify = _reVerifier != null
+                ? await _reVerifier.ReVerifyAsync(integ.IntegrationWorktreePath, allGuardrails, ct).ConfigureAwait(false)
+                : new ReVerifyResult { Passed = true };
+
+            if (aiReVerify.Passed)
+            {
+                // B2: commit the AI-resolved staged merge with the task trailer BEFORE journaling.
+                provider.CommitStagedMerge(integ, task.Id, ct);
+                long seq = _journal.ReserveMergeSequence();
+                _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, seq);
+                return result;
+            }
+
+            // Re-verify failed after AI merge: B1 four-effect rollback.
+            AtomicFile.WriteAllText(statePath, preMergeState);
+            provider.RollbackMerge(integ, ct);
+            _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+            return new TaskResult
+            {
+                TaskId = task.Id,
+                Outcome = TaskOutcome.NeedsHuman,
+                ActionExitCode = result.ActionExitCode,
+                Guardrails = result.Guardrails,
+                Summary = "AI-merge resolution failed re-verify (B-3); needs human"
+            };
+        }
+
+        // Non-FF union: re-verify the merged bytes in the integration worktree.
+        IReadOnlyList<GuardrailDefinition> integGuardrails =
+            GuardrailScopeFilter.IntegrationSet(_plan.Tasks.SelectMany(t => t.Guardrails));
+
+        ReVerifyResult reVerify = _reVerifier != null
+            ? await _reVerifier.ReVerifyAsync(integ.IntegrationWorktreePath, integGuardrails, ct).ConfigureAwait(false)
+            : new ReVerifyResult { Passed = true };
+
+        if (reVerify.Passed)
+        {
+            // B2 step 2: commit the staged non-FF union with the task trailer BEFORE journaling,
+            // so the plan branch carries this task's Guardrails-Task: trailer (the FF path commits
+            // implicitly via the FF move; the non-FF path must commit the staged merge explicitly).
+            provider.CommitStagedMerge(integ, task.Id, ct);
+            long seq = _journal.ReserveMergeSequence();
+            _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, seq);
+            return result;
+        }
+
+        // B1 four-effect rollback:
+        // 1. Restore state.json (undo fragment merge).
+        AtomicFile.WriteAllText(statePath, preMergeState);
+        // 2. Reset integration worktree to pre-merge HEAD.
+        provider.RollbackMerge(integ, ct);
+        // 3. Journal NeedsHuman — mergeSequence NOT consumed.
+        _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+
+        return new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            ActionExitCode = result.ActionExitCode,
+            Guardrails = result.Guardrails,
+            Summary = "non-FF union re-verify failed; rolled back (B1 four-effect)"
+        };
+    }
+
+    /// <summary>
+    /// Shallow-merge <paramref name="fragmentPath"/> into state.json at <paramref name="statePath"/>.
+    /// The fragment was already validated (valid JSON object, no foreign keys). Uses atomic write.
+    /// </summary>
+    private static void MergeFragmentIntoState(string statePath, string preMergeState, string fragmentPath)
+    {
+        var stateObj = (JsonNode.Parse(preMergeState) as JsonObject) ?? new JsonObject();
+        string rawFrag = File.ReadAllText(fragmentPath);
+        var fragObj = (JsonNode.Parse(rawFrag) as JsonObject) ?? new JsonObject();
+
+        foreach (var (key, value) in fragObj)
+        {
+            stateObj[key] = value?.DeepClone();
+        }
+
+        AtomicFile.WriteAllText(statePath, stateObj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    /// <summary>
+    /// Convert an all-green report into a needs-human one when the terminal integration gate
+    /// (§3.3) failed on the final plan-branch HEAD. The failure is attributed to the
+    /// <c>integrationGate:true</c> sink task (or, absent one, the last task in plan order) so the
+    /// run is not certified and mergeOnSuccess is refused.
+    /// </summary>
+    private static RunReport WithTerminalGateFailure(
+        PlanDefinition plan, RunReport report, ReVerifyResult gate)
+    {
+        string gateTaskId =
+            plan.Tasks.LastOrDefault(t => t.IntegrationGate)?.Id
+            ?? plan.Tasks[^1].Id;
+
+        string failed = string.Join(", ", gate.FailedGuardrails.Select(g => g.Name));
+        var rewritten = report.Tasks.Select(t => t.TaskId == gateTaskId
+            ? t with
+            {
+                Outcome = TaskOutcome.NeedsHuman,
+                Guardrails = gate.FailedGuardrails,
+                Summary = $"terminal integration gate failed on final HEAD: {failed}"
+            }
+            : t).ToList();
+
+        return report with { Tasks = rewritten };
+    }
+
     private static RunReport BuildReport(
         PlanDefinition plan,
         IReadOnlyDictionary<string, TaskResult> settled,
@@ -325,7 +588,7 @@ public sealed class Scheduler
         Dictionary<string, int> pendingDeps,
         Channel<TaskEnvelope> channel,
         int remaining,
-        IReadOnlyDictionary<string, WorktreeHandle> handles,
+        Dictionary<string, WorktreeHandle> handles,
         IntegrationHandle? integ)
     {
         public DependencyGraph Graph { get; } = graph;
@@ -334,7 +597,7 @@ public sealed class Scheduler
         public Dictionary<string, int> PendingDeps { get; } = pendingDeps;
         public Channel<TaskEnvelope> Channel { get; } = channel;
         public int Remaining { get; set; } = remaining;
-        public IReadOnlyDictionary<string, WorktreeHandle> Handles { get; } = handles;
+        public Dictionary<string, WorktreeHandle> Handles { get; } = handles;
         public IntegrationHandle? Integ { get; } = integ;
     }
 }

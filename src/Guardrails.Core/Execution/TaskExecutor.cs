@@ -33,6 +33,7 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly AttemptJournaler _journaler;
     private readonly DependencyGraph _graph;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
+    private readonly NeedsHumanTriage? _triage;
 
     public TaskExecutor(
         PlanDefinition plan,
@@ -41,12 +42,14 @@ public sealed class TaskExecutor : ITaskExecutor
         StateManager stateManager,
         RunJournal journal,
         IRunObserver observer,
-        PromptRunnerRegistry? promptRunners = null)
+        PromptRunnerRegistry? promptRunners = null,
+        NeedsHumanTriage? triage = null)
     {
         _plan = plan;
         _stateManager = stateManager;
         _journal = journal;
         _observer = observer;
+        _triage = triage;
 
         _graph = new DependencyGraph(plan.Tasks);
         _tasksById = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
@@ -77,7 +80,7 @@ public sealed class TaskExecutor : ITaskExecutor
             int attemptNumber = _journal.NextAttemptNumber(task.Id);
             _observer.AttemptStarting(task, attemptIndex, budget);
 
-            AttemptResult attempt = await RunAttemptAsync(task, attemptNumber, feedbackPath, isFinal, cancellationToken)
+            AttemptResult attempt = await RunAttemptAsync(task, worktree, attemptNumber, feedbackPath, isFinal, cancellationToken)
                 .ConfigureAwait(false);
             last = attempt.Result;
 
@@ -104,9 +107,39 @@ public sealed class TaskExecutor : ITaskExecutor
             }
 
             feedbackPath = attempt.FeedbackPath;
+
+            // F2: in worktree mode, reset the segment to taskBase + clean before the next attempt
+            // so attempt N+1 starts on a pristine tree and never inherits attempt N's WIP (the
+            // wip.txt-survives defect). Guarded on a real git segment (non-empty path + a real
+            // taskBase sha, not the all-zeros placeholder a fake provider supplies).
+            if (!isFinal && IsRealGitSegment(worktree))
+            {
+                GitWorktreeProvider.ResetSegment(worktree.WorktreePath, worktree.TaskBase);
+            }
         }
 
-        return last with { Summary = $"{last.Summary} — needs human after {budget} attempt(s)" };
+        // Budget exhausted → needs-human via exhaustion. Run advisory triage (plan 08 §9).
+        string? triageFeedbackPath = null;
+        if (_triage is not null)
+        {
+            try
+            {
+                string taskLogDir = TaskLevelLogDir(task.Id);
+                triageFeedbackPath = await _triage.RunAsync(
+                    task, taskLogDir, _plan.PlanDirectory, _plan.Workspace, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Triage is advisory — exceptions must never abort the run or change the verdict.
+            }
+        }
+
+        string exhaustedSuffix = $" — needs human after {budget} attempt(s)";
+        if (triageFeedbackPath is not null)
+            exhaustedSuffix += $"; triage: {triageFeedbackPath}";
+
+        return last with { Summary = $"{last.Summary}{exhaustedSuffix}" };
     }
 
     /// <summary>
@@ -137,6 +170,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
     private async Task<AttemptResult> RunAttemptAsync(
         TaskNode task,
+        WorktreeHandle worktree,
         int attemptNumber,
         string? previousFeedbackPath,
         bool isFinal,
@@ -151,7 +185,8 @@ public sealed class TaskExecutor : ITaskExecutor
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
 
         IReadOnlyDictionary<string, string> env = BuildEnvironment(
-            task, attemptNumber, logDir, snapshotPath, fragmentOutPath, previousFeedbackPath);
+            task, attemptNumber, logDir, snapshotPath, fragmentOutPath, previousFeedbackPath,
+            worktree.WorktreePath);
         string workspace = ResolveWorkingDirectory(task);
 
         // --- action (script or prompt) --------------------------------------------------
@@ -189,6 +224,35 @@ public sealed class TaskExecutor : ITaskExecutor
                 costUsd: action.CostUsd);
         }
 
+        // --- write-scope check (plan 08 §2/§3.4): after action, before guardrails -------
+        // Only runs when the task declares a writeScope AND the worktree carries a real
+        // git repo path (non-empty TaskBase). Skipped for FakeWorktreeProvider segments.
+        if (task.WriteScope is { } scopeGlobs && IsRealGitSegment(worktree))
+        {
+            WriteScopeCheckResult scopeCheck = WriteScopeCheck.Check(
+                worktree.WorktreePath, worktree.TaskBase, scopeGlobs);
+
+            if (!scopeCheck.Passed)
+            {
+                // Scoped revert: restore only the out-of-scope paths to taskBase state.
+                WriteScopeCheck.ScopedRevert(worktree.WorktreePath, worktree.TaskBase, scopeCheck.OffendingPaths);
+
+                string offendingList = string.Join(", ", scopeCheck.OffendingPaths);
+                string feedback = RetryPolicy.ForWriteScopeViolation(task, attemptNumber, scopeCheck.OffendingPaths);
+                return _journaler.FailedAttempt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
+                    AttemptOutcome.GuardrailFailed,
+                    new TaskResult
+                    {
+                        TaskId = task.Id,
+                        Outcome = TaskOutcome.GuardrailFailed,
+                        ActionExitCode = action.ExitCode,
+                        Summary = $"write-scope violation: {offendingList}"
+                    },
+                    costUsd: action.CostUsd);
+            }
+        }
+
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
@@ -218,12 +282,36 @@ public sealed class TaskExecutor : ITaskExecutor
                 costUsd: action.CostUsd);
         }
 
-        // --- merge fragment (only after every guardrail passed) --------------------------
+        // --- merge fragment or defer to Scheduler (worktree mode) -----------------------
+        // Worktree mode: the segment is a real directory. Validate the fragment but defer the
+        // actual merge + git commit to the Scheduler's B1 settle under the integration lock.
+        // Serial mode (empty or non-existent WorktreePath): merge immediately as before.
+        if (!string.IsNullOrEmpty(worktree.WorktreePath) && Directory.Exists(worktree.WorktreePath))
+        {
+            return _journaler.ValidateFragmentForSettle(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
+        }
+
         return _journaler.CompleteSucceededOrInvalidFragment(
             task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
     }
 
+    /// <summary>
+    /// True when <paramref name="worktree"/> is a real git segment (worktree mode) rather than a
+    /// serial-mode or fake-provider placeholder: a non-empty path that exists on disk plus a real
+    /// <c>TaskBase</c> sha (not the all-zeros placeholder a <see cref="FakeWorktreeProvider"/>
+    /// supplies). Gates both the write-scope check and the F2 retry reset on a usable git tree.
+    /// </summary>
+    private static bool IsRealGitSegment(WorktreeHandle worktree) =>
+        !string.IsNullOrEmpty(worktree.WorktreePath)
+        && Directory.Exists(worktree.WorktreePath)
+        && !string.IsNullOrEmpty(worktree.TaskBase)
+        && !worktree.TaskBase.All(c => c == '0');
+
     // --- log paths -----------------------------------------------------------------------
+
+    private string TaskLevelLogDir(string taskId) =>
+        Path.Combine(_plan.PlanDirectory, "logs", _journal.Document.RunId, taskId);
 
     private string AttemptLogDir(string taskId, int attempt) =>
         Path.Combine(_plan.PlanDirectory, "logs", _journal.Document.RunId, taskId, $"attempt-{attempt}");
@@ -235,7 +323,9 @@ public sealed class TaskExecutor : ITaskExecutor
 
     /// <summary>
     /// The §5.1 env-var contract for an ACTION process. <c>GUARDRAILS_FEEDBACK</c> is set
-    /// from attempt 2 onward, pointing at the previous attempt's <c>feedback.md</c>.
+    /// from attempt 2 onward. <c>GUARDRAILS_WORKSPACE</c> is set in worktree mode (when
+    /// <paramref name="worktreePath"/> is a real directory) so actions can write files into the
+    /// isolated segment that <see cref="GitWorktreeProvider.Integrate"/> will commit.
     /// </summary>
     private IReadOnlyDictionary<string, string> BuildEnvironment(
         TaskNode task,
@@ -243,7 +333,8 @@ public sealed class TaskExecutor : ITaskExecutor
         string logDir,
         string snapshotPath,
         string fragmentOutPath,
-        string? previousFeedbackPath)
+        string? previousFeedbackPath,
+        string worktreePath = "")
     {
         var env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -255,6 +346,11 @@ public sealed class TaskExecutor : ITaskExecutor
             ["GUARDRAILS_STATE_OUT"] = fragmentOutPath,
             ["GUARDRAILS_LOG_DIR"] = logDir
         };
+
+        if (!string.IsNullOrEmpty(worktreePath) && Directory.Exists(worktreePath))
+        {
+            env["GUARDRAILS_WORKSPACE"] = worktreePath;
+        }
 
         if (previousFeedbackPath is not null)
         {

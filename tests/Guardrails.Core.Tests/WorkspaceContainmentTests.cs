@@ -3,9 +3,9 @@ using Guardrails.Core.Execution;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// The shared containment boundary (FIX B, issue #51) used by both the GR2013 validator check and the
-/// CapturedFileStore snapshot/restore guard. A single definition of "stays inside the workspace?" so
-/// the two can never drift. Workspace is an absolute temp dir so resolution is realistic.
+/// The shared containment boundary (FIX B, issue #51) used by the GR2013 validator workspace-boundary
+/// check. A single OS-correct definition of "stays inside the workspace?" so callers can never drift.
+/// Workspace is an absolute temp dir so resolution is realistic.
 /// </summary>
 public sealed class WorkspaceContainmentTests
 {

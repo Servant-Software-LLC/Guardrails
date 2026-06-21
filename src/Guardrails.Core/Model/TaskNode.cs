@@ -42,4 +42,11 @@ public sealed record TaskNode
     /// guardrail with <c>scope:"integration"</c>. Default false (no gate role).
     /// </summary>
     public bool IntegrationGate { get; init; }
+
+    /// <summary>
+    /// The declared write-scope for this task (plan 08 §2/§3.4, SSOT §3.4). Each entry is a
+    /// glob pattern matched against <c>git diff --name-status</c> paths after the action runs.
+    /// Null (absent in <c>task.json</c>) is the off-switch — no write-scope check runs.
+    /// </summary>
+    public IReadOnlyList<string>? WriteScope { get; init; }
 }

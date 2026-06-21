@@ -305,6 +305,7 @@ public sealed class PlanLoader
             Retries = raw.Retries,
             TimeoutSeconds = raw.TimeoutSeconds,
             IntegrationGate = raw.IntegrationGate ?? false,
+            WriteScope = raw.WriteScope is { Count: > 0 } ws ? [.. ws] : null,
             Action = action,
             Guardrails = guardrails
         };
@@ -437,6 +438,10 @@ public sealed class PlanLoader
             {
                 guardrail = ApplySidecar(guardrail, guardrailsDir, basename, diagnostics);
             }
+            else if (kind == ActionKind.Prompt)
+            {
+                guardrail = ApplyPromptFrontmatter(guardrail);
+            }
 
             guardrails.Add(guardrail);
         }
@@ -479,6 +484,79 @@ public sealed class PlanLoader
             TimeoutSeconds = sidecar.TimeoutSeconds,
             Scope = string.IsNullOrWhiteSpace(sidecar.Scope) ? null : sidecar.Scope.Trim().ToLowerInvariant()
         };
+    }
+
+    // --- prompt frontmatter (SSOT §4.2) -----------------------------------------------
+
+    /// <summary>
+    /// Reads the YAML front-matter block (between the opening and closing <c>---</c> delimiters)
+    /// from a <c>.prompt.md</c> guardrail file and applies any recognised keys onto the guardrail.
+    /// Currently only <c>scope</c> is harvested; unknown keys are silently ignored.
+    /// </summary>
+    private static GuardrailDefinition ApplyPromptFrontmatter(GuardrailDefinition guardrail)
+    {
+        string content;
+        try { content = File.ReadAllText(guardrail.Path); }
+        catch (IOException) { return guardrail; }
+
+        // Front-matter must start with "---" on the very first line.
+        if (!content.StartsWith("---", StringComparison.Ordinal))
+            return guardrail;
+
+        int firstNewline = content.IndexOfAny(['\r', '\n']);
+        if (firstNewline < 0)
+            return guardrail;
+
+        int bodyStart = firstNewline + 1;
+        if (bodyStart < content.Length && content[firstNewline] == '\r' && content[bodyStart] == '\n')
+            bodyStart++;
+
+        // Find the closing "---" line.
+        int closePos = FindFrontmatterClose(content, bodyStart);
+        if (closePos < 0)
+            return guardrail;
+
+        string frontmatter = content[bodyStart..closePos];
+        string? scope = ParseFrontmatterScalar(frontmatter, "scope");
+        if (scope is null)
+            return guardrail;
+
+        return guardrail with
+        {
+            Scope = string.IsNullOrWhiteSpace(scope) ? null : scope.Trim().ToLowerInvariant()
+        };
+    }
+
+    private static int FindFrontmatterClose(string content, int startPos)
+    {
+        int pos = startPos;
+        while (pos < content.Length)
+        {
+            int lineStart = pos;
+            int lineEnd = content.IndexOfAny(['\r', '\n'], pos);
+            if (lineEnd < 0) break;
+
+            string line = content[lineStart..lineEnd];
+            if (line == "---")
+                return lineStart;
+
+            pos = lineEnd + 1;
+            if (pos < content.Length && content[lineEnd] == '\r' && content[pos] == '\n')
+                pos++;
+        }
+        return -1;
+    }
+
+    private static string? ParseFrontmatterScalar(string frontmatter, string key)
+    {
+        foreach (string line in frontmatter.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int colon = line.IndexOf(':');
+            if (colon < 0) continue;
+            if (string.Equals(line[..colon].Trim(), key, StringComparison.OrdinalIgnoreCase))
+                return line[(colon + 1)..].Trim();
+        }
+        return null;
     }
 
     // --- helpers ----------------------------------------------------------------------

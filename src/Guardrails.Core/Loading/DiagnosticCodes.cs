@@ -120,4 +120,28 @@ public static class DiagnosticCodes
     /// verifies nothing — an ERROR; the gate task must have at least one integration-scoped guardrail.
     /// </summary>
     public const string IntegrationGateEmpty = "GR2018";
+
+    /// <summary>
+    /// A <c>writeScope</c> entry is an absolute path or contains <c>..</c> segments that could
+    /// reference files outside the workspace root (plan 08 §2/§3.4, SSOT §3.4). Such an entry can
+    /// never match a git-diff path (which is always relative to the repo root) and is almost always
+    /// a configuration mistake — an ERROR.
+    /// </summary>
+    public const string WriteScopeEscapesWorkspace = "GR2019";
+
+    /// <summary>
+    /// A <c>writeScope</c> entry is vacuous or over-broad (e.g. <c>**</c> or <c>*</c>) and provides
+    /// no meaningful constraint (plan 08 §2/§3.4, SSOT §3.4). A scope that matches everything defeats
+    /// the purpose of write-scope isolation — a WARNING (may still be intentional during migration).
+    /// </summary>
+    public const string WriteScopeVacuous = "GR2020";
+
+    /// <summary>
+    /// A guardrail <c>scope</c> value is not one of the recognised values <c>integration</c> or
+    /// <c>local</c> (plan 08 M2, SSOT §4.3). An unrecognised scope silently degrades to <c>local</c>
+    /// at runtime, dropping the guardrail from the integration union re-verify set — a deterministic
+    /// gate quietly stops re-running without any warning. Validation must FAIL so the typo is caught
+    /// at validate time, never at silent runtime — an ERROR.
+    /// </summary>
+    public const string InvalidGuardrailScopeValue = "GR2021";
 }

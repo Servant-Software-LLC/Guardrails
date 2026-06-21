@@ -2,9 +2,7 @@ namespace Guardrails.Core.Execution;
 
 /// <summary>
 /// The single OS-correct definition of "does this path stay inside the workspace?" Used by
-/// <see cref="Loading.PlanValidator"/> for workspace-boundary path checks. Triad teardown
-/// (plan 08 M2): the CapturedFileStore consumer was removed; this utility is retained for
-/// any future workspace-boundary enforcement.
+/// <see cref="Loading.PlanValidator"/> for workspace-boundary path checks.
 /// </summary>
 internal static class WorkspaceContainment
 {

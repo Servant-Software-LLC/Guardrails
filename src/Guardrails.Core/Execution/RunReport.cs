@@ -34,6 +34,19 @@ public sealed record TaskResult
     /// <summary>A short human-readable explanation of the outcome (for the summary and logs).</summary>
     public required string Summary { get; init; }
 
+    /// <summary>
+    /// In worktree mode, the path to the validated fragment file for deferred B1 settle in the
+    /// Scheduler. Null in serial mode (AttemptJournaler handles the merge immediately).
+    /// </summary>
+    public string? FragmentPath { get; init; }
+
+    /// <summary>
+    /// True when the Scheduler must perform the B1 deferred settle (fragment merge → git commit →
+    /// journal RecordSettle) for this result. Set by <see cref="AttemptJournaler.ValidateFragmentForSettle"/>
+    /// in worktree mode. False in serial mode (AttemptJournaler already merged and journaled).
+    /// </summary>
+    public bool DeferredSettle { get; init; }
+
     /// <summary>True only for a genuine success this run (not a resume skip).</summary>
     public bool Succeeded => Outcome == TaskOutcome.Succeeded;
 
@@ -58,4 +71,11 @@ public sealed record RunReport
 
     /// <summary>True when at least one task failed or was blocked.</summary>
     public bool AnyFailed => Tasks.Any(t => !t.IsGreen);
+
+    /// <summary>
+    /// The outcome of the end-of-run merge-on-success delivery (plan 08 SSOT §5.3).
+    /// Null when <c>mergeOnSuccess</c> is false or the run was not wholly green.
+    /// Implemented by task 22.
+    /// </summary>
+    public MergeOnSuccessResult? MergeOnSuccessOutcome { get; init; }
 }

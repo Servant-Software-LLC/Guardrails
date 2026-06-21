@@ -21,9 +21,17 @@ public sealed class WorktreeHandle
     /// </summary>
     public string TaskBase { get; init; } = "";
 
-    /// <summary>The commit sha recorded after the task's action was committed to the segment branch.</summary>
-    public string RecordedCommitSha { get; init; } = "";
+    /// <summary>
+    /// The commit sha recorded after the task's action was committed to the segment branch.
+    /// Mutable: <see cref="IWorktreeProvider.Integrate"/> captures the segment's commit sha here
+    /// (C2) so a downstream fan-out <see cref="IWorktreeProvider.ForkFromTip"/> forks off the
+    /// producer's recorded sha rather than a live (possibly inheritor-advanced) segment tip (W-2).
+    /// </summary>
+    public string RecordedCommitSha { get; set; } = "";
 
     /// <summary>The plan-branch HEAD sha this segment was forked from.</summary>
     public string PlanBranchHead { get; init; } = "";
+
+    /// <summary>The task id this segment was created for (used for commit trailers in Integrate).</summary>
+    public string TaskId { get; init; } = "";
 }

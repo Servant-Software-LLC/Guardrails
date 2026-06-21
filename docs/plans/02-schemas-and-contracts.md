@@ -337,6 +337,7 @@ with no integration-scoped guardrail (BLOCKER).
 | `GUARDRAILS_STATE_OUT` | actions | Path the action may write its JSON fragment to (§6.2). Not pre-created; absence after success = "nothing to contribute" |
 | `GUARDRAILS_STATE_FRAGMENT` | guardrails | Path of the action's (not-yet-merged) fragment, if the action wrote one — lets a guardrail validate proposed state |
 | `GUARDRAILS_LOG_DIR` | all | `logs/<runId>/<task>/attempt-N/` — scratch space welcome |
+| `GUARDRAILS_WORKSPACE` | worktree mode | The task's isolated segment worktree directory — set only in worktree mode (parallel + git, §1); where the action writes files that `Integrate` commits. Absent in serial shared-workspace mode (cwd is the plan `workspace`) |
 | `GUARDRAILS_FEEDBACK` | actions, attempt ≥ 2 | Path to `feedback.md` describing the previous attempt's failures |
 | `GUARDRAILS_ACTION_STDOUT` | guardrails | The action's captured stdout file |
 | `GUARDRAILS_ACTION_STDERR` | guardrails | The action's captured stderr file |
@@ -433,7 +434,10 @@ discard-and-recreate.
 `--merge-on-success` is set, the harness merges the plan branch into the user's original branch
 (ff-only when possible, else a real merge whose re-verify must pass). **AI-merge is NOT used here.**
 A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch intact — never a
-force-overwrite. Default OFF leaves the plan branch for the user to review and merge.
+force-overwrite. Default OFF leaves the plan branch for the user to review and merge. The merge-back
+outcome is reported as `MergeOnSuccessResult` (`FastForwarded` / `Merged` / `Conflict` /
+`DirtyWorkingTree`); a dirty user working tree is refused **before any git merge runs** (the harness
+never runs git over uncommitted user work) and returns `DirtyWorkingTree`.
 
 Any new capability that needs the harness to write outside the integration worktree or the opt-in
 end-of-run delivery to the user's branch must be added to this section with its own containment
@@ -649,6 +653,68 @@ Its cost is charged against `maxCostUsd` like any prompt attempt. It is configur
 `promptRunners` as a **reserved merge runner profile** (e.g. `ai-merge`) — a distinct merge profile
 named for what it is (read the conflict, write only `GUARDRAILS_MERGE_OUT`), **not** a
 `guardrailOverrides` block.
+
+### 9.2 AI triage on needs-human (plan 08 §9, PO #7 / Decision 8)
+
+When a task exhausts its retry budget and transitions to `needs-human`, the harness optionally
+runs a **one-shot advisory triage step** to classify the root cause. It is a **constrained prompt
+action behind the existing `IPromptRunner` seam** (the same seam as `claude` and the AI-merge
+worker), invoked under a **distinct `ai-triage` prompt profile** in `promptRunners` — not a
+`guardrailOverrides` block. `NeedsHumanTriage` is the class that owns the step.
+
+**Trigger — exhaustion only.**
+
+- Triage fires **ONCE** on the **terminal exhaustion transition** (all retry budget consumed by
+  action/guardrail failures across every attempt).
+- It does **NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a
+  human ask — the question is already posed; additional triage is redundant and would race).
+- It does **NOT** fire mid-retry (between attempts while budget remains).
+
+**Diagnosis — tool-vs-local.**
+
+Given the failed task (`task.json`, every attempt's action output, the failing guardrail outputs,
+and the run context), the triage prompt classifies the root cause as one of:
+
+- `guardrails-tool` — a Guardrails harness or tooling limitation; warrants a GH issue against
+  the Guardrails repo. The triage response includes a ready-to-file `ghIssueTitle` + `ghIssueBody`.
+- `local-repo` — a problem with the plan, code, or tests for the **current** repo; no Guardrails
+  issue is warranted. The triage response includes an `analysis` field.
+
+**`feedback.md` — TASK-LEVEL under the elevated logs.**
+
+Triage writes `logs/<runId>/<task-id>/feedback.md` — a **sibling of the `attempt-N/` directories**,
+NOT inside any attempt dir. This is distinct from the **per-attempt** `feedback.md` written by §8
+(which lives at `logs/<runId>/<task-id>/attempt-N/feedback.md` and is the retry's input). The
+task-level `feedback.md` captures:
+
+- The diagnosis (`guardrails-tool` or `local-repo`).
+- The evidence the triage drew on.
+- For a `guardrails-tool` diagnosis: the drafted GH-issue title and body.
+
+**Needs-human message pointer.**
+
+The task's `needs-human` message (surfaced in the run summary and `guardrails status`) references
+the `logs/<runId>/<task-id>/feedback.md` path so the human lands on the triage diagnosis
+immediately.
+
+**Strictly advisory — gates nothing.**
+
+The task is **already `needs-human`** before triage runs; triage can **never** change that verdict,
+re-open the task, mark it done, or burn retry budget.
+
+- `PromptResult.IsError` and the runner exit code are **never** read as a verdict.
+- A thrown exception or a runner error means "no `feedback.md` was produced"; it is logged and the
+  task remains plainly `needs-human`. Triage must **never** block or abort the run — all other
+  independent tasks continue normally.
+
+A prompt proposes, a file certifies: only a written `feedback.md` provides the diagnosis; a
+failed/throwing triage is silently skipped.
+
+**Opt-in auto-file (`triageAutoFile`, default OFF).**
+
+By default, triage only **drafts** the GH issue (title + body) into `feedback.md` and files
+**nothing** to a remote. Only when `triageAutoFile` is explicitly opted in — gated behind a
+configured GH repo + token — does the harness auto-file the issue. Default is **OFF**.
 
 ---
 

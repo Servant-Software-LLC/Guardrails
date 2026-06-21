@@ -8,7 +8,7 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails run &lt;folder&gt; --dry-run</c> — validate the plan, print the execution
 /// waves (identical to <c>plan</c>), the per-task action resolution (kind, runner,
-/// exclusive, retry budget), and which tasks a resume would SKIP (read from the journal
+/// retry budget), and which tasks a resume would SKIP (read from the journal
 /// without normalizing or persisting it). Exits 0 having run nothing and touched no state.
 /// </summary>
 public static class DryRun

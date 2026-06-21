@@ -66,8 +66,11 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   verify — name the unverified criterion. (E.g. action says "sorted by category";
   no guardrail checks sorting.)
 - **Tests gameable**: implementation tasks whose tests can be edited by the same
-  action (no tests-untouched guardrail); inserted test tasks missing
-  tests-fail-on-current-code.
+  action — the implementation task's `writeScope` must EXCLUDE the test files its
+  upstream test-author task owns (the deterministic write-scope test-exclusion, SSOT
+  §3.4), so an edit to a test file fails the harness's read-only write-scope check. An
+  implementation task with no `writeScope`, or one whose scope covers the test files, is
+  gameable. Inserted test tasks missing tests-fail-on-current-code.
 - **Unactionable failures**: guardrails that fail without printing a usable reason
   (retry feedback quality).
 - **Grep-scope contamination**: a file-content guardrail that greps the project tree
@@ -83,6 +86,35 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   but no guardrail checks the consumer's project file has a `<ProjectReference>` — builds
   pass independently, so a local copy of the interface slips through. (Stack file →
   cross-module reference.)
+- **Vacuous `writeScope`**: a task declares `writeScope: ["**"]`, a bare top-level dir, or
+  any over-broad surface that owns everything — the write-scope check (SSOT §3.4) then
+  discriminates nothing and is theater (`validate` warns GR2020). The honest move is to omit
+  `writeScope` entirely (reported as a broad surface) rather than emit a vacuous one. Flag
+  every `**`/over-broad scope as WEAK and propose either a real surface or omission.
+- **Tests not excluded from an implementation scope**: an implementation task with an
+  upstream test-author task whose own `writeScope` covers (or fails to exclude) those test
+  files — the deterministic "implementation may not write the tests" boundary is open, so the
+  implementation can edit the tests to force a tests-pass guardrail green. The implementation
+  task's `writeScope` must EXCLUDE every test file the test-author task owns. (BLOCKER — it is
+  the TDD test-protection gate.)
+- **Missing `writeScope` where one is needed**: a task with a clearly bounded surface (a TDD
+  test-author or implementation task, or any task touching one project/file) that omits
+  `writeScope` entirely — it gets NO write-scope check, so an out-of-scope escape (including
+  an implementation editing the tests) goes uncaught. Omission is correct ONLY for a genuinely
+  repo-wide task (a terminal whole-suite gate, a sweeping cross-cutting change); flag a
+  confidently-scopable task with no `writeScope` as WEAK and name the surface it should declare.
+- **Integration gate missing or empty**: in a plan with ≥2 leaf tasks or any fan-in, confirm
+  **exactly one** task declares `integrationGate: true` (the terminal whole-repo sink, SSOT
+  §3.3) and that sink carries **at least one** `scope: "integration"` guardrail — an empty gate
+  verifies nothing. Zero gates on a multi-leaf/fan-in plan, two-or-more gates, or a gate with no
+  integration-scoped guardrail is a BLOCKER (`validate` enforces GR2017/GR2018, but call it out
+  with the missing/empty sink named).
+- **Build/suite not marked `scope: "integration"`**: the whole-repo build and full test-suite
+  guardrails must declare `scope: "integration"` (SSOT §4.3) so they join the integration set
+  re-run at every union point and on the terminal gate. A whole-suite or whole-repo-build
+  guardrail left at the `"local"` default is a coverage gap on an integration-sensitive (parallel)
+  plan — the union points and the terminal gate would re-run nothing. Flag it (BLOCKER on a
+  parallel plan with unions; WEAK otherwise) and name the guardrail to re-scope.
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -90,6 +122,12 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   path A→B.
 - **False edges** serializing genuinely parallel work.
 - A terminal task aggregates (suite green / e2e) so the run has a meaningful end.
+- **Exactly one integration-gate sink on a parallel plan.** A plan with ≥2 leaf tasks or
+  any fan-in (the shape a parallel run produces) MUST declare **exactly one**
+  `integrationGate: true` sink — the terminal whole-repo gate run on the fully merged
+  plan-branch HEAD (SSOT §3.3). Confirm the gate is the genuine sink the leaves fan into,
+  not a mislabeled mid-DAG task, and that no second `integrationGate: true` exists. A
+  single linear chain with no fan-in may omit it.
 
 ### 4. Missing-insertion check
 Re-apply plan-breakdown Step 5: any guardrail referencing an artifact no ancestor
@@ -125,4 +163,6 @@ changes to it.
 - [ ] Every BLOCKER names the concrete wrong implementation, not a vibe.
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Coverage gaps cite the exact unverified completion criterion.
+- [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files; no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
+- [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.

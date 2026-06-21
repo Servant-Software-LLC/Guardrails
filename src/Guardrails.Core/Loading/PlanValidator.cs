@@ -35,6 +35,8 @@ public sealed class PlanValidator
         ValidateGuardrailsPresent(plan, diagnostics);
         ValidateIntegrationGatePresent(plan, diagnostics);
         ValidateIntegrationGateNonEmpty(plan, diagnostics);
+        ValidateGuardrailScopeValues(plan, diagnostics);
+        ValidateWriteScopes(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
@@ -289,6 +291,74 @@ public sealed class PlanValidator
                     "scope:\"integration\". The terminal gate must carry at least one integration-scoped " +
                     "guardrail to be a sound soundness boundary. Add a guardrail sidecar declaring " +
                     "scope:\"integration\" (SSOT §3.3/§4.3, plan 08 §3)."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Validate <c>writeScope</c> entries across all tasks (plan 08 §2/§3.4, SSOT §3.4).
+    /// GR2019 ERROR: an entry is an absolute path or contains <c>..</c> (escapes the workspace).
+    /// GR2020 WARNING: an entry is vacuous/over-broad (e.g. <c>**</c> or <c>*</c>).
+    /// </summary>
+    private static void ValidateWriteScopes(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.WriteScope is not { Count: > 0 } scope) continue;
+
+            foreach (string entry in scope)
+            {
+                if (string.IsNullOrWhiteSpace(entry)) continue;
+
+                // GR2019: absolute path or contains ".." segments (could escape workspace).
+                if (Path.IsPathRooted(entry) ||
+                    entry.Split('/', '\\').Any(seg => seg == ".."))
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.WriteScopeEscapesWorkspace, task.Directory,
+                        $"Task '{task.Id}' writeScope entry '{entry}' is an absolute path or contains " +
+                        "'..' segments, which could reference files outside the workspace root. " +
+                        "Write-scope entries must be relative to the repository root (SSOT §3.4)."));
+                }
+
+                // GR2020: vacuous entry that matches everything (e.g. "**" or "*").
+                string trimmed = entry.Trim('/');
+                if (trimmed is "**" or "*")
+                {
+                    diagnostics.Add(Warning(DiagnosticCodes.WriteScopeVacuous, task.Directory,
+                        $"Task '{task.Id}' writeScope entry '{entry}' is over-broad and matches every " +
+                        "path in the repository, providing no meaningful write isolation. Narrow the " +
+                        "scope to a specific directory or file pattern (SSOT §3.4)."));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every non-null guardrail <c>scope</c> must be one of <c>integration</c> or <c>local</c>
+    /// (plan 08 M2, SSOT §4.3). An unrecognised value (e.g. a typo like <c>intergation</c>)
+    /// silently degrades to <c>local</c> at runtime, dropping the guardrail from the integration
+    /// union re-verify set — a deterministic gate quietly stops re-running. GR2021 ensures the
+    /// typo is caught at validate time, never at silent runtime. Fires for both the deterministic
+    /// sidecar <c>scope</c> key and the prompt-frontmatter <c>scope</c> (both are normalised to
+    /// lowercase by the loader; the validator can do case-sensitive comparison).
+    /// </summary>
+    private static void ValidateGuardrailScopeValues(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            foreach (GuardrailDefinition guardrail in task.Guardrails)
+            {
+                if (guardrail.Scope is null)
+                    continue;
+
+                if (guardrail.Scope != "integration" && guardrail.Scope != "local")
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.InvalidGuardrailScopeValue, guardrail.Path,
+                        $"Guardrail '{guardrail.Name}' in task '{task.Id}' has unrecognised scope value " +
+                        $"'{guardrail.Scope}'. The only recognised values are 'integration' and 'local'. " +
+                        "An unrecognised value silently degrades to 'local' at runtime, dropping the " +
+                        "guardrail from the integration union re-verify set (SSOT §4.3, plan 08 §3)."));
+                }
             }
         }
     }

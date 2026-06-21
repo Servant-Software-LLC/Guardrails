@@ -135,6 +135,30 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Compose feedback for an attempt rejected by the write-scope check (plan 08 §2/§3.4).
+    /// Names each offending path so the agent removes the out-of-scope change on retry. The
+    /// harness has already performed a scoped revert of the offending paths before calling this.
+    /// </summary>
+    public static string ForWriteScopeViolation(TaskNode task, int attempt, IReadOnlyList<string> offendingPaths)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## Write-scope violation");
+        text.AppendLine();
+        text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
+        foreach (string path in offendingPaths)
+        {
+            text.AppendLine($"- `{path}`");
+        }
+
+        text.AppendLine();
+        text.AppendLine("The harness has already reverted those files to their pre-attempt state. Your");
+        text.AppendLine("in-scope changes are preserved. On retry, ensure you only write to paths covered");
+        text.AppendLine("by this task's writeScope (SSOT §3.4, plan 08 §2).");
+        return text.ToString();
+    }
+
+    /// <summary>
     /// True when <paramref name="output"/> carries more than the one-line <paramref name="reason"/>
     /// already shown — i.e. it is non-empty and not just the reason line repeated.
     /// </summary>

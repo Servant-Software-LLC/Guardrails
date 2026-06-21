@@ -22,4 +22,18 @@ public interface ISchedulerJournal
     /// overrides it with the real total (<see cref="Journal.JournalCost.Total"/>).
     /// </summary>
     decimal CurrentCostUsd() => 0m;
+
+    /// <summary>
+    /// Reserve the next merge sequence number (advancing the counter). Default returns a dummy
+    /// value for fakes that do not track sequences. <see cref="Journal.RunJournal"/> provides the
+    /// real monotonic counter.
+    /// </summary>
+    long ReserveMergeSequence() => 0L;
+
+    /// <summary>
+    /// Record the terminal settle of a worktree task: update Status and optionally MergeSequence
+    /// WITHOUT adding an AttemptRecord (the attempt was already recorded by the executor).
+    /// Default is a no-op for fakes. <see cref="Journal.RunJournal"/> provides the real impl.
+    /// </summary>
+    void RecordSettle(string taskId, Journal.TaskStatus status, long? mergeSequence = null) { }
 }

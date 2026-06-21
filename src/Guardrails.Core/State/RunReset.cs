@@ -1,4 +1,6 @@
+using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
+using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.State;
@@ -34,6 +36,12 @@ public static class RunReset
         DeleteDirectoryIfExists(Path.Combine(stateDir, "logs"));
         DeleteDirectoryIfExists(Path.Combine(stateDir, "captured"));
 
+        // F3: prune stale guardrails/<runId>/* segment+fork branches and their worktrees left
+        // behind by a crashed worktree-mode run. State-file deletion alone never touches git refs,
+        // so a crashed run's segment branches would survive --fresh. Best-effort: a non-git
+        // workspace or a load failure must not abort the reset.
+        PruneStaleWorktreesAndBranches(planDirectory);
+
         // Re-seed immediately so a subsequent run starts from the seed-derived state.
         new StateManager(planDirectory).Initialize();
     }
@@ -62,6 +70,27 @@ public static class RunReset
         journal.ResetTask(taskId);
         DeleteDirectoryIfExists(Path.Combine(plan.PlanDirectory, "state", "captured", taskId));
         return true;
+    }
+
+    /// <summary>
+    /// Load the plan (best-effort) to resolve its workspace + worktree root, then prune any stale
+    /// <c>guardrails/&lt;runId&gt;/*</c> segment/fork branches and worktrees from the workspace repo.
+    /// Swallows every failure (unloadable plan, non-git workspace) so <c>--fresh</c> never aborts.
+    /// </summary>
+    private static void PruneStaleWorktreesAndBranches(string planDirectory)
+    {
+        try
+        {
+            PlanLoadResult load = new PlanLoader().Load(planDirectory);
+            if (load.Plan is not { } plan) return;
+
+            GitWorktreeProvider.PruneStaleSegmentBranches(
+                plan.Workspace, SchedulerFactory.WorktreeRootFor(plan));
+        }
+        catch
+        {
+            // Best-effort cleanup — a fresh reset must succeed even if the prune cannot run.
+        }
     }
 
     private static void DeleteFileIfExists(string path)

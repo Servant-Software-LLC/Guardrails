@@ -7,7 +7,7 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails plan [folder]</c> — print the execution waves the scheduler will
 /// follow: wave 0 has no dependencies; wave N waits on wave N−1. Tasks within a wave run
-/// in parallel up to <c>maxParallelism</c>, except <c>[exclusive]</c> tasks, which run alone.
+/// in parallel up to <c>maxParallelism</c>.
 /// Defaults to the current directory when the folder is omitted.
 /// </summary>
 public static class PlanCommand
