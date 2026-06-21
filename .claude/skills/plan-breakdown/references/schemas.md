@@ -88,17 +88,18 @@ a .NET plan, not blanket `Bash`.
                             // absent ⇒ identity falls back to the folder name (§3);
                             // duplicate ⇒ GR2010; must match ^[a-z0-9][a-z0-9._-]*$ ⇒ GR2011.
   "dependsOn": ["01-other-task"],                                // REQUIRED (may be [])
+  "integrationGate": false, // optional, default false; true marks the terminal whole-repo
+                            // integration gate — the final soundness boundary run once on the
+                            // fully merged plan-branch HEAD (§3.3). ≥2 leaf tasks / any fan-in ⇒
+                            // exactly one true sink (GR2017); the sink needs ≥1 scope:"integration"
+                            // guardrail (GR2018).
+  "writeScope": ["src/Foo/"], // optional; workspace-relative path prefixes/globs the task may
+                            // add/modify/delete/rename — a deterministic READ-ONLY check (§3.4).
+                            // ABSENT ⇒ NO check. Renames = paired D+A (both in scope); the check
+                            // NEVER reverts. A vacuous "**"/bare top-level dir is a granularity
+                            // smell. Escapes the workspace ⇒ GR2019; vacuous/over-broad ⇒ GR2020.
   "retries": 3,             // optional; overrides defaultRetries
-  "timeoutSeconds": 3600,   // optional
-  "exclusive": null,        // optional; default: prompt action → true, script → false.
-                            // Leave null unless you have a reason.
-  "captureHashes": [        // optional; workspace-relative files whose SHA-256 the HARNESS
-    "tests/MyProj/FooTests.cs"  // records into state after a successful action — the agent
-  ],                        // never hashes anything. Missing file ⇒ attempt fails. (tests-untouched)
-  "restoreOnRetry": true    // optional bool, default false; only meaningful WITH captureHashes.
-                            // true ⇒ the harness also snapshots the captured files' authored bytes
-                            // and restores them to baseline before each downstream retry (the #51
-                            // self-heal). true with empty/absent captureHashes ⇒ GR2014.
+  "timeoutSeconds": 3600    // optional
 }
 ```
 
@@ -110,22 +111,25 @@ the plan ⇒ GR2010; a value not matching `^[a-z0-9][a-z0-9._-]*$` ⇒ GR2011. O
 when the task folder has exactly one `action.*` file (the convention); zero or multiple =
 validation error.
 
-`captureHashes` lists files the harness hashes (SHA-256, uppercase hex, raw bytes) into
-`{ "<taskId>": { "fileHashes": { "<path>": "<hex>" } } }` after the action succeeds — computed in
-harness code, so the agent never runs a shell command to produce it. A `tests-untouched` guardrail
-on a downstream task reads it back and recomputes with `Get-FileHash -Algorithm SHA256`. Because
-single-writer-per-key is enforced (SSOT §6.2), no intervening task can forge or overwrite
-`<taskId>.fileHashes` by writing under another task's id — the recorded hash is contract-protected
-against cross-task poisoning (issue #48). See SKILL.md Step 5.
+`integrationGate` (optional, default **false**) marks a task as the terminal whole-repo integration
+gate — the final soundness boundary run once on the fully merged plan-branch HEAD after every other
+task succeeds (SSOT §3.3). Its guardrails are exactly the run's integration-guardrail set (all
+`scope: "integration"` guardrails, §4.3). A plan with ≥2 leaf tasks or any fan-in MUST declare
+**exactly one** `integrationGate: true` sink (**GR2017**); the sink MUST carry **at least one**
+`scope: "integration"` guardrail (**GR2018**). A single linear chain with no fan-in may omit it.
 
-`restoreOnRetry` (optional bool, default **false**) is only meaningful **with** `captureHashes`. By
-default `captureHashes` hashes for tamper-detection ONLY — nothing is snapshotted or restored.
-Setting `restoreOnRetry: true` opts the captured files into **restore-on-retry**: the harness also
-snapshots their authored bytes and restores any that differ from baseline before **each downstream
-retry**, so an implementation agent that dirtied an authored test starts its next attempt pristine
-(the #51 self-heal). `restoreOnRetry: true` with an empty/absent `captureHashes` has nothing to act
-on and is a **GR2014** validation error. The `tests-untouched` doctrine sets **both** fields on the
-test-author task (SKILL.md Step 5). See SSOT §3.1.1.
+`writeScope` (optional) is a list of workspace-relative path prefixes/globs declaring the surface a
+task may add/modify/delete/rename. It drives a **deterministic, read-only** harness check (SSOT
+§3.4): after the action and before the task's own guardrails, the harness diffs the task's segment
+worktree and asserts every changed path is in scope — a violation retries with feedback naming the
+out-of-scope paths (eventual `needs-human`). The check **never reverts**. **Renames** are a paired
+**D + A** (both paths must be in scope); **deletions** — the deleted path must be in scope. **Absent
+⇒ no check** (the off-switch): a task you cannot confidently scope omits the field and is reported as
+a broad surface — **never** give it a vacuous `**`. A scope that escapes the workspace ⇒ **GR2019**
+(error); a vacuous/over-broad scope ⇒ **GR2020** (warning). **TDD test-protection:** the test-author
+task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES them, so
+the check deterministically enforces "the implementation may not write the tests" — the replacement
+for the removed `captureHashes`/`tests-untouched`/`restoreOnRetry` triad. See SKILL.md Step 5.
 
 ## Prompt files (`.prompt.md`)
 

@@ -62,6 +62,9 @@ internal sealed class RawTask
     // Terminal integration gate marker (plan 08 M2, SSOT §3.3). Default false.
     public bool? IntegrationGate { get; set; }
 
+    // Write-scope glob list (plan 08 §2/§3.4, SSOT §3.4). Null = absent = off-switch.
+    public List<string>? WriteScope { get; set; }
+
     public RawAction? Action { get; set; }
 }
 

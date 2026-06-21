@@ -115,7 +115,7 @@ public sealed class DependencyGraph
     /// <summary>
     /// Execution waves: wave 0 contains tasks with no dependencies; wave N contains tasks
     /// whose deepest dependency sits in wave N−1. Tasks within one wave may run in
-    /// parallel (subject to <c>exclusive</c> and <c>maxParallelism</c>). Throws when the
+    /// parallel (subject to <c>maxParallelism</c>). Throws when the
     /// graph has a cycle — call <see cref="FindCycle"/> first.
     /// </summary>
     public IReadOnlyList<IReadOnlyList<TaskNode>> Waves()

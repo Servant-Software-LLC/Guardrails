@@ -55,7 +55,6 @@ public sealed class StatePlanBuilder : IDisposable
         string id,
         string? actionBody = null,
         string? guardrailBody = null,
-        bool? exclusive = null,
         (string Name, string Body)? secondGuardrail = null,
         params string[] dependsOn)
     {
@@ -67,15 +66,11 @@ public sealed class StatePlanBuilder : IDisposable
             ? "[]"
             : "[" + string.Join(", ", dependsOn.Select(d => $"\"{d}\"")) + "]";
 
-        string exclusiveLine = exclusive is null
-            ? string.Empty
-            : $",\n  \"exclusive\": {(exclusive.Value ? "true" : "false")}";
-
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
               "description": "fixture task {{id}}",
-              "dependsOn": {{dependsJson}}{{exclusiveLine}}
+              "dependsOn": {{dependsJson}}
             }
             """);
 

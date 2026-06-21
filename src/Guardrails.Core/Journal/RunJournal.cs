@@ -206,6 +206,35 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Record the terminal settle of a worktree task: update the task's Status and optionally
+    /// MergeSequence WITHOUT adding an AttemptRecord. Also advances NextMergeSequence when
+    /// mergeSequence is set. Called by the Scheduler under the integration lock (B1 step 3).
+    /// </summary>
+    public void RecordSettle(string taskId, TaskStatus status, long? mergeSequence = null)
+    {
+        lock (_gate)
+        {
+            TaskJournalEntry entry = GetOrCreate(taskId);
+            TaskJournalEntry updated = entry with
+            {
+                Status = status,
+                MergeSequence = mergeSequence ?? entry.MergeSequence
+            };
+            UpdateTask(taskId, updated);
+
+            if (mergeSequence is not null)
+            {
+                _document = _document with
+                {
+                    NextMergeSequence = Math.Max(_document.NextMergeSequence, mergeSequence.Value + 1)
+                };
+            }
+
+            Persist();
+        }
+    }
+
     /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
     public void ResetTask(string taskId)
     {

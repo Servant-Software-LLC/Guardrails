@@ -198,6 +198,17 @@ optional:
   must stand on its own line and be easy to scan. Applies to every archetype, build /
   exit-code checks included.
 - "All tests pass" appears ONLY on a terminal integration task.
+- Mark build / whole-suite test guardrails with `scope: "integration"` in their sidecar
+  JSON (deterministic) or prompt frontmatter (SSOT §4.3). The run's integration-guardrail
+  set = the union of all `scope: "integration"` guardrails (typically the whole-repo build
+  + the full test suite); the harness re-runs that set at every union point and on the
+  terminal gate's merged HEAD. Leave a task-local guardrail at its `"local"` default.
+- A terminal integration task must declare `integrationGate: true` in its `task.json` — it
+  marks the terminal whole-repo integration gate, the final soundness boundary run once on
+  the fully merged plan-branch HEAD (SSOT §3.3). Validation enforces this: a plan with ≥2
+  leaf tasks or any fan-in must declare **exactly one** `integrationGate: true` sink
+  (**GR2017**), and that sink must carry **at least one** `scope: "integration"` guardrail
+  (**GR2018**) — an empty gate verifies nothing.
 
 **Route through these doctrine checks every task (the decision tree's newer leaves):**
 - **State output** — does this task's action write a state key (to `GUARDRAILS_STATE_OUT`)
@@ -276,105 +287,63 @@ upstream task that creates it:
   adds noise without signal. When tests exercise only existing API surface (a CLI flag, a
   file path, a response code), keep `tests-build`.
 
-  **`tests-untouched` guardrail on every implementation task** that has an upstream
-  test-author task. Prevents the agent from making tests pass by editing them instead of
-  fixing the implementation. Uses **harness-computed content hashes** (issue #46): the
-  test-author task DECLARES the files to hash; the harness records their SHA-256 into state
-  **in code** — the agent never runs `git hash-object` or any shell command, so a scoped
-  `allowedTools` (e.g. `Bash(dotnet *)` only) can never block the capture (the failure mode
-  that made the old agent-computed pattern hang on `needsHuman`). Two parts:
+  **`writeScope` test-exclusion — the deterministic TDD test-protection (SSOT §3.4).**
+  Tests are protected by (i) physical worktree isolation and (ii) the harness's
+  **write-scope check**: a deterministic, read-only `git diff` membership test that runs
+  after the action and before the task's own guardrails. It asserts every path the task's
+  diff adds/modifies/deletes/renames is inside the task's declared `writeScope`; an
+  out-of-scope edit is a guardrail-class failure (retry with feedback naming the offending
+  paths, eventual `needs-human`). The check **never reverts** the in-scope work, and it
+  **writes nothing** — it only inspects the diff. Set the two scopes so the implementation
+  cannot author the tests:
 
-  **Part 1 — test-author `task.json`: declare `captureHashes` AND `restoreOnRetry: true`.**
-  List every test file the task authors, workspace-relative. Two task-level fields work
-  together here (SSOT §3.1 / §3.1.1):
+  - **Test-author `task.json`: declare a `writeScope` covering the test file(s) it authors.**
+    List each test file (or its directory) workspace-relative — the surface this task is
+    permitted to write.
 
-  - **`captureHashes`** records each file's SHA-256 (uppercase hex, over raw bytes) into state
-    under `{ "<task-id>": { "fileHashes": { "<path>": "<hex>" } } }` after the action succeeds
-    (and before guardrails run) — the tamper-detection input the downstream `tests-untouched`
-    check reads. No prompt instruction and no shell are involved. If a declared file is missing
-    after the action, the attempt fails with an actionable message naming it.
-  - **`restoreOnRetry: true`** makes the harness ALSO snapshot those files' authored bytes and
-    **restore them to baseline before any downstream retry**. So an implementation agent that
-    edited the authored test to game a tests-pass guardrail starts its next attempt against the
-    pristine, authored test (the self-heal that closes #51). This is **opt-in**: `captureHashes`
-    alone hashes for tamper-detection only — nothing is snapshotted or restored. The
-    `tests-untouched` use WANTS the restore, so set both. `restoreOnRetry: true` **requires** a
-    non-empty `captureHashes` (`restoreOnRetry: true` with an empty/absent `captureHashes` is a
-    **GR2014** validation error).
+    ```jsonc
+    {
+      "description": "Author failing tests for <feature>",
+      "dependsOn": ["..."],
+      "stableId": "…",
+      "writeScope": ["tests/MyProject/MyFeatureTests.cs"]
+    }
+    ```
 
-  ```jsonc
-  {
-    "description": "Author failing tests for <feature>",
-    "dependsOn": ["..."],
-    "stableId": "…",
-    "captureHashes": ["tests/MyProject/MyFeatureTests.cs"],
-    "restoreOnRetry": true
-  }
-  ```
+  - **Implementation `task.json`: declare a `writeScope` that EXCLUDES those test files.**
+    Scope it to the implementation surface (e.g. `src/MyProject/`) and do NOT list the test
+    files. The write-scope check then deterministically enforces "the implementation may not
+    write the tests" — an edit to a test file falls outside the implementation's scope and
+    fails the check. This is the **replacement** for the removed
+    `captureHashes`/`tests-untouched`/`restoreOnRetry` triad; no hashing, no restore, no
+    downstream `tests-untouched` guardrail.
 
-  Because the harness (not the agent) writes the hashes, **no `state-fragment-written`
-  guardrail is needed** on the test-author task: a missing declared file already fails the
-  attempt, and a present file is always recorded.
+    ```jsonc
+    {
+      "description": "Implement <feature> so the tests pass",
+      "dependsOn": ["NN-author-tests-<feature>"],
+      "stableId": "…",
+      "writeScope": ["src/MyProject/"]
+    }
+    ```
 
-  **Part 2 — implementation task `guardrails/NN-tests-untouched.ps1`** reads the recorded
-  hash from `GUARDRAILS_STATE_IN` and recomputes with `Get-FileHash` (a pwsh cmdlet — a
-  guardrail script runs via the interpreter, NOT the agent sandbox, so it always works; no
-  git dependency):
+  **OMIT `writeScope` for genuinely repo-wide tasks; NEVER emit a vacuous `**`.** `writeScope`
+  is the off-switch when absent — a task you cannot confidently scope (a sweeping
+  cross-cutting change, a terminal whole-suite gate) omits the field and is reported as a
+  broad surface, never given a vacuous `**` or a bare top-level dir. `validate` rejects a
+  scope that escapes the workspace (**GR2019**, error) and **warns** on a vacuous/over-broad
+  scope (**GR2020**) — so emit a real surface or none.
 
-  ```powershell
-  # catches: "making tests pass" by editing the tests instead of the implementation;
-  #          reads the SHA-256 hashes the harness recorded for the upstream test-author task
-  $state = Get-Content $env:GUARDRAILS_STATE_IN -Raw | ConvertFrom-Json
-  $storedHashes = $state.'NN-author-tests-FEATURE'.fileHashes
-  if (-not $storedHashes) {
-    Write-Output "State key 'NN-author-tests-FEATURE.fileHashes' missing — was captureHashes declared on the test-author task?"
-    exit 1
-  }
-  $failures = @()
-  foreach ($file in $storedHashes.PSObject.Properties.Name) {
-    $stored = $storedHashes.$file
-    if (-not (Test-Path $file)) { $failures += "$file was deleted by the implementation task"; continue }
-    $current = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash
-    if ($current -ne $stored) { $failures += "$file was modified (expected $stored, got $current)" }
-  }
-  if ($failures) {
-    Write-Output ($failures -join "; ")
-    exit 1
-  }
-  exit 0
-  ```
-
-  Replace `NN-author-tests-FEATURE` with the upstream test-author task's folder name. The
-  `foreach` handles multiple test files. (`Get-FileHash` and the harness both emit uppercase
-  SHA-256 hex; PowerShell `-ne` is case-insensitive regardless, so the comparison is exact.)
-
-  **Restore-on-retry (harness behavior — issue #51; opt-in via `restoreOnRetry: true`).** When the
-  test-author task sets `restoreOnRetry: true` (Part 1), its captured files are not just hashed: the
-  harness snapshots their authored bytes and **restores them to baseline before each retry** of a
-  downstream task. So if an implementation task edits a test file (to force a tests-pass guardrail
-  green), `tests-untouched` catches it AND the next attempt starts from the pristine test file —
-  no permanent dead-end. Without `restoreOnRetry: true` the file is hashed but never restored, so a
-  dirtied test would persist and `tests-untouched` would fail every retry identically — which is why
-  the `tests-untouched` doctrine sets both fields. The implementation action prompt should therefore
-  say plainly: **do not edit the authored tests; make them pass by fixing the implementation; if the
-  authored tests are genuinely wrong or incompatible, emit `{"needsHuman": "<why>"}` rather than
-  changing them.** The retry feedback the harness composes already says this on a `tests-untouched`
-  failure.
-
-  **Reserved filename — `untouched`.** The harness's restore-and-feedback path keys on the guardrail
-  *name*: `RetryPolicy.IsTestsUntouched` fires the "Do NOT edit the test file(s)" retry feedback for
-  any failing guardrail whose name contains the substring **`untouched`** (case-insensitive). The
-  substring `untouched` in a guardrail filename is therefore **RESERVED for test-file integrity
-  checks** — name your test-integrity guardrail `NN-tests-untouched.ps1` so the special feedback
-  fires, and do NOT name an unrelated guardrail `*untouched*` (it would spuriously trigger the
-  restore-and-feedback path for a non-test failure).
-
-  **Action prompt for test-author tasks.** The `## Task` section must tell the agent: (a) the
-  exact test file path(s) and any category/trait convention the repo uses; (b) the tests MUST
-  fail against the current code — this is intentional, not a mistake; (c) do NOT implement the
-  behavior, only the tests. It does NOT need to compute or write any hash — `captureHashes`
-  handles that in the harness. See `references/example-breakdown.md` for the complete worked
-  `action.prompt.md`.
+  **Action prompt for both tasks.** The declared scope is injected into the action prompt as
+  advisory context (the deterministic check is the gate). The test-author `## Task` section
+  must tell the agent: (a) the exact test file path(s) and any category/trait convention the
+  repo uses; (b) the tests MUST fail against the current code — this is intentional, not a
+  mistake; (c) do NOT implement the behavior, only the tests. The implementation `## Task`
+  must say plainly: **do not edit the authored tests; make them pass by fixing the
+  implementation; if the authored tests are genuinely wrong or incompatible, emit
+  `{"needsHuman": "<why>"}` rather than changing them** — an out-of-scope edit to a test file
+  fails the write-scope check and burns a retry. Neither task needs to compute or write any
+  hash. See `references/example-breakdown.md` for the complete worked `action.prompt.md`.
 - **Test framework is not yet chosen** (`$testFramework = none` from Step 0 and no test
   project exists) → the framework is a real fork (xUnit / NUnit / MSTest; jest / vitest;
   pytest / unittest) that **no one has decided**. Never let the action agent guess it from
@@ -491,6 +460,18 @@ Per `references/schemas.md`, exactly:
   fail validation (**GR2010**). **Format (GR2011):** a `stableId` must match
   `^[a-z0-9][a-z0-9._-]*$` — lowercase alphanumeric, may contain `. _ -`, no
   colon/slash/whitespace/uppercase. Mint short lowercase base36 tokens (e.g. `k3f9a1`, `q7m2zd`).
+- **`writeScope` (optional, SSOT §3.4)** — a list of workspace-relative path prefixes/globs
+  declaring the surface the task may add/modify/delete/rename; the harness verifies the task's
+  diff stays inside it (a deterministic read-only check that never reverts). Emit it for the
+  TDD pair (test-author owns the test files; implementation EXCLUDES them — Step 5) and for any
+  task you can confidently scope. **Absent ⇒ no check** — OMIT it for a genuinely repo-wide task;
+  **never** emit a vacuous `**` or bare top-level dir (escapes the workspace ⇒ **GR2019** error;
+  vacuous/over-broad ⇒ **GR2020** warning).
+- **`integrationGate` (optional, default `false`, SSOT §3.3)** — set `true` on the **terminal
+  whole-repo integration gate**, the final soundness boundary run once on the fully merged
+  plan-branch HEAD. A plan with ≥2 leaf tasks or any fan-in must declare **exactly one**
+  `integrationGate: true` sink (**GR2017**), and that sink must carry **at least one**
+  `scope: "integration"` guardrail (**GR2018**). A single linear chain with no fan-in may omit it.
 - Every **prompt action** opens with the harness-contract header block, verbatim:
 
   ```markdown
@@ -650,7 +631,8 @@ to preserve edits against).
 - [ ] UI-facing plan (described screen/page/browser-served component) → a `build-ui-<screen>` task per surface (alongside its backend, not instead of it) AND UI-presence guardrails: asset-exists (scoped to the page/asset file) + a served-markup assertion EXTENDING the §8 smoke-test (body contains a known UI string, not just HTTP 200), both deterministic — no prompt-judge on visual quality. Exit-criterion naming a UI action ⇒ a task builds that UI, or the Step 7.0 self-review failure is reported.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
-- [ ] Inserted test-author tasks include tests-fail-on-current-code; implementation tasks guard tests-untouched.
+- [ ] Inserted test-author tasks include tests-fail-on-current-code; implementation tasks declare a `writeScope` that EXCLUDES the test files (TDD test-exclusion — replaces the captureHashes/restoreOnRetry/tests-untouched triad).
+- [ ] A parallel plan (`maxParallelism` > 1) declares exactly one `integrationGate: true` sink carrying a `scope: "integration"` guardrail; build / whole-suite guardrails are marked `scope: "integration"`.
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.

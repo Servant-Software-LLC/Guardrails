@@ -300,17 +300,17 @@ What is the task's primary deliverable?
 ├── A file/artifact            → file-exists (always) + the strongest content check available:
 │                                schema-validates > file-contains-regex > prompt-judge
 ├── Code (library/feature)     → build-passes + specific-tests-pass (--filter THIS task's tests)
-│                                + tests-untouched (ON THE IMPLEMENTATION/EDITING task: recomputes
-│                                │  Get-FileHash and compares to the SHA-256 the HARNESS recorded
-│                                │  from the test-author task's captureHashes — agent never shells
-│                                │  out; see SKILL.md Step 5 and the placement rule below; required
-│                                │  whenever a test-author exists)
+│                                + writeScope on the IMPLEMENTATION task that EXCLUDES the test
+│                                │  files (SSOT §3.4): the harness's deterministic read-only
+│                                │  write-scope check then catches an implementation that edits the
+│                                │  tests instead of fixing the code — see SKILL.md Step 5 and the
+│                                │  writeScope test-exclusion rule below
 │                                └─ INSERT a test-author task upstream BY DEFAULT (SKILL Step 2
 │                                   TDD rule); skip only if tests already exist or behavior is
 │                                   too simple for unit tests — state why in task description
-│                                   (test-author: tests-fail-on-current-code (8) + declares
-│                                    captureHashes in task.json; tests-build only if tests
-│                                    compile against current code)
+│                                   (test-author: tests-fail-on-current-code (8) + declares a
+│                                    writeScope covering the test files in task.json; tests-build
+│                                    only if tests compile against current code)
 ├── A runnable script/tool     → file-exists + command-exit-code on a representative invocation
 ├── A running service /        → entry-point-wiring (grep: the entry point references the launcher)
 │    server / CLI executable      + port/endpoint-answers (#7: START the binary, POLL a route,
@@ -341,21 +341,20 @@ This is a speed/flake trade-off, sound only against output the action could not 
 when no such recorded target exists, keep the honest replay (`specific-tests-pass`, #4).
 See the verify-recorded-action-result section above for the GOOD-vs-BAD-target rules.
 
-**`tests-untouched` placement — doctrine.** `tests-untouched` belongs on the
-**EDITING/implementation task** — the one that must not modify the tests — NOT on a
-downstream-only task. A task's own guardrails run against its **pre-merge snapshot**
-(`GUARDRAILS_STATE_IN`, taken at attempt start), so the implementation task's guardrail compares
-the recorded hash against the test files *as they stand at the moment that task is verified* —
-catching the edit on the exact task that could have made it. Placing the check on a later
-read-only task is strictly weaker: it can only observe drift after the fact and cannot attribute
-it. Put `tests-untouched` on the task with workspace write access to the tests.
-
-The recorded hash is **contract-protected against cross-task forgery.** Single-writer-per-key is
-enforced at the merge step (SSOT §6.2, issue #48): a task may only write top-level keys equal to
-its own id, so no intervening task can republish `{ "<test-author-id>": { "fileHashes": … } }` to
-poison the stored hash — a foreign-id fragment is rejected and the attempt fails. The
-`tests-untouched` SCRIPT is unchanged (it still reads `<test-author-id>.fileHashes` from
-`GUARDRAILS_STATE_IN` and recomputes with `Get-FileHash`); it is simply now contract-protected.
+**`writeScope` test-exclusion — doctrine (replaces the removed `tests-untouched` triad).**
+Test-file integrity is now a **deterministic, read-only harness check**, not a hash-compare
+guardrail. The TDD pair declares two scopes: the **test-author task** owns its test files in
+`writeScope`; the **implementation task's** `writeScope` EXCLUDES the test files. After the
+implementation action runs and before its own guardrails, the harness diffs the task's segment
+worktree and asserts every changed path is in scope (SSOT §3.4) — an edit to a test file falls
+outside the implementation's scope, fails the check, and retries with feedback naming the
+out-of-scope paths. There is no `captureHashes`, no `Get-FileHash` recompute, no `restoreOnRetry`,
+and no downstream `tests-untouched` guardrail. The check belongs implicitly to the task whose scope
+is declared — the implementation task that must not write the tests — because it runs against that
+task's own diff at the moment that task is verified, catching the edit on the exact task that could
+have made it. Worktree isolation (physical) + this write-scope check (deterministic) together
+replace the `captureHashes`/`tests-untouched`/`restoreOnRetry` triad, with no shared-state hashes to
+forge and so no cross-task poisoning surface to defend.
 
 **State-output leaf — the fragment-key contract.** When a task's action publishes a key
 to the state fragment (written to `GUARDRAILS_STATE_OUT`) that a downstream task later

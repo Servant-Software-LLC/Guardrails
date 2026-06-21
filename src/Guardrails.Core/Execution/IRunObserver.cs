@@ -32,6 +32,14 @@ public interface IRunObserver
     /// </summary>
     void PlanHashMismatch(string previousPlanHash) { }
 
+    /// <summary>
+    /// A plan requested <paramref name="requested"/>-way parallelism but no worktree provider
+    /// was available, so the scheduler clamped to serial (shared-workspace) execution to avoid
+    /// an unsafe shared-workspace race (plan 08 §1 / F7). The run continues serially; this is a
+    /// loud demotion notice, not an error. Default no-op so non-CLI observers need not handle it.
+    /// </summary>
+    void ParallelismClampedNoProvider(int requested) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

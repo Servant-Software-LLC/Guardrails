@@ -10,5 +10,11 @@ public enum IntegrationResult
     FastForward,
 
     /// <summary>A merge commit was created to combine the segment with the integration branch.</summary>
-    Merged
+    Merged,
+
+    /// <summary>
+    /// The non-FF merge produced git conflicts; the integration worktree has conflict markers
+    /// and MERGE_HEAD set. The AI merge worker (if wired) will attempt to resolve them.
+    /// </summary>
+    Conflict
 }

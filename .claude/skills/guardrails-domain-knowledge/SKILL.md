@@ -25,7 +25,7 @@ description: |
 **What is Guardrails?** A system that turns a reviewed markdown plan into an
 executable, file-system task DAG where every task carries executable acceptance
 checks ("guardrails"), plus a cross-platform .NET harness (`guardrails` dotnet tool)
-that runs the DAG to green — retrying failed tasks with guardrail feedback, and
+that runs the DAG to green -- retrying failed tasks with guardrail feedback, and
 halting honestly (`needs-human`) when a task can't converge.
 
 **The bet:** in agentic engineering, verification is the bottleneck, not generation.
@@ -34,97 +34,153 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
 ## The model
 
 - **Plan folder** `<plan-name>/` generated next to `<plan-name>.md`:
-  `guardrails.json` (run config) + `state/` (seed, merged state, journal, logs) +
-  `tasks/<NN-verb-object>/` (one folder per task) + an optional generated
-  `diagram.md` (see below).
-- **Diagram** — two companion files written by `guardrails graph` at the plan-folder root,
+  `guardrails.json` (run config) + `state/` (seed, merged state, journal) +
+  `logs/<runId>/<task-id>/attempt-N/` (per-attempt artifacts, sibling of `state/`,
+  divided by `runId` so re-runs never interleave) +
+  `tasks/<NN-verb-object>/` (one folder per task) + optional `diagram.md`/`diagram.html`.
+- **Diagram** -- two companion files written by `guardrails graph` at the plan-folder root,
   both generated, non-authored, and excluded from `guardrails.baseline`:
   - `diagram.md`: Mermaid `flowchart TD` (GitHub render artifact). First line is a
     `<!-- guardrails:graph v1 source-sha256=<hash> -->` provenance comment. NOT part of the
     plan contract; safe to delete and regenerate.
   - `diagram.html`: interactive local-navigation companion (pan/zoom/fullscreen + Mermaid
     `click href` directives pointing to task/guardrail source). Suppressed by `--no-html`.
-    Node clicks require a local HTTP server — browsers block `file://→file://` by default.
+    Node clicks require a local HTTP server -- browsers block file://->file:// by default.
   Both share the same `source-sha256` key. `guardrails graph --check` exits 0 (fresh), 2
-  (stale/missing — a present but hash-mismatched `diagram.html` is stale; a missing one is
-  not), 1 (load/validate error). See SSOT §10.
+  (stale/missing), 1 (load/validate error). See SSOT section 10.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
-  `exclusive`/`action`) + one action file + `guardrails/` with ≥1 guardrail.
+  `integrationGate`/`writeScope`/`action`) + one action file + `guardrails/` with >=1 guardrail.
   Zero guardrails = validation error.
-- **Action kinds**: `.prompt.md` → LLM (via pluggable `IPromptRunner`; v1 = Claude Code
-  CLI headless); anything else → process via the interpreter map.
+  - `integrationGate: true` (optional, default false) marks the terminal whole-repo integration
+    gate (SSOT section 3.3). Required for any multi-leaf/fan-in plan (GR2017 error if absent);
+    the gate task's guardrails must include >=1 `scope: "integration"` guardrail (GR2018 if not).
+  - `writeScope: ["src/Foo/"]` (optional) drives the deterministic **write-scope CHECK** (SSOT
+    section 3.4): after the action, before the task's own guardrails, the harness computes
+    `git diff --name-status <taskBase>..<HEAD>` in the segment worktree and asserts every changed
+    path is in scope. Absent => no check. A violation is a guardrail-class failure (retry with
+    feedback naming the out-of-scope paths; eventual `needs-human`). **Never reverts** -- read-only
+    check only. Renames = paired D+A (both in scope). GR2019 (error): scope entry escapes
+    workspace. GR2020 (warning): vacuous/over-broad scope. TDD triad replacement.
+  - **The triad (`captureHashes`/`restoreOnRetry`/`exclusive`) and `WorkspaceLock` are REMOVED**
+    -- replaced by physical worktree isolation (one task per segment worktree) and `writeScope`.
+- **Worktree isolation**: the workspace must be a git repository top-level (GR2015 error
+  otherwise; GR2016 warning for deep `worktreeRoot` + deep source tree risking Windows MAX_PATH).
+  At run start the harness creates a **plan branch** `guardrails/<plan-name>` off the user's HEAD
+  and an integration worktree on it (sole merge target). Each task runs in a **segment worktree**:
+  - Linear chain: **reuses one** segment worktree (downstream commits on top of upstream's tip
+    in the same tree -- no inter-hop merge, no inter-hop re-verify).
+  - Fan-out: **inherits one** chain, **forks the rest** off the producer's committed tip (W-2,
+    not the inheritor's advanced tip).
+  - Fan-in: **forks one** upstream and merges the others in (union settle, SSOT section 5.3).
+  Worktrees are created under a harness-owned root outside the workspace (default
+  `<temp>/guardrails-worktrees/<hash>/<runId>/`, overridable via `worktreeRoot` in
+  `guardrails.json`). `maxParallelism` defaults to **3**. The user's checkout is **read-only
+  for the entire run**; the only optional write to the user's branch is `--merge-on-success`
+  (AI-merge is withheld at that boundary).
+- **Action kinds**: `.prompt.md` -> LLM (via pluggable `IPromptRunner`; v1 = Claude Code
+  CLI headless); anything else -> process via the interpreter map.
 - **Guardrails**: deterministic (exit 0 = pass; failure reason on stdout) or prompt
-  (MUST write `{pass, reason}` verdict JSON to `GUARDRAILS_VERDICT_OUT` — CLI exit
+  (MUST write `{pass, reason}` verdict JSON to `GUARDRAILS_VERDICT_OUT` -- CLI exit
   codes are never semantic). Ordered by filename, cheapest first. ALL must pass.
-  Every guardrail opens with a `catches:` comment naming the wrong implementation
-  it would catch.
-  **Verify-don't-replay (#62):** a guardrail receives the action's recorded outcome —
+  Every guardrail opens with a `catches:` comment naming the wrong implementation it would catch.
+  **Verify-don't-replay (#62):** a guardrail receives the action's recorded outcome --
   `GUARDRAILS_ACTION_RESULT` (`{kind, exitCode, summary}`), `_STDOUT`, `_STDERR` (SSOT
-  §5.1) — and may verify a postcondition from it instead of re-running the action's
-  command. It's a speed/flake trade-off, sound only against output the action couldn't
-  fabricate (a produced artifact, a runner-written TRX) — never the recorded `exitCode`
-  (always 0 at guardrail time → tautology) or a self-reported success line in `_STDOUT`
-  (echo-judge).
+  section 5.1) -- and may verify a postcondition from it instead of re-running the action's
+  command. It's a speed/flake trade-off, sound only against output the action couldn't fabricate.
+  **Guardrail scope** (SSOT section 4.3): a guardrail declares an optional `scope` (`"local"`
+  default, or `"integration"`). The **integration-guardrail set** = all `scope: "integration"`
+  guardrails across the plan (typically the whole-repo build + full test suite). At every union
+  point the harness re-runs on merged bytes: (1) the union task's full guardrail set; (2) every
+  **colliding sibling's FULL guardrail set -- unconditionally** (no touched-files filter for
+  colliding siblings, B-3); (3) the integration set. The touched-files local-skip applies **only**
+  to a distant, non-colliding task's `local` guardrails. The terminal `integrationGate` sink runs
+  the same integration set on the final merged HEAD.
 - **State**: snapshot-in / fragment-out. Attempt gets an immutable snapshot
-  (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment
-  (`GUARDRAILS_STATE_OUT`); harness (single writer) deep-merges fragments into
-  `state/state.json` in completion order after guardrails pass.
-  **Single-writer-per-key is ENFORCED, not a convention (SSOT §6.2):** a fragment's top-level
-  keys must each equal the writing task's OWN id (reserved keys — none in v1). A foreign task id
-  or any arbitrary shared key makes the fragment invalid-fragment — it is rejected (not stripped),
-  the attempt fails and retries with feedback, and nothing merges. This makes the harness the sole
-  writer of every task's namespace (closing the #48 cross-task poisoning vector). Scalars/arrays
-  last-writer-wins, but with single-writer-per-key enforced that is reachable only WITHIN a task's
-  own namespace or against committed seed content — never cross-task at the root (§6.3); overwrites
-  logged. `state/seed.json` (committed) seeds the runtime state.
+  (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment (`GUARDRAILS_STATE_OUT`);
+  harness (single writer) deep-merges fragments into `state/state.json` in completion order after
+  guardrails pass. **Single-writer-per-key is ENFORCED, not a convention (SSOT section 6.2)**:
+  a fragment's top-level keys must each equal the writing task's OWN id (reserved keys -- none in
+  v1). A foreign task id or any arbitrary shared key makes the fragment invalid-fragment -- it is
+  rejected (not stripped), the attempt fails and retries with feedback, and nothing merges. This
+  makes the harness the sole writer of every task's namespace. Scalars/arrays last-writer-wins
+  within a task's own namespace. `state/seed.json` (committed) seeds the runtime state.
 
 ## Execution semantics
 
-- Attempt = snapshot → run action (failed action skips guardrails) → run guardrails
-  (`failFast` default) → all pass: merge fragment + `succeeded` → else compose
-  `feedback.md` and retry (prompt actions get the feedback injected: "fix these
-  specific problems; do not start over").
-- Retry budget exhausted → `needs-human`; transitive dependents → `blocked`;
+- Attempt = snapshot -> run action (failed action skips guardrails) -> **write-scope check**
+  (if `writeScope` set: deterministic read-only git diff membership test in the segment worktree;
+  violation = retry with feedback naming out-of-scope paths) -> run guardrails (`failFast` default)
+  -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
+- **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
+  (preserving every upstream/sibling commit; `taskBase` != `preHead`).
+- Retry budget exhausted -> `needs-human`; transitive dependents -> `blocked`;
   **independent branches keep running**.
 - **Per-run cost cap** (`maxCostUsd` in `guardrails.json`, optional decimal USD): when
-  the journal's cumulative cost (sum of each attempt's `costUsd`) reaches/exceeds the
-  cap, the scheduler stops launching new attempts — each not-yet-launched task settles
-  `needs-human` ("cost cap reached") and its transitive dependents `blocked` (the same
-  halt path above); an in-flight attempt is never interrupted. Absent ⇒ no cap; a
-  non-positive cap is a validation error (GR2012). See SSOT §2.
-- Prompt actions default `exclusive: true` (sole workspace access) — two agents
-  editing one repo concurrently is the #1 real-world failure mode. Deterministic
-  actions default shared.
+  the journal's cumulative cost reaches/exceeds the cap, the scheduler stops launching new
+  attempts -- each not-yet-launched task settles `needs-human` ("cost cap reached") and its
+  transitive dependents `blocked`; an in-flight attempt is never interrupted. Absent => no cap;
+  non-positive cap is a validation error (GR2012). See SSOT section 2.
+- **Integration (A) Fast-forward**: a linear chain's commit where no sibling has advanced the
+  plan branch -> `git merge --ff-only`, **no new union, no re-verify** (bytes already passed
+  the task's guardrails in the segment worktree). The FF'd commit carries
+  `Guardrails-Task`/`Guardrails-Run` trailers for resume.
+- **Integration (B) Union** (fan-in, or non-FF where a sibling raced): real merge that MUST be
+  re-verified on the merged bytes. Resolution: git auto-merge -> **AI-merge** -> human.
+  - `git merge --no-commit`; on conflict, the **AI-merge worker** (a constrained prompt behind
+    `IPromptRunner`) is a **BYTE PRODUCER** only -- it writes resolved bytes to
+    `GUARDRAILS_MERGE_OUT` via the three-way on-disk env contract (`GUARDRAILS_MERGE_BASE`,
+    `GUARDRAILS_MERGE_OURS`, `GUARDRAILS_MERGE_THEIRS`, `GUARDRAILS_MERGE_OUT`). Two
+    **deterministic checks** gate the output: (i) no conflict markers remain (`git diff --check`);
+    (ii) blast-radius: modified only the git-reported-conflicted files (`git status --porcelain`).
+    Violation -> discard (`reset --hard`) + `needs-human`. 1 retry. `PromptResult.IsError` and
+    exit code are **never** the verdict. AI-merge resolves harness-internal unions only; withheld
+    at the `--merge-on-success` user-branch boundary.
+  - **The verdict** (for both clean-auto and AI-resolved) is the **deterministic re-verify**:
+    re-run the union task's own guardrails + the integration-guardrail set on the merged bytes via
+    the attempt-decoupled `IReVerifier` seam (no attempt lifecycle, no action result). Any fail ->
+    `reset --hard preHead`; `needs-human`; no fragment, no `mergeSequence`.
+  - AI-merge + re-verify run in a private forked worktree **off** the serialize lock; only the
+    final integration of the verified result into the plan branch is **under the lock**.
+- **B1 atomic settle** (under the serialize lock, fixed order): (1) deep-merge fragment into
+  `state.json`; (2) `git commit` the integration carrying `Guardrails-Task`/`Guardrails-Run`
+  trailers (FF'd commits AND merge commits); (3) consume `mergeSequence` + journal `Succeeded`.
+- **Resume-by-trailer**: the plan-branch's trailer-bearing commits are the durable resume record.
+  On resume, stale segment refs (`guardrails/<runId>/*`) are deleted **before** any trailer read
+  (W-1: a trailer on a surviving segment ref that never FF'd is not authoritative).
+- **End-of-run delivery**: when the run drains green AND `mergeOnSuccess`/`--merge-on-success` is
+  set, the harness merges the plan branch into the user's original branch. **AI-merge is NOT used
+  here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
+  intact. Default OFF.
 - Resume: `succeeded` is terminal (use `guardrails reset` to force);
-  `needs-human`/`failed`/`blocked` → fresh budget; crashed `running` → `pending`.
-- Harness exit codes: 0 green · 1 error · 2 needs-human · 3 cancelled.
-- A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its
-  fragment — no retry burn on a genuine human decision.
+  `needs-human`/`failed`/`blocked` -> fresh budget; crashed `running` -> `pending`.
+- Harness exit codes: 0 green / 1 error / 2 needs-human / 3 cancelled.
+- A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
+  no retry burn on a genuine human decision.
 
 ## The four-stage workflow
 
-PLAN (human+agents write/review the .md) → BREAK (`/plan-breakdown` generates the
-folder, **inserting guardrail-enabling tasks** like authoring the unit tests an
-implementation task's guardrails will run — with tests-fail-on-current-code proving
-non-tautology) → REVIEW (human edits; `/guardrails-review` adversarial pass: "what
-wrong implementation passes these?") → RUN (`guardrails run`). Generated output is
-always a **draft** until a human reviews it.
+PLAN (human+agents write/review the .md) -> BREAK (`/plan-breakdown` generates the folder,
+**inserting guardrail-enabling tasks** like authoring the unit tests an implementation task's
+guardrails will run -- with tests-fail-on-current-code proving non-tautology) -> REVIEW
+(human edits; `/guardrails-review` adversarial pass: "what wrong implementation passes these?")
+-> RUN (`guardrails run`). Generated output is always a **draft** until a human reviews it.
 
 BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
-(`guardrails graph --check`) and regenerates if the human's edits made it stale —
-the diagram is a deterministic projection that must track the folder, not a snapshot
-frozen at breakdown.
+(`guardrails graph --check`) and regenerates if the human's edits made it stale.
 
 ## Load-bearing invariants
 
-1. **Deterministic over prompts** — prompt-judges are last resort, never alone, and
+1. **Deterministic over prompts** -- prompt-judges are last resort, never alone, and
    must pass the demotion gate in the guardrail catalogue.
-2. **Harness is the single writer of merged state**; children only ever get
-   snapshots and write fragments.
-3. **Verdicts come from files, never CLI exit codes** (prompt guardrails).
-4. **`docs/plans/02-schemas-and-contracts.md` is the schema SSOT** — C# serializers,
+2. **Harness is the single writer of merged state**; children only ever get snapshots and
+   write fragments.
+3. **Verdicts come from files, never CLI exit codes** (prompt guardrails). The AI-merge
+   worker is a BYTE PRODUCER -- its exit code is never a verdict either.
+4. **`docs/plans/02-schemas-and-contracts.md` is the schema SSOT** -- C# serializers,
    skills, and examples implement it; never fork it.
-5. **Honest halts** — the harness never marks unverified work done.
+5. **Honest halts** -- the harness never marks unverified work done.
+6. **Worktree isolation is the concurrency safety boundary** -- each task runs in its own
+   segment worktree; the user's checkout is read-only for the entire run.
 
 ## Where truth lives
 
@@ -141,96 +197,65 @@ frozen at breakdown.
 - M1 Foundations: **complete** (docs + golden example committed).
 - M2 Walking skeleton: **complete**. Solution (`Guardrails.Core`/`.Cli`, net8.0 dotnet
   tool), `PlanLoader`/`PlanValidator` with precise diagnostic codes (GR10xx loading,
-  GR20xx validation), `InterpreterMap` (SSOT §5.2, injectable PATH probe),
+  GR20xx validation), `InterpreterMap` (SSOT section 5.2, injectable PATH probe),
   `ProcessRunner` (ArgumentList, tree-kill timeout), `SerialExecutor` (serial, ordinal
-  folder order, dependency-failure → blocked, no retry), and `guardrails run`/`validate`.
-  3-OS CI matrix in `.github/workflows/ci.yml`. M2 runs **script actions only** — a plan
-  with prompt actions/guardrails validates fine but `run` fails fast ("not supported
-  until M5"). State/journal/log env vars are **not** set yet (only `GUARDRAILS_PLAN_DIR`,
-  `_TASK_ID`, `_TASK_DIR`, `_ATTEMPT`="1").
-- M3 State + journal + resume: **complete**. `JsonMerger` (pure deep-merge: objects
-  recurse, scalars/arrays last-writer-wins, conflicts reported) + `StateManager` (single
-  writer of `state/state.json`: seed/init, immutable `state-in.json` snapshots, fragment
-  merge after guardrails pass, `merge-conflicts.log`, atomic writes; invalid non-object
-  fragment → distinct `invalid-fragment` outcome, state unchanged). `RunJournal`
-  (`state/run.json` per §7: kebab-case status/outcome strings, attempt records, `planHash`
-  = SHA-256 over guardrails.json + all task.json, loud warning on resume mismatch) with the
-  §7 resume matrix — `succeeded` skipped, `needs-human`/`failed`/`blocked` → `pending`,
-  crashed `running` → `pending` with attempt numbering continuing. `SerialExecutor` now
-  threads snapshot → action (tee stdout/stderr + `action-result.json`) → guardrails
-  (with `GUARDRAILS_ACTION_*`/`STATE_FRAGMENT`) → merge, writes the §8 per-attempt log
-  layout, and skips journal-`succeeded` tasks on resume. Env contract §5.1 completed for
-  scripts (`STATE_IN`/`STATE_OUT`/`STATE_FRAGMENT`/`LOG_DIR`/`ACTION_STDOUT`/`_STDERR`/
-  `_RESULT`; `FEEDBACK` is M4). New CLI: `status` (read-only journal table), `reset
-  <folder> [task]`, and `run --fresh`. M4 still owns DAG/parallelism/retry/needs-human.
-- M4 DAG + parallelism + retry: **complete**. `DependencyGraph` (cycle detection →
-  GR2007, waves, transitive-dependent closure), Channel-based `Scheduler`
-  (maxParallelism workers; failure blocks the transitive closure while independent
-  branches finish; resume pre-pass), `TaskExecutor` retry loop (budget = 1 + retries;
-  `feedback.md` written per failed attempt and delivered via `GUARDRAILS_FEEDBACK`
-  from attempt 2; budget exhaustion → `needs-human`; cancellation → attempt outcome
-  `cancelled`, task journaled `pending`), FIFO shared/exclusive `WorkspaceLock`
-  (prompt actions exclusive by default per §3), `guardrails plan` (waves preview),
-  Spectre live table UI (plain-line fallback when non-interactive or `--no-ui`),
-  exit code 3 on cancellation. `SerialExecutor` is gone — `Scheduler` with
-  maxParallelism 1 is serial mode; test fixtures pin `defaultRetries: 0` to keep
-  single-attempt assertions exact.
-- M5 Prompts: **complete**. Full `promptRunners` config parsing (`PromptRunnerConfig`
-  with base `PromptRunnerSettings` + a partial `guardrailOverrides` block merged for
-  guardrail prompts; `command`/`permissionMode`/`allowedTools`/`maxTurns`/`model`/
-  `extraArgs`); a plan with prompt tasks but no `promptRunners` config is a validation
-  error (**GR2008**). YAML frontmatter (`PromptFileParser`, YamlDotNet) for `.prompt.md`
-  actions and guardrails — `description`/`runner`/`maxTurns`/`timeoutSeconds`, optional,
-  body stripped; malformed frontmatter is a loading error. Prompt pipeline under
-  `Prompts/`: `IPromptRunner` seam, `PromptInvocation`/`PromptResult`,
-  `PromptRunnerRegistry` (name → runner, default resolution), `ClaudePromptRunner` (the
-  ONLY place Claude flag spelling + `stream-json` parsing live — prompt via **stdin**,
-  cwd = workspace, `--add-dir <planDir>`, tolerant line-wise parse teed to
-  `claude-stream.jsonl`; non-zero exit OR no terminal `result` ⇒ not completed),
-  `PromptComposer` (`composed-prompt.md` = body + Shared state [inlined ≤ 16 KB else by
-  path] + Output contract/needsHuman [actions] + Previous-attempt feedback [actions,
-  attempt ≥ 2] + Verdict contract [guardrails]), `GuardrailVerdictReader` (verdict file
-  is the ONLY pass/fail authority; missing/invalid/missing-`pass` ⇒ fail "guardrail
-  produced no valid verdict (see logs)"). `TaskExecutor` routes `ActionKind.Prompt`:
-  action success = completed AND `is_error == false`; per-attempt `costUsd` recorded;
-  prompt guardrails set `GUARDRAILS_VERDICT_OUT` and use the `guardrailOverrides` profile.
-  **needsHuman short-circuit** (SSOT §9): a prompt action whose fragment has a root string
-  `needsHuman` key escalates IMMEDIATELY — new outcome `needs-human` (kebab-case;
-  `AttemptOutcome.NeedsHuman` / `TaskOutcome.NeedsHuman`), no retry burn, no guardrails,
-  no fragment merge. `Scheduler.EnsureNoPrompts` and `PromptNotSupportedException` removed
-  — prompts now run. Tested tokenlessly by a fake-CLI (`.cmd`→`.ps1` on Windows, `.sh`
-  elsewhere) across all four scenarios + an opt-in real-claude smoke test
-  (`GUARDRAILS_REAL_CLAUDE=1`).
+  folder order, dependency-failure -> blocked, no retry), and `guardrails run`/`validate`.
+  3-OS CI matrix in `.github/workflows/ci.yml`. M2 runs **script actions only** -- a plan
+  with prompt actions/guardrails validates fine but `run` fails fast ("not supported until M5").
+  State/journal/log env vars are **not** set yet (only `GUARDRAILS_PLAN_DIR`, `_TASK_ID`,
+  `_TASK_DIR`, `_ATTEMPT`="1").
+- M3 State + journal + resume: **complete**. `JsonMerger` (pure deep-merge) + `StateManager`
+  (single writer of `state/state.json`: seed/init, immutable snapshots, fragment merge after
+  guardrails pass, `merge-conflicts.log`, atomic writes). `RunJournal` (`state/run.json` per
+  section 7: kebab-case status/outcome strings, attempt records, `planHash`, loud warning on
+  resume mismatch) with the section 7 resume matrix. `SerialExecutor` now threads snapshot ->
+  action -> guardrails -> merge, writes the section 8 per-attempt log layout. New CLI: `status`,
+  `reset <folder> [task]`, `run --fresh`. M4 still owns DAG/parallelism/retry/needs-human.
+- M4 DAG + parallelism + retry: **complete**. `DependencyGraph` (cycle detection -> GR2007,
+  waves, transitive-dependent closure), Channel-based `Scheduler` (maxParallelism workers;
+  failure blocks the transitive closure while independent branches finish; resume pre-pass),
+  `TaskExecutor` retry loop (budget = 1 + retries; `feedback.md` written per failed attempt;
+  budget exhaustion -> `needs-human`; cancellation -> `pending`), `guardrails plan` (waves
+  preview), Spectre live table UI, exit code 3 on cancellation. `SerialExecutor` is gone --
+  `Scheduler` with maxParallelism 1 is serial mode.
+- M5 Prompts: **complete**. Full `promptRunners` config parsing; `IPromptRunner` seam,
+  `ClaudePromptRunner` (the ONLY place Claude flag spelling + `stream-json` parsing live --
+  prompt via stdin, cwd = workspace, `--add-dir <planDir>`, teed to `claude-stream.jsonl`);
+  `PromptComposer` (body + Shared state + Output contract + Previous-attempt feedback +
+  Verdict contract); `GuardrailVerdictReader` (verdict file is the ONLY pass/fail authority).
+  **needsHuman short-circuit** (SSOT section 9): escalates IMMEDIATELY -- no retry burn,
+  no guardrails, no fragment merge. Prompts now run; tested tokenlessly + opt-in real-claude.
 - **Reality Gate 1 + 2: MET.** `guardrails run examples/hello-guardrails/hello-guardrails`
-  completes end-to-end green with the real Claude CLI — script action, two prompt actions,
-  and the prompt verdict-contract guardrail all pass; costs journaled (~$1.00 total).
-- M6 Skills: **complete**. `plan-breakdown` SKILL.md + references (guardrail-catalogue
-  with the archetype table / decision tree / demotion gate / anti-patterns; schemas
-  excerpt citing the SSOT; full worked example incl. an inserted test-author task and
-  a negative example), `guardrails-review` (adversarial "cheapest wrong implementation"
-  pass, BLOCKER/WEAK/NIT, per-finding approval), agents `guardrails-harness-developer`/
-  `-skill-author`/`-test-author`/`-devils-advocate`, `guardrails-dev-knowledge`,
-  lightweight `uber-report` (Reality Gate-first), and the real README (workflow,
-  60-second demo, CLI table). **Round-trip proven**: a fresh breakdown of
-  `hello-guardrails.md` following the skill procedure validates clean (exit 0) and
-  matches the golden folder's structure (same task split, same guardrail archetypes).
-- **Reality Gate: MET — all three booleans** (build+tests; end-to-end example run on
-  real Claude, verified 2026-06-10 at ~$0.90; plan-breakdown round-trip).
-- M7 Polish + packaging: **complete except dogfood execution** (which awaits human
-  review — that is the workflow). Run-level cost aggregation: `JournalCost.Total` sums
-  every attempt's `costUsd`; the `run` summary and `status` print `Total prompt cost:
-  $X.XXXX`, omitted when no attempt recorded a cost (deterministic plans stay quiet).
-  `guardrails run --dry-run`: validates, prints the waves preview + per-task resolution
-  (kind/runner/exclusive/retry-budget) + journal-aware resume SKIPs, then exits 0 having
-  run nothing and touched no state (reads `run.json` read-only — no `LoadOrCreate`).
-  Validation depth: `validate` probes each DECLARED prompt runner's `command` on PATH as a
-  **warning** (GR2009, not an error — the plan may run elsewhere). Packaging: PackageId
-  `ServantSoftware.Guardrails` (ToolCommandName stays `guardrails`), version
-  `1.0.0-preview.1`, MIT `LICENSE` + full package metadata, README packed; release pipeline
-  `.github/workflows/release.yml` (tag `v*` → 3-OS matrix → pack with version derived from the
-  tag → `dotnet nuget push` via **Trusted Publishing**/OIDC, no long-lived key — `NuGet/login@v1`
-  + a `NUGET_USER` profile-name secret + a nuget.org policy). Clean-machine pack/install
-  acceptance passed (validate + plan via the installed tool, then uninstalled). **Dogfood artifact authored, not executed**:
-  `docs/plans/04-dogfood-cost-cap.md` + its breakdown folder (validate-clean, 4 tasks:
-  inserted test-author → implement → document → terminal suite-green) await human review
-  before `guardrails run` — the first real v2 slice (per-run cost cap).
+  completes end-to-end green with the real Claude CLI (~$1.00 total).
+- M6 Skills: **complete**. `plan-breakdown` SKILL.md + references (guardrail-catalogue with
+  archetype table / decision tree / demotion gate / anti-patterns), `guardrails-review`
+  (adversarial "cheapest wrong implementation" pass, BLOCKER/WEAK/NIT, per-finding approval),
+  agents `guardrails-harness-developer`/`-skill-author`/`-test-author`/`-devils-advocate`,
+  `guardrails-dev-knowledge`, lightweight `uber-report` (Reality Gate-first), and the real
+  README. **Round-trip proven**: a fresh breakdown of `hello-guardrails.md` validates clean
+  and matches the golden folder.
+- **Reality Gate: MET -- all three booleans** (build+tests; end-to-end run on real Claude,
+  verified 2026-06-10 at ~$0.90; plan-breakdown round-trip).
+- M7 Polish + packaging: **complete except dogfood execution** (which awaits human review).
+  Run-level cost aggregation (`JournalCost.Total`). `guardrails run --dry-run`: validates,
+  prints waves preview + per-task resolution (kind/runner/retry-budget) + journal-aware
+  resume SKIPs, exits 0 having touched no state. Packaging: PackageId
+  `ServantSoftware.Guardrails`, version `1.0.0-preview.1`, MIT LICENSE, README packed;
+  release pipeline `.github/workflows/release.yml` (tag `v*` -> 3-OS matrix -> pack ->
+  `dotnet nuget push` via Trusted Publishing/OIDC). Clean-machine pack/install acceptance
+  passed. **Dogfood artifact authored, not executed**: `docs/plans/04-dogfood-cost-cap.md`
+  + breakdown folder await human review before `guardrails run`.
+- **Plan-08 parallel execution** (branch `dogfood/plan-08`, draft PR #107, tasks 01-26
+  complete): worktree isolation + reuse/chaining topology (plan branch off user HEAD,
+  segment-worktree reuse for linear chains, fan-out inherit-one + fork-the-rest off W-2,
+  fan-in fork); `writeScope` CHECK (deterministic read-only, triad replacement, GR2019/2020);
+  per-attempt logs elevated to `logs/<runId>/<task-id>/attempt-N/` (sibling of `state/`);
+  FF-free integration for linear chains (no re-verify), re-verified union for fan-in/non-FF;
+  B1 atomic settle (fragment -> commit -> journal); AI-merge worker (byte producer,
+  `GUARDRAILS_MERGE_BASE/_OURS/_THEIRS/_OUT` on-disk env contract, two deterministic gates,
+  1-retry budget, verdict = deterministic `IReVerifier` re-verify); `scope: "integration"`
+  guardrail set + terminal `integrationGate` sink (GR2017/2018); resume-by-trailer (FF commits
+  carry trailers; stale segment refs deleted before any trailer read, W-1);
+  `mergeOnSuccess`/`--merge-on-success` (AI-merge withheld at user-branch boundary);
+  `maxParallelism: 3` default, `worktreeRoot`/`runOnCurrentBranch` config fields (GR2015/2016);
+  triad (`captureHashes`/`restoreOnRetry`/`exclusive`, `WorkspaceLock`) REMOVED.

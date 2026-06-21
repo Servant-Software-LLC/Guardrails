@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.State;
@@ -99,6 +101,97 @@ internal sealed class AttemptJournaler
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed"
                       + costSegment
                       + (mergeSequence is null ? "" : $"; merged (seq {mergeSequence})")
+        }, FeedbackPath: null);
+    }
+
+    /// <summary>
+    /// Worktree-mode success path: validate the fragment (same rules as
+    /// <see cref="CompleteSucceededOrInvalidFragment"/>) but do NOT merge into state.json and do
+    /// NOT call RecordAttempt. Returns a succeeded <see cref="AttemptResult"/> with
+    /// <see cref="TaskResult.FragmentPath"/> set so the Scheduler can perform the B1 deferred settle
+    /// (fragment merge → git commit → journal settle) under the integration lock.
+    /// </summary>
+    public AttemptResult ValidateFragmentForSettle(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        string fragmentOutPath,
+        ActionRun action,
+        GuardrailRunResult guardrails,
+        bool isFinal)
+    {
+        string? validatedFragmentPath = null;
+
+        if (File.Exists(fragmentOutPath))
+        {
+            string raw;
+            try { raw = File.ReadAllText(fragmentOutPath); }
+            catch (Exception ex)
+            {
+                string msg = $"cannot read fragment: {ex.Message}";
+                return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
+                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg), isFinal,
+                    AttemptOutcome.InvalidFragment,
+                    new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
+                    costUsd: action.CostUsd);
+            }
+
+            JsonNode? node;
+            try { node = JsonNode.Parse(raw); }
+            catch (JsonException ex)
+            {
+                string msg = $"fragment is not valid JSON: {ex.Message}";
+                return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
+                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg), isFinal,
+                    AttemptOutcome.InvalidFragment,
+                    new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
+                    costUsd: action.CostUsd);
+            }
+
+            if (node is not JsonObject fragObj)
+            {
+                string kind = node is null ? "null" : node.GetValueKind().ToString().ToLowerInvariant();
+                string msg = $"invalid state fragment: top-level value must be a JSON object, was {kind}";
+                return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
+                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg), isFinal,
+                    AttemptOutcome.InvalidFragment,
+                    new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
+                    costUsd: action.CostUsd);
+            }
+
+            List<string> foreignKeys = fragObj
+                .Select(pair => pair.Key)
+                .Where(k => !string.Equals(k, task.Id, StringComparison.Ordinal) && !StateManager.ReservedMergeKeys.Contains(k))
+                .ToList();
+
+            if (foreignKeys.Count > 0)
+            {
+                string reason = $"foreign top-level key(s): {string.Join(", ", foreignKeys.Select(k => $"'{k}'"))}";
+                return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
+                    RetryPolicy.ForForeignKey(task, attemptNumber, foreignKeys), isFinal,
+                    AttemptOutcome.InvalidFragment,
+                    new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = reason },
+                    costUsd: action.CostUsd);
+            }
+
+            validatedFragmentPath = fragmentOutPath;
+        }
+
+        string costSegment = task.Action.Kind == ActionKind.Script
+            ? "; no LLM used (script)"
+            : action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.Succeeded,
+            ActionExitCode = action.ExitCode,
+            Guardrails = guardrails.Results,
+            FragmentPath = validatedFragmentPath,
+            DeferredSettle = true,
+            Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed{costSegment}"
         }, FeedbackPath: null);
     }
 

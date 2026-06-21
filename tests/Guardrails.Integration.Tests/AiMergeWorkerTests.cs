@@ -1,0 +1,737 @@
+using System.Diagnostics;
+using System.Text;
+using Guardrails.Core.Execution;
+using Guardrails.Core.Journal;
+using Guardrails.Core.Loading;
+using Guardrails.Core.Prompts;
+using Guardrails.Core.State;
+
+namespace Guardrails.Integration.Tests;
+
+/// <summary>
+/// Red-bar integration tests for plan 08 §4 / §9.1 / Stage-2 AI-merge worker.
+/// Authored BEFORE the worker exists — all tests reference not-yet-existing types so the
+/// project will NOT compile against current code. That compile failure IS the red-bar signal.
+/// Do NOT implement the worker here; tests only.
+///
+/// Compile-fail couplings (not yet existing):
+///   • <see cref="IAiMergeWorker"/> — interface consumed by the Scheduler
+///   • <see cref="AiMergeWorker"/> — concrete class wrapping <see cref="IPromptRunner"/>
+///   • <c>aiMergeWorker:</c> — named parameter on the <see cref="Scheduler"/> constructor
+///
+/// Fake AI runner pattern: thin <see cref="IPromptRunner"/> implementations that write
+/// canned bytes to the path in <c>GUARDRAILS_MERGE_OUT</c> (read from
+/// <see cref="PromptInvocation.Environment"/>) — no real claude process needed.
+///
+/// Five scenarios:
+/// <list type="bullet">
+///   <item><b>(i) CleanResolution_MergeEnvContract_ReVerifyIsVerdict_UnionSettles</b> —
+///     worker receives MERGE_BASE/OURS/THEIRS on disk, writes clean bytes to MERGE_OUT,
+///     returns IsError=true; harness reads MERGE_OUT (not IsError) and re-verify passes.</item>
+///   <item><b>(ii) OutOfBoundsWrite_DetectedViaGitStatusPorcelain_Discarded_NeedsHuman</b> —
+///     AI writes a file outside the conflicted set; harness detects via git status --porcelain.</item>
+///   <item><b>(iii) ConflictMarkersLeft_DetectedViaGitDiffCheck_NeedsHuman</b> —
+///     AI leaves conflict markers; harness detects via git diff --check.</item>
+///   <item><b>(iv) BudgetExhausted_After1Retry_NeedsHuman</b> —
+///     both attempts fail; runner called exactly twice; needs-human after budget exhausted.</item>
+///   <item><b>(v) AiDeletedHunk_B3_CollidingSiblingReVerifyCatchesIt</b> —
+///     AI drops colliding sibling's hunk; sibling's LOCAL guardrail re-runs UNCONDITIONALLY
+///     and catches the drop; B-3 split assertion pins that wrong filter would miss it.</item>
+/// </list>
+/// </summary>
+public sealed class AiMergeWorkerTests
+{
+    // ─── TempGitRepo ────────────────────────────────────────────────────────────────────────────
+    // Windows-safe disposable git repo. Strips read-only bits before delete (.git/objects are
+    // read-only on Windows → UnauthorizedAccessException without this). Pattern from
+    // WriteScopeCheckTests.cs / MergeLockAndSettleTests.cs.
+
+    private sealed class TempGitRepo : IDisposable
+    {
+        private readonly string _root;
+        public string RepoPath { get; }
+        public string WorktreeRoot { get; }
+
+        public TempGitRepo()
+        {
+            _root = Path.Combine(Path.GetTempPath(), "gr-amw-" + Guid.NewGuid().ToString("N"));
+            RepoPath = Path.Combine(_root, "repo");
+            WorktreeRoot = Path.Combine(_root, "worktrees");
+            Directory.CreateDirectory(RepoPath);
+            Directory.CreateDirectory(WorktreeRoot);
+            Git(RepoPath, "init");
+            Git(RepoPath, "config", "user.email", "test@guardrails.local");
+            Git(RepoPath, "config", "user.name", "Guardrails Test");
+            File.WriteAllText(Path.Combine(RepoPath, "README.md"), "# ai-merge-test");
+            Git(RepoPath, "add", ".");
+            Git(RepoPath, "commit", "-m", "Initial commit");
+        }
+
+        public string CurrentBranch() =>
+            Git(RepoPath, "rev-parse", "--abbrev-ref", "HEAD").Trim();
+
+        public string HeadSha() =>
+            Git(RepoPath, "rev-parse", "HEAD").Trim();
+
+        public static string Git(string workingDir, params string[] args)
+        {
+            var psi = new ProcessStartInfo("git")
+            {
+                WorkingDirectory = workingDir,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            foreach (var arg in args) psi.ArgumentList.Add(arg);
+            using var proc = Process.Start(psi)!;
+            string stdout = proc.StandardOutput.ReadToEnd();
+            string stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            if (proc.ExitCode != 0)
+                throw new InvalidOperationException(
+                    $"git {string.Join(" ", args)} (cwd={workingDir}) exited {proc.ExitCode}: {stderr.Trim()}");
+            return stdout;
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (Directory.Exists(_root))
+                {
+                    foreach (var f in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
+                        File.SetAttributes(f, FileAttributes.Normal);
+                    Directory.Delete(_root, recursive: true);
+                }
+            }
+            catch { /* best-effort teardown */ }
+        }
+    }
+
+    // ─── Fake IPromptRunner variants — byte producers for GUARDRAILS_MERGE_OUT ──────────────────
+    // All fake runners write to GUARDRAILS_MERGE_OUT from invocation.Environment.
+    // PromptResult.IsError is NEVER the verdict (SSOT §9.1) — the harness reads MERGE_OUT instead.
+
+    /// <summary>
+    /// Writes a canned merged resolution to GUARDRAILS_MERGE_OUT and returns IsError=true
+    /// deliberately — proves the harness NEVER reads PromptResult.IsError as the verdict (SSOT §9.1).
+    /// Also asserts the merge-env contract: MERGE_BASE, MERGE_OURS, MERGE_THEIRS, and MERGE_OUT
+    /// must all be present in invocation.Environment.
+    /// </summary>
+    private sealed class CannedResolutionRunner : IPromptRunner
+    {
+        private readonly string _mergedContent;
+        public List<PromptInvocation> Calls { get; } = new();
+
+        public CannedResolutionRunner(string mergedContent) => _mergedContent = mergedContent;
+
+        public string Name => "ai-merge-canned";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken ct)
+        {
+            Calls.Add(invocation);
+
+            // Merge-env contract (SSOT §5.1 / §9.1): all four vars must be present
+            Assert.True(invocation.Environment.ContainsKey("GUARDRAILS_MERGE_BASE"),
+                "AiMergeWorker must set GUARDRAILS_MERGE_BASE in the prompt invocation environment.");
+            Assert.True(invocation.Environment.ContainsKey("GUARDRAILS_MERGE_OURS"),
+                "AiMergeWorker must set GUARDRAILS_MERGE_OURS in the prompt invocation environment.");
+            Assert.True(invocation.Environment.ContainsKey("GUARDRAILS_MERGE_THEIRS"),
+                "AiMergeWorker must set GUARDRAILS_MERGE_THEIRS in the prompt invocation environment.");
+            Assert.True(invocation.Environment.ContainsKey("GUARDRAILS_MERGE_OUT"),
+                "AiMergeWorker must set GUARDRAILS_MERGE_OUT in the prompt invocation environment.");
+
+            // Write the resolution to MERGE_OUT (not PromptResult bytes — there are none)
+            string mergeOut = invocation.Environment["GUARDRAILS_MERGE_OUT"];
+            File.WriteAllText(mergeOut, _mergedContent);
+
+            // IsError=true deliberately: the harness MUST NOT read this as failure (SSOT §9.1)
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = true,
+                Summary = "ai-merge-canned: IsError=true proves it is never the verdict"
+            });
+        }
+    }
+
+    /// <summary>
+    /// Writes a clean resolution to GUARDRAILS_MERGE_OUT AND writes an extra file in the worker's
+    /// working directory that was not in the git-conflicted set — simulating an out-of-bounds
+    /// blast-radius violation. The harness must detect this via <c>git status --porcelain</c>.
+    /// </summary>
+    private sealed class OutOfBoundsWriter : IPromptRunner
+    {
+        private readonly string _mergedContent;
+        private readonly string _extraFileName;   // relative to invocation.WorkingDirectory
+
+        public OutOfBoundsWriter(string mergedContent, string extraFileName)
+        {
+            _mergedContent = mergedContent;
+            _extraFileName = extraFileName;
+        }
+
+        public string Name => "ai-merge-out-of-bounds";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken ct)
+        {
+            // Write the in-bounds resolution
+            string mergeOut = invocation.Environment["GUARDRAILS_MERGE_OUT"];
+            File.WriteAllText(mergeOut, _mergedContent);
+
+            // Also write an extra out-of-bounds file in the working dir (blast-radius violation)
+            string extraPath = Path.Combine(invocation.WorkingDirectory, _extraFileName);
+            Directory.CreateDirectory(Path.GetDirectoryName(extraPath)!);
+            File.WriteAllText(extraPath, "// out-of-bounds file written by AI — harness must detect");
+
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = false,
+                Summary = "ai-merge-out-of-bounds: wrote resolution + extra out-of-bounds file"
+            });
+        }
+    }
+
+    /// <summary>
+    /// Always writes content containing <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c> conflict markers
+    /// to GUARDRAILS_MERGE_OUT, even on retry. Used for both the markers test (iii) and the
+    /// budget-exhaustion test (iv).
+    /// </summary>
+    private sealed class MarkerLeavingRunner : IPromptRunner
+    {
+        public int CallCount { get; private set; }
+        public string Name => "ai-merge-markers";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken ct)
+        {
+            CallCount++;
+            string mergeOut = invocation.Environment["GUARDRAILS_MERGE_OUT"];
+            // Write content with conflict markers — the harness must reject this
+            File.WriteAllText(mergeOut,
+                "// AI failed to resolve\n" +
+                "<<<<<<< HEAD\n" +
+                "class Shared { static string Get() => \"FuncA\"; }\n" +
+                "=======\n" +
+                "class Shared { static string Get() => \"FuncB\"; }\n" +
+                ">>>>>>> sibling\n");
+
+            // IsError=false (irrelevant) — the marker check is the mechanism, not IsError
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = false,
+                Summary = "ai-merge-markers: deliberately left conflict markers"
+            });
+        }
+    }
+
+    /// <summary>
+    /// Writes a clean resolution to GUARDRAILS_MERGE_OUT but DROPS the colliding sibling's
+    /// source hunk — keeps only task B's FuncB, silently removing task A's FuncA.
+    /// No markers. In-bounds (only writes to MERGE_OUT, not the working directory).
+    /// Used for the B-3 load-bearing test (v).
+    /// </summary>
+    private sealed class HunkDropperRunner : IPromptRunner
+    {
+        private readonly string _keptContent;
+        public HunkDropperRunner(string keptContent) => _keptContent = keptContent;
+        public string Name => "ai-merge-hunk-dropper";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken ct)
+        {
+            string mergeOut = invocation.Environment["GUARDRAILS_MERGE_OUT"];
+            // Clean resolution: no markers, only writes to MERGE_OUT
+            // BUT drops A's FuncA — keeps only B's FuncB
+            File.WriteAllText(mergeOut, _keptContent);
+
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = false,
+                Summary = "ai-merge-hunk-dropper: clean resolution, sibling FuncA silently dropped"
+            });
+        }
+    }
+
+    // ─── SpyReVerifier ────────────────────────────────────────────────────────────────────────────
+
+    private sealed class SpyReVerifier : IReVerifier
+    {
+        public int CallCount { get; private set; }
+        public bool AlwaysPass { get; init; }
+
+        public Task<ReVerifyResult> ReVerifyAsync(
+            string worktreePath,
+            IReadOnlyList<GuardrailDefinition> guardrails,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(AlwaysPass
+                ? new ReVerifyResult { Passed = true }
+                : new ReVerifyResult
+                {
+                    Passed = false,
+                    FailedGuardrails = [new GuardrailResult
+                    {
+                        Name = "spy",
+                        Passed = false,
+                        Reason = "spy: forced failure"
+                    }]
+                });
+        }
+    }
+
+    // ─── Plan helpers ───────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Creates a plan inside <paramref name="repoPath"/> with two sibling tasks (01-task-a,
+    /// 02-task-b) that both write <c>src/conflict.cs</c> with different content, producing a
+    /// git conflict when the second task integrates. maxParallelism: 2 enables worktree mode.
+    /// </summary>
+    private static string CreateConflictPlan(string repoPath)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(planDir);
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 2
+            }
+            """);
+
+        WriteConflictTask(planDir, "01-task-a", "FuncA", b3SiblingGuardrail: false);
+        WriteConflictTask(planDir, "02-task-b", "FuncB", b3SiblingGuardrail: false);
+        return planDir;
+    }
+
+    /// <summary>
+    /// Creates the B-3 conflict plan: same two-sibling conflict as
+    /// <see cref="CreateConflictPlan"/> but task A additionally writes <c>src/a_tests.cs</c>
+    /// and carries a <c>02-sibling-tests</c> guardrail that enforces cross-file consistency —
+    /// failing when the AI drops A's FuncA from conflict.cs while a_tests.cs still references it.
+    /// </summary>
+    private static string CreateB3ConflictPlan(string repoPath)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(planDir);
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 2
+            }
+            """);
+
+        WriteConflictTask(planDir, "01-task-a", "FuncA", b3SiblingGuardrail: true);
+        WriteConflictTask(planDir, "02-task-b", "FuncB", b3SiblingGuardrail: false);
+        return planDir;
+    }
+
+    private static void WriteConflictTask(string planDir, string taskId, string funcName, bool b3SiblingGuardrail)
+    {
+        string taskDir = Path.Combine(planDir, "tasks", taskId);
+        Directory.CreateDirectory(taskDir);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $$"""{"description": "ai-merge conflict test {{taskId}}", "dependsOn": []}""");
+
+        string fragmentJson = "{\"" + taskId + "\": {\"done\": true}}";
+        string safeName = taskId.Replace("-", "_");
+
+        // Both tasks write src/conflict.cs with different content ("both added" git conflict).
+        // Each also writes a unique file (no conflict) so the commit has unambiguous identity.
+        string conflictContent = $"class Shared {{ static string Get() => \"{funcName}\"; }}";
+
+        // Only task-a (when b3SiblingGuardrail=true) writes src/a_tests.cs.
+        // This is the "file the merge did NOT touch" in the B-3 scenario.
+        string aTestsContent = $"// a_tests: calls Shared.Get() — expects {funcName}";
+
+        if (OperatingSystem.IsWindows())
+        {
+            var ps = new StringBuilder();
+            ps.AppendLine($"Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value '{fragmentJson}'");
+            ps.AppendLine($"New-Item -Path \"$env:GUARDRAILS_WORKSPACE\\src\\{taskId}.cs\" -Force -Value 'class {safeName} {{}}' | Out-Null");
+            ps.AppendLine($"New-Item -Path \"$env:GUARDRAILS_WORKSPACE\\src\\conflict.cs\" -Force -Value '{conflictContent}' | Out-Null");
+            if (b3SiblingGuardrail)
+            {
+                ps.AppendLine($"New-Item -Path \"$env:GUARDRAILS_WORKSPACE\\src\\a_tests.cs\" -Force -Value '{aTestsContent}' | Out-Null");
+            }
+            ps.AppendLine("exit 0");
+            File.WriteAllText(Path.Combine(taskDir, "action.ps1"), ps.ToString());
+
+            // Guardrail 01: always passes
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"), "exit 0\n");
+
+            if (b3SiblingGuardrail)
+            {
+                // Guardrail 02: B-3 load-bearing cross-file consistency check.
+                // Reads src/a_tests.cs AND src/conflict.cs using paths relative to cwd (= workspace
+                // during both task-exec and re-verify, so GUARDRAILS_WORKSPACE is not needed).
+                // PASSES: a_tests.cs references FuncA AND conflict.cs has FuncA (A's own segment).
+                // FAILS:  a_tests.cs references FuncA BUT conflict.cs has only FuncB (AI dropped A).
+                File.WriteAllText(Path.Combine(taskDir, "guardrails", "02-sibling-tests.ps1"),
+                    "$testFile = 'src\\a_tests.cs'\n" +
+                    "$srcFile  = 'src\\conflict.cs'\n" +
+                    "$testRefsFuncA = (Select-String -Path $testFile -Pattern 'FuncA' -Quiet) -eq $true\n" +
+                    "$srcHasFuncA   = (Select-String -Path $srcFile  -Pattern 'FuncA' -Quiet) -eq $true\n" +
+                    "if ($testRefsFuncA -and (-not $srcHasFuncA)) {\n" +
+                    "    Write-Output 'a_tests.cs references FuncA but conflict.cs is missing it — AI dropped sibling hunk'\n" +
+                    "    exit 1\n" +
+                    "}\n" +
+                    "exit 0\n");
+            }
+        }
+        else
+        {
+            var sh = new StringBuilder("#!/usr/bin/env bash\n");
+            sh.AppendLine($"printf '%s' '{fragmentJson}' > \"$GUARDRAILS_STATE_OUT\"");
+            sh.AppendLine("mkdir -p \"$GUARDRAILS_WORKSPACE/src\"");
+            sh.AppendLine($"printf '%s' '{conflictContent}' > \"$GUARDRAILS_WORKSPACE/src/conflict.cs\"");
+            sh.AppendLine($"printf '%s' 'class {safeName} {{}}' > \"$GUARDRAILS_WORKSPACE/src/{taskId}.cs\"");
+            if (b3SiblingGuardrail)
+            {
+                sh.AppendLine($"printf '%s' '{aTestsContent}' > \"$GUARDRAILS_WORKSPACE/src/a_tests.cs\"");
+            }
+            sh.AppendLine("exit 0");
+            string ap = Path.Combine(taskDir, "action.sh");
+            File.WriteAllText(ap, sh.ToString());
+            SetExecutable(ap);
+
+            string g1 = Path.Combine(taskDir, "guardrails", "01-check.sh");
+            File.WriteAllText(g1, "#!/usr/bin/env bash\nexit 0\n");
+            SetExecutable(g1);
+
+            if (b3SiblingGuardrail)
+            {
+                // Paths relative to cwd (= workspace during both task-exec and re-verify)
+                string g2 = Path.Combine(taskDir, "guardrails", "02-sibling-tests.sh");
+                File.WriteAllText(g2,
+                    "#!/usr/bin/env bash\n" +
+                    "testFile='src/a_tests.cs'\n" +
+                    "srcFile='src/conflict.cs'\n" +
+                    "if grep -q 'FuncA' \"$testFile\" && ! grep -q 'FuncA' \"$srcFile\"; then\n" +
+                    "    echo 'a_tests.cs references FuncA but conflict.cs is missing it — AI dropped sibling hunk'\n" +
+                    "    exit 1\n" +
+                    "fi\n" +
+                    "exit 0\n");
+                SetExecutable(g2);
+            }
+        }
+    }
+
+    private static void SetExecutable(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+    }
+
+    // ─── Run helper ──────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Loads <paramref name="planDir"/>, wires the AI merge worker and re-verifier into the
+    /// <see cref="Scheduler"/>, and runs to completion.
+    ///
+    /// The <c>aiMergeWorker:</c> named argument IS the compile-fail coupling —
+    /// <see cref="IAiMergeWorker"/> and the <c>Scheduler(aiMergeWorker:)</c> parameter do not
+    /// yet exist on current code.
+    /// </summary>
+    private static async Task<(RunReport report, RunJournal journal)> RunWithAiMergeAsync(
+        string planDir,
+        IWorktreeProvider worktreeProvider,
+        IAiMergeWorker aiMergeWorker,   // COMPILE ERROR: IAiMergeWorker does not yet exist
+        IReVerifier reVerifier,
+        CancellationToken ct = default)
+    {
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        Assert.NotNull(load.Plan);
+        Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
+
+        var stateManager = new StateManager(load.Plan!.PlanDirectory);
+        stateManager.Initialize();
+
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+
+        var interpreterMap = new InterpreterMap(new PathExecutableProbe(), load.Plan!.Config.Interpreters);
+        var registry = PromptRunnerRegistry.Build(load.Plan!.Config,
+            _ => throw new InvalidOperationException("No prompt runners in AI-merge worker tests."));
+
+        var executor = new TaskExecutor(
+            load.Plan!, new ProcessRunner(), interpreterMap,
+            stateManager, journal, IRunObserver.Null, registry);
+
+        // ── COMPILE ERROR on current code: Scheduler has no 'aiMergeWorker' parameter ──────────
+        var scheduler = new Scheduler(
+            load.Plan!, executor, journal,
+            worktreeProvider: worktreeProvider,
+            reVerifier: reVerifier,
+            aiMergeWorker: aiMergeWorker);
+
+        RunReport report = await scheduler.RunAsync(load.Plan!, ct);
+        return (report, journal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (i) byte-producer + merge-env-contract + re-verify is the verdict
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Plan 08 §9.1 byte-producer + merge-env-contract: the worker receives
+    /// GUARDRAILS_MERGE_BASE / MERGE_OURS / MERGE_THEIRS on disk and writes its resolution
+    /// to GUARDRAILS_MERGE_OUT only. The harness reads MERGE_OUT — NOT PromptResult bytes
+    /// (there are none). PromptResult.IsError is deliberately true to prove it is NEVER the
+    /// verdict (SSOT §9.1: "the re-verify is the verdict").
+    ///
+    /// After a clean AI resolution (no markers, in-bounds), the union re-verify passes and
+    /// both tasks succeed.
+    /// </summary>
+    [Fact]
+    public async Task CleanResolution_MergeEnvContract_ReVerifyIsVerdict_UnionSettles()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateConflictPlan(repo.RepoPath);
+
+        // CannedResolutionRunner returns IsError=true — harness must ignore this, read MERGE_OUT
+        var runner = new CannedResolutionRunner(
+            mergedContent: "class Shared { static string Get() => \"FuncA+FuncB\"; }");
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        // ── COMPILE ERROR: AiMergeWorker and Scheduler(aiMergeWorker:) do not yet exist ────────
+        var aiMergeWorker = new AiMergeWorker(runner);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        // Union settled: IsError=true on the runner did NOT cause failure
+        Assert.True(report.AllSucceeded,
+            "Clean AI resolution with passing re-verify must settle. " +
+            "PromptResult.IsError=true must be ignored — MERGE_OUT is the only read channel (SSOT §9.1). " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        // Re-verify was called for the non-FF union (the second sibling's integration)
+        Assert.True(spyReVerifier.CallCount > 0,
+            "Re-verify must be invoked for the non-FF union — it is the verdict, not PromptResult.IsError.");
+
+        // Merge-env contract was enforced (asserted inside CannedResolutionRunner.RunAsync)
+        Assert.True(runner.Calls.Count > 0,
+            "The AI merge worker must have called the prompt runner for the non-FF conflict.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (ii) out-of-bounds write → detected via git status --porcelain → needs-human
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Plan 08 §9.1 blast-radius check: when the AI writes any file OUTSIDE the git-conflicted
+    /// set, the harness detects it via <c>git status --porcelain</c>, discards the resolution
+    /// via <c>reset --hard</c>, and escalates to needs-human. The blast-radius check fires
+    /// BEFORE re-verify (SpyReVerifier call count must remain zero).
+    /// </summary>
+    [Fact]
+    public async Task OutOfBoundsWrite_DetectedViaGitStatusPorcelain_Discarded_NeedsHuman()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateConflictPlan(repo.RepoPath);
+        string initialHead = repo.HeadSha();
+
+        var writer = new OutOfBoundsWriter(
+            mergedContent: "class Shared { static string Get() => \"FuncA+FuncB\"; }",
+            extraFileName: "ai-wrote-this-out-of-bounds.tmp");  // not in the conflicted set
+
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        // ── COMPILE ERROR: AiMergeWorker and Scheduler(aiMergeWorker:) do not yet exist ────────
+        var aiMergeWorker = new AiMergeWorker(writer);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        // One task NeedsHuman (the second-to-integrate whose AI merge went out-of-bounds)
+        Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+        Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.Succeeded);
+
+        // Blast-radius check fires BEFORE re-verify — spy call count must stay zero
+        Assert.Equal(0, spyReVerifier.CallCount);
+
+        // Rollback must not alter the user's branch
+        Assert.Equal(initialHead, repo.HeadSha());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (iii) conflict markers left → detected via git diff --check → needs-human
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Plan 08 §9.1 conflict-marker check: when GUARDRAILS_MERGE_OUT contains
+    /// <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c> conflict markers, the harness detects them via
+    /// <c>git diff --check</c> and escalates to needs-human. PromptResult.IsError=false
+    /// is irrelevant — the marker check is the mechanism, not IsError.
+    /// </summary>
+    [Fact]
+    public async Task ConflictMarkersLeft_DetectedViaGitDiffCheck_NeedsHuman()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateConflictPlan(repo.RepoPath);
+        string initialHead = repo.HeadSha();
+
+        var markerRunner = new MarkerLeavingRunner();
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        // ── COMPILE ERROR: AiMergeWorker and Scheduler(aiMergeWorker:) do not yet exist ────────
+        var aiMergeWorker = new AiMergeWorker(markerRunner);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        // Conflict markers detected — one task NeedsHuman
+        Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+        Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.Succeeded);
+
+        // Marker check fires before (or instead of) re-verify
+        Assert.Equal(0, spyReVerifier.CallCount);
+
+        // Rollback must not alter the user's branch
+        Assert.Equal(initialHead, repo.HeadSha());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (iv) budget exhausted after 1 retry → needs-human
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Plan 08 §9.1 retry budget: the AI merge worker gets exactly 1 retry (2 total attempts).
+    /// When BOTH attempts leave conflict markers, the harness escalates to needs-human after
+    /// the second failure — no third attempt. The runner is called exactly twice.
+    /// </summary>
+    [Fact]
+    public async Task BudgetExhausted_After1Retry_NeedsHuman()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateConflictPlan(repo.RepoPath);
+
+        // MarkerLeavingRunner always fails — both attempt 1 and the 1 retry produce markers
+        var markerRunner = new MarkerLeavingRunner();
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        // ── COMPILE ERROR: AiMergeWorker and Scheduler(aiMergeWorker:) do not yet exist ────────
+        var aiMergeWorker = new AiMergeWorker(markerRunner);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        // Budget exhausted → NeedsHuman
+        Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+
+        // Exactly 2 calls: attempt 1 + 1 retry. No third attempt (SSOT §9.1: "1 retry").
+        Assert.Equal(2, markerRunner.CallCount);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (v) B-3 load-bearing: AI-deleted-hunk → colliding-sibling re-verify catches it
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Plan 08 §4 B-3 load-bearing gate: the AI resolves the conflict by DROPPING the colliding
+    /// sibling's (task A's) source hunk — keeping only task B's FuncB. The resolution has no
+    /// conflict markers and is in-bounds. Task B's own guardrails pass on the merged bytes.
+    ///
+    /// Task A's FULL guardrail set must re-run UNCONDITIONALLY because A is a colliding sibling —
+    /// including <c>02-sibling-tests</c>, whose subject file (<c>src/a_tests.cs</c>) was NOT
+    /// touched by the merge diff. Task A's <c>02-sibling-tests</c> detects that
+    /// <c>src/a_tests.cs</c> still references FuncA while <c>src/conflict.cs</c> no longer
+    /// contains FuncA — it FAILS, causing NeedsHuman.
+    ///
+    /// B-3 split assertion: <see cref="GuardrailScopeFilter.ShouldRunAtUnion"/> with
+    /// <c>isCollidingSibling=false</c> and empty <c>touchedByMerge</c> (treating A as a distant
+    /// non-colliding task) returns <c>false</c>, pinning that a wrong implementation would SKIP
+    /// A's <c>02-sibling-tests</c> and miss the hunk drop. The NeedsHuman assertion above FAILS
+    /// if the Scheduler passes <c>isCollidingSibling=false</c> for the colliding sibling A.
+    /// </summary>
+    [Fact]
+    public async Task AiDeletedHunk_B3_CollidingSiblingReVerifyCatchesIt()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateB3ConflictPlan(repo.RepoPath);
+        string initialHead = repo.HeadSha();
+
+        // AI drops A's FuncA, keeps B's FuncB. No markers. In-bounds (only writes to MERGE_OUT).
+        var hunkDropper = new HunkDropperRunner(
+            keptContent: "class Shared { static string Get() => \"FuncB\"; }");
+
+        // Use the REAL re-verifier so that 02-sibling-tests.ps1/.sh actually executes.
+        // A SpyReVerifier would not run the script and would not catch the hunk drop.
+        var reVerifier = new GuardrailReVerifier(
+            new ProcessRunner(),
+            new InterpreterMap(new PathExecutableProbe()));
+
+        // ── COMPILE ERROR: AiMergeWorker and Scheduler(aiMergeWorker:) do not yet exist ────────
+        var aiMergeWorker = new AiMergeWorker(hunkDropper);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, reVerifier,
+            TestContext.Current.CancellationToken);
+
+        // B-3 caught the hunk drop: the union is NeedsHuman
+        TaskResult nhTask = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+        _ = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.Succeeded);
+
+        // ── B-3 split: pin that the WRONG filter returns false ────────────────────────────────────
+        // src/a_tests.cs was NOT touched by the merge diff (AI only changed src/conflict.cs).
+        // A wrong implementation that treats A as a distant task (isCollidingSibling=false) with
+        // empty touchedByMerge would SKIP A's 02-sibling-tests → miss the hunk drop.
+        // The NeedsHuman assertion above FAILS in that case.
+        var aG02 = new GuardrailDefinition
+        {
+            Name = "02-sibling-tests",
+            Path = "fake-path",
+            Kind = ActionKind.Script,
+            Scope = null   // null = local scope; B-3 applies to colliding siblings' local guardrails
+        };
+        IReadOnlySet<string> aTestsNotInMergeDiff = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        bool wrongFilterSkips = GuardrailScopeFilter.ShouldRunAtUnion(
+            aG02,
+            isCollidingSibling: false,         // WRONG: treats A as a distant non-colliding task
+            touchedByMerge: aTestsNotInMergeDiff);
+        Assert.False(wrongFilterSkips,
+            "B-3 split: ShouldRunAtUnion(isCollidingSibling=false, touchedByMerge=empty) returns false. " +
+            "A wrong implementation that passes isCollidingSibling=false for colliding sibling A " +
+            "skips 02-sibling-tests and misses the AI-dropped hunk. " +
+            "The NeedsHuman assertion above FAILS in that scenario.");
+
+        // Correct filter: A is a colliding sibling → runs unconditionally regardless of touchedByMerge
+        Assert.True(
+            GuardrailScopeFilter.ShouldRunAtUnion(aG02, isCollidingSibling: true, touchedByMerge: aTestsNotInMergeDiff),
+            "With B-3 (isCollidingSibling=true), ShouldRunAtUnion returns true even with empty touchedByMerge.");
+
+        // Rollback must not alter the user's branch
+        Assert.Equal(initialHead, repo.HeadSha());
+    }
+}
