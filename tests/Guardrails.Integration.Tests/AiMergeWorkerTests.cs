@@ -254,6 +254,38 @@ public sealed class AiMergeWorkerTests
         }
     }
 
+    /// <summary>
+    /// Degenerate resolver (defect #120-followup gate iii): writes EMPTY/whitespace bytes to
+    /// GUARDRAILS_MERGE_OUT on every call — exactly what an unreachable sandbox (the runner cannot
+    /// write the file) or a no-op agent leaves behind. The harness must treat this as a FAILED
+    /// attempt: an empty MERGE_OUT produces no markers (gate i) and no out-of-bounds write (gate ii),
+    /// so without the explicit empty-out gate both prior gates pass vacuously and the conflicted
+    /// file would be silently blanked. Used by EmptyMergeOut_IsRejected_NeedsHuman.
+    /// </summary>
+    private sealed class EmptyOutRunner : IPromptRunner
+    {
+        private readonly string _content;
+        public int CallCount { get; private set; }
+
+        /// <param name="content">Bytes written to MERGE_OUT — "" or whitespace only.</param>
+        public EmptyOutRunner(string content) => _content = content;
+
+        public string Name => "ai-merge-empty-out";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken ct)
+        {
+            CallCount++;
+            string mergeOut = invocation.Environment["GUARDRAILS_MERGE_OUT"];
+            File.WriteAllText(mergeOut, _content);
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = false,
+                Summary = "ai-merge-empty-out: degenerate (empty) resolution"
+            });
+        }
+    }
+
     // ─── SpyReVerifier ────────────────────────────────────────────────────────────────────────────
 
     private sealed class SpyReVerifier : IReVerifier
@@ -650,6 +682,63 @@ public sealed class AiMergeWorkerTests
 
         // Exactly 2 calls: attempt 1 + 1 retry. No third attempt (SSOT §9.1: "1 retry").
         Assert.Equal(2, markerRunner.CallCount);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (iv-b) degenerate resolution: empty MERGE_OUT → rejected (3rd gate) → needs-human
+    // Regression for defect #120-followup gate iii. Method name greppable.
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Defect #120-followup, third deterministic gate: an empty (or whitespace-only) MERGE_OUT is
+    /// a FAILED merge attempt, never a vacuous pass. The runner writes "" to MERGE_OUT (what an
+    /// unreachable sandbox or a no-op agent leaves). Without the empty-out gate, overwriting the
+    /// conflicted file with "" yields no markers (gate i) and no extra files (gate ii), so both
+    /// prior gates would pass and the file's content would be silently deleted. The resolver must
+    /// instead reject the attempt; after the 1-retry budget the union halts to needs-human with a
+    /// clean rollback, and the conflicted file is NOT blanked on the plan branch.
+    /// </summary>
+    [Fact]
+    public async Task EmptyMergeOut_IsRejected_NeedsHuman()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateConflictPlan(repo.RepoPath);
+        string initialHead = repo.HeadSha();
+
+        // Writes EMPTY bytes — the precise degenerate case the third gate defends: a truly empty
+        // MERGE_OUT blanks the conflict file, which then passes git diff --check (no markers, no
+        // whitespace errors) and the blast-radius check — a vacuous pass WITHOUT the empty-out gate.
+        var emptyRunner = new EmptyOutRunner("");
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        var aiMergeWorker = new AiMergeWorker(emptyRunner);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        // Empty resolution rejected on both attempts → needs-human (one task succeeds, the colliding
+        // sibling halts).
+        _ = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+        _ = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.Succeeded);
+
+        // 1-retry budget: exactly two degenerate attempts, no third.
+        Assert.Equal(2, emptyRunner.CallCount);
+
+        // The empty-out gate fires BEFORE re-verify — an empty resolution never reaches it.
+        Assert.Equal(0, spyReVerifier.CallCount);
+
+        // Safety: rollback left the user's branch untouched, and the first sibling's conflict.cs
+        // content survives on the plan branch (the file was NOT silently blanked).
+        Assert.Equal(initialHead, repo.HeadSha());
+        string planName = Path.GetFileName(planDir);
+        string conflictOnPlan = TempGitRepo.Git(
+            repo.RepoPath, "show", $"guardrails/{planName}:src/conflict.cs");
+        Assert.False(string.IsNullOrWhiteSpace(conflictOnPlan),
+            "An empty MERGE_OUT must never blank the conflicted file: the first-integrated sibling's " +
+            "content must survive on the plan branch.");
+        Assert.Contains("Shared", conflictOnPlan, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────

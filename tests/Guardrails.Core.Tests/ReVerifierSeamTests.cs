@@ -154,4 +154,73 @@ public sealed class ReVerifierSeamTests : IDisposable
             "IReVerifier must not inject GUARDRAILS_ACTION_STDOUT/_STDERR/_RESULT — " +
             "those vars belong to the attempt lifecycle, not the re-verify context.");
     }
+
+    // =========================================================================
+    // #124: re-verify must set GUARDRAILS_WORKSPACE to the integration worktree
+    // The scenarios-present guardrail greps for the exact method name below.
+    // =========================================================================
+
+    [Fact]
+    public async Task ReVerify_SetsWorkspaceToWorktree()
+    {
+        // #124: a re-verify guardrail's effective workspace IS the integration worktree (its cwd),
+        // so GUARDRAILS_WORKSPACE must point there — identical to the in-attempt contract where the
+        // segment worktree is both cwd and GUARDRAILS_WORKSPACE (SSOT §5.1). A guardrail that
+        // resolves files via $GUARDRAILS_WORKSPACE must see the SAME value in both contexts; if the
+        // re-verifier left it unset, such a guardrail would silently misbehave at the union point.
+        //
+        // The guardrail below FAILS (exit 1) unless GUARDRAILS_WORKSPACE is set AND equals the
+        // worktree path the re-verifier was given (_tempRoot here).
+        string workspaceCheckScript = OperatingSystem.IsWindows()
+            ? """
+              if (-not $env:GUARDRAILS_WORKSPACE) {
+                  Write-Output 'GUARDRAILS_WORKSPACE must be set in the re-verify context (#124)'
+                  exit 1
+              }
+              $expected = (Resolve-Path $env:GR_EXPECTED_WORKSPACE).Path
+              $actual   = (Resolve-Path $env:GUARDRAILS_WORKSPACE).Path
+              if ($actual -ne $expected) {
+                  Write-Output "GUARDRAILS_WORKSPACE '$actual' != expected worktree '$expected'"
+                  exit 1
+              }
+              exit 0
+              """
+            : """
+              #!/usr/bin/env bash
+              if [ -z "${GUARDRAILS_WORKSPACE:-}" ]; then
+                  echo 'GUARDRAILS_WORKSPACE must be set in the re-verify context (#124)'
+                  exit 1
+              fi
+              actual="$(cd "$GUARDRAILS_WORKSPACE" && pwd -P)"
+              expected="$(cd "$GR_EXPECTED_WORKSPACE" && pwd -P)"
+              if [ "$actual" != "$expected" ]; then
+                  echo "GUARDRAILS_WORKSPACE '$actual' != expected worktree '$expected'"
+                  exit 1
+              fi
+              exit 0
+              """;
+
+        // The guardrail compares $GUARDRAILS_WORKSPACE against GR_EXPECTED_WORKSPACE; set the latter
+        // in the parent env so the child inherits it (the re-verifier injects only its own vars).
+        Environment.SetEnvironmentVariable("GR_EXPECTED_WORKSPACE", _tempRoot);
+        try
+        {
+            IReVerifier verifier = CreateVerifier();
+            GuardrailDefinition g = WriteGuardrailScript("01-assert-workspace-set", workspaceCheckScript);
+
+            ReVerifyResult result = await verifier.ReVerifyAsync(
+                _tempRoot,
+                [g],
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.Passed,
+                "IReVerifier must set GUARDRAILS_WORKSPACE to the integration worktree path (#124) " +
+                "so the env contract is identical in-attempt and at re-verify. Failure detail: " +
+                string.Join("; ", result.FailedGuardrails.Select(f => $"{f.Name}: {f.Reason}")));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GR_EXPECTED_WORKSPACE", null);
+        }
+    }
 }

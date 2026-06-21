@@ -328,9 +328,12 @@ only if the merge touched that task's files); it is **never** applied to a colli
 terminal `integrationGate` sink (§3.3) runs the **same** integration set on the final merged HEAD —
 the terminal gate and the per-union re-verify are one mechanism at two scopes. Because the re-verify
 runs on arbitrary union bytes outside any attempt lifecycle, it uses a **public attempt-decoupled
-re-verify seam** (NOT the attempt-bound internal guardrail runner). `plan-breakdown` marks the
-build/test guardrails `scope: "integration"`; `guardrails-review` flags an integration-sensitive plan
-with no integration-scoped guardrail (BLOCKER).
+re-verify seam** (NOT the attempt-bound internal guardrail runner). The re-verify child process runs
+with cwd = the integration worktree and `GUARDRAILS_WORKSPACE` set to that same path (#124) — so a
+guardrail reading `$GUARDRAILS_WORKSPACE` resolves files identically in-attempt and at re-verify; the
+`GUARDRAILS_ACTION_*` attempt-lifecycle vars stay deliberately absent (there is no action at a union
+point). `plan-breakdown` marks the build/test guardrails `scope: "integration"`; `guardrails-review`
+flags an integration-sensitive plan with no integration-scoped guardrail (BLOCKER).
 
 ---
 
@@ -348,7 +351,7 @@ with no integration-scoped guardrail (BLOCKER).
 | `GUARDRAILS_STATE_OUT` | actions | Path the action may write its JSON fragment to (§6.2). Not pre-created; absence after success = "nothing to contribute" |
 | `GUARDRAILS_STATE_FRAGMENT` | guardrails | Path of the action's (not-yet-merged) fragment, if the action wrote one — lets a guardrail validate proposed state |
 | `GUARDRAILS_LOG_DIR` | all | `logs/<runId>/<task>/attempt-N/` — scratch space welcome |
-| `GUARDRAILS_WORKSPACE` | worktree mode | The task's isolated segment worktree directory — set only in worktree mode (parallel + git, §1); where the action writes files that `Integrate` commits. Absent in serial shared-workspace mode (cwd is the plan `workspace`) |
+| `GUARDRAILS_WORKSPACE` | worktree mode (in-attempt AND re-verify) | The effective worktree directory. In-attempt: the task's isolated SEGMENT worktree (where the action writes files that `Integrate` commits). At re-verify (§4.3): the INTEGRATION worktree the union bytes were merged into. Set in BOTH contexts to the same kind of value (the effective workspace = cwd) so a guardrail reading `$GUARDRAILS_WORKSPACE` behaves identically in-attempt and at the union point (#124). Absent in serial shared-workspace mode (cwd is the plan `workspace`) |
 | `GUARDRAILS_FEEDBACK` | actions, attempt ≥ 2 | Path to `feedback.md` describing the previous attempt's failures |
 | `GUARDRAILS_ACTION_STDOUT` | guardrails | The action's captured stdout file |
 | `GUARDRAILS_ACTION_STDERR` | guardrails | The action's captured stderr file |
@@ -648,15 +651,23 @@ guardrail-verifier concept). **It is a BYTE PRODUCER, never a VERDICT PRODUCER:*
 
 - **Merge env contract (new):** `GUARDRAILS_MERGE_BASE`, `GUARDRAILS_MERGE_OURS`,
   `GUARDRAILS_MERGE_THEIRS` (the three-way inputs on disk) and `GUARDRAILS_MERGE_OUT` (the path the
-  worker writes the resolution to). The harness reads `GUARDRAILS_MERGE_OUT` after the run.
+  worker writes the resolution to). The harness reads `GUARDRAILS_MERGE_OUT` after the run. These four
+  files live in a harness temp dir that is **granted to the runner's sandbox** (the runner's cwd is
+  the integration worktree, so a temp dir outside it would otherwise be unreachable — the resolution
+  could not be written and `GUARDRAILS_MERGE_OUT` would stay empty). The same four **absolute paths
+  are embedded verbatim in the composed prompt body**, not just the env-var names (agents read
+  instructions, not env — §5.1). The temp dir stays OUTSIDE the worktree so it never pollutes
+  `git status` or the merge commit.
 - **Input:** the conflicted files (with markers) + base/ours/theirs on disk, and the colliding
   upstream tasks' intents (their `task.description` + `writeScope`) composed into the prompt string.
 - **Output:** the merged bytes only, written to `GUARDRAILS_MERGE_OUT`. A rationale is logged
   (NON-gating, never read as a verdict). `PromptResult.IsError` and the exit code are **not** the
   verdict.
-- **Trust:** two deterministic checks — no conflict markers remain (`git diff --check`); blast-radius
-  (modified only the git-reported-conflicted files, `git status --porcelain`). A violation ⇒ discard
-  (`reset --hard`) + `needs-human`.
+- **Trust:** three deterministic checks — (i) the resolution is non-degenerate: an empty or
+  whitespace-only `GUARDRAILS_MERGE_OUT` is a FAILED attempt (an empty resolution would otherwise
+  pass gates ii/iii vacuously and silently blank the conflicted file); (ii) no conflict markers
+  remain (`git diff --check`); (iii) blast-radius (modified only the git-reported-conflicted files,
+  `git status --porcelain`). A violation ⇒ discard (`reset --hard`) + `needs-human`.
 - **Budget:** 1 retry (2 attempts). Escalate to `needs-human` on markers-left / out-of-bounds /
   re-verify-fail / budget. The AI's exit code is never a verdict.
 

@@ -57,17 +57,55 @@ public static class SchedulerFactory
         //       shared-workspace-parallel fallback.
         IWorktreeProvider? worktreeProvider = null;
         IReVerifier? reVerifier = null;
+        IAiMergeWorker? aiMergeWorker = null;
         if (plan.Config.MaxParallelism > 1 && IsGitRepository(plan.Workspace))
         {
             worktreeProvider = new GitWorktreeProvider(plan.Workspace, WorktreeRootFor(plan));
             reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
+
+            // Plan 08 §9.1 / defect #120-followup: the AI-merge worker is the conflict-resolution
+            // path for a non-FF union. Without it the Scheduler's `_aiMergeWorker != null && …`
+            // short-circuits straight to needs-human on EVERY conflict (the worker is dead from the
+            // CLI). Build it over the merge-profile prompt runner resolved from the plan's
+            // `promptRunners`. A worktree-mode plan that declares NO prompt runner at all leaves the
+            // worker null — the safe halt-to-needs-human behavior, never a silent vacuous pass.
+            IPromptRunner? mergeRunner = ResolveMergeRunner(registry);
+            if (mergeRunner is not null)
+            {
+                aiMergeWorker = new AiMergeWorker(mergeRunner);
+            }
         }
 
         return new Scheduler(
             plan, executor, journal,
             worktreeProvider: worktreeProvider,
             observer: observer,
-            reVerifier: reVerifier);
+            reVerifier: reVerifier,
+            aiMergeWorker: aiMergeWorker);
+    }
+
+    /// <summary>
+    /// The reserved <c>promptRunners</c> profile name for the AI-merge worker (SSOT §9.1: "a reserved
+    /// merge runner profile (e.g. <c>ai-merge</c>)"). When a plan declares it, the merge worker uses
+    /// exactly that profile; otherwise it falls back to the default/sole prompt runner so a plan that
+    /// only configured <c>claude</c> still gets AI-merge instead of an immediate needs-human halt.
+    /// </summary>
+    private const string MergeRunnerProfile = "ai-merge";
+
+    /// <summary>
+    /// Resolve the <see cref="IPromptRunner"/> the AI-merge worker should drive: the reserved
+    /// <c>ai-merge</c> profile when declared, else the registry's default (or sole) runner, else
+    /// <c>null</c> when the plan declares no prompt runner at all (script-only plan run in parallel —
+    /// no agent to call, so a conflict must halt to needs-human, never pass vacuously).
+    /// </summary>
+    private static IPromptRunner? ResolveMergeRunner(PromptRunnerRegistry registry)
+    {
+        if (registry.Contains(MergeRunnerProfile))
+        {
+            return registry.Resolve(MergeRunnerProfile);
+        }
+
+        return registry.DefaultRunnerName is { } name ? registry.Resolve(name) : null;
     }
 
     /// <summary>

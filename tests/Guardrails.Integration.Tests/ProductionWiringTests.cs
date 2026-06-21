@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Prompts;
@@ -276,5 +277,95 @@ public sealed class ProductionWiringTests
             "Defect: factory does not create a plan branch, so all commits land on the user branch.");
         Assert.True(originalBranch == repo.CurrentBranch(),
             "User must remain on the original branch throughout the run.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Composition-root: factory must wire an AiMergeWorker into the Scheduler in worktree mode.
+    // Regression for defect #120-followup (AI-merge worker dead from the CLI). Method name greppable.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Defect #120-followup composition-root gap: <see cref="SchedulerFactory.Create"/> constructed
+    /// the worktree provider and re-verifier but passed NO <c>aiMergeWorker</c> to the Scheduler, so
+    /// <c>Scheduler.SettleAsync</c>'s <c>_aiMergeWorker != null &amp;&amp; …</c> short-circuited to
+    /// needs-human on every conflict — the AI-merge worker was dead from the CLI.
+    ///
+    /// This test drives the REAL production factory at <c>maxParallelism = 2</c> against a plan that
+    /// declares a <c>promptRunners</c> block, and asserts via reflection that the resulting Scheduler
+    /// holds a non-null <c>_aiMergeWorker</c>. The contrast case (serial, <c>maxParallelism = 1</c>)
+    /// asserts the worker is null — proving the wiring is conditional on worktree mode, not always-on.
+    /// </summary>
+    [Fact]
+    public void Factory_WiresAiMergeWorker_InWorktreeMode()
+    {
+        using var repo = new TempGitRepo();
+
+        // ── Worktree mode (parallel + git + promptRunners) → non-null AI-merge worker ───────────
+        string parallelPlanDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 2);
+        PlanLoadResult parallelLoad = new PlanLoader().Load(parallelPlanDir);
+        Assert.NotNull(parallelLoad.Plan);
+        Assert.False(parallelLoad.HasErrors,
+            "Worktree-mode fixture plan must load cleanly: " + string.Join("\n", parallelLoad.Diagnostics));
+
+        Scheduler parallelScheduler = SchedulerFactory.Create(
+            parallelLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+
+        object? worktreeWorker = AiMergeWorkerField().GetValue(parallelScheduler);
+        Assert.NotNull(worktreeWorker);
+        Assert.IsType<AiMergeWorker>(worktreeWorker);
+
+        // ── Serial mode (maxParallelism = 1) → null AI-merge worker (no worktree mode) ──────────
+        string serialPlanDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 1, folder: "serial-plan");
+        PlanLoadResult serialLoad = new PlanLoader().Load(serialPlanDir);
+        Assert.NotNull(serialLoad.Plan);
+        Assert.False(serialLoad.HasErrors,
+            "Serial-mode fixture plan must load cleanly: " + string.Join("\n", serialLoad.Diagnostics));
+
+        Scheduler serialScheduler = SchedulerFactory.Create(
+            serialLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+
+        Assert.Null(AiMergeWorkerField().GetValue(serialScheduler));
+    }
+
+    private static FieldInfo AiMergeWorkerField()
+    {
+        FieldInfo? field = typeof(Scheduler).GetField(
+            "_aiMergeWorker", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return field!;
+    }
+
+    /// <summary>
+    /// A single-task plan committed in <paramref name="repoPath"/> that declares a
+    /// <c>promptRunners</c> block, so <see cref="SchedulerFactory"/> can resolve a merge-profile
+    /// runner. The task body is irrelevant — this test inspects wiring, it does not run the plan.
+    /// </summary>
+    private static string CreateMergeRunnerPlan(string repoPath, int maxParallelism, string folder = "merge-plan")
+    {
+        string planDir = Path.Combine(repoPath, folder);
+        Directory.CreateDirectory(planDir);
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            $$"""
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": {{maxParallelism}},
+              "promptRunners": {
+                "default": "claude",
+                "claude": { "command": "claude" }
+              }
+            }
+            """);
+
+        WriteTask(planDir, "01-task-a", []);
+
+        TempGitRepo.Git(repoPath, "add", ".");
+        TempGitRepo.Git(repoPath, "commit", "-m", $"Add {folder} fixture");
+        return planDir;
     }
 }

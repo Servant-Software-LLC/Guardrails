@@ -51,6 +51,9 @@ public sealed class PromptRunnerRegistry
     /// <summary>The default runner name: <c>promptRunners.default</c> if it resolves, else the sole declared runner.</summary>
     public string? DefaultRunnerName => _defaultRunner;
 
+    /// <summary>True when a runner is registered under <paramref name="name"/> (used to detect a reserved profile).</summary>
+    public bool Contains(string name) => _runners.ContainsKey(name);
+
     /// <summary>
     /// The runner config for <paramref name="name"/> (null falls back to the default). The
     /// config carries the settings (incl. <c>guardrailOverrides</c>) the composer/executor need.

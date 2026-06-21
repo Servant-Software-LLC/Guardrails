@@ -10,10 +10,16 @@ namespace Guardrails.Core.Execution;
 /// on-disk env contract: GUARDRAILS_MERGE_BASE / GUARDRAILS_MERGE_OURS / GUARDRAILS_MERGE_THEIRS
 /// (inputs) and GUARDRAILS_MERGE_OUT (the AI writes the resolution; the harness reads it).
 ///
-/// <see cref="Prompts.PromptResult.IsError"/> is NEVER the verdict — only the two deterministic
+/// <see cref="Prompts.PromptResult.IsError"/> is NEVER the verdict — only the three deterministic
 /// gates certify:
-///   (i)  git diff --check — no conflict markers remain in the staged resolution
-///   (ii) git status --porcelain — blast-radius: the AI touched ONLY the git-reported-conflicted files
+///   (i)   non-degenerate: GUARDRAILS_MERGE_OUT is not empty/whitespace (an empty resolution would
+///         otherwise pass gates ii/iii vacuously and silently blank the conflicted file)
+///   (ii)  git diff --check — no conflict markers remain in the staged resolution
+///   (iii) git status --porcelain — blast-radius: the AI touched ONLY the git-reported-conflicted files
+///
+/// The three-way input files + the resolution target live in a harness temp dir granted to the
+/// runner's sandbox via <c>--add-dir</c> (the runner's cwd is the worktree, so the temp dir is
+/// otherwise unreachable), and their absolute paths are embedded in the prompt body (SSOT §9.1).
 ///
 /// 1-retry budget (2 total attempts). On any failure the integration worktree is reset to the
 /// pre-merge HEAD before returning false.
@@ -96,15 +102,28 @@ internal sealed class AiMergeResolver
                 ["GUARDRAILS_MERGE_OUT"]    = outPath,
             };
 
+            // Sandbox reachability (defect #120-followup / SSOT §9.1): the runner's cwd is the
+            // worktree and its only granted extra dir is the plan directory (--add-dir <planDir>).
+            // The MERGE_* files live under tmpDir (system TEMP), OUTSIDE both — so the runner's
+            // sandbox could not read base/ours/theirs nor WRITE the resolution to MERGE_OUT, leaving
+            // it empty and the two deterministic gates passing vacuously. Grant tmpDir to the runner
+            // via --add-dir (ClaudePromptRunner appends ExtraArgs verbatim; a fake runner ignores
+            // them). tmpDir stays under system TEMP — never inside the worktree — so it never
+            // pollutes git status or the merge commit.
+            var settings = new PromptRunnerSettings
+            {
+                ExtraArgs = ["--add-dir", tmpDir],
+            };
+
             var invocation = new PromptInvocation
             {
-                ComposedPrompt   = $"Resolve merge conflict in {conflictFile}. " +
-                                   "Write the fully resolved file content (no conflict markers) " +
-                                   "to the path in GUARDRAILS_MERGE_OUT.",
+                // Embed the resolved ABSOLUTE paths in the prompt body so an agent that does not (or
+                // cannot) read process env vars still gets the three-way inputs and the write target.
+                ComposedPrompt   = BuildPrompt(conflictFile, basePath, oursPath, theirsPath, outPath),
                 WorkingDirectory = worktreePath,
                 PlanDirectory    = planDirectory,
                 Environment      = env,
-                Settings         = new PromptRunnerSettings(),
+                Settings         = settings,
                 Timeout          = TimeSpan.FromMinutes(30),
                 StreamLogPath    = Path.Combine(tmpDir, "ai-merge-stream.jsonl"),
             };
@@ -114,6 +133,14 @@ internal sealed class AiMergeResolver
 
             if (!File.Exists(outPath)) return false;
             string mergedContent = File.ReadAllText(outPath);
+
+            // Third deterministic gate (defect #120-followup): a degenerate resolution — an empty or
+            // whitespace-only MERGE_OUT — is a FAILED attempt, never a pass. Without this an
+            // unreachable-sandbox (or a no-op agent) leaves MERGE_OUT at its pre-created empty bytes;
+            // overwriting the conflicted file with "" then yields no markers (gate i) and no
+            // out-of-bounds write (gate ii), so both prior gates pass on nothing. Reject it here so
+            // the conflict halts to needs-human instead of silently deleting the file's content.
+            if (string.IsNullOrWhiteSpace(mergedContent)) return false;
 
             // Apply AI's resolution: overwrite the conflict file, then stage it.
             string fullPath = Path.Combine(
@@ -141,6 +168,26 @@ internal sealed class AiMergeResolver
             try { Directory.Delete(tmpDir, recursive: true); } catch { /* best-effort teardown */ }
         }
     }
+
+    /// <summary>
+    /// Compose the merge prompt with the resolved ABSOLUTE paths embedded in the body (not just the
+    /// env-var names) so an agent that reads instructions rather than the process environment still
+    /// receives the three-way inputs and the exact write target (SSOT §5.1: "the same information is
+    /// embedded in the composed prompt").
+    /// </summary>
+    private static string BuildPrompt(
+        string conflictFile, string basePath, string oursPath, string theirsPath, string outPath) =>
+        $"Resolve the git merge conflict in `{conflictFile}` by combining BOTH sides' intended " +
+        "changes. Preserve every edit from both sides; do NOT drop either side's contribution.\n\n" +
+        "Three-way inputs (absolute paths on disk — read these):\n" +
+        $"  - merge base (common ancestor): {basePath}\n" +
+        $"  - ours (current plan-branch version): {oursPath}\n" +
+        $"  - theirs (incoming segment version): {theirsPath}\n\n" +
+        "Write the FULLY RESOLVED file content — with NO conflict markers " +
+        "(`<<<<<<<`, `=======`, `>>>>>>>`) — to this absolute path:\n" +
+        $"  {outPath}\n\n" +
+        "(This path is also available in the GUARDRAILS_MERGE_OUT environment variable.) " +
+        "Write ONLY that one file; do not modify any other file in the working tree.";
 
     private static List<string> ParseConflictedFiles(string porcelain)
     {

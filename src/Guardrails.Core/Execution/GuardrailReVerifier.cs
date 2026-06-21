@@ -25,12 +25,16 @@ public sealed class GuardrailReVerifier : IReVerifier
         CancellationToken cancellationToken = default)
     {
         var failed = new List<GuardrailResult>();
-        // Explicitly blank out attempt-lifecycle vars so child processes never see them —
-        // ProcessStartInfo.Environment inherits the parent env; these three would be present
-        // when re-verify runs inside a harness-managed action (which sets them via child-process
-        // contract SSOT §5.1). Re-verify has no action context, so they must be absent.
+        // #124: a re-verify guardrail's effective workspace IS the integration worktree (its cwd),
+        // so GUARDRAILS_WORKSPACE must point there — identical to the in-attempt contract where the
+        // segment worktree is both cwd and GUARDRAILS_WORKSPACE (SSOT §5.1). Without this a guardrail
+        // that resolves files via $GUARDRAILS_WORKSPACE (rather than cwd) reads from an unset path at
+        // re-verify but the segment path in-attempt — silently misbehaving at exactly the union point
+        // the gate exists to defend. The GUARDRAILS_ACTION_* vars stay deliberately blanked: re-verify
+        // runs on arbitrary union bytes with NO action lifecycle (they would be stale/tautological).
         IReadOnlyDictionary<string, string> env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            ["GUARDRAILS_WORKSPACE"]     = worktreePath,
             ["GUARDRAILS_ACTION_STDOUT"] = string.Empty,
             ["GUARDRAILS_ACTION_STDERR"] = string.Empty,
             ["GUARDRAILS_ACTION_RESULT"] = string.Empty,
