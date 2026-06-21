@@ -335,6 +335,91 @@ public sealed class ProductionWiringTests
         return field!;
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Composition-root: factory must wire a NeedsHumanTriage into the TaskExecutor whenever a
+    // prompt runner is available — in BOTH serial and worktree mode (the triage is NOT
+    // worktree-specific). Regression for the third #120-class "built but not injected" gap
+    // (NeedsHumanTriage dead from the CLI). Method name greppable.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Defect #120-class composition-root gap: <see cref="SchedulerFactory.Create"/> never constructed
+    /// a <see cref="NeedsHumanTriage"/>, so the <c>TaskExecutor</c>'s <c>_triage is not null</c> guard
+    /// short-circuited and the advisory needs-human triage (SSOT §9.2) was dead from the CLI.
+    ///
+    /// This drives the REAL production factory and asserts via reflection that the resulting
+    /// Scheduler's <c>TaskExecutor</c> holds a non-null <c>_triage</c> when the plan declares a
+    /// <c>promptRunners</c> block — and crucially asserts it is non-null in SERIAL mode
+    /// (<c>maxParallelism = 1</c>) too, proving the triage is wired whenever a runner is available
+    /// rather than being worktree-specific like the AI-merge worker. The contrast case (a script-only
+    /// plan with NO <c>promptRunners</c>) asserts the triage is null — no runner, no advisory triage.
+    /// </summary>
+    [Fact]
+    public void Factory_WiresNeedsHumanTriage_WhenRunnerAvailable()
+    {
+        using var repo = new TempGitRepo();
+
+        // ── Serial mode WITH a prompt runner → non-null triage (NOT worktree-specific) ──────────
+        string serialPlanDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 1, folder: "triage-serial-plan");
+        PlanLoadResult serialLoad = new PlanLoader().Load(serialPlanDir);
+        Assert.NotNull(serialLoad.Plan);
+        Assert.False(serialLoad.HasErrors,
+            "Serial-mode triage fixture plan must load cleanly: " + string.Join("\n", serialLoad.Diagnostics));
+
+        Scheduler serialScheduler = SchedulerFactory.Create(
+            serialLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+
+        object? serialTriage = TriageField().GetValue(ExecutorOf(serialScheduler));
+        Assert.NotNull(serialTriage);
+        Assert.IsType<NeedsHumanTriage>(serialTriage);
+
+        // ── Worktree mode WITH a prompt runner → non-null triage as well ────────────────────────
+        string parallelPlanDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 2, folder: "triage-parallel-plan");
+        PlanLoadResult parallelLoad = new PlanLoader().Load(parallelPlanDir);
+        Assert.NotNull(parallelLoad.Plan);
+        Assert.False(parallelLoad.HasErrors,
+            "Worktree-mode triage fixture plan must load cleanly: " + string.Join("\n", parallelLoad.Diagnostics));
+
+        Scheduler parallelScheduler = SchedulerFactory.Create(
+            parallelLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+
+        object? parallelTriage = TriageField().GetValue(ExecutorOf(parallelScheduler));
+        Assert.NotNull(parallelTriage);
+        Assert.IsType<NeedsHumanTriage>(parallelTriage);
+
+        // ── Script-only plan (NO promptRunners) → null triage (no runner, no advisory triage) ───
+        string scriptOnlyPlanDir = CreateFixturePlan(repo.RepoPath);
+        PlanLoadResult scriptOnlyLoad = new PlanLoader().Load(scriptOnlyPlanDir);
+        Assert.NotNull(scriptOnlyLoad.Plan);
+        Assert.False(scriptOnlyLoad.HasErrors,
+            "Script-only fixture plan must load cleanly: " + string.Join("\n", scriptOnlyLoad.Diagnostics));
+
+        Scheduler scriptOnlyScheduler = SchedulerFactory.Create(
+            scriptOnlyLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+
+        Assert.Null(TriageField().GetValue(ExecutorOf(scriptOnlyScheduler)));
+    }
+
+    /// <summary>The Scheduler's concrete <see cref="TaskExecutor"/> (stored as <c>ITaskExecutor</c>).</summary>
+    private static object ExecutorOf(Scheduler scheduler)
+    {
+        FieldInfo? field = typeof(Scheduler).GetField(
+            "_executor", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        object? executor = field!.GetValue(scheduler);
+        Assert.NotNull(executor);
+        Assert.IsType<TaskExecutor>(executor);
+        return executor!;
+    }
+
+    private static FieldInfo TriageField()
+    {
+        FieldInfo? field = typeof(TaskExecutor).GetField(
+            "_triage", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return field!;
+    }
+
     /// <summary>
     /// A single-task plan committed in <paramref name="repoPath"/> that declares a
     /// <c>promptRunners</c> block, so <see cref="SchedulerFactory"/> can resolve a merge-profile

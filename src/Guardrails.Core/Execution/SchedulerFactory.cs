@@ -43,7 +43,22 @@ public static class SchedulerFactory
 
         var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
         PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
-        var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry);
+
+        // Plan 08 §9.2 / defect #120-class: the needs-human triage is the advisory step that fires
+        // ONCE when a task exhausts its retry budget (in BOTH serial and worktree mode), writing the
+        // task-level feedback.md with a tool-vs-local diagnosis. Without it constructed here the
+        // TaskExecutor's `_triage is not null` guard short-circuits and the feature is dead from the
+        // CLI. Build it over the triage-profile prompt runner resolved from the plan's `promptRunners`;
+        // a script-only plan that declares NO prompt runner leaves it null — no advisory triage, never
+        // a crash. It is NOT worktree-specific, so wire it unconditionally whenever a runner exists.
+        NeedsHumanTriage? triage = null;
+        IPromptRunner? triageRunner = ResolveTriageRunner(registry);
+        if (triageRunner is not null)
+        {
+            triage = new NeedsHumanTriage(triageRunner, plan.Config.TriageAutoFile);
+        }
+
+        var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, triage);
 
         // Plan 08 §1 wiring policy, by (parallelism, git):
         //   • parallel + git repo  → WORKTREE mode: real GitWorktreeProvider + GuardrailReVerifier
@@ -93,16 +108,41 @@ public static class SchedulerFactory
     private const string MergeRunnerProfile = "ai-merge";
 
     /// <summary>
+    /// The reserved <c>promptRunners</c> profile name for the needs-human triage step (SSOT §9.2: "a
+    /// distinct <c>ai-triage</c> prompt profile in <c>promptRunners</c>"). When a plan declares it, the
+    /// triage uses exactly that profile; otherwise it falls back to the default/sole prompt runner so a
+    /// plan that only configured <c>claude</c> still gets advisory triage on exhaustion.
+    /// </summary>
+    private const string TriageRunnerProfile = "ai-triage";
+
+    /// <summary>
     /// Resolve the <see cref="IPromptRunner"/> the AI-merge worker should drive: the reserved
     /// <c>ai-merge</c> profile when declared, else the registry's default (or sole) runner, else
     /// <c>null</c> when the plan declares no prompt runner at all (script-only plan run in parallel —
     /// no agent to call, so a conflict must halt to needs-human, never pass vacuously).
     /// </summary>
-    private static IPromptRunner? ResolveMergeRunner(PromptRunnerRegistry registry)
+    private static IPromptRunner? ResolveMergeRunner(PromptRunnerRegistry registry) =>
+        ResolveReservedRunner(registry, MergeRunnerProfile);
+
+    /// <summary>
+    /// Resolve the <see cref="IPromptRunner"/> the needs-human triage should drive: the reserved
+    /// <c>ai-triage</c> profile when declared, else the registry's default (or sole) runner, else
+    /// <c>null</c> when the plan declares no prompt runner at all (a script-only plan simply gets no
+    /// advisory triage — never a crash, never a verdict change).
+    /// </summary>
+    private static IPromptRunner? ResolveTriageRunner(PromptRunnerRegistry registry) =>
+        ResolveReservedRunner(registry, TriageRunnerProfile);
+
+    /// <summary>
+    /// Shared resolution for a reserved prompt-runner profile: the reserved <paramref name="profile"/>
+    /// when declared, else the registry's default (or sole) runner, else <c>null</c> when the plan
+    /// declares no prompt runner at all.
+    /// </summary>
+    private static IPromptRunner? ResolveReservedRunner(PromptRunnerRegistry registry, string profile)
     {
-        if (registry.Contains(MergeRunnerProfile))
+        if (registry.Contains(profile))
         {
-            return registry.Resolve(MergeRunnerProfile);
+            return registry.Resolve(profile);
         }
 
         return registry.DefaultRunnerName is { } name ? registry.Resolve(name) : null;
