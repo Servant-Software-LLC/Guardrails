@@ -1,0 +1,5 @@
+{
+  "description": "Fan-in sink: combine both leaves into out/greeting.txt and gate the whole-repo result",
+  "dependsOn": ["01-write-hello", "02-write-world"],
+  "integrationGate": true
+}

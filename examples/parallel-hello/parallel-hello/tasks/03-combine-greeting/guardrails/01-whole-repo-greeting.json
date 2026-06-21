@@ -1,0 +1,4 @@
+{
+  "description": "Whole-repo integration gate: merged out/*.txt are non-empty and conflict-marker-free",
+  "scope": "integration"
+}

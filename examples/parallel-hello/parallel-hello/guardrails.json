@@ -1,0 +1,17 @@
+{
+  // Run configuration — see docs/plans/02-schemas-and-contracts.md §2
+  //
+  // maxParallelism > 1 selects WORKTREE MODE (plan 08 §1): the harness creates a
+  // `guardrails/parallel-hello` branch off the workspace's current HEAD, runs each
+  // task in an isolated segment worktree, and integrates every task's commit back
+  // into the plan branch. This is why the workspace MUST be a git repository — see
+  // README.md. A serial run (maxParallelism: 1) would NOT exercise the worktree path.
+  "version": 1,
+  "maxParallelism": 2,
+  "defaultRetries": 0,
+  "defaultTimeoutSeconds": 120,
+  "guardrailMode": "failFast",
+  // The plan folder lives at <repo>/parallel-hello inside the git workspace, so the
+  // workspace (git top-level) is the parent directory.
+  "workspace": ".."
+}
