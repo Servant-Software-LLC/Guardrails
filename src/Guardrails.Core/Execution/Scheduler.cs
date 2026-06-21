@@ -153,13 +153,23 @@ public sealed class Scheduler
         // linear chains: task B's segment is forked from task A's integrated HEAD, not from the
         // original plan-branch HEAD before A ran.
         var handles = new Dictionary<string, WorktreeHandle>(StringComparer.Ordinal);
+        // DirectoryOwner (plan 08 topology-wiring M0): worktree path → current owning task id.
+        // The single source of truth for "is this directory free to Discard / reuse?". Populated
+        // on every CreateSegment/ForkFromTip; ownership transfers on ReuseSegment (M1). In M0 every
+        // task still owns its own fresh directory, so this map mirrors the fresh-per-task baseline.
+        var directoryOwner = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (TaskNode task in plan.Tasks)
         {
             if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
             {
-                handles[task.Id] = _worktreeProvider != null && integ != null
+                WorktreeHandle handle = _worktreeProvider != null && integ != null
                     ? _worktreeProvider.CreateSegment(task.Id, attempt: 1, integ, cancellationToken)
                     : new WorktreeHandle();
+                handles[task.Id] = handle;
+                if (!string.IsNullOrEmpty(handle.WorktreePath))
+                {
+                    directoryOwner[handle.WorktreePath] = task.Id;
+                }
             }
         }
 
@@ -173,7 +183,7 @@ public sealed class Scheduler
 
         // --- workers ---------------------------------------------------------------------
         using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining, handles, integ);
+        var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining, handles, directoryOwner, integ);
         int workerCount = Math.Min(_maxParallelism, remaining);
         Task[] workers = Enumerable.Range(0, workerCount)
             .Select(_ => Task.Run(() => WorkerLoopAsync(context, runCts), CancellationToken.None))
@@ -336,6 +346,10 @@ public sealed class Scheduler
                             ? _worktreeProvider.CreateSegment(dependent, attempt: 1, context.Integ, CancellationToken.None)
                             : new WorktreeHandle();
                         context.Handles[dependent] = depHandle;
+                        if (!string.IsNullOrEmpty(depHandle.WorktreePath))
+                        {
+                            context.DirectoryOwner[depHandle.WorktreePath] = dependent;
+                        }
                         newlyReady.Add(context.ById[dependent]);
                     }
                 }
@@ -589,6 +603,7 @@ public sealed class Scheduler
         Channel<TaskEnvelope> channel,
         int remaining,
         Dictionary<string, WorktreeHandle> handles,
+        Dictionary<string, string> directoryOwner,
         IntegrationHandle? integ)
     {
         public DependencyGraph Graph { get; } = graph;
@@ -598,6 +613,14 @@ public sealed class Scheduler
         public Channel<TaskEnvelope> Channel { get; } = channel;
         public int Remaining { get; set; } = remaining;
         public Dictionary<string, WorktreeHandle> Handles { get; } = handles;
+
+        /// <summary>
+        /// plan 08 topology-wiring M0 bookkeeping: worktree path → current owning task id. Written
+        /// under <see cref="_gate"/> only (CreateSegment/ForkFromTip set it; ReuseSegment transfers
+        /// ownership to the inheritor; Discard removes the entry). The single source of truth for
+        /// "is this directory free to Discard / reuse?".
+        /// </summary>
+        public Dictionary<string, string> DirectoryOwner { get; } = directoryOwner;
         public IntegrationHandle? Integ { get; } = integ;
     }
 }
