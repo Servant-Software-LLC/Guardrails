@@ -853,7 +853,10 @@ public sealed class WiringDefectRegressionTests
 
         // Overwrite the guardrail sidecar with an invalid scope value.
         string guardrailsDir = Path.Combine(plan.PlanDir, "tasks", "01-gate", "guardrails");
-        string sidecarPath = Path.Combine(guardrailsDir, StatePlanBuilder.GuardrailFileName[..^4] + ".json");
+        // Derive the sidecar base from the guardrail name with GetFileNameWithoutExtension — NOT a fixed
+        // [..^4] strip: the guardrail is `.ps1` (4 chars) on Windows but `.sh` (3 chars) on Linux/macOS,
+        // so a hardcoded strip mis-names the sidecar off-Windows and the scope never loads.
+        string sidecarPath = Path.Combine(guardrailsDir, Path.GetFileNameWithoutExtension(StatePlanBuilder.GuardrailFileName) + ".json");
         File.WriteAllText(sidecarPath,
             """{"scope": "bogus-invalid", "description": "regression gate for GR2021"}""");
 
