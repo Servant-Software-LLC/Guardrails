@@ -148,11 +148,12 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
                                //   format ^[a-z0-9][a-z0-9._-]*$ (GR2011); unique (GR2010)
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
   "integrationGate": false,    // optional, default false; marks a terminal whole-repo integration gate (§3.3)
-  "writeScope": ["src/Foo/"],  // optional; the deterministic READ-ONLY write-scope check (§3.4). Absent ⇒ NO check.
-                               //   every path the task's diff (git diff --name-status <taskBase>..<HEAD>)
+  "writeScope": ["src/Foo/"],  // optional; the deterministic write-scope check (§3.4). Absent ⇒ NO check.
+                               //   every path the action's post-action diff (staged worktree vs <taskBase>)
                                //   adds/modifies/deletes/renames must be IN scope, or the task fails and
-                               //   retries with feedback. The check NEVER reverts. Renames = paired D+A
-                               //   (both in scope). A vacuous "**" / bare top-level dir is a granularity smell.
+                               //   retries with feedback after a SCOPED REVERT of the out-of-scope paths
+                               //   (in-scope WIP preserved). Renames = paired D+A (both in scope). A vacuous
+                               //   "**" / bare top-level dir is a granularity smell.
   "retries": 3,                // optional; overrides defaultRetries
   "timeoutSeconds": 3600,      // optional; whole-attempt ceiling (action + guardrails)
   "action": {                  // OPTIONAL — omit to use convention discovery:
@@ -226,11 +227,20 @@ sole whole-repo soundness boundary for FF chains and AI-resolved unions):
 ### 3.4 Write-scope check (`writeScope`)
 
 `writeScope` is an optional list of **workspace-relative path prefixes / globs** declaring the
-surface a task is permitted to add/modify/delete/rename. It drives a **deterministic, read-only
-harness check** (no revert, ever): after the task's action and **before** its own `guardrails/`,
-the harness computes `git diff --name-status <taskBase>..<segmentHEAD>` in the task's segment
-worktree and asserts every changed path satisfies `IsInScope(path, writeScope)`. A violation is a
-guardrail-class failure (retry with feedback naming the out-of-scope paths; eventual `needs-human`).
+surface a task is permitted to add/modify/delete/rename. It drives a **deterministic harness check**:
+after the task's action and **before** its own `guardrails/`, the harness inspects the action's
+**uncommitted** writes in the segment worktree and asserts every changed path satisfies
+`IsInScope(path, writeScope)`. Because the check runs **before** the segment commit, the action's
+output is not yet on `segmentHEAD` (HEAD == `taskBase` at this point); a `taskBase..segmentHEAD`
+commit diff would be empty and pass vacuously. The harness therefore stages the worktree
+(`git add -A`) and diffs the **index against `taskBase`**
+(`git diff --cached --name-status --no-renames <taskBase>`), which surfaces modified, deleted, AND
+new/untracked paths. Staging is not a content rewrite, and the Scheduler stages + commits the same
+tree on the pass path anyway. A violation is a guardrail-class failure: the harness performs a
+**scoped revert** that undoes ONLY the out-of-scope paths — an out-of-scope MODIFY/DELETE is restored
+with `git checkout <taskBase> -- <path>`, a newly-ADDED out-of-scope file is removed with
+`git rm -f -- <path>` — leaving same-attempt **in-scope WIP intact**, then retries with feedback
+naming the out-of-scope paths (eventual `needs-human`).
 **Absent ⇒ no check** (the off-switch — a task that can't be confidently scoped omits the field and
 is reported as a broad surface, never given a vacuous `**`). **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**

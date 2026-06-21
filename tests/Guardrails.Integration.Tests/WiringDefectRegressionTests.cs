@@ -688,6 +688,176 @@ public sealed class WiringDefectRegressionTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
+    // WS_3 — the LIVE write-scope check must catch a same-attempt out-of-scope write
+    //
+    // Every WriteScopeCheckTests case hands Check an ALREADY-COMMITTED segment, so they never
+    // exercised the live path: in TaskExecutor the check runs AFTER the action and BEFORE the
+    // segment commit, when the action's writes are UNCOMMITTED (HEAD == taskBase). A
+    // taskBase..HEAD commit diff is empty there → the check passed vacuously and never caught an
+    // out-of-scope write; the integration-gate backstop was the only thing that did.
+    //
+    // This end-to-end test drives a REAL run through Scheduler + TaskExecutor + GitWorktreeProvider
+    // with a re-verifier that ALWAYS PASSES (so the integration gate cannot be the catcher), and an
+    // action that writes one IN-scope file and one OUT-of-scope file, and asserts the WRITE-SCOPE
+    // CHECK is what halts the task to needs-human — with a scoped revert that keeps the in-scope
+    // file and removes the forbidden one, and feedback naming the offending path.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Plan 08 defect WS_3 (live-path coverage gap): the write-scope check must catch an action's
+    /// SAME-ATTEMPT out-of-scope write — the writes are uncommitted when the check runs, so a
+    /// <c>taskBase..HEAD</c> commit diff is empty and the check would pass vacuously. With a
+    /// re-verifier that always passes (the integration-gate backstop disabled), the only thing that
+    /// can flip the run off-green is the write-scope check itself. RED until <c>Check</c> inspects
+    /// the action's uncommitted writes (staged worktree vs taskBase) instead of <c>taskBase..HEAD</c>.
+    /// </summary>
+    [Fact]
+    public async Task WS_3_LiveCheck_CatchesUncommittedOutOfScopeWrite_ScopedRevertAndFeedback()
+    {
+        using var repo = new TempGitRepo();
+
+        string planDir = Path.Combine(repo.RepoPath, "plan");
+        Directory.CreateDirectory(planDir);
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+
+        // Single task, no retries, no integration gate. The only guardrail is a trivial exit-0
+        // so it can NEVER be the thing that catches the out-of-scope write — the write-scope check
+        // (which runs BEFORE the guardrails) must be the catcher.
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 2
+            }
+            """);
+
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+        string taskDir = Path.Combine(planDir, "tasks", "01-scoped");
+        Directory.CreateDirectory(taskDir);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+        // writeScope = src/** only. forbidden/ is OUT of scope.
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            """
+            {
+              "description": "WS_3 live write-scope check",
+              "dependsOn": [],
+              "writeScope": ["src/**"]
+            }
+            """);
+
+        // Action writes BOTH an in-scope file (must survive the scoped revert) and an out-of-scope
+        // file (must be reverted). The action SUCCEEDS (exit 0) and leaves the writes UNCOMMITTED in
+        // the segment — exactly the live pre-commit state the check must inspect.
+        const string inScopeContent = "// in-scope WIP — must survive the scoped revert";
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
+                $"""
+                New-Item -ItemType Directory -Force -Path "$env:GUARDRAILS_WORKSPACE\src" | Out-Null
+                Set-Content -NoNewline -Path "$env:GUARDRAILS_WORKSPACE\src\InScope.cs" -Value '{inScopeContent}'
+                New-Item -ItemType Directory -Force -Path "$env:GUARDRAILS_WORKSPACE\forbidden" | Out-Null
+                Set-Content -NoNewline -Path "$env:GUARDRAILS_WORKSPACE\forbidden\Outside.cs" -Value '// out of scope'
+                exit 0
+                """);
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"), "exit 0\n");
+        }
+        else
+        {
+            string actionPath = Path.Combine(taskDir, "action.sh");
+            File.WriteAllText(actionPath,
+                "#!/usr/bin/env bash\n" +
+                "mkdir -p \"$GUARDRAILS_WORKSPACE/src\" \"$GUARDRAILS_WORKSPACE/forbidden\"\n" +
+                $"printf '%s' '{inScopeContent}' > \"$GUARDRAILS_WORKSPACE/src/InScope.cs\"\n" +
+                "printf '%s' '// out of scope' > \"$GUARDRAILS_WORKSPACE/forbidden/Outside.cs\"\n" +
+                "exit 0\n");
+            File.SetUnixFileMode(actionPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            string guardrailPath = Path.Combine(taskDir, "guardrails", "01-check.sh");
+            File.WriteAllText(guardrailPath, "#!/usr/bin/env bash\nexit 0\n");
+            File.SetUnixFileMode(guardrailPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+
+        // Re-verifier ALWAYS passes: the integration gate is explicitly disabled as a backstop, so
+        // any off-green verdict can ONLY come from the write-scope check.
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        var spyRv = new SpyReVerifier { AlwaysPass = true };
+
+        var (report, journal) = await RunWithProviderAsync(
+            planDir, provider, spyRv, TestContext.Current.CancellationToken);
+
+        // 1) The run must NOT be green — the write-scope check caught the out-of-scope write.
+        //    Pre-fix: taskBase..HEAD is empty (writes uncommitted) → check passes vacuously →
+        //    the trivial guardrail passes → the task succeeds → RED.
+        TaskResult scoped = Assert.Single(report.Tasks, t => t.TaskId == "01-scoped");
+        Assert.False(scoped.IsGreen, "The out-of-scope write must flip the task off-green.");
+        // The write-scope violation is a guardrail-class failure that, with no retries left, exhausts
+        // the budget → the journal records the task needs-human via the write-scope path (NOT via an
+        // integration-gate backstop, which is disabled here). The TaskResult carries the underlying
+        // GuardrailFailed outcome + a write-scope summary naming the offending path.
+        Assert.Equal(TaskOutcome.GuardrailFailed, scoped.Outcome);
+        Assert.Equal(Guardrails.Core.Journal.TaskStatus.NeedsHuman, journal.StatusOf("01-scoped"));
+        Assert.Contains("write-scope violation", scoped.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("forbidden/Outside.cs", scoped.Summary.Replace('\\', '/'),
+            StringComparison.OrdinalIgnoreCase);
+
+        // 2) The segment worktree (not discarded on needs-human) proves the scoped revert: the
+        //    in-scope file survives with its WIP content; the out-of-scope file is gone.
+        string segmentPath = FindSegmentWorktree(repo.WorktreeRoot, "01-scoped");
+        string inScopePath = Path.Combine(segmentPath, "src", "InScope.cs");
+        string forbiddenPath = Path.Combine(segmentPath, "forbidden", "Outside.cs");
+
+        Assert.True(File.Exists(inScopePath),
+            "The in-scope file must survive the scoped revert (fix, don't restart).");
+        Assert.Equal(inScopeContent, File.ReadAllText(inScopePath));
+        Assert.False(File.Exists(forbiddenPath),
+            "The out-of-scope file must be removed by the scoped revert.");
+
+        // 3) feedback.md (written for the failed attempt) must name the offending path so a retry
+        //    agent knows exactly what to drop.
+        string feedback = ReadAttemptFeedback(planDir, "01-scoped");
+        Assert.Contains("forbidden/Outside.cs", feedback.Replace('\\', '/'),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Locate the single segment worktree for <paramref name="taskId"/> under
+    /// <paramref name="worktreeRoot"/> (<c>&lt;root&gt;/&lt;runId&gt;/&lt;taskId&gt;/attempt-N</c>). The
+    /// run's git runId is a fresh GUID chosen by the Scheduler, so the path is discovered, not predicted.
+    /// </summary>
+    private static string FindSegmentWorktree(string worktreeRoot, string taskId)
+    {
+        string[] matches = Directory.EnumerateDirectories(worktreeRoot, "attempt-*", SearchOption.AllDirectories)
+            .Where(d => string.Equals(Path.GetFileName(Path.GetDirectoryName(d)), taskId, StringComparison.Ordinal))
+            .ToArray();
+        Assert.True(matches.Length == 1,
+            $"Expected exactly one segment worktree for '{taskId}' under '{worktreeRoot}', found {matches.Length}.");
+        return matches[0];
+    }
+
+    /// <summary>
+    /// Read the <c>feedback.md</c> written for the (single) attempt of <paramref name="taskId"/> from
+    /// the plan's logs tree (<c>&lt;planDir&gt;/logs/&lt;runId&gt;/&lt;taskId&gt;/attempt-N/feedback.md</c>).
+    /// </summary>
+    private static string ReadAttemptFeedback(string planDir, string taskId)
+    {
+        string logsRoot = Path.Combine(planDir, "logs");
+        string[] feedbacks = Directory.EnumerateFiles(logsRoot, "feedback.md", SearchOption.AllDirectories)
+            .Where(f => Path.GetDirectoryName(f) is { } dir
+                        && string.Equals(Path.GetFileName(Path.GetDirectoryName(dir)), taskId, StringComparison.Ordinal))
+            .ToArray();
+        Assert.True(feedbacks.Length == 1,
+            $"Expected exactly one feedback.md for '{taskId}' under '{logsRoot}', found {feedbacks.Length}.");
+        return File.ReadAllText(feedbacks[0]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
     // F7 — maxParallelism > 1 with no provider must be refused or clamped
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
