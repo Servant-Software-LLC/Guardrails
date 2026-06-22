@@ -10,7 +10,7 @@ instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 Every stack file answers the same six standard questions first (§1–§6), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
-§11 strip-comments-before-forbidden-keyword-scan, then WPF).
+§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -650,6 +650,100 @@ breakdown report — full fidelity needs a parser, which is out of scope for a g
 catalogue's action-prompt discipline: do **not** pair a header-documenting prompt with a
 comment-blind grep — strip comments in the guardrail, and keep the banned-keyword list in the
 guardrail's `# catches:` line rather than the action prompt unless the guardrail is comment-safe.
+<!-- BEGIN ADDED SECTION #116 — Windows-safe TempGitRepo fixture (auto-merge friendly; do not merge into prose above) -->
+## 12. Windows-safe `TempGitRepo` test fixture — author-tests that build a real git repo (#116)
+
+The .NET realization of the catalogue's "Windows-safe git test fixture (#116)" doctrine. When an
+author-tests task's tests create a **real git repository**, emit this ONE shared fixture (or inject
+its directive) so each git-touching test reuses it instead of re-discovering Git-for-Windows
+semantics that a POSIX-only helper misses (SKILL.md Step 5a). Each behavior below is a logged halt;
+the fixture is non-negotiable on all four. Place it under the test project (e.g.
+`tests/<Project>.Tests/TestInfrastructure/TempGitRepo.cs`) and have later git-touching author-tests
+tasks `dependsOn` the task that authors it.
+
+```csharp
+// A Windows-safe disposable git repo fixture for author-tests. Encodes four logged Git-for-Windows
+// lessons a POSIX-only helper misses: read-only loose objects on delete (#109), empty-dir prune on
+// git rm/git mv (task-14), reset --hard rollback rather than merge --abort (W3), and deterministic
+// hashes via core.autocrlf=false. Reuse this from every test that builds a real repo - do NOT
+// hand-roll a temp-repo helper per test.
+using System.Diagnostics;
+
+public sealed class TempGitRepo : IDisposable
+{
+    public string Root { get; }
+    public string Head => Git("rev-parse", "HEAD").Trim();
+
+    public TempGitRepo()
+    {
+        Root = Path.Combine(Path.GetTempPath(), "gr-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Root);
+        Git("init", "-q");
+        // Deterministic hashes across platforms: never translate line endings in fixtures.
+        Git("config", "core.autocrlf", "false");
+        Git("config", "user.email", "test@example.com");
+        Git("config", "user.name", "Guardrails Test");
+    }
+
+    /// <summary>Write a file, recreating its parent if git pruned it (empty-dir prune, task-14).</summary>
+    public void WriteFile(string relativePath, string content)
+    {
+        string full = Path.Combine(Root, relativePath);
+        // git rm / git mv prunes the now-empty parent on Git-for-Windows; recreate before writing.
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllText(full, content);
+    }
+
+    public void Commit(string message)
+    {
+        Git("add", "-A");
+        Git("commit", "-q", "-m", message);
+    }
+
+    /// <summary>Roll back to a prior commit. NEVER `git merge --abort` — it fails rc=128 on a
+    /// dirtied tracked path (W3). `reset --hard` is the reliable rollback.</summary>
+    public void ResetHard(string commitish) => Git("reset", "--hard", commitish);
+
+    public string Git(params string[] args)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = Root,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        string stdout = p.StandardOutput.ReadToEnd();
+        string stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"git {string.Join(' ', args)} failed (rc={p.ExitCode}): {stderr}");
+        return stdout;
+    }
+
+    public void Dispose()
+    {
+        if (!Directory.Exists(Root)) return;
+        // Git marks .git/objects loose objects READ-ONLY on Windows: Directory.Delete then throws
+        // UnauthorizedAccessException (NOT IOException, #109). Strip read-only on every file first.
+        foreach (var file in Directory.EnumerateFiles(Root, "*", SearchOption.AllDirectories))
+        {
+            var attrs = File.GetAttributes(file);
+            if ((attrs & FileAttributes.ReadOnly) != 0)
+                File.SetAttributes(file, attrs & ~FileAttributes.ReadOnly);
+        }
+        Directory.Delete(Root, recursive: true);
+    }
+}
+```
+
+When the fixture is its own deliverable, guard the authoring task with a `file-exists` (#1) on
+`TempGitRepo.cs` and a `tests-build` (#3) so a non-compiling fixture fails loudly rather than
+silently breaking every downstream git test. The four behaviors map one-to-one onto the catalogue's
+#116 lessons; do not drop any one — each is a real `needs-human` halt a generated git test hit.
+<!-- END ADDED SECTION #116 -->
 
 ## WPF structural checks (#11 F5/F6)
 

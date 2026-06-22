@@ -928,6 +928,126 @@ should fail before an expensive test run or a paid judge ever starts.
   - Weak (gameable): `Get-ChildItem src/Desktop -Recurse -Filter *.cs | Select-String -Pattern "LocalAppData"` — a sibling `SettingsService.cs` mentioning `LocalApplicationData` in the same wave satisfies it.
   - Strong: `Select-String -Path "src/Desktop/WorkspaceRecentsList.cs" -Pattern "LocalAppData"` — scoped to the one file this task owns.
 
+<!-- BEGIN ADDED SECTION #94 — maxTurns budgeting doctrine (auto-merge friendly; do not merge into prose above) -->
+## maxTurns budgeting — a turn-budget exhaustion is NOT a sizing failure (#94)
+
+A guardrail catches a *wrong implementation*; a turn-budget exhaustion is a different failure class
+— a **legitimately-progressing agent killed at the turn cap mid-task** — and the breakdown prevents
+it not with a guardrail but by **budgeting `maxTurns` per task** (SKILL.md Step 4a; schemas.md
+"Per-task `maxTurns`"). It belongs in this catalogue because the *diagnosis* is the doctrine: when a
+prompt task fails on `max_turns` (`"terminal_reason":"max_turns"`, `"Reached maximum number of turns
+(50)"`), the wrong fix is "split it further."
+
+**Why "split it further" is wrong here.** The sizing heuristics (Step 2: one-session rule, guardrail-
+boundary rule) model *deliverable count*, not *research/discovery overhead*. An integration task whose
+assertions share ONE expensive setup (an in-process stdio/MCP harness) is correctly sized — its
+assertions cannot be split without **duplicating** that setup, which makes the budget problem worse.
+The cost driver is the agent reverse-engineering an unfamiliar SDK before it can write code (grepping
+package XML docs for `McpClientOptions`/`CallToolResult.Content`/…), which is real progress, not a
+loop. Splitting punishes a well-sized task for a budget problem.
+
+**The doctrine.** Keep the flat **50** default; bump only the predictably turn-expensive archetypes
+to a fixed **75** (a first-attempt cushion — actuals in the motivating run were 54 and 32, unguessable
+in advance):
+- **integration / smoke / e2e** tests, especially an in-process harness, transport-client wiring, or
+  spawning a server;
+- **work against an unfamiliar third-party SDK** (discover the API before writing code);
+- **terminal aggregation / wiring** tasks that connect several unfamiliar seams at once.
+
+A guessed *exact* budget is impossible; the fixed bump only needs to clear the common boundary case
+(54 > 50). The real safety net is a **harness-side auto-escalate-on-`max_turns` retry policy**
+(×1.5 next attempt) + distinct `max_turns` retry feedback — a SEPARATE harness concern, owned by the
+harness developer, NOT emitted by the breakdown. The breakdown's contribution is the deliberate
+first-attempt bump and a shared-harness insertion (below) so the heuristic is applied at generation
+time, not discovered by a failed run.
+
+**Amortize unfamiliar-SDK discovery (a generative insertion).** When ≥2 downstream tasks need the
+same setup against an API no ancestor established, insert ONE upstream harness task that learns the
+API and writes the reusable helper (a `<X>TestHost`); the downstream tasks `dependsOn` it instead of
+re-discovering the API. This is the test-harness sibling of the production-seam (#84) and
+composition-root (#120) insertions — driven by a shared *discovery cost*, not a missing artifact. The
+harness task itself gets the `maxTurns: 75` bump (it pays the discovery cost). See SKILL.md Step 4a.
+<!-- END ADDED SECTION #94 -->
+
+<!-- BEGIN ADDED SECTION #116 — Windows-safe git test fixture (auto-merge friendly; do not merge into prose above) -->
+## Windows-safe git test fixture — author-tests that build a real git repo (#116)
+
+When an author-tests task's tests create a **real git repository**, a hand-rolled temp-repo helper
+that assumes POSIX git semantics fails on Git-for-Windows in ways a POSIX-only author never sees —
+and because the breakdown generates each author-tests task in isolation, **every** test-author agent
+re-discovers (or misses) the same quirks independently, each a fresh `needs-human` halt. The fix is
+the same posture as the test-framework decision: **resolve it once at generation time** by emitting
+ONE shared, Windows-safe fixture (or injecting a portability directive), not per-task rediscovery
+(SKILL.md Step 5a).
+
+**The logged Windows-git lessons the fixture MUST encode** (each is a real halt):
+- **Read-only loose objects (#109).** `Directory.Delete(repoRoot, recursive: true)` throws
+  `UnauthorizedAccessException` (NOT `IOException`) because Git marks `.git/objects` loose objects
+  **read-only** on Windows. → Strip read-only attributes before deleting.
+- **Empty-directory prune (task-14).** After `git rm`/`git mv` empties a directory (`src/`),
+  Git-for-Windows **prunes it**, so the next `File.WriteAllText(src/New.cs)` throws
+  `DirectoryNotFoundException`. → Recreate the directory before writing into it.
+- **`merge --abort` rollback failure (W3).** `git merge --abort` fails rc=128 on a dirtied tracked
+  path. → Roll back with `git reset --hard <preHead>`, never `git merge --abort`.
+- **Non-deterministic hashes.** Platform line-ending translation changes fixture content hashes. →
+  Set `core.autocrlf=false` for deterministic hashes across platforms.
+
+**Two ways to satisfy it** (pick per task; prefer the fixture when ≥2 tasks build real repos — the
+same amortize-the-discovery logic as #94's shared-harness insertion):
+1. Emit a shared `TempGitRepo` fixture (one reviewed file the git-touching tests reuse). The .NET
+   realization is `stacks/dotnet.md §11`.
+2. Inject a "Windows-Git test portability" directive into the git-touching author-tests action
+   prompt, pointing at the fixture and naming the four behaviors above.
+
+This is **authored-test portability**, distinct from runner-level failures (#114/#115). It is applied
+at generation time so a Windows-git quirk surfaces in a reviewed fixture, not as a mid-run halt.
+<!-- END ADDED SECTION #116 -->
+
+<!-- BEGIN ADDED SECTION #101 — new-.claude/-subdirectory deliverable seeding (auto-merge friendly; do not merge into prose above) -->
+## New-`.claude/`-subdirectory deliverable — seed the directory before the run (#101)
+
+This is the **directory analogue of the artifact-ancestry rule** (below): a guardrail referencing a
+file no ancestor produces is a missing inserted task; here the missing prerequisite is a *directory*.
+Claude Code's `acceptEdits` mode (the default runner profile) auto-approves writes to **existing**
+paths but **blocks creating a new subdirectory under `.claude/`** (skills/commands/hooks/agents/
+contexts) without interactive confirmation. Headless, there is no human to confirm, so an agent
+writing `.claude/skills/<new>/SKILL.md` into a not-yet-existing directory correctly self-blocks to
+`{"needsHuman": "..."}` and the run halts (#101).
+
+**Detection (at breakdown time).** A task whose primary deliverable is a file under `.claude/` AND
+whose target subdirectory does not already exist (`Test-Path .claude/skills/<name>/`). An existing
+subdir needs nothing; only a NEW one trips the barrier.
+
+**Fix — seed it, or warn** (SKILL.md Step 5b):
+1. Insert a **directory-seed task** (`NN-seed-<name>-dir`, a **script** action — `New-Item -ItemType
+   Directory` + a `.gitkeep` write) immediately before the writing task, which `dependsOn` it —
+   making the directory "existing" so `acceptEdits` approves the write. It MUST be a script, not a
+   prompt: a script the harness runs directly bypasses the `acceptEdits` tool-permission barrier,
+   so it creates the new `.claude/` subdir headlessly; a prompt seed task would hit the same barrier
+   it is meant to remove. Prefer this for an unattended run.
+2. Or add a `## Pre-conditions` note to the writing task's action prompt requiring the caller to
+   pre-create the directory (a committed `.gitkeep`) before the run.
+
+**Guardrail — make the barrier visible.** A `01-dir-seeded.ps1` (`file-exists`, #1) on the writing
+(or seed) task asserting the target subdir exists before the write, scoped to the one subdir the task
+owns — so the barrier reads as a guardrail failure, not a cryptic `needsHuman`:
+
+```powershell
+# catches: a task writing into a NEW .claude/ subdir that acceptEdits cannot create headlessly -
+#          the dir was never seeded, so the write self-blocks to needsHuman mid-run. Assert the
+#          target subdir EXISTS before the write is attempted.
+$dir = ".claude/skills/survey-eval"
+if (-not (Test-Path $dir -PathType Container)) {
+    Write-Output "$dir does not exist - seed it (a committed .gitkeep) before the run; acceptEdits cannot create a new .claude/ subdir headlessly"
+    exit 1
+}
+exit 0
+```
+
+Issue #104 is the harness-side counterpart (granting the write up front); the breakdown owns only the
+detection + seeding doctrine here.
+<!-- END ADDED SECTION #101 -->
+
 ## The artifact-ancestry rule
 
 A guardrail may only reference artifacts that are (a) produced by an ANCESTOR task in
