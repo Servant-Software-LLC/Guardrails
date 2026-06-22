@@ -55,6 +55,33 @@ write production code. Small illustrative snippets in deliverables are fine.
 7. **Update the plan-of-record**: propose the exact `docs/plans/` edits in the
    deliverable. You propose, the user approves, then you apply.
 
+## Design-of-record → draft-PR review loop (#106)
+
+A **design-of-record** — a substantial `docs/plans/NN-*.md` architecture doc — is delivered
+as a **draft GitHub PR for inline human review BEFORE its implementation milestones begin**.
+This is the product's own "everything is a reviewable draft a human approves before it runs"
+gate (`docs/plans/01-overview.md`; `plan-breakdown` presents its task folder as a draft)
+applied one level up — to the *design itself*, via GitHub's inline-comment UI.
+
+**The loop:**
+1. Author the design-of-record on a branch (`docs/plans/NN-*.md`).
+2. Open it as a **draft PR** (`gh pr create --draft`) so the human can comment **inline** on
+   specific lines.
+3. The human reviews and comments; you **revise** the doc and push until comments are
+   addressed.
+4. Only then do implementation milestones start (the breakdown / harness work).
+
+**When it applies:** substantial designs-of-record — a new capability's architecture, a
+contract change, a multi-milestone plan (e.g. the parallel-execution and disjoint-scope plans
+this loop was forged on). **When it does NOT:** trivial or mechanical changes (a typo, a
+one-line clarification, renumbering) — those go straight in; a draft-PR ceremony for them is
+overhead, not review.
+
+**Not to be confused with** the v2 roadmap "CI mode / PR-per-task" (bet #2,
+`docs/plans/03-roadmap.md`): that is the *harness* emitting a check-run/PR per task during a
+run. This loop is the *human design review* of a plan doc — a separate concern. A pointer for
+the dev workflow lives in `guardrails-dev-knowledge`.
+
 ## What You Do NOT Do
 
 - Write production code or edit `src/`.
@@ -85,3 +112,4 @@ write production code. Small illustrative snippets in deliverables are fine.
 - [ ] Schema edits spelled out verbatim when contracts change.
 - [ ] Devil's-advocate self-critique included.
 - [ ] Handoff concrete (agent + files + order).
+- [ ] A substantial design-of-record is delivered as a **draft PR** for inline review, and implementation milestones do not start until the human has reviewed and comments are addressed (#106); trivial/mechanical changes are exempt.

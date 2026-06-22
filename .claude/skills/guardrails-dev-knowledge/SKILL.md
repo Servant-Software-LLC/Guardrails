@@ -152,6 +152,26 @@ from source (`dotnet build`/`dotnet run --project src/Guardrails.Cli`) — **nev
 invoke the globally installed `guardrails` tool that is executing the plan** (file
 locks on its own binaries, and you'd be testing the old build).
 
+## Design-of-record → draft-PR review workflow (#106)
+
+A **design-of-record** — a substantial `docs/plans/NN-*.md` architecture doc — goes into a
+**draft GitHub PR for inline human review before its implementation milestones begin**. The
+loop: author the doc on a branch → `gh pr create --draft` → human comments inline → architect
+revises and pushes until addressed → only then does coding (breakdown / harness work) start.
+This is the product's own "everything is a reviewable draft a human approves before it runs"
+gate applied to the *design* (`docs/plans/01-overview.md` pitches the artifacts as "reviewable
+in a PR"; `plan-breakdown` already presents its task folder as a draft).
+
+- **Applies to:** substantial designs-of-record (new-capability architecture, contract changes,
+  multi-milestone plans — e.g. the parallel-execution / disjoint-scope plans this loop was
+  forged on).
+- **Does NOT apply to:** trivial/mechanical changes (typos, one-line clarifications,
+  renumbering) — those go straight in.
+- **Distinct from** the v2 "CI mode / PR-per-task" roadmap bet #2 (the *harness* emitting a
+  check-run/PR per task during a run): that is automation, this is *human design review*.
+
+The `guardrails-architect` operating contract owns the full statement (`.claude/agents/guardrails-architect.md`).
+
 ## Status pointers
 
 Milestone status lives in `guardrails-domain-knowledge` → Status section. Roadmap +

@@ -27,6 +27,10 @@ and only then does `guardrails run` execute it.
   grep-scope traps). **Load the one matching the detected stack in Step 0** (only
   `stacks/dotnet.md` ships today). The catalogue holds the universal rule; the stack file
   holds the exact regex/command.
+- `references/stacks/ui.md` — the **two-level UI-verification methodology** (#41/#78):
+  Level A liveness smoke vs Level B behavioral interaction-flow, the `$e2eStack` detection
+  ladder, and the v2 boundary. **Read when the plan is UI-facing**, alongside the
+  `Step 4b / 5c — Two-level UI verification` section below.
 - `references/schemas.md` — exact file formats to emit (excerpt of the SSOT,
   `docs/plans/02-schemas-and-contracts.md`).
 - `references/example-breakdown.md` — a complete worked breakdown including an
@@ -540,8 +544,11 @@ upstream task that creates it:
      the breakdown report (Step 7).
 
   The same priority governs an **E2E driver** choice (Playwright / Cypress); the `$e2eStack`
-  detection mechanics land with the web-UI verification work — until then, an absent driver
-  is surfaced (report + honest-halt), never silently scaffolded.
+  detection rule now lives in the two-level UI-verification section below (Step 0 second-dimension
+  detection, #41/#78) and in `references/stacks/ui.md`. The browser-driver guardrails it gates are
+  Level A (v1 liveness smoke, once the sibling unit lands the #7-generalization archetype) and
+  Level B (v2 interaction-flow); until a driver is present, an absent driver is surfaced (report +
+  honest-halt), never silently scaffolded.
 - Guardrail "schema validates" and no schema exists → insert an author-schema task
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
@@ -1037,6 +1044,201 @@ pre-condition note) and the affected `.claude/` path in Step 7.
 > doctrine above; do not edit `src/**`.
 <!-- END ADDED SECTION #101 -->
 
+<!-- BEGIN ADDED SECTION #87 — one skill directory per task (auto-merge friendly; do not merge into prose above) -->
+## Step 2c — One skill directory per task (#87)
+
+A sizing rule that specializes the Step 2 over-size split-trigger for a common shape: a milestone
+that **updates more than one `.claude/skills/<X>/` directory in one task**. It complements the #111
+split-check — #111 splits by deliverable count and blast radius; this splits by *skill-directory
+count*, because skill files are large and read-heavy in a way #111's file-count heuristic
+under-weights.
+
+**Why a skill directory is special.** A skill folder (`SKILL.md` + `references/`) is large and must
+be **read in full before any write begins** — the agent loads the whole procedure to edit one rule
+correctly. Bundling two skill-directory updates into one task **doubles the read budget before the
+first write**, which is the cheapest way to exhaust a turn budget on a task that is otherwise
+well-formed (the #94 turn-expensive shape, reached by read volume rather than research). It also
+widens the `writeScope` to span unrelated directories, makes partial completion hard to recover (a
+failure in skill Y re-runs the edits to skill X), and means a single permission issue on one
+directory blocks the whole deliverable.
+
+**When this fires.** A candidate task whose deliverable edits **two or more** distinct
+`.claude/skills/<X>/` directories (counting `references/` under a skill as part of that skill's
+directory). It does NOT fire for a task editing several files **within one** skill directory
+(`SKILL.md` + two of its `references/`) — that is one skill, one read budget, one task.
+
+**The rule — one skill directory per task; regeneration and verification are their own downstream
+tasks.** When a milestone spans N skill directories:
+
+1. **Emit one update task per skill directory** — `NN-update-<skill>-skill`, each with a
+   `writeScope` narrowed to that one directory (e.g. `writeScope: [".claude/skills/plan-breakdown/"]`).
+   Each is independently atomic, independently retryable, and trivially scoped. These are usually
+   **parallel** (sparsest-DAG rule, Step 3) unless one skill's change consumes another's.
+2. **Make golden-example regeneration its own downstream task** — `NN-regenerate-golden-example`
+   (`writeScope: ["examples/<example>/"]`), depending on every skill-update task whose change it
+   must reflect. Do NOT fold the regeneration into a skill-update task: its `writeScope` (the
+   example folder) is disjoint from the skill directories, and it can only run once the skill edits
+   it depends on are committed.
+3. **Make round-trip verification its own terminal task** — the `guardrails validate` / golden
+   round-trip check (often the `integrationGate` sink), depending on the regeneration task.
+
+*Worked split (the #87 motivating case).* A task scoped to update
+`.claude/skills/plan-breakdown/`, `.claude/skills/guardrails-review/`, and
+`.claude/skills/guardrails-domain-knowledge/` plus three reference docs, regenerate the golden
+example, and run the round-trip test, fires this rule (3 skill directories) AND the #111 trigger.
+Split it into:
+
+```
+NNa-update-plan-breakdown-skill        writeScope: .claude/skills/plan-breakdown/
+NNb-update-guardrails-review-skill     writeScope: .claude/skills/guardrails-review/
+NNc-update-domain-knowledge-skill      writeScope: .claude/skills/guardrails-domain-knowledge/
+NNd-regenerate-golden-example          writeScope: examples/hello-guardrails/   dependsOn: NNa,NNb,NNc
+NNe-roundtrip-validate                 (integrationGate)                        dependsOn: NNd
+```
+
+**Self-review (folds into Step 7.0a).** When sweeping emitted tasks back through the split-trigger,
+also count skill directories per task: any task whose `writeScope` (or, if omitted, its described
+deliverable) spans ≥2 `.claude/skills/<X>/` directories is mis-sized — loop back and split it. The
+related knowledge-skill SELF-UPDATING clauses mean a knowledge-skill body is updated by whoever
+changes the underlying fact; sizing those updates one-directory-per-task keeps each such update
+atomic.
+<!-- END ADDED SECTION #87 -->
+
+<!-- BEGIN ADDED SECTION #41/#78 — two-level UI verification: liveness smoke + behavioral E2E (auto-merge friendly; do not merge into prose above) -->
+## Step 4b / 5c — Two-level UI verification (#41 v1 doctrine; #78 v2 interaction-flow)
+
+This section governs verifying **browser-rendered UI** beyond "the binary serves *something*". Read
+`references/stacks/ui.md` (the methodology, detection ladder, and the v2 boundary) alongside it.
+
+**Read the boundary first.** Three existing checks already verify increasingly more of a UI plan,
+none of which DRIVE the UI:
+- **§64 entry-point wiring + smoke-test** — the exe *starts and serves* (HTTP 200 from a route).
+- **§66 / dotnet.md §9 UI-presence** — the described UI is *built and served* (a single `GET` body
+  contains a known UI marker). One request; not a flow.
+- **This section** — two NEW levels that need a real **browser driver** (`$e2eStack`), which §64/§66
+  do not: Level A asserts the page actually *mounts in a browser with no console errors*; Level B
+  *drives a multi-step interaction* and asserts the terminal observable.
+
+**The two levels — do NOT conflate them.**
+
+### Level A — liveness smoke GUARDRAIL (v1 doctrine; default for any UI-producing task when a driver exists)
+
+> **Do NOT author a headless-browser guardrail inline.** In v1 the deterministic UI check the skill
+> actually emits is the dotnet.md §9 *served-markup* HTTP-body grep. Level A's browser-driver form is
+> gated behind a catalogue archetype the sibling unit has not landed yet — until it exists, emit §9
+> and **report the Level-A gap**; never hand-roll a Playwright/Cypress guardrail from this section.
+
+The browser-driver generalization of archetype #7 ("probe the running artifact": service → curl;
+web UI → headless-browser probe). It asserts **liveness only, never behavior**:
+- the page mounts in a headless browser,
+- no console errors / unhandled promise rejections on load,
+- a **structural selector derived from the plan** (a heading/region/`data-testid` the plan names)
+  is present.
+
+Minimal tautology surface — you cannot make a broken page emit zero console errors — so it needs
+**no anti-tautology scaffolding**. Be clear-eyed: **Level A does NOT catch behavior** (a Back button
+that wipes the form, an unwired Next, a wrong computed total). That is Level B.
+
+This is a **generalization of #7**, not a new tool-specific archetype. The catalogue note that
+generalizes #7 to "probe the running artifact (service → curl; web UI → headless-browser probe)" and
+the per-driver invocation idioms are **owned by the sibling unit** (catalogue + `stacks/dotnet.md` /
+`references/e2e/`), NOT by this skill section. **FLAG-FOR-LEAD** (see the flag block below) — until
+that archetype lands, the dotnet.md §9 *served-markup* HTTP-body grep is the strongest UI check the
+skill can emit deterministically, and an absent browser driver is surfaced, never scaffolded.
+
+### Level B — behavioral E2E spec (v2 — interaction-flow; inserted task chain, only when warranted)
+
+"Back repopulates the form", "checkout total renders correctly", "complete the wizard" — these
+assert **behavior reachable only through the artifact**, so the spec is a real authored test
+carrying the **full TDD anti-tautology chain** (`tests-fail-on-current-code` + the `writeScope`
+test-exclusion — Step 5's TDD pair). **This is the #78 interaction-flow archetype and is v2** (the
+external browser-driver dependency and the flakiest guardrail archetype are out of v1 — roadmap v2
+bet #5). Document it; do not emit a Level-B guardrail in v1 — surface it as a human decision /
+honest-halt instead (see the v2 flag block).
+
+**Trigger (the load-bearing decision rule).** Insert the author-spec + run-spec chain when the
+deliverable carries **regression-bearing logic reachable only through the artifact** — NOT when the
+plan prose happens to name an "E2E suite" (plans under-specify tests; that is the entire reason this
+skill INSERTS unit-test tasks the plan never mentioned). Decide per exit criterion:
+- **UI glue** — does it mount, does the button wire up, is the marker served → **Level A** (and
+  §9 served-markup).
+- **Logic behind the UI** — a computed total, a validation rule rendered in-page, state carried
+  across steps, "complete the wizard" → **Level B** (v2 interaction-flow).
+
+**E2E anti-tautology note (carry into the v2 spec).** A blank Playwright spec "fails on current
+code" *trivially* because no server = no page — that satisfies `tests-fail-on-current-code` via
+infrastructure, not behavior. The spec must fail **against a running app with the feature absent**
+(assert the specific element/text), not against a dead port. The `writeScope` test-exclusion leg
+ports unchanged; only the failure-cause leg needs this E2E-specific guidance.
+
+**Durability.** A Level-B spec is a real file at the CI-globbed path (`tests/e2e/*.spec.ts`) that CI
+re-runs forever; the guardrail is build-time-only, the spec is permanent coverage. Land it where CI
+globs it — an authoring constraint, not a reason to avoid the chain.
+
+### Step 0 second-dimension detection — `$e2eStack` (independent of `$stack`)
+
+E2E tooling is independent of the build stack (a .NET repo can have Playwright). After the Step 0
+build-stack table, record **one** probe value `$e2eStack` ∈ { `playwright` | `cypress` | `none` }:
+- `Microsoft.Playwright` PackageReference, or `@playwright/test`/`playwright` in `package.json`
+  devDependencies, or a `playwright.config.{ts,js}` → `playwright`;
+- `cypress` in `package.json`, or a `cypress.config.{ts,js}` → `cypress`;
+- otherwise `none`.
+
+Resolve a needed driver with the **same priority ladder** as the test-framework choice (Step 5):
+**detected in repo → named in plan → ask the human (interactive `AskUserQuestion`) → honest-halt +
+report (unattended); never silently scaffold.** This **resolves the SKILL.md forward-reference** that
+previously deferred `$e2eStack` mechanics to "the web-UI verification work" — the detection rule now
+lives here. **No driver detected → NO guardrail:** emit a `needsHuman` placeholder and flag it in the
+report ("Tasks NN produce browser-rendered output; no E2E driver detected (checked
+playwright/cypress) — install one or accept the coverage gap here"). An honest gap beats a fake
+green. **The LLM-prompt "does this look right" fallback is explicitly rejected** — it fails the
+catalogue demotion gate (deterministic-property, never-alone, echo-judge) and is strictly worse than
+no guardrail.
+
+### Step 5 insertion — when each level fires
+
+- **Level A (v1, when `$e2eStack ≠ none` and a task produces browser-rendered UI):** add the
+  liveness smoke guardrail to the `build-ui-<screen>` task (the catalogue's #7-generalization
+  archetype, once the sibling unit lands it). Until that archetype exists, emit the dotnet.md §9
+  served-markup guardrail (the strongest deterministic UI check available) and **report the Level-A
+  gap** — the served-markup grep proves the marker is in the body, not that the page mounts
+  error-free in a browser.
+- **Level B (v2, deferred):** when an exit criterion names a multi-step interaction with
+  regression-bearing logic, do NOT emit a guardrail in v1. Insert nothing executable; instead
+  surface it in the Step 7 report as a v2-interaction-flow decision (driver choice + the flow's
+  steps/selectors) the human must resolve, exactly as an unnamed route/marker is surfaced. When v2
+  lands, the inserted chain is `NN-author-e2e-<flow>` (TDD pair) + `NM-e2e-<flow>` carrying the
+  interaction-flow guardrail, downstream of the §66 UI task(s) and §64 wiring.
+
+### Step 7 self-review extension
+
+Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
+- An exit criterion phrased as a **multi-step interaction** ("complete the wizard", "next/back
+  navigation", "state carried across steps", "submit and see the confirmation") covered by **only**
+  a served-markup guardrail (no Level-B task) is an **under-coverage flag** — §66 proves the first
+  screen renders; "complete the wizard" needs the flow driven. Surface it the same way §66 surfaces
+  "promised a frontend, built zero UI": name the criterion, state that no task drives the flow, and
+  present the v2-interaction-flow decision (or the honest gap) as a blocking item the human resolves.
+- An **unspecified flow** (the plan names the outcome but not the concrete steps/selectors) is a
+  human decision, surfaced in the report — never an invented interaction script.
+
+> **v2 / sibling-unit FLAG-FOR-LEAD (NOT a v1 skill change — flag, do not implement here).**
+> Two pieces of this doctrine live OUTSIDE this skill section and are owned elsewhere:
+> 1. **Catalogue + stack archetypes (sibling unit owns `guardrail-catalogue.md` and
+>    `stacks/dotnet.md` this batch).** Level A needs a catalogue note **generalizing archetype #7**
+>    to "probe the running artifact (service → curl; web UI → headless-browser probe)" and the
+>    per-driver headless-probe idiom; Level B (v2) needs a new **interaction-flow** archetype
+>    (headless driver, scripted steps on stable selectors, deterministic waits, `finally` teardown,
+>    one actionable failure line, explicitly deterministic — no visual prompt-judge). **Flag both to
+>    the lead** — do not edit those files from here.
+> 2. **The `$e2eStack` harness/CI support and concrete driver invocation** (`references/e2e/<driver>.md`,
+>    `playwright install`, the 3-OS CI matrix cost, the readiness-probe loop) is **v2 bet #5**
+>    (`docs/plans/03-roadmap.md`) — designed, not built. `references/stacks/ui.md` documents the
+>    methodology and the v2 boundary; the concrete Playwright/Cypress stack file is deferred until a
+>    SECOND real web-UI plan exists (exactly one does today). Until v2 ships, an absent driver is
+>    surfaced (report + honest-halt), never silently scaffolded.
+<!-- END ADDED SECTION #41/#78 -->
+
 ## Quality bar (verify before declaring done)
 
 - [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
@@ -1069,4 +1271,6 @@ pre-condition note) and the affected `.claude/` path in Step 7.
 - [ ] (#94) Every turn-expensive prompt task (integration/smoke/e2e + in-process harness, unfamiliar-SDK discovery, terminal aggregation/wiring) carries a per-task `maxTurns: 75` override (`task.json action.maxTurns` or prompt frontmatter); other prompt tasks left at the default; a shared-harness task inserted when ≥2 tasks need the same unfamiliar-SDK setup; the bumps + insertion reported (Step 4a).
 - [ ] (#116) Every author-tests task that builds a real git repo reuses a Windows-safe shared `TempGitRepo` fixture (strips read-only before delete, recreates `git rm`/`git mv`-pruned dirs, rolls back via `git reset --hard`, normalizes `core.autocrlf`) OR carries the Windows-Git portability directive; the fixture is authored once and reused, not re-discovered per task (Step 5a; `stacks/dotnet.md §11`).
 - [ ] (#101) Every task whose primary deliverable is a file in a NEW `.claude/` subdirectory has a directory-seed task (writes a `.gitkeep`) or a `## Pre-conditions` note before it, plus a `01-dir-seeded.ps1` guardrail asserting the subdir exists; the seed and affected path reported (Step 5b).
+- [ ] (#87) No emitted task updates ≥2 `.claude/skills/<X>/` directories — multi-skill milestones split into one `NN-update-<skill>-skill` task per directory (each with a directory-narrowed `writeScope`), with golden-example regeneration and round-trip verification as their own downstream tasks `dependsOn` the skill updates (Step 2c).
+- [ ] (#41/#78) `$e2eStack` recorded in Step 0 (playwright | cypress | none); for a UI-producing task, Level A (v1 liveness smoke) is added when a driver exists (else the §9 served-markup guardrail is emitted and the Level-A gap reported), an absent driver is surfaced/honest-halted (never scaffolded), Level B (v2 interaction-flow) is documented and surfaced as a v2 decision (never emitted in v1), and a multi-step-interaction exit criterion covered by only served-markup is flagged under-covered in Step 7 (Step 4b/5c; `references/stacks/ui.md`).
 <!-- END ADDED QUALITY-BAR ITEMS -->
