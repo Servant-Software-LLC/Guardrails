@@ -20,6 +20,7 @@ public sealed class ReviewMarkerCliTests
         var root = new RootCommand("test root");
         root.Add(RunCommand.Create(io));
         root.Add(ValidateCommand.Create(io));
+        root.Add(MarkReviewedCommand.Create(io));
         int exit = await root.Parse(args).InvokeAsync();
         return (exit, io.OutText);
     }
@@ -93,5 +94,42 @@ public sealed class ReviewMarkerCliTests
         Assert.Equal(ExitCodes.Success, suppressed);
         Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, nudged);
         Assert.DoesNotContain(DiagnosticCodes.ReviewMarkerMissingOrStale, quiet);
+    }
+
+    // ── mark-reviewed (the writer, issue #131) ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task MarkReviewed_WritesMarker_ThenValidateIsQuiet()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        // Before: validate nudges (unreviewed).
+        (int _, string before) = await InvokeAsync("validate", plan.PlanDir);
+        Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, before);
+
+        // mark-reviewed writes the planHash-keyed marker.
+        (int markExit, string markOut) = await InvokeAsync("mark-reviewed", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, markExit);
+        Assert.Contains("marked reviewed", markOut);
+        Assert.True(File.Exists(ReviewMarker.PathFor(plan.PlanDir)));
+
+        // After: validate is quiet — the writer cleared the GR2025 nudge (#131 closes the #79 loop).
+        (int valExit, string after) = await InvokeAsync("validate", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, valExit);
+        Assert.DoesNotContain(DiagnosticCodes.ReviewMarkerMissingOrStale, after);
+    }
+
+    [Fact]
+    public async Task MarkReviewed_ThenPlanChanges_WarnsStaleAgain()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+        await InvokeAsync("mark-reviewed", plan.PlanDir);
+
+        // Editing the plan (a new task changes the plan hash) re-stales the marker.
+        plan.AddTask("02-second");
+
+        (int exit, string output) = await InvokeAsync("validate", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, output); // stale → warns again
     }
 }

@@ -281,6 +281,22 @@ concerns a guardrail the human added or edited (check `git log`/`git diff` if th
 folder is tracked, else say you cannot tell), name that explicitly before proposing
 changes to it.
 
+### 7. Record the review
+
+When the review pass is complete (findings reported; fixes applied or explicitly declined), record it
+so the harness's review nudge clears:
+
+```bash
+guardrails mark-reviewed <folder>
+```
+
+This writes the local, plan-hash-keyed `state/guardrails-review.json` marker (SSOT §13) — the skill
+can't compute the `PlanHash` itself, so it delegates to the CLI. Until the plan changes, `guardrails
+validate`/`run` stop emitting the GR2025 "not reviewed" warning; editing any `task.json` /
+`guardrails.json` re-stales the marker and the nudge returns (the marker is local, gitignored, and
+wiped by `--fresh`). Do NOT mark a plan reviewed while a BLOCKER finding remains unaddressed — the
+marker vouches that the plan was genuinely reviewed.
+
 ## Quality bar
 - [ ] `guardrails validate` ran first; findings don't duplicate the tool.
 - [ ] `guardrails graph --check` ran; exit 2 (stale/missing) → regenerated and noted; exit 1 (error) → surfaced, not silently regenerated.
@@ -302,3 +318,4 @@ changes to it.
 - [ ] Every producer↔consumer derived-name seam has a consumer-driven integration guardrail on a both-sides-present task that drives the real lookup for EVERY item and asserts 200 + a per-item marker — union-safe, no hard-coded name copy, no sampling (#96).
 <!-- END ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
+- [ ] The review was recorded with `guardrails mark-reviewed <folder>` once findings were addressed/declined — clearing the GR2025 nudge (#79/#131); NOT run while a BLOCKER remained open.

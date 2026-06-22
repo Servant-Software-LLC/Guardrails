@@ -1370,7 +1370,8 @@ page during a live run is a deferred follow-up; the re-runnable command is the v
 ## 13. Review marker (`state/guardrails-review.json`)
 
 `/guardrails-review` records that a human ran the adversarial review pass over the current plan, by
-writing a **local, gitignored** marker under `state/`:
+invoking **`guardrails mark-reviewed <folder>`** (the writer — issue #131; the skill can't compute the
+`PlanHash` itself, so it delegates to the CLI) which writes a **local, gitignored** marker under `state/`:
 
 ```jsonc
 {
