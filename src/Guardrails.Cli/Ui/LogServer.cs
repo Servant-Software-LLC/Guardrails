@@ -26,8 +26,12 @@ namespace Guardrails.Cli.Ui;
 /// </summary>
 public sealed class LogServer : IAsyncDisposable
 {
-    private const string PreferredPrimary = "claude-stream.jsonl";
-    private const string PreferredSecondary = "action-stdout.log";
+    // Preference order for the file the task page opens by default (issue #118). transcript.md —
+    // the groomed, human-readable projection of the agent stream (#27) — is what the user almost
+    // always wants when they click "view log", so it leads. claude-stream.jsonl (the raw debug
+    // stream) and action-stdout.log follow as fallbacks for script tasks / pre-transcript attempts.
+    private static readonly string[] PreferenceOrder =
+        ["transcript.md", "claude-stream.jsonl", "action-stdout.log"];
 
     private readonly HttpListener _listener;
     private readonly string _logsRoot;
@@ -248,9 +252,7 @@ public sealed class LogServer : IAsyncDisposable
                 .ToList();
 
         string? preferred =
-            files.Contains(PreferredPrimary) ? PreferredPrimary :
-            files.Contains(PreferredSecondary) ? PreferredSecondary :
-            files.FirstOrDefault();
+            PreferenceOrder.FirstOrDefault(files.Contains) ?? files.FirstOrDefault();
 
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))

@@ -511,6 +511,26 @@ the writing task's own id. It ships **EMPTY** in v1 — there is deliberately no
 namespace. Any future reserved key MUST carry its own anti-poisoning analysis before admission:
 a shared writable key is exactly the cross-task poisoning vector this rule closes.
 
+**Cross-task state references require a dependency edge (validated, GR2022).** A guardrail or
+script-action body that reads another task's state namespace in the canonical state-access form —
+`$state.'<task-id>'` / `$state."<task-id>"` (PowerShell) or `state['<task-id>']` /
+`state["<task-id>"]` (bracket index) — declares a *runtime read dependency* on that producer. The
+scheduler orders only on `dependsOn`, so if the producer is not a transitive `dependsOn` ancestor of
+the consumer, the scheduler may run the consumer first and the read returns null — the guardrail then
+fails at runtime as `needs-human` for a reason that was knowable at load time (the `46`→`35` cascade,
+issue #121). `guardrails validate` therefore turns this into a load-time **ERROR (GR2022)**: for every
+referenced `<task-id>` that is a real task id in the plan and is **not** the referencing task's own id,
+that task MUST be reachable as a transitive `dependsOn` ancestor — **OR** be satisfied by the
+pre-existing baseline, i.e. `state/seed.json` carries a top-level key exactly equal to `<task-id>`
+(§6.1/§6.3 establish seed content as a legitimate non-ancestor source under a task's namespace). The
+check is deliberately scoped to the canonical state-key *shape* — the exact form the single-writer-per-key
+namespacing makes deterministic (the producer of key `'<id>'` is exactly task `<id>`, never ambiguous) —
+so it carries **zero false-positive risk**: an id that matches no task, or a quoted string not in a
+`state` access position, is ignored. **Produced-file references** (a guardrail reading a path another
+task's action writes) are *not* linted in v1 — no deterministic producer→artifact map exists
+(`writeScope` is an optional, glob-shaped permission surface, not a write manifest), so a file-level
+check could not meet the zero-false-positive bar; it is a future tightening, gated on such a map existing.
+
 ### 6.3 Merge policy (deterministic)
 
 Deep merge into `state.json`: objects merge recursively; **scalars and arrays are

@@ -1,4 +1,5 @@
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
@@ -101,11 +102,8 @@ public static class RunReset
         }
     }
 
-    private static void DeleteDirectoryIfExists(string path)
-    {
-        if (Directory.Exists(path))
-        {
-            Directory.Delete(path, recursive: true);
-        }
-    }
+    // Windows-safe (issue #109): the logs/ and captured/ trees never hold git objects today, but
+    // the --fresh worktree-root wipe can; route every reset delete through SafeDelete so a future
+    // git-bearing path (or a read-only file dropped by a tool) cannot abort the reset.
+    private static void DeleteDirectoryIfExists(string path) => SafeDelete.DeleteDirectory(path);
 }
