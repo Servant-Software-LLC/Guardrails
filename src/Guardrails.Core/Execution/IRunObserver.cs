@@ -40,6 +40,15 @@ public interface IRunObserver
     /// </summary>
     void ParallelismClampedNoProvider(int requested) { }
 
+    /// <summary>
+    /// A best-effort cleanup operation (a segment-worktree <c>Discard</c> or <c>PruneOrphans</c>)
+    /// failed during the M2 end-of-run sweep or a failed-task Discard. <paramref name="owner"/> is
+    /// the owning task id (or a sentinel like <c>(prune-orphans)</c>). The run's verdict is
+    /// unaffected — a cleanup failure must never flip a green run off-green (plan 08 §D / #126).
+    /// Default no-op so non-CLI observers need not handle it.
+    /// </summary>
+    void CleanupFailed(string owner, Exception error) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

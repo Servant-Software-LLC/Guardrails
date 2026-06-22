@@ -233,7 +233,83 @@ public sealed class Scheduler
             mergeOutcome = _worktreeProvider.MergePlanBranchIntoUserBranch(integ, cancellationToken);
         }
 
+        // --- M2 end-of-run cleanup sweep (closes #126) -----------------------------------
+        // After delivery, Discard every still-live segment/fork worktree directory this run created
+        // (whatever remains owned in DirectoryOwner — the failure path already removed any it freed),
+        // then PruneOrphans to clear the registrations. The integration worktree is reattached to the
+        // plan branch and is NEVER in DirectoryOwner, so the sweep never touches it (design §D / 08 §7).
+        //
+        // Skipped on cancellation: a cancelled run journals in-flight tasks back to pending for
+        // resume, and Discarding here would race the executor's in-flight teardown (design §C). The
+        // next run's PruneStaleRunBranches pre-pass reclaims those directories.
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            EndOfRunSweep(context, integ);
+        }
+
         return report with { MergeOnSuccessOutcome = mergeOutcome };
+    }
+
+    /// <summary>
+    /// plan 08 topology-wiring M2 §D (#126): remove every segment/fork worktree directory owned by a
+    /// task that settled GREEN, then prune stale registrations. A green task's work is durable on the
+    /// plan branch, so its directory is pure waste — this is the direct #126 fix (a wholly-green run
+    /// leaves no segment worktree behind).
+    ///
+    /// A NON-green task (needs-human / failed / blocked) keeps its directory: the "fix, don't restart"
+    /// invariant (§3.2, open-risk #4) requires a failed attempt's worktree to survive so a human — or
+    /// a resume's reset-and-retry — can inspect the scoped-revert artifacts and WIP. The next run's
+    /// PruneStaleRunBranches pre-pass reclaims those. The <c>_integration</c> worktree is never in
+    /// <see cref="RunContext.DirectoryOwner"/> and is therefore never swept.
+    ///
+    /// Best-effort — a cleanup failure logs (via <see cref="IRunObserver.CleanupFailed"/>) and
+    /// continues; it must NEVER flip an otherwise-green run off-green (GitWorktreeProvider.Discard
+    /// throws on a non-zero git exit, so each call-site swallows).
+    /// </summary>
+    private void EndOfRunSweep(RunContext context, IntegrationHandle? integ)
+    {
+        if (_worktreeProvider is not { } provider || integ is null)
+        {
+            return;
+        }
+
+        // Snapshot under the gate (no workers are running now, but keep the discipline consistent).
+        // Sweep only GREEN-owned directories; non-green tasks keep their worktree for fix/resume.
+        List<KeyValuePair<string, string>> sweepable;
+        lock (_gate)
+        {
+            sweepable = context.DirectoryOwner
+                .Where(kv => context.Settled.TryGetValue(kv.Value, out TaskResult? r) && r.IsGreen)
+                .ToList();
+        }
+
+        foreach ((string path, string owner) in sweepable)
+        {
+            try
+            {
+                provider.Discard(new WorktreeHandle { WorktreePath = path });
+            }
+            catch (Exception ex)
+            {
+                _observer.CleanupFailed(owner, ex);
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    context.DirectoryOwner.Remove(path);
+                }
+            }
+        }
+
+        try
+        {
+            provider.PruneOrphans(Array.Empty<string>(), integ);
+        }
+        catch (Exception ex)
+        {
+            _observer.CleanupFailed("(prune-orphans)", ex);
+        }
     }
 
     private async Task WorkerLoopAsync(RunContext context, CancellationTokenSource runCts)
@@ -402,6 +478,14 @@ public sealed class Scheduler
                     _journal.MarkBlocked(dependent);
                     newlyBlocked.Add(blocked);
                 }
+
+                // M2 §C / open-risk #4: a permanently-failed (needs-human/failed) task's segment is
+                // NOT Discarded mid-run. The "fix, don't restart" invariant (§3.2) keeps a failed
+                // attempt's worktree alive so a human (or a retry) can inspect the scoped-revert
+                // artifacts and WIP. Its directory stays owned in DirectoryOwner and is reclaimed by
+                // the end-of-run sweep at quiescence — which is what closes #126 (design §D point 2:
+                // "#126 is closed by the run-end sweep alone"). Cancellation skips the sweep, so a
+                // cancelled task's worktree survives for the resume prune (T-11).
             }
 
             if (context.Remaining == 0)

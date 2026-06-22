@@ -211,6 +211,11 @@ task's start commit, distinct from the plan-branch `preHead`). A task that depen
 the producer's MERGED outputs (its worktree descends from the producer's committed tip). No
 cross-task `actionExitCode` channel exists. The user's checkout is never written; the plan branch's
 trailer-bearing commits (plain FF'd commits AND merge commits) are the durable resume record (§7).
+At run end the harness sweeps the segment worktree directory of every task that settled **green** (its
+work is durable on the plan branch, so the directory is pure waste — the direct fix for **#126**),
+then prunes the registrations; a **non-green** (needs-human/failed/blocked) task's worktree is left in
+place as the fix/resume inspection surface, and the integration worktree is never swept. A cancelled
+run skips the sweep entirely (its in-flight worktrees are reclaimed by the next run's resume prune).
 
 ### 3.3 Terminal integration gate (`integrationGate`)
 

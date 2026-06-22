@@ -168,6 +168,42 @@ public sealed class TopologyReuseForkSchedulerTests
             UnixFileMode.GroupRead | UnixFileMode.OtherRead);
     }
 
+    /// <summary>A 3-task linear chain where <paramref name="failingTask"/>'s guardrail exits 1.</summary>
+    private static string CreateFailingChainPlan(string repoPath, string failingTask)
+    {
+        string planDir = CreateChainPlan(repoPath,
+            ("01-a", []), ("02-b", ["01-a"]), ("03-c", ["02-b"]));
+        // Overwrite the failing task's guardrail to fail (defaultRetries: 0 → terminal needs-human).
+        string guardDir = Path.Combine(planDir, "tasks", failingTask, "guardrails");
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(Path.Combine(guardDir, "01-check.ps1"), "exit 1\n");
+        }
+        else
+        {
+            string g = Path.Combine(guardDir, "01-check.sh");
+            File.WriteAllText(g, "#!/usr/bin/env bash\nexit 1\n");
+            MakeExecutable(g);
+        }
+        return planDir;
+    }
+
+    /// <summary>Replace a task's action with a long sleep so a cancel has a window to fire mid-flight.</summary>
+    private static void OverwriteWithSlowAction(string planDir, string taskId)
+    {
+        string taskDir = Path.Combine(planDir, "tasks", taskId);
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(Path.Combine(taskDir, "action.ps1"), "Start-Sleep -Seconds 60\nexit 0\n");
+        }
+        else
+        {
+            string a = Path.Combine(taskDir, "action.sh");
+            File.WriteAllText(a, "#!/usr/bin/env bash\nsleep 60\nexit 0\n");
+            MakeExecutable(a);
+        }
+    }
+
     private static async Task<RunReport> RunAsync(
         string planDir, IWorktreeProvider provider, IReVerifier reVerifier, CancellationToken ct)
     {
@@ -188,12 +224,12 @@ public sealed class TopologyReuseForkSchedulerTests
     }
 
     /// <summary>
-    /// Counts the SEGMENT worktrees git has registered under <paramref name="worktreeRoot"/> —
-    /// every <c>git worktree add</c> the run made for a segment OR fork tree, excluding the single
-    /// <c>_integration</c> worktree. This is the metamorphic add-count instrument: a reuse chain
-    /// adds ONE; a fresh-per-task chain would add N.
+    /// Counts the SEGMENT/fork worktrees git currently has REGISTERED under
+    /// <paramref name="worktreeRoot"/>, excluding the single <c>_integration</c> worktree. Used by
+    /// the cleanup tests (T-9/T-10/T-11) to assert which segment trees SURVIVE — the M2 end-of-run
+    /// sweep drives this to zero on a quiescent run; cancellation leaves it ≥ 1.
     /// </summary>
-    private static int SegmentWorktreeAddCount(string repoPath, string worktreeRoot)
+    private static int LiveSegmentWorktreeCount(string repoPath, string worktreeRoot)
     {
         string listing = TempGitRepo.Git(repoPath, "worktree", "list", "--porcelain");
         string rootNorm = Path.GetFullPath(worktreeRoot)
@@ -214,6 +250,22 @@ public sealed class TopologyReuseForkSchedulerTests
         return count;
     }
 
+    /// <summary>
+    /// Counts the SEGMENT/fork BRANCHES (<c>guardrails/&lt;runId&gt;/…</c> with ≥ 3 path components)
+    /// the run created — the stable metamorphic add-count instrument. Each <c>CreateSegment</c> /
+    /// <c>ForkFromTip</c> creates exactly one such branch; <c>ReuseSegment</c> creates none. Unlike
+    /// the worktree directory (which the M2 sweep removes), the branch SURVIVES the run, so this is
+    /// the faithful "how many `git worktree add` did the run invoke" proxy AFTER cleanup. The plan
+    /// branch (<c>guardrails/&lt;plan-name&gt;</c>, exactly 2 components) is excluded.
+    /// </summary>
+    private static int SegmentBranchCount(string repoPath)
+    {
+        string refs = TempGitRepo.Git(repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads");
+        return refs.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Count(s => s.StartsWith("guardrails/", StringComparison.Ordinal) && s.Count(c => c == '/') >= 2);
+    }
+
     // ── T-M (headline metamorphic) ─────────────────────────────────────────────────────────────
     [Theory]
     [InlineData(2)]
@@ -223,6 +275,8 @@ public sealed class TopologyReuseForkSchedulerTests
     {
         // The disk lever, empirically: a linear chain of N tasks invokes `git worktree add` exactly
         // ONCE (one segment, reused N-1 times) — strictly less than the fresh-per-task baseline of N.
+        // Measured by the surviving segment-branch count (one branch per `worktree add`), which is
+        // stable under the M2 end-of-run worktree sweep (the sweep removes dirs, not branches).
         using var repo = new TempGitRepo();
         var tasks = Enumerable.Range(1, n)
             .Select(i => ($"{i:00}-t", i == 1 ? Array.Empty<string>() : new[] { $"{i - 1:00}-t" }))
@@ -237,12 +291,15 @@ public sealed class TopologyReuseForkSchedulerTests
             "linear chain should settle green: " +
             string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
 
-        int reuseAddCount = SegmentWorktreeAddCount(repo.RepoPath, repo.WorktreeRoot);
-        int freshBaseline = n; // fresh-per-task would add one segment worktree per task
+        int reuseAddCount = SegmentBranchCount(repo.RepoPath);
+        int freshBaseline = n; // fresh-per-task would add one segment worktree (branch) per task
 
         Assert.Equal(1, reuseAddCount);                 // reuse adds exactly one
         Assert.True(reuseAddCount < freshBaseline,       // strictly fewer than the baseline
             $"reuse add-count {reuseAddCount} must be < fresh baseline {freshBaseline}");
+
+        // And the M2 sweep removed the one segment worktree DIRECTORY (closes #126 for the chain).
+        Assert.Equal(0, LiveSegmentWorktreeCount(repo.RepoPath, repo.WorktreeRoot));
     }
 
     // ── T-6 ──────────────────────────────────────────────────────────────────────────────────
@@ -339,6 +396,133 @@ public sealed class TopologyReuseForkSchedulerTests
         TempGitRepo.Git(workingDir, "add", relPath);
         TempGitRepo.Git(workingDir, "commit", "-m", message);
         return TempGitRepo.Git(workingDir, "rev-parse", "HEAD").Trim();
+    }
+
+    /// <summary>True when the integration worktree directory for this run exists under the root.</summary>
+    private static bool IntegrationWorktreeExists(string worktreeRoot)
+    {
+        if (!Directory.Exists(worktreeRoot)) return false;
+        return Directory.EnumerateDirectories(worktreeRoot, "_integration", SearchOption.AllDirectories).Any();
+    }
+
+    // ── T-10 (#126 regression: no segment worktree survives a green run; _integration does) ─────
+    [Fact]
+    public async Task T10_GreenRun_LeavesNoSegmentWorktree_ButIntegrationWorktreeSurvives()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateChainPlan(repo.RepoPath,
+            ("01-a", []), ("02-b", ["01-a"]), ("03-c", ["01-a"])); // a chain + a fork sibling
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        RunReport report = await RunAsync(
+            planDir, provider, new SpyReVerifier(), TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded);
+
+        // #126: NO segment/fork worktree survives the green run.
+        Assert.Equal(0, LiveSegmentWorktreeCount(repo.RepoPath, repo.WorktreeRoot));
+
+        // The integration worktree IS reattached, not pruned — it survives.
+        Assert.True(IntegrationWorktreeExists(repo.WorktreeRoot),
+            "the _integration worktree must survive the end-of-run sweep");
+
+        // git's own worktree list agrees: exactly one linked worktree remains (the integration one).
+        string listing = TempGitRepo.Git(repo.RepoPath, "worktree", "list", "--porcelain");
+        int integCount = listing.Split('\n').Count(l =>
+            l.Trim().StartsWith("worktree ", StringComparison.Ordinal) &&
+            l.Trim().EndsWith("_integration", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(1, integCount);
+    }
+
+    // ── T-9 (integration: failed task's segment SURVIVES for fix/resume; _integration untouched) ──
+    [Fact]
+    public async Task T9_FailedTask_SegmentSurvivesSweep_IntegrationWorktreeUntouched()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateFailingChainPlan(repo.RepoPath, failingTask: "01-a");
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        RunReport report = await RunAsync(
+            planDir, provider, new SpyReVerifier(), TestContext.Current.CancellationToken);
+
+        Assert.False(report.AllSucceeded);
+        // §3.2 / open-risk #4: the failed task's segment survives the end-of-run sweep (the human's /
+        // resume's inspection surface). The integration worktree also survives.
+        Assert.True(LiveSegmentWorktreeCount(repo.RepoPath, repo.WorktreeRoot) >= 1,
+            "a failed task's segment worktree must survive for fix/resume (it is not swept)");
+        Assert.True(IntegrationWorktreeExists(repo.WorktreeRoot));
+    }
+
+    // ── T-11 (cancellation does NOT Discard) ────────────────────────────────────────────────────
+    [Fact]
+    public async Task T11_Cancellation_DoesNotDiscard_SegmentWorktreeSurvivesForResumePrune()
+    {
+        using var repo = new TempGitRepo();
+        // A long-running root + a dependent; cancel while the root is in flight.
+        string planDir = CreateChainPlan(repo.RepoPath, ("01-slow", []), ("02-next", ["01-slow"]));
+        OverwriteWithSlowAction(planDir, "01-slow");
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        Assert.NotNull(load.Plan);
+        var stateManager = new StateManager(load.Plan!.PlanDirectory);
+        stateManager.Initialize();
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+        var registry = PromptRunnerRegistry.Build(load.Plan!.Config,
+            _ => throw new InvalidOperationException("no prompt runners"));
+        var interpreterMap = new InterpreterMap(new PathExecutableProbe(), load.Plan!.Config.Interpreters);
+        var executor = new TaskExecutor(
+            load.Plan!, new ProcessRunner(), interpreterMap, stateManager, journal, IRunObserver.Null, registry);
+        var scheduler = new Scheduler(load.Plan!, executor, journal,
+            worktreeProvider: provider, reVerifier: new SpyReVerifier());
+
+        Task<RunReport> run = scheduler.RunAsync(load.Plan!, cts.Token);
+
+        // Wait until the root's segment worktree has been physically created, then cancel.
+        for (int i = 0; i < 200 && LiveSegmentWorktreeCount(repo.RepoPath, repo.WorktreeRoot) == 0; i++)
+            await System.Threading.Tasks.Task.Delay(25, TestContext.Current.CancellationToken);
+        Assert.True(LiveSegmentWorktreeCount(repo.RepoPath, repo.WorktreeRoot) >= 1,
+            "the root's segment worktree must exist before cancellation");
+
+        cts.Cancel();
+        RunReport report = await run;
+
+        Assert.True(report.Cancelled);
+        // Cancellation must NOT Discard: the segment worktree survives for the resume prune to handle.
+        Assert.True(LiveSegmentWorktreeCount(repo.RepoPath, repo.WorktreeRoot) >= 1,
+            "a cancelled run must not Discard its in-flight segment worktree (resume prune handles it)");
+    }
+
+    // ── T-13 (fan-in still works via the union path — no CreateFanIn; locks in option b) ─────────
+    [Fact]
+    public async Task T13_FanIn_StillWorksViaPlanBranchUnion_SeesAllProducersMergedTree()
+    {
+        using var repo = new TempGitRepo();
+        // P1, P2 → F. F is a fan-in: it must see BOTH producers' work (the plan-branch union), with
+        // NO CreateFanIn private merge. A green run with both producers' files present on the plan
+        // branch + the fan-in integrated proves the union path covers fan-in.
+        string planDir = CreateChainPlan(repo.RepoPath,
+            ("01-p1", []), ("02-p2", []), ("03-fanin", ["01-p1", "02-p2"]));
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        RunReport report = await RunAsync(
+            planDir, provider, new SpyReVerifier(), TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "fan-in via the union path should settle green: " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        // Both producers' files AND the fan-in's file are on the plan branch (the merged tree).
+        string tree = TempGitRepo.Git(repo.RepoPath, "ls-tree", "-r", "--name-only", "guardrails/plan");
+        foreach (string id in new[] { "01-p1", "02-p2", "03-fanin" })
+            Assert.Contains($"src/{id}.cs", tree, StringComparison.Ordinal);
+
+        // Every task carries a trailer (the fan-in integrated via the union, not a private merge).
+        string log = TempGitRepo.Git(repo.RepoPath, "log", "--format=%B", "guardrails/plan");
+        foreach (string id in new[] { "01-p1", "02-p2", "03-fanin" })
+            Assert.Contains($"Guardrails-Task: {id}", log, StringComparison.Ordinal);
     }
 
     // ── T-M2 (crash-resume after a reused-chain hop) ────────────────────────────────────────────
