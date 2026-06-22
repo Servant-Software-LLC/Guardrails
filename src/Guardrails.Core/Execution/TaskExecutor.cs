@@ -34,6 +34,7 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly DependencyGraph _graph;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
     private readonly NeedsHumanTriage? _triage;
+    private readonly Func<TimeSpan, CancellationToken, Task> _transientDelay;
 
     public TaskExecutor(
         PlanDefinition plan,
@@ -43,13 +44,17 @@ public sealed class TaskExecutor : ITaskExecutor
         RunJournal journal,
         IRunObserver observer,
         PromptRunnerRegistry? promptRunners = null,
-        NeedsHumanTriage? triage = null)
+        NeedsHumanTriage? triage = null,
+        Func<TimeSpan, CancellationToken, Task>? transientDelay = null)
     {
         _plan = plan;
         _stateManager = stateManager;
         _journal = journal;
         _observer = observer;
         _triage = triage;
+        // Injected so concurrency tests gate the transient backoff deterministically (no real sleeps);
+        // production waits with Task.Delay (issue #115).
+        _transientDelay = transientDelay ?? Task.Delay;
 
         _graph = new DependencyGraph(plan.Tasks);
         _tasksById = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
@@ -74,15 +79,73 @@ public sealed class TaskExecutor : ITaskExecutor
         string? feedbackPath = null;
         TaskResult last = null!;
 
+        // One transient-pause budget per task (issue #115): a rate limit pauses+re-runs WITHOUT
+        // consuming the retry budget, bounded by the cumulative wall-clock pause budget.
+        var backoff = new TransientBackoff(
+            TimeSpan.FromSeconds(_plan.Config.TransientPauseBudgetSeconds), _transientDelay);
+        int timeoutRetries = 0;
+
         for (int attemptIndex = 1; attemptIndex <= budget; attemptIndex++)
         {
             bool isFinal = attemptIndex == budget;
-            int attemptNumber = _journal.NextAttemptNumber(task.Id);
             _observer.AttemptStarting(task, attemptIndex, budget);
 
-            AttemptResult attempt = await RunAttemptAsync(task, worktree, attemptNumber, feedbackPath, isFinal, cancellationToken)
-                .ConfigureAwait(false);
+            // Inner pause loop: re-run the SAME attempt across transient pauses without consuming the
+            // retry budget. attemptNumber is re-read each time (NextAttemptNumber is pure until an
+            // attempt is actually recorded), so a paused retry reuses the same attempt-N log dir.
+            AttemptResult attempt;
+            while (true)
+            {
+                int attemptNumber = _journal.NextAttemptNumber(task.Id);
+                attempt = await RunAttemptAsync(
+                    task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (attempt.Result.Outcome != TaskOutcome.TransientPause)
+                {
+                    break;
+                }
+
+                // Cancellation during a pause: journal back to pending (resume re-runs), like any
+                // mid-attempt cancellation — NOT a rate-limit halt.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    int n = _journal.NextAttemptNumber(task.Id);
+                    AttemptResult cancelled = _journaler.Cancelled(
+                        task, n, DateTimeOffset.UtcNow, RelativeLogDir(task.Id, n),
+                        new ProcessResult { ExitCode = 0, StandardOutput = "", StandardError = "", TimedOut = false, Duration = TimeSpan.Zero },
+                        costUsd: null);
+                    return cancelled.Result;
+                }
+
+                // Transient: pause (bounded backoff) and re-run, unless the whole-task pause budget is
+                // spent — then settle needs-human with a DISTINCT rate-limit reason ("re-run later"),
+                // NOT a generic failure. This is the named bound on "a rate limit never needs-human".
+                if (!backoff.CanPauseAgain())
+                {
+                    int n = _journal.NextAttemptNumber(task.Id);
+                    AttemptResult exhausted = _journaler.RateLimitExhausted(
+                        task, n, DateTimeOffset.UtcNow,
+                        RelativeLogDir(task.Id, n), AttemptLogDir(task.Id, n),
+                        attempt.TransientReason ?? "transient infrastructure error",
+                        backoff.Elapsed);
+                    return exhausted.Result;
+                }
+
+                string reason = attempt.TransientReason ?? "transient infrastructure error";
+                TimeSpan delay = backoff.NextDelay();
+                _observer.PromptPaused(task, reason, delay, backoff.PauseCount + 1);
+                await backoff.PauseAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             last = attempt.Result;
+
+            // A timeout outcome means the task needed more clock; count it so the NEXT attempt's
+            // timeout is extended (issue #119) — a same-clock retry just re-times-out.
+            if (attempt.Outcome is AttemptOutcome.Timeout)
+            {
+                timeoutRetries++;
+            }
 
             // On success, stamp the summary with how long the task took (including any retries)
             // and the wall-clock completion time, so an unattended/overnight run can be reviewed
@@ -175,6 +238,7 @@ public sealed class TaskExecutor : ITaskExecutor
         int attemptNumber,
         string? previousFeedbackPath,
         bool isFinal,
+        int timeoutRetries,
         CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
@@ -191,9 +255,13 @@ public sealed class TaskExecutor : ITaskExecutor
         string workspace = ResolveWorkingDirectory(task);
 
         // --- action (script or prompt) --------------------------------------------------
+        // Timeout extension (issue #119): after a timeout, each retry gets a longer clock — a
+        // same-clock retry just re-times-out. The factor grows 1× → 1.5× → 2.25× …, capped, so a
+        // genuinely heavy task is given the wall-clock it demonstrably needs without unbounded growth.
+        double timeoutMultiplier = TimeoutMultiplierFor(timeoutRetries);
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, cancellationToken).ConfigureAwait(false);
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
@@ -208,19 +276,65 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.NeedsHuman(task, attemptNumber, startedAt, relativeLogDir, logDir, action, question);
         }
 
+        // --- transient pause (issue #115): a retryable infra condition (429/503/529, overloaded,
+        // rate/session/usage limit). Do NOT journal a failed attempt and do NOT consume the retry
+        // budget — return the in-memory TransientPause signal so the loop backs off and re-runs the
+        // SAME attempt. A human cannot fix a rate limit, so this never marks needs-human (until the
+        // whole-task pause budget is exhausted, which the loop handles).
+        if (!action.Succeeded && action.FailureKind == PromptFailureKind.Transient)
+        {
+            string reason = action.ResetHint is { Length: > 0 } hint
+                ? $"{action.FailureSummary} (resets {hint})"
+                : action.FailureSummary;
+            return new AttemptResult(
+                new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.TransientPause,
+                    ActionExitCode = action.ExitCode,
+                    Summary = $"paused (transient): {reason}"
+                },
+                FeedbackPath: null,
+                TransientReason: reason);
+        }
+
         if (!action.Succeeded)
         {
-            string feedback = action.FailureFeedback
-                ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult());
+            // Compose signal-specific feedback so a retry CHANGES BEHAVIOR rather than re-hitting the
+            // same wall: output-cap (#114) → "write incrementally / split"; timeout (#119) → "continue
+            // from preserved partial work, don't re-explore". A genuine error keeps the prompt/script
+            // failure feedback. The journal outcome distinguishes timeout / output-cap / action-failed
+            // so a human (and §9 triage) sees a budget/tool issue, not a generic failure.
+            string feedback = action.FailureKind switch
+            {
+                PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber),
+                PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber),
+                _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult())
+            };
+
+            AttemptOutcome attemptOutcome = action.FailureKind switch
+            {
+                PromptFailureKind.Timeout => AttemptOutcome.Timeout,
+                PromptFailureKind.OutputCap => AttemptOutcome.OutputCap,
+                _ => action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed
+            };
+
+            string summary = action.FailureKind switch
+            {
+                PromptFailureKind.OutputCap => "response truncated at the output-token cap — reduce/split the task; guardrails skipped",
+                PromptFailureKind.Timeout => $"{action.FailureSummary} — likely under-sized/under-budgeted; guardrails skipped",
+                _ => $"{action.FailureSummary}; guardrails skipped"
+            };
+
             return _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
-                action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed,
+                attemptOutcome,
                 new TaskResult
                 {
                     TaskId = task.Id,
                     Outcome = TaskOutcome.ActionFailed,
                     ActionExitCode = action.ExitCode,
-                    Summary = $"{action.FailureSummary}; guardrails skipped"
+                    Summary = summary
                 },
                 costUsd: action.CostUsd);
         }
@@ -410,4 +524,13 @@ public sealed class TaskExecutor : ITaskExecutor
             ?? _plan.Config.DefaultTimeoutSeconds;
         return TimeSpan.FromSeconds(seconds);
     }
+
+    /// <summary>
+    /// The timeout-extension factor for the current attempt given how many prior attempts timed out
+    /// (issue #119): 1× on the first attempt, growing 1.5× per prior timeout, capped at 4× so a
+    /// genuinely heavy task gets the wall-clock it demonstrably needs without unbounded growth. A
+    /// non-timeout failure does not extend the clock (it would not help).
+    /// </summary>
+    internal static double TimeoutMultiplierFor(int priorTimeouts) =>
+        Math.Min(Math.Pow(1.5, Math.Max(priorTimeouts, 0)), 4.0);
 }

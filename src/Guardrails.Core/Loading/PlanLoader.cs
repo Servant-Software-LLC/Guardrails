@@ -119,6 +119,7 @@ public sealed class PlanLoader
             DefaultRetries = raw.DefaultRetries ?? 2,
             MaxCostUsd = raw.MaxCostUsd,
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
+            TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 1800,
             GuardrailMode = mode,
             Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,
             WorktreeRoot = string.IsNullOrWhiteSpace(raw.WorktreeRoot) ? null : raw.WorktreeRoot.Trim(),
@@ -192,7 +193,11 @@ public sealed class PlanLoader
             AllowedTools = raw.AllowedTools is null ? [] : [.. raw.AllowedTools],
             MaxTurns = raw.MaxTurns ?? 50,
             Model = raw.Model,
-            ExtraArgs = raw.ExtraArgs is null ? [] : [.. raw.ExtraArgs]
+            ExtraArgs = raw.ExtraArgs is null ? [] : [.. raw.ExtraArgs],
+            MaxOutputTokens = raw.MaxOutputTokens ?? PromptRunnerSettings.DefaultMaxOutputTokens,
+            Env = raw.Env is null
+                ? new Dictionary<string, string>(StringComparer.Ordinal)
+                : new Dictionary<string, string>(raw.Env, StringComparer.Ordinal)
         };
 
         PromptRunnerOverrides? overrides = raw.GuardrailOverrides is null
@@ -203,7 +208,11 @@ public sealed class PlanLoader
                 AllowedTools = raw.GuardrailOverrides.AllowedTools is null ? null : [.. raw.GuardrailOverrides.AllowedTools],
                 MaxTurns = raw.GuardrailOverrides.MaxTurns,
                 Model = raw.GuardrailOverrides.Model,
-                ExtraArgs = raw.GuardrailOverrides.ExtraArgs is null ? null : [.. raw.GuardrailOverrides.ExtraArgs]
+                ExtraArgs = raw.GuardrailOverrides.ExtraArgs is null ? null : [.. raw.GuardrailOverrides.ExtraArgs],
+                MaxOutputTokens = raw.GuardrailOverrides.MaxOutputTokens,
+                Env = raw.GuardrailOverrides.Env is null
+                    ? null
+                    : new Dictionary<string, string>(raw.GuardrailOverrides.Env, StringComparer.Ordinal)
             };
 
         return new PromptRunnerConfig

@@ -15,8 +15,14 @@ public sealed record ClaudeResult
     /// <summary>The result message's <c>is_error</c> flag.</summary>
     public bool IsError { get; init; }
 
-    /// <summary>The result message's <c>result</c> text (the agent's final message).</summary>
+    /// <summary>The result message's <c>result</c> text (the agent's final message — on an error this is the error text).</summary>
     public string? ResultText { get; init; }
+
+    /// <summary>
+    /// The result message's <c>subtype</c> (e.g. <c>"success"</c>, <c>"error_max_turns"</c>), if present.
+    /// A structured hint used alongside the result text to classify a failure (issues #114/#115/#119).
+    /// </summary>
+    public string? Subtype { get; init; }
 
     /// <summary>The result message's <c>total_cost_usd</c>, if present.</summary>
     public decimal? CostUsd { get; init; }
@@ -37,6 +43,7 @@ public sealed class ClaudeStreamParser
     private bool _hasResult;
     private bool _isError;
     private string? _resultText;
+    private string? _subtype;
     private decimal? _costUsd;
     private int? _numTurns;
 
@@ -80,6 +87,9 @@ public sealed class ClaudeStreamParser
             _resultText = root.TryGetProperty("result", out JsonElement res) && res.ValueKind == JsonValueKind.String
                 ? res.GetString()
                 : _resultText;
+            _subtype = root.TryGetProperty("subtype", out JsonElement sub) && sub.ValueKind == JsonValueKind.String
+                ? sub.GetString()
+                : _subtype;
             _costUsd = TryGetDecimal(root, "total_cost_usd") ?? _costUsd;
             _numTurns = TryGetInt(root, "num_turns") ?? _numTurns;
         }
@@ -91,6 +101,7 @@ public sealed class ClaudeStreamParser
         HasResult = _hasResult,
         IsError = _isError,
         ResultText = _resultText,
+        Subtype = _subtype,
         CostUsd = _costUsd,
         NumTurns = _numTurns
     };

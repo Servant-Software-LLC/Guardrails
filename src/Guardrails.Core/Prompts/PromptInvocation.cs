@@ -63,6 +63,22 @@ public sealed record PromptResult
     /// <summary>Number of agent turns reported by the runner; null when unknown.</summary>
     public int? NumTurns { get; init; }
 
+    /// <summary>
+    /// The runner-agnostic classification of a non-success outcome (SSOT §9, issues #114/#115/#119).
+    /// <see cref="PromptFailureKind.None"/> on success. The CLI quarantine
+    /// (<see cref="ClaudePromptRunner"/>) computes this; the harness routes on it without ever
+    /// inspecting a Claude-specific string. <see cref="PromptFailureKind.Transient"/> is the only
+    /// value that suppresses retry-budget consumption (the harness backs off and re-runs).
+    /// </summary>
+    public PromptFailureKind FailureKind { get; init; } = PromptFailureKind.None;
+
+    /// <summary>
+    /// An advisory, operator-facing reset hint extracted from a rate-limit message
+    /// (e.g. <c>"11:20am"</c>), surfaced in the pause notice. Null when none was present. Never
+    /// parsed into a sleep duration (timezone/day ambiguity) — display only.
+    /// </summary>
+    public string? ResetHint { get; init; }
+
     /// <summary>A short human-readable summary of the outcome (for logs and feedback).</summary>
     public required string Summary { get; init; }
 }

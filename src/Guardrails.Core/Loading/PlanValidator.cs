@@ -39,6 +39,7 @@ public sealed class PlanValidator
         ValidateWriteScopes(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
+        ValidatePromptRunnerOutputCaps(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
         return diagnostics;
@@ -125,6 +126,35 @@ public sealed class PlanValidator
             diagnostics.Add(Error(DiagnosticCodes.CostCapNonPositive, plan.PlanDirectory,
                 $"maxCostUsd is {cap}, but a cost cap must be positive; a zero or negative cap would " +
                 "halt the run before any work could run."));
+        }
+    }
+
+    /// <summary>
+    /// A prompt runner's <c>maxOutputTokens</c> (and its <c>guardrailOverrides.maxOutputTokens</c>)
+    /// must be positive (SSOT §2/§9, issue #114). The value caps the runner's per-response output
+    /// budget; a non-positive cap would make every prompt response fail, so it is an ERROR (GR2022).
+    /// An absent value is the harness default and is fine.
+    /// </summary>
+    private static void ValidatePromptRunnerOutputCaps(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values)
+        {
+            if (runner.Settings.MaxOutputTokens <= 0)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.MaxOutputTokensNonPositive, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.maxOutputTokens is {runner.Settings.MaxOutputTokens}, " +
+                    "but it must be a positive integer."));
+            }
+
+            // The guardrail profile (base + guardrailOverrides) is checked too: an override could drive
+            // the effective cap non-positive even when the base is fine.
+            if (runner.GuardrailOverrides is not null &&
+                runner.EffectiveSettings(isGuardrail: true).MaxOutputTokens <= 0)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.MaxOutputTokensNonPositive, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.guardrailOverrides.maxOutputTokens resolves to a " +
+                    "non-positive value, but it must be a positive integer."));
+            }
         }
     }
 

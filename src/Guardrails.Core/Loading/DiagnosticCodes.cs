@@ -144,4 +144,12 @@ public static class DiagnosticCodes
     /// at validate time, never at silent runtime — an ERROR.
     /// </summary>
     public const string InvalidGuardrailScopeValue = "GR2021";
+
+    /// <summary>
+    /// A prompt runner's <c>maxOutputTokens</c> (SSOT §2/§9, issue #114) — or its
+    /// <c>guardrailOverrides.maxOutputTokens</c> — is zero or negative. The value caps the runner's
+    /// per-response output budget and is translated into the CLI's output-token env var; a
+    /// non-positive cap would make every prompt response fail, so it is an ERROR.
+    /// </summary>
+    public const string MaxOutputTokensNonPositive = "GR2022";
 }

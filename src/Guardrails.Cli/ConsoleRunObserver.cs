@@ -60,6 +60,18 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount)
+    {
+        lock (_gate)
+        {
+            // A HEALTHY task waiting out a transient limit — make it unmistakable from a failure so
+            // the operator waits rather than debugging it (issue #115).
+            _output.WriteLine(
+                $"[paused] {task.Id}: transient — {reason}; backing off {(int)backoff.TotalSeconds}s " +
+                $"(pause {pauseCount}); does NOT count against retries");
+        }
+    }
+
     public void PlanHashMismatch(string previousPlanHash)
     {
         lock (_gate)

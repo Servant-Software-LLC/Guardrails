@@ -316,6 +316,34 @@ public sealed class FakeClaudeRunTests
     }
 
     [Fact]
+    public async Task PromptAction_OverCap_ClassifiedFromRealStream_DistinctOutcome_ActionableFeedback()
+    {
+        // End-to-end through the FAKE CLI emitting the real output-token-cap stream-json result
+        // (#114): the ClaudePromptRunner must classify it from the live stream, the journal must
+        // record the DISTINCT output-cap outcome (not generic action-failed), and the retry feedback
+        // must be actionable ("write incrementally / split"), proving the retry is not a blind re-hit.
+        using var plan = new FakeClaudePlanBuilder(defaultRetries: 1)
+            .AddPromptTask("01-generate", mode: "overcap", cost: "none");
+
+        RunReport report = await RunAsync(plan.PlanDir);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.ActionFailed, task.Outcome);
+        Assert.Contains("output-token cap", task.Summary);
+
+        TaskJournalEntry entry = Journal(plan.PlanDir).Tasks["01-generate"];
+        Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
+        Assert.Equal(2, entry.Attempts.Count);
+        Assert.All(entry.Attempts, a => Assert.Equal(AttemptOutcome.OutputCap, a.Outcome));
+
+        // The first attempt's feedback (input to attempt 2) is the actionable cap guidance.
+        string feedback = File.ReadAllText(
+            Path.Combine(AttemptDir(plan.PlanDir, "01-generate", 1), "feedback.md"));
+        Assert.Contains("output-token cap", feedback);
+        Assert.Contains("INCREMENTAL", feedback);
+    }
+
+    [Fact]
     public async Task PromptAction_IsError_Retries_ThenNeedsHuman()
     {
         using var plan = new FakeClaudePlanBuilder(defaultRetries: 1)

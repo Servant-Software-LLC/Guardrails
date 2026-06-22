@@ -181,19 +181,27 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         } elseif ($env:GUARDRAILS_STATE_OUT) {
             if ($env:FAKE_MODE -eq 'needshuman') {
                 Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value '{"needsHuman": "which color should I use?"}'
-            } elseif ($env:FAKE_MODE -eq 'iserror' -or $env:FAKE_MODE -eq 'nofragment') {
-                # no fragment (iserror also reports is_error; nofragment succeeds cleanly)
+            } elseif ($env:FAKE_MODE -eq 'iserror' -or $env:FAKE_MODE -eq 'nofragment' -or $env:FAKE_MODE -eq 'overcap' -or $env:FAKE_MODE -eq 'transient') {
+                # no fragment (iserror/overcap/transient report is_error; nofragment succeeds cleanly)
             } else {
                 $frag = '{"' + $env:GUARDRAILS_TASK_ID + '": {"produced": true}}'
                 Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value $frag
             }
         }
-        $err = if ($env:FAKE_MODE -eq 'iserror') { 'true' } else { 'false' }
-        if ($cost -eq 'none') {
-            # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
-            Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","num_turns":2}')
+        # Some modes emit a stream-json result whose `result` text carries a recognised signal so the
+        # ClaudePromptRunner classifies it (overcap = output-token cap #114; transient = rate-limit #115).
+        if ($env:FAKE_MODE -eq 'overcap') {
+            Write-Output ('{"type":"result","is_error":true,"result":"API Error: Claude''s response exceeded the 32000 output token maximum","num_turns":4}')
+        } elseif ($env:FAKE_MODE -eq 'transient') {
+            Write-Output ('{"type":"result","is_error":true,"result":"You''ve hit your session limit · resets 11:20am (America/Chicago)","num_turns":1}')
         } else {
-            Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","total_cost_usd":' + $cost + ',"num_turns":2}')
+            $err = if ($env:FAKE_MODE -eq 'iserror') { 'true' } else { 'false' }
+            if ($cost -eq 'none') {
+                # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
+                Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","num_turns":2}')
+            } else {
+                Write-Output ('{"type":"result","is_error":' + $err + ',"result":"fake done","total_cost_usd":' + $cost + ',"num_turns":2}')
+            }
         }
         """;
 
@@ -211,18 +219,26 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         elif [ -n "$GUARDRAILS_STATE_OUT" ]; then
           if [ "$FAKE_MODE" = "needshuman" ]; then
             printf '{"needsHuman": "which color should I use?"}' > "$GUARDRAILS_STATE_OUT"
-          elif [ "$FAKE_MODE" = "iserror" ] || [ "$FAKE_MODE" = "nofragment" ]; then
-            : # no fragment (iserror also reports is_error; nofragment succeeds cleanly)
+          elif [ "$FAKE_MODE" = "iserror" ] || [ "$FAKE_MODE" = "nofragment" ] || [ "$FAKE_MODE" = "overcap" ] || [ "$FAKE_MODE" = "transient" ]; then
+            : # no fragment (iserror/overcap/transient report is_error; nofragment succeeds cleanly)
           else
             printf '{"%s": {"produced": true}}' "$GUARDRAILS_TASK_ID" > "$GUARDRAILS_STATE_OUT"
           fi
         fi
-        if [ "$FAKE_MODE" = "iserror" ]; then err=true; else err=false; fi
-        if [ "$cost" = "none" ]; then
-          # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
-          printf '{"type":"result","is_error":%s,"result":"fake done","num_turns":2}\n' "$err"
+        # Some modes emit a result whose `result` text carries a recognised signal so the
+        # ClaudePromptRunner classifies it (overcap = output-token cap #114; transient = rate-limit #115).
+        if [ "$FAKE_MODE" = "overcap" ]; then
+          printf '{"type":"result","is_error":true,"result":"API Error: Claude'"'"'s response exceeded the 32000 output token maximum","num_turns":4}\n'
+        elif [ "$FAKE_MODE" = "transient" ]; then
+          printf '{"type":"result","is_error":true,"result":"You'"'"'ve hit your session limit \xc2\xb7 resets 11:20am (America/Chicago)","num_turns":1}\n'
         else
-          printf '{"type":"result","is_error":%s,"result":"fake done","total_cost_usd":%s,"num_turns":2}\n' "$err" "$cost"
+          if [ "$FAKE_MODE" = "iserror" ]; then err=true; else err=false; fi
+          if [ "$cost" = "none" ]; then
+            # Omit total_cost_usd — models a succeeded prompt whose runner reported no cost.
+            printf '{"type":"result","is_error":%s,"result":"fake done","num_turns":2}\n' "$err"
+          else
+            printf '{"type":"result","is_error":%s,"result":"fake done","total_cost_usd":%s,"num_turns":2}\n' "$err" "$cost"
+          fi
         fi
         """;
 

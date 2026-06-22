@@ -74,6 +74,7 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
   "maxParallelism": 3,                // default 3 in worktree mode (chain-reuse keeps a linear chain to ONE tree)
   "defaultRetries": 2,                // retries AFTER the first attempt; default 2
   "defaultTimeoutSeconds": 1800,      // per-attempt ceiling when nothing narrower applies
+  "transientPauseBudgetSeconds": 1800,// cumulative wall-clock a task may spend PAUSED on transient infra limits (#115); 0 disables pausing
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
@@ -93,6 +94,8 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
       "maxTurns": 50,
       "model": null,                  // null = CLI default
       "extraArgs": [],
+      "maxOutputTokens": 64000,       // per-response output-token cap (#114); default 64000 (> Claude Code's 32000); GR2022 if <= 0
+      "env": {},                      // extra env vars passed verbatim to the runner process (#114); user keys win last
       "guardrailOverrides": {         // tighter profile for verdict-only guardrail prompts
         "permissionMode": "default",
         "allowedTools": ["Read", "Grep", "Glob", "Write"],
@@ -138,6 +141,30 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
+- `transientPauseBudgetSeconds` (default `1800`) is the cumulative wall-clock a single task may spend
+  **paused** on transient, retryable infrastructure conditions (HTTP 429/503/529, "overloaded", a
+  usage/session/rate limit from the runner — issue #115). A transient signal does **NOT** consume the
+  retry budget: the harness backs off (bounded exponential, 2s→…→60s cap, honoring a parsed reset hint
+  for display) and re-runs the **same** attempt, surfacing a distinct `PromptPaused` observer event
+  (CLI: a `paused` row, not a failure). A transient pause that clears is **never journaled** —
+  observe-only. This is the named bound on **"a rate limit is never `needs-human`"**: only if the
+  limit fails to clear within this whole-task budget does the task settle `needs-human` with the
+  distinct `rate-limited` outcome (§7) and a "re-run later" reason. `0` disables pausing (a transient
+  signal is then a normal action failure).
+- `promptRunners.<name>.maxOutputTokens` (default `64000`) caps the runner's per-response output
+  budget (issue #114). The default sits **above** Claude Code's own 32 000 default so a well-formed
+  single-response task is not blocked by a cap the harness never used to configure. The runner CLASS
+  translates it into the CLI's env var (`CLAUDE_CODE_MAX_OUTPUT_TOKENS` for `claude`) — the env-var
+  NAME is **quarantined in the runner**, never in this schema or the §5.1 `GUARDRAILS_*` set. A
+  non-positive value (base or via `guardrailOverrides`) is a validation error (**GR2022**). When a
+  response still exceeds the cap, the runner detects it and the harness surfaces a distinct
+  `output-cap` outcome (§7) with actionable retry feedback ("write the file incrementally / split"),
+  not a generic action failure.
+- `promptRunners.<name>.env` (default `{}`) passes extra environment variables verbatim to the runner
+  process (issue #114) — a general passthrough for runner/provider knobs the harness does not model.
+  It overlays the harness `GUARDRAILS_*` env; a user-set key **wins last** (it is authoritative, and
+  may even override the translated `maxOutputTokens` cap). `guardrailOverrides` may narrow both
+  `maxOutputTokens` and `env` for the verifier profile.
 
 ## 3. `tasks/<id>/task.json`
 
@@ -544,7 +571,7 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "attempt": 1,
           "startedAt": "…", "endedAt": "…",
           "actionExitCode": 0,
-          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | cancelled | invalid-fragment | needs-human
+          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
           "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1"
@@ -555,11 +582,25 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 }
 ```
 
+**Attempt outcomes** (the per-attempt `outcome` field; distinct from task `status`):
+- `action-failed` — a generic non-zero action / `is_error` with no recognized signal.
+- `timeout` — the action (or a guardrail) exceeded its timeout (issue #119). The retry carries
+  timeout-specific feedback ("continue from the preserved partial work; don't re-explore") AND a
+  **longer clock** (1× → 1.5× → 2.25× …, capped 4×) — a same-clock retry just re-times-out.
+- `output-cap` — a prompt action's response exceeded the runner's output-token cap (issue #114). A
+  budget-exhaustion failure distinct from `action-failed` so a human (and §9 triage) sees the agent
+  ran out of OUTPUT budget; the retry carries "write incrementally / split" feedback.
+- `rate-limited` — a transient infrastructure limit did not clear within
+  `transientPauseBudgetSeconds` (issue #115). The harness paused+re-ran WITHOUT consuming the retry
+  budget; only on budget exhaustion did it settle `needs-human` with this outcome ("re-run later"). A
+  transient pause that DOES clear is never journaled (observe-only via the `PromptPaused` event).
+
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
   explicit way to force a re-run.
-- `needs-human` — retry budget exhausted. All *transitive* dependents become `blocked`.
-  Independent branches keep running.
+- `needs-human` — retry budget exhausted, OR (issue #115) a transient limit that did not clear within
+  the pause budget (a `rate-limited` attempt — re-run later). All *transitive* dependents become
+  `blocked`. Independent branches keep running.
 - Resume rules (`guardrails run` on an existing journal): `succeeded` → skip;
   `needs-human` / `failed` / `blocked` → `pending` with a fresh retry budget;
   `running` (crashed previous run) → `pending`, attempt numbering continues.
@@ -648,6 +689,31 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 - A prompt action may signal an unresolvable decision by writing
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
   as needs-human immediately (no retry burn).
+- **Failure classification (runner-agnostic).** A non-success prompt result is classified into a
+  `PromptFailureKind` — `Transient` | `OutputCap` | `Timeout` | `Error` — by the runner CLASS, which
+  is the SOLE home of the fragile vendor error-string matching (a 429/503/529 status, an "overloaded"
+  / rate-/session-/usage-limit phrase, the "…output token maximum" message). The harness routes on the
+  ENUM only, never on a CLI-specific string. Matching prefers a structured signal (HTTP status) over
+  free text, and a miss is conservative (→ `Error`, which consumes the budget — never a false
+  `Transient` that could loop).
+  - **`Transient`** (issue #115): a retryable infra condition. Does **NOT** consume the retry budget —
+    the harness backs off (bounded exponential, honoring a parsed reset hint for display) and re-runs
+    the same attempt, bounded by `transientPauseBudgetSeconds` (§2). A `PromptPaused` observer event is
+    emitted; a transient pause is never journaled unless its budget is exhausted (→ `rate-limited`).
+    The signal is read from the terminal `result` error text OR, when there is no terminal result (the
+    instant-rejection case), the captured process stdout/stderr — both inside the runner quarantine.
+  - **`OutputCap`** (issue #114): consumes the budget like `Error` but composes actionable feedback
+    ("write incrementally / split; or `needsHuman` if inherently too large") and records the distinct
+    `output-cap` outcome (§7).
+  - **`Timeout`** (issue #119): records `timeout` (§7), composes "continue from preserved partial work"
+    feedback, and the retry's clock is extended.
+- **Observer signal.** `IRunObserver.PromptPaused(task, reason, backoff, pauseCount)` surfaces a
+  transient pause so an operator sees a HEALTHY task waiting out a limit, not a failing one. Default
+  no-op (non-CLI observers need not handle it).
+- **Scope.** Classification + transient pausing apply to the prompt **action**. A transient signal hit
+  by a prompt **guardrail** still surfaces as that guardrail's normal verdict failure (the verifier's
+  signal is its verdict file); promoting guardrail-prompt transients to the same pause path is a future
+  extension, not part of #114/#115/#119.
 
 ### 9.1 AI-merge worker
 

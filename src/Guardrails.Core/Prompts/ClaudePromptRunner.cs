@@ -85,7 +85,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
             ProcessResult process = await _processRunner.RunAsync(
                 command,
                 invocation.WorkingDirectory,
-                invocation.Environment,
+                BuildEnvironment(invocation),
                 invocation.Timeout,
                 standardInput: invocation.ComposedPrompt,
                 stdoutLineSink: Tee,
@@ -99,6 +99,10 @@ public sealed class ClaudePromptRunner : IPromptRunner
 
             bool completed = process.Succeeded && result.HasResult;
             string summary = BuildSummary(process, result);
+            PromptFailureKind failureKind = ClassifyFailure(process, result);
+            string? resetHint = failureKind == PromptFailureKind.Transient
+                ? ClaudeSignalClassifier.ExtractResetHint(ClassificationText(process, result))
+                : null;
 
             return new PromptResult
             {
@@ -107,6 +111,8 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 ResultText = result.ResultText,
                 CostUsd = result.CostUsd,
                 NumTurns = result.NumTurns,
+                FailureKind = failureKind,
+                ResetHint = resetHint,
                 Summary = summary
             };
         }
@@ -117,6 +123,33 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 await transcriptFile.DisposeAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// The Claude-specific env name for the output-token cap (issue #114). QUARANTINED here — this
+    /// is the ONLY place in the codebase that knows the CLI's env-var spelling; the harness model
+    /// carries only the abstract <c>maxOutputTokens</c> int (SSOT §9, never §5.1's GUARDRAILS_* set).
+    /// </summary>
+    internal const string MaxOutputTokensEnvVar = "CLAUDE_CODE_MAX_OUTPUT_TOKENS";
+
+    /// <summary>
+    /// The effective child environment: the harness <c>GUARDRAILS_*</c> set (<see cref="PromptInvocation.Environment"/>),
+    /// overlaid with the Claude output-token cap (<see cref="MaxOutputTokensEnvVar"/>, issue #114), then
+    /// the user's <c>env</c> passthrough (which wins last, so an explicit user value is authoritative).
+    /// </summary>
+    internal static IReadOnlyDictionary<string, string> BuildEnvironment(PromptInvocation invocation)
+    {
+        var env = new Dictionary<string, string>(invocation.Environment, StringComparer.Ordinal)
+        {
+            [MaxOutputTokensEnvVar] = invocation.Settings.MaxOutputTokens.ToString()
+        };
+
+        foreach (KeyValuePair<string, string> entry in invocation.Settings.Env)
+        {
+            env[entry.Key] = entry.Value;
+        }
+
+        return env;
     }
 
     /// <summary>Build the <c>claude</c> argument list (SSOT §9). All flag spelling lives here.</summary>
@@ -150,6 +183,53 @@ public sealed class ClaudePromptRunner : IPromptRunner
         args.AddRange(settings.ExtraArgs);
 
         return args;
+    }
+
+    /// <summary>
+    /// Classify a non-success run into a runner-agnostic <see cref="PromptFailureKind"/> (SSOT §9).
+    /// Precedence: a process timeout is <see cref="PromptFailureKind.Timeout"/>; otherwise the error
+    /// TEXT — the terminal result's error message, or, when no terminal result was produced (the
+    /// "instant rejection, no result line" case in #115), the captured stdout/stderr — is classified
+    /// by <see cref="ClaudeSignalClassifier"/>. A clean success is <see cref="PromptFailureKind.None"/>.
+    /// </summary>
+    private static PromptFailureKind ClassifyFailure(ProcessResult process, ClaudeResult result)
+    {
+        if (process.TimedOut)
+        {
+            return PromptFailureKind.Timeout;
+        }
+
+        // Success = clean exit AND a terminal result that is not an error.
+        if (process.Succeeded && result.HasResult && !result.IsError)
+        {
+            return PromptFailureKind.None;
+        }
+
+        PromptFailureKind classified = ClaudeSignalClassifier.Classify(ClassificationText(process, result));
+
+        // A recognized transient/cap signal wins. Otherwise this is a genuine error — but if there was
+        // no error text at all (e.g. a clean exit with no terminal result), still report Error so the
+        // attempt fails rather than being mistaken for success.
+        return classified == PromptFailureKind.None ? PromptFailureKind.Error : classified;
+    }
+
+    /// <summary>
+    /// The text to classify: the terminal result's error message when present (on an error the agent's
+    /// final <c>result</c> field carries the error description), else the captured process streams
+    /// (the no-terminal-result rejection case). Both are inside the Claude quarantine.
+    /// </summary>
+    private static string ClassificationText(ProcessResult process, ClaudeResult result)
+    {
+        if (result.HasResult && result.IsError && !string.IsNullOrWhiteSpace(result.ResultText))
+        {
+            return result.ResultText!;
+        }
+
+        // No usable result text — fall back to the raw streams (stderr first: rejections print there).
+        return string.Join(
+            "\n",
+            new[] { result.ResultText, result.Subtype, process.StandardError, process.StandardOutput }
+                .Where(s => !string.IsNullOrWhiteSpace(s)));
     }
 
     private static string BuildSummary(ProcessResult process, ClaudeResult result)

@@ -153,4 +153,32 @@ public sealed class RetryPolicyTests
         Assert.DoesNotContain("line 1\n", feedback);   // head dropped
         Assert.Contains("line 500", feedback);          // tail kept
     }
+
+    [Fact]
+    public void OutputCap_Feedback_IsActionable_AndTellsAgentToWriteIncrementally()
+    {
+        // #114: the retry must CHANGE behavior, not re-hit the same wall — so the feedback names the
+        // cap and prescribes incremental edits / splitting, plus the needsHuman escape if too large.
+        string feedback = RetryPolicy.ForOutputCapExceeded(Task("12-implement"), attempt: 2);
+
+        Assert.Contains("output-token cap", feedback);
+        Assert.Contains("INCREMENTAL", feedback);
+        Assert.Contains("split", feedback);
+        Assert.Contains("needsHuman", feedback);          // the escape when inherently too large
+        Assert.Contains("Attempt 2", feedback);
+    }
+
+    [Fact]
+    public void Timeout_Feedback_TellsAgentToContinueFromPartialWork_NotReExplore()
+    {
+        // #119: the retry must continue from the preserved partial work and prioritise compile/green,
+        // not re-read the whole codebase (the wasteful "15 reads, 0 edits" retry the issue documents).
+        string feedback = RetryPolicy.ForTimeout(Task("18-merge-engine"), attempt: 2);
+
+        Assert.Contains("timed out", feedback);
+        Assert.Contains("preserved", feedback);
+        Assert.Contains("CONTINUE", feedback);
+        Assert.Contains("do NOT start over", feedback, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("needsHuman", feedback);          // split-suggestion escape
+    }
 }

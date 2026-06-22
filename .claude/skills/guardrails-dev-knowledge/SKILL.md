@@ -95,7 +95,8 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   `AllowTrailingCommas` — committed examples use `//` comments; don't break this.
 - **Diagnostic codes**: GR10xx loading, GR20xx validation (`DiagnosticCodes.cs`);
   tests assert codes; never renumber. GR2009 = prompt-runner `command` not on PATH
-  (WARNING, not error). Next free: GR1009 / GR2010.
+  (WARNING, not error). GR2022 = a prompt-runner `maxOutputTokens` ≤ 0 (#114). Next free:
+  GR1010 / GR2023.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;

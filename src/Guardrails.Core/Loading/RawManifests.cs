@@ -11,6 +11,7 @@ internal sealed class RawRunConfig
     public int? DefaultRetries { get; set; }
     public decimal? MaxCostUsd { get; set; }
     public int? DefaultTimeoutSeconds { get; set; }
+    public int? TransientPauseBudgetSeconds { get; set; }
     public string? GuardrailMode { get; set; }
     public string? Workspace { get; set; }
     public string? WorktreeRoot { get; set; }
@@ -34,6 +35,13 @@ internal sealed class RawPromptRunner
     public int? MaxTurns { get; set; }
     public string? Model { get; set; }
     public List<string>? ExtraArgs { get; set; }
+
+    // Output-token cap (issue #114). null = harness default (PromptRunnerSettings.DefaultMaxOutputTokens).
+    public int? MaxOutputTokens { get; set; }
+
+    // General env passthrough (issue #114). null = none.
+    public Dictionary<string, string>? Env { get; set; }
+
     public RawPromptRunnerOverrides? GuardrailOverrides { get; set; }
 }
 
@@ -45,6 +53,8 @@ internal sealed class RawPromptRunnerOverrides
     public int? MaxTurns { get; set; }
     public string? Model { get; set; }
     public List<string>? ExtraArgs { get; set; }
+    public int? MaxOutputTokens { get; set; }
+    public Dictionary<string, string>? Env { get; set; }
 }
 
 /// <summary>Raw shape of <c>tasks/&lt;id&gt;/task.json</c> for deserialization (SSOT §3).</summary>
