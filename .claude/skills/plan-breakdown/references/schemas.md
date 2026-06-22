@@ -138,6 +138,27 @@ for the removed `captureHashes`/`tests-untouched`/`restoreOnRetry` triad. See SK
 Optional YAML frontmatter: `description`, `runner`, `maxTurns`, `timeoutSeconds`.
 Precedence for prompt actions: `task.json action.*` → frontmatter → runner config.
 
+<!-- BEGIN ADDED SECTION #94 — per-task maxTurns budgeting (cites SSOT §2/§3; auto-merge friendly) -->
+### Per-task `maxTurns` (prompt actions only) (#94)
+
+`maxTurns` caps the agent's turn budget for a prompt action. It resolves in three places, highest
+precedence first (SSOT §2/§3):
+
+| Where | Field | Scope | Notes |
+|---|---|---|---|
+| `task.json` | `action.maxTurns` | one task | prompt actions only; overrides the two below |
+| `.prompt.md` frontmatter | `maxTurns:` | one prompt file | overrides the runner config below |
+| `guardrails.json` | `promptRunners.<name>.maxTurns` (default **50**) | every prompt task | the flat fallback; `guardrailOverrides.maxTurns` (default 20) for verdict-only guardrail prompts |
+
+The default 50 is right for most tasks. The breakdown raises **only** the turn-expensive archetypes
+(integration/smoke/e2e + in-process harness, unfamiliar-SDK discovery, terminal aggregation/wiring)
+to a fixed **75** via the per-task `action.maxTurns` (or frontmatter) override — see SKILL.md Step 4a
+and the catalogue's "maxTurns budgeting (#94)" section. Script tasks have no `maxTurns`. A guessed
+exact budget is unguessable; the fixed bump is a first-attempt cushion, paired with a harness-side
+auto-escalate-on-`max_turns` retry policy (a separate harness concern, not emitted by the breakdown).
+<!-- END ADDED SECTION #94 -->
+
+
 The harness automatically appends to every composed prompt: the shared state (inline
 or by path), the fragment output contract + `needsHuman` escape (actions), prior
 attempt feedback (actions, attempt ≥ 2), and the full verdict contract (guardrails).
