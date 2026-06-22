@@ -9,7 +9,8 @@ instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
 Every stack file answers the same six standard questions first (§1–§6), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
-(§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring, then WPF).
+(§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
+§11 production testability seam, §12 scripted ETL / bulk fan-out, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -564,6 +565,154 @@ exit 0
 This is strictly weaker — `new FooImpl(` can sit in a dead branch the production path never reaches,
 and the grep cannot tell. Use it only when the factory cannot be driven from a test at all; prefer
 10a, then 10b. Mark 10a/10b `scope: "integration"` when they drive the whole assembled feature.
+
+## 11. Production testability seam — the seam-exists structural check (#84)
+
+The catalogue's production-testability-seam archetype for .NET. A test-author behavior needs an
+injection point in production code — a DI **constructor overload**, a **factory delegate**, or an
+**injectable interface** — so a test can supply a fake/double (`RecordingDestinationWriter`,
+`InMemoryConnectionFactory`, a fixture source). The seam task is a **pure structural production
+change** (no behavior, no endpoint); guard it with `build-passes` (§4) plus a **structural seam-exists
+check** that matches the **declaration**, not a bare token (§3's universal rule). Scope every grep to
+the one production file the seam task owns.
+
+The seam case is whichever of these the plan needs:
+
+### 11a. Injection-constructor overload — a `new` overload that takes the injected dependency
+
+The motivating shape (#84): `Launcher` is constructed only via a production constructor with no way to
+inject an `IDestinationWriter`, so behavior 3 (`MovedCountGreaterThanZero`) can never be expressed as a
+passing test. The seam adds `Launcher(TextWriter, IWorksoftConnectionFactory, IDestinationWriter)`. A
+**bare `IDestinationWriter` grep** passes on a field, a `using`, or a comment — match the constructor
+**parameter list** instead:
+
+```powershell
+# catches: a seam task that claims to add an injection constructor but the overload taking the
+#          injected dependency is absent (so tests still cannot inject a fake - behavior unsatisfiable)
+$src = "src/Worksoft.Migrator/Launcher.cs"
+$code = Get-Content $src -Raw
+# the constructor named `Launcher(` whose parameter list includes the injected interface
+if ($code -notmatch '(?s)\bLauncher\s*\([^)]*\bIDestinationWriter\b[^)]*\)') {
+    Write-Output "$src has no Launcher(...) constructor overload taking IDestinationWriter - the injection seam is missing"
+    exit 1
+}
+exit 0
+```
+
+The `(?s)` lets the parameter list span lines; `[^)]*` keeps the match inside the one parameter list
+(it cannot run past the closing `)` into an unrelated call). Use the concrete seam type the plan names.
+
+### 11b. Factory delegate — a `Func<…>`/factory the production type accepts for the dependency
+
+When the seam is a factory the type accepts (rather than the dependency directly), assert the
+field/parameter is the **factory type**, declared on the owning type:
+
+```powershell
+# catches: the production type does not accept a factory delegate for the dependency, so a test
+#          cannot substitute a fake-producing factory (the seam is missing)
+$src = "src/Worksoft.Migrator/Launcher.cs"
+if ((Get-Content $src -Raw) -notmatch 'Func\s*<\s*[^>]*IDestinationWriter\s*>') {
+    Write-Output "$src does not accept a Func<...IDestinationWriter> factory - the factory seam is missing"
+    exit 1
+}
+exit 0
+```
+
+### 11c. Injectable interface + DI registration — the abstraction exists AND is registered
+
+When the seam is "introduce `IDestinationWriter` and register it so it can be replaced in tests",
+assert BOTH the interface declaration (§3's structural form) AND that the production composition
+registers it — otherwise the abstraction is dead and tests still cannot inject through the container:
+
+```powershell
+# catches: an injectable-interface seam where the interface exists but is never registered in the
+#          container, so a test cannot override the registration with a fake
+$iface = "src/Worksoft.Migrator/Abstractions/IDestinationWriter.cs"
+if ((Get-Content $iface -Raw) -notmatch 'interface\s+IDestinationWriter\b') {
+    Write-Output "$iface does not declare interface IDestinationWriter - the seam interface is missing"
+    exit 1
+}
+$startup = "src/Worksoft.Migrator/Program.cs"
+if ((Get-Content $startup -Raw) -notmatch '(AddScoped|AddSingleton|AddTransient)\s*<\s*IDestinationWriter\b') {
+    Write-Output "$startup never registers IDestinationWriter in the container - the seam is not injectable at runtime"
+    exit 1
+}
+exit 0
+```
+
+The seam task is **TDD-exempt** (a too-simple structural change — state the exemption reason in its
+description) and is an **upstream dependency of the test-author task**. With the seam present, the
+test-author task authors **all** behaviors against the real injection point; each fails at runtime as a
+clean red with no `needsHuman`. Do NOT mark the seam-exists check `scope: "integration"` — it is a
+task-local structural check on one production file.
+
+## 12. Scripted ETL — model bulk/unbounded fan-out as one script, not an agent loop (#100)
+
+The catalogue's bulk/unbounded-fan-out archetype for .NET. When a task's deliverable is "process N
+items where N is unknown and potentially large" (a portal crawl, a recursive-glob transform, a mass API
+fetch), model it as a **`script` action** the agent authors and runs ONCE — the N-item volume executes
+inside the script run, off the agent's turn budget — NOT a `.prompt.md` that iterates items (that hits
+max-turns and dies; raising `maxTurns` only moves the wall). Three task shapes, in DAG order:
+
+### 12a. Discover-size-first probe (where N is unknown)
+
+A cheap upstream task that enumerates/counts the in-scope set BEFORE the crawl commits to an approach
+(the "8 expected → 409 actual" calibration). Write the count to state (under the task's own id) and
+guard the fragment key:
+
+```powershell
+# catches: the size probe ran but never published the in-scope count a downstream task sizes against
+$fragmentPath = $env:GUARDRAILS_STATE_FRAGMENT
+if (-not $fragmentPath -or -not (Test-Path $fragmentPath)) {
+    Write-Output "no state fragment written - 'inscope_count' is missing"
+    exit 1
+}
+$fragment = Get-Content $fragmentPath -Raw | ConvertFrom-Json
+$count = $fragment.'01-discover-portal-size'.inscope_count
+if ($null -eq $count -or [int]$count -lt 1) {
+    Write-Output "state key 'inscope_count' is missing or not a positive integer"
+    exit 1
+}
+exit 0
+```
+
+### 12b. Scripted bulk-capture — the deterministic crawl/transform
+
+The agent authors a script (e.g. a Playwright + HTML→markdown crawler, or a glob walk + transform) and
+runs it. Guard the OUTPUT it produced — never replay the crawl, and never grep the action's stdout for
+a self-reported "done". Assert the output directory exists and holds at least the discovered count of
+items:
+
+```powershell
+# catches: the bulk-capture script claimed success but produced an empty/short output set -
+#          fewer captured items than the discover-size probe found in scope (a partial crawl)
+$outDir = "artifacts/portal-crawl"
+if (-not (Test-Path $outDir)) {
+    Write-Output "$outDir does not exist - the scripted crawl produced no output"
+    exit 1
+}
+$captured = (Get-ChildItem $outDir -Filter *.md -Recurse).Count
+$stateIn  = Get-Content $env:GUARDRAILS_STATE_IN -Raw | ConvertFrom-Json
+$expected = [int]$stateIn.'01-discover-portal-size'.inscope_count
+if ($captured -lt $expected) {
+    Write-Output "scripted crawl captured $captured pages but $expected were in scope - the capture is incomplete"
+    exit 1
+}
+exit 0
+```
+
+This is a `file-exists` (§archetype 1) + count check on **produced output** (verify-don't-replay, #9) —
+the script ran the expensive work; the guardrail reads its result. The completeness/substance of the
+captured corpus is a separate concern (#99); this proves the capture is **present and complete by
+count**.
+
+### 12c. Bounded per-item derivation/curation (a SEPARATE, bounded agent task)
+
+Any agent *derivation* over the captured set is its own downstream task, scoped to a **bounded subset**
+("derive a high-value committed subset"), never "derive all N." It is a normal prompt task (guard it by
+the artifacts it commits) — the point is that the *unbounded* volume already happened deterministically
+in 12b, so the agent task here has a bounded, session-sized job. Keep the discover/capture/curate
+boundary in the DAG: 12a → 12b → 12c.
 
 ## WPF structural checks (#11 F5/F6)
 

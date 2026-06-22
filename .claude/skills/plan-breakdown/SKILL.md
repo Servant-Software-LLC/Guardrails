@@ -210,6 +210,48 @@ Under 3 or over 25 tasks after applying TDD → re-examine, and tell the user wh
 it stands. **A count under the floor after splitting over-sized milestones is itself a signal**
 that a milestone was sized 1:1 — re-run the split-trigger before settling on a small task count.
 
+### Large/unbounded fan-out → scripted ETL, NOT an agent-per-item loop (#100)
+
+The over-size split-trigger sizes by *deliverable count and blast radius*; this rule sizes by
+**iteration cardinality**. When a task's deliverable is **"process N items where N is unknown and
+potentially large"** — a web crawl/scrape, a bulk transform over an unknown-size glob, a mass API
+fetch, a dataset ETL — the wrong model is an **agent-iterated loop** (one agent turn-budget covering
+N fetch+convert+write cycles). Agent turns are the wrong unit for bulk work: a few hundred items blow
+any reasonable turn budget, the action hits max-turns and is killed, and the retry hits the same wall
+identically — a hard dead-end (`action-failed` → retries fail → `needs-human`) on a task that is
+perfectly doable when structured as a script. **Raising `maxTurns` does not fix it; it only moves the
+wall.**
+
+**Detection heuristic — flag during sizing when a task fans out over an external or unknown-size set:**
+a website / section / sitemap, a recursive glob, an API listing, "every page under…", "all files
+matching…", "each record in…". The tell is *cardinality the plan cannot bound at breakdown time*
+("8 expected" can turn out to be 409 actual). A retry-cheapness / one-session check on **"could this be
+hundreds of items?"** trips the rule.
+
+**When it fires, structure the work as a scripted bulk operation — three moves:**
+
+1. **Scripted-ETL action (the volume happens off the turn budget).** The agent authors and runs **one
+   script** that does the N-item work in a single execution (e.g. Playwright + HTML→markdown; a glob
+   walk + transform). The agent's turns go to *writing, verifying, and running* the script — NOT to
+   iterating items. This is a **`script` action**, not a `.prompt.md` that loops. Guard it with the
+   ordinary script archetypes (file-exists on the output dir + command-exit-code / a count check), and
+   verify the *recorded output*, not a replay.
+2. **Discover-size-first.** When the set size is unknown, **enumerate/count before** committing to an
+   approach, so sizing and any curation are calibrated to reality. This is its own cheap probe
+   (enumerate the in-scope set, write the count to state or a manifest) and may be a separate upstream
+   task feeding the ETL task.
+3. **Split bulk-capture from per-item derivation.** Make the cheap, complete, **scripted capture** one
+   task (deterministic, fits a session — dump all N items locally), and any **agent derivation/curation**
+   a separate, **bounded** task over a *selected subset* — never "derive all N." "Crawl all 409 pages to
+   local markdown" (scripted capture) then "curate a high-value committed subset" (bounded agent
+   derivation) is the shape, not one agent told to "crawl and curate 409 pages."
+
+The catalogue's scripted-ETL section holds the archetype detail and the decision-tree leaf
+(`references/guardrail-catalogue.md` → "Bulk/unbounded fan-out"). Relation to siblings: this is
+necessary but distinct from `maxTurns` budgeting (#94 — bulk fan-out does not scale with turns at all)
+and from corpus-completeness guardrails (#99 — those *verify* the output; this *structures the task* so
+it can be produced at all).
+
 ## Step 3 — Determine the DAG (`dependsOn`)
 
 Edge sources, in priority order:
@@ -356,6 +398,16 @@ optional:
   which false-passes on `{ init; get; }` (catalogue → structural-vs-keyword; `stacks/dotnet.md §3`).
 - **Grep scope** — every file-content guardrail is scoped to the one file this task owns
   (catalogue → grep-scope contamination anti-pattern; `.NET` traps in `stacks/dotnet.md §5`).
+- **Test-author needs a production testability seam (#84)** — while routing a test-author task,
+  check **each behavior**: does expressing it as a test that can eventually PASS require a
+  production-code **injection seam** that does not exist yet (a DI constructor overload, a factory
+  delegate, an injectable interface, a fixture source)? The tell: the behavior injects a fake/double
+  (`RecordingX`, `FakeX`, `InMemoryX`, a fixture source) into a type currently constructed only via a
+  production constructor with no injection point. If yes, insert an **upstream production-seam task**
+  (Step 5's #84 bullet) the test-author task `dependsOn` — do NOT let the test-author task invent the
+  seam or rely on its `needsHuman` escape hatch. Distinct from the compile-coupled-DTO case (where the
+  missing symbol is a type the *test* constructs) and from composition-root wiring #120 (which injects
+  the *real* impl in production); the seam only opens the injection point so tests can supply a double.
 
 ## Step 5 — Insert guardrail-enabling tasks (the generative step)
 
@@ -430,6 +482,47 @@ upstream task that creates it:
   `{"needsHuman": "<why>"}` rather than changing them** — an out-of-scope edit to a test file
   fails the write-scope check and burns a retry. Neither task needs to compute or write any
   hash. See `references/example-breakdown.md` for the complete worked `action.prompt.md`.
+- **A test-author behavior needs a production-code testability SEAM that doesn't exist yet →
+  insert an upstream production-seam task (#84).** Distinct from the compile-coupled-DTO case
+  above: there the missing symbol is a **type the test constructs**, so forcing the whole test
+  file red via a compile failure is correct. The seam case is different — only **one behavior of
+  several** needs an injection point (a DI constructor overload, a factory delegate, an injectable
+  interface, a fixture source) for that behavior to be **expressible as a test that can eventually
+  PASS**. The other behaviors are runtime-testable against the existing surface and must keep
+  compiling and failing as their own clean red; folding the seam into the test file (or vaguely
+  gesturing at it from the implementation task) leaves the test-author task unable to verify its own
+  behavior will ever go green — so it correctly halts `needsHuman` mid-run and forces a human to
+  hand-edit production code. The seam belongs in **its own small upstream task** the test-author
+  task `dependsOn`, generated at breakdown time so the run stays autonomous.
+
+  **Detection heuristic (apply while parsing each test-author behavior, Step 4 routing).** A behavior
+  requires a seam when it injects a fake/double — `RecordingX`, `FakeX`, `InMemoryX`, a fixture
+  source — into a type that is currently constructed **only** via a production constructor with **no
+  injection point**. That is the signal. The action prompt's "if no seam exists, write `needsHuman`
+  and stop" escape hatch must be the **last resort**, not the default: by run start the seam task
+  should already exist.
+
+  Insert **`NN-add-<component>-<seam>-seam`** — a **pure structural production change**: add the
+  constructor overload / factory delegate / injectable interface + its DI registration. **No behavior,
+  no endpoint** — the seam only opens an injection point. Edge direction: the **test-author task
+  `dependsOn` this seam task** (the seam is upstream; the tests compile against it), never the reverse.
+  - **Guardrails:** the stack build (`build-passes`, archetype #3 / `stacks/dotnet.md §4`) + a
+    **structural check that the seam exists** — the stack file's *declaration* regex (the new
+    constructor signature / factory delegate / interface), **never a bare name grep** (catalogue →
+    structural-vs-keyword; the .NET seam realizations are `stacks/dotnet.md §11`). Scope the grep to
+    the one production file the seam task owns.
+  - **TDD-exempt:** a seam is a too-simple structural change with no meaningful unit-test behavior —
+    state the exemption reason in the task description (rule (b) of the Step 2 TDD-collapse criteria).
+  - **DAG:** the **test-author task `dependsOn` the seam task** (artifact dependency: the tests compile
+    against the real seam). With the seam present, the test-author task authors **all** behaviors
+    against the real injection point — every behavior fails at runtime (the endpoint/feature is still
+    absent) as a clean red, with **no `needsHuman`**.
+
+  Compose with the TDD pair above (the seam task is upstream of `NN-author-tests-<feature>`) and with
+  the composition-root wiring bullet below when the same seam must later be **wired in production**
+  (#120): the seam task only *opens* the injection point for tests; a wiring task still *constructs and
+  injects* the real collaborator at the composition root. Two distinct deliverables — do not conflate
+  "a seam exists so tests can inject a fake" with "production injects the real impl."
 - **Test framework is not yet chosen** (`$testFramework = none` from Step 0 and no test
   project exists) → the framework is a real fork (xUnit / NUnit / MSTest; jest / vitest;
   pytest / unittest) that **no one has decided**. Never let the action agent guess it from
@@ -650,6 +743,34 @@ Per `references/schemas.md`, exactly:
    re-baseline to that piece) before proceeding. If you cannot split it (the plan genuinely couples
    the work), **flag it in the report** as an over-scoped task and warn that its retry is expensive
    and it is the most likely `needs-human` — do not present it as well-sized.
+0b. **Deliverable-coverage self-review — EVERY numbered design deliverable maps to a task (#110).**
+   The UI exit-criteria check (7.0) is **one instance** of a general property: *every numbered design
+   deliverable in the plan maps to at least one generated task.* A deliverable that lives in the plan's
+   body without a milestone can be silently dropped, and the run drains fully green having built a
+   **subset** of the plan — the deliverable-coverage analogue of the UI false-green, and just as
+   expensive (a missed feature with a 100%-green run). Generalize the check:
+   1. **Build the deliverable set.** Enumerate the plan's **numbered deliverables** from ALL of:
+      placement-table rows, top-level `§`-sections, and "what's being asked / done when" items — not
+      merely the milestone list. The Step 1 scratch table is the starting point; reconcile it against
+      the plan's section structure so a body deliverable without a scratch-table row is not missed.
+   2. **Cross-check each deliverable against the generated tasks.** For every deliverable, point to the
+      task(s) that produce it. **Any design deliverable with NO producing task is a self-review
+      finding.**
+   3. **Specifically flag milestone-vs-body divergence.** The load-bearing miss (#110, plan-08 dogfood):
+      a feature in the design **body** (a `§`-section, a placement-table row) that maps to **no
+      milestone** — the breakdown leaned on the M1–Mn milestone list as its task source, so a
+      `§`-deliverable without a milestone home had nowhere to map and was dropped. (The dropped feature
+      in the motivating case was *§9 AI-triage-on-needs-human* — tagged "and a later milestone" but never
+      given one.) When a feature appears in the body but in no milestone, **warn**: the breakdown must
+      cover the *design*, not just the *milestone list*.
+   Do NOT proceed to a clean report with an uncovered deliverable. For each finding, either insert the
+   missing task(s) and guardrails (loop back to Steps 4–5), or — if it is genuinely deferred — present
+   it as a **blocking decision the human must resolve**: name the deliverable, state that no task
+   produces it, and ask the human to add the task or confirm it is intentionally deferred to a later
+   version. Surface a **`guardrails-review` probe** in the report so the adversarial pass re-checks
+   coverage: "every numbered design deliverable maps to a task; no body/`§`-deliverable was dropped for
+   lacking a milestone." The UI-exit-criterion case (7.0) remains the most expensive instance; this is
+   the general rule it specializes.
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
@@ -760,6 +881,9 @@ to preserve edits against).
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
 - [ ] Inserted test-author tasks include tests-fail-on-current-code; implementation tasks declare a `writeScope` that EXCLUDES the test files (TDD test-exclusion — replaces the captureHashes/restoreOnRetry/tests-untouched triad).
+- [ ] A test-author behavior that needs a production injection seam (a fake/double injected into a type with no injection point) → an upstream `add-<component>-<seam>-seam` task (pure structural production change, build + a structural seam-exists check, TDD-exempt) the test-author task `dependsOn`; the seam was NOT left to the test task to invent or to its `needsHuman` escape (#84).
+- [ ] A task that fans out over an external/unknown-size set (crawl, recursive glob, API listing) → modeled as a scripted-ETL `script` action (volume off the turn budget), NOT an agent-per-item loop; discover-size-first probe added where the count is unknown; bulk-capture split from bounded per-item curation (#100).
+- [ ] Step 7.0b deliverable-coverage self-review ran: every numbered design deliverable (placement-table row, top-level `§`-section, "what's-asked" item) maps to ≥1 task; any body/`§`-deliverable lacking a milestone home was flagged, not silently dropped; uncovered deliverables are blocking decisions in the report; a `guardrails-review` coverage probe is surfaced (#110).
 - [ ] A parallel plan (`maxParallelism` > 1) declares exactly one `integrationGate: true` sink carrying a `scope: "integration"` guardrail; build / whole-suite guardrails are marked `scope: "integration"`.
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
