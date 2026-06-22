@@ -269,6 +269,35 @@ optional:
   consume? Add the stack file's reference-chain guardrail on the CONSUMER's project file
   (`stacks/dotnet.md §2`). Builds pass independently, so without this an agent can define a
   local copy of the interface and pass.
+- **Composition-root wiring (#120 — the recurring lesson)** — does the plan add a **component
+  that must be CONSTRUCTED and INJECTED at a production composition root or entry point** to do
+  anything (an `IFoo` + `FooImpl` pair injected into a factory / `Program.cs` / DI registration /
+  dispatch site / `RunCommand`)? The per-component tasks author-test + implement `FooImpl` against
+  an **injected constructor seam** — each green — and the terminal whole-suite build + test passes,
+  yet **nothing constructs `FooImpl` and hands it to the production assembler**, so the real entry
+  point never takes the new branch and the feature is **inert** (reachable only from xUnit, which
+  injects the seam itself). This is the highest-impact false-green the skill emits — it recurred 3×
+  in one plan (engine, AI-merge, triage — all built, all dead from the CLI at the `SchedulerFactory`
+  composition root). Two artifacts close it, generated in Step 5: an explicit **wiring task** (a
+  named deliverable: construct `FooImpl` and inject it into the assembler, with a DAG sink depending
+  on it) and a **composition-root guardrail** asserting the component is ACTUALLY wired in
+  production — drive the REAL assembler and assert observable output the wired-only feature produces
+  (strongest), or reflect on the constructed object for the non-null collaborator WITH a contrast
+  case (the `Factory_Wires*` shape; catalogue → composition-root section, `stacks/dotnet.md §10`).
+  The guardrail MUST NOT inject the seam itself, and the terminal whole-suite gate does NOT cover
+  this (it is necessary but not sufficient). The signals (any one):
+  - the plan introduces an `IFoo` + `FooImpl` pair (heuristic: every such pair needs a "wire
+    `FooImpl` into the composition root" deliverable);
+  - the component is reachable only via a constructor/DI seam the unit tests inject themselves;
+  - the plan names a factory / `Program.cs` / `Startup` / DI registration / dispatch site /
+    `RunCommand` that must construct, branch on, or inject the new component;
+  - the feature activates only under a mode/flag (e.g. `maxParallelism > 1`) the production dispatch
+    must honour — "machinery reachable only from xUnit" is the tell.
+
+  (This is a sibling of the executable-entry-point-wiring check below but at the assembly layer:
+  that one greps `Program.cs` + smoke-tests a route for a *server serving over a port*; this one
+  asserts a *factory/container constructs and injects an internal collaborator*. A plan can need
+  both — wire the entry point to the launcher AND wire a collaborator into the factory.)
 - **Executable entry-point wiring** — does the plan describe a **server or CLI executable
   outcome** (signals below)? Component tasks (scaffold, handler, routes) each compile and
   unit-test green, and the terminal whole-solution build passes — yet *nothing wires the
@@ -410,6 +439,34 @@ upstream task that creates it:
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
   guardrail owns start/stop itself with a timeout.
+- **Component injected at a composition root (Step 4 composition-root-wiring signal fired) →
+  insert a wiring task AND a composition-root guardrail (#120 — the recurring lesson).** A plan
+  that adds an `IFoo`/`FooImpl` pair behind a constructor seam decomposes into component tasks
+  (author tests → implement `FooImpl`) each green, yet no task constructs `FooImpl` and injects it
+  into the production assembler — so the feature is dead from the CLI. Insert:
+  1. **`NN-wire-<fooimpl>-into-<assembler>`** — the named integration deliverable: construct
+     `FooImpl` and inject it into the production assembler (e.g. `SchedulerFactory.Create`
+     constructs and passes the provider; `Program.cs` registers it in the DI container) so the
+     production path branches into the new mode. Depends on the `FooImpl`-implementation task(s)
+     (the collaborator must exist before it can be wired) and on any factory-scaffold task. **Make
+     a DAG sink depend on this task** — the wiring is what makes the feature real, so no terminal
+     gate should be reachable without it.
+  2. **A composition-root guardrail on the wiring task** — the ONLY guardrail that proves the
+     component is wired in production. Use the strongest feasible form: **(a)** a
+     `specific-tests-pass` (#4) test that drives the REAL assembler (call
+     `SchedulerFactory.Create(...)`, NEVER `new Scheduler(..., new FooImpl())` — injecting the seam
+     in the test makes it pass even unwired and is FORBIDDEN) and asserts an observable output only
+     the wired feature produces; or **(b)** a reflection assertion that the constructed object holds
+     the non-null collaborator, WITH a contrast case proving the wiring is conditional (active mode →
+     non-null, inactive mode → null) — the `Factory_Wires*` shape. The full .NET realizations
+     (drive-the-real-factory test, reflection-on-factory test, and the weakest-acceptable source
+     grep) are `stacks/dotnet.md §10`. Author the production-wiring TEST via the TDD pair (author it
+     red against the unwired factory — `tests-fail-on-current-code` proves it fails before wiring —
+     then the wiring task makes it green). Mark the guardrail `scope: "integration"` when it drives
+     the whole assembled feature. When the plan names no concrete observable to assert on, surface
+     it in the breakdown report (Step 7) as a decision the human must confirm — do not invent one.
+     (Compose with the server/executable bullet below when the plan is BOTH: wire the entry point to
+     the launcher AND wire a collaborator into the factory — two distinct wiring deliverables.)
 - **Server/executable plan (Step 4 entry-point-wiring signal fired) → insert a wiring task
   AND a live smoke-test task.** A plan that decomposes into component tasks (scaffold the
   exe project, implement the handler/launcher, implement the routes) verifies each component
@@ -683,6 +740,7 @@ to preserve edits against).
 - [ ] Any task that writes a downstream-read state key carries the fragment-key-present guardrail.
 - [ ] New module/project added to a build descriptor → registration guardrail on the descriptor itself.
 - [ ] Abstraction consumed by a later task → cross-module reference guardrail on the consumer.
+- [ ] Component injected at a composition root (`IFoo`/`FooImpl` pair → factory/DI/`Program.cs`) → a wiring task (construct + inject `FooImpl` into the production assembler) AND a composition-root guardrail that drives the REAL assembler (observable output, or reflection-on-the-constructed-object with a contrast case — the `Factory_Wires*` shape), NEVER injecting the seam in the guardrail and NEVER relying on terminal whole-suite green to cover wiring (#120).
 - [ ] Server/executable plan (entry-point-wiring signal) → a wiring task (entry-point-references-launcher grep) AND a live smoke-test task (start → poll route → assert 200 → stop in `finally`) inserted; the polled route is produced by an ancestor.
 - [ ] UI-facing plan (described screen/page/browser-served component) → a `build-ui-<screen>` task per surface (alongside its backend, not instead of it) AND UI-presence guardrails: asset-exists (scoped to the page/asset file) + a served-markup assertion EXTENDING the §8 smoke-test (body contains a known UI string, not just HTTP 200), both deterministic — no prompt-judge on visual quality. Exit-criterion naming a UI action ⇒ a task builds that UI, or the Step 7.0 self-review failure is reported.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.

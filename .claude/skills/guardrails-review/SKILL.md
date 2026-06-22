@@ -86,6 +86,18 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   but no guardrail checks the consumer's project file has a `<ProjectReference>` — builds
   pass independently, so a local copy of the interface slips through. (Stack file →
   cross-module reference.)
+- **Built-but-unwired component (#120 — the recurring lesson)**: the plan adds an `IFoo`/`FooImpl`
+  pair (or any collaborator a production assembler must construct + inject), the component tasks
+  build + unit-test it through an injected constructor seam — but **no task constructs `FooImpl` and
+  injects it at the production composition root** (factory / `Program.cs` / DI / `RunCommand`), and
+  **no guardrail drives the REAL assembler with the new mode active**. Every check is green while the
+  feature is inert (reachable only from xUnit, which injects the seam itself); the terminal
+  whole-suite gate does NOT cover this. Also flag the inverse: a wiring guardrail that **constructs +
+  injects `FooImpl` itself** then asserts it works — it proves the component, never the wiring; the
+  guardrail must go through the production assembler (drive the real factory + assert observable
+  output, or reflect on the constructed object for the non-null collaborator with a contrast case —
+  the `Factory_Wires*` shape). Missing wiring task OR a seam-injecting guardrail OR reliance on
+  whole-suite green to cover wiring = BLOCKER. (Catalogue → composition-root section, `stacks/dotnet.md §10`.)
 - **Vacuous `writeScope`**: a task declares `writeScope: ["**"]`, a bare top-level dir, or
   any over-broad surface that owns everything — the write-scope check (SSOT §3.4) then
   discriminates nothing and is theater (`validate` warns GR2020). The honest move is to omit
@@ -176,5 +188,6 @@ changes to it.
 - [ ] Coverage gaps cite the exact unverified completion criterion.
 - [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files; no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
+- [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.

@@ -9,7 +9,8 @@ instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
 Every stack file answers the same six standard questions first (§1–§6), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
-(§7–§8 server/executable wiring + smoke-test, §9 UI-presence, then WPF). Each pattern's PowerShell example
+(§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring, then WPF).
+Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
 file the task owns.
@@ -408,6 +409,93 @@ Three adaptations, each **stated in the breakdown report**:
 Scope note: this proves the *described UI is present and served* — not that it is *visually
 good* (out of scope; a prompt-judge here is forbidden, per the catalogue's UI-presence
 section). Presence and wiring is the deliverable.
+
+## 10. Composition-root wiring — the factory CONSTRUCTS and INJECTS the collaborator (#120)
+
+The catalogue's composition-root-wiring archetype for .NET. A plan that adds an `IFoo` + `FooImpl`
+pair injected into a production assembler (a `SchedulerFactory`, a `Program.cs`, an
+`IServiceCollection` registration, a `RunCommand`) decomposes into per-component tasks each guarded
+by build + unit-tests against an **injected constructor seam** (`new Scheduler(plan, executor, …,
+provider)`). Each goes green, the terminal `dotnet test` passes — and `SchedulerFactory.Create`
+never constructed `FooImpl` and never passed it on, so the production path runs the legacy branch
+and the new collaborator is dead code reachable only from xUnit. A build cannot see it; the unit
+tests *inject the seam themselves*, so they pass either way. Two guardrail shapes prove the wiring,
+both **deterministic** — strongest first. Put them on the inserted wiring task (SKILL.md Step 5).
+
+### 10a. Drive the REAL factory, assert observable behaviour (strongest)
+
+A `specific-tests-pass` (#4) guardrail running an xUnit test that calls the **production factory with
+no manual injection** and asserts an output only the wired feature produces. The test MUST construct
+the Scheduler via `SchedulerFactory.Create(...)` — **never** `new Scheduler(..., provider)`, which
+would pass even with an unwired factory (cf. plan-08 `ProductionWiringTests.Factory_RunsWorktreeMode_OnCommittedFixturePlan`,
+which drives the real factory at `maxParallelism = 2` and asserts a `guardrails/<plan>` branch
+exists with ≥2 `Guardrails-Task:` trailers — an output only the wired worktree provider yields):
+
+```powershell
+# catches: a component (FooImpl) built + unit-tested behind an injected seam but never
+#          constructed/injected by the production factory - the feature is dead from the CLI.
+#          Drives the REAL SchedulerFactory (no manual injection) and asserts the wired-only output.
+dotnet test tests/Guardrails.Integration.Tests --filter "FullyQualifiedName~ProductionWiringTests" --nologo
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "production-wiring tests fail - SchedulerFactory does not construct/inject the component (feature inert from the CLI)"
+    exit 1
+}
+exit 0
+```
+
+The test file is itself a deliverable — insert it via the TDD pair (author the production-wiring test
+red, then the wiring task makes it green). The test-author task's `tests-fail-on-current-code`
+guardrail proves the test actually fails against the *unwired* factory (it must, by construction).
+
+### 10b. Reflection on the constructed object — the `Factory_Wires*` shape
+
+When the observable behaviour is too environment-bound to drive in a guardrail, assert structurally
+that the production factory injects the collaborator. The canonical shape drives the **real factory**
+and reflects on the constructed object for the non-null collaborator field, **with a contrast case**
+proving the wiring is conditional, not a constant (cf. plan-08
+`Factory_WiresAiMergeWorker_InWorktreeMode`: worktree mode → non-null, serial mode → null;
+`Factory_WiresNeedsHumanTriage_WhenRunnerAvailable`: runner present → non-null, script-only → null):
+
+```csharp
+// catches: SchedulerFactory.Create builds the Scheduler but never injects FooImpl - the
+//          collaborator is unit-tested in isolation yet dead in the production path.
+[Fact]
+public void Factory_WiresFooImpl_WhenModeActive()
+{
+    // Drive the REAL factory - NEVER `new Scheduler(..., new FooImpl())` (would pass unwired).
+    Scheduler active = SchedulerFactory.Create(activePlan, runner, probe, IRunObserver.Null);
+    var field = typeof(Scheduler).GetField("_fooImpl", BindingFlags.Instance | BindingFlags.NonPublic);
+    Assert.NotNull(field!.GetValue(active));               // wired in the active mode
+
+    // Contrast case - proves the wiring is conditional + real, not a hard-coded constant.
+    Scheduler inactive = SchedulerFactory.Create(inactivePlan, runner, probe, IRunObserver.Null);
+    Assert.Null(field!.GetValue(inactive));                // NOT wired when the mode is off
+}
+```
+
+The guardrail is the same `dotnet test --filter` shape as 10a, pointed at this test. The reflection
+private-field read is acceptable here precisely because it asserts a **production composition fact**
+the public API does not expose; the contrast case is what makes it more than a tautology.
+
+### 10c. Source grep (weakest — last resort)
+
+When neither 10a nor 10b is feasible, a `file-contains` on the FACTORY file that it constructs the
+impl, scoped to the one assembler file (grep-scope rule, §5):
+
+```powershell
+# catches: the factory file never constructs FooImpl (weakest wiring check - proves the text
+#          exists, NOT that the constructed object is reached; prefer 10a/10b)
+$factory = "src/Guardrails.Core/Execution/SchedulerFactory.cs"
+if ((Get-Content $factory -Raw) -notmatch 'new\s+FooImpl\b') {
+    Write-Output "$factory does not construct FooImpl - the component is not wired into the factory"
+    exit 1
+}
+exit 0
+```
+
+This is strictly weaker — `new FooImpl(` can sit in a dead branch the production path never reaches,
+and the grep cannot tell. Use it only when the factory cannot be driven from a test at all; prefer
+10a, then 10b. Mark 10a/10b `scope: "integration"` when they drive the whole assembled feature.
 
 ## WPF structural checks (#11 F5/F6)
 
