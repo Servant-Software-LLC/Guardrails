@@ -126,18 +126,6 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <inheritdoc />
-    public FanInHandle CreateFanIn(
-        WorktreeHandle chosenUpstream,
-        IReadOnlyList<WorktreeHandle> others,
-        string taskId,
-        int attempt,
-        CancellationToken ct)
-    {
-        // M5 – merge logic is not yet implemented.
-        throw new NotImplementedException("Fan-in worktree creation is implemented in M5.");
-    }
-
-    /// <inheritdoc />
     public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct)
     {
         string integPath = integ.IntegrationWorktreePath;

@@ -149,14 +149,6 @@ public sealed class MergeOnSuccessTests
         public WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt) =>
             _inner.ForkFromTip(producerRecordedSha, taskId, attempt);
 
-        public FanInHandle CreateFanIn(
-            WorktreeHandle chosenUpstream,
-            IReadOnlyList<WorktreeHandle> others,
-            string taskId,
-            int attempt,
-            CancellationToken ct) =>
-            _inner.CreateFanIn(chosenUpstream, others, taskId, attempt, ct);
-
         public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct) =>
             _inner.Integrate(segment, integ, ct);
 
@@ -222,14 +214,6 @@ public sealed class MergeOnSuccessTests
 
         public WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt) =>
             _inner.ForkFromTip(producerRecordedSha, taskId, attempt);
-
-        public FanInHandle CreateFanIn(
-            WorktreeHandle chosenUpstream,
-            IReadOnlyList<WorktreeHandle> others,
-            string taskId,
-            int attempt,
-            CancellationToken ct) =>
-            _inner.CreateFanIn(chosenUpstream, others, taskId, attempt, ct);
 
         public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct) =>
             _inner.Integrate(segment, integ, ct);

@@ -8,10 +8,10 @@
 > but **never called** by `Scheduler`. Closes **#126** (segment worktrees not pruned post-run).
 >
 > **One-line recommendation:** wire **ReuseSegment + ForkFromTip (M1)** and **Discard +
-> PruneOrphans (M2)**; **DEFER `CreateFanIn` (M3, recommend NOT building in v1)** — the existing
-> plan-branch union path already produces correct fan-in, and `CreateFanIn` adds a redundant
-> private merge plus a non-FF re-integration without removing a union. The tradeoff is made
-> explicit below so the lead can overrule.
+> PruneOrphans (M2)**; **`CreateFanIn` + `FanInHandle` were DELETED per PO decision (Decision F)** —
+> the existing plan-branch union path already produces correct fan-in, and `CreateFanIn` only added a
+> redundant private merge plus a non-FF re-integration without removing a union. The technical
+> rationale for why the union path suffices is preserved below.
 
 ---
 
@@ -19,9 +19,10 @@
 
 `GitWorktreeProvider` ships real implementations of a worktree-reuse topology — `ReuseSegment`
 (branch-switch reuse of a producer's directory), `ForkFromTip` (fork a fresh tree off a producer's
-**recorded** sha), `CreateFanIn` (private pre-merge of producers — currently `throw new
-NotImplementedException`), `Discard` (`git worktree remove --force`), `PruneOrphans` (`git worktree
-prune`). The `Scheduler` calls **none** of them. It currently calls only:
+**recorded** sha), `CreateFanIn` (private pre-merge of producers — was a `throw new
+NotImplementedException` stub, since **deleted** per Decision F), `Discard` (`git worktree
+remove --force`), `PruneOrphans` (`git worktree prune`). The `Scheduler` calls **none** of them. It
+originally called only:
 
 - `CreateSegment` — for the initially-ready set (`Scheduler.cs:160-161`) and **lazily** for each
   unlocked dependent (`Scheduler.cs:335-336`), so every task gets a **fresh** segment off the
@@ -39,9 +40,9 @@ produces correct outcomes.
 - **"Wire the topology" read literally = wire all five.** I narrow it: ReuseSegment + ForkFromTip +
   Discard + PruneOrphans have **self-contained value over the current model** (disk/checkout
   reduction; #126 cleanup) and are wired. `CreateFanIn` is an **alternative fan-in mechanism that
-  competes with a path that already works** (the plan-branch union) — I recommend deferring it and
-  flag the divergence from a literal reading for the lead (Decision F below). This is the one place
-  I diverge from "wire everything," and I say so loudly rather than bundling its risk in.
+  competes with a path that already works** (the plan-branch union) — the PO chose to **delete** it
+  (Decision F below), a divergence from a literal "wire all five" reading. This is the one place
+  the topology departs from "wire everything," and it is called out loudly rather than buried.
 - **"Reuse" means reuse the producer's *worktree directory*, not its branch identity.** The
   inheritor commits onto the producer's segment *branch*, advancing it; siblings fork fresh off the
   producer's **recorded** sha (W-2). I make the inheritor/sibling predicate exact in §Design.
@@ -57,9 +58,9 @@ produces correct outcomes.
 |---|---|
 | Reuse/fork inheritor predicate + call-site in `OnSettledAsync` (lazy dependent creation) | **harness** — `Scheduler.cs` |
 | `Discard` on permanent-failure / cancel; `PruneOrphans` at run start + end (#126) | **harness** — `Scheduler.cs` (+ a tiny `IWorktreeProvider` semantics tightening) |
-| `CreateFanIn` private pre-merge as the fan-in mechanism | **v2 / defer** — recommend NOT v1 (Decision F). If the lead overrules: harness + a real `IntegrationResult` re-integration contract |
+| `CreateFanIn` private pre-merge as the fan-in mechanism | **DELETED** — removed per PO decision (Decision F); the plan-branch union is the sole fan-in mechanism |
 | Tracking which live tasks own which worktree directory (reuse bookkeeping) | **harness** — new per-run map in `Scheduler.RunContext` |
-| SSOT note that reuse/fork/cleanup are now wired; `CreateFanIn` status | **schema/docs** — `02-schemas-and-contracts.md` §3.2 (small delta, §SSOT below) |
+| SSOT note that reuse/fork/cleanup are now wired; `CreateFanIn`/`FanInHandle` removed | **schema/docs** — `02-schemas-and-contracts.md` §3.2 (small delta, §SSOT below) |
 | Metamorphic "reuse reduces `git worktree add` count" assertion | **test** — `guardrails-test-author` |
 
 No new `guardrails.json` field, no new env var, no new GR code. This is a **wiring + scheduling**
@@ -104,7 +105,7 @@ Named, with how the wiring respects or strains each (the brief requires ≥2; I 
    **only after** the task is journaled `needs-human`/`blocked`, never instead of journaling, and
    **never** on a directory an inheritor holds (the bug this design's bookkeeping prevents).
 
-The reason I recommend **deferring CreateFanIn** is invariant 1: it adds a second writer-shaped
+The reason `CreateFanIn` was **deleted** rests on invariant 1: it adds a second writer-shaped
 merge (the private pre-merge) whose result must still pass through the single-writer settle, and the
 re-integration of that private merge onto the plan branch is non-FF by construction (§Decision F) —
 more integration surface, not less.
@@ -284,10 +285,12 @@ continues (a cleanup failure must never fail an otherwise-green run). `GitWorktr
 currently throws on a non-zero git exit; M2 should make the **call-site** swallow-and-log, or add an
 idempotent `Discard` overload. (Smallest change: call-site try/catch.)
 
-#### E. `CreateFanIn` — the private pre-merge (DEFER — recommend NOT v1; Decision F)
+#### E. `CreateFanIn` — the private pre-merge (DELETED per PO decision; Decision F)
 
-See the fan-in recommendation below. If wired, it is M3, gated, and carries the re-integration
-contract spelled out there.
+`CreateFanIn` and its `FanInHandle` type were **removed** from `IWorktreeProvider`,
+`GitWorktreeProvider`, `FakeWorktreeProvider`, and all test doubles. The plan-branch union path is the
+sole fan-in mechanism. See the fan-in recommendation below for the rationale (it explains *why* the
+union path suffices, which is why the method was redundant and could be deleted).
 
 ### Reuse bookkeeping (new per-run state)
 
@@ -322,7 +325,7 @@ the §A proof and the §C exclusivity claim mechanical rather than argued.
 
 This is a wiring change, not a contract change — **no new field, env var, or GR code.** The only SSOT
 edit is a precision tightening of §3.2 so the doc matches the now-wired behavior (and records that
-`CreateFanIn` is deferred). Replace, in §3.2 "Worktree task semantics", the sentence:
+`CreateFanIn`/`FanInHandle` were removed). Replace, in §3.2 "Worktree task semantics", the sentence:
 
 > a fan-out inherits one chain and forks the rest off the producer's committed tip; a fan-in forks
 > one upstream and merges the others in (§5.3 union).
@@ -335,21 +338,17 @@ with:
 > **fan-in** task forks a fresh segment off the **plan-branch tip**, which already contains every
 > producer's integrated work (the producers' own settles unioned it onto the plan branch), so the
 > fan-in sees the merged tree without a separate private merge. *(A private pre-merge worktree
-> — `CreateFanIn` — is defined on the provider but is **not wired in v1**; the plan-branch union is
-> the v1 fan-in mechanism. See plan 08 `topology-wiring-design.md` Decision F.)*
-
-If the lead **overrules** Decision F and wires `CreateFanIn`, the §3.2 edit instead reads "a fan-in
-forks one upstream into a private worktree and merges the others in before the task runs," and a new
-§5.3 paragraph must specify the private-merge re-integration contract (drafted in Decision F).
+> — `CreateFanIn`/`FanInHandle` — was **removed**; the plan-branch union is the sole fan-in
+> mechanism. See plan 08 `topology-wiring-design.md` Decision F.)*
 
 ---
 
 ## The fan-in recommendation (a / b / c)
 
-**Recommendation: (b) — keep the existing plan-branch union path; wire only reuse + fork + cleanup.
-Defer `CreateFanIn` (recommend deleting its `throw`-stub or leaving it dead behind an explicit "not
-v1" doc-comment).** One-line why: **the union path already produces a correct merged tree for the
-fan-in task, and `CreateFanIn` adds a redundant private merge plus a guaranteed non-FF
+**Decision: (b) — keep the existing plan-branch union path as the sole fan-in mechanism; wire only
+reuse + fork + cleanup. `CreateFanIn` and `FanInHandle` were DELETED per PO decision (its `throw`-stub
+and all test doubles removed).** One-line why: **the union path already produces a correct merged tree
+for the fan-in task, and `CreateFanIn` only added a redundant private merge plus a guaranteed non-FF
 re-integration without removing any union — more integration surface and a new resume/trailer edge,
 for no correctness gain.**
 
@@ -386,16 +385,16 @@ for no correctness gain.**
   surface invariant 1 is most nervous about. Deferring keeps v1's conflict story to **one**
   mechanism.
 
-- **If the lead overrules** (wants `CreateFanIn` in v1): it is **M3, strictly after M1/M2 ship and
-  are green**, and it requires a **new re-integration contract** that `Integrate` does not currently
-  express: integrating a fan-in segment whose `TaskBase` is a non-ancestor private merge must be a
-  *recognized* non-FF union with the colliding-sibling re-verify set (design 08 §4 step 3), and the
-  merge commit must carry `F`'s `Guardrails-Task:` trailer via `CommitStagedMerge`
-  (`GitWorktreeProvider.cs:183-189`) so resume reconcile still holds. That is a real schema/contract
-  paragraph in §5.3, not a free wiring. I would still re-verify (option b) is enough — but this is
-  the buildable shape if overruled.
+- **What building it would have required (for the record).** Had `CreateFanIn` been wired, it would
+  have needed a **new re-integration contract** that `Integrate` does not express: integrating a
+  fan-in segment whose `TaskBase` is a non-ancestor private merge must be a *recognized* non-FF union
+  with the colliding-sibling re-verify set (design 08 §4 step 3), and the merge commit must carry
+  `F`'s `Guardrails-Task:` trailer via `CommitStagedMerge` (`GitWorktreeProvider.cs:183-189`) so
+  resume reconcile still holds — a real schema/contract paragraph in §5.3, not a free wiring. That
+  cost, for no correctness gain over the union path, is why the PO chose to delete the method.
 
-So: **(b)**, with **(c)/`CreateFanIn` explicitly deferred** and the tradeoff on the table.
+So: **(b)**, with **`CreateFanIn`/`FanInHandle` deleted** — the plan-branch union is the sole fan-in
+mechanism, proven by T-13.
 
 ---
 
@@ -443,12 +442,12 @@ later stages never land.
   failure-path Discard; best-effort try/catch at call-sites. *Independently shippable* — pure
   cleanup, no scheduling change. Tests: T-9…T-12 + a #126 regression (no segment worktrees survive a
   green run; `_integration` does).
-- **M3 — `CreateFanIn` (DEFERRED; build only if the lead overrules Decision F).** Private pre-merge
-  + the non-FF re-integration contract + §5.3 SSOT paragraph + colliding-sibling re-verify wiring.
-  Strictly after M1/M2 green. Tests: fan-in-via-private-merge integrates with a re-verified non-FF
-  union and a correct trailer; resume-after-private-merge reconciles.
+- **M3 — `CreateFanIn` (DELETED per PO decision; Decision F).** The method and its `FanInHandle` type
+  were removed from `IWorktreeProvider`, `GitWorktreeProvider`, `FakeWorktreeProvider`, and every test
+  double. No private pre-merge, no non-FF re-integration contract, no §5.3 SSOT paragraph — the
+  plan-branch union path is the sole fan-in mechanism (T-13).
 
-Recommended v1 ship line: **M0 + M1 + M2.** M3 is a separate decision.
+Recommended v1 ship line: **M0 + M1 + M2.** (M3 was deleted, not built.)
 
 ---
 
@@ -509,6 +508,7 @@ The metamorphic test (T-M) is the brief's explicit requirement and the empirical
    is small and the scheduling complexity may not pay. The metamorphic test quantifies the win;
    the lead should weigh it against the added `OnSettledAsync` complexity before committing M1 to
    master. (This is the honest case for "maybe just wire cleanup, skip reuse" — surfaced, not hidden.)
-6. **CreateFanIn deferral is a divergence from a literal "wire the topology."** If the PO truly
-   meant "wire all five," Decision F is a pushback. I recommend (b) on the merits; the lead decides.
-   The cost of being wrong is low: M3 can be added later without reworking M1/M2.
+6. **CreateFanIn deletion is a divergence from a literal "wire the topology."** A literal "wire all
+   five" reading would have wired it; the PO instead chose to **delete** `CreateFanIn`/`FanInHandle`
+   on the merits (Decision F). The cost of being wrong is low: the method could be re-introduced later
+   without reworking M1/M2.

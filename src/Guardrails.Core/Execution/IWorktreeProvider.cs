@@ -33,17 +33,6 @@ public interface IWorktreeProvider
     WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt);
 
     /// <summary>
-    /// Create a private fan-in worktree that merges <paramref name="chosenUpstream"/> with
-    /// <paramref name="others"/> before a fan-in task runs (plan 08 M5).
-    /// </summary>
-    FanInHandle CreateFanIn(
-        WorktreeHandle chosenUpstream,
-        IReadOnlyList<WorktreeHandle> others,
-        string taskId,
-        int attempt,
-        CancellationToken ct);
-
-    /// <summary>
     /// Fast-forward (or merge) the plan branch in the integration worktree to include the commits
     /// in <paramref name="segment"/>. Called once per task after the executor reports success.
     /// </summary>

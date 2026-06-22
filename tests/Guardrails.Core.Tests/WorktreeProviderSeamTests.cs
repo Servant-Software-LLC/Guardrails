@@ -12,7 +12,7 @@ namespace Guardrails.Core.Tests;
 /// takes a WorktreeHandle), and scheduler-level overlap — all BEFORE any of these
 /// types exist. This file MUST fail to compile against pre-M1 code because
 /// IWorktreeProvider, WorktreeHandle, IntegrationHandle, IntegrationResult,
-/// FanInHandle, MergeOnSuccessResult, and the new ExecuteAsync overload do not yet
+/// MergeOnSuccessResult, and the new ExecuteAsync overload do not yet
 /// exist. That compile failure IS the "fails on current code" signal.
 /// Do NOT implement the seam to make these compile; implement M1 instead.
 /// </summary>
@@ -89,14 +89,6 @@ public sealed class WorktreeProviderSeamTests
                 RecordedCommitSha = producerRecordedSha,
                 PlanBranchHead = producerRecordedSha
             };
-
-        public FanInHandle CreateFanIn(
-            WorktreeHandle chosenUpstream,
-            IReadOnlyList<WorktreeHandle> others,
-            string taskId,
-            int attempt,
-            CancellationToken ct) =>
-            new() { PrivateWorktreePath = $"/fake/worktrees/fanin/{taskId}/attempt-{attempt}" };
 
         public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct)
         {

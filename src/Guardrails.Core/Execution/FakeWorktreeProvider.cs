@@ -50,14 +50,6 @@ public sealed class FakeWorktreeProvider : IWorktreeProvider
             TaskId = taskId
         };
 
-    public FanInHandle CreateFanIn(
-        WorktreeHandle chosenUpstream,
-        IReadOnlyList<WorktreeHandle> others,
-        string taskId,
-        int attempt,
-        CancellationToken ct) =>
-        new() { PrivateWorktreePath = $"fake/worktrees/fanin/{taskId}/attempt-{attempt}" };
-
     public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct) =>
         IntegrationResult.FastForward;
 

@@ -239,14 +239,6 @@ public sealed class MergeLockAndSettleTests
                 PlanBranchHead = producerSha
             };
 
-        public FanInHandle CreateFanIn(
-            WorktreeHandle chosenUpstream,
-            IReadOnlyList<WorktreeHandle> others,
-            string taskId,
-            int attempt,
-            CancellationToken ct) =>
-            new() { PrivateWorktreePath = _workDir };
-
         public void Discard(WorktreeHandle handle) { }
 
         public void PruneOrphans(IReadOnlyCollection<string> liveTaskIds, IntegrationHandle integ) { }

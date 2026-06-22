@@ -63,11 +63,6 @@ public sealed class TopologyM2CleanupTests
         public WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt) =>
             new() { WorktreePath = $"fork://{taskId}", SegmentBranchName = $"fork/{taskId}", TaskId = taskId };
 
-        public FanInHandle CreateFanIn(
-            WorktreeHandle chosenUpstream, IReadOnlyList<WorktreeHandle> others,
-            string taskId, int attempt, CancellationToken ct) =>
-            new() { PrivateWorktreePath = $"fanin://{taskId}" };
-
         public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct) =>
             IntegrationResult.FastForward;
 

@@ -495,14 +495,15 @@ public sealed class TopologyReuseForkSchedulerTests
             "a cancelled run must not Discard its in-flight segment worktree (resume prune handles it)");
     }
 
-    // ── T-13 (fan-in still works via the union path — no CreateFanIn; locks in option b) ─────────
+    // ── T-13 (fan-in works via the plan-branch union path — the sole fan-in mechanism; locks in option b)
     [Fact]
     public async Task T13_FanIn_StillWorksViaPlanBranchUnion_SeesAllProducersMergedTree()
     {
         using var repo = new TempGitRepo();
-        // P1, P2 → F. F is a fan-in: it must see BOTH producers' work (the plan-branch union), with
-        // NO CreateFanIn private merge. A green run with both producers' files present on the plan
-        // branch + the fan-in integrated proves the union path covers fan-in.
+        // P1, P2 → F. F is a fan-in: it must see BOTH producers' work (the plan-branch union) — there
+        // is no private pre-merge worktree; the union path is the only fan-in mechanism. A green run
+        // with both producers' files present on the plan branch + the fan-in integrated proves the
+        // union path covers fan-in.
         string planDir = CreateChainPlan(repo.RepoPath,
             ("01-p1", []), ("02-p2", []), ("03-fanin", ["01-p1", "02-p2"]));
         var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);

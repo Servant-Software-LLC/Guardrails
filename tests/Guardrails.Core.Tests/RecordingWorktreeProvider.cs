@@ -98,14 +98,6 @@ public sealed class RecordingWorktreeProvider : IWorktreeProvider
         };
     }
 
-    public FanInHandle CreateFanIn(
-        WorktreeHandle chosenUpstream,
-        IReadOnlyList<WorktreeHandle> others,
-        string taskId,
-        int attempt,
-        CancellationToken ct) =>
-        new() { PrivateWorktreePath = $"fanin://{taskId}/attempt-{attempt}" };
-
     public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct)
     {
         string taskId = string.IsNullOrEmpty(segment.TaskId) ? segment.SegmentBranchName : segment.TaskId;

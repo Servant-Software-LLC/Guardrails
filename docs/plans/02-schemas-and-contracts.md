@@ -203,9 +203,8 @@ tiebreak) and **forks the rest** off the producer's **recorded** committed sha (
 segment-branch tip, which the inheritor may have advanced); a **fan-in** task forks a fresh segment
 off the **plan-branch tip**, which already contains every producer's integrated work (the producers'
 own settles unioned it onto the plan branch), so the fan-in sees the merged tree without a separate
-private merge. *(A private pre-merge worktree — `CreateFanIn` — is defined on the provider but is
-**not wired in v1**; the plan-branch union is the v1 fan-in mechanism. See plan 08
-`topology-wiring-design.md` Decision F.)* A failed attempt does NOT discard the worktree — the harness `git reset --hard
+private merge. *(A private pre-merge worktree — `CreateFanIn`/`FanInHandle` — was **removed**; the
+plan-branch union is the sole fan-in mechanism. See plan 08 `topology-wiring-design.md` Decision F.)* A failed attempt does NOT discard the worktree — the harness `git reset --hard
 <taskBase> + git clean -fd` (preserving every upstream/sibling commit in the tree; `taskBase` is the
 task's start commit, distinct from the plan-branch `preHead`). A task that depends on another reads
 the producer's MERGED outputs (its worktree descends from the producer's committed tip). No
