@@ -24,7 +24,8 @@ public sealed class FakeWorktreeProvider : IWorktreeProvider
             SegmentBranchName = $"guardrails/{integ.RunId}/{taskId}/attempt-{attempt}",
             TaskBase = "0000000000000000000000000000000000000000",
             RecordedCommitSha = "0000000000000000000000000000000000000000",
-            PlanBranchHead = "0000000000000000000000000000000000000000"
+            PlanBranchHead = "0000000000000000000000000000000000000000",
+            TaskId = taskId
         };
 
     public WorktreeHandle ReuseSegment(WorktreeHandle upstreamSegment, string taskId, int attempt) =>
@@ -34,7 +35,8 @@ public sealed class FakeWorktreeProvider : IWorktreeProvider
             SegmentBranchName = $"guardrails/reused/{taskId}/attempt-{attempt}",
             TaskBase = upstreamSegment.RecordedCommitSha,
             RecordedCommitSha = upstreamSegment.RecordedCommitSha,
-            PlanBranchHead = upstreamSegment.PlanBranchHead
+            PlanBranchHead = upstreamSegment.PlanBranchHead,
+            TaskId = taskId
         };
 
     public WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt) =>
@@ -44,7 +46,8 @@ public sealed class FakeWorktreeProvider : IWorktreeProvider
             SegmentBranchName = $"guardrails/fork/{taskId}/attempt-{attempt}",
             TaskBase = producerRecordedSha,
             RecordedCommitSha = producerRecordedSha,
-            PlanBranchHead = producerRecordedSha
+            PlanBranchHead = producerRecordedSha,
+            TaskId = taskId
         };
 
     public FanInHandle CreateFanIn(

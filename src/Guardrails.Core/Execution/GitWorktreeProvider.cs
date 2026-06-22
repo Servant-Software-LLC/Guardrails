@@ -91,7 +91,11 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             SegmentBranchName = upstreamSegment.SegmentBranchName,
             TaskBase = upstreamSegment.RecordedCommitSha,
             RecordedCommitSha = upstreamSegment.RecordedCommitSha,
-            PlanBranchHead = upstreamSegment.PlanBranchHead
+            PlanBranchHead = upstreamSegment.PlanBranchHead,
+            // The inheritor's commit must carry ITS OWN task id as the integration trailer (resume
+            // truth, §7) — not the producer's segment-branch name. Integrate falls back to the
+            // branch name only when TaskId is empty, so this must be set on the reused handle.
+            TaskId = taskId
         };
 
     /// <inheritdoc />
@@ -114,7 +118,10 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             SegmentBranchName = forkBranch,
             TaskBase = producerRecordedSha,
             RecordedCommitSha = producerRecordedSha,
-            PlanBranchHead = producerRecordedSha
+            PlanBranchHead = producerRecordedSha,
+            // Carry the fork's own task id so its integrated commit's trailer is the task id (§7),
+            // not the fork-branch name (Integrate's empty-TaskId fallback).
+            TaskId = taskId
         };
     }
 

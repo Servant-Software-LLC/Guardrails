@@ -244,7 +244,7 @@ public sealed class Scheduler
             await foreach (TaskEnvelope envelope in context.Channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
                 TaskNode task = envelope.Task;
-                WorktreeHandle handle = envelope.Handle;
+                WorktreeHandle handle = MaterializeForkIfDeferred(context, envelope);
 
                 if (CostCapHaltFor(task) is { } capped)
                 {
@@ -271,6 +271,37 @@ public sealed class Scheduler
             context.Channel.Writer.TryComplete();
             runCts.Cancel();
         }
+    }
+
+    /// <summary>
+    /// plan 08 topology-wiring M1 §B: materialize a deferred fork-the-rest sibling's worktree at
+    /// dequeue — the actual <c>git worktree add</c> runs HERE, OFF the <see cref="_gate"/> every
+    /// settling worker contends for. The fork roots off the producer's RECORDED sha (captured in
+    /// the request under <c>_gate</c> at assignment, W-2), never a live rev-parse of the segment
+    /// branch the inheritor may have advanced. Returns the envelope's existing handle unchanged
+    /// when there is no deferred fork.
+    /// </summary>
+    private WorktreeHandle MaterializeForkIfDeferred(RunContext context, TaskEnvelope envelope)
+    {
+        if (envelope.Fork is not { } fork || _worktreeProvider is not { } provider)
+        {
+            return envelope.Handle;
+        }
+
+        // git I/O off the gate.
+        WorktreeHandle handle = provider.ForkFromTip(fork.ProducerRecordedSha, envelope.Task.Id, attempt: 1);
+
+        // Bookkeeping under the gate: record the assigned handle + directory ownership.
+        lock (_gate)
+        {
+            context.Handles[envelope.Task.Id] = handle;
+            if (!string.IsNullOrEmpty(handle.WorktreePath))
+            {
+                context.DirectoryOwner[handle.WorktreePath] = envelope.Task.Id;
+            }
+        }
+
+        return handle;
     }
 
     private TaskResult? CostCapHaltFor(TaskNode task)
@@ -326,7 +357,7 @@ public sealed class Scheduler
             }
         }
 
-        var newlyReady = new List<TaskNode>();
+        var newlyReady = new List<TaskEnvelope>();
         var newlyBlocked = new List<TaskResult>();
 
         lock (_gate)
@@ -336,23 +367,19 @@ public sealed class Scheduler
 
             if (result.IsGreen)
             {
+                // Which dependents of this producer just had their LAST pending dep cleared?
+                // (A multi-producer dependent here is a fan-in: it has other, already-green
+                // producers, and reaches the merged plan tip — never reused, M1 §A1.)
+                var justReady = new List<string>();
                 foreach (string dependent in context.Graph.DependentsOf(task.Id))
                 {
                     if (!context.Settled.ContainsKey(dependent) && --context.PendingDeps[dependent] == 0)
                     {
-                        // Lazy handle creation: create the dependent's segment NOW, after the
-                        // upstream integration has advanced the plan branch. This allows FF.
-                        WorktreeHandle depHandle = _worktreeProvider != null && context.Integ != null
-                            ? _worktreeProvider.CreateSegment(dependent, attempt: 1, context.Integ, CancellationToken.None)
-                            : new WorktreeHandle();
-                        context.Handles[dependent] = depHandle;
-                        if (!string.IsNullOrEmpty(depHandle.WorktreePath))
-                        {
-                            context.DirectoryOwner[depHandle.WorktreePath] = dependent;
-                        }
-                        newlyReady.Add(context.ById[dependent]);
+                        justReady.Add(dependent);
                     }
                 }
+
+                AssignDependentHandles(context, task, justReady, newlyReady);
             }
             else if (result.Outcome != TaskOutcome.Cancelled)
             {
@@ -389,10 +416,110 @@ public sealed class Scheduler
             _observer.TaskFinished(blocked);
         }
 
-        foreach (TaskNode ready in newlyReady)
+        // Each envelope already carries its assigned handle (fresh segment / reused directory) OR a
+        // deferred fork request the worker materializes off-gate at dequeue (M1 §B).
+        foreach (TaskEnvelope ready in newlyReady)
         {
-            WorktreeHandle readyHandle = context.Handles.GetValueOrDefault(ready.Id) ?? new WorktreeHandle();
-            context.Channel.Writer.TryWrite(new TaskEnvelope(ready, readyHandle));
+            context.Channel.Writer.TryWrite(ready);
+        }
+    }
+
+    /// <summary>
+    /// plan 08 topology-wiring M1 §A/§B: assign worktree handles to the dependents of a just-settled
+    /// green producer <paramref name="producer"/>, choosing reuse vs fork vs fresh-segment.
+    /// <list type="bullet">
+    ///   <item><b>Multi-producer dependents (fan-in)</b> get a fresh <see cref="IWorktreeProvider.CreateSegment"/>
+    ///     off the plan-branch tip, which already contains every producer's integrated work — never
+    ///     reused (§A1).</item>
+    ///   <item><b>Single-producer dependents</b> are the inherit-one/fork-rest fan-out. The inheritor
+    ///     (longest downstream chain via <see cref="DependencyGraph.TransitiveDependentsOf"/>, ordinal-id
+    ///     tiebreak) reuses the producer's segment directory via the pure-handle
+    ///     <see cref="IWorktreeProvider.ReuseSegment"/> (safe under <see cref="_gate"/>; ownership
+    ///     transfers to the inheritor). The rest fork off the producer's RECORDED sha — a DEFERRED
+    ///     request the worker materializes off-gate (§B, W-2).</item>
+    /// </list>
+    /// Runs under <see cref="_gate"/>. All assignment + bookkeeping is here; only the fork's
+    /// <c>git worktree add</c> is deferred off-gate.
+    /// </summary>
+    private void AssignDependentHandles(
+        RunContext context, TaskNode producer, List<string> justReady, List<TaskEnvelope> newlyReady)
+    {
+        // Fan-in (multi-producer) dependents reach the merged plan tip with a fresh segment.
+        var singleProducer = new List<string>();
+        foreach (string dependent in justReady)
+        {
+            if (context.ById[dependent].DependsOn.Count > 1)
+            {
+                WorktreeHandle fanInHandle = CreateFreshSegment(context, dependent);
+                context.Handles[dependent] = fanInHandle;
+                RecordOwnership(context, fanInHandle, dependent);
+                newlyReady.Add(new TaskEnvelope(context.ById[dependent], fanInHandle));
+            }
+            else
+            {
+                singleProducer.Add(dependent);
+            }
+        }
+
+        if (singleProducer.Count == 0)
+        {
+            return;
+        }
+
+        // Inherit-one: the single-producer dependent with the longest downstream chain reuses the
+        // producer's directory; ordinal-id tiebreak. The producer's handle carries the RecordedSha
+        // that Integrate captured during this settle (strict happens-before).
+        string inheritor = singleProducer
+            .OrderByDescending(d => context.Graph.TransitiveDependentsOf(d).Count)
+            .ThenBy(d => d, StringComparer.Ordinal)
+            .First();
+
+        WorktreeHandle? producerHandle =
+            _worktreeProvider != null ? context.Handles.GetValueOrDefault(producer.Id) : null;
+
+        foreach (string dependent in singleProducer)
+        {
+            if (dependent == inheritor && _worktreeProvider is { } reuseProvider && producerHandle is { } ph)
+            {
+                // Pure handle rewrite — no git, safe under _gate. Ownership of the producer's
+                // directory transfers to the inheritor.
+                WorktreeHandle reused = reuseProvider.ReuseSegment(ph, dependent, attempt: 1);
+                context.Handles[dependent] = reused;
+                if (!string.IsNullOrEmpty(reused.WorktreePath))
+                {
+                    context.DirectoryOwner[reused.WorktreePath] = dependent;
+                }
+                newlyReady.Add(new TaskEnvelope(context.ById[dependent], reused));
+            }
+            else if (_worktreeProvider is not null && producerHandle is { } pf)
+            {
+                // Fork-the-rest: defer the git worktree add to the worker (off-gate). Root off the
+                // producer's RECORDED sha — never the live segment-branch tip the inheritor advances.
+                var fork = new ForkRequest(pf.RecordedCommitSha);
+                newlyReady.Add(new TaskEnvelope(context.ById[dependent], new WorktreeHandle(), fork));
+            }
+            else
+            {
+                // No provider (serial/fake-less mode): an empty placeholder handle, as before.
+                var placeholder = new WorktreeHandle();
+                context.Handles[dependent] = placeholder;
+                newlyReady.Add(new TaskEnvelope(context.ById[dependent], placeholder));
+            }
+        }
+    }
+
+    /// <summary>Create a fresh segment off the plan-branch tip (or an empty handle without a provider).</summary>
+    private WorktreeHandle CreateFreshSegment(RunContext context, string taskId) =>
+        _worktreeProvider != null && context.Integ != null
+            ? _worktreeProvider.CreateSegment(taskId, attempt: 1, context.Integ, CancellationToken.None)
+            : new WorktreeHandle();
+
+    /// <summary>Record directory ownership for a non-empty handle path (M0 bookkeeping; under <see cref="_gate"/>).</summary>
+    private static void RecordOwnership(RunContext context, WorktreeHandle handle, string taskId)
+    {
+        if (!string.IsNullOrEmpty(handle.WorktreePath))
+        {
+            context.DirectoryOwner[handle.WorktreePath] = taskId;
         }
     }
 
@@ -591,8 +718,20 @@ public sealed class Scheduler
         return new RunReport { Tasks = results, Cancelled = cancelled };
     }
 
-    /// <summary>Per-task channel item pairing a task with its assigned worktree handle.</summary>
-    private readonly record struct TaskEnvelope(TaskNode Task, WorktreeHandle Handle);
+    /// <summary>
+    /// Per-task channel item pairing a task with its assigned worktree handle. When
+    /// <see cref="Fork"/> is non-null the handle is a placeholder and the worker materializes the
+    /// real fork worktree off-gate at dequeue (M1 §B); otherwise <see cref="Handle"/> is the final
+    /// assigned segment/reused directory.
+    /// </summary>
+    private readonly record struct TaskEnvelope(TaskNode Task, WorktreeHandle Handle, ForkRequest? Fork = null);
+
+    /// <summary>
+    /// A deferred fork-the-rest request (M1 §B): the producer's RECORDED commit sha to fork off
+    /// (W-2 — never a live rev-parse of the inheritor-advanced segment branch). Materialized by the
+    /// worker via <see cref="IWorktreeProvider.ForkFromTip"/> before the task's action runs.
+    /// </summary>
+    private readonly record struct ForkRequest(string ProducerRecordedSha);
 
     /// <summary>Mutable shared state of one run, guarded by the scheduler's gate.</summary>
     private sealed class RunContext(
