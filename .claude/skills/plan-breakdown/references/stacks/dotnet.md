@@ -9,7 +9,8 @@ instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
 Every stack file answers the same six standard questions first (§1–§6), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
-(§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring, then WPF).
+(§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
+§11 strip-comments-before-forbidden-keyword-scan, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -564,6 +565,91 @@ exit 0
 This is strictly weaker — `new FooImpl(` can sit in a dead branch the production path never reaches,
 and the grep cannot tell. Use it only when the factory cannot be driven from a test at all; prefer
 10a, then 10b. Mark 10a/10b `scope: "integration"` when they drive the whole assembled feature.
+
+## 11. Strip comments before a forbidden-keyword scan — SQL and C# syntax (#97, #98)
+
+The catalogue's comment-blind keyword-scan rule (catalogue → "Comment-blind keyword scan"): a
+guardrail that scans a **source artifact** for **banned constructs** — a T-SQL survey asserted
+read-only (`MERGE`/`EXEC`/`INSERT`/`UPDATE`/`DELETE`/`xp_cmdshell`/`OPENROWSET`), a C# file asserted
+free of `Console.WriteLine`/`eval`-shaped calls — must **strip comments first**, or it
+false-POSITIVES on a comment that merely *names* the banned thing. The motivating trap (plan 0007
+task 01): the action prompt asked for a **safety-header comment** listing the banned keywords, and
+the comment-blind guardrail flagged them in the header — whack-a-mole to `needs-human` on a correct
+read-only script. Here are the two .NET-relevant comment syntaxes.
+
+**SQL** — strip `/* */` block comments then `-- …` line comments before the keyword scan:
+
+```powershell
+# catches: a read-only T-SQL survey check that false-POSITIVES on its OWN safety-header comment
+#          ("performs no MERGE/EXEC, no xp_cmdshell") - escalating a correct read-only script to
+#          needs-human. Strip SQL comments, THEN scan the code for banned write/external surface.
+$sql = "scripts/survey.sql"
+$raw = Get-Content $sql -Raw
+$code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
+$code = [regex]::Replace($code, '--[^\r\n]*', ' ')       # -- line comments
+$banned = 'xp_cmdshell|OPENROWSET|\bMERGE\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b'
+$m = [regex]::Match($code, "(?i)$banned")
+if ($m.Success) {
+    Write-Output "$sql uses banned construct '$($m.Value)' in CODE (not just a comment) - not read-only"
+    exit 1
+}
+exit 0
+```
+
+`EXEC` needs care — a read-only survey legitimately calls `EXEC sp_executesql` (the parameterized-
+query idiom). Match `EXEC` only when it is **not** `sp_executesql`, against the comment-stripped code:
+
+```powershell
+# allow EXEC sp_executesql (read-only parameterized query); ban any other EXEC, in CODE only
+if ($code -match '(?i)\bEXEC(UTE)?\b(?!\s+sp_executesql\b)') {
+    Write-Output "$sql calls EXEC other than sp_executesql in CODE - external/unsafe surface"
+    exit 1
+}
+```
+
+**C#** — strip `/* */` then `// …` line comments (note `//`, not SQL's `--`) before a banned-call
+scan:
+
+```powershell
+# catches: a "no Console.WriteLine" (or other banned-call) check that false-positives on a
+#          // comment naming the banned call. Strip C# comments, then scan the code.
+$cs = "src/Tool/Runner.cs"
+$raw = Get-Content $cs -Raw
+$code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
+$code = [regex]::Replace($code, '//[^\r\n]*', ' ')       # // line comments
+if ($code -match 'Console\s*\.\s*WriteLine') {
+    Write-Output "$cs calls Console.WriteLine in CODE (not just a comment) - use the injected logger"
+    exit 1
+}
+exit 0
+```
+
+**Line-number-reporting variant** — when the failure line must name the offending source line,
+blank the comment spans **in place** (preserve newlines) so reported line numbers stay accurate,
+rather than collapsing the file:
+
+```powershell
+# blank block-comment spans but KEEP newlines, so a per-line scan reports correct line numbers
+$raw = [regex]::Replace($raw, '/\*[\s\S]*?\*/', { $args[0].Value -replace '[^\r\n]', ' ' })
+$lines = $raw -split '\r?\n'
+for ($i = 0; $i -lt $lines.Count; $i++) {
+    $line = $lines[$i] -replace '--[^\r\n]*', ' '        # SQL line comment ('//' for C#)
+    if ($line -match '(?i)\bxp_cmdshell\b') {
+        Write-Output "$sql line $($i + 1): xp_cmdshell in code - external/unsafe surface"
+        exit 1
+    }
+}
+exit 0
+```
+
+Caveat (state it if it matters for the artifact): regex comment-stripping does not understand a
+banned keyword sitting **inside a string literal** (`'-- not a comment'`, `"/* still a string */"`).
+For most read-only-survey and banned-call checks this is acceptable (a survey rarely embeds the
+banned keyword in a string); when string-literal false positives are a real risk, note it in the
+breakdown report — full fidelity needs a parser, which is out of scope for a guardrail. And per the
+catalogue's action-prompt discipline: do **not** pair a header-documenting prompt with a
+comment-blind grep — strip comments in the guardrail, and keep the banned-keyword list in the
+guardrail's `# catches:` line rather than the action prompt unless the guardrail is comment-safe.
 
 ## WPF structural checks (#11 F5/F6)
 

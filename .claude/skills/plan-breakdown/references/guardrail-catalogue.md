@@ -68,6 +68,85 @@ accessor block, never a fixed leading accessor. The exact C# property-declaratio
 anchor on the part of the syntax whose order the language fixes, never on whichever
 member/accessor happens to be written first.
 
+### Comment-blind keyword scan — strip comments before forbidden-keyword matching (universal) (#97, #98)
+
+The structural-vs-keyword rule (above) is about a *required* construct a comment/`using`/local
+copy can fake. This is its **forbidden**-keyword mirror: a guardrail that scans source text for
+**banned** constructs — read-only checks (`MERGE`/`EXEC`/`INSERT`/`xp_cmdshell`), no-shell,
+no-eval, `no-console.log`, no-`TODO` — and matches the **raw file including comments** will
+**false-POSITIVE on a comment** (and on string literals and disabled code). Same root cause as
+the structural rule — *matching raw text, not code* — same fix family — *strip/parse, don't
+raw-grep*. But where structural-vs-keyword causes a false **green** (a comment satisfies a
+required token), comment-blind scanning causes a false **red**: a comment that merely *names*
+the banned thing trips the check.
+
+**Why this is a BLOCKER pattern, not a nuisance.** It is not a wrong implementation passing — it
+is a **correct implementation failing permanently**, with no path to recovery. The classic trap is
+a *coupled pair*: (1) the action prompt asks the agent to write a self-describing **safety-header
+comment** naming the banned constructs (good engineering practice — "READ-ONLY survey; performs no
+MERGE/INSERT/EXEC; makes no external calls (no xp_cmdshell…)"); (2) the guardrail keyword-matches
+the **raw file** and so flags those keywords *in the header the prompt asked for*. The agent cannot
+tell the match came from its own comment, so each retry it strips one mention and exposes the next —
+**whack-a-mole to `needs-human`** on a strictly-read-only artifact. Real run (plan 0007 task 01):
+attempt 1 flagged `MERGE`/`EXEC`, attempt 2 `EXEC`, attempt 3 `xp_cmdshell` — three *different*
+banned keywords across three attempts, all from one safety comment. The harness behaved correctly
+(accurate feedback, retries, honest halt) — the **guardrail** was mis-scoped.
+
+**Rule (catalogue doctrine).** Any guardrail that scans a source artifact for **banned keywords**
+MUST strip the source language's comments — ideally string literals too — **before** matching. Use
+the target language's comment syntax. For SQL (the motivating case), strip `/* */` block comments
+and `-- …` line comments first; the same applies to any language — a `//`-comment or docstring that
+documents "this code uses no `eval`" must not trip an `eval` ban.
+
+```powershell
+# catches: a forbidden-keyword (read-only / no-shell) check that false-POSITIVES on a comment -
+#          e.g. a SAFETY-HEADER comment the action prompt asked for ("performs no MERGE/EXEC,
+#          no xp_cmdshell") - sending a CORRECT read-only script to needs-human via whack-a-mole.
+#          Strip comments BEFORE the keyword scan so only real code is matched.
+$raw = Get-Content $f -Raw
+$c = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
+$c = [regex]::Replace($c,   '--[^\r\n]*', ' ')        # -- line comments
+# ...now run the banned-keyword checks against $c (the comment-free code), NOT $raw.
+if ($c -match '(?i)\bxp_cmdshell\b') {
+    Write-Output "$f calls xp_cmdshell in CODE (not just a comment) - external/unsafe surface"
+    exit 1
+}
+exit 0
+```
+
+For a **line-number-reporting** guardrail (e.g. no-forbidden-egress that names the offending line),
+do not collapse the file — **blank the comment spans in place, preserving newlines**, so line
+numbers in the failure message stay accurate:
+
+```powershell
+# strip block comments but KEEP newlines so reported line numbers stay correct
+$raw = [regex]::Replace($raw, '/\*[\s\S]*?\*/', { $args[0].Value -replace '[^\r\n]', ' ' })
+$lines = $raw -split '\r?\n'
+# an existing per-line '--' line-comment skip handles line-comment-only lines
+```
+
+```bash
+# catches: same - a banned-keyword scan that false-positives on a comment/safety-header.
+#          Strip /* */ then -- before matching; scan the code, not the comment.
+set -euo pipefail
+c=$(perl -0pe 's{/\*.*?\*/}{ }gs; s{--[^\n]*}{ }g' "$f")
+if printf '%s' "$c" | grep -Eiq '\bxp_cmdshell\b'; then
+    echo "$f calls xp_cmdshell in CODE (not just a comment) - external/unsafe surface"
+    exit 1
+fi
+exit 0
+```
+
+**Action-prompt discipline — the breakdown must not grep for what it tells the action to document
+(#98).** A self-describing safety header is good practice, but it requires a **comment-safe**
+guardrail. During guardrail selection, flag the **direct conflict** when the *same* task both
+(a) tells the action to write a header comment naming the banned constructs AND (b) greps for those
+constructs without comment-stripping — that pairing is a guaranteed false positive that burns the
+full retry budget and escalates a correct artifact. Resolve it by stripping comments in the guardrail
+(above); the `# catches:` line already documents intent, so the **action prompt should NOT enumerate
+banned keywords** unless its guardrail is comment-safe. The per-language comment syntax lives in the
+stack file (`stacks/dotnet.md §11` for SQL/C#).
+
 ### Positive-effect / non-hollow assertion (universal) (#73)
 
 The structural-vs-keyword rule has a sibling on the *value* side: a guardrail must
@@ -440,6 +519,104 @@ the subjective vibes the demotion gate rejects, and worse, it cannot catch the f
 contains the asserted element is the deliverable). The cross-check that a *described* UI
 mapped to *some* build-ui task lives in SKILL.md Step 7.0 (exit-criteria self-review).
 
+## Corpus / aggregation completeness & substance (#99)
+
+A task whose deliverable is **derived artifacts from a set of inputs** — doc mining, codegen
+from a spec, API→docs, dataset import, schema→fixtures, a crawl/enumeration that produces one
+output per page — has a failure mode the existing archetypes miss. `file-exists` and
+`file-contains` (and `tests-fail-on-current-code`) cover **shape** and **anti-tautology**;
+nothing covers the **completeness and substance of a derived corpus**. The result is the worst
+kind of false-green: a run that is 100% green and **ships an empty or partial corpus** — worse
+than a hard failure, because it *looks done*. Three concrete misses (all the same gap):
+
+- **F1 — hollow artifacts.** `file-exists` + a required marker line (e.g. a `Source:` citation)
+  passes a **one-line stub**. The deliverable is empty-but-shaped.
+- **F2 — incomplete aggregate/index.** An index that references *one* output "resolves" and
+  passes while omitting most of the corpus — silently blinding any consumer that navigates via
+  the index.
+- **F3 — shallow ingestion.** A crawl that captures 2 of N pages passes, because the guardrails
+  verify "everything I *listed* exists," never "I listed *enough*."
+
+Distinct from the comment-stripping family (#97/#98): that is about false **positives** on banned
+constructs; this is about false **negatives** on hollow/incomplete derived corpora. It complements
+`tests-fail-on-current-code` (anti-tautology for tests) with an anti-tautology for
+*extraction/aggregation outputs*.
+
+**The four guardrails.** For a derived-corpus task, add deterministic checks that assert:
+
+1. **Input→output coverage (no silent drops).** Every input — a manifest entry, a source file, an
+   enumerated URL — maps to an **existing** output artifact. Iterate the *input* set and fail on the
+   first input with no corresponding output; never iterate the outputs (that only proves "what I
+   produced exists," F3's blind spot).
+2. **Per-output substance floor (anti-stub).** Each derived artifact exceeds a **minimal content
+   floor** — e.g. ≥ N non-empty lines or ≥ N characters *beyond* the required boilerplate/marker —
+   so a one-line stub (F1) cannot pass. Subtract the boilerplate before measuring, or the marker line
+   itself satisfies the floor.
+3. **Aggregate/index completeness (`produced ⊆ indexed`).** The index/rollup references **every**
+   produced artifact, not just ≥ 1. Compute the produced set and the indexed set and fail if any
+   produced artifact is absent from the index (F2).
+4. **Ingestion lower bound (where knowable).** A sanity floor on **how many** inputs were processed
+   — `count(outputs) ≥ N` — to catch a trivially shallow run (F3). Set N from the manifest/known
+   corpus size when one exists.
+
+```powershell
+# catches: a derived-corpus run that ships HOLLOW or INCOMPLETE outputs while green - a one-line
+#          stub per source (F1), an index naming only 1 of N outputs (F2), or 2-of-N pages
+#          ingested (F3). Asserts input->output coverage, a per-output substance floor, index
+#          completeness (produced subset of indexed), and an ingestion lower bound.
+$inputs   = Get-Content "manifest.txt" | Where-Object { $_.Trim() }   # the input set (1 line per input)
+$outDir   = "docs/derived"
+$indexFile = "docs/derived/INDEX.md"
+$minLines = 5                                                          # substance floor (tune per corpus)
+$minInputs = 10                                                       # ingestion lower bound (tune)
+
+# 4. ingestion lower bound
+if ($inputs.Count -lt $minInputs) {
+    Write-Output "only $($inputs.Count) inputs in manifest (< $minInputs) - corpus looks trivially shallow"
+    exit 1
+}
+$produced = @()
+foreach ($in in $inputs) {
+    $slug = [IO.Path]::GetFileNameWithoutExtension($in)
+    $out  = Join-Path $outDir "$slug.md"
+    # 1. input -> output coverage (no silent drops)
+    if (-not (Test-Path $out)) {
+        Write-Output "input '$in' has no derived output at $out - a source was silently dropped"
+        exit 1
+    }
+    # 2. per-output substance floor (anti-stub): non-empty lines beyond the Source: marker
+    $body = Get-Content $out | Where-Object { $_.Trim() -and $_ -notmatch '^\s*Source:' }
+    if ($body.Count -lt $minLines) {
+        Write-Output "$out has only $($body.Count) substantive lines (< $minLines) - hollow stub"
+        exit 1
+    }
+    $produced += $out
+}
+# 3. aggregate/index completeness: produced subset of indexed
+$index = Get-Content $indexFile -Raw
+foreach ($p in $produced) {
+    $name = [IO.Path]::GetFileName($p)
+    if ($index -notmatch [regex]::Escape($name)) {
+        Write-Output "$indexFile does not reference produced artifact '$name' - index is incomplete"
+        exit 1
+    }
+}
+exit 0
+```
+
+**The honest limit — state it in the doctrine so authors don't over-trust the floors.** These are
+**lower bounds, not faithfulness checks.** A deterministic guardrail can enforce "≥ N,
+every-input-mapped, non-trivial size, fully indexed" — it **cannot** verify the extraction is
+*content-faithful* or *semantically complete* (that the derived doc actually captures its source).
+That residual needs a human pass or a demotion-gated prompt-judge (one paired with these
+deterministic floors, never alone — the demotion gate below). The floors are **tunable per corpus**:
+set N, the substance floor, and the ingestion lower bound from the known corpus size; when none is
+knowable, drop guardrail 4 and say so in the breakdown report rather than inventing a number.
+
+**Decision-tree leaf:** *deliverable = derived corpus / aggregate over a set of inputs* → add the
+coverage + substance-floor + index-completeness guardrails (lower bounds; note the faithfulness
+residual is human/judge work).
+
 ## The prompt-judge demotion gate
 
 For EVERY candidate prompt-judge, ask all four. Any "no" → demote to a deterministic
@@ -461,6 +638,47 @@ retry feedback, so make it actionable.* (The harness appends the full verdict
 contract automatically — the prompt only needs the criterion. See
 `examples/hello-guardrails/hello-guardrails/tasks/03-quality-check/guardrails/02-tone-is-friendly.prompt.md`
 for the golden reference.)
+
+## A `scope:"integration"` guardrail MUST be UNION-SAFE (#125)
+
+This is an authoring constraint on **which assertion** a `scope: "integration"` guardrail may make —
+distinct from the mechanical "mark the build/suite as integration" rule. Per SSOT **§4.3**, the run's
+integration-guardrail set re-runs at **EVERY union point** — every fan-in and every **non-FF**
+plan-branch integration (SSOT §5.3 case B), on the merged bytes, *before* the merge commit and
+*before any downstream action* — **not only on the terminal `integrationGate` sink**. The terminal
+gate and the per-union re-verify are **one mechanism at two scopes** (§4.3). So an integration
+guardrail runs at moments when **downstream tasks have not run yet**.
+
+**The rule: assert a union-safe INVARIANT, never a terminal POSTCONDITION.** A `scope:"integration"`
+guardrail must assert something true of **any valid intermediate union** — an invariant like "every
+produced file present is non-empty and conflict-marker-free", "the solution still builds", "the
+already-merged tests still pass". It must **NOT** assert a **terminal postcondition** that only holds
+once the *whole* plan has merged — "the final combined output exists", "the sink wrote its
+aggregate", "all N contributors are present". A terminal postcondition **fails at an intermediate
+union** where the producing task hasn't settled yet, turning a healthy partial merge into a spurious
+`needs-human`.
+
+**Surfaced live by `parallel-hello`:** a sink-postcondition gate ("the final combined output exists")
+was marked `scope:"integration"` and **failed when the 2nd leaf settled as a union before the sink
+ran** — the combined output legitimately did not exist yet. The fix was twofold, and it is the
+template:
+
+1. **Keep the integration gate union-safe** — re-scope it to an invariant ("any produced file present
+   is non-empty and conflict-marker-free"), true at every union including the terminal one.
+2. **Move the terminal assertion to a `local` guardrail on the sink** — "the final combined output
+   exists" runs **in-attempt on the sink's own segment** (default `"local"` scope), where the sink's
+   action has just produced it. A `local` guardrail runs only in the sink's attempt lifecycle, never
+   at an upstream union, so it never fires early.
+
+**Decision test (apply to every `scope:"integration"` guardrail):** *"If this ran on a partial merge
+where a downstream task has not settled yet, would it pass?"* If **no**, it is a terminal
+postcondition wearing an integration scope — demote it to a `local` guardrail on the task that owns
+the postcondition, and (if needed) replace it with a union-safe invariant at integration scope. An
+integration guardrail asserting a terminal-only postcondition is an **anti-pattern** (see the
+anti-patterns list).
+
+Do not fork the contract here — §4.3 (re-verify at every union) and §5.3 (FF vs union) are the SSOT;
+this section is doctrine *about how to author within* that contract.
 
 ## The decision tree (apply per task)
 
@@ -502,6 +720,11 @@ What is the task's primary deliverable?
 │                                 contrast case (the Factory_Wires* shape). NEVER inject the seam
 │                                 in the guardrail; NEVER trust terminal whole-suite green to
 │                                 cover wiring. See the composition-root section + stacks/dotnet.md §10
+├── A derived corpus /         → coverage (every input maps to an output) + per-output substance
+│    aggregate over a set of      floor (anti-stub) + index completeness (produced ⊆ indexed) +
+│    inputs (doc-mine, codegen    ingestion lower bound (#99). LOWER BOUNDS, not faithfulness —
+│    -from-spec, crawl, import)   the semantic residual is human/judge work; see the corpus /
+│                                 aggregation completeness section above
 ├── Config/data                → schema-validates; else file-contains on load-bearing keys
 ├── State output (a key a      → fragment-key-present (read $env:GUARDRAILS_STATE_FRAGMENT,
 │    downstream task reads)      parse JSON, assert the key non-null + non-empty; allowed-set
@@ -594,6 +817,39 @@ should fail before an expensive test run or a paid judge ever starts.
   declaration up to the brace (`public\s+TYPE\s+NAME\s*\{`), order-insensitive by construction;
   if accessor presence matters, test `(get|set|init)` anywhere inside the block. See the
   member-order-insensitivity note above; exact regex `stacks/dotnet.md §3.1`.
+- **Comment-blind keyword scan** (#97, #98): a forbidden-keyword guardrail (read-only / no-shell /
+  no-eval) that calls `Get-Content $f -Raw` and matches banned keywords against the **raw file
+  including comments** — it false-POSITIVES on a comment, a string literal, or disabled code that
+  merely *names* the banned construct. The poison case: the action prompt asked the agent to write a
+  **safety-header comment** listing the banned keywords ("performs no MERGE/EXEC, no xp_cmdshell"),
+  and the guardrail flags those keywords in the header — sending a **correct** read-only artifact to
+  `needs-human` via whack-a-mole (each retry strips one mention and exposes the next). A BLOCKER
+  pattern: not a wrong implementation passing, but a correct one failing permanently. Fix: **strip the
+  source language's comments before matching** (SQL: `/* */` then `-- …`; blank-in-place preserving
+  newlines for line-number-reporting checks). And don't pair a header-documenting prompt with a
+  comment-blind grep — that is a guaranteed false positive. See the comment-blind keyword-scan section
+  above; per-language syntax `stacks/dotnet.md §11`.
+- **Hollow / incomplete derived corpus** (#99): a derived-corpus task (doc mining, codegen-from-spec,
+  crawl→one-output-per-page, dataset import) whose guardrails verify only **shape** — `file-exists` +
+  a marker line — so it ships a green run over an **empty or partial** corpus. Three tells: a
+  one-line **stub** passes a marker check (F1); an **index** naming only 1 of N outputs "resolves"
+  (F2); a crawl that captured **2 of N** pages passes because the checks verify "what I listed
+  exists," never "I listed enough" (F3). Worse than a hard failure — it *looks done*. Fix: add the
+  four completeness/substance guardrails — input→output coverage, per-output substance floor
+  (anti-stub), index completeness (`produced ⊆ indexed`), and an ingestion lower bound — noting they
+  are **lower bounds**, not faithfulness checks (the semantic residual is human/judge work). See the
+  corpus / aggregation completeness section above.
+- **Terminal-postcondition at integration scope** (#125): a `scope:"integration"` guardrail that
+  asserts a **terminal postcondition** ("the final combined output exists", "the sink wrote its
+  aggregate", "all N contributors present") instead of a **union-safe invariant**. Per SSOT §4.3 the
+  integration set re-runs at **every** union point (every fan-in / non-FF integration, §5.3 case B),
+  on partial merges where downstream tasks have **not run yet** — so a terminal postcondition
+  spuriously fails at an intermediate union and escalates a healthy partial merge to `needs-human`
+  (surfaced live by `parallel-hello`). Fix: keep the integration guardrail to an invariant true of
+  any valid intermediate union ("any produced file present is non-empty and conflict-marker-free");
+  move the terminal assertion to a `local` guardrail on the sink (runs in-attempt on the sink's own
+  segment, where the output exists). Decision test: *"would this pass on a partial merge with a
+  downstream task unsettled?"* — if no, demote to `local`. See the union-safe section above.
 - **Echo-judge**: a prompt-judge evaluating the action's own claim of success (its
   summary, its commit message) rather than the artifact.
 - **Replay-the-action**: a guardrail that **re-runs the action's own command** (e.g. a

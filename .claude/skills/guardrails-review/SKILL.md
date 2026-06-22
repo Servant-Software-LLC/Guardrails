@@ -98,6 +98,44 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   order-insensitive; if accessor presence matters, test `(get|set|init)` anywhere inside the
   block. (Catalogue → member-order insensitivity; `stacks/dotnet.md §3.1`.) BLOCKER on a
   removal check — a lingering field reads as gone.
+- **Comment-blind forbidden-keyword scan (#97, #98)**: a guardrail that scans a **source file**
+  for **banned** constructs (read-only `MERGE`/`EXEC`/`xp_cmdshell`, no-shell, no-eval,
+  no-`console.log`) by matching the **raw file including comments** — `Get-Content $f -Raw` then
+  a banned-keyword `-match` with no comment-stripping. It false-POSITIVES on a comment, a string
+  literal, or disabled code that *names* the banned thing. The poison case to hunt: the **same
+  task** both (a) tells the action to write a **safety-header comment** naming the banned constructs
+  AND (b) greps for them without stripping comments — a guaranteed false positive that whack-a-moles
+  a CORRECT read-only artifact to `needs-human` (each retry strips one mention, exposes the next).
+  Tell: a `Get-Content -Raw` keyword check on a source file with no `/* */` + `--` (or `//`) strip
+  upstream of the match. Fix: strip the source language's comments before matching (blank-in-place
+  for line-number-reporting checks); and don't pair a header-documenting prompt with a comment-blind
+  grep. BLOCKER — a correct implementation fails permanently. (Catalogue → comment-blind keyword
+  scan; `stacks/dotnet.md §11`.)
+- **Hollow / incomplete derived corpus (#99)**: a task whose deliverable is **derived artifacts
+  over a set of inputs** (doc mining, codegen-from-spec, crawl→one-output-per-page, dataset import)
+  whose guardrails verify only **shape** — `file-exists` + a marker line — so a green run ships an
+  **empty or partial** corpus (worse than a hard failure: it looks done). Three tells: a one-line
+  **stub** passes a marker check (F1); an **index** naming only 1 of N outputs "resolves" (F2); a
+  crawl capturing **2 of N** pages passes because the checks verify "what I listed exists," never "I
+  listed enough" (F3 — look for guardrails iterating the *outputs* rather than the *inputs*). Fix:
+  require the four completeness/substance guardrails — input→output coverage, per-output substance
+  floor (anti-stub), index completeness (`produced ⊆ indexed`), ingestion lower bound. Name them as
+  **lower bounds**, not faithfulness checks (the semantic residual is a human pass or a
+  demotion-gated judge — never a judge alone). BLOCKER — a green run ships a hollow/partial corpus.
+  (Catalogue → corpus / aggregation completeness.)
+- **Terminal-postcondition at integration scope (#125)**: a `scope:"integration"` guardrail that
+  asserts a **terminal postcondition** — "the final combined output exists", "the sink wrote its
+  aggregate", "all N contributors present" — instead of a **union-safe invariant**. Per SSOT §4.3
+  the integration set re-runs at **every** union point (every fan-in / non-FF integration, §5.3 case
+  B), on partial merges where downstream tasks have **not run yet** — so a terminal postcondition
+  spuriously fails at an intermediate union and escalates a healthy partial merge to `needs-human`
+  (surfaced live by `parallel-hello`). Decision test per integration guardrail: *"would this pass on
+  a partial merge with a downstream task unsettled?"* If **no**, it is a terminal postcondition
+  wearing an integration scope. Fix: keep the integration gate to an invariant true of any valid
+  intermediate union ("any produced file present is non-empty + conflict-marker-free"); move the
+  terminal assertion to a `local` guardrail on the sink (runs in-attempt on the sink's segment).
+  BLOCKER on a parallel plan with unions — it spuriously red-halts a correct run. (Catalogue →
+  union-safe integration section; SSOT §4.3/§5.3.)
 - **Unregistered module**: a task adds a module/project to a build descriptor (`.csproj`
   → `.slnx`) but no guardrail checks the DESCRIPTOR names it — a descriptor build passes
   with the project unregistered. (Stack file → build-descriptor registration.)
@@ -209,5 +247,8 @@ changes to it.
 - [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files; no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
+- [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
+- [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).
+- [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
