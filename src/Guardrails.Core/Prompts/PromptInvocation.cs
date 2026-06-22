@@ -81,6 +81,18 @@ public sealed record PromptResult
 
     /// <summary>A short human-readable summary of the outcome (for logs and feedback).</summary>
     public required string Summary { get; init; }
+
+    /// <summary>
+    /// The distinct file paths the runtime REFUSED to write/edit this run because the path is not on
+    /// the granted permission allow-list (issues #86 / #104), in first-seen order. Empty when no
+    /// permission wall was hit. Runner-agnostic: the CLI quarantine
+    /// (<see cref="ClaudePermissionScanner"/>) mines these from the runner's tool-result events; the
+    /// harness (<c>TaskExecutor</c> via <c>PermissionWallTracker</c>) routes on the list of paths only,
+    /// never on a vendor-specific denial string. A repeated wall on the SAME path (or any wall on a
+    /// <c>.claude/</c> path, a known-structural runtime restriction) settles the task
+    /// <c>needs-human</c> immediately instead of burning the remaining retries.
+    /// </summary>
+    public IReadOnlyList<string> BlockedWritePaths { get; init; } = [];
 }
 
 /// <summary>

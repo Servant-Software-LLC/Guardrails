@@ -50,6 +50,11 @@ public sealed class ClaudePromptRunner : IPromptRunner
 
         var parser = new ClaudeStreamParser();
 
+        // Mine permission-wall signals from the same stream lines (issues #86 / #104): a write/edit
+        // refused because the path is not granted. The scanner is fed in the Tee alongside the parser
+        // and transcript; its output flows out as the runner-agnostic BlockedWritePaths list.
+        var permissionScanner = new ClaudePermissionScanner.Scanner();
+
         // Open both log artifacts for incremental writes before launching the process so the
         // "view log" link can tail them in real time (issue #41) — both claude-stream.jsonl (the
         // raw debug stream) and transcript.md (the human/dependent-task view, issues #26/#27) grow
@@ -78,6 +83,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
             void Tee(string line)
             {
                 parser.Feed(line);
+                permissionScanner.Feed(line);
                 streamWriter.WriteLine(line);
                 transcript?.Feed(line);
             }
@@ -113,6 +119,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 NumTurns = result.NumTurns,
                 FailureKind = failureKind,
                 ResetHint = resetHint,
+                BlockedWritePaths = permissionScanner.BlockedWritePaths,
                 Summary = summary
             };
         }

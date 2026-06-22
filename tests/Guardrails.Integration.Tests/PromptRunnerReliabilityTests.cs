@@ -99,17 +99,45 @@ public sealed class PromptRunnerReliabilityTests
     };
 
     /// <summary>
+    /// A run that hit a PERMISSION WALL on the given paths (issues #86 / #104). Modelled as a generic
+    /// error result (the agent kept trying and eventually reported failure) carrying the runner-agnostic
+    /// <see cref="PromptResult.BlockedWritePaths"/> the scanner would have mined from the stream. Whether
+    /// the result is "completed" is irrelevant — the harness routes on the blocked-paths list.
+    /// </summary>
+    private static PromptResult Blocked(params string[] paths) => new()
+    {
+        Completed = false,
+        IsError = true,
+        ResultText = "I could not write the required file(s) — the writes were refused.",
+        FailureKind = PromptFailureKind.Error,
+        BlockedWritePaths = paths,
+        Summary = "claude reported is_error (writes refused)"
+    };
+
+    /// <summary>
     /// Build a one-task prompt-action plan (a trivial always-pass deterministic guardrail) and run it
     /// through the real Scheduler with the given fake runner, observer, retry budget and instant
     /// transient delay. Returns the run report + the journal entry for the single task.
     /// </summary>
-    private static async Task<(RunReport Report, TaskJournalEntry Entry, SequencingRunner Runner)> RunOneTaskAsync(
+    /// <summary>
+    /// The plan root of the LAST <see cref="RunOneTaskAsync"/> call made with <c>keepRoot: true</c> —
+    /// so a test that needs to read on-disk artifacts (e.g. the permission-wall <c>feedback.md</c>)
+    /// can locate them after the run. The test that sets it is responsible for deleting the directory.
+    /// </summary>
+    private string? _lastPlanRoot;
+
+    private async Task<(RunReport Report, TaskJournalEntry Entry, SequencingRunner Runner)> RunOneTaskAsync(
         SequencingRunner runner,
         IRunObserver observer,
         int defaultRetries,
-        int transientPauseBudgetSeconds = 1800)
+        int transientPauseBudgetSeconds = 1800,
+        bool keepRoot = false)
     {
         string root = Path.Combine(Path.GetTempPath(), "gr-reliability-" + Guid.NewGuid().ToString("N"));
+        if (keepRoot)
+        {
+            _lastPlanRoot = root;
+        }
         Directory.CreateDirectory(Path.Combine(root, "tasks", "01-task", "guardrails"));
 
         File.WriteAllText(Path.Combine(root, "guardrails.json"),
@@ -166,7 +194,10 @@ public sealed class PromptRunnerReliabilityTests
         }
         finally
         {
-            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+            if (!keepRoot)
+            {
+                try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+            }
         }
     }
 
@@ -307,5 +338,109 @@ public sealed class PromptRunnerReliabilityTests
         Assert.Equal(60, used.Timeouts[0].TotalSeconds, precision: 0);
         Assert.Equal(90, used.Timeouts[1].TotalSeconds, precision: 0);
         Assert.Equal(135, used.Timeouts[2].TotalSeconds, precision: 0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #104 — a .claude/ write wall is STRUCTURAL: needs-human on the FIRST hit, zero retries burned
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ClaudeDirWrite_Blocked_SettlesNeedsHuman_OnFirstAttempt_NoRetryBurn()
+    {
+        // The #104 repro: a task whose deliverable is under .claude/ is refused by the runtime. Even
+        // with a generous retry budget (2 → 3 attempts), the harness must settle needs-human on the
+        // FIRST attempt — a .claude/ wall is structural and no retry can clear it.
+        var runner = new SequencingRunner(Blocked(".claude/skills/certify-knowledge/SKILL.md"));
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains(".claude/", task.Summary);
+        Assert.Contains("structural", task.Summary);
+
+        // Exactly ONE attempt journaled, with the DISTINCT permission-denied outcome — the remaining
+        // two budgeted attempts were NOT burned on the identical, un-retryable wall (#104's core waste).
+        Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
+        AttemptRecord attempt = Assert.Single(entry.Attempts);
+        Assert.Equal(AttemptOutcome.PermissionDenied, attempt.Outcome);
+        Assert.Equal(1, used.Calls);
+    }
+
+    [Fact]
+    public async Task ClaudeDirWall_WritesTaskLevelFeedback_NamingThePathAndRemediation()
+    {
+        // The needs-human message must point a human at WHAT is blocked and HOW to fix it: the .claude/
+        // path, the acceptEdits restriction, and the concrete remediations (grant Write(.claude/**) or
+        // re-target to a staging path).
+        var runner = new SequencingRunner(Blocked(".claude/agents/reviewer.md"));
+
+        (RunReport report, TaskJournalEntry entry, _) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 1, keepRoot: true);
+
+        try
+        {
+            Assert.Equal(TaskOutcome.NeedsHuman, Assert.Single(report.Tasks).Outcome);
+
+            // feedback.md was written into the (sole) attempt's log dir; it names the path + remediations.
+            AttemptRecord attempt = Assert.Single(entry.Attempts);
+            string feedbackPath = Path.Combine(_lastPlanRoot!, attempt.LogDir, "feedback.md");
+            Assert.True(File.Exists(feedbackPath), $"expected feedback at {feedbackPath}");
+            string feedback = File.ReadAllText(feedbackPath);
+            Assert.Contains(".claude/agents/reviewer.md", feedback);
+            Assert.Contains("acceptEdits", feedback);
+            Assert.Contains("Write(.claude/**)", feedback);
+            Assert.Contains("staging", feedback, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            try { Directory.Delete(_lastPlanRoot!, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #86 — the SAME write path refused across attempts: settle needs-human on the repeat, not burn out
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task SameNonClaudePath_BlockedTwice_SettlesNeedsHuman_OnTheRepeat_NotAllRetries()
+    {
+        // #86: a non-.claude path refused on attempt 1 (one chance to clear) then refused AGAIN on
+        // attempt 2 is a wall. With budget 3 (defaultRetries 2), the harness must settle needs-human
+        // after the SECOND attempt — NOT spend the third on the identical wall.
+        var runner = new SequencingRunner(Blocked("src/locked/Protected.cs"));   // every call hits the same wall
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("permission wall", task.Summary);
+        Assert.Contains("src/locked/Protected.cs", task.Summary);
+
+        // Two attempts journaled: attempt 1 failed (action-failed), attempt 2 settled permission-denied.
+        // The THIRD budgeted attempt was not burned on the same wall (#86's core waste).
+        Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
+        Assert.Equal(2, entry.Attempts.Count);
+        Assert.Equal(AttemptOutcome.PermissionDenied, entry.Attempts[^1].Outcome);
+        Assert.Equal(2, used.Calls);
+    }
+
+    [Fact]
+    public async Task NonClaudePath_BlockedOnceThenSucceeds_DoesNotEarlyHalt()
+    {
+        // A one-off non-.claude refusal must NOT short-circuit: the retry is given its chance, and when
+        // it clears the task succeeds. Only a REPEAT (or a structural .claude/ path) halts — a single
+        // blocked write that the retry resolves is normal retry behaviour, not a wall.
+        var runner = new SequencingRunner(Blocked("src/locked/Protected.cs"), Success());
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        Assert.Equal(JournalTaskStatus.Succeeded, entry.Status);
+        Assert.Equal(2, used.Calls);                       // 1 blocked + 1 success
+        Assert.DoesNotContain(entry.Attempts, a => a.Outcome == AttemptOutcome.PermissionDenied);
     }
 }

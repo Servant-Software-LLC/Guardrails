@@ -5,8 +5,9 @@ namespace Guardrails.Core.Tests;
 
 /// <summary>
 /// Pins the SSOT §7 kebab-case spelling of every attempt outcome and its JSON round-trip — including
-/// the two added for issues #114/#115: <c>output-cap</c> and <c>rate-limited</c>. The journal is a
-/// contract; a token rename breaks resume of an in-flight run, so it must be deliberate.
+/// the two added for issues #114/#115 (<c>output-cap</c> and <c>rate-limited</c>) and the one added for
+/// issues #86/#104 (<c>permission-denied</c>). The journal is a contract; a token rename breaks resume
+/// of an in-flight run, so it must be deliberate.
 /// </summary>
 public sealed class AttemptOutcomeTokenTests
 {
@@ -20,12 +21,14 @@ public sealed class AttemptOutcomeTokenTests
     [InlineData(AttemptOutcome.Cancelled, "cancelled")]
     [InlineData(AttemptOutcome.InvalidFragment, "invalid-fragment")]
     [InlineData(AttemptOutcome.NeedsHuman, "needs-human")]
+    [InlineData(AttemptOutcome.PermissionDenied, "permission-denied")]
     public void OutcomeToken_MatchesSsotSpelling(AttemptOutcome outcome, string token) =>
         Assert.Equal(token, JournalJson.OutcomeToken(outcome));
 
     [Theory]
     [InlineData(AttemptOutcome.OutputCap)]
     [InlineData(AttemptOutcome.RateLimited)]
+    [InlineData(AttemptOutcome.PermissionDenied)]
     public void NewOutcomes_RoundTripThroughJson(AttemptOutcome outcome)
     {
         string json = JsonSerializer.Serialize(outcome, JournalJson.Options);
