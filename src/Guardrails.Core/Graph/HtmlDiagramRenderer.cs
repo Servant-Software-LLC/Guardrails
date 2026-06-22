@@ -102,7 +102,14 @@ import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.es
 const graph = document.getElementById('graph-source').textContent;
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;
 // the content is the user's own local plan, served from file:// — not untrusted input.
-mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', flowchart: { useMaxWidth: false } });
+// maxTextSize raises Mermaid's default 50 000-character source ceiling (issue #108): a large
+// plan's DAG source easily exceeds it, and on overflow mermaid.render throws "Maximum text size
+// in diagram exceeded" — landing every big plan in the catch-block "could not render" fallback.
+// 5 000 000 covers DAGs far larger than any hand-reviewed plan while still bounding the parser.
+// maxEdges raises Mermaid's default 500-edge ceiling for the same reason: a many-task plan fans
+// out task→guardrail→done→dependent edges well past 500, and overflow throws "Maximum number of
+// edges exceeded". Both ceilings must be lifted or a big plan still fails to render.
+mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', maxTextSize: 5000000, maxEdges: 100000, flowchart: { useMaxWidth: false } });
 
 let pz = null;
 try {
@@ -115,9 +122,16 @@ try {
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
 } catch (e) {
-  document.getElementById('stage').innerHTML =
-    '<p style="padding:1rem">Could not render the diagram (offline? the renderer loads from a CDN). ' +
-    'The DAG source is embedded in this page, and diagram.md renders on GitHub.</p>';
+  // Surface the actual failure (offline CDN, or a Mermaid limit we have not yet lifted) instead of
+  // guessing — a generic "offline?" message sent every big-plan #108 failure down the wrong path.
+  const detail = (e && e.message) ? String(e.message) : String(e);
+  const p = document.createElement('p');
+  p.style.padding = '1rem';
+  p.textContent = 'Could not render the diagram: ' + detail +
+    ' — the DAG source is embedded in this page, and diagram.md renders on GitHub.';
+  const stage = document.getElementById('stage');
+  stage.innerHTML = '';
+  stage.appendChild(p);
 }
 
 document.getElementById('fit').onclick  = () => { if (pz) { pz.fit(); pz.center(); } };
