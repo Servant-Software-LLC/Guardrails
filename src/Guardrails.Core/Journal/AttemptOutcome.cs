@@ -21,6 +21,24 @@ public enum AttemptOutcome
     /// <summary>The action or a guardrail exceeded its timeout and was killed.</summary>
     Timeout,
 
+    /// <summary>
+    /// A prompt action's response exceeded the runner's output-token cap (issue #114,
+    /// <c>CLAUDE_CODE_MAX_OUTPUT_TOKENS</c>). A budget-exhaustion failure distinct from a generic
+    /// <see cref="ActionFailed"/>, so a human (and §9 triage) sees the agent ran out of OUTPUT budget —
+    /// a tool/config issue — and the retry carries actionable "write incrementally / split" feedback.
+    /// </summary>
+    OutputCap,
+
+    /// <summary>
+    /// A transient infrastructure limit (HTTP 429/503/529, "overloaded", a usage/session/rate limit)
+    /// did not clear within the task's cumulative pause budget (<c>transientPauseBudgetSeconds</c>,
+    /// issue #115). The harness paused+re-ran WITHOUT consuming the retry budget; only when the pause
+    /// budget was exhausted did the task settle <c>needs-human</c> with this DISTINCT outcome — so the
+    /// journal shows a rate-limit halt ("re-run later"), never a generic action failure. A transient
+    /// pause that DOES clear is never journaled (observe-only via <see cref="Execution.IRunObserver.PromptPaused"/>).
+    /// </summary>
+    RateLimited,
+
     /// <summary>The run was cancelled (Ctrl+C) before the attempt completed. (M4.)</summary>
     Cancelled,
 

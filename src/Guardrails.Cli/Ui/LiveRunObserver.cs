@@ -192,6 +192,24 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         Update(result.TaskId, StatusMarkup(result.Outcome), detail);
     }
 
+    public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount)
+    {
+        // Show the task as PAUSED (blue, distinct from yellow "running"/"retry" and red failure) and
+        // freeze its clock prefix so an operator reads "healthy task waiting out a rate limit", not a
+        // failing one (issue #115). The retry budget is untouched.
+        lock (_gate)
+        {
+            if (_running.TryGetValue(task.Id, out RunningState state))
+            {
+                _running[task.Id] = state with { Prefix = $"paused {(int)backoff.TotalSeconds}s" };
+            }
+        }
+
+        Update(task.Id,
+            $"[blue]paused {(int)backoff.TotalSeconds}s[/]",
+            $"[blue]transient — {Markup.Escape(reason)} (pause {pauseCount}; no retry burn)[/]");
+    }
+
     public void PlanHashMismatch(string previousPlanHash)
     {
         lock (_gate)

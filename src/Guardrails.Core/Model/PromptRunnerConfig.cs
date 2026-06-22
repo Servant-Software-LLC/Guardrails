@@ -52,6 +52,29 @@ public sealed record PromptRunnerSettings
     /// <summary>Extra CLI arguments appended verbatim. Empty by default.</summary>
     public IReadOnlyList<string> ExtraArgs { get; init; } = [];
 
+    /// <summary>
+    /// The output-token cap handed to the runner (issue #114). Defaults to
+    /// <see cref="DefaultMaxOutputTokens"/> — deliberately ABOVE Claude Code's 32 000 default so a
+    /// well-formed single-response task is not blocked by the cap the harness never used to configure.
+    /// The runner CLASS translates this into the CLI's env var
+    /// (<c>CLAUDE_CODE_MAX_OUTPUT_TOKENS</c>) — the env-var NAME stays quarantined in
+    /// <see cref="Prompts.ClaudePromptRunner"/>, never in this model. A non-positive value is a
+    /// validation error (GR2023).
+    /// </summary>
+    public int MaxOutputTokens { get; init; } = DefaultMaxOutputTokens;
+
+    /// <summary>
+    /// Extra environment variables passed verbatim to the runner process (SSOT §2/§9, issue #114) —
+    /// a general passthrough for runner/provider knobs the harness does not model. These overlay (and
+    /// may override) the harness <c>GUARDRAILS_*</c> env only for keys the user explicitly sets.
+    /// Empty by default.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Env { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>The default output-token cap (issue #114): 64 000, double Claude Code's 32 000 default.</summary>
+    public const int DefaultMaxOutputTokens = 64_000;
+
     /// <summary>Return a copy with any non-null fields of <paramref name="overrides"/> applied.</summary>
     public PromptRunnerSettings With(PromptRunnerOverrides overrides) => this with
     {
@@ -59,7 +82,9 @@ public sealed record PromptRunnerSettings
         AllowedTools = overrides.AllowedTools ?? AllowedTools,
         MaxTurns = overrides.MaxTurns ?? MaxTurns,
         Model = overrides.Model ?? Model,
-        ExtraArgs = overrides.ExtraArgs ?? ExtraArgs
+        ExtraArgs = overrides.ExtraArgs ?? ExtraArgs,
+        MaxOutputTokens = overrides.MaxOutputTokens ?? MaxOutputTokens,
+        Env = overrides.Env ?? Env
     };
 }
 
@@ -74,4 +99,6 @@ public sealed record PromptRunnerOverrides
     public int? MaxTurns { get; init; }
     public string? Model { get; init; }
     public IReadOnlyList<string>? ExtraArgs { get; init; }
+    public int? MaxOutputTokens { get; init; }
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
 }

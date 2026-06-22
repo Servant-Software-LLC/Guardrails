@@ -28,6 +28,57 @@ public static class RetryPolicy
         return text.ToString();
     }
 
+    /// <summary>
+    /// Compose feedback for a prompt action that exceeded the runner's OUTPUT-TOKEN cap (issue #114).
+    /// The retry must CHANGE BEHAVIOR — a re-run with the identical config just re-hits the same wall —
+    /// so the feedback is actionable: split the work, write the file with small incremental edits, and
+    /// keep reasoning terse. Distinct from a generic action failure so a human (and §9 triage) sees a
+    /// tool/budget issue, not "the agent failed".
+    /// </summary>
+    public static string ForOutputCapExceeded(TaskNode task, int attempt)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## Response truncated at the output-token cap");
+        text.AppendLine();
+        text.AppendLine("Your previous response exceeded the runner's output-token cap, so it was cut off and");
+        text.AppendLine("NOTHING was written. Re-running the same way will hit the same wall. CHANGE your");
+        text.AppendLine("approach on this attempt:");
+        text.AppendLine();
+        text.AppendLine("- Write each file with SMALL, INCREMENTAL edits (one tool call per file/section), not");
+        text.AppendLine("  one giant response containing the whole file.");
+        text.AppendLine("- Keep prose/reasoning terse — spend the output budget on the deliverable, not narration.");
+        text.AppendLine("- If the task genuinely needs more than one response's worth of output, split it: produce");
+        text.AppendLine("  the most important part first, then continue in subsequent turns.");
+        text.AppendLine("- If the deliverable is inherently too large to produce within the cap, STOP and write");
+        text.AppendLine("  {\"needsHuman\": \"<why this task is too large for the output cap>\"} to GUARDRAILS_STATE_OUT.");
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// Compose feedback for a prompt/script action that TIMED OUT (issue #119). A timeout means the
+    /// task needed more wall-clock, and the partial work is PRESERVED in the segment worktree — so the
+    /// retry must continue from it, not re-explore from scratch (the wasteful "15 reads, 0 edits" retry
+    /// the issue documents). The harness also extends the retry's clock (see <c>TaskExecutor</c>).
+    /// </summary>
+    public static string ForTimeout(TaskNode task, int attempt)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## The previous attempt timed out");
+        text.AppendLine();
+        text.AppendLine("The previous attempt ran out of time and was stopped. Its PARTIAL WORK is preserved in");
+        text.AppendLine("your workspace — do NOT start over and do NOT re-read the whole codebase to re-orient.");
+        text.AppendLine();
+        text.AppendLine("- CONTINUE from the partial work already on disk; build on it.");
+        text.AppendLine("- Prioritise getting the change to COMPILE and the guardrails to GO GREEN first; refine after.");
+        text.AppendLine("- Make focused edits — minimise exploration, maximise progress, because the clock matters.");
+        text.AppendLine("- If this task bundles several distinct sub-features and cannot finish in the time given,");
+        text.AppendLine("  STOP and write {\"needsHuman\": \"<this task is under-sized for the timeout; suggest a split>\"}");
+        text.AppendLine("  to GUARDRAILS_STATE_OUT rather than burning more attempts.");
+        return text.ToString();
+    }
+
     /// <summary>Compose feedback for an attempt where one or more GUARDRAILS failed.</summary>
     public static string ForGuardrailFailures(
         TaskNode task,

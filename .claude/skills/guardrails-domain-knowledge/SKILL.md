@@ -115,6 +115,17 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
 - Retry budget exhausted -> `needs-human`; transitive dependents -> `blocked`;
   **independent branches keep running**.
+- **Prompt-runner failure classification** (SSOT section 9, #114/#115/#119): a non-success prompt
+  result is classified (in the runner quarantine) into `Transient` | `OutputCap` | `Timeout` | `Error`.
+  - **Transient** (429/503/529, "overloaded", rate/session/usage limit): does NOT consume the retry
+    budget -- the harness PAUSES (bounded backoff, bounded by `transientPauseBudgetSeconds`) and
+    re-runs the same attempt, surfacing a distinct `PromptPaused` observer event. A rate limit is
+    NEVER `needs-human` until the pause budget is spent (then a distinct `rate-limited` outcome,
+    "re-run later"). A cleared pause is never journaled (observe-only).
+  - **OutputCap** (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, default raised to 64000 via `maxOutputTokens`):
+    distinct `output-cap` outcome + actionable "write incrementally / split" retry feedback.
+  - **Timeout**: distinct `timeout` outcome + "continue from preserved partial work" feedback, and
+    the retry clock is EXTENDED (1x -> 1.5x -> 2.25x, capped 4x).
 - **Per-run cost cap** (`maxCostUsd` in `guardrails.json`, optional decimal USD): when
   the journal's cumulative cost reaches/exceeds the cap, the scheduler stops launching new
   attempts -- each not-yet-launched task settles `needs-human` ("cost cap reached") and its

@@ -49,6 +49,17 @@ public interface IRunObserver
     /// </summary>
     void CleanupFailed(string owner, Exception error) { }
 
+    /// <summary>
+    /// A task's prompt action hit a TRANSIENT, retryable infrastructure condition (an HTTP 429/503/529,
+    /// "overloaded", or a usage/session/rate limit) and the harness is PAUSING before re-running the
+    /// same attempt — WITHOUT consuming the retry budget (SSOT §9, issue #115). <paramref name="reason"/>
+    /// is the operator-facing cause (carrying a reset hint like "resets 11:20am" when one was present),
+    /// <paramref name="backoff"/> is how long this pause waits, and <paramref name="pauseCount"/> is the
+    /// 1-based pause number for this task. A distinct signal so an operator sees a HEALTHY task waiting
+    /// out a rate limit, not a failing one. Default no-op so non-CLI observers need not handle it.
+    /// </summary>
+    void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

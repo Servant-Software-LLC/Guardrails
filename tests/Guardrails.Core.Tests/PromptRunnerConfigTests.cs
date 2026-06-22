@@ -121,6 +121,83 @@ public sealed class PromptRunnerConfigTests : IDisposable
     }
 
     [Fact]
+    public void MaxOutputTokens_AndEnv_AreParsed_WithDefaults()
+    {
+        // #114: maxOutputTokens + env passthrough parse; absent maxOutputTokens defaults above 32k.
+        const string json =
+            """
+            {
+              "version": 1,
+              "promptRunners": {
+                "default": "claude",
+                "claude": {
+                  "command": "claude",
+                  "maxOutputTokens": 96000,
+                  "env": { "ANTHROPIC_LOG": "debug" }
+                },
+                "other": { "command": "other" }
+              }
+            }
+            """;
+
+        PlanLoadResult result = new PlanLoader().Load(PlanWith(json, promptTask: true));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
+        PromptRunnerConfig claude = result.Plan!.Config.PromptRunners["claude"];
+        Assert.Equal(96_000, claude.Settings.MaxOutputTokens);
+        Assert.Equal("debug", claude.Settings.Env["ANTHROPIC_LOG"]);
+
+        // An unspecified maxOutputTokens defaults above Claude Code's 32 000 default (issue #114).
+        PromptRunnerConfig other = result.Plan!.Config.PromptRunners["other"];
+        Assert.Equal(PromptRunnerSettings.DefaultMaxOutputTokens, other.Settings.MaxOutputTokens);
+        Assert.True(other.Settings.MaxOutputTokens > 32_000);
+        Assert.Empty(other.Settings.Env);
+    }
+
+    [Fact]
+    public void MaxOutputTokens_GuardrailOverride_IsApplied()
+    {
+        const string json =
+            """
+            {
+              "version": 1,
+              "promptRunners": {
+                "default": "claude",
+                "claude": {
+                  "command": "claude",
+                  "maxOutputTokens": 96000,
+                  "guardrailOverrides": { "maxOutputTokens": 16000 }
+                }
+              }
+            }
+            """;
+
+        PromptRunnerConfig claude = new PlanLoader().Load(PlanWith(json, promptTask: true)).Plan!.Config.PromptRunners["claude"];
+
+        Assert.Equal(96_000, claude.EffectiveSettings(isGuardrail: false).MaxOutputTokens);
+        Assert.Equal(16_000, claude.EffectiveSettings(isGuardrail: true).MaxOutputTokens);   // tighter verifier profile
+    }
+
+    [Fact]
+    public void NonPositiveMaxOutputTokens_IsGR2023ValidationError()
+    {
+        const string json =
+            """
+            {
+              "version": 1,
+              "promptRunners": { "default": "claude", "claude": { "command": "claude", "maxOutputTokens": 0 } }
+            }
+            """;
+        PlanLoadResult result = new PlanLoader().Load(PlanWith(json, promptTask: true));
+        Assert.False(result.HasErrors, "loading should still succeed structurally");
+
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(result.Plan!);
+
+        Diagnostic error = Assert.Single(diagnostics, d => d.Code == DiagnosticCodes.MaxOutputTokensNonPositive);
+        Assert.Equal(DiagnosticSeverity.Error, error.Severity);
+    }
+
+    [Fact]
     public void RunnerWithoutCommand_DefaultsCommandToName()
     {
         const string json =

@@ -229,7 +229,57 @@ internal sealed class AttemptJournaler
         };
         _journal.RecordAttempt(task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running);
 
-        return new AttemptResult(result, feedbackPath);
+        return new AttemptResult(result, feedbackPath, Outcome: outcome);
+    }
+
+    /// <summary>
+    /// The rate-limit-exhausted halt (issue #115): a transient pause budget was spent without the
+    /// limit clearing. Record one attempt with the <see cref="AttemptOutcome.Timeout"/>-distinct
+    /// rate-limit signal and settle the task <c>needs-human</c> — but with a DISTINCT, actionable
+    /// reason ("re-run later") so the operator waits rather than debugging a healthy task. Distinct
+    /// from a generic budget-exhaustion needs-human.
+    /// </summary>
+    public AttemptResult RateLimitExhausted(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        string reason,
+        TimeSpan pausedFor)
+    {
+        Directory.CreateDirectory(logDir);
+        string summary = $"paused (rate-limited): {reason}; did not clear within " +
+                         $"{(int)pausedFor.TotalSeconds}s — re-run later";
+
+        string feedback =
+            $"# Task '{task.Id}' is rate-limited\n\n" +
+            $"Task: {task.Description}\n\n" +
+            $"A transient infrastructure limit did not clear within the pause budget " +
+            $"({(int)pausedFor.TotalSeconds}s):\n\n> {reason}\n\n" +
+            "This is NOT a task defect and NOT something to debug — the provider was rate-limiting/" +
+            "overloaded. RE-RUN this plan later (the harness will resume from here) once the limit " +
+            "has cleared. Raise `transientPauseBudgetSeconds` in guardrails.json to wait longer " +
+            "automatically.\n";
+        AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = null,
+            Outcome = AttemptOutcome.RateLimited,
+            LogDir = relativeLogDir
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            Summary = summary
+        }, FeedbackPath: null, Outcome: AttemptOutcome.RateLimited);
     }
 
     /// <summary>
@@ -306,5 +356,13 @@ internal sealed class AttemptJournaler
     }
 }
 
-/// <summary>One attempt's terminal result plus the feedback file it left for the next attempt.</summary>
-internal sealed record AttemptResult(TaskResult Result, string? FeedbackPath);
+/// <summary>
+/// One attempt's terminal result plus the feedback file it left for the next attempt.
+/// <see cref="TransientReason"/> is set ONLY for a transient pause (issue #115): the operator-facing
+/// cause (with any reset hint), which the loop passes to <see cref="IRunObserver.PromptPaused"/>.
+/// </summary>
+internal sealed record AttemptResult(
+    TaskResult Result,
+    string? FeedbackPath,
+    string? TransientReason = null,
+    AttemptOutcome? Outcome = null);

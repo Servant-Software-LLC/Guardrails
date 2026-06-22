@@ -49,20 +49,26 @@ internal sealed class ActionRunner
         string fragmentOutPath,
         string? previousFeedbackPath,
         string logDir,
+        double timeoutMultiplier,
         CancellationToken cancellationToken)
     {
         if (task.Action.Kind != ActionKind.Prompt)
         {
             ProcessResult script = await _scriptRunner.RunAsync(
                 task.Action.Path, task.Action.Args, workspace, env,
-                _resolveTimeout(task, task.Action.TimeoutSeconds), cancellationToken).ConfigureAwait(false);
+                Extend(_resolveTimeout(task, task.Action.TimeoutSeconds), timeoutMultiplier),
+                cancellationToken).ConfigureAwait(false);
             return ActionRun.FromScript(script, NeedsHumanFrom(fragmentOutPath));
         }
 
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
+    private static TimeSpan Extend(TimeSpan timeout, double multiplier) =>
+        multiplier <= 1.0 ? timeout : TimeSpan.FromSeconds(timeout.TotalSeconds * multiplier);
 
     private async Task<ActionRun> RunPromptActionAsync(
         TaskNode task,
@@ -73,6 +79,7 @@ internal sealed class ActionRunner
         string fragmentOutPath,
         string? previousFeedbackPath,
         string logDir,
+        double timeoutMultiplier,
         CancellationToken cancellationToken)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
@@ -96,7 +103,9 @@ internal sealed class ActionRunner
             PlanDirectory = _plan.PlanDirectory,
             Environment = env,
             Settings = settings,
-            Timeout = _resolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
+            Timeout = Extend(
+                _resolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
+                timeoutMultiplier),
             StreamLogPath = Path.Combine(logDir, "claude-stream.jsonl"),
             TranscriptLogPath = Path.Combine(logDir, "transcript.md")
         };
@@ -158,6 +167,17 @@ internal sealed record ActionRun
     public string? FailureFeedback { get; init; }
     public string FailureSummary { get; init; } = "action failed";
 
+    /// <summary>
+    /// The runner-agnostic classification of a prompt action's failure (SSOT §9, issues #114/#115/#119).
+    /// <see cref="PromptFailureKind.None"/> for a script action or a succeeded prompt. The
+    /// <see cref="TaskExecutor"/> routes on this: <see cref="PromptFailureKind.Transient"/> pauses
+    /// without consuming the retry budget; the others compose signal-specific feedback.
+    /// </summary>
+    public PromptFailureKind FailureKind { get; init; } = PromptFailureKind.None;
+
+    /// <summary>An advisory rate-limit reset hint to surface in the pause notice (issue #115), or null.</summary>
+    public string? ResetHint { get; init; }
+
     // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
     // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
     // issue #62) and surface stderr in action-failure feedback. A PROMPT action leaves these empty —
@@ -184,6 +204,11 @@ internal sealed record ActionRun
         StandardOutput = result.StandardOutput,
         StandardError = result.StandardError,
         NeedsHumanQuestion = needsHuman,
+        // A script timeout is classified Timeout so it shares the timeout-specific retry handling
+        // (issue #119); any other non-zero exit is a generic action failure (no Claude signals apply).
+        FailureKind = result.TimedOut ? PromptFailureKind.Timeout
+            : result.Succeeded ? PromptFailureKind.None
+            : PromptFailureKind.Error,
         FailureSummary = result.TimedOut ? "action timed out" : $"action exited {result.ExitCode}"
     };
 
@@ -196,10 +221,12 @@ internal sealed record ActionRun
             Succeeded = succeeded,
             // Synthesize an exit code for the journal: 0 on success, 1 otherwise.
             ExitCode = succeeded ? 0 : 1,
-            TimedOut = result.Summary.Contains("timed out", StringComparison.Ordinal),
+            TimedOut = result.FailureKind == PromptFailureKind.Timeout,
             CostUsd = result.CostUsd,
             NeedsHumanQuestion = needsHuman,
             FailureFeedback = feedback,
+            FailureKind = succeeded ? PromptFailureKind.None : result.FailureKind,
+            ResetHint = result.ResetHint,
             FailureSummary = result.Summary
         };
     }

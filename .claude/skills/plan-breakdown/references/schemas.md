@@ -64,6 +64,8 @@ first guardrail are cheap sanity checks.
       "maxTurns": 50,
       "model": null,                  // null = CLI default
       "extraArgs": [],
+      "maxOutputTokens": 64000,       // per-response output-token cap (#114); default 64000 (> Claude Code's 32000); GR2023 if <= 0
+      "env": {},                      // extra env vars passed verbatim to the runner process (#114); user keys win last
       "guardrailOverrides": {         // tighter profile for verdict-only guardrail prompts
         "permissionMode": "default",
         "allowedTools": ["Read", "Grep", "Glob", "Write"],

@@ -79,4 +79,53 @@ public sealed class ClaudePromptRunnerArgsTests
 
         Assert.Equal("--dangerously-skip-permissions", args[^1]);
     }
+
+    [Fact]
+    public void Environment_InjectsOutputTokenCap_FromMaxOutputTokens()
+    {
+        // #114: the abstract maxOutputTokens int is translated to the Claude env var here, and ONLY
+        // here — the env-var NAME is quarantined in the runner, never in the Core model/SSOT §5.1.
+        var settings = new PromptRunnerSettings { MaxOutputTokens = 96_000 };
+        var invocation = Invocation(settings) with
+        {
+            Environment = new Dictionary<string, string> { ["GUARDRAILS_TASK_ID"] = "01-t" }
+        };
+
+        IReadOnlyDictionary<string, string> env = ClaudePromptRunner.BuildEnvironment(invocation);
+
+        Assert.Equal("96000", env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]);
+        Assert.Equal("01-t", env["GUARDRAILS_TASK_ID"]);   // harness env preserved
+    }
+
+    [Fact]
+    public void Environment_DefaultCap_IsAbove32k()
+    {
+        // The harness default must sit ABOVE Claude Code's 32 000 default so a well-formed
+        // single-response task is not blocked by a cap the harness never used to configure.
+        IReadOnlyDictionary<string, string> env =
+            ClaudePromptRunner.BuildEnvironment(Invocation(new PromptRunnerSettings()));
+
+        Assert.True(int.Parse(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]) > 32_000);
+    }
+
+    [Fact]
+    public void Environment_UserEnvPassthrough_WinsLast()
+    {
+        // A user-set env passthrough overlays the harness env and may even override the cap (it is the
+        // explicit, authoritative value).
+        var settings = new PromptRunnerSettings
+        {
+            MaxOutputTokens = 64_000,
+            Env = new Dictionary<string, string>
+            {
+                ["ANTHROPIC_LOG"] = "debug",
+                ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "120000",
+            }
+        };
+
+        IReadOnlyDictionary<string, string> env = ClaudePromptRunner.BuildEnvironment(Invocation(settings));
+
+        Assert.Equal("debug", env["ANTHROPIC_LOG"]);
+        Assert.Equal("120000", env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]);   // user override wins
+    }
 }

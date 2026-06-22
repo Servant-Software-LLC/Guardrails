@@ -29,6 +29,18 @@ public sealed record RunConfig
     /// <summary>Per-attempt timeout ceiling when nothing narrower applies. Default 1800s.</summary>
     public int DefaultTimeoutSeconds { get; init; } = 1800;
 
+    /// <summary>
+    /// The cumulative wall-clock budget (seconds) a task may spend PAUSED on transient,
+    /// retryable infrastructure conditions before the harness gives up (SSOT §2/§9, issue #115).
+    /// A transient signal (HTTP 429/503/529, "overloaded", a usage/session/rate limit) does NOT
+    /// consume the retry budget: the harness backs off (bounded exponential) and re-runs the same
+    /// attempt. This is the named bound on "a rate limit must never mark needs-human" — only if the
+    /// limit fails to clear within this whole-task budget does the task settle <c>needs-human</c>
+    /// with a distinct rate-limit reason ("re-run later"). Default 1800s (30 min). A non-positive
+    /// value disables pausing (a transient signal is then treated as a normal action failure).
+    /// </summary>
+    public int TransientPauseBudgetSeconds { get; init; } = 1800;
+
     /// <summary>How guardrail failures are handled within an attempt. Default <see cref="GuardrailMode.FailFast"/>.</summary>
     public GuardrailMode GuardrailMode { get; init; } = GuardrailMode.FailFast;
 
