@@ -24,7 +24,7 @@ namespace Guardrails.Cli.Ui;
 /// </list>
 ///
 /// The <c>{id}</c> must be a known task id and <c>{name}</c> a bare filename inside the attempt
-/// directory — both are validated to keep the file surface inside <c>state/logs/&lt;id&gt;/</c>.
+/// directory — both are validated to keep the file surface inside <c>logs/&lt;runId&gt;/&lt;id&gt;/</c>.
 /// </summary>
 public sealed class LogServer : IAsyncDisposable
 {
@@ -82,7 +82,8 @@ public sealed class LogServer : IAsyncDisposable
     /// <paramref name="warn"/> and returns null — the run proceeds without it, never blocked by a
     /// UX nicety. <paramref name="port"/> = 0 selects a free ephemeral port.
     /// </summary>
-    /// <param name="planDirectory">Plan folder whose <c>state/logs/</c> tree is served.</param>
+    /// <param name="planDirectory">Plan folder whose <c>logs/&lt;runId&gt;/</c> tree is served.</param>
+    /// <param name="runId">The run whose attempt logs are served (selects <c>logs/&lt;runId&gt;/</c>).</param>
     /// <param name="tasks">The plan's tasks — the only ids the server will serve.</param>
     /// <param name="port">Listen port; 0 selects a free ephemeral port.</param>
     /// <param name="warn">Where a bind failure's single warning line is written.</param>
@@ -94,6 +95,7 @@ public sealed class LogServer : IAsyncDisposable
     /// </param>
     public static LogServer? TryStart(
         string planDirectory,
+        string runId,
         IReadOnlyList<TaskNode> tasks,
         int port,
         TextWriter warn,
@@ -134,7 +136,11 @@ public sealed class LogServer : IAsyncDisposable
                     continue;
                 }
 
-                string logsRoot = Path.Combine(planDirectory, "state", "logs");
+                // Per-attempt artifacts live under logs/<runId>/<task>/attempt-N/ (SSOT §8, plan-08:
+                // a sibling of state/, divided by runId), NOT the pre-plan-08 state/logs/<task>/. The
+                // run is selected by the journal's runId (the live run owns it; the post-mortem reads
+                // it for the Status column), so the server walks exactly that run's tree.
+                string logsRoot = Path.Combine(planDirectory, "logs", runId);
                 var server = new LogServer(listener, baseUrl, logsRoot, tasks, statusForTask);
                 server._acceptLoop = Task.Run(server.AcceptLoopAsync);
                 return server;
@@ -496,12 +502,14 @@ public sealed class LogServer : IAsyncDisposable
         }
 
         return LandingTemplate
+            .Replace("__STYLE__", LogSiteRenderer.SharedStyle)
             .Replace("__STATUS_TH__", withStatus ? "<th>Status</th>" : string.Empty)
             .Replace("__ROWS__", rows.ToString());
     }
 
     private static string TaskPageHtml(string taskId) =>
-        TaskTemplate.Replace("__TASK_JSON__", JsonSerializer.Serialize(taskId))
+        TaskTemplate.Replace("__STYLE__", LogSiteRenderer.SharedStyle)
+                    .Replace("__TASK_JSON__", JsonSerializer.Serialize(taskId))
                     .Replace("__TASK_HTML__", WebUtility.HtmlEncode(taskId));
 
     // --- response helpers -------------------------------------------------------------------
@@ -557,19 +565,7 @@ public sealed class LogServer : IAsyncDisposable
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guardrails run — task logs</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; background: #0b0f14; color: #d6deeb; }
-  h1 { font-size: 1.3rem; }
-  p { color: #8aa0b3; }
-  table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
-  td, th { padding: .45rem .8rem; border-bottom: 1px solid #1c2733; text-align: left; }
-  th { color: #8aa0b3; font-weight: 600; }
-  a { color: #7fdbff; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  td.status { font-weight: 600; }
-  td.status[data-status="succeeded"], td.status[data-status="skipped"] { color: #3fb950; }
-  td.status[data-status="needs-human"], td.status[data-status="failed"] { color: #f85149; }
-  td.status[data-status="running"] { color: #d29922; }
-  td.status[data-status="pending"], td.status[data-status="blocked"], td.status[data-status="unknown"] { color: #8aa0b3; }
+__STYLE__
 </style>
 </head>
 <body>
@@ -593,15 +589,7 @@ __ROWS__
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TASK_HTML__ — Guardrails log</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #0b0f14; color: #d6deeb; }
-  h1 { font-size: 1.15rem; }
-  a { color: #7fdbff; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .bar { color: #8aa0b3; margin-bottom: .8rem; }
-  select { background: #121a24; color: #d6deeb; border: 1px solid #243343; border-radius: 4px; padding: .2rem .4rem; }
-  pre { background: #06090d; border: 1px solid #1c2733; border-radius: 6px; padding: 1rem;
-        white-space: pre-wrap; word-break: break-word; font-size: .82rem; line-height: 1.35;
-        max-height: 75vh; overflow: auto; }
+__STYLE__
 </style>
 </head>
 <body>

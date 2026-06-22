@@ -163,4 +163,13 @@ public static class DiagnosticCodes
     /// non-positive cap would make every prompt response fail, so it is an ERROR.
     /// </summary>
     public const string MaxOutputTokensNonPositive = "GR2023";
+
+    /// <summary>
+    /// The plan folder has not been through <c>/guardrails-review</c> (no <c>state/guardrails-review.json</c>
+    /// marker), or it has changed since the last review (the marker's <c>planHash</c> no longer matches the
+    /// plan, SSOT §13, issue #79). A WARNING, never an error: the review is a token-costing Claude skill and
+    /// a quick/intentional run is legitimate, so this is an honest nudge — run <c>/guardrails-review</c>, or
+    /// pass <c>--skip-review-check</c> on <c>run</c> to proceed. (GR2024 is reserved elsewhere.)
+    /// </summary>
+    public const string ReviewMarkerMissingOrStale = "GR2025";
 }

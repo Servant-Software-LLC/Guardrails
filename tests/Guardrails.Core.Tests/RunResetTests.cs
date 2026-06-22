@@ -60,6 +60,36 @@ public sealed class RunResetTests : IDisposable
     }
 
     [Fact]
+    public void Fresh_DeletesPlanRootLogsTree_NotJustStateLogs()
+    {
+        // SSOT §8 / plan-08: per-attempt artifacts (and any exported static log site) live under the
+        // PLAN-ROOT logs/<runId>/ tree — a sibling of state/, NOT state/logs/. --fresh must delete
+        // that tree, or it grows unbounded across runs (the path the writer never cleaned).
+        string attemptFile = Path.Combine(_planDir, "logs", "run-1", "01-task", "attempt-1", "action-stdout.log");
+        Directory.CreateDirectory(Path.GetDirectoryName(attemptFile)!);
+        File.WriteAllText(attemptFile, "prior run output");
+
+        RunReset.Fresh(_planDir);
+
+        Assert.False(Directory.Exists(Path.Combine(_planDir, "logs")),
+            "--fresh must delete the plan-root logs/ tree (where attempt artifacts actually land, SSOT §8)");
+    }
+
+    [Fact]
+    public void Fresh_DeletesLocalReviewMarker()
+    {
+        // SSOT §13: the local review marker is gitignored runtime under state/; a fresh slate honestly
+        // discards the prior local review act.
+        string marker = Path.Combine(_planDir, "state", "guardrails-review.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
+        File.WriteAllText(marker, "{}");
+
+        RunReset.Fresh(_planDir);
+
+        Assert.False(File.Exists(marker), "--fresh must delete state/guardrails-review.json (SSOT §13)");
+    }
+
+    [Fact]
     public void ResetTask_ClearsThatTasksCapturedSubdir_OnlyItsOwn()
     {
         // A journal must exist with the task for RunReset.Task to act.

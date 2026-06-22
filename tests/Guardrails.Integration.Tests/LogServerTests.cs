@@ -245,7 +245,7 @@ public sealed class LogServerTests
     {
         using var temp = new TempPlan();
         IReadOnlyList<TaskNode> tasks = [Task("01-alpha", "First"), Task("02-beta", "Second")];
-        LogServer? server = LogServer.TryStart(temp.Dir, tasks, port: 0, TextWriter.Null,
+        LogServer? server = LogServer.TryStart(temp.Dir, TempPlan.RunId, tasks, port: 0, TextWriter.Null,
             statusForTask: id => id == "01-alpha" ? "succeeded" : "needs-human");
         Assert.NotNull(server);
 
@@ -295,7 +295,7 @@ public sealed class LogServerTests
         {
             for (int i = 0; i < 16; i++)
             {
-                LogServer? server = LogServer.TryStart(temp.Dir, tasks, port: 0, TextWriter.Null);
+                LogServer? server = LogServer.TryStart(temp.Dir, TempPlan.RunId, tasks, port: 0, TextWriter.Null);
                 Assert.NotNull(server); // the retry loop survives the probe→bind race
                 servers.Add(server!);
             }
@@ -320,7 +320,7 @@ public sealed class LogServerTests
         // picked it). Pick a free port via a throwaway probe, then assert the server lands on it.
         int port = FreeLoopbackPort();
         using var temp = new TempPlan();
-        LogServer? server = LogServer.TryStart(temp.Dir, [Task("01-alpha", "First")], port, TextWriter.Null);
+        LogServer? server = LogServer.TryStart(temp.Dir, TempPlan.RunId, [Task("01-alpha", "First")], port, TextWriter.Null);
         Assert.NotNull(server);
 
         await using (server)
@@ -342,7 +342,8 @@ public sealed class LogServerTests
 
     private static LogServer Start(string planDir, IReadOnlyList<TaskNode> tasks)
     {
-        LogServer? server = LogServer.TryStart(planDir, tasks, port: 0, TextWriter.Null);
+        // The server serves logs/<runId>/ (SSOT §8); the fixtures below write under the same runId.
+        LogServer? server = LogServer.TryStart(planDir, TempPlan.RunId, tasks, port: 0, TextWriter.Null);
         Assert.NotNull(server); // a normal host can bind a loopback ephemeral port
         return server!;
     }
@@ -362,13 +363,16 @@ public sealed class LogServerTests
     /// <summary>A throwaway plan directory under the temp path; cleaned up on dispose.</summary>
     private sealed class TempPlan : IDisposable
     {
+        /// <summary>A fixed run id so the fixtures and the server agree on which logs/&lt;runId&gt;/ tree to use.</summary>
+        public const string RunId = "test-run";
+
         public string Dir { get; } = Path.Combine(Path.GetTempPath(), "gr-logsrv-" + Guid.NewGuid().ToString("N"));
 
         public TempPlan() => Directory.CreateDirectory(Dir);
 
         public void WriteLog(string taskId, int attempt, string fileName, string content)
         {
-            string attemptDir = Path.Combine(Dir, "state", "logs", taskId, $"attempt-{attempt}");
+            string attemptDir = Path.Combine(Dir, "logs", RunId, taskId, $"attempt-{attempt}");
             Directory.CreateDirectory(attemptDir);
             File.WriteAllText(Path.Combine(attemptDir, fileName), content);
         }
@@ -379,7 +383,7 @@ public sealed class LogServerTests
         /// </summary>
         public void AppendLog(string taskId, int attempt, string fileName, string extra)
         {
-            string path = Path.Combine(Dir, "state", "logs", taskId, $"attempt-{attempt}", fileName);
+            string path = Path.Combine(Dir, "logs", RunId, taskId, $"attempt-{attempt}", fileName);
             File.AppendAllText(path, extra);
             // Guarantee a distinct LastWriteTimeUtc from the prior serve even on coarse-grained
             // filesystem timestamp resolution, so the change is observable to the (Length, mtime)

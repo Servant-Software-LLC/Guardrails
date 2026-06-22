@@ -17,6 +17,7 @@ public sealed class AttemptOutcomeTokenTests
     [InlineData(AttemptOutcome.GuardrailFailed, "guardrail-failed")]
     [InlineData(AttemptOutcome.Timeout, "timeout")]
     [InlineData(AttemptOutcome.OutputCap, "output-cap")]
+    [InlineData(AttemptOutcome.MaxTurns, "max-turns")]
     [InlineData(AttemptOutcome.RateLimited, "rate-limited")]
     [InlineData(AttemptOutcome.Cancelled, "cancelled")]
     [InlineData(AttemptOutcome.InvalidFragment, "invalid-fragment")]
@@ -27,6 +28,7 @@ public sealed class AttemptOutcomeTokenTests
 
     [Theory]
     [InlineData(AttemptOutcome.OutputCap)]
+    [InlineData(AttemptOutcome.MaxTurns)]
     [InlineData(AttemptOutcome.RateLimited)]
     [InlineData(AttemptOutcome.PermissionDenied)]
     public void NewOutcomes_RoundTripThroughJson(AttemptOutcome outcome)

@@ -38,6 +38,17 @@ public enum PromptFailureKind
     /// </summary>
     Timeout,
 
+    /// <summary>
+    /// The agent ran out of TURN budget mid-progress (issue #129 / #94): the runner reported the
+    /// max-turns terminal subtype (Claude: <c>error_max_turns</c>, "Reached maximum number of turns
+    /// (N)"). Categorically different from a logic failure — the agent was making real progress and
+    /// simply hit the turn cap. Distinct from a generic <see cref="Error"/> so the retry carries
+    /// actionable feedback ("you ran out of turns mid-task; work more directly") AND the harness
+    /// AUTO-ESCALATES the next attempt's turn budget (mirroring the timeout clock, issue #119) instead
+    /// of retrying into the same wall.
+    /// </summary>
+    MaxTurns,
+
     /// <summary>A genuine, non-special action failure (the agent reported <c>is_error</c> with no recognized signal).</summary>
     Error
 }

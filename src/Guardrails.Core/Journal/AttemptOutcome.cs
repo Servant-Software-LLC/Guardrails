@@ -30,6 +30,15 @@ public enum AttemptOutcome
     OutputCap,
 
     /// <summary>
+    /// A prompt action exhausted its TURN budget mid-progress (issue #129 / #94): the runner reported
+    /// max-turns (Claude: <c>error_max_turns</c>). A budget-exhaustion failure distinct from a generic
+    /// <see cref="ActionFailed"/>, so a human (and §9 triage) sees the agent ran out of TURNS — not a
+    /// logic failure — and the harness AUTO-ESCALATES the next attempt's turn budget (mirroring the
+    /// timeout clock) instead of retrying into the same wall.
+    /// </summary>
+    MaxTurns,
+
+    /// <summary>
     /// A transient infrastructure limit (HTTP 429/503/529, "overloaded", a usage/session/rate limit)
     /// did not clear within the task's cumulative pause budget (<c>transientPauseBudgetSeconds</c>,
     /// issue #115). The harness paused+re-ran WITHOUT consuming the retry budget; only when the pause

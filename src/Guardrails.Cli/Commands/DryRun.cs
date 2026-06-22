@@ -13,7 +13,7 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class DryRun
 {
-    public static int Execute(string folder, IConsoleIo io)
+    public static int Execute(string folder, IConsoleIo io, bool skipReviewCheck = false)
     {
         TextWriter output = io.Out;
 
@@ -29,6 +29,9 @@ public static class DryRun
         PlanProbe.PrintDiagnostics(probe.Diagnostics, output);
 
         PlanDefinition plan = probe.Plan;
+
+        // Review-marker nudge (warn, never block — SSOT §13, issue #79), same as a real run.
+        RunCommand.WarnIfUnreviewed(plan, skipReviewCheck, io);
 
         // Resume awareness: read the journal read-only (NO LoadOrCreate — a dry run must not
         // normalize statuses or persist anything). Only journaled 'succeeded' tasks would be

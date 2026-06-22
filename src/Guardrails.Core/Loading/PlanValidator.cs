@@ -48,6 +48,22 @@ public sealed class PlanValidator
         return diagnostics;
     }
 
+    /// <summary>
+    /// The review-marker nudge (GR2025, WARNING — SSOT §13, issue #79): missing/stale review marker.
+    /// Deliberately NOT part of <see cref="Validate"/> (which is the pure semantic plan validator —
+    /// keeping it out keeps every plan that lacks a marker from being noisy in the harness's own
+    /// validation, and keeps the check a deliberate command-layer concern). The <c>validate</c> and
+    /// <c>run</c> CLI commands call THIS to surface the same warning; both reuse the one deterministic
+    /// <see cref="Review.ReviewMarker.Evaluate"/> computation. Returns null when freshly reviewed.
+    /// </summary>
+    public static Diagnostic? ReviewMarkerDiagnostic(PlanDefinition plan)
+    {
+        Review.ReviewEvaluation evaluation = Review.ReviewMarker.Evaluate(plan);
+        return evaluation.ShouldWarn && evaluation.NudgeMessage is { } message
+            ? Warning(DiagnosticCodes.ReviewMarkerMissingOrStale, plan.PlanDirectory, message)
+            : null;
+    }
+
     private static bool HasAnyPrompt(PlanDefinition plan) =>
         plan.Tasks.Any(t =>
             t.Action.Kind == ActionKind.Prompt ||

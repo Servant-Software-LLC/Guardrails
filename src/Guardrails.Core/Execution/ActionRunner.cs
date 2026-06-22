@@ -50,6 +50,7 @@ internal sealed class ActionRunner
         string? previousFeedbackPath,
         string logDir,
         double timeoutMultiplier,
+        double maxTurnsMultiplier,
         CancellationToken cancellationToken)
     {
         if (task.Action.Kind != ActionKind.Prompt)
@@ -63,12 +64,19 @@ internal sealed class ActionRunner
 
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, maxTurnsMultiplier, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
     private static TimeSpan Extend(TimeSpan timeout, double multiplier) =>
         multiplier <= 1.0 ? timeout : TimeSpan.FromSeconds(timeout.TotalSeconds * multiplier);
+
+    /// <summary>
+    /// Apply the turn-budget-extension factor (issue #129 / #94) to a <c>maxTurns</c> setting; 1× is
+    /// the identity. Rounds UP so a fractional bump still raises the integer cap by at least one turn.
+    /// </summary>
+    private static int ExtendTurns(int maxTurns, double multiplier) =>
+        multiplier <= 1.0 ? maxTurns : (int)Math.Ceiling(maxTurns * multiplier);
 
     private async Task<ActionRun> RunPromptActionAsync(
         TaskNode task,
@@ -80,6 +88,7 @@ internal sealed class ActionRunner
         string? previousFeedbackPath,
         string logDir,
         double timeoutMultiplier,
+        double maxTurnsMultiplier,
         CancellationToken cancellationToken)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
@@ -95,6 +104,11 @@ internal sealed class ActionRunner
         PromptRunnerSettings settings = PromptExecutionSupport.ApplyPromptOverrides(
             runnerConfig.EffectiveSettings(isGuardrail: false),
             task.Action.MaxTurns ?? promptFile.Frontmatter.MaxTurns);
+
+        // Auto-escalate the turn budget after a prior max-turns exhaustion (issue #129 / #94): raise
+        // the effective maxTurns by the multiplier so the retry has headroom instead of re-hitting the
+        // same cap. 1× (no prior max-turns) leaves it unchanged.
+        settings = settings with { MaxTurns = ExtendTurns(settings.MaxTurns, maxTurnsMultiplier) };
 
         var invocation = new PromptInvocation
         {

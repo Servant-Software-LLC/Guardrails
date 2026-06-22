@@ -15,10 +15,11 @@ namespace Guardrails.Core.State;
 public static class RunReset
 {
     /// <summary>
-    /// Full fresh reset (SSOT §6.1 / M3 scope): delete <c>run.json</c>, <c>state.json</c>,
-    /// the <c>logs/</c> tree, <c>merge-conflicts.log</c> and the <c>captured/</c> baseline store,
-    /// then re-seed <c>state.json</c> from <c>seed.json</c> (or <c>{}</c>). The committed
-    /// <c>seed.json</c> and task folders are left untouched.
+    /// Full fresh reset (SSOT §6.1): delete <c>run.json</c>, <c>state.json</c>,
+    /// <c>merge-conflicts.log</c>, the plan-root <c>logs/</c> tree (all runs' attempt artifacts and
+    /// any exported static log site, §8), the local review marker <c>state/guardrails-review.json</c>
+    /// (§13) and the <c>captured/</c> baseline store, then re-seed <c>state.json</c> from
+    /// <c>seed.json</c> (or <c>{}</c>). The committed <c>seed.json</c> and task folders are untouched.
     /// </summary>
     /// <remarks>
     /// <c>captured/</c> (issue #51, the restore-on-retry baselines) MUST be wiped: a stale baseline
@@ -34,7 +35,12 @@ public static class RunReset
         DeleteFileIfExists(Path.Combine(stateDir, "run.json"));
         DeleteFileIfExists(Path.Combine(stateDir, "state.json"));
         DeleteFileIfExists(Path.Combine(stateDir, "merge-conflicts.log"));
-        DeleteDirectoryIfExists(Path.Combine(stateDir, "logs"));
+        // The per-attempt artifacts (and any exported static log site) live under the PLAN-ROOT
+        // logs/<runId>/ tree (SSOT §8, plan-08: a sibling of state/, divided by runId) — NOT the
+        // pre-plan-08 state/logs/. Delete the whole logs/ tree so a fresh run starts clean and the
+        // tree never grows unbounded across runs. The local review marker (§13) goes too.
+        DeleteDirectoryIfExists(Path.Combine(planDirectory, "logs"));
+        DeleteFileIfExists(Path.Combine(stateDir, "guardrails-review.json"));
         DeleteDirectoryIfExists(Path.Combine(stateDir, "captured"));
 
         // F3: prune stale guardrails/<runId>/* segment+fork branches and their worktrees left

@@ -21,6 +21,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private readonly Timer _ticker;
     private readonly Func<string, string?>? _logUrlForTask;
     private readonly string? _planDirectory;
+    private readonly string? _runId;
     private LiveDisplayContext? _context;
 
     /// <summary>A task currently running: when it started and the status word to prefix the clock.</summary>
@@ -38,13 +39,20 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     /// available on success, needs-human, and failure alike, and still valid after the run ends and
     /// the live log server is gone. Null = no post-mortem links.
     /// </param>
+    /// <param name="runId">
+    /// The run id selecting the <c>logs/&lt;runId&gt;/</c> tree the post-mortem link points into
+    /// (SSOT §8). Required alongside <paramref name="planDirectory"/> for the post-mortem link;
+    /// null suppresses the link the same way a null plan dir does.
+    /// </param>
     public LiveRunObserver(
         IReadOnlyList<TaskNode> tasks,
         Func<string, string?>? logUrlForTask = null,
-        string? planDirectory = null)
+        string? planDirectory = null,
+        string? runId = null)
     {
         _logUrlForTask = logUrlForTask;
         _planDirectory = planDirectory;
+        _runId = runId;
         _table = new Table().Border(TableBorder.Rounded);
         _table.AddColumn("Task");
         _table.AddColumn("Status");
@@ -156,18 +164,18 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 
     /// <summary>
     /// Spectre markup for a durable <c>logs</c> link to a task's on-disk log directory
-    /// (<c>state/logs/&lt;id&gt;/</c>, holding every attempt's action output, guardrail logs and
-    /// feedback). A <c>file://</c> OSC 8 hyperlink that survives the run — the entry point for a
-    /// post-mortem on any finished task, not just failures. Null when no plan dir was supplied.
+    /// (<c>logs/&lt;runId&gt;/&lt;id&gt;/</c>, holding every attempt's action output, guardrail logs and
+    /// feedback — SSOT §8). A <c>file://</c> OSC 8 hyperlink that survives the run — the entry point
+    /// for a post-mortem on any finished task, not just failures. Null when no plan dir / run id.
     /// </summary>
     private string? PostMortemLinkMarkup(string taskId)
     {
-        if (_planDirectory is null)
+        if (_planDirectory is null || _runId is null)
         {
             return null;
         }
 
-        string dir = Path.GetFullPath(Path.Combine(_planDirectory, "state", "logs", taskId));
+        string dir = Path.GetFullPath(Path.Combine(_planDirectory, "logs", _runId, taskId));
         return $"[link={new Uri(dir).AbsoluteUri}]logs[/]";
     }
 
