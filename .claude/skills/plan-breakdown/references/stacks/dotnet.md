@@ -99,6 +99,74 @@ name when you know it (`class\s+CloudDestinationWriter\s*:`), or `class\s+\w+\s*
 implementing class name is the agent's choice. Scope to the implementing file (pattern 2's
 ProjectReference check stops the local-copy escape; this regex stops the comment escape).
 
+### 3.1 Property declaration — match up to the brace, NOT a fixed accessor order (#112)
+
+A structural "property declared / removed" check is **accessor-order-sensitive** if it keys
+on a fixed leading accessor. C# accessor order is **free**:
+`{ get; init; }` ≡ `{ init; get; }` ≡ `{ get; set; }` ≡ `{ set; get; }` — all the same
+property. A regex like `public\s+[^\s]+\s+NAME\s*\{\s*get` only matches when `get` is the
+**first** accessor, so it:
+
+- **false-PASSES a "field removed" check** when the field survives as `{ init; get; }`
+  (init first): the regex doesn't match, the guardrail concludes the field is gone, and an
+  **incomplete refactor ships green** — the structural analogue of the matcher/decoy
+  false-green. The motivating case (plan-08 task 08) retained
+  `public IReadOnlyList<string> CaptureHashes { init; get; }` and the `\{\s*get` removal
+  check passed while the field lingered.
+- **false-FAILS a "field declared" check** symmetrically — the property is present as
+  `{ init; get; }` but the leading-`get` regex says it is absent.
+
+**Rule.** Key a property-declaration check on the declaration **up to the opening brace** —
+the type and name, which are order-free — and stop there. If accessor *presence* genuinely
+matters, test for `(get|set|init)` **anywhere inside the accessor block**, never a fixed
+leading accessor.
+
+- **Weak (accessor-order-sensitive — false-passes on `{ init; get; }`):**
+  `public\s+[^\s]+\s+CaptureHashes\s*\{\s*get`
+- **Strong (order-insensitive — matches regardless of get/set/init order):**
+  `public\s+[^\s]+\s+CaptureHashes\s*\{`
+  (and, only if an accessor must be present, additionally require
+  `\{[^}]*\b(get|set|init)\b` inside the block).
+
+The `[^\s]+` type token spans generics (`IReadOnlyList<string>`) and arrays without a
+greedy `.*`. Use `(?m)` so `^`/`$` and the per-line scan behave on a multi-line file.
+
+```powershell
+# catches: a "triad field removed" claim that false-passes when the field survives with a
+#          different ACCESSOR ORDER - e.g. `public bool RestoreOnRetry { init; get; }`
+#          (init first) is NOT matched by `\{\s*get`, so the lingering field reads as gone.
+#          Key on the declaration up to the brace - order-insensitive by construction.
+$tn = Get-Content "src/Guardrails.Core/TaskNode.cs" -Raw
+foreach ($field in @('Exclusive','CaptureHashes','RestoreOnRetry')) {
+    if ($tn -match "(?m)public\s+[^\s]+\s+$field\s*\{") {
+        Write-Output "TaskNode.cs still declares property '$field' (teardown incomplete) - regardless of get/set/init order"
+        exit 1
+    }
+}
+exit 0
+```
+
+```bash
+# catches: same - a property-removal check that false-passes on `{ init; get; }` ordering.
+#          Match the declaration up to the brace; do not anchor on a leading `get`.
+set -euo pipefail
+tn="src/Guardrails.Core/TaskNode.cs"
+for field in Exclusive CaptureHashes RestoreOnRetry; do
+    if grep -Eq "public[[:space:]]+[^[:space:]]+[[:space:]]+${field}[[:space:]]*\{" "$tn"; then
+        echo "TaskNode.cs still declares property '$field' (teardown incomplete) - regardless of get/set/init order"
+        exit 1
+    fi
+done
+exit 0
+```
+
+For a **field-DECLARED** (presence) check, flip the sense — fail when the
+match-up-to-the-brace regex is *absent* — using the same order-insensitive pattern. The
+same fix applies to every `class/record/interface … { … }` structural check: anchor on the
+order-free part of the declaration, never on whichever member/accessor happens to be written
+first. This is the property/accessor instantiation of §3's universal "match the construct,
+not the token" rule.
+
 ## 4. Canonical build command — how `dotnet build` should appear in guardrails
 
 - **Build a single project** (a code task's `build-passes` guardrail): build THIS task's

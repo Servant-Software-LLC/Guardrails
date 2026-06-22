@@ -55,6 +55,90 @@ language's declaration syntax instead: `class Foo : IBar` (C#), `implements Foo`
 the **exact regex per language lives in the stack file** (`references/stacks/<stack>.md`,
 e.g. the C# class-declaration pattern in `stacks/dotnet.md`).
 
+**Member-order insensitivity (#112).** A structural check must also be insensitive to the
+**free ordering of members/accessors** inside the construct. A property's accessors have no
+fixed order in C# — `{ get; init; }` ≡ `{ init; get; }` ≡ `{ get; set; }` ≡ `{ set; get; }` —
+so a regex keyed on a fixed leading accessor (`…NAME\s*\{\s*get`) **false-passes a "property
+removed" check** when the property survives as `{ init; get; }` (init first), shipping an
+incomplete refactor green; it **false-fails a "declared" check** symmetrically. Key the match
+on the order-free part of the declaration — **up to the opening brace** (`public\s+TYPE\s+NAME\s*\{`)
+— and, only if accessor presence matters, test for `(get|set|init)` **anywhere inside** the
+accessor block, never a fixed leading accessor. The exact C# property-declaration regex is
+`stacks/dotnet.md §3.1`. The same rule applies to any `class/record/interface … { … }` check:
+anchor on the part of the syntax whose order the language fixes, never on whichever
+member/accessor happens to be written first.
+
+### Positive-effect / non-hollow assertion (universal) (#73)
+
+The structural-vs-keyword rule has a sibling on the *value* side: a guardrail must
+assert a **positive observable OUTCOME**, never merely the **absence of an error** — a
+zero exit, a `NotNull`, or the bare *presence* of an assertion keyword. An assertion that
+green-lights a zero/null/empty result is structurally a **no-op for a "did anything get
+produced?" question**: a terminal e2e that runs a full migration and asserts
+`Assert.Equal(0, writer.Count)` certifies a no-op while reporting success. This is the
+terminal-task analogue of `tests-fail-on-current-code` (archetype #8) — asserting a
+zero/null quantity is equivalent to asserting nothing at all about an output quantity.
+
+The trap has two shapes:
+
+1. **Hollow keyword-presence on a count.** A regex that requires only that an assertion
+   *mentions* a quantity token — `Assert.*\([^)]*(Moved|Written|Count|Entities)` — matches
+   `Assert.Equal(0, writer.Count)`. The keyword is present; the value is zero; the migration
+   moved nothing and the run is green. (Note: anchor on `Assert.*\(` / `Assert\.\w+\(`, not
+   `Assert\w*\(` — the latter's `\w*` cannot span the `.` in the dotted xUnit form
+   `Assert.Equal(`, so it silently never matches it. The point stands either way: matching the
+   assertion's *text* is the wrong tool; require a positive *value*, below.)
+2. **Absence-of-error standing in for presence-of-effect.** A terminal guardrail whose
+   whole assertion is `exit 0` / no exception / `Assert.NotNull(result)`. "It didn't throw"
+   and "the handle isn't null" are *necessary* but never *sufficient* for "it produced the
+   thing" — an empty result is non-null and throws nothing.
+
+**Rule.** When a task's deliverable is a **non-empty quantity of output** — a migration
+moved-count, items written, rows produced, entities created — the guardrail MUST require a
+**strictly positive** value, not the presence of an assertion keyword and not merely a
+non-error exit. Apply this to the terminal/integration e2e task whose action prompt claims
+a "how many items were processed" result (see SKILL.md Step 4's decision tree).
+
+- **Pattern to AVOID** (hollow — matches `Assert.Equal(0, x.Count)`):
+  `Assert.*\([^)]*(Moved|Written|Count|Entities)`
+- **Pattern to USE** (requires a positive value):
+  `(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)`
+
+Even stronger than matching the *source text* of an assertion is reading the **runner's
+recorded outcome** (a TRX, a structured result file, or a state key the action published)
+and asserting the moved-count `> 0` directly — the source-text regex proves a positive
+assertion was *written*, not that the run actually *produced* a positive count. Prefer the
+recorded-outcome read when the action emits one (verify-recorded-action-result, #9; the
+state-output leaf below); fall back to the positivity regex when it does not.
+
+```powershell
+# catches: a terminal e2e that runs the migration but asserts a HOLLOW result -
+#          Assert.Equal(0, writer.Count) / Assert.NotNull(...) / a bare exit 0 - so a
+#          run that moved ZERO entities still goes green. Require a POSITIVE moved-count.
+$test = "tests/Migration.E2E/EndToEndTests.cs"
+$src  = Get-Content $test -Raw
+# AVOID: -match 'Assert.*\([^)]*(Moved|Written|Count|Entities)'  # passes on Assert.Equal(0, x.Count)
+if ($src -notmatch '(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)') {
+    Write-Output "$test never asserts a POSITIVE moved-count (>0) - a zero-entity migration would pass"
+    exit 1
+}
+exit 0
+```
+
+```bash
+# catches: a terminal e2e that runs the migration but asserts a HOLLOW result -
+#          Assert.Equal(0, writer.Count) / Assert.NotNull(...) / a bare exit 0 - so a
+#          run that moved ZERO entities still goes green. Require a POSITIVE moved-count.
+set -euo pipefail
+test="tests/Migration.E2E/EndToEndTests.cs"
+# AVOID: grep -E 'Assert.*\([^)]*(Moved|Written|Count|Entities)'  # passes on Assert.Equal(0, x.Count)
+if ! grep -Eq '(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)' "$test"; then
+    echo "$test never asserts a POSITIVE moved-count (>0) - a zero-entity migration would pass"
+    exit 1
+fi
+exit 0
+```
+
 ### verify-recorded-action-result: don't replay, but don't trust a log either (#62)
 
 The harness hands every guardrail the action's **already-captured** outcome
@@ -399,6 +483,23 @@ should fail before an expensive test run or a paid judge ever starts.
 
 - **Tautological**: the guardrail checks something the action writes specifically to
   satisfy it ("status.txt contains DONE"). The action controls the evidence.
+- **Hollow output assertion** (#73): a terminal/e2e guardrail that asserts only the
+  **absence of an error** — `Assert.Equal(0, x.Count)`, `Assert.NotNull(...)`, a bare
+  `exit 0`, or the mere *presence* of an assertion keyword
+  (`Assert.*\([^)]*(Moved|Written|Count|Entities)` matches `Assert.Equal(0, …)`) — for a
+  task whose deliverable is a **non-empty quantity of output** (migration moved-count, items
+  written, entities produced). It certifies a no-op: a run that moved zero entities goes
+  green. Fix: require a **strictly positive** value — `(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)` —
+  or better, read the runner-recorded count / state key and assert `> 0`. See the
+  positive-effect / non-hollow assertion section above.
+- **Accessor-order-sensitive structural regex** (#112): a property "declared/removed"
+  check keyed on a fixed leading accessor — `…NAME\s*\{\s*get` or `…\{\s*set` — is itself a
+  finding. C# accessor order is free (`{ get; init; }` ≡ `{ init; get; }`), so the regex
+  **false-passes a removal check** when the field survives as `{ init; get; }` (an incomplete
+  refactor ships green) and **false-fails a declared check** symmetrically. Fix: match the
+  declaration up to the brace (`public\s+TYPE\s+NAME\s*\{`), order-insensitive by construction;
+  if accessor presence matters, test `(get|set|init)` anywhere inside the block. See the
+  member-order-insensitivity note above; exact regex `stacks/dotnet.md §3.1`.
 - **Echo-judge**: a prompt-judge evaluating the action's own claim of success (its
   summary, its commit message) rather than the artifact.
 - **Replay-the-action**: a guardrail that **re-runs the action's own command** (e.g. a

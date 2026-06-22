@@ -58,6 +58,16 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   or grep `GUARDRAILS_ACTION_STDOUT` for the action's own success word (`"Passed!"`,
   `"Build succeeded"` — an echo-judge, also SDK-version-brittle)? Fix: read a
   runner-written structured result (TRX) or a produced artifact, never the self-report.
+- **Hollow output assertion** (#73): for a terminal/e2e guardrail whose task claims a
+  **non-empty quantity of output** (migration moved-count, items written, rows produced,
+  entities created), does the assertion green-light a **zero/null** result? Tells: a
+  keyword-presence regex `Assert.*\([^)]*(Moved|Written|Count|Entities)` (matches
+  `Assert.Equal(0, writer.Count)`), a bare `Assert.NotNull(...)`, or an `exit 0` with no
+  positive-value check. "It didn't error" / "the keyword is present" is a structural no-op for
+  "did anything get produced?" — a run that moved ZERO entities passes. Fix: require a
+  **strictly positive** value (`(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)`), or
+  read the runner-recorded count / state key and assert `> 0`. (Catalogue → positive-effect /
+  non-hollow assertion.) BLOCKER — a zero-effect run goes green.
 - **Judge-where-deterministic-possible**: for every `.prompt.md` guardrail, name the
   deterministic archetype that could replace it, or confirm none can (the 4-question
   demotion gate).
@@ -78,7 +88,16 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   same-wave sibling sharing the term can satisfy it. (Catalogue anti-pattern.)
 - **Keyword-not-structural**: an "implements/extends/declares" check matching a bare
   type name (`Select-String "IFoo"`) that a comment, `using`, or local copy satisfies —
-  it should match the declaration construct (stack file's structural regex).
+  it should match the declaration construct (stack file's structural regex). Also flag an
+  **accessor-order-sensitive** structural regex (#112): a property "declared/removed" check
+  keyed on a fixed leading accessor — `\{\s*get` or `\{\s*set` (e.g.
+  `public\s+\S+\s+NAME\s*\{\s*get`) — is **itself a finding**. C# accessor order is free
+  (`{ get; init; }` ≡ `{ init; get; }`), so it **false-passes a removal check** when the field
+  survives as `{ init; get; }` (an incomplete refactor ships green) and **false-fails a declared
+  check** symmetrically. Fix: match up to the brace (`public\s+TYPE\s+NAME\s*\{`),
+  order-insensitive; if accessor presence matters, test `(get|set|init)` anywhere inside the
+  block. (Catalogue → member-order insensitivity; `stacks/dotnet.md §3.1`.) BLOCKER on a
+  removal check — a lingering field reads as gone.
 - **Unregistered module**: a task adds a module/project to a build descriptor (`.csproj`
   → `.slnx`) but no guardrail checks the DESCRIPTOR names it — a descriptor build passes
   with the project unregistered. (Stack file → build-descriptor registration.)
@@ -161,6 +180,7 @@ changes to it.
 - [ ] `guardrails validate` ran first; findings don't duplicate the tool.
 - [ ] `guardrails graph --check` ran; exit 2 (stale/missing) → regenerated and noted; exit 1 (error) → surfaced, not silently regenerated.
 - [ ] Every BLOCKER names the concrete wrong implementation, not a vibe.
+- [ ] Terminal/e2e tasks claiming an output quantity assert a STRICTLY POSITIVE value (no hollow `Assert.Equal(0,…)` / `NotNull` / bare `exit 0`); every structural property check is accessor-order-insensitive (no `\{\s*get` / `\{\s*set` anchor).
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Coverage gaps cite the exact unverified completion criterion.
 - [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files; no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.

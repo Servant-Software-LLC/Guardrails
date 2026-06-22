@@ -266,8 +266,22 @@ optional:
   scope, *presence and wiring of the described UI* is the deliverable. The exit-criteria
   self-review in Step 7 is the backstop: a plan promising a frontend that decomposed to zero
   UI tasks fails its own review.
+- **Positive-effect / non-hollow output assertion** (#73) — does this task's action claim a
+  **non-empty quantity of output** (a "how many items were processed" result: migration
+  moved-count, items written, rows produced, entities created)? Typically the terminal/
+  integration e2e task. A keyword-presence regex on the assertion
+  (`Assert.*\([^)]*(Moved|Written|Count|Entities)`), a bare `Assert.NotNull(...)`, or a
+  non-error `exit 0` is **hollow** — it passes on `Assert.Equal(0, writer.Count)`, certifying
+  a no-op (a migration that moved zero entities goes green). Emit the **positivity** check
+  instead: require a strictly positive value
+  (`(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)`), or better, read the
+  runner-recorded count / state key and assert `> 0`. Catalogue → positive-effect / non-hollow
+  assertion.
 - **Structural impl / keyword match** — any "implements/extends/declares" check uses the
-  stack file's declaration regex (`stacks/dotnet.md §3`), never a bare type-name grep.
+  stack file's declaration regex (`stacks/dotnet.md §3`), never a bare type-name grep. A
+  property-declaration check must be **accessor-order-insensitive** (#112) — key on the
+  declaration up to the brace (`public\s+TYPE\s+NAME\s*\{`), never a fixed leading `\{\s*get`,
+  which false-passes on `{ init; get; }` (catalogue → structural-vs-keyword; `stacks/dotnet.md §3`).
 - **Grep scope** — every file-content guardrail is scoped to the one file this task owns
   (catalogue → grep-scope contamination anti-pattern; `.NET` traps in `stacks/dotnet.md §5`).
 
