@@ -181,6 +181,9 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
                                //   retries with feedback after a SCOPED REVERT of the out-of-scope paths
                                //   (in-scope WIP preserved). Renames = paired D+A (both in scope). A vacuous
                                //   "**" / bare top-level dir is a granularity smell.
+  "stagingOutputs": [                                // optional; autonomous .claude/ delivery (§3.5). Absent ⇒ none.
+    { "from": "skill/**", "to": ".claude/skills/foo/" }  // action writes <from> under GUARDRAILS_STAGING_DIR;
+  ],                                                 //   harness MOVES it to <to> after action, before guardrails
   "retries": 3,                // optional; overrides defaultRetries
   "timeoutSeconds": 3600,      // optional; whole-attempt ceiling (action + guardrails)
   "action": {                  // OPTIONAL — omit to use convention discovery:
@@ -295,6 +298,60 @@ proof harness (the 27-row table + the two fuzz properties: membership-implies-ov
 task's own verdict — never write another task's files; `Overlaps` (the scheduler hint) retains
 cross-task reach and keeps the full fuzz rigor.
 
+When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the **post-move**
+surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must
+authorize), not the pre-move staging writes — the surface the check protects (what reaches the
+commit) is unchanged and still fully gated.
+
+### 3.5 Staging outputs (`stagingOutputs`) — autonomous `.claude/` delivery
+
+A task whose deliverable lives under `.claude/` cannot write it directly: the Claude Code
+sub-agent runtime blocks automated writes under `.claude/` **by path pattern**, even under
+`permissionMode: acceptEdits`, in the user's checkout AND in a segment worktree (issues
+#104/#85, §9.3). `stagingOutputs` is the **autonomous fix**: the action writes its deliverable to
+a harness-managed staging dir the runtime permits, and the harness — running with full host
+permissions, outside the sub-agent sandbox — **moves** the staged outputs into their real
+`.claude/` paths **after the action succeeds and before the task's guardrails run**, so the
+guardrails verify the real `.claude/` artifact and the task goes green unattended.
+
+`stagingOutputs` is an optional list of `{ "from", "to" }` mappings:
+
+- **`from`** — a path or glob relative to `GUARDRAILS_STAGING_DIR` (§5.1), the per-task staging
+  root `<workspace>/.guardrails-staging/<task-id>/` (the segment worktree in worktree mode, the
+  plan workspace in serial mode). The action writes its deliverable under this relative path.
+- **`to`** — a workspace-relative destination **under `.claude/`**. A trailing `/` lands the
+  matched `from` subtree under that directory preserving relative structure; a file `to` moves one
+  file.
+
+**The move** runs in the task's segment worktree, after action success, **before the write-scope
+check** (§3.4) and the guardrails — so the changed surface the write-scope check and the guardrails
+see is the real `.claude/` path. The harness deletes the entire `.guardrails-staging/` tree after
+the move and before integration, so staging scaffolding never reaches a commit (a generated
+`.git/info/exclude` entry is a belt-and-braces second line; the user's tracked `.gitignore` is
+never modified). The move is done by the executor inside the per-task segment worktree (worktree
+isolation), not under the integration lock.
+
+**Rollback.** The move is gated on action success, so an action failure never moves. A move that
+matches no files for a declared `from`, an IO failure, or a guardrail failure on the moved artifact
+all fail the attempt; the retry's `git reset --hard <taskBase> + git clean -fd` removes the
+uncommitted moved files and the harness clears the staging dir, so the next attempt starts clean.
+Repeated failure settles `needs-human` via the normal exhaustion path. The committed `.claude/`
+artifact exists only on a green settle.
+
+**Validation (`GR2024`, error).** A present `stagingOutputs` is rejected when: the array is empty;
+an entry has a missing/empty `from` or `to`; a `to` does not normalize to a path under `.claude/`;
+a `to` escapes the workspace (absolute or `..` climbing out, as GR2019); or a `from` escapes the
+staging root. A malformed staging contract would produce a task that runs, moves nothing, and fails
+its `.claude/` guardrail for a load-time-knowable reason — so it is an error, not a warning.
+
+**Composes with `writeScope`.** A staging task's `writeScope` authorizes the real `.claude/`
+destination(s) (the surface the write-scope check sees after the move); the staging prefix nets to
+zero changed paths because it is deleted before the diff. The `to` destinations are also
+**implicitly in-scope** for the write-scope check (a staging task need not list its `.claude/`
+destinations in `writeScope` as well); an *undeclared* `.claude/` write still fails the check.
+**Subsumes #85:** the `.claude/` block is by path pattern, so no permission-config value unblocks a
+worktree `.claude/` write; `stagingOutputs` is the supported autonomous path.
+
 ## 4. Guardrails
 
 Files under `tasks/<id>/guardrails/`, executed in filename sort order (**ordinal**,
@@ -386,6 +443,7 @@ flags an integration-sensitive plan with no integration-scoped guardrail (BLOCKE
 | `GUARDRAILS_ATTEMPT` | all | 1-based attempt number |
 | `GUARDRAILS_STATE_IN` | all | Read-only merged-state **snapshot copy** taken at attempt start; immutable for the attempt |
 | `GUARDRAILS_STATE_OUT` | actions | Path the action may write its JSON fragment to (§6.2). Not pre-created; absence after success = "nothing to contribute" |
+| `GUARDRAILS_STAGING_DIR` | actions, when `stagingOutputs` declared | Pre-created absolute staging root `<workspace>/.guardrails-staging/<task-id>/`. The action writes its `.claude/`-destined deliverable here under the relative `from` paths; the harness moves staged outputs into their real `.claude/` paths after the action succeeds and before guardrails run (§3.5). Absent for guardrails (verify the real path) and for `--revalidate-task` (no action ran) |
 | `GUARDRAILS_STATE_FRAGMENT` | guardrails | Path of the action's (not-yet-merged) fragment, if the action wrote one — lets a guardrail validate proposed state |
 | `GUARDRAILS_LOG_DIR` | all | `logs/<runId>/<task>/attempt-N/` — scratch space welcome |
 | `GUARDRAILS_WORKSPACE` | worktree mode (in-attempt AND re-verify) | The effective worktree directory. In-attempt: the task's isolated SEGMENT worktree (where the action writes files that `Integrate` commits). At re-verify (§4.3): the INTEGRATION worktree the union bytes were merged into. Set in BOTH contexts to the same kind of value (the effective workspace = cwd) so a guardrail reading `$GUARDRAILS_WORKSPACE` behaves identically in-attempt and at the union point (#124). Absent in serial shared-workspace mode (cwd is the plan `workspace`) |
@@ -436,7 +494,7 @@ substitution tokens (`{args}` defaults to appending after the script path).
 `guardrails validate` reports any extension used by the plan whose interpreter is
 not resolvable on PATH.
 
-### 5.3 Harness writes to the workspace — two bounded cases
+### 5.3 Harness writes to the workspace — three bounded cases
 
 **The harness writes only the harness-owned integration worktree (plan branch
 `guardrails/<plan-name>`), via integration, after a task's action and guardrails succeed in its
@@ -489,6 +547,18 @@ force-overwrite. Default OFF leaves the plan branch for the user to review and m
 outcome is reported as `MergeOnSuccessResult` (`FastForwarded` / `Merged` / `Conflict` /
 `DirtyWorkingTree`); a dirty user working tree is refused **before any git merge runs** (the harness
 never runs git over uncommitted user work) and returns `DirtyWorkingTree`.
+
+**(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
+action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
+— after the action succeeds, before the write-scope check and guardrails. *Containment:* the write
+is confined to the per-task segment worktree the harness already owns and commits via `Integrate`
+(the same tree `git add -A` stages); it is scoped to the task's declared `.claude/` destinations
+(gated by the write-scope check on the post-move surface); it runs under worktree isolation, not
+the integration lock (no cross-task surface); and the `.guardrails-staging/` source tree is deleted
+before integration so no scaffolding is committed. In serial shared-workspace mode the move lands
+in the user's checkout `.claude/` — the one documented serial trade-off, no broader than the
+existing serial-mode child writes (§7.1). It never writes the integration worktree or the user's
+branch outside the existing `--merge-on-success` delivery.
 
 Any new capability that needs the harness to write outside the integration worktree or the opt-in
 end-of-run delivery to the user's branch must be added to this section with its own containment
@@ -732,7 +802,10 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
   the transitive `dependsOn` closure's `transcript.md` + contributed `fragment.json`, present
   on every attempt — #26 Gap 4), output contract (actions), previous-attempt feedback (actions,
   attempt ≥ 2: the latest `feedback.md` verbatim + pointers to ALL prior attempts' transcript
-  and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), verdict
+  and feedback — #26 Gaps 2 & 3, "fix these specific problems; do not start over"), **staging-outputs
+  contract** (actions, when `stagingOutputs` declared, §3.5: the absolute `GUARDRAILS_STAGING_DIR` and
+  the `from→to` map embedded verbatim — "write here; the harness moves it to `.claude/`; do not write
+  `.claude/` directly", since agents read instructions, not env vars), verdict
   contract (guardrails: "you are a verifier — do NOT fix anything").
 - Semantic success for a prompt **action** = process completed AND result `is_error == false`.
   For a prompt **guardrail** = the verdict file, full stop.
@@ -911,11 +984,16 @@ resumes from here).
 **Residual (honest scope).** This is a **detect-and-halt-honestly** mitigation: it ends the #86/#104
 retry-budget waste and lands the human on an actionable diagnosis on the first (structural) or second
 (repeated) attempt. It does **not** itself grant `.claude/` write access — the root cause is a
-Claude-Code-runtime restriction the harness cannot override from outside the sub-agent. A full
-autonomous fix (a `task.json` `stagingOutputs` contract that declares an out-of-`.claude/` write the
-harness moves into place after guardrails pass — issue #104 Option A) is a larger schema change owned by
-the architect and is **NOT** implemented here; the breakdown-time warning (Option C) is a
-`plan-breakdown` skill change, also out of this harness slice.
+Claude-Code-runtime restriction the harness cannot override from outside the sub-agent.
+
+The full autonomous fix is the `task.json` `stagingOutputs` contract (§3.5, issue #130): a task
+declares the `.claude/` deliverable it produces and a staging path the action writes instead, and
+the harness moves the staged output into its real `.claude/` path after the action succeeds and
+before guardrails run — so the task completes unattended. The §9.3 detect-and-halt remains the
+safety net for a `.claude/`-writing task that did **not** declare `stagingOutputs`; its
+`feedback.md` now points at `stagingOutputs` as the fix. The breakdown-time emission of
+`stagingOutputs` for `.claude/`-targeted tasks (Option C) is a `plan-breakdown` skill change,
+tracked separately.
 
 ---
 

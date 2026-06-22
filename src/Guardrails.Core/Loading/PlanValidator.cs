@@ -40,6 +40,7 @@ public sealed class PlanValidator
         ValidateIntegrationGateNonEmpty(plan, diagnostics);
         ValidateGuardrailScopeValues(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
+        ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
@@ -364,6 +365,116 @@ public sealed class PlanValidator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Validate <c>stagingOutputs</c> entries across all tasks (SSOT §3.5, issue #130). All causes
+    /// share one code, <c>GR2024</c> (error), each with a precise reason string (mirrors how GR2019/
+    /// GR2020 carry one code with a specific reason). <c>stagingOutputs</c> is OPTIONAL — absent (null)
+    /// ⇒ no check. A PRESENT list is rejected when:
+    /// <list type="bullet">
+    ///   <item>the array is empty (declares staging but stages nothing);</item>
+    ///   <item>an entry has a missing/empty <c>from</c> or <c>to</c>;</item>
+    ///   <item>a <c>to</c> does not normalize to a path under <c>.claude/</c> (the load-bearing check:
+    ///     <c>stagingOutputs</c> exists only to land <c>.claude/</c> deliverables);</item>
+    ///   <item>a <c>to</c> escapes the workspace (absolute, or <c>..</c> climbing out — same family as
+    ///     GR2019 for <c>writeScope</c>);</item>
+    ///   <item>a <c>from</c> escapes the staging root (absolute, or <c>..</c> climbing above the
+    ///     per-task staging dir).</item>
+    /// </list>
+    /// </summary>
+    private static void ValidateStagingOutputs(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.StagingOutputs is not { } staging)
+            {
+                continue; // absent ⇒ no staging, no check (the unchanged default).
+            }
+
+            if (staging.Count == 0)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.StagingOutputsInvalid, task.Directory,
+                    $"Task '{task.Id}' declares an empty 'stagingOutputs' array — it declares staging " +
+                    "but stages nothing. Remove the field, or add at least one { from, to } entry (SSOT §3.5)."));
+                continue;
+            }
+
+            foreach (StagingOutput entry in staging)
+            {
+                ValidateStagingEntry(task, entry, diagnostics);
+            }
+        }
+    }
+
+    private static void ValidateStagingEntry(TaskNode task, StagingOutput entry, List<Diagnostic> diagnostics)
+    {
+        if (string.IsNullOrWhiteSpace(entry.From))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.StagingOutputsInvalid, task.Directory,
+                $"Task '{task.Id}' has a stagingOutputs entry with a missing or empty 'from'. " +
+                "'from' is the path/glob (relative to GUARDRAILS_STAGING_DIR) the action writes (SSOT §3.5)."));
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.To))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.StagingOutputsInvalid, task.Directory,
+                $"Task '{task.Id}' stagingOutputs 'from' '{entry.From}' has a missing or empty 'to'. " +
+                "'to' is the workspace-relative destination under '.claude/' (SSOT §3.5)."));
+            return;
+        }
+
+        // 'from' must stay WITHIN the staging root: not absolute, no '..' climbing above it.
+        if (Path.IsPathRooted(entry.From) ||
+            entry.From.Split('/', '\\').Any(seg => seg == ".."))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.StagingOutputsInvalid, task.Directory,
+                $"Task '{task.Id}' stagingOutputs 'from' '{entry.From}' is an absolute path or contains " +
+                "'..' segments, which would escape the per-task staging root. 'from' must be relative to " +
+                "GUARDRAILS_STAGING_DIR and stay within it (SSOT §3.5)."));
+        }
+
+        // 'to' must stay WITHIN the workspace: not absolute, no '..' climbing out (same family as GR2019).
+        if (Path.IsPathRooted(entry.To) ||
+            entry.To.Split('/', '\\').Any(seg => seg == ".."))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.StagingOutputsInvalid, task.Directory,
+                $"Task '{task.Id}' stagingOutputs 'to' '{entry.To}' is an absolute path or contains " +
+                "'..' segments, which could reference files outside the workspace root. 'to' must be " +
+                "workspace-relative (SSOT §3.5, cf. GR2019)."));
+            return; // an escape already disqualifies it; the under-.claude check below is moot.
+        }
+
+        // 'to' must normalize to a path UNDER '.claude/' — the load-bearing check.
+        if (!NormalizesUnderClaude(entry.To))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.StagingOutputsInvalid, task.Directory,
+                $"Task '{task.Id}' stagingOutputs 'to' '{entry.To}' does not resolve under '.claude/'. " +
+                "stagingOutputs exists only to land '.claude/' deliverables; a non-'.claude/' destination " +
+                "is either a misunderstanding (use a normal action write) or an escape attempt (SSOT §3.5)."));
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="to"/> (already known to be workspace-relative and free of <c>..</c>)
+    /// has <c>.claude</c> as its first normalized path segment — so it lands under <c>.claude/</c>.
+    /// Tolerates a leading <c>./</c> and either slash style; an empty/whitespace segment (a stray
+    /// leading slash already excluded as "rooted") is skipped.
+    /// </summary>
+    private static bool NormalizesUnderClaude(string to)
+    {
+        foreach (string segment in to.Split('/', '\\'))
+        {
+            if (segment.Length == 0 || segment == ".")
+            {
+                continue; // skip leading "./" and empty segments.
+            }
+
+            return segment == ".claude";
+        }
+
+        return false;
     }
 
     /// <summary>

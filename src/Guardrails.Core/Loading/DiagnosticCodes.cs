@@ -163,4 +163,16 @@ public static class DiagnosticCodes
     /// non-positive cap would make every prompt response fail, so it is an ERROR.
     /// </summary>
     public const string MaxOutputTokensNonPositive = "GR2023";
+
+    /// <summary>
+    /// A <c>stagingOutputs</c> entry is malformed (SSOT §3.5, issue #130): the array is present but
+    /// empty; an entry has a missing/empty <c>from</c> or <c>to</c>; a <c>to</c> does not normalize to
+    /// a path under <c>.claude/</c>; a <c>to</c> escapes the workspace (absolute or <c>..</c> climbing
+    /// out, the same family as <see cref="WriteScopeEscapesWorkspace"/>); or a <c>from</c> escapes the
+    /// staging root. <c>stagingOutputs</c> exists only to land <c>.claude/</c> deliverables; a
+    /// malformed contract would produce a task that runs, moves nothing (or the wrong thing), and then
+    /// fails its <c>.claude/</c> guardrail for a reason that was knowable at validate time — so it is an
+    /// ERROR, turning a knowable runtime cascade into a load-time catch.
+    /// </summary>
+    public const string StagingOutputsInvalid = "GR2024";
 }

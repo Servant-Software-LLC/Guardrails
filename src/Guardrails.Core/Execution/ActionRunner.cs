@@ -50,6 +50,7 @@ internal sealed class ActionRunner
         string? previousFeedbackPath,
         string logDir,
         double timeoutMultiplier,
+        string? stagingDir,
         CancellationToken cancellationToken)
     {
         if (task.Action.Kind != ActionKind.Prompt)
@@ -63,7 +64,7 @@ internal sealed class ActionRunner
 
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
@@ -80,6 +81,7 @@ internal sealed class ActionRunner
         string? previousFeedbackPath,
         string logDir,
         double timeoutMultiplier,
+        string? stagingDir,
         CancellationToken cancellationToken)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
@@ -88,8 +90,12 @@ internal sealed class ActionRunner
 
         IReadOnlyList<DependencyContextRef> dependencies = _dependencyContext.BuildDependencyContext(task);
         IReadOnlyList<PriorAttemptRef> priorAttempts = _dependencyContext.BuildPriorAttempts(task.Id, attemptNumber);
+        // §3.5: the staging dir + from→to map are embedded verbatim in the prompt (agents read
+        // instructions, not env vars) — only when the task declares stagingOutputs and a staging dir
+        // was provisioned (the executor passes null otherwise).
         string composed = PromptComposer.ComposeAction(
-            promptFile.Body, snapshotPath, fragmentOutPath, previousFeedbackPath, dependencies, priorAttempts);
+            promptFile.Body, snapshotPath, fragmentOutPath, previousFeedbackPath, dependencies, priorAttempts,
+            stagingDir, stagingDir is not null ? task.StagingOutputs : null);
         AtomicFile.WriteAllText(Path.Combine(logDir, "composed-prompt.md"), composed);
 
         PromptRunnerSettings settings = PromptExecutionSupport.ApplyPromptOverrides(

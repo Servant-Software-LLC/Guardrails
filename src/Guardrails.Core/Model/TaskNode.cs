@@ -49,4 +49,29 @@ public sealed record TaskNode
     /// Null (absent in <c>task.json</c>) is the off-switch — no write-scope check runs.
     /// </summary>
     public IReadOnlyList<string>? WriteScope { get; init; }
+
+    /// <summary>
+    /// The declared staging outputs for autonomous <c>.claude/</c> delivery (SSOT §3.5, issue #130).
+    /// Each entry maps a <c>from</c> path/glob (relative to <c>GUARDRAILS_STAGING_DIR</c>, where the
+    /// action writes its deliverable) to a <c>to</c> destination under <c>.claude/</c> (where the
+    /// harness moves it after the action succeeds and before guardrails run). Null (absent in
+    /// <c>task.json</c>) means no staging — the unchanged default behavior. A present-but-malformed
+    /// list is a validation error (<see cref="Loading.DiagnosticCodes.StagingOutputsInvalid"/>).
+    /// </summary>
+    public IReadOnlyList<StagingOutput>? StagingOutputs { get; init; }
+}
+
+/// <summary>
+/// One <c>stagingOutputs[]</c> mapping (SSOT §3.5): the action writes its deliverable to
+/// <see cref="From"/> (relative to the per-task staging root <c>GUARDRAILS_STAGING_DIR</c>), and the
+/// harness moves it to <see cref="To"/> (a workspace-relative path under <c>.claude/</c>) after the
+/// action succeeds and before guardrails run.
+/// </summary>
+public sealed record StagingOutput
+{
+    /// <summary>The source path or glob relative to the per-task staging root.</summary>
+    public required string From { get; init; }
+
+    /// <summary>The workspace-relative destination under <c>.claude/</c>.</summary>
+    public required string To { get; init; }
 }

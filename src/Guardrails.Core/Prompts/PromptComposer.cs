@@ -1,4 +1,5 @@
 using System.Text;
+using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Prompts;
 
@@ -31,13 +32,16 @@ public static class PromptComposer
         string stateOutPath,
         string? feedbackPath,
         IReadOnlyList<DependencyContextRef>? dependencies = null,
-        IReadOnlyList<PriorAttemptRef>? priorAttempts = null)
+        IReadOnlyList<PriorAttemptRef>? priorAttempts = null,
+        string? stagingDir = null,
+        IReadOnlyList<StagingOutput>? stagingOutputs = null)
     {
         var text = new StringBuilder();
         AppendBody(text, body);
         AppendSharedState(text, stateInPath);
         AppendDependencyContext(text, dependencies);
         AppendOutputContract(text, stateOutPath);
+        AppendStagingOutputs(text, stagingDir, stagingOutputs);
         AppendPreviousAttempt(text, feedbackPath, priorAttempts);
         return text.ToString();
     }
@@ -93,6 +97,42 @@ public static class PromptComposer
         text.Append("If you cannot proceed without a human decision, write exactly ");
         text.Append("`{ \"needsHuman\": \"<your question>\" }` to that same path and stop — the harness will ");
         text.Append("escalate to a human without burning further retries.\n");
+    }
+
+    /// <summary>
+    /// The staging-outputs section (SSOT §3.5, issue #130): emitted ONLY when the task declares
+    /// <c>stagingOutputs</c>. The deliverable is destined for a <c>.claude/</c> path the runtime
+    /// blocks; the action must write it to the absolute <c>GUARDRAILS_STAGING_DIR</c> under the
+    /// relative <c>from</c> paths, and the harness moves it to the real <c>.claude/</c> <c>to</c> path
+    /// after the action succeeds and before guardrails run. Both the staging dir AND the
+    /// <c>from→to</c> map are embedded verbatim because agents read instructions, not env vars (§5.1).
+    /// </summary>
+    private static void AppendStagingOutputs(
+        StringBuilder text,
+        string? stagingDir,
+        IReadOnlyList<StagingOutput>? stagingOutputs)
+    {
+        if (string.IsNullOrEmpty(stagingDir) || stagingOutputs is not { Count: > 0 })
+        {
+            return;
+        }
+
+        text.Append("\n## Staging outputs\n\n");
+        text.Append("This task's deliverable is destined for a path under `.claude/`, which the runtime\n");
+        text.Append("blocks you from writing directly. Write it instead to this absolute staging directory:\n\n");
+        text.Append('`').Append(stagingDir).Append("`\n\n");
+        text.Append("Place files under these relative paths; after you finish, the harness moves them into\n");
+        text.Append("their real `.claude/` locations (it has the permissions you don't), then runs the\n");
+        text.Append("guardrails against the REAL `.claude/` paths:\n\n");
+
+        foreach (StagingOutput entry in stagingOutputs)
+        {
+            text.Append("- `").Append(entry.From).Append("`  →  `").Append(entry.To).Append("`\n");
+        }
+
+        text.Append('\n');
+        text.Append("Do NOT attempt to write under `.claude/` directly — it will be refused. Stage, and the\n");
+        text.Append("harness delivers.\n");
     }
 
     /// <summary>

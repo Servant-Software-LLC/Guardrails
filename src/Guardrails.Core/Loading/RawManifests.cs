@@ -76,7 +76,18 @@ internal sealed class RawTask
     // Write-scope glob list (plan 08 §2/§3.4, SSOT §3.4). Null = absent = off-switch.
     public List<string>? WriteScope { get; set; }
 
+    // Staging-output mappings for autonomous .claude/ delivery (SSOT §3.5, issue #130).
+    // Null = absent = no staging. A present-but-malformed list is GR2024.
+    public List<RawStagingOutput>? StagingOutputs { get; set; }
+
     public RawAction? Action { get; set; }
+}
+
+/// <summary>Raw shape of one <c>stagingOutputs[]</c> entry in <c>task.json</c> (SSOT §3.5).</summary>
+internal sealed class RawStagingOutput
+{
+    public string? From { get; set; }
+    public string? To { get; set; }
 }
 
 /// <summary>Raw shape of the optional <c>action</c> block in <c>task.json</c> (SSOT §3).</summary>
