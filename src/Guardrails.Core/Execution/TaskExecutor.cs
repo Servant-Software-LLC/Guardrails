@@ -663,9 +663,10 @@ public sealed class TaskExecutor : ITaskExecutor
 
     /// <summary>
     /// The §5.1 env-var contract for an ACTION process. <c>GUARDRAILS_FEEDBACK</c> is set
-    /// from attempt 2 onward. <c>GUARDRAILS_WORKSPACE</c> is set in worktree mode (when
-    /// <paramref name="worktreePath"/> is a real directory) so actions can write files into the
-    /// isolated segment that <see cref="GitWorktreeProvider.Integrate"/> will commit.
+    /// from attempt 2 onward. <c>GUARDRAILS_WORKSPACE</c> is the effective workspace in BOTH modes:
+    /// the isolated segment worktree when <paramref name="worktreePath"/> is a real directory (worktree
+    /// mode, the segment <see cref="GitWorktreeProvider.Integrate"/> commits), else the plan workspace
+    /// (serial mode) — so actions/guardrails reference the workspace uniformly across modes.
     /// </summary>
     private IReadOnlyDictionary<string, string> BuildEnvironment(
         TaskNode task,
@@ -688,10 +689,14 @@ public sealed class TaskExecutor : ITaskExecutor
             ["GUARDRAILS_LOG_DIR"] = logDir
         };
 
-        if (!string.IsNullOrEmpty(worktreePath) && Directory.Exists(worktreePath))
-        {
-            env["GUARDRAILS_WORKSPACE"] = worktreePath;
-        }
+        // GUARDRAILS_WORKSPACE = the effective workspace in BOTH modes: the segment worktree when real
+        // (worktree mode), else the plan workspace (serial mode). Set in serial too so a guardrail/action
+        // references the workspace uniformly — and so a stagingOutputs move (which lands under the
+        // effective workspace) is found by a guardrail checking $GUARDRAILS_WORKSPACE/<to> regardless of
+        // mode (#130: the serial gap that failed Linux/macOS CI while Windows's Join-Path masked it).
+        env["GUARDRAILS_WORKSPACE"] = !string.IsNullOrEmpty(worktreePath) && Directory.Exists(worktreePath)
+            ? worktreePath
+            : _plan.Workspace;
 
         // Staging dir (§3.5): action env only, only when the task declares stagingOutputs. The
         // guardrail env is derived from this action env, so BuildGuardrailEnvironment removes it
