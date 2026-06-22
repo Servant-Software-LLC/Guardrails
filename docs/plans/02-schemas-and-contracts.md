@@ -1110,16 +1110,22 @@ echo secrets, so they are never exposed off the local machine (the numeric bind 
 custom `/etc/hosts` mapping of `localhost` cannot widen the exposure). Responses carry
 `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. The file surface is confined to
 `state/logs/<task-id>/`: the requested task id must be one the plan declares, and the requested
-filename must be a bare name inside the latest `attempt-N/` directory (no traversal).
+filename must be a bare name inside the selected `attempt-N/` directory (no traversal).
+
+**Attempt selection.** Both `files` and `file` take an optional `attempt=N` query: the selected
+attempt is that `attempt-N/` directory when it exists, else the latest attempt (an unknown/absent N
+falls back to latest rather than 404, so a mid-run page stays usable when a URL names an attempt
+that has not started). The task page renders an **attempt selector** beside the file selector — the
+live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 
 **Routes** (both the live and post-mortem servers expose the same set):
 
 | Route | Serves |
 |---|---|
 | `GET /` | landing page — every task linking to its log page (the `logs` variant also shows each task's journal status) |
-| `GET /tasks/{id}` | a page that tails the latest attempt's log directory for task `{id}` |
-| `GET /tasks/{id}/files` | JSON `{ attempt, preferred, files[] }` — the latest attempt number, a preferred file to open first (`claude-stream.jsonl`, else `action-stdout.log`, else the first file), and the attempt's files |
-| `GET /tasks/{id}/file?name={f}` | the raw text of one log file (read with a shared handle so an in-flight writer is not blocked) |
+| `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt) |
+| `GET /tasks/{id}/files[?attempt=N]` | JSON `{ attempt, attempts[], preferred, files[] }` — the SELECTED attempt number (default = latest), every available attempt number ascending, a preferred file to open first (`transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log`, else the first file), and the selected attempt's files |
+| `GET /tasks/{id}/file?name={f}[&attempt=N]` | the raw text of one log file from the selected attempt (default = latest; read with a shared handle so an in-flight writer is not blocked) |
 
 ### 12.1 `guardrails run` — live log links
 

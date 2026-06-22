@@ -85,6 +85,91 @@ public sealed class LogServerTests
     }
 
     [Fact]
+    public async Task Files_ListsEveryAttempt_Ascending()
+    {
+        // Issue #103: the attempt selector needs the full list of attempts, not just the latest.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "first");
+        temp.WriteLog("01-alpha", attempt: 2, "action-stdout.log", "second");
+        temp.WriteLog("01-alpha", attempt: 3, "action-stdout.log", "third");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/files");
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement root = doc.RootElement;
+
+        Assert.Equal(3, root.GetProperty("attempt").GetInt32()); // selected defaults to latest
+        int[] attempts = root.GetProperty("attempts").EnumerateArray().Select(e => e.GetInt32()).ToArray();
+        Assert.Equal(new[] { 1, 2, 3 }, attempts);
+    }
+
+    [Fact]
+    public async Task Files_WithAttemptParam_SelectsThatAttempt_NotLatest()
+    {
+        // Issue #103: ?attempt=N serves the requested prior attempt's files while a later attempt
+        // exists — the live viewer inspecting attempt-1 while attempt-2 runs.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "first");
+        temp.WriteLog("01-alpha", attempt: 1, "first-only.log", "x");
+        temp.WriteLog("01-alpha", attempt: 2, "action-stdout.log", "second");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/files?attempt=1");
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement root = doc.RootElement;
+
+        Assert.Equal(1, root.GetProperty("attempt").GetInt32());
+        string[] files = root.GetProperty("files").EnumerateArray().Select(e => e.GetString()!).ToArray();
+        Assert.Contains("first-only.log", files); // an attempt-1-only file proves the right dir was read
+        // The full attempt list is unaffected by the selection.
+        int[] attempts = root.GetProperty("attempts").EnumerateArray().Select(e => e.GetInt32()).ToArray();
+        Assert.Equal(new[] { 1, 2 }, attempts);
+    }
+
+    [Fact]
+    public async Task Files_UnknownAttemptParam_FallsBackToLatest()
+    {
+        // A URL naming an attempt that does not exist yet (mid-run) falls back to latest, not 404.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "first");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/files?attempt=9");
+        using JsonDocument doc = JsonDocument.Parse(json);
+
+        Assert.Equal(1, doc.RootElement.GetProperty("attempt").GetInt32());
+    }
+
+    [Fact]
+    public async Task File_WithAttemptParam_ReturnsThatAttemptsContent()
+    {
+        // Issue #103: /file?...&attempt=N reads the requested attempt, not the latest.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "first attempt output");
+        temp.WriteLog("01-alpha", attempt: 2, "action-stdout.log", "second attempt output");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string body = await GetStringAsync(
+            $"{server.BaseUrl}tasks/01-alpha/file?name=action-stdout.log&attempt=1");
+
+        Assert.Equal("first attempt output", body); // explicitly the OLDER attempt
+    }
+
+    [Fact]
+    public async Task TaskPage_HasAttemptSelector()
+    {
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "x");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string html = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha");
+
+        // An attempt <select> beside the existing file <select> (mirror the file picker).
+        Assert.Contains("id=\"attempt\"", html);
+        Assert.Contains("id=\"file\"", html);
+    }
+
+    [Fact]
     public async Task File_ReturnsRawContent_OfLatestAttempt()
     {
         using var temp = new TempPlan();
