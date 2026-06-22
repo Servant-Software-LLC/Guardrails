@@ -162,10 +162,53 @@ A task is right-sized when ALL hold:
    task is cheap and its `tests-fail-on-current-code` guardrail is the strongest
    anti-tautology check the skill has.
 
+### Over-size split-check — a CHECK WITH TEETH, not advice (#111)
+
+The right-sizing rules above describe the target; this check ENFORCES it. **Before emitting any
+task, run it through the split-trigger. If ANY trigger fires, you MUST split the task and re-run the
+triggers on each piece — do NOT emit the over-sized task and "note it."** A milestone-sized chunk that
+maps to one task thrashes at run time: every failed guardrail re-runs the whole oversized action, and
+it is the single most likely `needs-human` in a run (the exact retry-cheapness anti-pattern).
+
+**Split-trigger — split when ANY holds:**
+- **(a) Bundles multiple distinct deliverables.** The description reads "do X **and** Y **and** Z"
+  with the conjuncts being separately-verifiable outcomes (add a gate **and** delete three classes
+  **and** re-baseline the suite). Each distinct deliverable is its own task. (One outcome that needs
+  "and" only to *describe* it — "create the file and register it in the index", checked by a single
+  guardrail — is NOT this trigger; that is rule 2's single-guardrail case.)
+- **(b) Wide blast radius.** The task creates/deletes/renames many files, or re-baselines many test
+  references (a rough line: **deleting ≥3 source files, or touching ≳10 files / test references** in
+  one action). A wide-blast task fails the retry-cheapness rule by construction: a one-line guardrail
+  miss re-does the entire multi-file change. Split so each task's diff — and therefore its retry — is
+  bounded.
+- **(c) Maps 1:1 to a design milestone.** A plan milestone / phase / numbered section is NOT a task —
+  it is a *bundle* of deliverables. If a candidate task is "implement Milestone M4," decompose it into
+  the deliverables inside M4; never size a milestone 1:1 to a task.
+- **(d) Retry re-runs expensive work.** Estimate what a single failed guardrail forces to redo. If a
+  retry re-runs an hour of refactoring (a multi-deletion, a 100+-ref re-baseline), the task is
+  mis-sized by definition. Split so each task's retry is cheap.
+
+**Carry the plan's own feasibility signals into sizing (#111).** When the plan's
+feasibility / self-critique / risk section flags a milestone as **heavy, over-packed, or
+high-churn** ("~147 test refs", "over-packed", "large blast radius", "risky to do in one pass"),
+treat that as a **fired trigger**: the breakdown MUST split that milestone rather than size it 1:1.
+This signal already exists in the plan — do not let it die between the plan's risk section and your
+task sizing.
+
+**Corrective action when a trigger fires:** decompose the task into the smallest pieces that each
+(i) carry one verifiable outcome, (ii) land in one session, and (iii) retry cheaply — scoping each
+piece's test re-baseline to that piece. *Worked split:* a task bundling "add the git-required
+validation gate + new error codes, delete `CapturedFileStore` + `FileHashCapture` +
+`RestoreAncestorCaptures` + two validators, and re-baseline ~147 test refs" fires (a), (b), and (d).
+Split it into e.g. (1) add the validation gate + error codes; (2) remove the two validators; (3)
+delete the three capture classes + the retry-loop change — each with its test re-baseline scoped to
+that piece, so each lands in a session and retries cheaply.
+
 Heuristic: a typical feature plan yields **5–15 tasks**. TDD splitting doubles code
 tasks (each code item becomes two tasks); this does not count against the threshold.
 Under 3 or over 25 tasks after applying TDD → re-examine, and tell the user why if
-it stands.
+it stands. **A count under the floor after splitting over-sized milestones is itself a signal**
+that a milestone was sized 1:1 — re-run the split-trigger before settling on a small task count.
 
 ## Step 3 — Determine the DAG (`dependsOn`)
 
@@ -524,6 +567,18 @@ Per `references/schemas.md`, exactly:
    applies to any exit criterion naming an observable a guardrail should but doesn't
    cover; the UI case is just the one #66 makes most expensive (a fully-green run with no
    frontend).
+0a. **Task-size self-review — re-run the Step 2 split-trigger on every emitted task (#111).**
+   Before validating, sweep the final task list back through the Step 2 over-size split-trigger.
+   For each task, confirm NONE of the triggers fires: (a) it does not bundle multiple distinct
+   deliverables ("X **and** Y **and** Z"); (b) its blast radius is bounded (not deleting ≥3 source
+   files or touching ≳10 files / test references in one action); (c) it is not a design milestone
+   sized 1:1; (d) a single failed-guardrail retry does not re-run an hour of work. Cross-check
+   against the plan's own feasibility/self-critique signals: any milestone the plan flagged as
+   heavy / over-packed / high-churn MUST have been split, not sized 1:1. A task that still trips a
+   trigger is **mis-sized** — loop back to Step 2 and split it (scoping each piece's test
+   re-baseline to that piece) before proceeding. If you cannot split it (the plan genuinely couples
+   the work), **flag it in the report** as an over-scoped task and warn that its retry is expensive
+   and it is the most likely `needs-human` — do not present it as well-sized.
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
@@ -621,6 +676,7 @@ to preserve edits against).
 ## Quality bar (verify before declaring done)
 
 - [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
+- [ ] Every emitted task passed the Step 2 over-size split-trigger (no task bundles multiple deliverables, has a wide blast radius, maps 1:1 to a design milestone, or has an expensive retry); any feasibility/self-critique "over-packed"/"~N test refs" signal was carried into sizing and split, not sized 1:1 (#111). Re-checked in the Step 7.0a task-size self-review; any unsplittable over-scoped task is flagged in the report.
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
 - [ ] Every guardrail file opens with its `catches:` line.
 - [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys).
