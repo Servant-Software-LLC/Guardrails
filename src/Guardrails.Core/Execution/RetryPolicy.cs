@@ -210,6 +210,72 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Compose the task-level <c>feedback.md</c> for a PERMISSION WALL early halt (issues #86 / #104):
+    /// the runtime refused a write/edit because the path is not granted, and retrying cannot clear it.
+    /// This is NOT a retry-input (the task is settling <c>needs-human</c>) — it is the human's
+    /// remediation note, so it names the exact blocked path(s) and the concrete fixes. A
+    /// <c>.claude/</c> wall (<paramref name="structuralPaths"/>) is called out as a known structural
+    /// restriction with its specific remediations; any other repeated path
+    /// (<paramref name="repeatedPaths"/>) is named as an un-retryable wall.
+    /// </summary>
+    public static string ForPermissionWall(
+        TaskNode task,
+        IReadOnlyList<string> structuralPaths,
+        IReadOnlyList<string> repeatedPaths)
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"# Task '{task.Id}' hit a permission wall");
+        text.AppendLine();
+        text.AppendLine($"Task: {task.Description}");
+        text.AppendLine();
+        text.AppendLine("The runtime REFUSED to write one or more paths because they are not on the granted");
+        text.AppendLine("permission allow-list. Retrying cannot clear a permission wall — switching tools or");
+        text.AppendLine("re-issuing the same write hits the same refusal — so the harness escalated to you");
+        text.AppendLine("immediately instead of burning the remaining attempts on it.");
+        text.AppendLine();
+
+        if (structuralPaths.Count > 0)
+        {
+            text.AppendLine("## Blocked `.claude/` path(s) — a STRUCTURAL restriction");
+            text.AppendLine();
+            foreach (string path in structuralPaths)
+            {
+                text.AppendLine($"- `{path}`");
+            }
+
+            text.AppendLine();
+            text.AppendLine("The Claude Code sub-agent runtime blocks automated writes under `.claude/` even when");
+            text.AppendLine("`permissionMode` is `acceptEdits`. No amount of retrying will let the agent write there.");
+            text.AppendLine("To make this task completable autonomously, do ONE of:");
+            text.AppendLine();
+            text.AppendLine("1. Grant the write explicitly — add a rule like `Write(.claude/**)` (and `Edit(.claude/**)`)");
+            text.AppendLine("   to the project's `.claude/settings.json` allow-list before re-running.");
+            text.AppendLine("2. Re-target the task to write its deliverable to a path OUTSIDE `.claude/` (e.g. a");
+            text.AppendLine("   staging directory under the plan folder), then move it into `.claude/` by hand or with");
+            text.AppendLine("   a follow-up script step the harness runs with full permissions.");
+            text.AppendLine();
+        }
+
+        if (repeatedPaths.Count > 0)
+        {
+            text.AppendLine("## Repeatedly-refused path(s)");
+            text.AppendLine();
+            foreach (string path in repeatedPaths)
+            {
+                text.AppendLine($"- `{path}`");
+            }
+
+            text.AppendLine();
+            text.AppendLine("The same path was refused on multiple attempts. Confirm the runner's `permissionMode`");
+            text.AppendLine("and `allowedTools` (and any `.claude/settings.json` allow-list) cover this path, then");
+            text.AppendLine("re-run — the harness will resume from here.");
+            text.AppendLine();
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>
     /// True when <paramref name="output"/> carries more than the one-line <paramref name="reason"/>
     /// already shown — i.e. it is non-empty and not just the reason line repeated.
     /// </summary>

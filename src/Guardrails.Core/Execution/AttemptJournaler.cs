@@ -324,6 +324,53 @@ internal sealed class AttemptJournaler
         }, FeedbackPath: null);
     }
 
+    /// <summary>
+    /// The permission-wall early halt (issues #86 / #104): the runtime refused a write/edit on a path
+    /// retrying cannot clear (a <c>.claude/</c> structural path, or the same path across repeated
+    /// attempts). Record ONE attempt with the distinct <see cref="AttemptOutcome.PermissionDenied"/>
+    /// outcome, write a task-level <c>feedback.md</c> naming the wall and its remediation, and settle
+    /// the task <c>needs-human</c> immediately — no further retries. Returns a non-green result so the
+    /// scheduler blocks dependents.
+    /// </summary>
+    public AttemptResult PermissionWall(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        ActionRun action,
+        PermissionWallDecision decision)
+    {
+        Directory.CreateDirectory(logDir);
+        string feedback = RetryPolicy.ForPermissionWall(task, decision.StructuralPaths, decision.RepeatedPaths);
+        AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+        string paths = string.Join(", ", decision.AllPaths);
+        string summary = decision.HasStructural
+            ? $"needs human: write to .claude/ blocked by the runtime (structural) — {paths}"
+            : $"needs human: write repeatedly refused (permission wall) — {paths}";
+
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = action.ExitCode,
+            Outcome = AttemptOutcome.PermissionDenied,
+            CostUsd = action.CostUsd,
+            LogDir = relativeLogDir
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            ActionExitCode = action.ExitCode,
+            Summary = summary
+        }, FeedbackPath: null, Outcome: AttemptOutcome.PermissionDenied);
+    }
+
     public AttemptResult Cancelled(
         TaskNode task,
         int attemptNumber,

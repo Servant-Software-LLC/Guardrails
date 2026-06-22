@@ -178,6 +178,14 @@ internal sealed record ActionRun
     /// <summary>An advisory rate-limit reset hint to surface in the pause notice (issue #115), or null.</summary>
     public string? ResetHint { get; init; }
 
+    /// <summary>
+    /// The distinct write/edit paths the runtime refused this attempt because they are not granted
+    /// (issues #86 / #104), in first-seen order. Empty for a script action or a prompt that hit no
+    /// permission wall. The <see cref="TaskExecutor"/> feeds these to <see cref="PermissionWallTracker"/>
+    /// to decide an early <c>needs-human</c> halt instead of burning the remaining retries.
+    /// </summary>
+    public IReadOnlyList<string> BlockedWritePaths { get; init; } = [];
+
     // The action's captured streams. A SCRIPT action carries its real stdout/stderr so the harness
     // can write them to action-stdout.log / action-stderr.log (GUARDRAILS_ACTION_STDOUT/_STDERR,
     // issue #62) and surface stderr in action-failure feedback. A PROMPT action leaves these empty —
@@ -227,6 +235,7 @@ internal sealed record ActionRun
             FailureFeedback = feedback,
             FailureKind = succeeded ? PromptFailureKind.None : result.FailureKind,
             ResetHint = result.ResetHint,
+            BlockedWritePaths = result.BlockedWritePaths,
             FailureSummary = result.Summary
         };
     }

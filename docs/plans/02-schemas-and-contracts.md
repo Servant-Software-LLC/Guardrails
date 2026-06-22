@@ -591,7 +591,7 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "attempt": 1,
           "startedAt": "…", "endedAt": "…",
           "actionExitCode": 0,
-          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human
+          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
           "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1"
@@ -614,6 +614,13 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   `transientPauseBudgetSeconds` (issue #115). The harness paused+re-ran WITHOUT consuming the retry
   budget; only on budget exhaustion did it settle `needs-human` with this outcome ("re-run later"). A
   transient pause that DOES clear is never journaled (observe-only via the `PromptPaused` event).
+- `permission-denied` — the runner refused a write/edit because the path is not on the granted
+  permission allow-list, and the wall is un-retryable (issues #86 / #104, §9.3). The harness settled
+  `needs-human` EARLY — on the FIRST hit for a structural `.claude/` path (the Claude Code sub-agent
+  runtime blocks automated `.claude/` writes even under `acceptEdits`), or on the REPEAT for any other
+  path refused across two or more attempts — instead of burning the remaining retry budget on the
+  identical wall. The attempt carries this DISTINCT outcome so a human (and §9.2 triage) sees a
+  permission/config issue, not a generic `action-failed`.
 
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
@@ -833,6 +840,52 @@ failed/throwing triage is silently skipped.
 By default, triage only **drafts** the GH issue (title + body) into `feedback.md` and files
 **nothing** to a remote. Only when `triageAutoFile` is explicitly opted in — gated behind a
 configured GH repo + token — does the harness auto-file the issue. Default is **OFF**.
+
+### 9.3 Permission-wall early halt (issues #86 / #104)
+
+When the runner REFUSES a write/edit because the target path is not on the granted permission
+allow-list, retrying cannot clear it — switching tools or re-issuing the same write hits the same
+refusal. The harness detects this **permission wall** and settles the task `needs-human` EARLY with
+the distinct `permission-denied` attempt outcome (§7), instead of spending the rest of the retry
+budget on the identical, un-recoverable wall.
+
+**Runner-agnostic signal.** Detecting the concrete refusal is **quarantined in the runner CLASS** (the
+SOLE home of the vendor permission-denial wording, like the §9 failure classifier): for `claude`, the
+wall surfaces in the `tool_result` events of the `stream-json` stream, NOT the terminal `result`
+message — a refusal under `acceptEdits` does not make the agent report `is_error`, so the agent keeps
+trying workarounds and burns turns/retries (exactly the #86/#104 waste). The runner mines the distinct
+**refused write paths** (extracting the path the denial message embeds, falling back to the preceding
+write-family `tool_use`'s `file_path` when the message carries none) and returns them as a
+runner-agnostic list. The harness routes on the LIST of paths only — never on a vendor string.
+
+**Two halt rules.**
+
+- **Structural `.claude/` path (issue #104).** The Claude Code sub-agent runtime blocks automated
+  writes under `.claude/` **even when `permissionMode` is `acceptEdits`**, so NO number of retries can
+  clear it. One refusal on a `.claude/` path settles `needs-human` on the **FIRST** attempt that hits
+  it — zero retries wasted.
+- **Repeated same path (issue #86).** Any other path refused on **two or more** attempts is a
+  structural blocker the agent cannot fix by retrying. The harness halts on the **second** attempt that
+  re-hits the SAME path, rather than spending the rest of the budget on the identical wall. A path
+  refused **once** does NOT halt (the retry is given its chance — a one-off block the retry clears is
+  normal retry behaviour).
+
+**`feedback.md` — task-level remediation.** The halt writes a `feedback.md` naming the exact blocked
+path(s) and the concrete fix: for a `.claude/` wall, grant `Write(.claude/**)` (and `Edit(.claude/**)`)
+in the project's `.claude/settings.json` allow-list, **or** re-target the task to write its deliverable
+to a staging path OUTSIDE `.claude/` and move it into place with a follow-up script step (which the
+harness runs with full permissions); for any other repeated path, confirm the runner's `permissionMode`
+/ `allowedTools` and the `.claude/settings.json` allow-list cover the path, then re-run (the harness
+resumes from here).
+
+**Residual (honest scope).** This is a **detect-and-halt-honestly** mitigation: it ends the #86/#104
+retry-budget waste and lands the human on an actionable diagnosis on the first (structural) or second
+(repeated) attempt. It does **not** itself grant `.claude/` write access — the root cause is a
+Claude-Code-runtime restriction the harness cannot override from outside the sub-agent. A full
+autonomous fix (a `task.json` `stagingOutputs` contract that declares an out-of-`.claude/` write the
+harness moves into place after guardrails pass — issue #104 Option A) is a larger schema change owned by
+the architect and is **NOT** implemented here; the breakdown-time warning (Option C) is a
+`plan-breakdown` skill change, also out of this harness slice.
 
 ---
 

@@ -50,5 +50,17 @@ public enum AttemptOutcome
     /// key to its fragment (SSOT §9). The attempt is recorded with this distinct outcome and
     /// the task goes straight to <c>needs-human</c> — no retry burn, no guardrails. (M5.)
     /// </summary>
-    NeedsHuman
+    NeedsHuman,
+
+    /// <summary>
+    /// The runtime REFUSED a write/edit because the path is not on the granted permission allow-list,
+    /// and the wall is unrecoverable by retrying (issues #86 / #104): a <c>.claude/</c> path (the
+    /// Claude Code sub-agent runtime blocks automated <c>.claude/</c> writes even under
+    /// <c>acceptEdits</c> — structural, halted on the FIRST hit) or the SAME path refused across
+    /// repeated attempts. The harness settles the task <c>needs-human</c> EARLY with an actionable
+    /// reason instead of burning the rest of the retry budget on the identical wall. Distinct from a
+    /// generic <see cref="ActionFailed"/> so a human sees a permission/config issue, not "the agent
+    /// failed".
+    /// </summary>
+    PermissionDenied
 }

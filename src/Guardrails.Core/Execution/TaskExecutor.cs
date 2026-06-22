@@ -79,6 +79,12 @@ public sealed class TaskExecutor : ITaskExecutor
         string? feedbackPath = null;
         TaskResult last = null!;
 
+        // Tracks permission walls across attempts (issues #86 / #104): a write the runtime refuses
+        // because the path is not granted. A .claude/ wall is structural (halts on the FIRST hit); any
+        // other path refused across repeated attempts halts on the repeat — both settle needs-human
+        // EARLY rather than burning the rest of the budget on the identical, un-retryable wall.
+        var permissionWalls = new PermissionWallTracker();
+
         // One transient-pause budget per task (issue #115): a rate limit pauses+re-runs WITHOUT
         // consuming the retry budget, bounded by the cumulative wall-clock pause budget.
         var backoff = new TransientBackoff(
@@ -98,7 +104,7 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 int attemptNumber = _journal.NextAttemptNumber(task.Id);
                 attempt = await RunAttemptAsync(
-                    task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, cancellationToken)
+                    task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, permissionWalls, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (attempt.Result.Outcome != TaskOutcome.TransientPause)
@@ -162,8 +168,9 @@ public sealed class TaskExecutor : ITaskExecutor
                 };
             }
 
-            // Other terminal outcomes do not retry: cancellation, plus the prompt-action needsHuman
-            // short-circuit (SSOT §9) which escalates immediately with no retry burn.
+            // Other terminal outcomes do not retry: cancellation, plus the needs-human escalations that
+            // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9) and the
+            // permission-wall early halt (issues #86 / #104), both of which surface as TaskOutcome.NeedsHuman.
             if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 return attempt.Result;
@@ -239,6 +246,7 @@ public sealed class TaskExecutor : ITaskExecutor
         string? previousFeedbackPath,
         bool isFinal,
         int timeoutRetries,
+        PermissionWallTracker permissionWalls,
         CancellationToken cancellationToken)
     {
         var startedAt = DateTimeOffset.UtcNow;
@@ -274,6 +282,20 @@ public sealed class TaskExecutor : ITaskExecutor
         if (action.NeedsHumanQuestion is { } question)
         {
             return _journaler.NeedsHuman(task, attemptNumber, startedAt, relativeLogDir, logDir, action, question);
+        }
+
+        // --- permission wall early halt (issues #86 / #104) ------------------------------
+        // Feed this attempt's refused write paths to the cross-attempt tracker, then check whether a
+        // wall warrants settling needs-human NOW instead of burning the rest of the budget. A .claude/
+        // path is structural (halts on the FIRST hit — the runtime blocks .claude/ writes even under
+        // acceptEdits, so no retry clears it, #104); any other path refused across repeated attempts
+        // halts on the repeat (#86). Checked here, before success/failure routing, because even a
+        // prompt that "completed" while silently unable to write its .claude/ deliverable must escalate.
+        permissionWalls.Observe(action.BlockedWritePaths);
+        PermissionWallDecision wall = permissionWalls.ShouldHalt();
+        if (wall.Halt)
+        {
+            return _journaler.PermissionWall(task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall);
         }
 
         // --- transient pause (issue #115): a retryable infra condition (429/503/529, overloaded,

@@ -29,6 +29,7 @@ public static class JournalJson
         AttemptOutcome.Cancelled => "cancelled",
         AttemptOutcome.InvalidFragment => "invalid-fragment",
         AttemptOutcome.NeedsHuman => "needs-human",
+        AttemptOutcome.PermissionDenied => "permission-denied",
         _ => throw new JsonException($"Unhandled attempt outcome '{outcome}'.")
     };
 
@@ -96,6 +97,7 @@ public static class JournalJson
                 "cancelled" => AttemptOutcome.Cancelled,
                 "invalid-fragment" => AttemptOutcome.InvalidFragment,
                 "needs-human" => AttemptOutcome.NeedsHuman,
+                "permission-denied" => AttemptOutcome.PermissionDenied,
                 _ => throw new JsonException($"Unknown attempt outcome '{value}'.")
             };
         }
