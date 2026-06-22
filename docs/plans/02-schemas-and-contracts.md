@@ -25,9 +25,11 @@ plan-name/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
 │   ├── run.json                 # run journal — harness-owned, gitignored (§7)
+│   ├── guardrails-review.json   # OPTIONAL local review marker — gitignored (§13)
 │   └── merge-conflicts.log      # harness-owned, gitignored (§6.3)
 ├── logs/
-│   └── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
+│   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
+│   └── <runId>/index.html       # OPTIONAL durable static log site — non-authored (§12.3)
 └── tasks/
     └── <NN-verb-object>/        # task id = folder name, kebab-case, NN = topological hint
         ├── task.json            # task manifest (§3)
@@ -574,7 +576,9 @@ analysis — the default remains that the harness does not mutate the user's che
 - `state/state.json` (runtime, gitignored): the merged state. Created at run start
   from `seed.json` (or `{}`) when missing. `guardrails run --fresh` deletes runtime
   state and re-seeds. The `--fresh` deletion list is: `run.json`, `state.json`,
-  `merge-conflicts.log`, and the `logs/<runId>/` tree for the abandoned run.
+  `merge-conflicts.log`, `state/guardrails-review.json` (the local review marker, §13),
+  `state/captured/`, and the plan-root `logs/` tree (all runs' attempt artifacts and any
+  exported static log site, §8/§12.3).
 - The **harness is the single writer** of `state.json`. Child processes never touch it.
 
 ### 6.2 Fragments (snapshot in, fragment out)
@@ -680,6 +684,11 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 - `output-cap` — a prompt action's response exceeded the runner's output-token cap (issue #114). A
   budget-exhaustion failure distinct from `action-failed` so a human (and §9 triage) sees the agent
   ran out of OUTPUT budget; the retry carries "write incrementally / split" feedback.
+- `max-turns` — a prompt action exhausted its TURN budget mid-progress (issue #129 / #94; Claude
+  `error_max_turns`). A budget-exhaustion failure distinct from `action-failed` so a human (and §9
+  triage) sees the agent ran out of TURNS — not a logic failure. The retry carries "continue from the
+  preserved partial work; work directly" feedback AND a **raised turn budget** (1× → 1.5× → 2.25× …,
+  capped 4×, rounded up) — a same-budget retry just re-exhausts at the same cap.
 - `rate-limited` — a transient infrastructure limit did not clear within
   `transientPauseBudgetSeconds` (issue #115). The harness paused+re-ran WITHOUT consuming the retry
   budget; only on budget exhaustion did it settle `needs-human` with this outcome ("re-run later"). A
@@ -820,12 +829,13 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
   as needs-human immediately (no retry burn).
 - **Failure classification (runner-agnostic).** A non-success prompt result is classified into a
-  `PromptFailureKind` — `Transient` | `OutputCap` | `Timeout` | `Error` — by the runner CLASS, which
-  is the SOLE home of the fragile vendor error-string matching (a 429/503/529 status, an "overloaded"
-  / rate-/session-/usage-limit phrase, the "…output token maximum" message). The harness routes on the
-  ENUM only, never on a CLI-specific string. Matching prefers a structured signal (HTTP status) over
-  free text, and a miss is conservative (→ `Error`, which consumes the budget — never a false
-  `Transient` that could loop).
+  `PromptFailureKind` — `Transient` | `OutputCap` | `MaxTurns` | `Timeout` | `Error` — by the runner
+  CLASS, which is the SOLE home of the fragile vendor error-string matching (a 429/503/529 status, an
+  "overloaded" / rate-/session-/usage-limit phrase, the "…output token maximum" message, the
+  `error_max_turns` subtype / "Reached maximum number of turns" message). The harness routes on the
+  ENUM only, never on a CLI-specific string. Matching prefers a structured signal (HTTP status, the
+  `error_max_turns` terminal subtype) over free text, and a miss is conservative (→ `Error`, which
+  consumes the budget — never a false `Transient` that could loop).
   - **`Transient`** (issue #115): a retryable infra condition. Does **NOT** consume the retry budget —
     the harness backs off (bounded exponential, honoring a parsed reset hint for display) and re-runs
     the same attempt, bounded by `transientPauseBudgetSeconds` (§2). A `PromptPaused` observer event is
@@ -835,6 +845,12 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
   - **`OutputCap`** (issue #114): consumes the budget like `Error` but composes actionable feedback
     ("write incrementally / split; or `needsHuman` if inherently too large") and records the distinct
     `output-cap` outcome (§7).
+  - **`MaxTurns`** (issue #129 / #94): the agent exhausted its TURN budget mid-progress (the
+    `error_max_turns` subtype). Consumes the budget like `Error` but composes "continue from the
+    preserved partial work; work directly; or `needsHuman` if under-budgeted" feedback, records the
+    distinct `max-turns` outcome (§7), AND **auto-escalates the next attempt's `maxTurns`** (1× → 1.5×
+    → 2.25× …, capped 4×, rounded up — the same shape as the timeout clock) so the retry has turn
+    headroom instead of re-hitting the same cap.
   - **`Timeout`** (issue #119): records `timeout` (§7), composes "continue from preserved partial work"
     feedback, and the retry's clock is extended.
 - **Observer signal.** `IRunObserver.PromptPaused(task, reason, backoff, pauseCount)` surfaces a
@@ -1270,8 +1286,9 @@ automatically chosen free ephemeral port by default), **never** to a routable in
 echo secrets, so they are never exposed off the local machine (the numeric bind is deliberate, so a
 custom `/etc/hosts` mapping of `localhost` cannot widen the exposure). Responses carry
 `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. The file surface is confined to
-`state/logs/<task-id>/`: the requested task id must be one the plan declares, and the requested
-filename must be a bare name inside the selected `attempt-N/` directory (no traversal).
+`logs/<runId>/<task-id>/` (SSOT §8): the run is selected by the journal's `runId` (§7), the requested
+task id must be one the plan declares, and the requested filename must be a bare name inside the
+selected `attempt-N/` directory (no traversal).
 
 **Attempt selection.** Both `files` and `file` take an optional `attempt=N` query: the selected
 attempt is that `attempt-N/` directory when it exists, else the latest attempt (an unknown/absent N
@@ -1323,3 +1340,66 @@ coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked` 
 diagnostics and exits `1`. When the plan has **no run journal yet** (never run), `logs` prints a
 one-line notice and exits `0` — there is nothing to post-mortem, which is not an error. A bind
 failure exits `1`.
+
+### 12.3 Durable static export (`guardrails logs --export`)
+
+`guardrails logs [folder] --export` renders a **self-contained static HTML site** of the
+journal-selected run's logs and exits `0` — it does **not** start the server or block. The site is
+written **next to the artifacts it renders**, under the `logs/` audit tree (never `state/`, which
+holds mutable run state):
+- `logs/<runId>/<task-id>/index.html` — one page per task that has attempts on disk, inlining that
+  task's per-attempt artifacts (§8): each attempt shows its preferred file (`transcript.md`, else
+  `claude-stream.jsonl`, else `action-stdout.log`) inlined, plus relative `file://` links to the
+  attempt's other files (a large raw stream is linked, not inlined — #103 decision 5).
+- `logs/<runId>/index.html` — the site index, a **projection of the journal** (§7) regenerated on
+  every export (never appended): every task with its status word; a task with attempts on disk is a
+  **link** to its page, a not-yet-run task is **plain text** (the #103 linkability rule).
+
+Pages are produced by the **same renderer** the live/post-mortem server uses (`LogSiteRenderer`,
+which owns the shared page shell — CSS, layout, status colours — that the live `LogServer` templates
+also embed) — there is **no forked static look-alike** (#103 Request 2). The export is re-runnable and
+idempotent (regenerates the whole site each call, like `guardrails graph`). It is **non-authored
+audit** (excluded from `guardrails.baseline`, like `diagram.html`, because it lives under `logs/`) and
+is cleared with the rest of `logs/` by `--fresh` (§6.1). `--port`/`--task` are serve-mode options and
+are ignored with `--export`. A missing/in-flight attempt artifact renders as "no output captured" — a
+static snapshot of an in-flight run is valid and never errors. *(On-settle auto-write of each task's
+page during a live run is a deferred follow-up; the re-runnable command is the v1 surface.)*
+
+---
+
+## 13. Review marker (`state/guardrails-review.json`)
+
+`/guardrails-review` records that a human ran the adversarial review pass over the current plan, by
+writing a **local, gitignored** marker under `state/`:
+
+```jsonc
+{
+  "version": 1,
+  "reviewedAt": "2026-06-22T14:03:11Z",   // ISO-8601 UTC, review time
+  "planHash": "sha256:…"                   // PlanHash (§7) computed at review time
+}
+```
+
+The `planHash` is the **same `PlanHash`** the journal records (§7) — `guardrails.json` + every
+`task.json`, newline-normalized, task-id-ordered. **Staleness** is a deterministic compare: marker
+absent ⇒ *missing*; `planHash` ≠ the plan's current `PlanHash` ⇒ *stale* (the plan's task structure
+changed since review); equal ⇒ *reviewed*. A present-but-unparseable marker is treated as *missing*
+(never throws). `PlanHash` covers task structure, not guardrail-script bodies — a guardrail-script
+edit does not by itself re-flag a review; this is intentional under the "plan changed" framing.
+
+The marker is **local runtime truth, never committed**: it asserts that *this* checkout was reviewed
+*here*, so a committed marker would falsely vouch for the plan on another machine. It lives under
+`state/` (gitignored) and is wiped by `--fresh` (§6.1) — a fresh slate honestly discards the prior
+local review act.
+
+**Surfacing (warn, never block — issue #79):**
+- `guardrails validate` appends **GR2025 (warning)** when the marker is missing or stale, naming the
+  reviewed-vs-current short hash. A warning never fails `validate`'s exit code. The nudge is a
+  **command-layer** concern (`PlanValidator.ReviewMarkerDiagnostic`), deliberately NOT part of the
+  pure semantic `PlanValidator.Validate` set, so a plan that lacks a marker is not flagged by the
+  harness's own internal validation.
+- `guardrails run` (and `--dry-run`) print the same nudge before launching, suppressible with
+  `--skip-review-check`.
+
+The marker is **written by the `/guardrails-review` skill**; the harness only reads it
+(`ReviewMarker.Read`/`Evaluate`), computes staleness, and surfaces the warning.

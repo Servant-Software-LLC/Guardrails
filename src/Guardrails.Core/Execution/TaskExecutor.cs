@@ -91,6 +91,10 @@ public sealed class TaskExecutor : ITaskExecutor
         var backoff = new TransientBackoff(
             TimeSpan.FromSeconds(_plan.Config.TransientPauseBudgetSeconds), _transientDelay);
         int timeoutRetries = 0;
+        // One auto-escalation counter for turn-budget exhaustion (issue #129 / #94), mirroring the
+        // timeout clock: after a max-turns termination the NEXT attempt's turn budget is raised so the
+        // retry does not hit the identical wall. A same-budget retry just re-exhausts at the same cap.
+        int maxTurnsRetries = 0;
 
         for (int attemptIndex = 1; attemptIndex <= budget; attemptIndex++)
         {
@@ -105,7 +109,8 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 int attemptNumber = _journal.NextAttemptNumber(task.Id);
                 attempt = await RunAttemptAsync(
-                    task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, permissionWalls, cancellationToken)
+                    task, worktree, attemptNumber, feedbackPath, isFinal, timeoutRetries, maxTurnsRetries,
+                    permissionWalls, cancellationToken)
                     .ConfigureAwait(false);
 
                 if (attempt.Result.Outcome != TaskOutcome.TransientPause)
@@ -152,6 +157,13 @@ public sealed class TaskExecutor : ITaskExecutor
             if (attempt.Outcome is AttemptOutcome.Timeout)
             {
                 timeoutRetries++;
+            }
+
+            // A max-turns outcome means the task needed more TURNS; count it so the NEXT attempt's
+            // turn budget is raised (issue #129 / #94) — a same-budget retry just re-exhausts.
+            if (attempt.Outcome is AttemptOutcome.MaxTurns)
+            {
+                maxTurnsRetries++;
             }
 
             // On success, stamp the summary with how long the task took (including any retries)
@@ -382,6 +394,7 @@ public sealed class TaskExecutor : ITaskExecutor
         string? previousFeedbackPath,
         bool isFinal,
         int timeoutRetries,
+        int maxTurnsRetries,
         PermissionWallTracker permissionWalls,
         CancellationToken cancellationToken)
     {
@@ -419,9 +432,13 @@ public sealed class TaskExecutor : ITaskExecutor
         // same-clock retry just re-times-out. The factor grows 1× → 1.5× → 2.25× …, capped, so a
         // genuinely heavy task is given the wall-clock it demonstrably needs without unbounded growth.
         double timeoutMultiplier = TimeoutMultiplierFor(timeoutRetries);
+        // Turn-budget extension (issue #129 / #94): after a max-turns termination, each retry gets a
+        // larger turn budget — a same-budget retry just re-exhausts at the same cap. Same growth shape
+        // and cap as the timeout clock; applied only to prompt actions (scripts have no turn budget).
+        double maxTurnsMultiplier = MaxTurnsMultiplierFor(maxTurnsRetries);
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken).ConfigureAwait(false);
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
@@ -482,6 +499,7 @@ public sealed class TaskExecutor : ITaskExecutor
             string feedback = action.FailureKind switch
             {
                 PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber),
+                PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber),
                 PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult())
             };
@@ -490,12 +508,14 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 PromptFailureKind.Timeout => AttemptOutcome.Timeout,
                 PromptFailureKind.OutputCap => AttemptOutcome.OutputCap,
+                PromptFailureKind.MaxTurns => AttemptOutcome.MaxTurns,
                 _ => action.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.ActionFailed
             };
 
             string summary = action.FailureKind switch
             {
                 PromptFailureKind.OutputCap => "response truncated at the output-token cap — reduce/split the task; guardrails skipped",
+                PromptFailureKind.MaxTurns => $"{action.FailureSummary} — ran out of turns mid-progress; turn budget auto-raised for retry; guardrails skipped",
                 PromptFailureKind.Timeout => $"{action.FailureSummary} — likely under-sized/under-budgeted; guardrails skipped",
                 _ => $"{action.FailureSummary}; guardrails skipped"
             };
@@ -818,4 +838,14 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     internal static double TimeoutMultiplierFor(int priorTimeouts) =>
         Math.Min(Math.Pow(1.5, Math.Max(priorTimeouts, 0)), 4.0);
+
+    /// <summary>
+    /// The turn-budget-extension factor for the current attempt given how many prior attempts hit the
+    /// max-turns cap (issue #129 / #94): 1× on the first attempt, growing 1.5× per prior max-turns
+    /// exhaustion, capped at 4× — the same shape and cap as <see cref="TimeoutMultiplierFor"/>. A
+    /// genuinely turn-expensive task (an unfamiliar-SDK discovery task) is given the turn headroom it
+    /// demonstrably needs without unbounded growth. A non-max-turns failure does not raise the budget.
+    /// </summary>
+    internal static double MaxTurnsMultiplierFor(int priorMaxTurns) =>
+        Math.Min(Math.Pow(1.5, Math.Max(priorMaxTurns, 0)), 4.0);
 }

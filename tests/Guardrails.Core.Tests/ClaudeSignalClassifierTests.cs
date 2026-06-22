@@ -46,6 +46,28 @@ public sealed class ClaudeSignalClassifierTests
     }
 
     [Theory]
+    // The free-text message Claude emits as the result text on a turn-budget exhaustion.
+    [InlineData("Reached maximum number of turns (50)")]
+    [InlineData("Reached maximum number of turns (120)")]
+    // The structured terminal subtype, when it flows through the classified text.
+    [InlineData("error_max_turns")]
+    [InlineData("subtype: error_max_turns")]
+    public void Classify_MaxTurnsMessage_IsMaxTurns(string text) =>
+        Assert.Equal(PromptFailureKind.MaxTurns, ClaudeSignalClassifier.Classify(text));
+
+    [Fact]
+    public void Classify_MaxTurns_IsDistinctFromOutputCap()
+    {
+        // "maximum number of turns" (too many tool turns) and "output token maximum" (a single
+        // response too long) are categorically different budgets — they must classify distinctly so
+        // the harness raises the TURN budget for one and steers "write incrementally" for the other.
+        Assert.Equal(PromptFailureKind.MaxTurns,
+            ClaudeSignalClassifier.Classify("Reached maximum number of turns (50)"));
+        Assert.Equal(PromptFailureKind.OutputCap,
+            ClaudeSignalClassifier.Classify("response exceeded the 32000 output token maximum"));
+    }
+
+    [Theory]
     [InlineData("Tool 'Bash' is not permitted")]
     [InlineData("Syntax error in the generated code")]
     [InlineData("the file already exists")]

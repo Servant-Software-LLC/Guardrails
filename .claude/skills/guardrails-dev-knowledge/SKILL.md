@@ -96,8 +96,10 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
 - **Diagnostic codes**: GR10xx loading, GR20xx validation (`DiagnosticCodes.cs`);
   tests assert codes; never renumber. GR2009 = prompt-runner `command` not on PATH
   (WARNING, not error). GR2022 = a guardrail/script-action reading a non-ancestor task's
-  state key (#121); GR2023 = a prompt-runner `maxOutputTokens` ≤ 0 (#114). Next free:
-  GR1010 / GR2024.
+  state key (#121); GR2023 = a prompt-runner `maxOutputTokens` ≤ 0 (#114). GR2025
+  (WARNING) = plan missing/stale a `/guardrails-review` marker (#79, SSOT §13) — surfaced
+  at the CLI command layer (`PlanValidator.ReviewMarkerDiagnostic`), NOT inside
+  `PlanValidator.Validate`. Next free: GR1010 / GR2024 / GR2026.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;

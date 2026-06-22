@@ -212,6 +212,16 @@ public sealed class ClaudePromptRunner : IPromptRunner
             return PromptFailureKind.None;
         }
 
+        // Prefer the STRUCTURED max-turns signal: Claude stamps the terminal result subtype
+        // "error_max_turns" on a turn-budget exhaustion (issue #129). The result TEXT also carries
+        // "Reached maximum number of turns (N)", which the text classifier matches too, but the
+        // subtype is the stable structured signal and is checked first so a result-text wording
+        // change cannot regress it.
+        if (string.Equals(result.Subtype, "error_max_turns", StringComparison.Ordinal))
+        {
+            return PromptFailureKind.MaxTurns;
+        }
+
         PromptFailureKind classified = ClaudeSignalClassifier.Classify(ClassificationText(process, result));
 
         // A recognized transient/cap signal wins. Otherwise this is a genuine error — but if there was
@@ -244,6 +254,15 @@ public sealed class ClaudePromptRunner : IPromptRunner
         if (process.TimedOut)
         {
             return "claude timed out";
+        }
+
+        // A max-turns exhaustion (issue #129) gets a distinct, human-readable summary so the journal /
+        // feedback shows a TURN-budget signal rather than a generic "is_error". The structured subtype
+        // is the authority; the turn count (if any) is appended.
+        if (string.Equals(result.Subtype, "error_max_turns", StringComparison.Ordinal))
+        {
+            string n = result.NumTurns is { } turnCount ? $" ({turnCount} turn(s))" : string.Empty;
+            return $"claude reached the turn limit{n}";
         }
 
         if (!process.Succeeded)

@@ -30,6 +30,7 @@ public sealed class PromptRunnerReliabilityTests
         private int _index = -1;
         public int Calls { get; private set; }
         public List<TimeSpan> Timeouts { get; } = new();
+        public List<int> MaxTurnsSeen { get; } = new();
 
         public SequencingRunner(params PromptResult[] sequence)
         {
@@ -43,6 +44,9 @@ public sealed class PromptRunnerReliabilityTests
         {
             Calls++;
             Timeouts.Add(invocation.Timeout);
+            // Capture the effective per-attempt turn budget so a test can assert the auto-escalation
+            // raised it on retry (issue #129 / #94).
+            MaxTurnsSeen.Add(invocation.Settings.MaxTurns);
             _index = Math.Min(_index + 1, _sequence.Count - 1);
             return Task.FromResult(_sequence[_index]);
         }
@@ -84,6 +88,18 @@ public sealed class PromptRunnerReliabilityTests
         IsError = false,
         FailureKind = PromptFailureKind.Timeout,
         Summary = "claude timed out"
+    };
+
+    private static PromptResult MaxTurns() => new()
+    {
+        // Mirrors a Claude error_max_turns terminal result: completed the process, is_error true, the
+        // result text is the turn-budget message, and the CLI quarantine classified it MaxTurns.
+        Completed = false,
+        IsError = true,
+        ResultText = "Reached maximum number of turns (50)",
+        FailureKind = PromptFailureKind.MaxTurns,
+        NumTurns = 50,
+        Summary = "claude reached the turn limit (50 turn(s))"
     };
 
     private static PromptResult Success() => new()
@@ -338,6 +354,99 @@ public sealed class PromptRunnerReliabilityTests
         Assert.Equal(60, used.Timeouts[0].TotalSeconds, precision: 0);
         Assert.Equal(90, used.Timeouts[1].TotalSeconds, precision: 0);
         Assert.Equal(135, used.Timeouts[2].TotalSeconds, precision: 0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #129 / #94 — max-turns: distinct outcome, actionable feedback, AUTO-ESCALATE the turn budget
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task MaxTurns_RecordsDistinctOutcome_NotGenericActionFailure()
+    {
+        // Always max-turns, budget 1 (one retry): two attempts, both max-turns, then needs-human. The
+        // journal must show the DISTINCT max-turns outcome (not generic action-failed) so a human (and
+        // §9 triage) sees a TURN-budget issue, not a logic failure.
+        var runner = new SequencingRunner(MaxTurns());
+
+        (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 1);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.ActionFailed, task.Outcome);
+        Assert.Contains("ran out of turns", task.Summary);
+
+        Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
+        Assert.Equal(2, entry.Attempts.Count);
+        Assert.All(entry.Attempts, a => Assert.Equal(AttemptOutcome.MaxTurns, a.Outcome));
+        Assert.Equal(2, used.Calls);
+    }
+
+    [Fact]
+    public async Task MaxTurns_EscalatesTheTurnBudget_OnRetry()
+    {
+        // #129 / #94: a same-budget retry just re-exhausts at the same cap, so the retry must get a
+        // LARGER turn budget. With defaultRetries 2 (3 attempts) all hitting max-turns, each successive
+        // attempt's effective maxTurns must be strictly larger than the previous (1× → 1.5× → 2.25×).
+        var runner = new SequencingRunner(MaxTurns());
+
+        (_, _, SequencingRunner used) = await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        Assert.Equal(3, used.MaxTurnsSeen.Count);
+        Assert.True(used.MaxTurnsSeen[1] > used.MaxTurnsSeen[0], "attempt 2 should get a larger turn budget than attempt 1");
+        Assert.True(used.MaxTurnsSeen[2] > used.MaxTurnsSeen[1], "attempt 3 should get a larger turn budget than attempt 2");
+
+        // Concretely: default 50 → 50, 75 (ceil 50×1.5), 113 (ceil 50×2.25).
+        Assert.Equal(50, used.MaxTurnsSeen[0]);
+        Assert.Equal(75, used.MaxTurnsSeen[1]);
+        Assert.Equal(113, used.MaxTurnsSeen[2]);
+    }
+
+    [Fact]
+    public async Task MaxTurns_OnlyEscalatesAfterAMaxTurnsFailure_NotAfterAGenericFailure()
+    {
+        // The escalation is SPECIFIC to max-turns: a generic action failure must NOT raise the turn
+        // budget (it would not help). A timeout then a max-turns: the timeout attempt does not bump
+        // turns, so the second attempt still sees the base budget; only a PRIOR max-turns bumps it.
+        var runner = new SequencingRunner(Timeout(), MaxTurns(), MaxTurns());
+
+        (_, _, SequencingRunner used) = await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 2);
+
+        Assert.Equal(3, used.MaxTurnsSeen.Count);
+        // Attempt 1 (timeout) and attempt 2 (first max-turns) both see the base budget — the timeout
+        // did not escalate turns. Attempt 3 follows ONE prior max-turns, so it is bumped.
+        Assert.Equal(50, used.MaxTurnsSeen[0]);
+        Assert.Equal(50, used.MaxTurnsSeen[1]);
+        Assert.Equal(75, used.MaxTurnsSeen[2]);
+    }
+
+    [Fact]
+    public async Task MaxTurns_WritesActionableFeedback_ContinueFromPartialWork()
+    {
+        // The retry feedback must steer the agent to CONTINUE from preserved partial work and work
+        // directly — not re-explore — and tell it the budget was raised. Distinct from a generic
+        // "claude exited 1" so the retry changes behaviour instead of re-hitting the wall.
+        var runner = new SequencingRunner(MaxTurns());
+
+        (RunReport report, TaskJournalEntry entry, _) =
+            await RunOneTaskAsync(runner, new PauseRecordingObserver(), defaultRetries: 1, keepRoot: true);
+
+        try
+        {
+            Assert.Equal(TaskOutcome.ActionFailed, Assert.Single(report.Tasks).Outcome);
+
+            // The first failed attempt's feedback.md carries the max-turns guidance.
+            AttemptRecord first = entry.Attempts[0];
+            string feedbackPath = Path.Combine(_lastPlanRoot!, first.LogDir, "feedback.md");
+            Assert.True(File.Exists(feedbackPath), $"expected feedback at {feedbackPath}");
+            string feedback = File.ReadAllText(feedbackPath);
+            Assert.Contains("ran out of turns", feedback);
+            Assert.Contains("PARTIAL WORK", feedback);
+            Assert.Contains("RAISED the turn budget", feedback);
+        }
+        finally
+        {
+            try { Directory.Delete(_lastPlanRoot!, recursive: true); } catch (IOException) { }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

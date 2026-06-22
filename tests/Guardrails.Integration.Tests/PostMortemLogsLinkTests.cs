@@ -54,9 +54,11 @@ public sealed class PostMortemLogsLinkTests
 
         Assert.Equal(ExitCodes.Success, exit);
 
-        // The link line carries the ABSOLUTE state/logs root (the #59 bug was a relative path).
+        // The link line carries the ABSOLUTE logs/<runId>/ root (the #59 bug was a relative path);
+        // post-plan-08 the per-attempt artifacts live under logs/<runId>/, NOT state/logs/ (SSOT §8).
         string linkLine = output.Split('\n').Single(l => l.Contains("post-mortem any task"));
-        Assert.Contains(Path.Combine(plan.PlanDir, "state", "logs"), linkLine);
+        Assert.Contains(Path.Combine(plan.PlanDir, "logs"), linkLine);
+        Assert.DoesNotContain(Path.Combine(plan.PlanDir, "state", "logs"), linkLine);
 
         // The <task-id>/attempt-N placeholders moved off the link onto the guidance line.
         Assert.DoesNotContain("<task-id>", linkLine);

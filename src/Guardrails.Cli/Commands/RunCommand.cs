@@ -55,6 +55,11 @@ public static class RunCommand
             Description = "Re-validate-only (issue #102): run ONLY this task's guardrails against the current workspace, spawning NO agent attempt — for confirming a hand-fix to a needs-human task. On pass the task is marked succeeded; serial mode only."
         };
 
+        var skipReviewCheckOption = new Option<bool>("--skip-review-check")
+        {
+            Description = "Suppress the warning when the plan hasn't been through /guardrails-review (or has changed since) (SSOT §13, issue #79)."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
@@ -64,6 +69,7 @@ public static class RunCommand
         command.Add(logPortOption);
         command.Add(mergeOnSuccessOption);
         command.Add(revalidateTaskOption);
+        command.Add(skipReviewCheckOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -75,6 +81,7 @@ public static class RunCommand
             int logPort = parseResult.GetValue(logPortOption);
             bool mergeOnSuccess = parseResult.GetValue(mergeOnSuccessOption);
             string? revalidateTask = parseResult.GetValue(revalidateTaskOption);
+            bool skipReviewCheck = parseResult.GetValue(skipReviewCheckOption);
 
             // Re-validate-only (issue #102) is a single-task verification, not a run: it spawns no
             // agent attempt and ignores the run-shaped flags. Reject the combinations that would
@@ -92,17 +99,17 @@ public static class RunCommand
 
             if (dryRun)
             {
-                return DryRun.Execute(folder, io);
+                return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -111,6 +118,11 @@ public static class RunCommand
             io.Out.WriteLine("\nValidation failed; nothing was run.");
             return ExitCodes.HarnessError;
         }
+
+        // Review-marker nudge (warn, never block — SSOT §13, issue #79): if the plan hasn't been
+        // through /guardrails-review (or has changed since), print a one-line warning before running,
+        // unless --skip-review-check. Reuses the same deterministic evaluation as `validate`.
+        WarnIfUnreviewed(probe.Plan, skipReviewCheck, io);
 
         // --merge-on-success forces end-of-run delivery on (SSOT §5.3 / §2: "CLI --merge-on-success
         // overrides"). The flag only augments — it can turn the config value on, never off — so a
@@ -128,11 +140,17 @@ public static class RunCommand
 
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;
 
+        // Resolve the run's id up-front so the live log server and the post-mortem links target the
+        // correct logs/<runId>/ tree (SSOT §8/§12). LoadOrCreate is idempotent: it creates run.json
+        // here (or reads it on resume), and the Scheduler's own LoadOrCreate then reads the SAME
+        // run.json — so this runId matches the one the executor writes attempt logs under.
+        string runId = RunJournal.LoadOrCreate(probe.Plan).Document.RunId;
+
         // The log server is a companion to the live table: start it only in the interactive path
         // (nobody clicks links in CI / redirected output), and never let a binding failure abort
         // the run — TryStart returns null and prints one warning.
         LogServer? logServer = (live && !noLogServer)
-            ? LogServer.TryStart(probe.Plan.PlanDirectory, probe.Plan.Tasks, logPort, io.Out)
+            ? LogServer.TryStart(probe.Plan.PlanDirectory, runId, probe.Plan.Tasks, logPort, io.Out)
             : null;
 
         try
@@ -147,7 +165,7 @@ public static class RunCommand
             RunReport report;
             if (live)
             {
-                await using var observer = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory);
+                await using var observer = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
                 report = await ExecuteAsync(probe.Plan, observer, cancellationToken).ConfigureAwait(false);
             }
             else
@@ -155,7 +173,7 @@ public static class RunCommand
                 report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(io.Out), cancellationToken).ConfigureAwait(false);
             }
 
-            return Finish(report, probe.Plan.PlanDirectory, io);
+            return Finish(report, probe.Plan.PlanDirectory, runId, io);
         }
         finally
         {
@@ -166,10 +184,29 @@ public static class RunCommand
         }
     }
 
-    /// <summary>Print the summary and map the report to the process exit code (SSOT §7).</summary>
-    private static int Finish(RunReport report, string planDirectory, IConsoleIo io)
+    /// <summary>
+    /// Print the review-marker nudge (GR2025, WARNING — SSOT §13, issue #79) when the plan is
+    /// missing/stale a <c>/guardrails-review</c> marker, unless <paramref name="skipReviewCheck"/>.
+    /// Warn, never block — the run proceeds regardless. Shared by <c>run</c> and <c>--dry-run</c>.
+    /// </summary>
+    public static void WarnIfUnreviewed(Core.Model.PlanDefinition plan, bool skipReviewCheck, IConsoleIo io)
     {
-        PrintSummary(report, planDirectory, io);
+        if (skipReviewCheck)
+        {
+            return;
+        }
+
+        if (Core.Loading.PlanValidator.ReviewMarkerDiagnostic(plan) is { } nudge)
+        {
+            io.Out.WriteLine(nudge.ToString());
+            io.Out.WriteLine();
+        }
+    }
+
+    /// <summary>Print the summary and map the report to the process exit code (SSOT §7).</summary>
+    private static int Finish(RunReport report, string planDirectory, string runId, IConsoleIo io)
+    {
+        PrintSummary(report, planDirectory, runId, io);
 
         if (report.Cancelled)
         {
@@ -188,7 +225,7 @@ public static class RunCommand
         return scheduler.RunAsync(plan, cancellationToken);
     }
 
-    private static void PrintSummary(RunReport report, string planDirectory, IConsoleIo io)
+    private static void PrintSummary(RunReport report, string planDirectory, string runId, IConsoleIo io)
     {
         TextWriter output = io.Out;
 
@@ -209,9 +246,10 @@ public static class RunCommand
 
         // Post-mortem pointer for EVERY task, not just failures: a green task whose guardrails
         // turned out too weak is reviewed from the same on-disk logs (action output, guardrail
-        // stdout, feedback per attempt). The link target is the ABSOLUTE state/logs root so it is
-        // clickable (issue #59); the <task-id>/attempt-N/ layout follows as guidance text.
-        string logsRoot = Path.GetFullPath(Path.Combine(planDirectory, "state", "logs"));
+        // stdout, feedback per attempt). The link target is the ABSOLUTE logs/<runId>/ root so it is
+        // clickable (issue #59); the <task-id>/attempt-N/ layout follows as guidance text. The
+        // per-attempt artifacts live under logs/<runId>/ (SSOT §8), NOT the pre-plan-08 state/logs/.
+        string logsRoot = Path.GetFullPath(Path.Combine(planDirectory, "logs", runId));
         string sep = Path.DirectorySeparatorChar.ToString();
         // Emit a clickable OSC 8 link only when the terminal can actually render one — matching the
         // live table's gate. Redirection alone is too weak: a non-redirected but hyperlink-incapable

@@ -35,17 +35,25 @@ public static class LogsCommand
             Description = "Do not open a browser automatically; just print the URL."
         };
 
+        var exportOption = new Option<bool>("--export")
+        {
+            Description = "Render a durable static HTML log site under logs/<runId>/ and exit (no server). " +
+                          "Viewable after the run; --port/--task are ignored."
+        };
+
         var command = new Command("logs", "Serve the web log viewer over a plan's persisted logs (post-mortem; runs until Ctrl-C).");
         command.Add(folderArgument);
         command.Add(portOption);
         command.Add(taskOption);
         command.Add(noOpenOption);
+        command.Add(exportOption);
 
         command.SetAction((parseResult, cancellationToken) => RunAsync(
             FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out),
             parseResult.GetValue(portOption),
             parseResult.GetValue(taskOption),
             parseResult.GetValue(noOpenOption),
+            parseResult.GetValue(exportOption),
             io,
             cancellationToken));
 
@@ -53,7 +61,7 @@ public static class LogsCommand
     }
 
     private static async Task<int> RunAsync(
-        string folder, int port, string? task, bool noOpen, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, int port, string? task, bool noOpen, bool export, IConsoleIo io, CancellationToken cancellationToken)
     {
         TextWriter output = io.Out;
 
@@ -75,9 +83,23 @@ public static class LogsCommand
         // Read-only snapshot of the journal — the landing page shows each task's status as it
         // stands on disk (works after a run, or mid-run from another terminal).
         JournalDocument document = JournalReader.Read(journalPath);
+
+        // --export: render the durable static site (SSOT §12.3) and exit — no server, no blocking.
+        // The site lands under logs/<runId>/ (next to the attempt artifacts it renders), so it is
+        // viewable via file:// after the LogServer process is gone, and --fresh cleans it for free.
+        if (export)
+        {
+            string logsRoot = Path.Combine(probe.Plan.PlanDirectory, "logs", document.RunId);
+            string indexPath = LogSiteRenderer.ExportSite(logsRoot, probe.Plan.Tasks, document);
+            bool linkable = !Console.IsOutputRedirected && Spectre.Console.AnsiConsole.Profile.Capabilities.Links;
+            output.WriteLine($"Static log site written: {RunCommand.Hyperlink(Path.GetFullPath(indexPath), linkable)}");
+            return ExitCodes.Success;
+        }
+
         Func<string, string?> statusForTask = StatusResolver(document);
 
-        LogServer? server = LogServer.TryStart(probe.Plan.PlanDirectory, probe.Plan.Tasks, port, output, statusForTask);
+        LogServer? server = LogServer.TryStart(
+            probe.Plan.PlanDirectory, document.RunId, probe.Plan.Tasks, port, output, statusForTask);
         if (server is null)
         {
             return ExitCodes.HarnessError; // TryStart already explained why

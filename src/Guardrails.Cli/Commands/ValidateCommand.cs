@@ -27,11 +27,23 @@ public static class ValidateCommand
     private static int Run(string folder, IConsoleIo io)
     {
         PlanProbe.Result result = PlanProbe.LoadAndValidate(folder);
-        PlanProbe.PrintDiagnostics(result.Diagnostics, io.Out);
+
+        // The review-marker nudge (GR2025, WARNING — SSOT §13, issue #79) is surfaced at the command
+        // layer, not inside the pure semantic validator: a missing/stale /guardrails-review marker is
+        // an honest nudge, never a gate. Append it to the printed diagnostics; a warning never fails
+        // validate's exit code (HasErrors counts errors only).
+        var diagnostics = new List<Core.Loading.Diagnostic>(result.Diagnostics);
+        if (result.Plan is not null &&
+            Core.Loading.PlanValidator.ReviewMarkerDiagnostic(result.Plan) is { } reviewNudge)
+        {
+            diagnostics.Add(reviewNudge);
+        }
+
+        PlanProbe.PrintDiagnostics(diagnostics, io.Out);
 
         if (result.HasErrors)
         {
-            int errorCount = result.Diagnostics.Count(d => d.Severity == Core.Loading.DiagnosticSeverity.Error);
+            int errorCount = diagnostics.Count(d => d.Severity == Core.Loading.DiagnosticSeverity.Error);
             io.Out.WriteLine($"\nFAILED: {errorCount} error(s).");
             return ExitCodes.HarnessError;
         }
