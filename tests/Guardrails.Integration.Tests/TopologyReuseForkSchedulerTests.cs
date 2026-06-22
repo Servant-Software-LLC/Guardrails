@@ -232,16 +232,19 @@ public sealed class TopologyReuseForkSchedulerTests
     private static int LiveSegmentWorktreeCount(string repoPath, string worktreeRoot)
     {
         string listing = TempGitRepo.Git(repoPath, "worktree", "list", "--porcelain");
-        string rootNorm = Path.GetFullPath(worktreeRoot)
-            .Replace('\\', '/').TrimEnd('/');
+        // macOS resolves the temp-dir symlink (/var → /private/var), so `git worktree list` reports
+        // segment paths under /private/var while worktreeRoot is the /var alias — a full-path prefix
+        // match never hits (the cause of the T9/T11 macOS CI false-reds, and of T10/T-M passing
+        // VACUOUSLY because the count was always 0). Match instead on the stable worktree-root LEAF
+        // infix (e.g. "/worktrees/"), which is symlink-insensitive, and exclude the _integration tree.
+        string leaf = "/" + worktreeRoot.Replace('\\', '/').TrimEnd('/').Split('/').Last() + "/";
         int count = 0;
         foreach (string raw in listing.Split('\n'))
         {
             string line = raw.Trim();
             if (!line.StartsWith("worktree ", StringComparison.Ordinal)) continue;
-            string path = Path.GetFullPath(line["worktree ".Length..].Trim())
-                .Replace('\\', '/').TrimEnd('/');
-            if (path.StartsWith(rootNorm + "/", StringComparison.OrdinalIgnoreCase)
+            string path = line["worktree ".Length..].Trim().Replace('\\', '/').TrimEnd('/');
+            if (path.Contains(leaf, StringComparison.OrdinalIgnoreCase)
                 && !path.EndsWith("/_integration", StringComparison.OrdinalIgnoreCase))
             {
                 count++;
