@@ -179,6 +179,16 @@ public sealed class TaskExecutor : ITaskExecutor
 
             feedbackPath = attempt.FeedbackPath;
 
+            // §3.5: clear the per-task staging tree before the next attempt so a failed action
+            // (whose move never ran) cannot leak attempt N's staged scaffolding into attempt N+1.
+            // The StagingMover already deletes staging after a successful move; this covers the
+            // action-failed path and does NOT depend on staging being git-untracked. Runs in BOTH
+            // modes (serial has no F2 reset). Re-created empty at the top of the next attempt.
+            if (!isFinal && task.StagingOutputs is { Count: > 0 })
+            {
+                ClearStagingTree(EffectiveWorkspace(worktree), task.Id);
+            }
+
             // F2: in worktree mode, reset the segment to taskBase + clean before the next attempt
             // so attempt N+1 starts on a pristine tree and never inherits attempt N's WIP (the
             // wip.txt-survives defect). Guarded on a real git segment (non-empty path + a real
@@ -383,9 +393,25 @@ public sealed class TaskExecutor : ITaskExecutor
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
 
+        // Staging (SSOT §3.5, issue #130): when the task declares stagingOutputs, the action writes
+        // its .claude/-destined deliverable to a pre-created staging dir under the EFFECTIVE
+        // workspace (the segment worktree in worktree mode, the plan workspace in serial mode); the
+        // harness moves it into the real .claude/ path after the action succeeds and before the
+        // write-scope check and guardrails. Null when the task declares no staging.
+        string effectiveWorkspace = EffectiveWorkspace(worktree);
+        string? stagingDir = task.StagingOutputs is { Count: > 0 }
+            ? StagingDirFor(effectiveWorkspace, task.Id)
+            : null;
+        if (stagingDir is not null)
+        {
+            // Pre-created (unlike STATE_OUT) so the action can Write into it without first creating
+            // the tree, and a pre-created empty dir is the "stage here" signal.
+            Directory.CreateDirectory(stagingDir);
+        }
+
         IReadOnlyDictionary<string, string> env = BuildEnvironment(
             task, attemptNumber, logDir, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            worktree.WorktreePath);
+            worktree.WorktreePath, stagingDir);
         string workspace = ResolveWorkingDirectory(task);
 
         // --- action (script or prompt) --------------------------------------------------
@@ -395,7 +421,7 @@ public sealed class TaskExecutor : ITaskExecutor
         double timeoutMultiplier = TimeoutMultiplierFor(timeoutRetries);
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, cancellationToken).ConfigureAwait(false);
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
@@ -487,11 +513,42 @@ public sealed class TaskExecutor : ITaskExecutor
                 costUsd: action.CostUsd);
         }
 
-        // --- write-scope check (plan 08 §2/§3.4): after action, before guardrails -------
+        // --- staging move (SSOT §3.5, issue #130): after action success, BEFORE the write-scope
+        // check and BEFORE guardrails. Move the action's staged .claude/-destined files into their
+        // real .claude/ paths in the EFFECTIVE workspace, then delete the staging tree. Gated on
+        // action success (a failed action never reaches here). An empty-source / IO failure is a
+        // guardrail-class failed attempt with actionable feedback (RetryPolicy.ForStagingFailure).
+        if (stagingDir is not null && task.StagingOutputs is { Count: > 0 } stagingEntries)
+        {
+            StagingMoveResult moveResult = StagingMover.Move(stagingDir, effectiveWorkspace, stagingEntries);
+            if (!moveResult.Succeeded)
+            {
+                string feedback = RetryPolicy.ForStagingFailure(
+                    task, attemptNumber, moveResult.FailureReason ?? "the staging move did not complete");
+                return _journaler.FailedAttempt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
+                    AttemptOutcome.GuardrailFailed,
+                    new TaskResult
+                    {
+                        TaskId = task.Id,
+                        Outcome = TaskOutcome.GuardrailFailed,
+                        ActionExitCode = action.ExitCode,
+                        Summary = $"staging move failed: {moveResult.FailureReason}"
+                    },
+                    costUsd: action.CostUsd);
+            }
+        }
+
+        // --- write-scope check (plan 08 §2/§3.4): after action (and staging move), before guardrails
         // Only runs when the task declares a writeScope AND the worktree carries a real
         // git repo path (non-empty TaskBase). Skipped for FakeWorktreeProvider segments.
-        if (task.WriteScope is { } scopeGlobs && IsRealGitSegment(worktree))
+        if (task.WriteScope is { } declaredScope && IsRealGitSegment(worktree))
         {
+            // The stagingOutputs 'to' destinations are IMPLICITLY in-scope (SSOT §3.4/§3.5): a staging
+            // task must NOT have to also list its .claude/ destinations in writeScope. The check sees
+            // the post-move surface, so the real .claude/ paths the move produced must be authorized.
+            IReadOnlyList<string> scopeGlobs = WithImplicitStagingScope(declaredScope, task.StagingOutputs);
+
             WriteScopeCheckResult scopeCheck = WriteScopeCheck.Check(
                 worktree.WorktreePath, worktree.TaskBase, scopeGlobs);
 
@@ -597,7 +654,8 @@ public sealed class TaskExecutor : ITaskExecutor
         string snapshotPath,
         string fragmentOutPath,
         string? previousFeedbackPath,
-        string worktreePath = "")
+        string worktreePath = "",
+        string? stagingDir = null)
     {
         var env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -613,6 +671,14 @@ public sealed class TaskExecutor : ITaskExecutor
         if (!string.IsNullOrEmpty(worktreePath) && Directory.Exists(worktreePath))
         {
             env["GUARDRAILS_WORKSPACE"] = worktreePath;
+        }
+
+        // Staging dir (§3.5): action env only, only when the task declares stagingOutputs. The
+        // guardrail env is derived from this action env, so BuildGuardrailEnvironment removes it
+        // (guardrails verify the real .claude/ path, not the deleted pre-move scaffolding).
+        if (stagingDir is not null)
+        {
+            env["GUARDRAILS_STAGING_DIR"] = stagingDir;
         }
 
         if (previousFeedbackPath is not null)
@@ -640,6 +706,11 @@ public sealed class TaskExecutor : ITaskExecutor
         var env = new Dictionary<string, string>(actionEnv, StringComparer.Ordinal);
         env.Remove("GUARDRAILS_STATE_OUT");
 
+        // §3.5: GUARDRAILS_STAGING_DIR is absent for guardrails — by the time guardrails run, the move
+        // has happened and the real .claude/ artifact is the thing to verify; a guardrail reading the
+        // staging dir would inspect pre-move scaffolding (already deleted), an anti-pattern.
+        env.Remove("GUARDRAILS_STAGING_DIR");
+
         env["GUARDRAILS_ACTION_STDOUT"] = Path.Combine(logDir, "action-stdout.log");
         env["GUARDRAILS_ACTION_STDERR"] = Path.Combine(logDir, "action-stderr.log");
         env["GUARDRAILS_ACTION_RESULT"] = Path.Combine(logDir, "action-result.json");
@@ -663,6 +734,72 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         return Path.GetFullPath(Path.Combine(_plan.PlanDirectory, task.Action.WorkingDirectory));
+    }
+
+    /// <summary>
+    /// The EFFECTIVE workspace for staging (SSOT §3.5): the task's isolated SEGMENT worktree in
+    /// worktree mode (a real git segment), else the plan <see cref="PlanDefinition.Workspace"/> in
+    /// serial shared-workspace mode. This is the tree the action's writes land in and that
+    /// <c>Integrate</c> commits — so staging and the move are both rooted here, never in the user's
+    /// checkout in worktree mode.
+    /// </summary>
+    private string EffectiveWorkspace(WorktreeHandle worktree) =>
+        IsRealGitSegment(worktree) ? worktree.WorktreePath : _plan.Workspace;
+
+    /// <summary>The per-task staging root <c>&lt;workspace&gt;/.guardrails-staging/&lt;task-id&gt;/</c> (§3.5).</summary>
+    private static string StagingDirFor(string effectiveWorkspace, string taskId) =>
+        Path.Combine(effectiveWorkspace, ".guardrails-staging", taskId);
+
+    /// <summary>
+    /// Best-effort delete of the per-task staging tree (§3.5 rollback). Used on the retry path for a
+    /// failed action whose move never ran; a delete failure is swallowed (the next attempt's
+    /// pre-create + the segment reset/clean sweep any residue).
+    /// </summary>
+    private static void ClearStagingTree(string effectiveWorkspace, string taskId)
+    {
+        string stagingDir = StagingDirFor(effectiveWorkspace, taskId);
+        try
+        {
+            if (Directory.Exists(stagingDir))
+            {
+                Directory.Delete(stagingDir, recursive: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Swallowed: the next attempt re-creates the dir and the F2 reset cleans the segment.
+        }
+    }
+
+    /// <summary>
+    /// Combine the task's declared <c>writeScope</c> with the <c>stagingOutputs</c> <c>to</c>
+    /// destinations, which are IMPLICITLY in-scope (SSOT §3.4/§3.5): a staging task must not have to
+    /// also list its <c>.claude/</c> destinations in <c>writeScope</c>. Each <c>to</c> is added as a
+    /// glob (a trailing-slash directory <c>to</c> becomes <c>&lt;to&gt;**</c> so the moved subtree is
+    /// covered). The original <c>declaredScope</c> is returned unchanged when there are no staging
+    /// outputs, so a non-staging task's check is byte-for-byte identical to before.
+    /// </summary>
+    private static IReadOnlyList<string> WithImplicitStagingScope(
+        IReadOnlyList<string> declaredScope,
+        IReadOnlyList<StagingOutput>? stagingOutputs)
+    {
+        if (stagingOutputs is not { Count: > 0 } outputs)
+        {
+            return declaredScope;
+        }
+
+        var combined = new List<string>(declaredScope);
+        foreach (StagingOutput entry in outputs)
+        {
+            string to = entry.To.Replace('\\', '/');
+            // A directory-shaped 'to' ("foo/") covers its whole moved subtree → "foo/**"; a file 'to'
+            // is the literal path. Also implicitly cover the staging prefix itself (deleted before the
+            // diff, so it nets to zero, but listing it is harmless and self-documenting).
+            combined.Add(to.EndsWith('/') ? to + "**" : to);
+        }
+
+        combined.Add(".guardrails-staging/**");
+        return combined;
     }
 
     private TimeSpan ResolveTimeout(TaskNode task, int? narrowest)

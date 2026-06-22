@@ -210,6 +210,42 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Compose feedback for an attempt whose STAGING MOVE failed (SSOT §3.5, issue #130): the action
+    /// succeeded but the declared <c>stagingOutputs</c> deliverable was not produced under the staging
+    /// dir (an empty source), or the move hit an IO error. The retry must CHANGE BEHAVIOR — write the
+    /// deliverable to <c>GUARDRAILS_STAGING_DIR</c> under the declared <c>from</c> path(s) — so the
+    /// feedback names the staging dir and the exact <c>from→to</c> map. An empty-source move is a
+    /// deliverable-not-produced condition (guardrail-class), not a crash.
+    /// </summary>
+    public static string ForStagingFailure(TaskNode task, int attempt, string reason)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## Staging move failed");
+        text.AppendLine();
+        text.AppendLine(reason);
+        text.AppendLine();
+        text.AppendLine("Your action completed, but the harness could not move your `.claude/` deliverable into");
+        text.AppendLine("place because it was not staged. Write your deliverable to the absolute staging directory");
+        text.AppendLine("(`GUARDRAILS_STAGING_DIR`, embedded in the `## Staging outputs` section of your prompt)");
+        text.AppendLine("under the declared `from` path(s) BEFORE you finish:");
+        text.AppendLine();
+        if (task.StagingOutputs is { } staging)
+        {
+            foreach (StagingOutput entry in staging)
+            {
+                text.AppendLine($"- `{entry.From}`  →  `{entry.To}`");
+            }
+
+            text.AppendLine();
+        }
+
+        text.AppendLine("Do NOT write under `.claude/` directly — the runtime refuses it. Stage your files under");
+        text.AppendLine("the staging dir and the harness will move them into `.claude/` for you (SSOT §3.5).");
+        return text.ToString();
+    }
+
+    /// <summary>
     /// Compose the task-level <c>feedback.md</c> for a PERMISSION WALL early halt (issues #86 / #104):
     /// the runtime refused a write/edit because the path is not granted, and retrying cannot clear it.
     /// This is NOT a retry-input (the task is settling <c>needs-human</c>) — it is the human's

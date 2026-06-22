@@ -1,4 +1,5 @@
 using System.Text;
+using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 
 namespace Guardrails.Core.Tests;
@@ -35,6 +36,44 @@ public sealed class PromptComposerTests : IDisposable
         Assert.Contains("needsHuman", composed);
         // No retry section on attempt 1.
         Assert.DoesNotContain("## Previous attempt failed", composed);
+    }
+
+    [Fact]
+    public void Action_WithStagingOutputs_EmbedsStagingDirAndFromToMap()
+    {
+        // SSOT §3.5: a stagingOutputs-declaring action must carry the absolute staging dir AND the
+        // from→to map verbatim in the prompt body (agents read instructions, not env vars), with the
+        // "do not write .claude/ directly" instruction. The section appears after ## Output contract.
+        string stateIn = WriteState("{}");
+        string stagingDir = Path.Combine(_dir, ".guardrails-staging", "05-certify-knowledge");
+        IReadOnlyList<StagingOutput> outputs =
+        [
+            new StagingOutput { From = "skill/**", To = ".claude/skills/certify-knowledge/" }
+        ];
+
+        string composed = PromptComposer.ComposeAction(
+            "Author the skill.", stateIn, Path.Combine(_dir, "o.json"), feedbackPath: null,
+            dependencies: null, priorAttempts: null, stagingDir: stagingDir, stagingOutputs: outputs);
+
+        Assert.Contains("## Staging outputs", composed);
+        Assert.Contains(stagingDir, composed);
+        Assert.Contains("skill/**", composed);
+        Assert.Contains(".claude/skills/certify-knowledge/", composed);
+        Assert.Contains("Do NOT attempt to write under `.claude/` directly", composed);
+        // The map arrow joins from→to.
+        Assert.Contains("`skill/**`  →  `.claude/skills/certify-knowledge/`", composed);
+    }
+
+    [Fact]
+    public void Action_WithoutStagingOutputs_OmitsStagingSection()
+    {
+        // No stagingOutputs ⇒ the section is absent (the unchanged default for the vast majority
+        // of tasks). Passing a stagingDir without outputs (or outputs without a dir) also omits it.
+        string stateIn = WriteState("{}");
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), feedbackPath: null);
+
+        Assert.DoesNotContain("## Staging outputs", composed);
     }
 
     [Fact]

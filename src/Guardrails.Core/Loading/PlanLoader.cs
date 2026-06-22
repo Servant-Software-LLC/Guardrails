@@ -316,9 +316,33 @@ public sealed class PlanLoader
             TimeoutSeconds = raw.TimeoutSeconds,
             IntegrationGate = raw.IntegrationGate ?? false,
             WriteScope = raw.WriteScope is { Count: > 0 } ws ? [.. ws] : null,
+            StagingOutputs = BindStagingOutputs(raw.StagingOutputs),
             Action = action,
             Guardrails = guardrails
         };
+    }
+
+    /// <summary>
+    /// Bind the raw <c>stagingOutputs</c> list (SSOT §3.5). Null (absent) stays null — the
+    /// no-staging default. A PRESENT list is bound faithfully, INCLUDING an empty array and entries
+    /// with a missing/empty <c>from</c> or <c>to</c> (mapped to <c>""</c>): the validator turns those
+    /// into GR2024 errors, so the loader must preserve the "present but malformed" signal rather than
+    /// silently dropping it (which would let a malformed contract validate clean).
+    /// </summary>
+    private static IReadOnlyList<StagingOutput>? BindStagingOutputs(List<RawStagingOutput>? raw)
+    {
+        if (raw is null)
+        {
+            return null;
+        }
+
+        return raw
+            .Select(entry => new StagingOutput
+            {
+                From = entry.From?.Trim() ?? string.Empty,
+                To = entry.To?.Trim() ?? string.Empty
+            })
+            .ToList();
     }
 
     // --- action discovery (SSOT §3) ---------------------------------------------------
