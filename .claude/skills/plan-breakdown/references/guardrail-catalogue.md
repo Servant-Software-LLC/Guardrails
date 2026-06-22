@@ -420,6 +420,105 @@ both go green over an unwired feature. A full-suite-green gate over seam-injecte
 The .NET realization (the reflection-on-factory pattern + the drive-the-real-factory integration
 test) is `stacks/dotnet.md §10`.
 
+## Production testability seam — insert it upstream of the test-author task (#84)
+
+A test-author task can correctly refuse to author a behavior it knows is **unsatisfiable as
+architected**: the production code has no injection point, so the behavior can never be expressed
+as a test that eventually goes green. The real run then halts `needsHuman` mid-run and forces a
+human to hand-edit production code — defeating the "approve the guardrails once, then let it run"
+model. The agent did the right thing (wrote the tests, confirmed them red, refused the unsatisfiable
+one); the **breakdown** is what should have caught it, by inserting the seam as its own task.
+
+**This is a sibling of #120 (composition-root wiring) at a different layer.** #120 is about
+*production* injecting the *real* impl so the feature is live from the CLI. This (#84) is about
+*tests* being able to inject a *fake/double* so a behavior is **expressible as a passing test at
+all**. A plan can need both: a seam task (opens the injection point) AND, later, a wiring task
+(production constructs and injects the real collaborator). Do not conflate them.
+
+**Why the existing patterns do not cover this.** The compile-coupled-tests pattern (catalogue →
+archetype #8 note: the test references a not-yet-existing **DTO/type** the implementation adds) works
+when the missing symbol is something the **test constructs** — forcing the whole test file into a
+compile failure is the correct red. It does NOT work when only **one behavior of several** needs the
+seam: forcing the entire file red to satisfy behavior 3 would stop behaviors 1/2/4 — which are
+runtime-testable against the existing surface — from compiling and failing as their own clean red. So
+the seam belongs in its **own small upstream task**, not folded into either the test-author or the
+implementation task (neither cleanly OWNs it as a verifiable deliverable otherwise).
+
+**Decision rule — when does this fire?** While parsing a test-author behavior: **does expressing this
+behavior as a test that can eventually PASS require a production-code seam that does not exist yet** —
+a DI constructor overload, a factory delegate, an injectable interface, a fixture source? The
+detection tell: the behavior injects a fake/double (`RecordingX`, `FakeX`, `InMemoryX`, a fixture
+source) into a type currently constructed **only** via a production constructor with **no injection
+point**. The action prompt's "if no seam exists, write `needsHuman` and stop" escape hatch is the
+**last resort**, not the default — by run start the seam task should already exist.
+
+**Two artifacts close it** (generated in SKILL.md Step 5):
+1. **A production-seam TASK** — `NN-add-<component>-<seam>-seam`, a **pure structural production
+   change**: add the constructor overload / factory delegate / injectable interface + its DI
+   registration. **No behavior, no endpoint** — the seam only opens an injection point. Edge
+   direction: the **test-author task `dependsOn` this seam task** (the seam is upstream; the tests
+   compile against it), never the reverse. **TDD-exempt:** a seam is too simple for meaningful unit
+   tests — state the exemption reason in the task description.
+2. **A structural seam-exists guardrail** on the seam task — pairing `build-passes` (#3) with a
+   **structural check that the seam exists** using the stack file's **declaration regex** (the new
+   constructor signature / factory delegate / interface), **never a bare name grep** (this is the
+   universal structural-vs-keyword rule, §"file-contains: structural vs. keyword matching"). Scope it
+   to the one production file the seam task owns (grep-scope rule). The .NET realizations (constructor
+   overload, factory delegate, injectable interface) are `stacks/dotnet.md §11`.
+
+With the seam present, the test-author task authors **all** behaviors against the real injection
+point: every behavior fails at runtime (the endpoint/feature is still absent) as a clean red, with no
+`needsHuman`. The run stays autonomous.
+
+**FORBIDDEN shapes** (the review skill hunts these):
+- A test-author task expected to **invent the seam itself** (or to gesture vaguely at "add an
+  injection mechanism") — neither it nor the implementation task cleanly owns the seam as a verifiable
+  deliverable, and the `needsHuman` escape fires at run time.
+- A **bare name grep** for the seam (`Select-String "Launcher"`) instead of the declaration regex — it
+  passes on a comment, a `using`, or an unrelated mention (the structural-vs-keyword trap).
+
+## Bulk / unbounded fan-out → scripted ETL, not an agent-per-item loop (#100)
+
+When a task's deliverable is **"process N items where N is unknown and potentially large"** — a web
+crawl/scrape, a bulk transform over an unknown-size glob, a mass API fetch, a dataset ETL — the wrong
+model is an **agent-iterated loop**: one agent turn-budget covering N fetch+convert+write cycles. Agent
+turns are the wrong unit for bulk work. A real run modeled a `portal-crawl` as "use Playwright to
+enumerate the in-scope pages and produce a note per page"; the in-scope set turned out to be ~409
+pages, the crawl sub-agent hit max-turns (50) and was killed, and the retry hit the same wall
+identically — a hard dead-end (`action-failed` → retries fail → `needs-human`) that wasted a large
+turn/$$ budget *discovering the wall*. This is a **task-structuring** failure, not a `maxTurns` one:
+raising the turn budget (#94) only moves the wall, because bulk fan-out does not scale with turns at
+all.
+
+**Decision rule — when does this fire?** When a task fans out over an **external or unknown-size set**:
+a website / section / sitemap, a recursive glob, an API listing — "every page under…", "all files
+matching…", "each record in…". The tell is **cardinality the plan cannot bound at breakdown time**
+("8 expected" → 409 actual). A retry-cheapness / one-session check on **"could this be hundreds of
+items?"** trips the rule during sizing (SKILL.md Step 2).
+
+**Structure it as a scripted bulk operation — three moves:**
+1. **Scripted-ETL action (the volume goes off the turn budget).** The agent authors and runs **one
+   `script`** that does the N-item work in a single execution (Playwright + HTML→markdown; a glob walk
+   + transform). The agent's turns go to *writing, verifying, and running* the script — NOT to
+   iterating items. This is a `script` action, not a `.prompt.md` that loops. Guard it with the
+   ordinary script archetypes — `file-exists` (#1) on the output directory + `command-exit-code` (#2)
+   or a count check — and verify the **recorded output** (verify-don't-replay, #9), not a re-run.
+2. **Discover-size-first.** Where the set size is unknown, **enumerate/count before** committing to an
+   approach, so sizing and any curation are calibrated to reality. This is a cheap upstream probe
+   (enumerate the in-scope set, write the count to state or a manifest) that may be its own task
+   feeding the ETL task.
+3. **Split bulk-capture from per-item derivation.** Make the cheap, complete, **scripted capture** one
+   task (deterministic, fits a session — dump all N items locally), and any **agent
+   derivation/curation** a separate, **bounded** task over a *selected subset* — never "derive all N."
+   "Scripted crawl dumps all 409 pages to local markdown" then "a curate task derives a high-value
+   committed subset" is the shape, not one agent told to "crawl and curate 409 pages."
+
+**Relation to siblings.** Complementary to corpus-completeness/substance guardrails (#99 — those
+*verify* the captured output is complete and substantive; this *structures the task* so it can be
+produced at all) and to `maxTurns` budgeting (#94 — necessary but insufficient; bulk fan-out is the
+case where more turns never help). The decision-tree leaf is below; the .NET scripted-crawl shape is
+`stacks/dotnet.md §12`.
+
 ## Entry-point wiring + the live smoke-test (server/executable plans) (#64)
 
 A plan whose outcome is a **server or CLI executable** — "a CLI entrypoint that starts a
@@ -731,6 +830,19 @@ What is the task's primary deliverable?
 │                                check if a downstream task branches on the value)
 ├── Docs / prose               → file-exists + file-contains (required headings/terms);
 │                                prompt-judge ONLY for genuine subjective quality, never alone
+├── Bulk / unbounded fan-out  → scripted-ETL archetype (#100), NOT an agent-per-item loop: ONE
+│    (crawl/scrape, recursive    `script` action does the N-item work in a single run (volume off
+│    glob, API listing, ETL —    the turn budget) + file-exists/command-exit-code/count on its
+│    "process N items, N         output; INSERT a discover-size-first probe where N is unknown; SPLIT
+│    unknown & maybe large")     scripted bulk-capture from a BOUNDED per-item curation task. Raising
+│                                maxTurns does NOT help. See the bulk-fan-out section + stacks/dotnet.md §12
+├── Test needs an injection   → INSERT an upstream production-seam task (#84): add the DI ctor
+│    seam to express a behavior  overload / factory delegate / injectable interface + DI registration
+│    (a fake/double injected      (pure structural change, no behavior), guarded by build-passes +
+│    into a type with no          a STRUCTURAL seam-exists check (declaration regex, never a bare
+│    injection point)             name grep). The test-author task dependsOn it. Distinct from #120
+│                                 (which injects the REAL impl in production). See the
+│                                 production-testability-seam section + stacks/dotnet.md §11
 └── Refactor (no new behavior) → build-passes + existing-tests-still-pass (the suite IS the guardrail)
 ```
 
@@ -914,6 +1026,31 @@ should fail before an expensive test run or a paid judge ever starts.
   zero served-markup assertion. **Forbidden "fix":** a prompt-judge "does the UI look good" —
   it is subjective vibes the demotion gate rejects AND cannot catch the failure; the deliverable
   is *presence and wiring*, asserted deterministically.
+- **Test-author left to invent the seam** (#84): a plan needs a production injection seam — a DI
+  constructor overload, a factory delegate, an injectable interface — for **one** behavior to be
+  expressible as a test that can pass, but the breakdown emits no upstream seam task. Neither the
+  test-author task nor the implementation task cleanly OWNS the seam as a verifiable deliverable, so
+  the test-author task's `needsHuman` escape ("if no injection mechanism exists, write a needsHuman
+  note and stop") fires at run time and a human must hand-edit production code mid-run. Distinct from
+  compile-coupled-tests (where the missing symbol is a **type the test constructs** and forcing the
+  whole file red is correct): here only one behavior of several needs the seam, so the file must keep
+  compiling and failing as its own clean red. Fix: insert `NN-add-<component>-<seam>-seam` (pure
+  structural production change, build + a STRUCTURAL seam-exists check via the declaration regex,
+  TDD-exempt) the test-author task `dependsOn` — see the production-testability-seam section above +
+  `stacks/dotnet.md §11`. **Forbidden "fix":** a bare name grep for the seam (passes on a comment / a
+  `using`); use the declaration regex.
+- **Agent-per-item loop over a large/unknown fan-out** (#100): a task whose deliverable is "process N
+  items where N is unknown and potentially large" — a web crawl, a recursive-glob transform, a mass
+  API fetch — modeled as an **agent-iterated loop** (one `.prompt.md` turn-budget covering N
+  fetch+convert+write cycles). Agent turns are the wrong unit for bulk work: a few hundred items blow
+  the budget, the action hits max-turns and is killed, and the retry hits the same wall identically —
+  a hard dead-end on a task that is perfectly doable as a script. Raising `maxTurns` (#94) only moves
+  the wall. Fix: model it as a **scripted-ETL `script` action** (the N-item volume happens in one
+  script execution, off the turn budget), add a **discover-size-first** probe where N is unknown, and
+  **split** the scripted bulk-capture from a **bounded** per-item curation task — see the
+  bulk/unbounded-fan-out section above + `stacks/dotnet.md §12`. The tell `/guardrails-review` hunts: a
+  crawl/scrape/bulk-transform task written as a prompt that "enumerates … and produces a note per
+  item" with no size bound and no script.
 - **Hidden-state**: the guardrail depends on machine state (network, globally
   installed tools, a developer's home dir) rather than ancestor outputs or the repo.
   Declare required interpreters via `guardrails.json` instead.
