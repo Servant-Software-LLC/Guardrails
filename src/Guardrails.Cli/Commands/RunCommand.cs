@@ -50,6 +50,11 @@ public static class RunCommand
             Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess on regardless of guardrails.json."
         };
 
+        var revalidateTaskOption = new Option<string?>("--revalidate-task")
+        {
+            Description = "Re-validate-only (issue #102): run ONLY this task's guardrails against the current workspace, spawning NO agent attempt — for confirming a hand-fix to a needs-human task. On pass the task is marked succeeded; serial mode only."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
@@ -58,6 +63,7 @@ public static class RunCommand
         command.Add(noLogServerOption);
         command.Add(logPortOption);
         command.Add(mergeOnSuccessOption);
+        command.Add(revalidateTaskOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -68,6 +74,21 @@ public static class RunCommand
             bool noLogServer = parseResult.GetValue(noLogServerOption);
             int logPort = parseResult.GetValue(logPortOption);
             bool mergeOnSuccess = parseResult.GetValue(mergeOnSuccessOption);
+            string? revalidateTask = parseResult.GetValue(revalidateTaskOption);
+
+            // Re-validate-only (issue #102) is a single-task verification, not a run: it spawns no
+            // agent attempt and ignores the run-shaped flags. Reject the combinations that would
+            // otherwise silently no-op (or, for --fresh, destroy the very state being verified).
+            if (!string.IsNullOrWhiteSpace(revalidateTask))
+            {
+                if (fresh || dryRun)
+                {
+                    io.Out.WriteLine("--revalidate-task cannot be combined with --fresh or --dry-run.");
+                    return ExitCodes.HarnessError;
+                }
+
+                return await Revalidate.ExecuteAsync(folder, revalidateTask, io, cancellationToken).ConfigureAwait(false);
+            }
 
             if (dryRun)
             {

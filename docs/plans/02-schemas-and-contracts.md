@@ -625,6 +625,36 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   `needs-human` / `failed` / `blocked` → `pending` with a fresh retry budget;
   `running` (crashed previous run) → `pending`, attempt numbering continues.
 
+### 7.1 Re-validate-only (`guardrails run --revalidate-task <id>`)
+
+`guardrails run [folder] --revalidate-task <task-id>` runs **only that one task's guardrails**
+against the **current workspace state**, spawning **no action/agent attempt** (issue #102). The use
+case: a task hit `needs-human`, a human hand-fixed the artifact in their checkout, and they want to
+confirm the gate now passes WITHOUT burning another agent attempt that might redo expensive work or
+overwrite the fix. It is a single-task verification, **not** a run — the rest of the DAG is untouched
+(a subsequent normal `run` resumes it).
+
+- **Workspace / cwd.** Guardrails run with cwd = the plan `workspace` (the user's own checkout, where
+  the fix lives) — the same serial/shared-workspace path a `maxParallelism: 1` run uses.
+- **Worktree mode is refused.** When a normal run would use worktree isolation (`maxParallelism > 1`
+  on a git workspace), `--revalidate-task` exits `1` with a pointer to set `maxParallelism: 1`: an
+  in-place fix in the user's checkout is invisible to a fresh isolated segment worktree, so verifying
+  it there would be meaningless.
+- **No action output, no fragment.** The `GUARDRAILS_ACTION_STDOUT` / `_STDERR` / `_RESULT` pointers
+  (§5.1) are **absent** — no action ran — so a verify-don't-replay guardrail (#62) that requires them
+  fails honestly rather than passing vacuously. `GUARDRAILS_STATE_IN` is a fresh snapshot of the
+  current `state.json`; **no fragment is produced or merged** (the human's artifact is the deliverable,
+  not new state — any state earlier attempts contributed is already in `state.json`). Prompt guardrails
+  run via the same path as a normal attempt; they are NEVER silently skipped.
+- **Eligibility.** Refused (exit `1`) for an unknown task id, an already-`succeeded` task (use
+  `guardrails reset <id>`), or a task with a dependency that is not yet `succeeded` (the DAG invariant:
+  a task only goes green after its deps). Eligibility is read from the **durable** journal status
+  (before resume normalization). Cannot be combined with `--fresh` or `--dry-run`.
+- **Settle.** All guardrails pass ⇒ a synthetic `succeeded` attempt is journaled and the task settles
+  `succeeded` (`state.json` unchanged); exit `0`. Any guardrail fails ⇒ a `feedback.md` is written, the
+  failing guardrails are reported, the task settles `needs-human` (still a non-green halt the human must
+  keep working); exit `2`. No agent is spawned in either case.
+
 **Harness exit codes**: `0` all succeeded · `1` harness/validation error ·
 `2` the operation completed but an actionable condition was found — for `run`: a task is
 needs-human/blocked; for `graph --check`: the diagram is stale or missing (the "regenerate"
