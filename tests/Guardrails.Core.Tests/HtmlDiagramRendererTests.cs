@@ -47,6 +47,19 @@ public sealed class HtmlDiagramRendererTests
     }
 
     [Fact]
+    public void Render_RaisesMermaidSizeCeilings_SoLargeDagsRender()
+    {
+        // Issue #108: a large plan's DAG source exceeds Mermaid's default 50 000-char maxTextSize
+        // and/or 500-edge maxEdges ceiling, so mermaid.render throws and the page falls back to
+        // "could not render". The fix lifts BOTH ceilings in mermaid.initialize — assert they are
+        // present (a regression that drops either re-introduces the big-plan render failure).
+        string html = HtmlDiagramRenderer.Render(Source, Hash);
+
+        Assert.Contains("maxTextSize: 5000000", html);
+        Assert.Contains("maxEdges: 100000", html);
+    }
+
+    [Fact]
     public void Render_IsDeterministic()
     {
         Assert.Equal(HtmlDiagramRenderer.Render(Source, Hash), HtmlDiagramRenderer.Render(Source, Hash));

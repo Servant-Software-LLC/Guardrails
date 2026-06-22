@@ -4,6 +4,7 @@ using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
+using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Core.Execution;
 
@@ -211,6 +212,131 @@ public sealed class TaskExecutor : ITaskExecutor
             exhaustedSuffix += $"; triage: {triageFeedbackPath}";
 
         return last with { Summary = $"{last.Summary}{exhaustedSuffix}" };
+    }
+
+    /// <summary>
+    /// Re-validate-only (issue #102): run JUST this task's guardrails against the CURRENT workspace
+    /// state, spawning NO action/agent attempt. The intended caller is a human who hand-fixed a
+    /// <c>needs-human</c> task's artifact and wants to confirm the gate now passes WITHOUT burning an
+    /// agent attempt that might redo expensive work or overwrite the fix.
+    /// <list type="bullet">
+    ///   <item>Guardrails run with cwd = the plan <see cref="PlanDefinition.Workspace"/> (the user's
+    ///     own checkout where the fix lives) — this path is serial/shared-workspace only (the CLI
+    ///     refuses worktree mode, where a fresh segment would not contain the in-place fix).</item>
+    ///   <item>The <c>GUARDRAILS_ACTION_*</c> pointers are deliberately ABSENT: no action ran, so a
+    ///     verify-don't-replay guardrail (#62) that requires recorded action output fails honestly
+    ///     rather than passing vacuously. <c>GUARDRAILS_STATE_IN</c> is a fresh snapshot of the
+    ///     current <c>state.json</c>; no fragment is produced or merged (the human's artifact is the
+    ///     deliverable, not new state).</item>
+    ///   <item>All pass ⇒ a synthetic <see cref="AttemptOutcome.Succeeded"/> attempt is journaled and
+    ///     the task settles <see cref="TaskOutcome.Succeeded"/> (state.json unchanged). Any fail ⇒
+    ///     a <c>feedback.md</c> is written and the task settles <see cref="TaskOutcome.GuardrailFailed"/>;
+    ///     the journal status stays non-green so the next normal <c>run</c> still re-attempts it.</item>
+    /// </list>
+    /// Prompt guardrails are fully supported (same <see cref="GuardrailRunner"/> as a normal attempt);
+    /// they are NEVER silently skipped.
+    /// </summary>
+    public async Task<TaskResult> RevalidateAsync(TaskNode task, CancellationToken cancellationToken)
+    {
+        var startedAt = DateTimeOffset.UtcNow;
+        _observer.TaskStarting(task);
+
+        int attemptNumber = _journal.NextAttemptNumber(task.Id);
+        string logDir = AttemptLogDir(task.Id, attemptNumber);
+        Directory.CreateDirectory(logDir);
+        string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
+
+        string snapshotPath = _stateManager.CreateSnapshot(logDir);
+        string workspace = ResolveWorkingDirectory(task);
+
+        // The guardrail env WITHOUT GUARDRAILS_STATE_OUT (no action) and WITHOUT the
+        // GUARDRAILS_ACTION_* pointers: there is no recorded action output to verify against, so a
+        // guardrail that reads them sees them absent (a verify-don't-replay guardrail then fails
+        // honestly — never a vacuous pass). GUARDRAILS_STATE_IN is the fresh snapshot.
+        var env = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["GUARDRAILS_PLAN_DIR"] = _plan.PlanDirectory,
+            ["GUARDRAILS_TASK_ID"] = task.Id,
+            ["GUARDRAILS_TASK_DIR"] = task.Directory,
+            ["GUARDRAILS_ATTEMPT"] = attemptNumber.ToString(),
+            ["GUARDRAILS_STATE_IN"] = snapshotPath,
+            ["GUARDRAILS_LOG_DIR"] = logDir
+        };
+        foreach (KeyValuePair<string, string> extra in task.Action.Env)
+        {
+            env[extra.Key] = extra.Value;
+        }
+
+        GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
+            task, workspace, env, snapshotPath, logDir, cancellationToken).ConfigureAwait(false);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new TaskResult
+            {
+                TaskId = task.Id,
+                Outcome = TaskOutcome.Cancelled,
+                Guardrails = guardrails.Results,
+                Summary = "revalidate cancelled"
+            };
+        }
+
+        if (guardrails.AnyFailed)
+        {
+            IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
+            string feedback = RetryPolicy.ForGuardrailFailures(task, attemptNumber, guardrails.Results);
+            AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+            var failedRecord = new AttemptRecord
+            {
+                Attempt = attemptNumber,
+                StartedAt = startedAt,
+                EndedAt = DateTimeOffset.UtcNow,
+                ActionExitCode = null,
+                Outcome = AttemptOutcome.GuardrailFailed,
+                FailedGuardrails = failed
+                    .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
+                    .ToList(),
+                LogDir = relativeLogDir
+            };
+            // NeedsHuman, not pending: the gate still does not pass, so the task stays a non-green
+            // halt the human must keep working on — exactly as a normal failed attempt would leave it.
+            _journal.RecordAttempt(task.Id, failedRecord, JournalTaskStatus.NeedsHuman);
+
+            var result = new TaskResult
+            {
+                TaskId = task.Id,
+                Outcome = TaskOutcome.GuardrailFailed,
+                Guardrails = guardrails.Results,
+                Summary = $"revalidate: guardrail(s) still failing: {string.Join(", ", failed.Select(g => g.Name))}"
+            };
+            _observer.TaskFinished(result);
+            return result;
+        }
+
+        // All guardrails pass against the current workspace. Journal a synthetic succeeded attempt —
+        // no fragment merge (state.json is untouched: the artifact is the deliverable, and any state
+        // earlier attempts contributed is already merged).
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = null,
+            Outcome = AttemptOutcome.Succeeded,
+            LogDir = relativeLogDir
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Succeeded);
+
+        var ok = new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.Succeeded,
+            Guardrails = guardrails.Results,
+            Summary = $"revalidate ok: {guardrails.Results.Count} guardrail(s) passed against current workspace (no agent attempt)"
+        };
+        _observer.TaskFinished(ok);
+        return ok;
     }
 
     /// <summary>

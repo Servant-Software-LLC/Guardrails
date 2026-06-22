@@ -632,6 +632,36 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   `needs-human` / `failed` / `blocked` → `pending` with a fresh retry budget;
   `running` (crashed previous run) → `pending`, attempt numbering continues.
 
+### 7.1 Re-validate-only (`guardrails run --revalidate-task <id>`)
+
+`guardrails run [folder] --revalidate-task <task-id>` runs **only that one task's guardrails**
+against the **current workspace state**, spawning **no action/agent attempt** (issue #102). The use
+case: a task hit `needs-human`, a human hand-fixed the artifact in their checkout, and they want to
+confirm the gate now passes WITHOUT burning another agent attempt that might redo expensive work or
+overwrite the fix. It is a single-task verification, **not** a run — the rest of the DAG is untouched
+(a subsequent normal `run` resumes it).
+
+- **Workspace / cwd.** Guardrails run with cwd = the plan `workspace` (the user's own checkout, where
+  the fix lives) — the same serial/shared-workspace path a `maxParallelism: 1` run uses.
+- **Worktree mode is refused.** When a normal run would use worktree isolation (`maxParallelism > 1`
+  on a git workspace), `--revalidate-task` exits `1` with a pointer to set `maxParallelism: 1`: an
+  in-place fix in the user's checkout is invisible to a fresh isolated segment worktree, so verifying
+  it there would be meaningless.
+- **No action output, no fragment.** The `GUARDRAILS_ACTION_STDOUT` / `_STDERR` / `_RESULT` pointers
+  (§5.1) are **absent** — no action ran — so a verify-don't-replay guardrail (#62) that requires them
+  fails honestly rather than passing vacuously. `GUARDRAILS_STATE_IN` is a fresh snapshot of the
+  current `state.json`; **no fragment is produced or merged** (the human's artifact is the deliverable,
+  not new state — any state earlier attempts contributed is already in `state.json`). Prompt guardrails
+  run via the same path as a normal attempt; they are NEVER silently skipped.
+- **Eligibility.** Refused (exit `1`) for an unknown task id, an already-`succeeded` task (use
+  `guardrails reset <id>`), or a task with a dependency that is not yet `succeeded` (the DAG invariant:
+  a task only goes green after its deps). Eligibility is read from the **durable** journal status
+  (before resume normalization). Cannot be combined with `--fresh` or `--dry-run`.
+- **Settle.** All guardrails pass ⇒ a synthetic `succeeded` attempt is journaled and the task settles
+  `succeeded` (`state.json` unchanged); exit `0`. Any guardrail fails ⇒ a `feedback.md` is written, the
+  failing guardrails are reported, the task settles `needs-human` (still a non-green halt the human must
+  keep working); exit `2`. No agent is spawned in either case.
+
 **Harness exit codes**: `0` all succeeded · `1` harness/validation error ·
 `2` the operation completed but an actionable condition was found — for `run`: a task is
 needs-human/blocked; for `graph --check`: the diagram is stale or missing (the "regenerate"
@@ -1163,16 +1193,22 @@ echo secrets, so they are never exposed off the local machine (the numeric bind 
 custom `/etc/hosts` mapping of `localhost` cannot widen the exposure). Responses carry
 `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. The file surface is confined to
 `state/logs/<task-id>/`: the requested task id must be one the plan declares, and the requested
-filename must be a bare name inside the latest `attempt-N/` directory (no traversal).
+filename must be a bare name inside the selected `attempt-N/` directory (no traversal).
+
+**Attempt selection.** Both `files` and `file` take an optional `attempt=N` query: the selected
+attempt is that `attempt-N/` directory when it exists, else the latest attempt (an unknown/absent N
+falls back to latest rather than 404, so a mid-run page stays usable when a URL names an attempt
+that has not started). The task page renders an **attempt selector** beside the file selector — the
+live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 
 **Routes** (both the live and post-mortem servers expose the same set):
 
 | Route | Serves |
 |---|---|
 | `GET /` | landing page — every task linking to its log page (the `logs` variant also shows each task's journal status) |
-| `GET /tasks/{id}` | a page that tails the latest attempt's log directory for task `{id}` |
-| `GET /tasks/{id}/files` | JSON `{ attempt, preferred, files[] }` — the latest attempt number, a preferred file to open first (`claude-stream.jsonl`, else `action-stdout.log`, else the first file), and the attempt's files |
-| `GET /tasks/{id}/file?name={f}` | the raw text of one log file (read with a shared handle so an in-flight writer is not blocked) |
+| `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt) |
+| `GET /tasks/{id}/files[?attempt=N]` | JSON `{ attempt, attempts[], preferred, files[] }` — the SELECTED attempt number (default = latest), every available attempt number ascending, a preferred file to open first (`transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log`, else the first file), and the selected attempt's files |
+| `GET /tasks/{id}/file?name={f}[&attempt=N]` | the raw text of one log file from the selected attempt (default = latest; read with a shared handle so an in-flight writer is not blocked) |
 
 ### 12.1 `guardrails run` — live log links
 

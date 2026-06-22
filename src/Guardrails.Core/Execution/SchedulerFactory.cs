@@ -25,8 +25,13 @@ namespace Guardrails.Core.Execution;
 /// </remarks>
 public static class SchedulerFactory
 {
-    /// <summary>Build a ready-to-run scheduler for <paramref name="plan"/>.</summary>
-    public static Scheduler Create(
+    /// <summary>
+    /// A <see cref="TaskExecutor"/> wired exactly as a real run wires it (state initialized, journal
+    /// loaded with resume rules applied, interpreter map + prompt-runner registry + advisory triage),
+    /// paired with the loaded <see cref="RunJournal"/>. <see cref="Create"/> uses this; the
+    /// re-validate-only path (issue #102) reuses it to run ONE task's guardrails without a scheduler.
+    /// </summary>
+    public static (TaskExecutor Executor, RunJournal Journal) CreateExecutor(
         PlanDefinition plan,
         ProcessRunner processRunner,
         IExecutableProbe probe,
@@ -59,6 +64,17 @@ public static class SchedulerFactory
         }
 
         var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, triage);
+        return (executor, journal);
+    }
+
+    /// <summary>Build a ready-to-run scheduler for <paramref name="plan"/>.</summary>
+    public static Scheduler Create(
+        PlanDefinition plan,
+        ProcessRunner processRunner,
+        IExecutableProbe probe,
+        IRunObserver observer)
+    {
+        (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer);
 
         // Plan 08 §1 wiring policy, by (parallelism, git):
         //   • parallel + git repo  → WORKTREE mode: real GitWorktreeProvider + GuardrailReVerifier
@@ -75,6 +91,12 @@ public static class SchedulerFactory
         IAiMergeWorker? aiMergeWorker = null;
         if (plan.Config.MaxParallelism > 1 && IsGitRepository(plan.Workspace))
         {
+            // The interpreter map + prompt-runner registry the worktree collaborators need are
+            // rebuilt from the same inputs CreateExecutor used (cheap, pure constructions) — kept
+            // local to this branch so the serial path constructs neither.
+            var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
+            PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
+
             worktreeProvider = new GitWorktreeProvider(plan.Workspace, WorktreeRootFor(plan));
             reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
 
@@ -147,6 +169,17 @@ public static class SchedulerFactory
 
         return registry.DefaultRunnerName is { } name ? registry.Resolve(name) : null;
     }
+
+    /// <summary>
+    /// True when a real <c>run</c> of <paramref name="plan"/> would use WORKTREE mode (segment
+    /// worktrees + a plan branch), i.e. <c>maxParallelism &gt; 1</c> AND the workspace is a git
+    /// repository — the exact condition <see cref="Create"/> wires a <see cref="GitWorktreeProvider"/>
+    /// on. Exposed so the re-validate-only path (issue #102) can REFUSE worktree mode: a human's
+    /// in-place fix lives in their own checkout, which a fresh isolated segment worktree would not
+    /// contain, so verifying it there would be meaningless.
+    /// </summary>
+    public static bool WouldUseWorktreeMode(PlanDefinition plan) =>
+        plan.Config.MaxParallelism > 1 && IsGitRepository(plan.Workspace);
 
     /// <summary>
     /// True when <paramref name="workspace"/> is inside a git working tree (worktree mode's hard

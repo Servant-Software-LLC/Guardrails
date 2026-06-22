@@ -16,9 +16,11 @@ namespace Guardrails.Cli.Ui;
 /// Routes:
 /// <list type="bullet">
 ///   <item><c>GET /</c> — landing page listing every task, each linking to its log page.</item>
-///   <item><c>GET /tasks/{id}</c> — a page that tails the latest attempt's log directory.</item>
-///   <item><c>GET /tasks/{id}/files</c> — JSON: the latest attempt number + the files in it.</item>
-///   <item><c>GET /tasks/{id}/file?name={f}</c> — the raw text of one log file (tailed by the page).</item>
+///   <item><c>GET /tasks/{id}</c> — a page that tails an attempt's log directory (latest by default).</item>
+///   <item><c>GET /tasks/{id}/files[?attempt=N]</c> — JSON: the selected attempt number, every
+///     available attempt number, and the files in the selected attempt (default = latest).</item>
+///   <item><c>GET /tasks/{id}/file?name={f}[&amp;attempt=N]</c> — the raw text of one log file
+///     from the selected attempt (default = latest; tailed by the page).</item>
 /// </list>
 ///
 /// The <c>{id}</c> must be a known task id and <c>{name}</c> a bare filename inside the attempt
@@ -226,10 +228,12 @@ public sealed class LogServer : IAsyncDisposable
         switch (segments[2])
         {
             case "files":
-                WriteJson(context, FilesJson(taskId));
+                WriteJson(context, FilesJson(taskId, ParseAttempt(context.Request.QueryString["attempt"])));
                 return;
             case "file":
-                WriteFile(context, taskId, context.Request.QueryString["name"]);
+                WriteFile(context, taskId,
+                    context.Request.QueryString["name"],
+                    ParseAttempt(context.Request.QueryString["attempt"]));
                 return;
             default:
                 TrySetStatus(context, HttpStatusCode.NotFound);
@@ -239,9 +243,17 @@ public sealed class LogServer : IAsyncDisposable
 
     // --- payloads ---------------------------------------------------------------------------
 
-    private string FilesJson(string taskId)
+    private string FilesJson(string taskId, int? requestedAttempt)
     {
-        string? attemptDir = LatestAttemptDir(taskId, out int? attemptNumber);
+        // Every attempt the task has on disk, ascending — the attempt <select> mirrors this and the
+        // live viewer can inspect a finished attempt-1 while attempt-2 runs (issue #103).
+        IReadOnlyList<int> attempts = AttemptNumbers(taskId);
+
+        // Resolve the directory for the SELECTED attempt: an explicit ?attempt=N when it exists,
+        // else the latest. An unknown/invalid N falls back to latest rather than 404 — the page
+        // stays usable while a run is mid-flight and an attempt the URL named has not started yet.
+        string? attemptDir = ResolveAttemptDir(taskId, requestedAttempt, out int? attemptNumber);
+
         var files = attemptDir is null
             ? new List<string>()
             : Directory.EnumerateFiles(attemptDir)
@@ -267,6 +279,14 @@ public sealed class LogServer : IAsyncDisposable
                 writer.WriteNull("attempt");
             }
 
+            writer.WriteStartArray("attempts");
+            foreach (int a in attempts)
+            {
+                writer.WriteNumberValue(a);
+            }
+
+            writer.WriteEndArray();
+
             if (preferred is null)
             {
                 writer.WriteNull("preferred");
@@ -289,7 +309,7 @@ public sealed class LogServer : IAsyncDisposable
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    private void WriteFile(HttpListenerContext context, string taskId, string? name)
+    private void WriteFile(HttpListenerContext context, string taskId, string? name, int? requestedAttempt)
     {
         if (string.IsNullOrEmpty(name) || !IsSafeFileName(name))
         {
@@ -297,7 +317,7 @@ public sealed class LogServer : IAsyncDisposable
             return;
         }
 
-        string? attemptDir = LatestAttemptDir(taskId, out _);
+        string? attemptDir = ResolveAttemptDir(taskId, requestedAttempt, out _);
         if (attemptDir is null)
         {
             WriteText(context, string.Empty); // attempt not started yet — empty, page keeps polling
@@ -358,14 +378,64 @@ public sealed class LogServer : IAsyncDisposable
 
     // --- log-dir resolution -----------------------------------------------------------------
 
-    /// <summary>The highest-numbered <c>attempt-N</c> directory for a task, or null if none yet.</summary>
-    private string? LatestAttemptDir(string taskId, out int? attemptNumber)
+    /// <summary>
+    /// Parse the <c>?attempt=N</c> query value to a positive attempt number, or null when absent /
+    /// non-numeric / non-positive — in which case callers default to the latest attempt.
+    /// </summary>
+    private static int? ParseAttempt(string? raw) =>
+        int.TryParse(raw, out int n) && n > 0 ? n : null;
+
+    /// <summary>
+    /// Every <c>attempt-N</c> directory number a task has on disk, ascending. Empty when the task
+    /// has no log directory yet. Drives the attempt selector and the "which attempts exist" list.
+    /// </summary>
+    private IReadOnlyList<int> AttemptNumbers(string taskId)
+    {
+        string taskDir = Path.Combine(_logsRoot, taskId);
+        if (!Directory.Exists(taskDir))
+        {
+            return Array.Empty<int>();
+        }
+
+        var numbers = new List<int>();
+        foreach (string dir in Directory.EnumerateDirectories(taskDir))
+        {
+            string leaf = Path.GetFileName(dir);
+            if (leaf.StartsWith("attempt-", StringComparison.Ordinal) &&
+                int.TryParse(leaf.AsSpan("attempt-".Length), out int n))
+            {
+                numbers.Add(n);
+            }
+        }
+
+        numbers.Sort();
+        return numbers;
+    }
+
+    /// <summary>
+    /// The directory for the SELECTED attempt: <paramref name="requestedAttempt"/> when that
+    /// attempt-N directory exists, otherwise the highest-numbered (latest) attempt. Returns null —
+    /// with <paramref name="attemptNumber"/> null — when the task has no attempts yet. The
+    /// fall-back-to-latest keeps a mid-run page usable when a URL names an attempt that has not
+    /// started, and preserves the pre-#103 "always latest" behaviour when no attempt is requested.
+    /// </summary>
+    private string? ResolveAttemptDir(string taskId, int? requestedAttempt, out int? attemptNumber)
     {
         attemptNumber = null;
         string taskDir = Path.Combine(_logsRoot, taskId);
         if (!Directory.Exists(taskDir))
         {
             return null;
+        }
+
+        if (requestedAttempt is { } requested)
+        {
+            string candidate = Path.Combine(taskDir, $"attempt-{requested}");
+            if (Directory.Exists(candidate))
+            {
+                attemptNumber = requested;
+                return candidate;
+            }
         }
 
         string? best = null;
@@ -536,20 +606,44 @@ __ROWS__
 </head>
 <body>
 <h1>__TASK_HTML__</h1>
-<div class="bar"><a href="/">&larr; all tasks</a> &middot; attempt <span id="attempt">—</span>
+<div class="bar"><a href="/">&larr; all tasks</a>
+  &middot; attempt <select id="attempt"></select>
   &middot; file <select id="file"></select>
   &middot; <span id="tick">live</span></div>
 <pre id="log">waiting for log output…</pre>
 <script>
 const TASK = __TASK_JSON__;
-let current = null;
+let current = null;          // selected file name
+let attempt = null;          // selected attempt number (null = follow latest)
+let pinned = false;          // true once the user explicitly picks an attempt — stop auto-following latest
+
+function attemptQuery() { return attempt === null ? '' : `?attempt=${encodeURIComponent(attempt)}`; }
 
 async function refreshFiles() {
   try {
-    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/files`);
+    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/files${attemptQuery()}`);
     if (!r.ok) return;
     const d = await r.json();
-    document.getElementById('attempt').textContent = (d.attempt ?? '—');
+
+    // Attempt selector: rebuild only when the set of attempts changed, so a new attempt appearing
+    // mid-run does not clobber the user's current selection.
+    const asel = document.getElementById('attempt');
+    const attempts = d.attempts ?? (d.attempt != null ? [d.attempt] : []);
+    const haveAttempts = [...asel.options].map(o => Number(o.value));
+    const changed = attempts.length !== haveAttempts.length ||
+                    attempts.some((a, i) => a !== haveAttempts[i]);
+    if (changed) {
+      const keep = asel.value;
+      asel.innerHTML = '';
+      for (const a of attempts) {
+        const o = document.createElement('option');
+        o.value = a; o.textContent = 'attempt ' + a; asel.appendChild(o);
+      }
+      // Unpinned: follow the latest (server-reported) attempt. Pinned: keep the user's choice.
+      asel.value = pinned && keep ? keep : (d.attempt != null ? d.attempt : '');
+    }
+    if (!pinned && d.attempt != null) { attempt = d.attempt; asel.value = d.attempt; }
+
     const sel = document.getElementById('file');
     const have = new Set([...sel.options].map(o => o.value));
     for (const f of d.files) {
@@ -570,7 +664,7 @@ async function refreshLog() {
   current = sel.value || current;
   if (!current) return;
   try {
-    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/file?name=${encodeURIComponent(current)}`);
+    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/file?name=${encodeURIComponent(current)}${attempt === null ? '' : '&attempt=' + encodeURIComponent(attempt)}`);
     if (!r.ok) return;
     const t = await r.text();
     const pre = document.getElementById('log');
@@ -586,6 +680,17 @@ document.getElementById('file').addEventListener('change', () => {
   current = document.getElementById('file').value;
   refreshLog();
 });
+
+document.getElementById('attempt').addEventListener('change', () => {
+  // Pin to the user's chosen attempt and reset the file list, since a different attempt has its
+  // own files (and may prefer a different default file).
+  attempt = Number(document.getElementById('attempt').value);
+  pinned = true;
+  current = null;
+  document.getElementById('file').innerHTML = '';
+  refreshFiles().then(refreshLog);
+});
+
 setInterval(refreshFiles, 2000);
 setInterval(refreshLog, 1000);
 refreshFiles().then(refreshLog);
