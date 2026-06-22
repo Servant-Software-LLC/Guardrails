@@ -1,3 +1,5 @@
+using Guardrails.Core.Io;
+
 namespace Guardrails.Cli;
 
 /// <summary>
@@ -61,7 +63,10 @@ public static class SkillsInstaller
 
             if (Directory.Exists(destination))
             {
-                Directory.Delete(destination, recursive: true);
+                // Windows-safe (issue #109): a previously installed skill folder may contain a
+                // read-only file; SafeDelete strips the attribute before deleting so a forced
+                // reinstall never fails with Access Denied.
+                SafeDelete.DeleteDirectory(destination);
             }
 
             CopyDirectory(skillDir, destination);

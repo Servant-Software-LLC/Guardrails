@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Guardrails.Core.Io;
 
 namespace Guardrails.Core.Execution;
 
@@ -198,6 +199,12 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     public void Discard(WorktreeHandle handle)
     {
         Git("worktree", "remove", "--force", handle.WorktreePath);
+
+        // Issue #109: `git worktree remove --force` handles git's own bookkeeping, but on Windows
+        // it can leave the directory on disk when a read-only loose object refuses deletion
+        // (Access Denied). Sweep any surviving tree with the read-only-clearing SafeDelete so a
+        // discarded segment never lingers.
+        SafeDelete.DeleteDirectory(handle.WorktreePath);
     }
 
     /// <inheritdoc />
@@ -287,6 +294,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             {
                 try { GitIn(repoPath, "worktree", "remove", "--force", worktreePath); }
                 catch (InvalidOperationException) { /* not a registered worktree; pruned below */ }
+                // Issue #109: clear any tree git left on disk (Windows read-only loose objects).
+                SafeDelete.DeleteDirectory(worktreePath);
             }
         }
 
@@ -328,6 +337,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             {
                 try { Git("worktree", "remove", "--force", worktreePath); }
                 catch (InvalidOperationException) { /* not a registered worktree; pruned below */ }
+                // Issue #109: clear any tree git left on disk (Windows read-only loose objects).
+                SafeDelete.DeleteDirectory(worktreePath);
             }
         }
 

@@ -43,8 +43,10 @@ public sealed class LogServerTests
     }
 
     [Fact]
-    public async Task Files_ReportsLatestAttempt_AndPrefersClaudeStream()
+    public async Task Files_ReportsLatestAttempt_AndPrefersClaudeStreamOverActionStdout()
     {
+        // No transcript.md present (a script task, or a prompt attempt before the transcript was
+        // rendered): claude-stream.jsonl still beats action-stdout.log.
         using var temp = new TempPlan();
         temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "old attempt");
         temp.WriteLog("01-alpha", attempt: 2, "action-stdout.log", "hello");
@@ -60,6 +62,26 @@ public sealed class LogServerTests
         string[] files = root.GetProperty("files").EnumerateArray().Select(e => e.GetString()!).ToArray();
         Assert.Contains("action-stdout.log", files);
         Assert.Contains("claude-stream.jsonl", files);
+    }
+
+    [Fact]
+    public async Task Files_PrefersTranscriptMd_OverClaudeStreamAndActionStdout()
+    {
+        // Issue #118: when transcript.md (the groomed, human-readable agent view) is present, it is
+        // the default file the task page opens — ahead of the raw claude-stream.jsonl and the
+        // action-stdout.log. transcript.md sorts AFTER both of those ordinally, so this proves the
+        // preference is intentional and not an artefact of alphabetical first-file fallback.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "stdout");
+        temp.WriteLog("01-alpha", attempt: 1, "claude-stream.jsonl", "{}");
+        temp.WriteLog("01-alpha", attempt: 1, "transcript.md", "# groomed view");
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/files");
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement root = doc.RootElement;
+
+        Assert.Equal("transcript.md", root.GetProperty("preferred").GetString());
     }
 
     [Fact]

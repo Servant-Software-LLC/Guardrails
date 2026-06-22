@@ -144,4 +144,15 @@ public static class DiagnosticCodes
     /// at validate time, never at silent runtime — an ERROR.
     /// </summary>
     public const string InvalidGuardrailScopeValue = "GR2021";
+
+    /// <summary>
+    /// A guardrail or script-action body reads another task's state namespace in the canonical
+    /// state-access form (<c>$state.'&lt;task-id&gt;'</c> / <c>state["&lt;task-id&gt;"]</c>) but the
+    /// referenced producer is not a transitive <c>dependsOn</c> ancestor of the referencing task and
+    /// is not satisfied by a <c>seed.json</c> top-level key (SSOT §6.2, issue #121). The scheduler
+    /// orders only on <c>dependsOn</c>, so the consumer can run before the producer and the read
+    /// returns null — failing at runtime as <c>needs-human</c> for a reason knowable at load time.
+    /// An ERROR: turns the runtime cascade into a deterministic load-time catch.
+    /// </summary>
+    public const string CrossTaskStateReferenceWithoutDependency = "GR2022";
 }

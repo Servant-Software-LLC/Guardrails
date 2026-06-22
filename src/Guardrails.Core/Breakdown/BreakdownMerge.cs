@@ -1,3 +1,4 @@
+using Guardrails.Core.Io;
 using Guardrails.Core.Model;
 using Guardrails.Core.State;
 
@@ -153,7 +154,7 @@ public static class BreakdownMerge
                 // Restore the original tasks tree if the final swap fails.
                 if (Directory.Exists(localTasks))
                 {
-                    Directory.Delete(localTasks, recursive: true);
+                    SafeDelete.DeleteDirectory(localTasks);
                 }
                 if (Directory.Exists(backup) && !Directory.Exists(localTasks))
                 {
@@ -164,7 +165,7 @@ public static class BreakdownMerge
 
             if (Directory.Exists(backup))
             {
-                Directory.Delete(backup, recursive: true);
+                SafeDelete.DeleteDirectory(backup);
             }
         }
         finally
@@ -172,7 +173,7 @@ public static class BreakdownMerge
             // Best-effort cleanup of the staging dir if anything left it behind.
             if (Directory.Exists(staged))
             {
-                try { Directory.Delete(staged, recursive: true); }
+                try { SafeDelete.DeleteDirectory(staged); }
                 catch (IOException) { /* leave it; the swap either succeeded or threw already */ }
             }
         }

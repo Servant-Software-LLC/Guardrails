@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 
 namespace Guardrails.Integration.Tests;
 
@@ -95,18 +96,10 @@ public sealed class GitWorktreeLifecycleTests
 
         public void Dispose()
         {
-            // Windows-safe teardown: git marks loose objects under .git/objects read-only, so a plain
-            // Directory.Delete(recursive) throws UnauthorizedAccessException (NOT IOException) on Windows.
-            // Strip the read-only attribute on every file first, then delete. Best-effort on teardown.
-            try
-            {
-                if (Directory.Exists(_root))
-                {
-                    foreach (var file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-                        File.SetAttributes(file, FileAttributes.Normal);
-                    Directory.Delete(_root, recursive: true);
-                }
-            }
+            // Windows-safe teardown (issue #109): git marks loose objects under .git/objects
+            // read-only, so a plain Directory.Delete(recursive) throws UnauthorizedAccessException
+            // (NOT IOException) on Windows. SafeDelete strips read-only attributes before deleting.
+            try { SafeDelete.DeleteDirectory(_root); }
             catch { /* best-effort cleanup of a temp dir */ }
         }
     }

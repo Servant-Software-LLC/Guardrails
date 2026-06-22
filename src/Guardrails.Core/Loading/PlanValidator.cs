@@ -1,5 +1,7 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Graph;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Loading;
@@ -32,6 +34,7 @@ public sealed class PlanValidator
         ValidateCostCap(plan, diagnostics);
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
+        ValidateCrossTaskStateReferences(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
         ValidateIntegrationGatePresent(plan, diagnostics);
         ValidateIntegrationGateNonEmpty(plan, diagnostics);
@@ -377,6 +380,144 @@ public sealed class PlanValidator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// A guardrail or script-action body that reads another task's state namespace in the canonical
+    /// state-access form declares a *runtime read dependency* on that producer. Because the scheduler
+    /// orders only on <c>dependsOn</c>, a consumer that reads <c>$state.'&lt;id&gt;'</c> without a
+    /// dependency path to <c>&lt;id&gt;</c> can run before the producer — the read returns null and
+    /// the guardrail fails at runtime as <c>needs-human</c> (the real <c>46</c>→<c>35</c> cascade,
+    /// issue #121). GR2022 turns this into a load-time ERROR: every referenced task id that is a real
+    /// task and is not the referencing task's own id MUST be a transitive <c>dependsOn</c> ancestor —
+    /// OR be satisfied by the pre-existing baseline, i.e. <c>state/seed.json</c> carries a top-level
+    /// key exactly equal to that id (§6.2/§6.3). The check is scoped to the canonical state-key SHAPE
+    /// — the form single-writer-per-key namespacing makes deterministic (the producer of key
+    /// <c>'&lt;id&gt;'</c> is exactly task <c>&lt;id&gt;</c>) — so an id matching no task, or a quoted
+    /// string outside a <c>state</c> access, is ignored: zero false positives. Produced-file
+    /// references are NOT linted in v1 (no deterministic producer→artifact map exists). Skipped when a
+    /// cycle was found (the ancestor closure is unreliable on a graph that already failed GR2007).
+    /// </summary>
+    private static void ValidateCrossTaskStateReferences(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        // A cycle (GR2007) makes the dependency closure meaningless — skip to avoid noise on a plan
+        // that already fails validation for a more fundamental reason.
+        var graph = new DependencyGraph(plan.Tasks);
+        if (graph.FindCycle() is not null)
+        {
+            return;
+        }
+
+        var taskIds = new HashSet<string>(plan.Tasks.Select(t => t.Id), StringComparer.Ordinal);
+        var seedKeys = ReadSeedTopLevelKeys(plan.PlanDirectory);
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            IReadOnlySet<string> ancestors = graph.TransitiveDependenciesOf(task.Id);
+
+            // The action body (script actions only — a prompt action is not a deterministic script
+            // and its "references" are prose, not a state deref) plus every guardrail body.
+            if (task.Action.Kind == ActionKind.Script)
+            {
+                CheckBody(task, task.Action.Path, ancestors);
+            }
+
+            foreach (GuardrailDefinition guardrail in task.Guardrails)
+            {
+                CheckBody(task, guardrail.Path, ancestors);
+            }
+        }
+
+        void CheckBody(TaskNode task, string bodyPath, IReadOnlySet<string> ancestors)
+        {
+            string body;
+            try
+            {
+                body = File.ReadAllText(bodyPath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return; // unreadable body — a structural problem the loader/other checks surface
+            }
+
+            // De-dup so a body referencing the same producer twice yields one diagnostic.
+            var reported = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (Match match in StateKeyReference.Matches(body))
+            {
+                string referencedId = match.Groups["id"].Value;
+
+                // Only flag a reference to a REAL OTHER task: an id matching no task is not a
+                // cross-task reference (could be any quoted string), and a self-reference is always
+                // satisfiable (the task writes its own namespace).
+                if (!taskIds.Contains(referencedId) || referencedId == task.Id)
+                {
+                    continue;
+                }
+
+                // Satisfied by a dependency edge or by a pre-existing seed top-level key.
+                if (ancestors.Contains(referencedId) || seedKeys.Contains(referencedId))
+                {
+                    continue;
+                }
+
+                if (!reported.Add(referencedId))
+                {
+                    continue;
+                }
+
+                diagnostics.Add(Error(DiagnosticCodes.CrossTaskStateReferenceWithoutDependency, bodyPath,
+                    $"Task '{task.Id}' reads state key '{referencedId}' (produced by task '{referencedId}') " +
+                    "but declares no dependsOn path to it, and no seed.json top-level key provides it. " +
+                    "The scheduler may run this task before its producer, so the state read returns null " +
+                    $"and the guardrail fails at runtime as needs-human. Add '{referencedId}' to this task's " +
+                    "dependsOn (directly or transitively) so the producer always runs first (SSOT §6.2)."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Matches the canonical state-key access shapes (case-sensitive on the <c>state</c> token),
+    /// capturing the quoted task id: <c>$state.'&lt;id&gt;'</c>, <c>$state."&lt;id&gt;"</c> (PowerShell
+    /// property access), and <c>state['&lt;id&gt;']</c> / <c>state["&lt;id&gt;"]</c> (bracket index,
+    /// JS/Python/jq idioms). The id is any non-quote run, validated against real task ids by the caller.
+    /// </summary>
+    private static readonly Regex StateKeyReference = new(
+        """(?<![\w$])\$?state\s*(?:\.\s*'(?<id>[^']+)'|\.\s*"(?<id>[^"]+)"|\[\s*'(?<id>[^']+)'\s*\]|\[\s*"(?<id>[^"]+)"\s*\])""",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Read the top-level object keys of <c>&lt;planDirectory&gt;/state/seed.json</c> (comment- and
+    /// trailing-comma-tolerant, matching the committed-manifest convention). Returns an empty set when
+    /// the file is absent, unreadable, or not a JSON object — the reference then simply isn't seed-satisfied.
+    /// </summary>
+    private static HashSet<string> ReadSeedTopLevelKeys(string planDirectory)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        string seedPath = Path.Combine(planDirectory, "state", "seed.json");
+        if (!File.Exists(seedPath))
+        {
+            return keys;
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(seedPath),
+                new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty property in doc.RootElement.EnumerateObject())
+                {
+                    keys.Add(property.Name);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // A malformed/unreadable seed simply provides no exemption keys.
+        }
+
+        return keys;
     }
 
     private static void ValidateGuardrailsPresent(PlanDefinition plan, List<Diagnostic> diagnostics)
