@@ -162,10 +162,53 @@ A task is right-sized when ALL hold:
    task is cheap and its `tests-fail-on-current-code` guardrail is the strongest
    anti-tautology check the skill has.
 
+### Over-size split-check — a CHECK WITH TEETH, not advice (#111)
+
+The right-sizing rules above describe the target; this check ENFORCES it. **Before emitting any
+task, run it through the split-trigger. If ANY trigger fires, you MUST split the task and re-run the
+triggers on each piece — do NOT emit the over-sized task and "note it."** A milestone-sized chunk that
+maps to one task thrashes at run time: every failed guardrail re-runs the whole oversized action, and
+it is the single most likely `needs-human` in a run (the exact retry-cheapness anti-pattern).
+
+**Split-trigger — split when ANY holds:**
+- **(a) Bundles multiple distinct deliverables.** The description reads "do X **and** Y **and** Z"
+  with the conjuncts being separately-verifiable outcomes (add a gate **and** delete three classes
+  **and** re-baseline the suite). Each distinct deliverable is its own task. (One outcome that needs
+  "and" only to *describe* it — "create the file and register it in the index", checked by a single
+  guardrail — is NOT this trigger; that is rule 2's single-guardrail case.)
+- **(b) Wide blast radius.** The task creates/deletes/renames many files, or re-baselines many test
+  references (a rough line: **deleting ≥3 source files, or touching ≳10 files / test references** in
+  one action). A wide-blast task fails the retry-cheapness rule by construction: a one-line guardrail
+  miss re-does the entire multi-file change. Split so each task's diff — and therefore its retry — is
+  bounded.
+- **(c) Maps 1:1 to a design milestone.** A plan milestone / phase / numbered section is NOT a task —
+  it is a *bundle* of deliverables. If a candidate task is "implement Milestone M4," decompose it into
+  the deliverables inside M4; never size a milestone 1:1 to a task.
+- **(d) Retry re-runs expensive work.** Estimate what a single failed guardrail forces to redo. If a
+  retry re-runs an hour of refactoring (a multi-deletion, a 100+-ref re-baseline), the task is
+  mis-sized by definition. Split so each task's retry is cheap.
+
+**Carry the plan's own feasibility signals into sizing (#111).** When the plan's
+feasibility / self-critique / risk section flags a milestone as **heavy, over-packed, or
+high-churn** ("~147 test refs", "over-packed", "large blast radius", "risky to do in one pass"),
+treat that as a **fired trigger**: the breakdown MUST split that milestone rather than size it 1:1.
+This signal already exists in the plan — do not let it die between the plan's risk section and your
+task sizing.
+
+**Corrective action when a trigger fires:** decompose the task into the smallest pieces that each
+(i) carry one verifiable outcome, (ii) land in one session, and (iii) retry cheaply — scoping each
+piece's test re-baseline to that piece. *Worked split:* a task bundling "add the git-required
+validation gate + new error codes, delete `CapturedFileStore` + `FileHashCapture` +
+`RestoreAncestorCaptures` + two validators, and re-baseline ~147 test refs" fires (a), (b), and (d).
+Split it into e.g. (1) add the validation gate + error codes; (2) remove the two validators; (3)
+delete the three capture classes + the retry-loop change — each with its test re-baseline scoped to
+that piece, so each lands in a session and retries cheaply.
+
 Heuristic: a typical feature plan yields **5–15 tasks**. TDD splitting doubles code
 tasks (each code item becomes two tasks); this does not count against the threshold.
 Under 3 or over 25 tasks after applying TDD → re-examine, and tell the user why if
-it stands.
+it stands. **A count under the floor after splitting over-sized milestones is itself a signal**
+that a milestone was sized 1:1 — re-run the split-trigger before settling on a small task count.
 
 ## Step 3 — Determine the DAG (`dependsOn`)
 
@@ -226,6 +269,35 @@ optional:
   consume? Add the stack file's reference-chain guardrail on the CONSUMER's project file
   (`stacks/dotnet.md §2`). Builds pass independently, so without this an agent can define a
   local copy of the interface and pass.
+- **Composition-root wiring (#120 — the recurring lesson)** — does the plan add a **component
+  that must be CONSTRUCTED and INJECTED at a production composition root or entry point** to do
+  anything (an `IFoo` + `FooImpl` pair injected into a factory / `Program.cs` / DI registration /
+  dispatch site / `RunCommand`)? The per-component tasks author-test + implement `FooImpl` against
+  an **injected constructor seam** — each green — and the terminal whole-suite build + test passes,
+  yet **nothing constructs `FooImpl` and hands it to the production assembler**, so the real entry
+  point never takes the new branch and the feature is **inert** (reachable only from xUnit, which
+  injects the seam itself). This is the highest-impact false-green the skill emits — it recurred 3×
+  in one plan (engine, AI-merge, triage — all built, all dead from the CLI at the `SchedulerFactory`
+  composition root). Two artifacts close it, generated in Step 5: an explicit **wiring task** (a
+  named deliverable: construct `FooImpl` and inject it into the assembler, with a DAG sink depending
+  on it) and a **composition-root guardrail** asserting the component is ACTUALLY wired in
+  production — drive the REAL assembler and assert observable output the wired-only feature produces
+  (strongest), or reflect on the constructed object for the non-null collaborator WITH a contrast
+  case (the `Factory_Wires*` shape; catalogue → composition-root section, `stacks/dotnet.md §10`).
+  The guardrail MUST NOT inject the seam itself, and the terminal whole-suite gate does NOT cover
+  this (it is necessary but not sufficient). The signals (any one):
+  - the plan introduces an `IFoo` + `FooImpl` pair (heuristic: every such pair needs a "wire
+    `FooImpl` into the composition root" deliverable);
+  - the component is reachable only via a constructor/DI seam the unit tests inject themselves;
+  - the plan names a factory / `Program.cs` / `Startup` / DI registration / dispatch site /
+    `RunCommand` that must construct, branch on, or inject the new component;
+  - the feature activates only under a mode/flag (e.g. `maxParallelism > 1`) the production dispatch
+    must honour — "machinery reachable only from xUnit" is the tell.
+
+  (This is a sibling of the executable-entry-point-wiring check below but at the assembly layer:
+  that one greps `Program.cs` + smoke-tests a route for a *server serving over a port*; this one
+  asserts a *factory/container constructs and injects an internal collaborator*. A plan can need
+  both — wire the entry point to the launcher AND wire a collaborator into the factory.)
 - **Executable entry-point wiring** — does the plan describe a **server or CLI executable
   outcome** (signals below)? Component tasks (scaffold, handler, routes) each compile and
   unit-test green, and the terminal whole-solution build passes — yet *nothing wires the
@@ -381,6 +453,34 @@ upstream task that creates it:
   (guardrails: schema file exists + parses + a known-bad sample FAILS validation).
 - Guardrail "port answers" → ensure an ancestor produces the launch script, or the
   guardrail owns start/stop itself with a timeout.
+- **Component injected at a composition root (Step 4 composition-root-wiring signal fired) →
+  insert a wiring task AND a composition-root guardrail (#120 — the recurring lesson).** A plan
+  that adds an `IFoo`/`FooImpl` pair behind a constructor seam decomposes into component tasks
+  (author tests → implement `FooImpl`) each green, yet no task constructs `FooImpl` and injects it
+  into the production assembler — so the feature is dead from the CLI. Insert:
+  1. **`NN-wire-<fooimpl>-into-<assembler>`** — the named integration deliverable: construct
+     `FooImpl` and inject it into the production assembler (e.g. `SchedulerFactory.Create`
+     constructs and passes the provider; `Program.cs` registers it in the DI container) so the
+     production path branches into the new mode. Depends on the `FooImpl`-implementation task(s)
+     (the collaborator must exist before it can be wired) and on any factory-scaffold task. **Make
+     a DAG sink depend on this task** — the wiring is what makes the feature real, so no terminal
+     gate should be reachable without it.
+  2. **A composition-root guardrail on the wiring task** — the ONLY guardrail that proves the
+     component is wired in production. Use the strongest feasible form: **(a)** a
+     `specific-tests-pass` (#4) test that drives the REAL assembler (call
+     `SchedulerFactory.Create(...)`, NEVER `new Scheduler(..., new FooImpl())` — injecting the seam
+     in the test makes it pass even unwired and is FORBIDDEN) and asserts an observable output only
+     the wired feature produces; or **(b)** a reflection assertion that the constructed object holds
+     the non-null collaborator, WITH a contrast case proving the wiring is conditional (active mode →
+     non-null, inactive mode → null) — the `Factory_Wires*` shape. The full .NET realizations
+     (drive-the-real-factory test, reflection-on-factory test, and the weakest-acceptable source
+     grep) are `stacks/dotnet.md §10`. Author the production-wiring TEST via the TDD pair (author it
+     red against the unwired factory — `tests-fail-on-current-code` proves it fails before wiring —
+     then the wiring task makes it green). Mark the guardrail `scope: "integration"` when it drives
+     the whole assembled feature. When the plan names no concrete observable to assert on, surface
+     it in the breakdown report (Step 7) as a decision the human must confirm — do not invent one.
+     (Compose with the server/executable bullet below when the plan is BOTH: wire the entry point to
+     the launcher AND wire a collaborator into the factory — two distinct wiring deliverables.)
 - **Server/executable plan (Step 4 entry-point-wiring signal fired) → insert a wiring task
   AND a live smoke-test task.** A plan that decomposes into component tasks (scaffold the
   exe project, implement the handler/launcher, implement the routes) verifies each component
@@ -538,6 +638,18 @@ Per `references/schemas.md`, exactly:
    applies to any exit criterion naming an observable a guardrail should but doesn't
    cover; the UI case is just the one #66 makes most expensive (a fully-green run with no
    frontend).
+0a. **Task-size self-review — re-run the Step 2 split-trigger on every emitted task (#111).**
+   Before validating, sweep the final task list back through the Step 2 over-size split-trigger.
+   For each task, confirm NONE of the triggers fires: (a) it does not bundle multiple distinct
+   deliverables ("X **and** Y **and** Z"); (b) its blast radius is bounded (not deleting ≥3 source
+   files or touching ≳10 files / test references in one action); (c) it is not a design milestone
+   sized 1:1; (d) a single failed-guardrail retry does not re-run an hour of work. Cross-check
+   against the plan's own feasibility/self-critique signals: any milestone the plan flagged as
+   heavy / over-packed / high-churn MUST have been split, not sized 1:1. A task that still trips a
+   trigger is **mis-sized** — loop back to Step 2 and split it (scoping each piece's test
+   re-baseline to that piece) before proceeding. If you cannot split it (the plan genuinely couples
+   the work), **flag it in the report** as an over-scoped task and warn that its retry is expensive
+   and it is the most likely `needs-human` — do not present it as well-sized.
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
@@ -635,12 +747,14 @@ to preserve edits against).
 ## Quality bar (verify before declaring done)
 
 - [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
+- [ ] Every emitted task passed the Step 2 over-size split-trigger (no task bundles multiple deliverables, has a wide blast radius, maps 1:1 to a design milestone, or has an expensive retry); any feasibility/self-critique "over-packed"/"~N test refs" signal was carried into sizing and split, not sized 1:1 (#111). Re-checked in the Step 7.0a task-size self-review; any unsplittable over-scoped task is flagged in the report.
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
 - [ ] Every guardrail file opens with its `catches:` line.
 - [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys).
 - [ ] Any task that writes a downstream-read state key carries the fragment-key-present guardrail.
 - [ ] New module/project added to a build descriptor → registration guardrail on the descriptor itself.
 - [ ] Abstraction consumed by a later task → cross-module reference guardrail on the consumer.
+- [ ] Component injected at a composition root (`IFoo`/`FooImpl` pair → factory/DI/`Program.cs`) → a wiring task (construct + inject `FooImpl` into the production assembler) AND a composition-root guardrail that drives the REAL assembler (observable output, or reflection-on-the-constructed-object with a contrast case — the `Factory_Wires*` shape), NEVER injecting the seam in the guardrail and NEVER relying on terminal whole-suite green to cover wiring (#120).
 - [ ] Server/executable plan (entry-point-wiring signal) → a wiring task (entry-point-references-launcher grep) AND a live smoke-test task (start → poll route → assert 200 → stop in `finally`) inserted; the polled route is produced by an ancestor.
 - [ ] UI-facing plan (described screen/page/browser-served component) → a `build-ui-<screen>` task per surface (alongside its backend, not instead of it) AND UI-presence guardrails: asset-exists (scoped to the page/asset file) + a served-markup assertion EXTENDING the §8 smoke-test (body contains a known UI string, not just HTTP 200), both deterministic — no prompt-judge on visual quality. Exit-criterion naming a UI action ⇒ a task builds that UI, or the Step 7.0 self-review failure is reported.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.

@@ -105,6 +105,18 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   but no guardrail checks the consumer's project file has a `<ProjectReference>` — builds
   pass independently, so a local copy of the interface slips through. (Stack file →
   cross-module reference.)
+- **Built-but-unwired component (#120 — the recurring lesson)**: the plan adds an `IFoo`/`FooImpl`
+  pair (or any collaborator a production assembler must construct + inject), the component tasks
+  build + unit-test it through an injected constructor seam — but **no task constructs `FooImpl` and
+  injects it at the production composition root** (factory / `Program.cs` / DI / `RunCommand`), and
+  **no guardrail drives the REAL assembler with the new mode active**. Every check is green while the
+  feature is inert (reachable only from xUnit, which injects the seam itself); the terminal
+  whole-suite gate does NOT cover this. Also flag the inverse: a wiring guardrail that **constructs +
+  injects `FooImpl` itself** then asserts it works — it proves the component, never the wiring; the
+  guardrail must go through the production assembler (drive the real factory + assert observable
+  output, or reflect on the constructed object for the non-null collaborator with a contrast case —
+  the `Factory_Wires*` shape). Missing wiring task OR a seam-injecting guardrail OR reliance on
+  whole-suite green to cover wiring = BLOCKER. (Catalogue → composition-root section, `stacks/dotnet.md §10`.)
 - **Vacuous `writeScope`**: a task declares `writeScope: ["**"]`, a bare top-level dir, or
   any over-broad surface that owns everything — the write-scope check (SSOT §3.4) then
   discriminates nothing and is theater (`validate` warns GR2020). The honest move is to omit
@@ -134,6 +146,17 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   guardrail left at the `"local"` default is a coverage gap on an integration-sensitive (parallel)
   plan — the union points and the terminal gate would re-run nothing. Flag it (BLOCKER on a
   parallel plan with unions; WEAK otherwise) and name the guardrail to re-scope.
+- **Over-scoped task (#111 — is this too coarse to land in one session / retry cheaply?)**: a task
+  trips the plan-breakdown Step 2 split-trigger — (a) it bundles multiple distinct deliverables
+  ("do X **and** Y **and** Z"); (b) it has a wide blast radius (deletes ≥3 source files, or
+  touches ≳10 files / test references in one action); (c) it maps 1:1 to a design milestone / phase;
+  or (d) a single failed-guardrail retry re-runs an hour of work (a multi-deletion, a 100+-ref
+  re-baseline). An over-scoped task thrashes at run time — every guardrail miss re-runs the whole
+  oversized action — and is the most likely `needs-human` in a run. Flag it WEAK (its retry is
+  expensive; it is mis-sized) and propose the split: name the deliverables it bundles and the
+  smaller tasks they should become, each with its test re-baseline scoped to that piece. This is the
+  inverse of the missing-insertion check (§4): there a deliverable maps to NO task; here ONE task
+  carries too many deliverables.
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -185,4 +208,6 @@ changes to it.
 - [ ] Coverage gaps cite the exact unverified completion criterion.
 - [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files; no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
+- [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
+- [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
