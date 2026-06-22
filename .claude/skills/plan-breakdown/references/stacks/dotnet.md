@@ -10,7 +10,7 @@ instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 Every stack file answers the same six standard questions first (§1–§6), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
-§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, then WPF).
+§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors, §18 name-convention seam, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -896,6 +896,219 @@ the artifacts it commits) — the point is that the *unbounded* volume already h
 in 14b, so the agent task here has a bounded, session-sized job. Keep the discover/capture/curate
 boundary in the DAG: 14a → 14b → 14c.
 <!-- END ADDED SECTION #100 -->
+
+<!-- BEGIN ADDED SECTION #76 — method-call anchoring (auto-merge friendly; do not merge into prose above) -->
+## 15. Method-call anchoring — verify a call to `B.Method()`, not a bare name (#76)
+
+The .NET realization of the catalogue's method-call-anchoring rule (catalogue → "Method-call
+anchoring"). A "the CLI calls `MigrationRunner.RunAsync(...)`" wiring guardrail written as a **bare
+method-name** grep — `(Get-Content $prog -Raw) -notmatch 'RunAsync\s*\('` — false-passes on a comment
+(`// RunAsync(scope)`), a **local** `private void RunAsync(...)` wrapper, or any unrelated same-named
+method. None invoke the real runner. Require **two sequential checks**: the **type** is referenced (no
+local stub can fake the type name) AND the call carries a **dot prefix** (`\.RunAsync\s*\(` — a method
+*definition* reads `void RunAsync(` with no leading dot; a *call* reads `runner.RunAsync(`):
+
+```powershell
+# catches: a "Program.cs calls MigrationRunner.RunAsync(...)" wiring claim satisfied by a comment
+#          (// RunAsync(scope)) or a LOCAL method also named RunAsync - neither invokes the real
+#          library method. Require BOTH the type reference and the dotted call construct.
+$prog = "src/Migration.Cli/Program.cs"
+$content = Get-Content $prog -Raw
+if ($content -notmatch 'MigrationRunner') {
+    Write-Output "$prog does not reference MigrationRunner - the runner type is never named (a local RunAsync stub would not wire it)"
+    exit 1
+}
+if ($content -notmatch '\.RunAsync\s*\(') {
+    Write-Output "$prog does not call .RunAsync(...) on an instance - only a bare/commented/locally-defined RunAsync would match without the dot"
+    exit 1
+}
+exit 0
+```
+
+Use the concrete type and method the plan names. The two-check form is strictly stronger than either
+alone: the type reference rules out a local same-named stub, the dotted call rules out comments and
+standalone definitions. This is the same shape §7's entry-point grep already uses
+(`new\s+Launcher\b|Launcher\s*\.\s*\w`, never a bare `Launcher`) — §7 is the executable-entry-point
+instance; §15 is the general "A must call `B.Method()`" instance. Scope to the one caller file
+(grep-scope rule, §5). Caveat (state it if it matters): a regex cannot tell a real call from the method
+name sitting **inside a string literal** — a parser is out of scope; note it in the report if the method
+name plausibly appears in a string.
+<!-- END ADDED SECTION #76 -->
+
+<!-- BEGIN ADDED SECTION #74 — no-direct-bypass (auto-merge friendly; do not merge into prose above) -->
+## 16. No-direct-bypass — the extracted library must not call the concrete dependency directly (#74)
+
+The .NET realization of the catalogue's no-direct-bypass archetype (catalogue → "No-direct-bypass"). A
+library extracted to write **through** an injected `IDestinationWriter` is registered (§1), references
+its abstraction (§2), builds (§4), and passes its tests — yet its internals can still call
+`ToscaCloudClient.UploadEntitiesAsync` **directly**, bypassing the writer. No other guardrail sees this.
+Scan the **library project's `.cs` only** (scope to the lib folder, exclude `bin`/`obj` per §5) for a
+**dotted** call to the concrete method, **after stripping comments** (§11 — a comment naming the method
+would otherwise false-RED a correct library, the #97/#98 trap inverted):
+
+```powershell
+# catches: the extracted engine library bypassing IDestinationWriter by calling
+#          ToscaCloudClient.UploadEntitiesAsync directly - registered, built, and tested all green
+#          while the injected abstraction is bypassed. Strip comments first (a comment naming the
+#          method is NOT a real call), anchor on the DOTTED call (#76), scope to the library folder.
+$libDir = "PoC/ConformedSources/Migration.Engine"
+$hits = Get-ChildItem $libDir -Recurse -Filter *.cs |
+    Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
+    Where-Object {
+        $raw  = Get-Content $_.FullName -Raw
+        $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
+        $code = [regex]::Replace($code, '//[^\r\n]*', ' ')       # // line comments
+        $code -match '\.UploadEntitiesAsync\s*\('
+    }
+if ($hits) {
+    $names = ($hits | ForEach-Object { $_.Name }) -join ', '
+    Write-Output "$libDir calls .UploadEntitiesAsync(...) directly in [$names] - must write THROUGH the injected IDestinationWriter, not the concrete client"
+    exit 1
+}
+exit 0
+```
+
+Use the concrete `ConcreteType.Method` the plan forbids. This is the **inverse** of §1/§2: those prove
+the library is wired *in*; this proves the library does not bypass its abstraction from the *inside*.
+It is a **forbidden-call** check, so it inherits §11's comment-strip discipline (strip first) and §15's
+dot-anchoring (a same-named method on a *different*, allowed type, or the name in a string literal, must
+not false-RED). For extra strictness require the concrete type near the call
+(`ToscaCloudClient[\s\S]{0,200}?\.UploadEntitiesAsync\s*\(`) when the method name alone is too common.
+Caveat: the string-literal residual (the method name inside a string) is the same lower-bound limit as
+§15 — note it if it matters.
+<!-- END ADDED SECTION #74 -->
+
+<!-- BEGIN ADDED SECTION #75 — covers-key-behaviors (auto-merge friendly; do not merge into prose above) -->
+## 17. Covers-key-behaviors — a test file encodes the enumerated behaviors (#75)
+
+The .NET realization of the catalogue's covers-key-behaviors rule (catalogue → "Covers-key-behaviors").
+When a test-author task's action prompt enumerates **≥3** named behaviors to encode, the `tests-exist` +
+`tests-fail-on-current-code` pair is satisfiable by **one** trivially-failing stub — neither checks the
+named behaviors are present. Add a `03-covers-key-behaviors.ps1` that greps the **one test file** the
+task authors for **2–3 distinctive terms** (one `if` per term, so the failure names the missing
+behavior). Pick a **domain type name, an enum value, or a method name** — never a generic word
+(`test`/`assert`/`Fact`/`should`) any stub already contains:
+
+```powershell
+# catches: a test file that lacks coverage of ProcessID keying or rollup counts - both named in the
+#          action prompt's "encode these behaviors" list - while tests-exist + tests-fail-on-current-code
+#          both pass on ONE trivially-failing stub test.
+$f = "tests/Migration.Engine.Tests/SubProcessRollupTests.cs"
+$content = Get-Content $f -Raw
+if ($content -notmatch 'ProcessId') {
+    Write-Output "$f does not test ProcessID keying - add a test asserting entities are keyed by ProcessId (behavior 2)"
+    exit 1
+}
+if ($content -notmatch 'RollupCount') {
+    Write-Output "$f does not test rollup counts - add a test asserting the parent's RollupCount aggregates its sub-processes (behavior 3)"
+    exit 1
+}
+exit 0
+```
+
+Choose the 2–3 **headline** behaviors most likely to be accidentally omitted (the plan's risk-section
+ones), not the whole list. Scope to the one test file (grep-scope rule, §5). This is a **lower bound**
+(the #99 substance-floor class): a term in a comment or an unused variable still matches, so it proves a
+test *names* the behavior, not that it *asserts* it — the residual is the `tests-fail-on-current-code`
+red plus human review. The breakdown report must **list which enumerated behaviors went unchecked** so
+the reviewer can decide whether to add more terms.
+<!-- END ADDED SECTION #75 -->
+
+<!-- BEGIN ADDED SECTION #96 — name-convention seam (auto-merge friendly; do not merge into prose above) -->
+## 18. Name-convention seam — drive the consumer's derived-name lookup over every artifact (#96)
+
+The .NET realization of the catalogue's name-convention-seam archetype (catalogue → "Name-convention
+seam") for a web executable whose **shell resolves fragments by a derived name**. The producer wrote
+kebab-case fragments (`wwwroot/steps/source-connection.html`, with `DestinationSelection` served by the
+outlier `destination.html`); the shell requested them by the **PascalCase step id** — `GET
+/wizard/pages/SourceConnection.html` → embedded resource `…wwwroot.steps.SourceConnection.html` → **404
+→ silent fallback**. Per-side file-exists + content checks all passed. The guardrail must be
+**consumer-driven** (derive the names from the shell's **own** map, not a hard-coded copy), **cover
+every item**, and **assert 200 + a per-item marker** (not a fallback body). It **reuses §8's smoke-test
+lifecycle** (start the binary, bounded poll, `finally` teardown, deterministic port) and changes the
+success test to a per-item loop. Put it on a **both-sides-present** terminal/integration task, mark it
+`scope: "integration"`, and keep it **union-safe** (#125 — assert "every artifact that resolves"):
+
+```powershell
+# catches: a producer<->consumer NAME-CONVENTION drift the per-side checks miss - the shell derives a
+#          fragment name (PascalCase step id) the producer never emitted (kebab-case, with a special-case
+#          outlier), so a step 404s -> silent fallback at runtime on a 100%-green suite. Parse the SHELL'S
+#          OWN step map (not a hard-coded copy), GET every fragment through the live server, assert 200 +
+#          a per-item marker. Reuses the §8 start/poll/finally lifecycle.
+$ErrorActionPreference = 'Stop'
+$project = "src/Wizard.Cli"
+$port    = 5099
+$baseUrl = "http://127.0.0.1:$port"
+$timeoutSeconds = 20
+$proc = $null
+try {
+    $outLog = Join-Path $env:GUARDRAILS_LOG_DIR "seam-stdout.log"
+    $errLog = Join-Path $env:GUARDRAILS_LOG_DIR "seam-stderr.log"
+    $proc = Start-Process -FilePath "dotnet" `
+        -ArgumentList @("run", "--project", $project, "--no-build", "--", "--urls", $baseUrl) `
+        -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden
+
+    # CONSUMER-DRIVEN: read the step ids from the SHELL's own source, not a hard-coded list. Each id is
+    # the exact name the shell derives its fragment URL from - so this set IS the consumer's contract.
+    $shell = Get-Content "src/Wizard.Cli/WizardShell.cs" -Raw
+    $stepIds = [regex]::Matches($shell, 'StepId\.(\w+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+    if ($stepIds.Count -lt 1) {
+        Write-Output "could not parse any StepId.* from WizardShell.cs - cannot drive the seam consumer-side"
+        exit 1
+    }
+
+    # wait for the server to answer at all (bounded poll, §8)
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    $up = $false
+    while ((Get-Date) -lt $deadline) {
+        if ($proc.HasExited) { Write-Output "server exited early (code $($proc.ExitCode)) - see $errLog"; exit 1 }
+        try { if ((Invoke-WebRequest "$baseUrl/health" -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200) { $up = $true; break } } catch {}
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $up) { Write-Output "server did not come up within ${timeoutSeconds}s - see $errLog"; exit 1 }
+
+    # COVER EVERY ITEM: GET each fragment through the shell's own URL convention; assert 200 + a per-item
+    # marker (the step id echoed in the fragment), NOT a 200 fallback body.
+    foreach ($id in $stepIds) {
+        $url = "$baseUrl/wizard/pages/$id.html"   # the shell's derived-name convention
+        try {
+            $resp = Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5
+        } catch {
+            Write-Output "seam: GET $url failed ($($_.Exception.Message)) - the producer never emitted the fragment the shell derives for step '$id' (name-convention drift)"
+            exit 1
+        }
+        if ($resp.StatusCode -ne 200 -or $resp.Content -notmatch [regex]::Escape($id)) {
+            Write-Output "seam: GET $url returned HTTP $($resp.StatusCode) without marker '$id' - resolved to a fallback/404 body, not the real fragment (name-convention drift)"
+            exit 1
+        }
+    }
+    exit 0
+}
+finally {
+    if ($proc -and -not $proc.HasExited) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+```
+
+Three adaptations, each **stated in the breakdown report**:
+- **Parse the CONSUMER's real map.** The `StepId.*` regex is illustrative — point it at whatever the
+  shell actually derives names from (an `enum`, a `STEPS`/`FRAGMENTS` dictionary, an embedded-resource
+  manifest, a route table). The names MUST come from the consumer's own source/runtime, never a
+  hard-coded copy in the guardrail (a copy hides a consumer-side drift).
+- **The URL/lookup convention.** `"/wizard/pages/$id.html"` is the shell's derived-name form — use the
+  plan's actual route/resource convention.
+- **The per-item marker.** Assert a string only the *correctly resolved* fragment contains (the step id,
+  a known element). A bare 200 is the trap — a silent-fallback page also returns 200.
+
+**Union-safety (#125).** As written, a step whose fragment is missing fails — correct on a terminal
+gate, but at an intermediate **union** where the producer set is only partially present this would
+false-RED. If the plan reaches such unions, gate the loop on artifacts *present* on the consumer side
+("for every step the producer has emitted, the derived-name lookup resolves") so a partial merge passes
+while still catching a *wrong-name* drift. This pairs with §8 (the exe serves something) and §9 (the
+root is the described UI): §18 proves **every derived-name lookup across the set resolves to the right
+artifact**.
+<!-- END ADDED SECTION #96 -->
 
 ## WPF structural checks (#11 F5/F6)
 

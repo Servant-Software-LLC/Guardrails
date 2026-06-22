@@ -195,6 +195,50 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   smaller tasks they should become, each with its test re-baseline scoped to that piece. This is the
   inverse of the missing-insertion check (§4): there a deliverable maps to NO task; here ONE task
   carries too many deliverables.
+<!-- BEGIN ADDED PROBES #74/#75/#76/#96 -->
+- **Keyword-not-structural for a METHOD CALL (#76)**: a "file calls `B.Method()`" guardrail that greps a
+  **bare method name** — `RunAsync\s*\(` — passes on a comment (`// RunAsync(scope)`), a **local stub**
+  of the same name (`private void RunAsync(...)`), or any unrelated same-named method, none of which
+  invoke the real library method. The call-site sibling of the keyword-not-structural type/member trap.
+  Fix: require **two sequential checks** — the **type** is referenced (`MigrationRunner`, rules out a
+  local stub) AND the **dotted call** (`\.RunAsync\s*\(`, rules out comments + standalone definitions).
+  Apply to any "task A must call `B.Method()`" on a specific type in another project. (Catalogue →
+  method-call anchoring; `stacks/dotnet.md §15`.) BLOCKER on a wiring guardrail — a local/commented stub
+  reads as wired.
+- **Library bypasses its injected interface (#74)**: a task extracts a library that must write
+  **through** an injected `IInterface`; it is registered + builds + tests pass — but **no guardrail checks
+  the library's internals don't call the CONCRETE method directly**, bypassing the abstraction. Tell: an
+  "extract … must go through `IInterface`" / "must NOT call `X` directly" task with only registration +
+  build + tests-pass guardrails and no forbidden-direct-call scan of the library folder. Fix: a
+  comment-stripped (#97/#98), dot-anchored (#76) forbidden-call scan of the **library project's `.cs`
+  only** (exclude `bin`/`obj`). Also flag the inverse mistake: a **bare-name** bypass grep with no
+  comment-strip — it *false-REDs* a correct library on a comment (whack-a-mole to `needs-human`).
+  (Catalogue → no-direct-bypass; `stacks/dotnet.md §16`.) BLOCKER — a bypass ships green.
+- **Enumerated behaviors unverified (#75)**: a test-author task whose action prompt lists **≥3 named
+  behaviors** to encode but whose guardrails are only `tests-exist` + `tests-fail-on-current-code` —
+  neither verifies the named behaviors are present, so **one** trivially-failing stub satisfies both
+  while behaviors 2–N are never encoded (the coverage-gap anti-pattern, made concrete). Fix: a
+  `covers-key-behaviors` check for **2–3 distinctive terms** (domain type / enum / method name — never
+  generic words) from the list, **scoped to the one test file**; name it a **lower bound** (a term
+  present ≠ the behavior asserted) and report which enumerated behaviors went unchecked. (Catalogue →
+  covers-key-behaviors; `stacks/dotnet.md §17`.) WEAK→BLOCKER depending on how load-bearing the
+  unverified behaviors are (it is the coverage-gap probe, sharpened for enumerated lists).
+- **Name-convention seam unverified (#96)**: task A produces artifacts a consumer (task B / a runtime
+  component) resolves by a **derived or mapped name** (url→embedded resource, step id→filename, key→file,
+  route→handler, message-type→schema) — and `file-exists`/`file-contains` on A plus content checks on B
+  both pass while the **naming contract is never exercised**. B derives a name A never produced (case /
+  separator / single special-case drift) and **404s/silently-falls-back at runtime** on a 100%-green
+  suite — invisible until the first real run. Tell: a derived-name consumer (fetch-by-name,
+  embedded-resource/reflection lookup, convention file-map, route resolution) with only per-side
+  file-exists/content checks and **no end-to-end lookup over the whole set**. Fix: a **consumer-driven
+  integration guardrail** on a **both-sides-present** task that **parses the consumer's real map** (never
+  a hard-coded contract copy), drives the lookup for **every** item, and asserts **200 + a per-item
+  marker** (not a fallback body); `scope:"integration"` and **union-safe** (#125 — "every present
+  artifact resolves"). Also flag the weak forms: a **sampled** check (not every item — the drift hides in
+  the one special case) and a **hard-coded name list** in the test (a copy hides a consumer-side drift).
+  (Catalogue → name-convention seam; `stacks/dotnet.md §18`.) BLOCKER on a UI/transport/convention-heavy
+  plan — the failure is invisible to the whole suite.
+<!-- END ADDED PROBES #74/#75/#76/#96 -->
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -251,4 +295,10 @@ changes to it.
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
+<!-- BEGIN ADDED CHECKS #74/#75/#76/#96 -->
+- [ ] Every "task A calls `B.Method()`" guardrail anchors on BOTH the type reference and the dotted call (`\.Method\s*\(`), never a bare method-name grep (#76).
+- [ ] Every "extract a library that must write through `IInterface`" task has a forbidden-direct-call scan of the library folder — comment-stripped and dot-anchored, never a bare-name grep that false-REDs on a comment (#74).
+- [ ] Every test-author task whose prompt enumerates ≥3 behaviors has a covers-key-behaviors check (2–3 distinctive terms, scoped to the one test file), named as a lower bound, with the unchecked behaviors reported (#75).
+- [ ] Every producer↔consumer derived-name seam has a consumer-driven integration guardrail on a both-sides-present task that drives the real lookup for EVERY item and asserts 200 + a per-item marker — union-safe, no hard-coded name copy, no sampling (#96).
+<!-- END ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.

@@ -779,6 +779,235 @@ anti-patterns list).
 Do not fork the contract here — §4.3 (re-verify at every union) and §5.3 (FF vs union) are the SSOT;
 this section is doctrine *about how to author within* that contract.
 
+<!-- BEGIN ADDED SECTION #76 — method-call anchoring (auto-merge friendly; do not merge into prose above) -->
+## Method-call anchoring — match the call construct, not a bare method name (#76)
+
+The **call-site sibling** of the structural-vs-keyword rule (§"file-contains: structural vs.
+keyword matching", which covers *type/member declarations*). That rule says a check for "type
+`IFoo` is implemented" must match the declaration, never the bare token `IFoo`. The same trap
+exists for **method calls**: a guardrail verifying "file calls method `X` on type `Y`" that greps
+a **bare method name** — `RunAsync\s*\(` — false-passes on three things that do NOT prove the real
+library method is wired up:
+
+- a **comment** that merely names it — `// then we call RunAsync(scope)`;
+- a **local stub/wrapper** method that happens to share the name — `private void RunAsync(...)`;
+- any unrelated method called `RunAsync` on a different type.
+
+This is the call-site shape of the green-build false-pass: the guardrail goes green while the
+specific library method it was meant to verify is never actually invoked. It surfaced on a
+"CLI must call `MigrationRunner.RunAsync`" wiring guardrail written as
+`(Get-Content $prog -Raw) -notmatch 'RunAsync\s*\('` — satisfied by a local `RunAsync` wrapper
+or a `// RunAsync(scope)` comment, neither of which wires the real runner.
+
+**Rule.** When a guardrail verifies "file calls method `X` on type `Y`," require **both** of two
+sequential checks (each a separate `if` so the failure line names the missing half):
+1. **A reference to the TYPE** — `TypeName` (or the stricter `TypeName\s*\.`) — rules out a local
+   stub that shares only the method name.
+2. **The call with a DOT prefix** — `\.MethodName\s*\(` — rules out substring matches in comments
+   and standalone method *definitions* (a definition reads `void MethodName(` with no leading dot;
+   a call reads `something.MethodName(`).
+
+- **Pattern to AVOID** (matches comments, local stubs, any same-named method):
+  `RunAsync\s*\(`
+- **Pattern to USE** (two sequential checks — type reference, then dotted call):
+  ```powershell
+  # catches: a "CLI calls MigrationRunner.RunAsync(...)" wiring claim satisfied by a comment
+  #          (// RunAsync(scope)) or a LOCAL method also named RunAsync - neither invokes the
+  #          real library method. Require BOTH the type reference and the dotted call construct.
+  $prog = "src/Migration.Cli/Program.cs"
+  $content = Get-Content $prog -Raw
+  if ($content -notmatch 'MigrationRunner') {
+      Write-Output "$prog does not reference MigrationRunner - the runner type is never named (a local RunAsync stub would not wire it)"
+      exit 1
+  }
+  if ($content -notmatch '\.RunAsync\s*\(') {
+      Write-Output "$prog does not call .RunAsync(...) on an instance - only a bare/commented/locally-defined RunAsync would match without the dot"
+      exit 1
+  }
+  exit 0
+  ```
+
+Apply whenever the plan says "task A must call `B.Method()`" where `B` is a specific type in
+another project (the entry-point-wiring grep in §"Entry-point wiring" is the executable-specific
+instance of the same idea — it already requires `new\s+Launcher\b|Launcher\s*\.\s*\w` rather than
+a bare `Launcher`). For the strict-string-literal residual (a banned/expected method name sitting
+inside a string), the same caveat as the comment-strip family applies: a regex is a lower bound, a
+parser is out of scope — note it in the report if it matters. The .NET realization is
+`stacks/dotnet.md §15`.
+<!-- END ADDED SECTION #76 -->
+
+<!-- BEGIN ADDED SECTION #74 — no-direct-bypass archetype (auto-merge friendly; do not merge into prose above) -->
+## No-direct-bypass — an extracted library must write THROUGH its injected interface (#74)
+
+The **inverse** of the two registration/reference seams (build-descriptor registration,
+cross-module reference): those prove a library is *wired in* (registered in the solution, referenced
+by the consumer). This proves a library does **not bypass its own abstraction** from the inside. A
+library can be correctly registered, building, and passing its tests while still calling the
+**concrete** dependency directly in its internals — bypassing the very `IInterface` it was extracted
+to enforce. Registration, build, and tests-pass guardrails all go green; the bypass slips through.
+
+It surfaced on an "extract migration-engine library" task: the library was registered, built, and
+tested, but nothing prevented the extracted engine from calling `ToscaCloudClient.UploadEntitiesAsync`
+directly — bypassing the injected `IDestinationWriter` entirely. The library's whole purpose was to
+enforce the writer abstraction; without this guardrail the bypass is invisible to every other check.
+
+**Rule.** When a task extracts a library that **must call through an injected interface rather than a
+concrete dependency**, add a guardrail that scans the extracted project's `.cs` files for a **direct
+call to the concrete method** and fails if it finds one. Two anchoring requirements (both from the
+method-call-anchoring rule, #76 above — a bare-name grep here would *false-RED* on a comment, escalating
+a correct library):
+1. **Strip comments before the scan** (#97/#98 comment-blind family) — a `// we used to call
+   UploadEntitiesAsync directly` comment must not trip the ban (false positive → whack-a-mole to
+   `needs-human` on a correct library).
+2. **Anchor on the dotted call construct** — `\.UploadEntitiesAsync\s*\(` (optionally `ConcreteType`
+   nearby), not a bare `UploadEntitiesAsync`, so a same-named method on a *different* allowed type or a
+   string literal does not false-RED.
+
+Scope the scan to the **new library's project folder only** (grep-scope rule), excluding `bin`/`obj`:
+
+```powershell
+# catches: <LibraryProject> bypassing <IInterface> by calling <ConcreteClass>.<ConcreteMethod>
+#          directly in its internals - registered, building, and tested all stay green while the
+#          injected abstraction is bypassed. Strip comments first (so a comment naming the method
+#          is not a false RED), then anchor on the DOTTED call construct, scoped to the library only.
+$libDir = "PoC/ConformedSources/Migration.Engine"
+$hits = Get-ChildItem $libDir -Recurse -Filter *.cs |
+    Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } |
+    Where-Object {
+        $raw  = Get-Content $_.FullName -Raw
+        $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', ' ')   # /* */ block comments
+        $code = [regex]::Replace($code, '//[^\r\n]*', ' ')       # // line comments
+        $code -match '\.UploadEntitiesAsync\s*\('
+    }
+if ($hits) {
+    $names = ($hits | ForEach-Object { $_.Name }) -join ', '
+    Write-Output "$libDir calls .UploadEntitiesAsync(...) directly in [$names] - must write THROUGH the injected IDestinationWriter, not the concrete client"
+    exit 1
+}
+exit 0
+```
+
+**Trigger:** the plan or action prompt contains language like "must NOT call `X` directly", "must
+write **through** interface `Y`", "the current Exe bypasses the abstraction", or "the engine must
+depend only on `IInterface`." This is a **forbidden-call** check (a ban), so it inherits both the
+comment-blind caveat (#97/#98 — strip first) and the string-literal residual (a parser is out of
+scope; note it if the concrete method name plausibly appears in a string). The .NET realization is
+`stacks/dotnet.md §16`.
+<!-- END ADDED SECTION #74 -->
+
+<!-- BEGIN ADDED SECTION #75 — covers-key-behaviors guardrail (auto-merge friendly; do not merge into prose above) -->
+## Covers-key-behaviors — a test-author task with an enumerated behavior list (#75)
+
+A concrete instance of the **coverage-gap** anti-pattern (the action's stated completion criteria
+exceed what the guardrails verify). When a test-author task's action prompt **enumerates specific
+named behaviors** to encode — a numbered list under "encode these behaviors: 1. sub-processes are not
+filtered 2. ProcessID keying 3. rollup counts" — the standard TDD pair (`tests-exist` +
+`tests-fail-on-current-code`) verifies the file *exists* and *fails against current code*, but neither
+verifies the **enumerated behaviors are actually present**. An agent can satisfy both with **one**
+trivially-failing stub test and never encode behaviors 2–5.
+
+**Rule.** When a test-author task's action prompt enumerates **3 or more** specific named behaviors to
+encode, add a `03-covers-key-behaviors.ps1` guardrail that checks the test file for **2–3 of the most
+distinctive terms** from the behavior list (one `if` per term, so the failure line names the missing
+behavior). Scope the grep to the **one test file the task authors** (grep-scope rule).
+
+```powershell
+# catches: a test file that lacks coverage of <Behavior1> or <Behavior2> - both named in the action
+#          prompt's "encode these behaviors" list - while tests-exist + tests-fail-on-current-code
+#          both pass on a single trivially-failing stub test.
+$f = "tests/Migration.Engine.Tests/SubProcessRollupTests.cs"
+$content = Get-Content $f -Raw
+if ($content -notmatch 'ProcessId') {
+    Write-Output "$f does not test ProcessID keying - add a test asserting entities are keyed by ProcessId (behavior 2)"
+    exit 1
+}
+if ($content -notmatch 'RollupCount') {
+    Write-Output "$f does not test rollup counts - add a test asserting the parent's RollupCount aggregates its sub-processes (behavior 3)"
+    exit 1
+}
+exit 0
+```
+
+**Term-selection rules:**
+- Choose terms **distinctive** to the behavior — a domain type name, an enum value, a method name —
+  **never** generic words like `test`, `assert`, `Fact`, or `should`, which any stub satisfies.
+- Pick the **headline** behaviors most likely to be accidentally omitted (the ones the plan's risk
+  section flags), not all of them — **2 checks per guardrail is usually enough**.
+- Scope to the **one test file** the task authors (grep-scope rule, §"Grep-scope contamination").
+
+**The honest limit — state it so authors don't over-trust the check.** This is a **lower bound**, the
+same class as the corpus substance floors (#99): a distinctive term *present in the file* proves a
+test *names* the behavior, not that it *asserts* it correctly — a term in a comment or an unused
+variable still matches. It is a cheap guard against the "one stub for five behaviors" failure, not a
+faithfulness check; the residual (does the test actually exercise the behavior?) is the
+`tests-fail-on-current-code` red plus human review. The breakdown report (Step 7) should **list which
+enumerated behaviors were NOT covered** by the key-behaviors guardrail, so the human reviewer can
+decide whether to add checks. The .NET realization is `stacks/dotnet.md §17`.
+<!-- END ADDED SECTION #75 -->
+
+<!-- BEGIN ADDED SECTION #96 — producer<->consumer name-convention seam (auto-merge friendly; do not merge into prose above) -->
+## Name-convention seam — producer files ⟷ consumer lookup by a derived name (#96)
+
+The **third sibling** of the two "independent build passes, but the link is unverified" seams
+(build-descriptor registration §1, cross-module reference §2). Here task A **produces artifacts** whose
+names a consumer (task B, or a runtime component) **resolves by a derived or mapped name** — not a
+literal path B already hard-codes: a URL → embedded resource, a step id → filename, a key → file, a
+route → handler, a message-type → schema file. `file-exists`/`file-contains` on A and content checks on
+B both pass while the **naming contract between them is never exercised**: B can derive a name A never
+produced (case / separator / special-case drift) and fail **only at runtime**.
+
+It surfaced as a real runtime bug a clean guardrail suite passed end-to-end. A browser wizard's step
+fragments were produced kebab-case (`wwwroot/steps/source-connection.html`, and the `DestinationSelection`
+step served by `destination.html` — an outlier, not `destination-selection.html`); the shell requested
+fragments by the **PascalCase step id** — `GET /wizard/pages/SourceConnection.html` → embedded resource
+`…wwwroot.steps.SourceConnection.html` → **404 → silent fallback**. Every guardrail passed because each
+side was verified **independently**: file-exists + file-contains on each fragment (✅ the kebab files
+existed), the shell's stepper/order were correct (✅), and the smoke test asserted step *order*, not
+fragment *fetchability* (✅). Nothing verified **the consumer can resolve the producer's artifacts by the
+name it derives at runtime** — the single most expensive class of false-green for UI / transport /
+convention-heavy plans, because the failure is invisible to the whole suite and surfaces only on the
+first real run.
+
+**Rule.** When a task's artifacts are consumed by a name the consumer **derives** (a fetch-by-name, a
+reflection / embedded-resource lookup, a convention-based file map, a route→handler resolution), add an
+**integration guardrail that DRIVES the real lookup** end-to-end and asserts resolution succeeds for
+**every** item in the set. Three properties — each load-bearing:
+
+1. **Consumer-driven names.** Derive the lookup names from the **consumer's own mapping** — parse or run
+   the shell's real `STEPS`/`FRAGMENTS` map, the route table, the message-type registry — **never a
+   hard-coded copy** of the contract in the test. A test-side copy of the naming convention hides a
+   *consumer-side* drift: it would test the test's idea of the names, not the consumer's.
+2. **Cover EVERY item.** Iterate the *whole* set (all steps / all message types / all routes), not a
+   sample — the drift is typically a **single special case** (the `destination.html` outlier). One
+   un-checked item is exactly where it hides.
+3. **Drive the real lookup, assert a per-item success marker.** Exercise B against A's *actual*
+   artifacts (start the server and `GET` each fragment **through the shell's own map**; or invoke the
+   real resolver) and assert **200 + a per-item content marker** — never a 404 / silent-fallback body.
+   Resolution succeeding ≠ a 200 from a fallback page; assert a marker that only the *correctly resolved*
+   artifact contains.
+
+**Placement — both sides must be present.** This belongs on a task where **producer AND consumer
+coexist** — a terminal / integration task (the whole-suite gate or a dedicated end-to-end task), never
+on the producer task or the consumer task alone (on either, the other side isn't there to drive). Mark
+it `scope: "integration"` — and keep it **union-safe** (#125): "every producer artifact present resolves
+through the consumer's derived name" is an **invariant** true of any valid intermediate union where both
+sides are present, so it is a legitimate integration-scope assertion, **not** a terminal postcondition.
+(If a plan can reach a union where the producer set is only *partially* present, scope the assertion to
+"every artifact **that is present** resolves" so a partial merge does not false-RED — the drift you are
+hunting is a *wrong-name* failure, not a *missing-file* one, so a present-set invariant still catches it.)
+
+This is **starts-and-resolves** verification — distinct from #64 (the exe *serves something*) and the
+#66 served-markup check (the served root is *the described UI*). Compose them: #64 proves the server
+answers, #66 proves the root is the UI, and this proves **every derived-name lookup across the set
+resolves to the right artifact**. The .NET realization (parse the consumer's embedded-resource / route
+map, drive each through the live server, assert 200 + per-item marker) is `stacks/dotnet.md §18`.
+
+**Decision-tree leaf:** *task A's artifacts are resolved by task B (or a runtime component) via a
+DERIVED/MAPPED name (not a literal path B hard-codes)* → add a **consumer-driven integration guardrail**
+on a both-sides-present task that drives the real lookup for **every** item and asserts 200 + a per-item
+marker (union-safe; the per-side independent file-exists / content checks do NOT cover the seam).
+<!-- END ADDED SECTION #96 -->
+
 ## The decision tree (apply per task)
 
 ```
@@ -843,6 +1072,27 @@ What is the task's primary deliverable?
 │    injection point)             name grep). The test-author task dependsOn it. Distinct from #120
 │                                 (which injects the REAL impl in production). See the
 │                                 production-testability-seam section + stacks/dotnet.md §11
+├── Extracted library that must → no-direct-bypass (#74): scan the LIBRARY project's .cs (strip
+│    write THROUGH an injected     comments first, scope to the lib folder, exclude bin/obj) for a
+│    interface (not the concrete   DOTTED call to the concrete method (\.ConcreteMethod\s*\() and
+│    dependency directly)          FAIL if present — registration/build/tests all pass over a bypass.
+│                                 Trigger: "must NOT call X directly" / "write through interface Y".
+│                                 See the no-direct-bypass section + stacks/dotnet.md §16
+├── Test-author task whose      → covers-key-behaviors (#75): in ADDITION to tests-exist +
+│    action prompt enumerates     tests-fail-on-current-code, add a check for 2–3 DISTINCTIVE terms
+│    ≥3 named behaviors to        from the behavior list (domain type / enum / method name, never
+│    encode                        generic words), scoped to the one test file. LOWER BOUND, not a
+│                                 faithfulness check; report which behaviors went unchecked. See the
+│                                 covers-key-behaviors section + stacks/dotnet.md §17
+├── "Task A must call          → method-call anchoring (#76): TWO sequential checks — reference the
+│    B.Method()" on a specific    TYPE (rules out a local same-named stub) AND the dotted call
+│    type in another project      (\.Method\s*\(, rules out comments + standalone definitions). NOT a
+│                                 bare Method\s*\( grep. See the method-call-anchoring section + §15
+├── Producer files ⟷ consumer  → name-convention seam (#96): a CONSUMER-DRIVEN integration guardrail
+│    lookup by a DERIVED/mapped    on a both-sides-present task — parse the consumer's real map, drive
+│    name (url→resource, step     the lookup for EVERY item, assert 200 + a per-item marker (not a 404/
+│    id→file, key→file,           fallback). Union-safe (#125). Per-side file-exists/content checks do
+│    route→handler)               NOT cover the seam. See the name-convention-seam section + §18
 └── Refactor (no new behavior) → build-passes + existing-tests-still-pass (the suite IS the guardrail)
 ```
 
@@ -1064,6 +1314,48 @@ should fail before an expensive test run or a paid judge ever starts.
   specific file this task produces, never the project tree.
   - Weak (gameable): `Get-ChildItem src/Desktop -Recurse -Filter *.cs | Select-String -Pattern "LocalAppData"` — a sibling `SettingsService.cs` mentioning `LocalApplicationData` in the same wave satisfies it.
   - Strong: `Select-String -Path "src/Desktop/WorkspaceRecentsList.cs" -Pattern "LocalAppData"` — scoped to the one file this task owns.
+
+<!-- BEGIN ADDED ANTI-PATTERNS #74/#75/#76/#96 (auto-merge friendly; do not merge into the list above) -->
+- **Keyword-not-structural for a METHOD CALL** (#76): a "file calls `B.Method()`" guardrail that greps
+  a **bare method name** — `RunAsync\s*\(` — instead of the call construct. It false-passes on a comment
+  (`// RunAsync(scope)`), a **local stub/wrapper** method of the same name (`private void RunAsync(...)`),
+  or any unrelated same-named method — none of which invoke the real library method. The call-site
+  sibling of the type/member keyword-not-structural trap. Fix: **two sequential checks** — reference the
+  **type** (`MigrationRunner`, rules out a local stub) AND the **dotted call** (`\.RunAsync\s*\(`, rules
+  out comments and standalone definitions). Apply whenever "task A must call `B.Method()`" on a specific
+  type in another project. See the method-call-anchoring section; `stacks/dotnet.md §15`.
+- **Library bypasses its injected interface** (#74): a task extracts a library that **must write through
+  an injected `IInterface`**, the library is registered + builds + tests pass — but **no guardrail checks
+  the library's internals don't call the CONCRETE method directly**, bypassing the abstraction it exists
+  to enforce. Registration/build/tests all stay green over the bypass. Fix: a forbidden-call scan of the
+  **library project's `.cs` only** (scope to the lib folder, exclude `bin`/`obj`), **comment-stripped**
+  (#97/#98 — else a comment naming the method false-REDs a correct library) and **dot-anchored**
+  (`\.ConcreteMethod\s*\(`, #76 — else a same-named method or string literal false-REDs). Trigger: "must
+  NOT call `X` directly" / "write through interface `Y`" / "the Exe bypasses the abstraction". See the
+  no-direct-bypass section; `stacks/dotnet.md §16`.
+- **Enumerated behaviors unverified** (#75): a test-author task whose action prompt lists **≥3 named
+  behaviors** to encode but whose guardrails are only `tests-exist` + `tests-fail-on-current-code` —
+  **neither checks the named behaviors are present**, so **one** trivially-failing stub test satisfies
+  both while behaviors 2–N are never encoded (the coverage-gap anti-pattern, made concrete). Fix: add a
+  `covers-key-behaviors` check for **2–3 distinctive terms** (domain type / enum / method name — never
+  generic words like `test`/`assert`) from the behavior list, **scoped to the one test file**. Name it a
+  **lower bound** (a term present ≠ the behavior asserted; the residual is human review) and report which
+  enumerated behaviors went unchecked. See the covers-key-behaviors section; `stacks/dotnet.md §17`.
+- **Name-convention seam unverified** (#96): task A produces artifacts a consumer (task B / a runtime
+  component) resolves by a **derived or mapped name** (url→embedded resource, step id→filename, key→file,
+  route→handler, message-type→schema) — and `file-exists`/`file-contains` on A plus content checks on B
+  **both pass while the naming contract between them is never exercised**. B derives a name A never
+  produced (case / separator / single special-case drift) and **404s/silently-falls-back at runtime** on
+  a 100%-green suite — invisible until the first real run (a kebab `destination.html` outlier vs a
+  PascalCase `DestinationSelection.html` lookup). Fix: a **consumer-driven integration guardrail** on a
+  **both-sides-present** task that **parses the consumer's real map** (never a hard-coded contract copy),
+  drives the lookup for **every** item, and asserts **200 + a per-item marker** (not a fallback body).
+  Mark it `scope:"integration"` and keep it **union-safe** (#125 — assert "every present artifact
+  resolves", an invariant, not a terminal postcondition). The tell `/guardrails-review` hunts: a
+  derived-name consumer (fetch-by-name, embedded-resource/reflection lookup, convention file-map) with
+  only per-side file-exists/content checks and no end-to-end lookup over the whole set. See the
+  name-convention-seam section; `stacks/dotnet.md §18`.
+<!-- END ADDED ANTI-PATTERNS #74/#75/#76/#96 -->
 
 <!-- BEGIN ADDED SECTION #94 — maxTurns budgeting doctrine (auto-merge friendly; do not merge into prose above) -->
 ## maxTurns budgeting — a turn-budget exhaustion is NOT a sizing failure (#94)
