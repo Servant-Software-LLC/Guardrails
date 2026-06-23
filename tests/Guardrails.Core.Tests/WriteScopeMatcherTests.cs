@@ -101,6 +101,32 @@ public sealed class WriteScopeMatcherTests
     }
 
     // =========================================================================
+    // Issue #136 — a trailing slash is an EXPLICIT directory marker.
+    // 'src/Foo/' (and the dotted 'src/Foo.Bar/') must claim their nested files,
+    // not collapse to 'dir//**' (an empty segment matching nothing). Kept as a
+    // separate theory so the pinned §2.1(d) 27-row table stays verbatim.
+    // =========================================================================
+
+    [Theory]
+    // trailing-slash dir claims nested files
+    [InlineData("src/Feature/", "src/Feature/x.cs", true)]
+    // ...but not the bare dir entry itself (matches row-10 semantics)
+    [InlineData("src/Feature/", "src/Feature", false)]
+    // the #136 repro: a DOTTED directory name with a trailing slash
+    [InlineData("src/TextTools.Strings/", "src/TextTools.Strings/Slug.cs", true)]
+    [InlineData("tests/TextTools.Tests/", "tests/TextTools.Tests/SlugTests.cs", true)]
+    // dotfile directory + trailing slash stays in scope (no regression of the WS_1 .github case)
+    [InlineData(".github/", ".github/workflows/ci.yml", true)]
+    // a file literal (no trailing slash, real extension) still matches exactly
+    [InlineData("src/Thing.cs", "src/Thing.cs", true)]
+    // a trailing-slash dir does not over-claim a sibling directory
+    [InlineData("src/Feature/", "src/Other/x.cs", false)]
+    public void IsInScope_TrailingSlashDirectory_Issue136(string glob, string path, bool expected)
+    {
+        Assert.Equal(expected, WriteScope.IsInScope(path, [glob]));
+    }
+
+    // =========================================================================
     // §2.2 — Generative / property tests, seeded and reproducible
     //
     // Seed 0x08C0FFEE (plan-08 + COFFEE mnemonic).  A failing counterexample from
