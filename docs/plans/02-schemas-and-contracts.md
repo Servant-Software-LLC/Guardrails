@@ -449,7 +449,7 @@ whose integration set is missing or too thin to be the union's whole re-verify (
 
 | Variable | Set for | Meaning |
 |---|---|---|
-| `GUARDRAILS_PLAN_DIR` | all | Plan folder root |
+| `GUARDRAILS_PLAN_DIR` | all | Plan folder root — the **MAIN checkout's** plan dir in ALL modes (the harness's single-writer home for `state/`, `logs/`, the journal); NOT redirected to a segment worktree's checked-out copy even in worktree mode (#134, see the cwd note below) |
 | `GUARDRAILS_TASK_ID` | all | Current task id |
 | `GUARDRAILS_TASK_DIR` | all | Current task folder |
 | `GUARDRAILS_ATTEMPT` | all | 1-based attempt number |
@@ -482,7 +482,28 @@ action's command. Two honesty constraints the guardrail catalogue expands on:
   own self-reported success line in `_STDOUT`, which is an echo-judge. When the strong
   postcondition isn't expressible from recorded output, re-executing reality is the honest gate.
 
-cwd = resolved `workspace`. Process arguments are passed via `ArgumentList`
+**cwd = `GUARDRAILS_WORKSPACE` (the EFFECTIVE workspace), in every mode** (#134). The action's
+and guardrail's process working directory is set to the SAME directory that
+`GUARDRAILS_WORKSPACE` names: in worktree mode the task's isolated **segment worktree**; in serial
+shared-workspace mode the plan `workspace`; at a union re-verify the integration worktree (§4.3).
+This means a file the action writes *relative to its cwd* — not only via `$GUARDRAILS_WORKSPACE` —
+lands in the segment worktree that `Integrate` commits, never the user's main checkout. (A
+`workingDirectory` action override, when set, is the one exception: it stays resolved relative to
+`GUARDRAILS_PLAN_DIR`, below, so its anchor is the same path in both modes.)
+
+**`GUARDRAILS_PLAN_DIR` and the prompt-runner `--add-dir` grant stay the MAIN checkout's plan dir
+in worktree mode** (#134) — they are NOT redirected to the worktree's checked-out copy of the plan
+folder. The harness is the single writer of `state/state.json`, the `logs/` tree, and the journal,
+all of which live under the main checkout's plan dir; `GUARDRAILS_STATE_IN`/`_OUT`,
+`GUARDRAILS_LOG_DIR`, and the fragment the harness reads back are absolute paths under it. The
+prompt runner's `--add-dir <GUARDRAILS_PLAN_DIR>` grant must therefore name the main checkout's plan
+dir so the agent (whose cwd is the segment worktree) can still reach those absolute state/verdict/log
+paths. So in worktree mode the split is: **cwd → segment worktree; harness-owned state/log/plan-dir
+paths → main checkout.** The plan folder is also physically present *inside* the segment worktree
+(it is committed in the repo), but the agent is pointed at the main-checkout copy for all
+harness I/O — the in-worktree copy is incidental and must not be written for state.
+
+Process arguments are passed via `ArgumentList`
 (never a concatenated shell string). All child `stdout`/`stderr` is decoded as
 UTF-8 and all `stdin` is written as UTF-8 (no BOM), independent of the host console
 code page (e.g. the Windows OEM page CP437/850) — so the captured artifacts (§8)
@@ -816,7 +837,10 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 - Invocation: `claude -p --output-format stream-json --verbose --permission-mode <m>
   --allowedTools <list> --max-turns <n> [--model <m>] [extraArgs…]`
 - Prompt delivered via **stdin** (no arg-length/quoting issues).
-- cwd = workspace; `--add-dir <planDir>` grants access to state/verdict paths.
+- cwd = the effective workspace (§5.1: the segment worktree in worktree mode, the plan workspace in
+  serial mode — #134); `--add-dir <GUARDRAILS_PLAN_DIR>` grants access to state/verdict paths and
+  names the MAIN checkout's plan dir even in worktree mode (the agent's cwd is the segment, but the
+  harness-owned absolute state/verdict/log paths it must reach live under the main checkout — #134).
 - The composed prompt (§8 `composed-prompt.md`) = body + appended harness sections:
   shared state (inlined ≤ 16 KB, else by path), **dependency context** (actions: pointers to
   the transitive `dependsOn` closure's `transcript.md` + contributed `fragment.json`, present

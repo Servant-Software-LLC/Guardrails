@@ -269,7 +269,9 @@ public sealed class TaskExecutor : ITaskExecutor
         string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
 
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
-        string workspace = ResolveWorkingDirectory(task);
+        // Revalidate is serial-only (the CLI refuses worktree mode here), so cwd = the plan workspace
+        // where the human's in-place fix lives — never a segment worktree (issue #134 / #102).
+        string workspace = ResolveRevalidateWorkingDirectory(task);
 
         // The guardrail env WITHOUT GUARDRAILS_STATE_OUT (no action) and WITHOUT the
         // GUARDRAILS_ACTION_* pointers: there is no recorded action output to verify against, so a
@@ -425,7 +427,10 @@ public sealed class TaskExecutor : ITaskExecutor
         IReadOnlyDictionary<string, string> env = BuildEnvironment(
             task, attemptNumber, logDir, snapshotPath, fragmentOutPath, previousFeedbackPath,
             worktree.WorktreePath, stagingDir);
-        string workspace = ResolveWorkingDirectory(task);
+        // cwd = the EFFECTIVE workspace (issue #134): the segment worktree in worktree mode, the plan
+        // workspace in serial mode — matching GUARDRAILS_WORKSPACE and EffectiveWorkspace exactly, so
+        // a write relative to cwd lands in the segment that Integrate commits (not the user's checkout).
+        string workspace = ResolveWorkingDirectory(task, worktree);
 
         // --- action (script or prompt) --------------------------------------------------
         // Timeout extension (issue #119): after a timeout, each retry gets a longer clock — a
@@ -751,7 +756,34 @@ public sealed class TaskExecutor : ITaskExecutor
     private static string ActionKindLabel(TaskNode task) =>
         task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
 
-    private string ResolveWorkingDirectory(TaskNode task)
+    /// <summary>
+    /// The process <b>cwd</b> for an action/guardrail (SSOT §5.1) — the EFFECTIVE workspace, so the
+    /// cwd matches <c>GUARDRAILS_WORKSPACE</c> and <see cref="EffectiveWorkspace"/> in BOTH modes
+    /// (issue #134). In worktree mode (a real git segment) this is the task's isolated SEGMENT
+    /// worktree, so files the action writes <i>relative to its cwd</i> — not only via
+    /// <c>$GUARDRAILS_WORKSPACE</c> — land in the segment that <see cref="GitWorktreeProvider.Integrate"/>
+    /// commits; in serial shared-workspace mode it is the plan <see cref="PlanDefinition.Workspace"/>
+    /// (byte-identical to before). A <c>WorkingDirectory</c> override stays resolved relative to the
+    /// plan dir (<c>GUARDRAILS_PLAN_DIR</c>, the MAIN checkout — the single writer of harness state),
+    /// not the segment, so the override's anchor is the same path in both modes.
+    /// </summary>
+    private string ResolveWorkingDirectory(TaskNode task, WorktreeHandle worktree)
+    {
+        if (string.IsNullOrWhiteSpace(task.Action.WorkingDirectory))
+        {
+            return EffectiveWorkspace(worktree);
+        }
+
+        return Path.GetFullPath(Path.Combine(_plan.PlanDirectory, task.Action.WorkingDirectory));
+    }
+
+    /// <summary>
+    /// Serial-only cwd resolution for <see cref="RevalidateAsync"/> (issue #102): there is no segment
+    /// — the CLI refuses worktree mode for <c>--revalidate-task</c> (an in-place fix in the user's
+    /// checkout is invisible to a fresh segment) — so the cwd is always the plan
+    /// <see cref="PlanDefinition.Workspace"/> where the human's fix lives.
+    /// </summary>
+    private string ResolveRevalidateWorkingDirectory(TaskNode task)
     {
         if (string.IsNullOrWhiteSpace(task.Action.WorkingDirectory))
         {
