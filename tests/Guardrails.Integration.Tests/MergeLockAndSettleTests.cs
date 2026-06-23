@@ -314,6 +314,87 @@ public sealed class MergeLockAndSettleTests
         return planDir;
     }
 
+    /// <summary>
+    /// Creates a single-task plan inside <paramref name="repoPath"/> whose action writes a file using
+    /// a <b>cwd-relative</b> path (NOT via <c>$GUARDRAILS_WORKSPACE</c>) — the exact shape issue #134
+    /// reproduces. <c>maxParallelism: 2</c> forces worktree mode so the cwd IS the segment worktree.
+    /// </summary>
+    private static string CreateCwdRelativeWritePlan(string repoPath)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(planDir);
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 2
+            }
+            """);
+
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+        WriteCwdRelativeTaskInRepo(planDir, "01-cwd-writer");
+        return planDir;
+    }
+
+    /// <summary>
+    /// The relative path the cwd-relative-write action produces (the load-bearing #134 artifact).
+    /// </summary>
+    private const string CwdRelativeFile = "cwd-written.txt";
+    private const string CwdRelativeContent = "written-relative-to-cwd";
+
+    /// <summary>
+    /// Writes a task whose action creates <see cref="CwdRelativeFile"/> using a path RELATIVE to the
+    /// process cwd — deliberately NOT through <c>$GUARDRAILS_WORKSPACE</c>. With the #134 bug (cwd =
+    /// the user's MAIN checkout) the file lands in the main checkout and the segment commit is empty;
+    /// with the fix (cwd = the segment worktree) it lands in the segment and is committed.
+    /// </summary>
+    private static void WriteCwdRelativeTaskInRepo(string planDir, string taskId)
+    {
+        string taskDir = Path.Combine(planDir, "tasks", taskId);
+        Directory.CreateDirectory(taskDir);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $$"""
+            {
+              "description": "cwd-relative write {{taskId}}",
+              "dependsOn": []
+            }
+            """);
+
+        if (OperatingSystem.IsWindows())
+        {
+            // Set-Content with a RELATIVE path resolves against the process cwd (PS keeps its own
+            // current-location synced to the process working directory at launch). No GUARDRAILS_WORKSPACE.
+            File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
+                $"Set-Content -NoNewline -Path '{CwdRelativeFile}' -Value '{CwdRelativeContent}'\n" +
+                "exit 0\n");
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"), "exit 0\n");
+        }
+        else
+        {
+            string actionPath = Path.Combine(taskDir, "action.sh");
+            File.WriteAllText(actionPath,
+                "#!/usr/bin/env bash\n" +
+                // Redirect to a RELATIVE path → resolves against the process cwd. No $GUARDRAILS_WORKSPACE.
+                $"printf '%s' '{CwdRelativeContent}' > '{CwdRelativeFile}'\n" +
+                "exit 0\n");
+            File.SetUnixFileMode(actionPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            string guardrailPath = Path.Combine(taskDir, "guardrails", "01-check.sh");
+            File.WriteAllText(guardrailPath, "#!/usr/bin/env bash\nexit 0\n");
+            File.SetUnixFileMode(guardrailPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+    }
+
     private static void WriteTaskInRepo(string planDir, string taskId, string[] dependsOn)
     {
         string taskDir = Path.Combine(planDir, "tasks", taskId);
@@ -503,6 +584,88 @@ public sealed class MergeLockAndSettleTests
 
         // ── User branch stays on the same named branch (not detached HEAD) ────────────────────
         Assert.Equal(originalBranch, repo.CurrentBranch());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 2b — issue #134: worktree-mode cwd IS the segment worktree
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #134 regression: in worktree mode the action/guardrail process <b>cwd</b> must be the
+    /// task's SEGMENT worktree, not the user's MAIN checkout. The action writes a file using a path
+    /// RELATIVE TO ITS CWD (deliberately NOT via <c>$GUARDRAILS_WORKSPACE</c>) — the exact shape that
+    /// dogfooding the texttools showcase exposed.
+    ///
+    /// With the bug present (<c>ResolveWorkingDirectory</c> returns <c>_plan.Workspace</c>
+    /// unconditionally) the cwd is the user's checkout, so:
+    /// <list type="bullet">
+    ///   <item>the file lands in the MAIN checkout (untracked) and is NOT in the segment, so the
+    ///     segment commit captures ZERO files (the empty-segment-commit failure — masked by
+    ///     <c>--allow-empty</c>);</item>
+    ///   <item>the integrated plan branch <c>guardrails/plan</c> therefore does NOT contain the file —
+    ///     a downstream integration re-verify checking it out would not see the artifact.</item>
+    /// </list>
+    /// With the fix (cwd = the segment worktree) the file is committed in the segment, FF'd onto the
+    /// plan branch, and the MAIN checkout's tracked tree is untouched.
+    ///
+    /// Three assertions, mapping to the issue's consequence chain:
+    /// <list type="number">
+    ///   <item>the written file IS captured in the segment commit (non-empty commit — the file is in
+    ///     the committed tree on the plan branch);</item>
+    ///   <item>the file is visible to a downstream integration re-verify (present on the integrated
+    ///     plan branch <c>guardrails/plan</c>, which the union re-verify checks out);</item>
+    ///   <item>the user's MAIN checkout is NOT mutated by the worktree-mode action (no committed file,
+    ///     no untracked file in the user's working tree).</item>
+    /// </list>
+    /// </summary>
+    [Fact]
+    public async Task WorktreeMode_ActionCwd_IsSegmentWorktree_NotMainCheckout()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateCwdRelativeWritePlan(repo.RepoPath);
+        string initialHead = repo.HeadSha(repo.RepoPath);
+
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        var (report, _) = await RunWithProviderAsync(
+            planDir, provider, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "cwd-relative write task must succeed; " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        // The plan branch the harness integrates onto: guardrails/<plan-folder-name> = guardrails/plan.
+        const string planBranch = "guardrails/plan";
+
+        // ── Assertion 1 + 2: the file is in the committed tree on the integrated plan branch ──────
+        // `git ls-tree` lists ONLY tracked, committed paths. The file being present proves both the
+        // segment commit was NON-EMPTY (it captured the cwd-relative write) and that it FF'd onto the
+        // plan branch a downstream union re-verify checks out. With the #134 bug this list is empty
+        // (the file went to the main checkout; the segment commit captured nothing).
+        string tracked = TempGitRepo.Git(repo.RepoPath, "ls-tree", "--name-only", "-r", planBranch);
+        Assert.Contains(CwdRelativeFile, tracked, StringComparison.Ordinal);
+
+        // And its CONTENT is the cwd-relative write (not some empty/placeholder object).
+        string committedContent = TempGitRepo.Git(repo.RepoPath, "show", $"{planBranch}:{CwdRelativeFile}");
+        Assert.Equal(CwdRelativeContent, committedContent);
+
+        // ── Assertion 3: the user's MAIN checkout is NOT mutated by the worktree-mode action ──────
+        // (a) The user branch HEAD did not advance — no commit landed in the main checkout (no
+        //     mergeOnSuccess; the plan branch holds the work in isolation).
+        Assert.Equal(initialHead, repo.HeadSha(repo.RepoPath));
+
+        // (b) The file is NOT present in the main checkout's working tree — neither tracked nor
+        //     untracked. With the bug the action wrote it here (cwd = main checkout); the fix keeps
+        //     the main checkout pristine. `git status --porcelain` over the user branch surfaces any
+        //     untracked artifact; a direct File.Exists is the belt-and-braces check.
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, CwdRelativeFile)),
+            $"#134: '{CwdRelativeFile}' must NOT exist in the user's main checkout — the worktree-mode " +
+            "action must write into its segment worktree, never the user's tree.");
+
+        string status = TempGitRepo.Git(repo.RepoPath, "status", "--porcelain");
+        Assert.DoesNotContain(CwdRelativeFile, status, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
