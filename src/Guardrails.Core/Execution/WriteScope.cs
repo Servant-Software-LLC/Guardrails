@@ -54,6 +54,12 @@ public static class WriteScope
     private static string Normalize(string glob)
     {
         if (glob.Contains('*')) return glob;
+        // A trailing slash is an EXPLICIT directory marker (issue #136): normalise straight to
+        // '<dir>/**' before the extension heuristic. Without this, 'src/Foo/' became 'src/Foo//**'
+        // — an empty middle segment that matches no real path component, so every nested file fell
+        // out of scope. Honouring the slash also rescues a dotted directory name ('src/Foo.Bar/'),
+        // which the HasFileExtension heuristic below would otherwise mis-read as a file literal.
+        if (glob.EndsWith('/')) return glob + "**";
         int lastSlash = glob.LastIndexOf('/');
         string lastSeg = lastSlash >= 0 ? glob[(lastSlash + 1)..] : glob;
         return HasFileExtension(lastSeg) ? glob : glob + "/**";

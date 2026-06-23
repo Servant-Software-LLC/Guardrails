@@ -425,6 +425,10 @@ Matching is segment-by-segment against the `/`-separated path. Within a single s
   must reappear between the two `**`s), or trailing (`src/Feature/**`).
 - A **bare directory** entry (no glob, e.g. `src/Feature`) **normalizes to `src/Feature/**`** — it
   matches files *under* the directory, never the directory entry itself.
+- A **trailing slash** is an **explicit directory marker** (issue #136): `src/Feature/` and the dotted
+  `src/Foo.Bar/` both normalize to `<dir>/**`, claiming nested files. The slash is honoured *before* the
+  file-vs-directory extension heuristic, so a dotted directory name is not mis-read as a file — and it
+  never collapses to `dir//**` (an empty segment that would match nothing).
 - An **empty** scope list `[]` matches **nothing** (a task that owns nothing); `["**"]` matches
   **everything** (universal — disables the check's discriminating power; a granularity smell, GR2020).
 
