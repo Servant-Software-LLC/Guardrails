@@ -1893,6 +1893,17 @@ plan-name/
 
 ### §4.3 — NEW: per-guardrail `scope` + the integration-guardrail set
 
+> **⚠ SUPERSEDED (2026-06-23, #132).** The three-part union re-verify set this proposed-edit block
+> quotes below (union task's full set + every colliding sibling's full set unconditionally + the
+> integration set) was **not adopted for v1**. The text actually written into the SSOT is the
+> **integration-set-only** contract: at every union point the harness re-runs the run's
+> **integration-guardrail set** and nothing else, and SSOT §4.3 also records the **B-3 three-net
+> residual** (the disjoint-scope CHECK + the integration set + the terminal gate) that the
+> integration-set-only model accepts in place of re-running colliding siblings' full `local` sets. The
+> authoritative text is **§4.3 of `02-schemas-and-contracts.md`** — read that, not the quote below.
+> The quote is retained verbatim as the historical proposal; `ShouldRunAtUnion` / per-colliding-sibling
+> selection is **dormant** in v1.
+
 Add a §4.3 "Guardrail scope (`scope: "integration" | "local"`)":
 
 > A guardrail declares an optional `scope` (deterministic sidecar key §4.1, or prompt frontmatter
@@ -1914,6 +1925,14 @@ Add a §4.3 "Guardrail scope (`scope: "integration" | "local"`)":
 > with no integration-scoped guardrail (BLOCKER).
 
 ### §5.3 — replace with the FF / union integration + the unified atomic settle + AI-merge
+
+> **⚠ SUPERSEDED in part (2026-06-23, #132).** The "verdict" sentence below quoted "re-run the union
+> task's own guardrails + the run's integration-guardrail set"; the text actually written into the SSOT
+> drops "the union task's own guardrails +", leaving the **integration-guardrail set as the sole
+> re-verify input** at every union (clean-auto, AI-resolved, and fan-in alike) — consistent with the
+> integration-set-only §4.3 contract and #132. The authoritative text is **§5.3 of
+> `02-schemas-and-contracts.md`**. The rest of this block (FF vs union, AI-merge byte-producer + the
+> deterministic gates, the atomic settle order, off-lock AI-merge) is unchanged and live.
 
 Replace the §5.3 block (superseding plan 07's §5.3) with:
 
