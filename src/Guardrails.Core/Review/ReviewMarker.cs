@@ -6,21 +6,24 @@ using Guardrails.Core.Model;
 namespace Guardrails.Core.Review;
 
 /// <summary>
-/// The local review marker (SSOT §13, issue #79): a small, gitignored file
-/// <c>state/guardrails-review.json</c> that records a human ran <c>/guardrails-review</c> over the
-/// CURRENT plan. It carries a timestamp and the plan's <see cref="PlanHash"/> at review time, so an
-/// EDITED plan reads as un-reviewed again (the same way the journal's <c>planHash</c> detects a
-/// changed plan on resume).
+/// The review marker (SSOT §13, issue #79): a small file <c>state/guardrails-review.json</c> that
+/// records a human ran <c>/guardrails-review</c> over the CURRENT plan. It carries a timestamp and
+/// the plan's <see cref="PlanHash"/> at review time, so an EDITED plan reads as un-reviewed again
+/// (the same way the journal's <c>planHash</c> detects a changed plan on resume).
 ///
-/// <para>It is LOCAL runtime truth, never committed: it asserts that <em>this</em> checkout was
-/// reviewed <em>here</em>, so a committed marker would falsely vouch for the plan on another machine.
-/// It lives under <c>state/</c> (gitignored) and is wiped by <c>--fresh</c> (SSOT §6.1) — a fresh
-/// slate honestly discards the prior local review act.</para>
+/// <para>It is <b>committed as part of the reviewed plan</b>, alongside the committed task folder and
+/// the review's edits. It is an attestation about the COMMITTED plan content, not about a particular
+/// checkout: because it is <see cref="PlanHash"/>-keyed it <b>self-invalidates the instant any
+/// <c>task.json</c>/<c>guardrails.json</c> changes the plan hash</b> (the review nudge returns), so it
+/// can never falsely vouch for changed content. That self-invalidation is exactly what makes
+/// committing it safe — a stale marker reads as un-reviewed rather than as a false green.</para>
 ///
 /// <para>The harness only READS the marker and computes staleness; the <c>/guardrails-review</c> skill
 /// WRITES it. Surfacing is warn-never-block: <c>guardrails validate</c> emits
 /// <see cref="Loading.DiagnosticCodes.ReviewMarkerMissingOrStale"/> (GR2025, a warning) and
-/// <c>guardrails run</c> prints the same nudge (suppressible with <c>--skip-review-check</c>).</para>
+/// <c>guardrails run</c> prints the same nudge (suppressible with <c>--skip-review-check</c>).
+/// Because it is a committed plan artifact (not per-run runtime state), <c>--fresh</c> does NOT
+/// wipe it (SSOT §6.1).</para>
 /// </summary>
 public sealed record ReviewMarker
 {
@@ -125,7 +128,7 @@ public sealed record ReviewMarker
 /// <summary>The review state of a plan against its marker (SSOT §13).</summary>
 public enum ReviewState
 {
-    /// <summary>No (parseable) review marker exists — the plan was never reviewed in this checkout.</summary>
+    /// <summary>No (parseable) review marker exists — the plan was never reviewed (or the marker was not committed).</summary>
     Missing,
 
     /// <summary>A marker exists but its plan hash no longer matches — the plan changed since review.</summary>

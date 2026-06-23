@@ -668,13 +668,21 @@ public sealed class Scheduler
                 };
             }
 
-            // AI merge succeeded: re-verify using the FULL guardrail set of all colliding
-            // siblings unconditionally (B-3: AI may silently drop a sibling's hunk).
-            IReadOnlyList<GuardrailDefinition> allGuardrails =
-                _plan.Tasks.SelectMany(t => t.Guardrails).ToList();
+            // AI merge succeeded: re-verify the merged bytes against the SAME integration
+            // set as the non-AI-merge union path below (§4.3, v1 contract). Running the FULL
+            // per-task set here false-fails by construction — it includes per-attempt
+            // anti-tautology guardrails (tests-fail-on-current-code, which PASS post-merge),
+            // scaffold-state and state-fragment-present checks (no action fragment exists at a
+            // union point), and downstream tasks that have not run yet. The B-3 "AI may drop a
+            // colliding sibling's hunk" concern is covered by the integration-scope union
+            // guardrails (a well-authored integration/union-verify guardrail catches a dropped
+            // hunk), the disjoint-scope CHECK, and the terminal integration gate — not by
+            // re-running the full per-task set (which would be inconsistent with the union path).
+            IReadOnlyList<GuardrailDefinition> aiIntegGuardrails =
+                GuardrailScopeFilter.IntegrationSet(_plan.Tasks.SelectMany(t => t.Guardrails));
 
             ReVerifyResult aiReVerify = _reVerifier != null
-                ? await _reVerifier.ReVerifyAsync(integ.IntegrationWorktreePath, allGuardrails, ct).ConfigureAwait(false)
+                ? await _reVerifier.ReVerifyAsync(integ.IntegrationWorktreePath, aiIntegGuardrails, ct).ConfigureAwait(false)
                 : new ReVerifyResult { Passed = true };
 
             if (aiReVerify.Passed)
@@ -696,7 +704,7 @@ public sealed class Scheduler
                 Outcome = TaskOutcome.NeedsHuman,
                 ActionExitCode = result.ActionExitCode,
                 Guardrails = result.Guardrails,
-                Summary = "AI-merge resolution failed re-verify (B-3); needs human"
+                Summary = "AI-merge resolution failed integration re-verify; needs human"
             };
         }
 

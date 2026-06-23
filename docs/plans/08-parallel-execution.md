@@ -760,6 +760,17 @@ N-4):
 - **Bounded budget; 1 retry (2 attempts total).** Escalate to **needs-human** on markers-left,
   out-of-bounds, re-verify-fail, or budget exhaustion.
 
+> **⚠ SUPERSEDED (2026-06-23, #132).** The three-part union re-verify set described in this Step 3
+> (union task's full set + every colliding sibling's full set unconditionally + the integration set)
+> was **not adopted for v1**. The v1 contract is **integration-set-only**: at every union point the
+> harness re-runs the run's **integration-guardrail set** and nothing else — see the authoritative
+> **§4.3 of `02-schemas-and-contracts.md`**, which also records the **B-3 three-net residual** (the
+> disjoint-scope CHECK + the integration set + the terminal gate) that the integration-set-only model
+> accepts in place of re-running colliding siblings' full `local` sets. The `ShouldRunAtUnion` /
+> per-colliding-sibling selection machinery this section motivates is therefore **dormant** in v1 —
+> retained here only as the historical rationale and a deferred v2 option. The narrative below is left
+> intact as that record; do not implement it as written.
+
 **Step 3 — the verdict is the deterministic re-verify, IDENTICAL machinery for clean-auto and
 AI-resolved paths.** Re-run, on the `--no-commit` merged bytes — **BEFORE the downstream task starts
 its action and BEFORE the merge commit** — exactly these three sets:

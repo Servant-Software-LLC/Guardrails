@@ -6,9 +6,10 @@ using static Guardrails.Core.Tests.PlanFixtures;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// The local review marker (SSOT §13, issue #79): a deterministic missing/stale/reviewed evaluation
-/// over <c>state/guardrails-review.json</c>, reusing the journal's <see cref="PlanHash"/> so an edited
-/// plan reads as un-reviewed. Warn, never block: the harness only reads + classifies; the skill writes.
+/// The review marker (SSOT §13, issue #79): a deterministic missing/stale/reviewed evaluation
+/// over the committed <c>state/guardrails-review.json</c>, reusing the journal's <see cref="PlanHash"/>
+/// so an edited plan reads as un-reviewed. Warn, never block: the harness only reads + classifies; the
+/// skill writes.
 /// </summary>
 public sealed class ReviewMarkerTests : IDisposable
 {

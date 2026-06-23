@@ -290,12 +290,16 @@ so the harness's review nudge clears:
 guardrails mark-reviewed <folder>
 ```
 
-This writes the local, plan-hash-keyed `state/guardrails-review.json` marker (SSOT §13) — the skill
+This writes the committed, plan-hash-keyed `state/guardrails-review.json` marker (SSOT §13) — the skill
 can't compute the `PlanHash` itself, so it delegates to the CLI. Until the plan changes, `guardrails
 validate`/`run` stop emitting the GR2025 "not reviewed" warning; editing any `task.json` /
-`guardrails.json` re-stales the marker and the nudge returns (the marker is local, gitignored, and
-wiped by `--fresh`). Do NOT mark a plan reviewed while a BLOCKER finding remains unaddressed — the
-marker vouches that the plan was genuinely reviewed.
+`guardrails.json` re-stales the marker and the nudge returns. The marker is COMMITTED as part of the
+reviewed plan: because it is `planHash`-keyed it is an attestation about the committed plan content
+that self-invalidates the instant any `task.json` / `guardrails.json` changes the planHash (the
+GR2025 nudge returns), so committing it can never falsely vouch for changed content. `--fresh` does
+NOT wipe it — `--fresh` clears only genuine runtime state (`run.json`, `state.json`,
+`merge-conflicts.log`, `logs/`, `captured/`). Do NOT mark a plan reviewed while a BLOCKER finding
+remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 
 ## Quality bar
 - [ ] `guardrails validate` ran first; findings don't duplicate the tool.

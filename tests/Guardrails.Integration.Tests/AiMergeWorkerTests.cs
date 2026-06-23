@@ -349,8 +349,14 @@ public sealed class AiMergeWorkerTests
     /// <see cref="CreateConflictPlan"/> but task A additionally writes <c>src/a_tests.cs</c>
     /// and carries a <c>02-sibling-tests</c> guardrail that enforces cross-file consistency —
     /// failing when the AI drops A's FuncA from conflict.cs while a_tests.cs still references it.
+    ///
+    /// <paramref name="siblingGuardrailScope"/> controls whether the cross-file consistency
+    /// guardrail is in the integration set: <c>"integration"</c> (the v1 B-3 net — it runs at
+    /// the union re-verify and catches the dropped hunk) or <c>null</c> / <c>"local"</c> (the
+    /// accepted v1 residual — a purely-local detector that the integration-set-only union
+    /// re-verify does NOT run, so the drop settles green).
     /// </summary>
-    private static string CreateB3ConflictPlan(string repoPath)
+    private static string CreateB3ConflictPlan(string repoPath, string? siblingGuardrailScope)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(planDir);
@@ -368,12 +374,15 @@ public sealed class AiMergeWorkerTests
             }
             """);
 
-        WriteConflictTask(planDir, "01-task-a", "FuncA", b3SiblingGuardrail: true);
+        WriteConflictTask(planDir, "01-task-a", "FuncA", b3SiblingGuardrail: true,
+            siblingGuardrailScope: siblingGuardrailScope);
         WriteConflictTask(planDir, "02-task-b", "FuncB", b3SiblingGuardrail: false);
         return planDir;
     }
 
-    private static void WriteConflictTask(string planDir, string taskId, string funcName, bool b3SiblingGuardrail)
+    private static void WriteConflictTask(
+        string planDir, string taskId, string funcName, bool b3SiblingGuardrail,
+        string? siblingGuardrailScope = null)
     {
         string taskDir = Path.Combine(planDir, "tasks", taskId);
         Directory.CreateDirectory(taskDir);
@@ -426,6 +435,7 @@ public sealed class AiMergeWorkerTests
                     "    exit 1\n" +
                     "}\n" +
                     "exit 0\n");
+                WriteSiblingGuardrailSidecar(taskDir, siblingGuardrailScope);
             }
         }
         else
@@ -462,8 +472,29 @@ public sealed class AiMergeWorkerTests
                     "fi\n" +
                     "exit 0\n");
                 SetExecutable(g2);
+                WriteSiblingGuardrailSidecar(taskDir, siblingGuardrailScope);
             }
         }
+    }
+
+    /// <summary>
+    /// Writes the metadata sidecar for the <c>02-sibling-tests</c> guardrail so it declares the
+    /// requested <paramref name="scope"/> (§4.1). When <paramref name="scope"/> is null no sidecar
+    /// is written, leaving the guardrail at the default <c>local</c> scope (the accepted-residual
+    /// case: a purely-local detector that the integration-set-only union re-verify never runs).
+    /// </summary>
+    private static void WriteSiblingGuardrailSidecar(string taskDir, string? scope)
+    {
+        if (scope is null)
+        {
+            return;
+        }
+
+        // The sidecar pairs with the guardrail by basename (02-sibling-tests.json next to
+        // 02-sibling-tests.ps1/.sh), independent of the script extension (§4.1).
+        File.WriteAllText(
+            Path.Combine(taskDir, "guardrails", "02-sibling-tests.json"),
+            $$"""{ "scope": "{{scope}}" }""");
     }
 
     private static void SetExecutable(string path)
@@ -742,31 +773,36 @@ public sealed class AiMergeWorkerTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────
-    // (v) B-3 load-bearing: AI-deleted-hunk → colliding-sibling re-verify catches it
+    // (v) B-3 v1 doctrine: AI-deleted-hunk → INTEGRATION-set re-verify catches it
     // ─────────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Plan 08 §4 B-3 load-bearing gate: the AI resolves the conflict by DROPPING the colliding
-    /// sibling's (task A's) source hunk — keeping only task B's FuncB. The resolution has no
-    /// conflict markers and is in-bounds. Task B's own guardrails pass on the merged bytes.
+    /// Plan 08 §4.3 B-3, v1 integration-set-only union re-verify contract: the AI resolves the
+    /// conflict by DROPPING the colliding sibling's (task A's) source hunk — keeping only task B's
+    /// FuncB. The resolution has no conflict markers and is in-bounds. Task B's own guardrails pass
+    /// on the merged bytes.
     ///
-    /// Task A's FULL guardrail set must re-run UNCONDITIONALLY because A is a colliding sibling —
-    /// including <c>02-sibling-tests</c>, whose subject file (<c>src/a_tests.cs</c>) was NOT
-    /// touched by the merge diff. Task A's <c>02-sibling-tests</c> detects that
-    /// <c>src/a_tests.cs</c> still references FuncA while <c>src/conflict.cs</c> no longer
-    /// contains FuncA — it FAILS, causing NeedsHuman.
+    /// <para>Under the v1 contract the AI-merge re-verify runs ONLY the run's integration-guardrail
+    /// set (§4.3) — the SAME set as the non-AI-merge union path — NOT every colliding sibling's full
+    /// local guardrail set. The dropped hunk is therefore caught only when the cross-file consistency
+    /// detector is in the integration set. Here task A's <c>02-sibling-tests</c> guardrail is marked
+    /// <c>scope:"integration"</c> (via its sidecar), so it IS in the integration set and runs at the
+    /// union: it detects that <c>src/a_tests.cs</c> still references FuncA while <c>src/conflict.cs</c>
+    /// no longer contains FuncA, FAILS, and the union settles NeedsHuman.</para>
     ///
-    /// B-3 split assertion: <see cref="GuardrailScopeFilter.ShouldRunAtUnion"/> with
-    /// <c>isCollidingSibling=false</c> and empty <c>touchedByMerge</c> (treating A as a distant
-    /// non-colliding task) returns <c>false</c>, pinning that a wrong implementation would SKIP
-    /// A's <c>02-sibling-tests</c> and miss the hunk drop. The NeedsHuman assertion above FAILS
-    /// if the Scheduler passes <c>isCollidingSibling=false</c> for the colliding sibling A.
+    /// <para>This is the real v1 B-3 net being pinned: a well-authored integration/union-verify
+    /// guardrail catches a dropped hunk. The companion
+    /// <see cref="AiDeletedHunk_LocalOnlyCoverage_IsAcceptedResidual_SettlesGreen"/> pins the honest
+    /// residual — a purely-local detector is NOT run at the union, so the same drop settles green.
+    /// The dormant <see cref="GuardrailScopeFilter.ShouldRunAtUnion"/> predicate logic is unit-pinned
+    /// in <c>GuardrailScopeTests</c>, not here.</para>
     /// </summary>
     [Fact]
-    public async Task AiDeletedHunk_B3_CollidingSiblingReVerifyCatchesIt()
+    public async Task AiDeletedHunk_B3_IntegrationSetReVerifyCatchesIt()
     {
         using var repo = new TempGitRepo();
-        string planDir = CreateB3ConflictPlan(repo.RepoPath);
+        // 02-sibling-tests is integration-scoped → in the integration set → runs at the union.
+        string planDir = CreateB3ConflictPlan(repo.RepoPath, siblingGuardrailScope: "integration");
         string initialHead = repo.HeadSha();
 
         // AI drops A's FuncA, keeps B's FuncB. No markers. In-bounds (only writes to MERGE_OUT).
@@ -779,7 +815,6 @@ public sealed class AiMergeWorkerTests
             new ProcessRunner(),
             new InterpreterMap(new PathExecutableProbe()));
 
-        // ── COMPILE ERROR: AiMergeWorker and Scheduler(aiMergeWorker:) do not yet exist ────────
         var aiMergeWorker = new AiMergeWorker(hunkDropper);
         var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
 
@@ -787,40 +822,64 @@ public sealed class AiMergeWorkerTests
             planDir, provider, aiMergeWorker, reVerifier,
             TestContext.Current.CancellationToken);
 
-        // B-3 caught the hunk drop: the union is NeedsHuman
-        TaskResult nhTask = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+        // B-3 caught the hunk drop via the integration set: the union is NeedsHuman.
+        _ = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
         _ = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.Succeeded);
 
-        // ── B-3 split: pin that the WRONG filter returns false ────────────────────────────────────
-        // src/a_tests.cs was NOT touched by the merge diff (AI only changed src/conflict.cs).
-        // A wrong implementation that treats A as a distant task (isCollidingSibling=false) with
-        // empty touchedByMerge would SKIP A's 02-sibling-tests → miss the hunk drop.
-        // The NeedsHuman assertion above FAILS in that case.
-        var aG02 = new GuardrailDefinition
-        {
-            Name = "02-sibling-tests",
-            Path = "fake-path",
-            Kind = ActionKind.Script,
-            Scope = null   // null = local scope; B-3 applies to colliding siblings' local guardrails
-        };
-        IReadOnlySet<string> aTestsNotInMergeDiff = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        bool wrongFilterSkips = GuardrailScopeFilter.ShouldRunAtUnion(
-            aG02,
-            isCollidingSibling: false,         // WRONG: treats A as a distant non-colliding task
-            touchedByMerge: aTestsNotInMergeDiff);
-        Assert.False(wrongFilterSkips,
-            "B-3 split: ShouldRunAtUnion(isCollidingSibling=false, touchedByMerge=empty) returns false. " +
-            "A wrong implementation that passes isCollidingSibling=false for colliding sibling A " +
-            "skips 02-sibling-tests and misses the AI-dropped hunk. " +
-            "The NeedsHuman assertion above FAILS in that scenario.");
-
-        // Correct filter: A is a colliding sibling → runs unconditionally regardless of touchedByMerge
-        Assert.True(
-            GuardrailScopeFilter.ShouldRunAtUnion(aG02, isCollidingSibling: true, touchedByMerge: aTestsNotInMergeDiff),
-            "With B-3 (isCollidingSibling=true), ShouldRunAtUnion returns true even with empty touchedByMerge.");
-
-        // Rollback must not alter the user's branch
+        // Rollback must not alter the user's branch.
         Assert.Equal(initialHead, repo.HeadSha());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (v-b) B-3 accepted residual: a LOCAL-only dropped-hunk detector is NOT run at the union
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Plan 08 §4.3 accepted v1 residual (#132): the AI-merge re-verify runs ONLY the integration
+    /// set. A cross-file consistency detector left at the default <c>local</c> scope (no sidecar,
+    /// not in the integration set) is NOT re-run at the union, so an AI-dropped colliding-sibling
+    /// hunk that ONLY a local guardrail would catch settles GREEN.
+    ///
+    /// <para>This is the honest counterpart of
+    /// <see cref="AiDeletedHunk_B3_IntegrationSetReVerifyCatchesIt"/>: it makes the v1 weakening
+    /// visible and asserted rather than silent. The fixture is identical EXCEPT task A's
+    /// <c>02-sibling-tests</c> guardrail is local (the dropped-hunk detector that would have caught
+    /// the drop is purely local), and there is no integration-scoped guardrail covering the dropped
+    /// code and no downstream dependent — so all three v1 B-3 nets miss it. When the deferred
+    /// union-safe colliding-sibling re-verify (#132) is built, this test flips to NeedsHuman and
+    /// becomes the red-bar for that work.</para>
+    /// </summary>
+    [Fact]
+    public async Task AiDeletedHunk_LocalOnlyCoverage_IsAcceptedResidual_SettlesGreen()
+    {
+        using var repo = new TempGitRepo();
+        // 02-sibling-tests stays LOCAL (siblingGuardrailScope: null → no sidecar) → NOT in the
+        // integration set → NOT run at the union re-verify. No other integration coverage exists.
+        string planDir = CreateB3ConflictPlan(repo.RepoPath, siblingGuardrailScope: null);
+
+        // AI drops A's FuncA, keeps B's FuncB. No markers. In-bounds (only writes to MERGE_OUT).
+        var hunkDropper = new HunkDropperRunner(
+            keptContent: "class Shared { static string Get() => \"FuncB\"; }");
+
+        // REAL re-verifier — but with no integration-scoped guardrail it has nothing to run that
+        // would catch the drop; the LOCAL 02-sibling-tests is deliberately NOT in the set.
+        var reVerifier = new GuardrailReVerifier(
+            new ProcessRunner(),
+            new InterpreterMap(new PathExecutableProbe()));
+
+        var aiMergeWorker = new AiMergeWorker(hunkDropper);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, reVerifier,
+            TestContext.Current.CancellationToken);
+
+        // Accepted v1 residual: the local-only dropped-hunk detector is NOT run at the union, so
+        // the drop is NOT caught — both tasks settle green. This documents the known weakening.
+        Assert.True(report.AllSucceeded,
+            "Accepted v1 residual (#132): the integration-set-only union re-verify does not run a " +
+            "purely-local dropped-hunk detector, so an AI-dropped colliding-sibling hunk covered " +
+            "ONLY by a local guardrail settles green. " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
     }
 }

@@ -76,17 +76,21 @@ public sealed class RunResetTests : IDisposable
     }
 
     [Fact]
-    public void Fresh_DeletesLocalReviewMarker()
+    public void Fresh_PreservesCommittedReviewMarker()
     {
-        // SSOT §13: the local review marker is gitignored runtime under state/; a fresh slate honestly
-        // discards the prior local review act.
+        // SSOT §13: the review marker is a COMMITTED plan artifact (planHash-keyed, self-invalidating
+        // on any edit), NOT per-run runtime state. --fresh must NOT delete it — a fresh slate keeps the
+        // prior review attestation; the planHash key alone re-nudges if the plan content changed.
         string marker = Path.Combine(_planDir, "state", "guardrails-review.json");
         Directory.CreateDirectory(Path.GetDirectoryName(marker)!);
-        File.WriteAllText(marker, "{}");
+        File.WriteAllText(marker, """{ "version": 1, "reviewedAt": "2026-06-23T00:00:00Z", "planHash": "sha256:abc" }""");
 
         RunReset.Fresh(_planDir);
 
-        Assert.False(File.Exists(marker), "--fresh must delete state/guardrails-review.json (SSOT §13)");
+        Assert.True(File.Exists(marker),
+            "--fresh must NOT delete the committed review marker state/guardrails-review.json (SSOT §13)");
+        // The original content survives untouched — --fresh does not rewrite it either.
+        Assert.Contains("sha256:abc", File.ReadAllText(marker), StringComparison.Ordinal);
     }
 
     [Fact]

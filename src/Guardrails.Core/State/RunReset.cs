@@ -17,9 +17,11 @@ public static class RunReset
     /// <summary>
     /// Full fresh reset (SSOT §6.1): delete <c>run.json</c>, <c>state.json</c>,
     /// <c>merge-conflicts.log</c>, the plan-root <c>logs/</c> tree (all runs' attempt artifacts and
-    /// any exported static log site, §8), the local review marker <c>state/guardrails-review.json</c>
-    /// (§13) and the <c>captured/</c> baseline store, then re-seed <c>state.json</c> from
-    /// <c>seed.json</c> (or <c>{}</c>). The committed <c>seed.json</c> and task folders are untouched.
+    /// any exported static log site, §8) and the <c>captured/</c> baseline store, then re-seed
+    /// <c>state.json</c> from <c>seed.json</c> (or <c>{}</c>). The committed <c>seed.json</c>, the task
+    /// folders, and the committed review marker <c>state/guardrails-review.json</c> (§13) are
+    /// untouched — the marker is a committed plan artifact (planHash-keyed, self-invalidating on any
+    /// edit), NOT per-run runtime state, so a fresh slate keeps the prior review attestation.
     /// </summary>
     /// <remarks>
     /// <c>captured/</c> (issue #51, the restore-on-retry baselines) MUST be wiped: a stale baseline
@@ -38,9 +40,11 @@ public static class RunReset
         // The per-attempt artifacts (and any exported static log site) live under the PLAN-ROOT
         // logs/<runId>/ tree (SSOT §8, plan-08: a sibling of state/, divided by runId) — NOT the
         // pre-plan-08 state/logs/. Delete the whole logs/ tree so a fresh run starts clean and the
-        // tree never grows unbounded across runs. The local review marker (§13) goes too.
+        // tree never grows unbounded across runs.
         DeleteDirectoryIfExists(Path.Combine(planDirectory, "logs"));
-        DeleteFileIfExists(Path.Combine(stateDir, "guardrails-review.json"));
+        // The review marker (state/guardrails-review.json, §13) is deliberately NOT deleted: it is a
+        // committed plan artifact, planHash-keyed so it self-invalidates on any task/guardrail edit
+        // (the nudge returns) — a fresh run must keep the prior review attestation, not erase it.
         DeleteDirectoryIfExists(Path.Combine(stateDir, "captured"));
 
         // F3: prune stale guardrails/<runId>/* segment+fork branches and their worktrees left

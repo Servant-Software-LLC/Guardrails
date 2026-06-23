@@ -25,7 +25,7 @@ plan-name/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
 │   ├── run.json                 # run journal — harness-owned, gitignored (§7)
-│   ├── guardrails-review.json   # OPTIONAL local review marker — gitignored (§13)
+│   ├── guardrails-review.json   # OPTIONAL review marker — COMMITTED, planHash-keyed (§13)
 │   └── merge-conflicts.log      # harness-owned, gitignored (§6.3)
 ├── logs/
 │   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
@@ -414,22 +414,32 @@ A guardrail declares an optional `scope` (deterministic sidecar key §4.1, or pr
 §4.2): `"local"` (default) or `"integration"`. The run's **integration-guardrail set** = the union
 of all `scope: "integration"` guardrails across the plan (typically the whole-repo build + the
 whole test suite). At **every union point** (a fan-in or a non-FF plan-branch integration, §5.3), on
-the merged bytes, BEFORE the merge commit and BEFORE any downstream action, the harness re-runs (via
-the attempt-decoupled re-verify seam): (1) the union task's full guardrail set; (2) **every colliding
-sibling's FULL guardrail set — UNCONDITIONALLY, with NO touched-files filter** (the AI may have
-dropped a colliding sibling's contribution, leaving the sibling's test file untouched — a
-touched-files skip would miss exactly that); and (3) the integration-guardrail set. **The
-touched-files local-skip applies ONLY to a distant, NON-colliding task's `local` guardrails** (re-run
-only if the merge touched that task's files); it is **never** applied to a colliding sibling. The
-terminal `integrationGate` sink (§3.3) runs the **same** integration set on the final merged HEAD —
-the terminal gate and the per-union re-verify are one mechanism at two scopes. Because the re-verify
-runs on arbitrary union bytes outside any attempt lifecycle, it uses a **public attempt-decoupled
-re-verify seam** (NOT the attempt-bound internal guardrail runner). The re-verify child process runs
-with cwd = the integration worktree and `GUARDRAILS_WORKSPACE` set to that same path (#124) — so a
-guardrail reading `$GUARDRAILS_WORKSPACE` resolves files identically in-attempt and at re-verify; the
-`GUARDRAILS_ACTION_*` attempt-lifecycle vars stay deliberately absent (there is no action at a union
-point). `plan-breakdown` marks the build/test guardrails `scope: "integration"`; `guardrails-review`
-flags an integration-sensitive plan with no integration-scoped guardrail (BLOCKER).
+the merged bytes, BEFORE the merge commit and BEFORE any downstream action, the harness re-runs **the
+run's integration-guardrail set** (via the attempt-decoupled re-verify seam). This is the **complete
+v1 union re-verify contract**: one set, run uniformly at every union and again on the final merged
+HEAD by the terminal `integrationGate` sink (§3.3). The terminal gate and the per-union re-verify are
+one mechanism running the **same** set at two scopes. There is no per-task or per-colliding-sibling
+guardrail selection at a union in v1 — the integration set is the whole re-verify.
+
+**Residual the v1 integration-set-only contract accepts (the B-3 three-net residual).** Because the
+union re-verify runs only `scope: "integration"` guardrails — not a colliding sibling's full
+`local` set — an AI-merge that drops a colliding sibling's source hunk while leaving the sibling's
+test file textually untouched is NOT caught by any *local* guardrail at the union. v1 catches such a
+drop by **three nets, all integration-scoped or global**: (1) the **disjoint-scope CHECK** that makes
+two tasks writing the same file a flagged plan-shape problem, so genuine colliding siblings are rare
+by construction; (2) the **integration-guardrail set** (the whole-repo build + whole suite) re-run at
+the union, which catches any drop that breaks a build or an integration-scoped test; and (3) the
+**terminal whole-repo gate** on the final HEAD. A purely-`local` regression hidden inside a cleanly
+re-merged file — invisible to all three nets — is an **accepted v1 residual**, tracked by **#132**;
+re-running colliding siblings' full `local` sets at unions (the superseded three-part union model) is
+deferred, not adopted. Because the re-verify runs on arbitrary union bytes outside any attempt
+lifecycle, it uses a **public attempt-decoupled re-verify seam** (NOT the attempt-bound internal
+guardrail runner). The re-verify child process runs with cwd = the integration worktree and
+`GUARDRAILS_WORKSPACE` set to that same path (#124) — so a guardrail reading `$GUARDRAILS_WORKSPACE`
+resolves files identically in-attempt and at re-verify; the `GUARDRAILS_ACTION_*` attempt-lifecycle
+vars stay deliberately absent (there is no action at a union point). `plan-breakdown` marks the
+build/test guardrails `scope: "integration"`; `guardrails-review` flags an integration-sensitive plan
+whose integration set is missing or too thin to be the union's whole re-verify (BLOCKER).
 
 ---
 
@@ -517,7 +527,7 @@ resolves harness-internal unions only; it is **withheld** at the `--merge-on-suc
 boundary.
 
 **The verdict (identical for clean-auto and AI-resolved) is the deterministic re-verify:** re-run
-the union task's own guardrails + the run's **integration-guardrail set** (§4.3) on the `--no-commit`
+the run's **integration-guardrail set** (§4.3) on the `--no-commit`
 merged bytes, then assert `git status --porcelain` shows only the staged merge (W3 read-only check).
 Any re-verify fail / remaining conflict / dirtied tracked file ⇒ `git reset --hard preHead`;
 `needs-human`; write no fragment, consume no `mergeSequence`. AI-merge + its re-verify run in the
@@ -576,9 +586,10 @@ analysis — the default remains that the harness does not mutate the user's che
 - `state/state.json` (runtime, gitignored): the merged state. Created at run start
   from `seed.json` (or `{}`) when missing. `guardrails run --fresh` deletes runtime
   state and re-seeds. The `--fresh` deletion list is: `run.json`, `state.json`,
-  `merge-conflicts.log`, `state/guardrails-review.json` (the local review marker, §13),
-  `state/captured/`, and the plan-root `logs/` tree (all runs' attempt artifacts and any
-  exported static log site, §8/§12.3).
+  `merge-conflicts.log`, `state/captured/`, and the plan-root `logs/` tree (all runs'
+  attempt artifacts and any exported static log site, §8/§12.3). It does **NOT** delete
+  `state/guardrails-review.json` — that marker is a committed plan artifact (§13),
+  planHash-keyed so it self-invalidates on any edit, NOT per-run runtime state.
 - The **harness is the single writer** of `state.json`. Child processes never touch it.
 
 ### 6.2 Fragments (snapshot in, fragment out)
@@ -1371,7 +1382,7 @@ page during a live run is a deferred follow-up; the re-runnable command is the v
 
 `/guardrails-review` records that a human ran the adversarial review pass over the current plan, by
 invoking **`guardrails mark-reviewed <folder>`** (the writer — issue #131; the skill can't compute the
-`PlanHash` itself, so it delegates to the CLI) which writes a **local, gitignored** marker under `state/`:
+`PlanHash` itself, so it delegates to the CLI) which writes a **committed** marker under `state/`:
 
 ```jsonc
 {
@@ -1388,10 +1399,16 @@ changed since review); equal ⇒ *reviewed*. A present-but-unparseable marker is
 (never throws). `PlanHash` covers task structure, not guardrail-script bodies — a guardrail-script
 edit does not by itself re-flag a review; this is intentional under the "plan changed" framing.
 
-The marker is **local runtime truth, never committed**: it asserts that *this* checkout was reviewed
-*here*, so a committed marker would falsely vouch for the plan on another machine. It lives under
-`state/` (gitignored) and is wiped by `--fresh` (§6.1) — a fresh slate honestly discards the prior
-local review act.
+The marker is **committed as part of the reviewed plan**, alongside the committed task folder and the
+review's edits. It is an attestation about the **committed plan content** — not about a particular
+checkout — and because it is `planHash`-keyed it **self-invalidates the instant any `task.json` or
+`guardrails.json` changes the `PlanHash`** (the GR2025 nudge returns), so a committed marker can never
+falsely vouch for changed content. That self-invalidation is exactly what makes committing it safe and
+correct: it travels with the plan it attests to, and any edit that the `PlanHash` covers reads as
+un-reviewed rather than as a false green. It is therefore **NOT wiped by `--fresh`** (§6.1) — `--fresh`
+clears genuine per-run runtime state (`run.json`, `state.json`, `merge-conflicts.log`, `logs/`,
+`captured/`), not committed plan artifacts. (As above, `PlanHash` covers task structure + config, not
+guardrail-script bodies, so a script-body-only edit does not by itself re-flag the review.)
 
 **Surfacing (warn, never block — issue #79):**
 - `guardrails validate` appends **GR2025 (warning)** when the marker is missing or stale, naming the

@@ -18,7 +18,16 @@ public static class GuardrailScopeFilter
             .ToList();
 
     /// <summary>
-    /// Decides whether <paramref name="guardrail"/> should re-run at a union point (SSOT §4.3).
+    /// Decides whether <paramref name="guardrail"/> should re-run at a union point under the
+    /// superseded three-part union model (union task's full set + every colliding sibling's full
+    /// set unconditionally + the integration set).
+    ///
+    /// <para><b>DORMANT in v1 (#132).</b> The v1 union re-verify contract is integration-set-only
+    /// (SSOT §4.3): every union point re-runs <see cref="IntegrationSet"/> and nothing else, with
+    /// no per-task or per-colliding-sibling selection. This predicate has NO production callers —
+    /// it is retained only as the seed of the deferred union-safe colliding-sibling re-verify
+    /// design and is exercised by unit tests. Do not wire it into the scheduler without revisiting
+    /// §4.3 and the #132 tracking issue.</para>
     /// </summary>
     /// <param name="guardrail">The guardrail being evaluated.</param>
     /// <param name="isCollidingSibling">

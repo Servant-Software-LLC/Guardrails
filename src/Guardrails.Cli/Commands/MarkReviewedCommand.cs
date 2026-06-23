@@ -5,12 +5,14 @@ namespace Guardrails.Cli.Commands;
 
 /// <summary>
 /// <c>guardrails mark-reviewed [folder]</c> — record that <c>/guardrails-review</c> ran over the
-/// CURRENT plan by writing the local <c>state/guardrails-review.json</c> marker (SSOT §13, issues
+/// CURRENT plan by writing the <c>state/guardrails-review.json</c> marker (SSOT §13, issues
 /// #79/#131). The WRITER half of the review nudge: with a fresh marker, <c>validate</c>/<c>run</c>
 /// stop emitting the GR2025 "not reviewed" warning until the plan changes (the marker is
 /// plan-hash-keyed, so an edited plan reads as un-reviewed again). The <c>/guardrails-review</c> skill
 /// invokes this at the end of a review — the skill can't compute the <c>PlanHash</c> itself. The
-/// marker is LOCAL, gitignored, and wiped by <c>--fresh</c>.
+/// marker is <b>committed as part of the reviewed plan</b>: it is an attestation about the committed
+/// plan content, planHash-keyed so it self-invalidates on any edit (the nudge returns), and is NOT
+/// wiped by <c>--fresh</c>.
 /// </summary>
 public static class MarkReviewedCommand
 {
@@ -20,7 +22,7 @@ public static class MarkReviewedCommand
 
         var command = new Command(
             "mark-reviewed",
-            "Record that /guardrails-review ran over the current plan (writes the local review marker).");
+            "Record that /guardrails-review ran over the current plan (writes the committed review marker).");
         command.Add(folderArgument);
 
         command.SetAction(parseResult =>
