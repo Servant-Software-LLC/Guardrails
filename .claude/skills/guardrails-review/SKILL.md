@@ -136,6 +136,21 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   terminal assertion to a `local` guardrail on the sink (runs in-attempt on the sink's segment).
   BLOCKER on a parallel plan with unions — it spuriously red-halts a correct run. (Catalogue →
   union-safe integration section; SSOT §4.3/§5.3.)
+- **Overlapping writeScopes with no integration union-guardrail (#132)**: when **two or more tasks
+  have OVERLAPPING `writeScope`s on a shared file/path** (colliding siblings that can both write the
+  same file — AI-merge territory at the union), verify **at least one** `scope:"integration"` guardrail
+  (on the integration / fan-in task) asserts the **UNION invariant** on that shared file. The v1 union
+  re-verify runs the **integration set ONLY** (SSOT §4.3) — it does NOT re-run a colliding sibling's
+  per-attempt `local` guardrails (running them at the union false-fails: fragment-readers checking
+  `GUARDRAILS_STATE_FRAGMENT`, anti-tautology `tests-fail-on-current-code`, not-yet-run tasks). So a
+  hunk an AI-merge silently DROPS on the shared file is re-verified at the union **only** by an
+  integration-scoped guardrail; a drop catchable solely by a sibling's `local` guardrail is NOT
+  re-verified there (it surfaces at the terminal gate, or not at all). If **no** `scope:"integration"`
+  guardrail asserts the shared-file union invariant → emit a finding **WEAK**: recommend adding one
+  (as the texttools showcase does with `components-union-verified` — assert the merged shared file
+  still holds every sibling's contribution, union-safe per #125). This is an **authoring nudge**, not a
+  harness bug: the integration-set-only union re-verify is an accepted v1 design (#132). (Catalogue →
+  overlapping-writeScope union-guardrail; SSOT §4.3 "Accepted residual".)
 - **Unregistered module**: a task adds a module/project to a build descriptor (`.csproj`
   → `.slnx`) but no guardrail checks the DESCRIPTOR names it — a descriptor build passes
   with the project unregistered. (Stack file → build-descriptor registration.)
@@ -314,6 +329,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
+- [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing.
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
 <!-- BEGIN ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every "task A calls `B.Method()`" guardrail anchors on BOTH the type reference and the dotted call (`\.Method\s*\(`), never a bare method-name grep (#76).

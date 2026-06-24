@@ -779,6 +779,32 @@ anti-patterns list).
 Do not fork the contract here — §4.3 (re-verify at every union) and §5.3 (FF vs union) are the SSOT;
 this section is doctrine *about how to author within* that contract.
 
+### Overlapping writeScopes need a `scope:"integration"` union-guardrail on the shared file (#132)
+
+The corollary of "the union re-verify is integration-set-only" (SSOT §4.3): the union re-verify runs
+**ONLY** the `scope:"integration"` set — it does **NOT** re-run a colliding sibling's per-attempt
+`local` guardrails (running `local` guardrails on arbitrary union bytes false-fails — fragment-readers
+checking `GUARDRAILS_STATE_FRAGMENT`, anti-tautology `tests-fail-on-current-code`, not-yet-run
+downstream tasks). So when an AI-merge resolves a union of **two tasks that both write a shared
+file** (overlapping `writeScope`s — colliding siblings), a hunk the merge silently DROPS on that file
+is re-verified at the union **only** if a `scope:"integration"` guardrail asserts the shared file's
+**union invariant**. A drop catchable solely by a sibling's `local` guardrail is **not** caught at
+the union (it surfaces at the terminal gate, or not at all — the accepted v1 residual, SSOT §4.3
+"Accepted residual").
+
+**The authoring rule (proactive — emit it when you generate colliding writeScopes).** Whenever the
+breakdown produces **≥2 tasks with overlapping `writeScope`s on a shared file/path** (rare by
+design — the disjoint-scope CHECK flags most such collisions as a plan-shape smell, prefer disjoint
+scopes), author **one** `scope:"integration"` guardrail on the integration / fan-in task that asserts
+the **union invariant** on that shared file: the merged file still holds **every** colliding sibling's
+contribution (each sibling's distinctive marker / declaration is present, conflict-marker-free,
+non-empty). This is exactly the texttools showcase's `components-union-verified` guardrail
+(`05-integration-gate/.../03-components-union-verified.json`, `scope:"integration"`). Keep it
+**union-safe** (#125 — assert "every contribution PRESENT in the union is intact", an invariant true
+of any valid intermediate union, never a terminal "all N present" postcondition that false-fails on a
+partial merge). The well-authored plan covers the residual this way; `guardrails-review` emits a WEAK
+finding when colliding writeScopes carry no such union-guardrail.
+
 <!-- BEGIN ADDED SECTION #76 — method-call anchoring (auto-merge friendly; do not merge into prose above) -->
 ## Method-call anchoring — match the call construct, not a bare method name (#76)
 
@@ -1212,6 +1238,19 @@ should fail before an expensive test run or a paid judge ever starts.
   move the terminal assertion to a `local` guardrail on the sink (runs in-attempt on the sink's own
   segment, where the output exists). Decision test: *"would this pass on a partial merge with a
   downstream task unsettled?"* — if no, demote to `local`. See the union-safe section above.
+- **Overlapping writeScopes with no integration union-guardrail** (#132): ≥2 tasks with **overlapping
+  `writeScope`s on a shared file** (colliding siblings — AI-merge territory at the union) and **no**
+  `scope:"integration"` guardrail asserting that shared file's **union invariant**. The union re-verify
+  is **integration-set-only** (SSOT §4.3) — it does NOT re-run a sibling's per-attempt `local`
+  guardrails (they false-fail on union bytes), so a hunk an AI-merge silently DROPS on the shared file
+  is caught at the union ONLY by an integration-scoped guardrail; a drop catchable solely by a sibling's
+  `local` guardrail is the **accepted v1 residual** (not caught at the union). Fix: author one
+  `scope:"integration"` union-guardrail on the integration / fan-in task that asserts the merged shared
+  file holds every sibling's contribution (each distinctive marker present, conflict-marker-free) —
+  union-safe (#125), like the texttools showcase's `components-union-verified`. Prefer **disjoint**
+  writeScopes (the disjoint-scope CHECK flags the collision); emit the union-guardrail when the overlap
+  is genuine. See the overlapping-writeScope union-guardrail section above. WEAK — an authoring nudge,
+  not a harness bug.
 - **Echo-judge**: a prompt-judge evaluating the action's own claim of success (its
   summary, its commit message) rather than the artifact.
 - **Replay-the-action**: a guardrail that **re-runs the action's own command** (e.g. a

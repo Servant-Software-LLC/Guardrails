@@ -432,7 +432,31 @@ the union, which catches any drop that breaks a build or an integration-scoped t
 **terminal whole-repo gate** on the final HEAD. A purely-`local` regression hidden inside a cleanly
 re-merged file — invisible to all three nets — is an **accepted v1 residual**, tracked by **#132**;
 re-running colliding siblings' full `local` sets at unions (the superseded three-part union model) is
-deferred, not adopted. Because the re-verify runs on arbitrary union bytes outside any attempt
+deferred, not adopted.
+
+> **Accepted residual (#132) — integration-set-only union re-verify.**
+> - **WHY integration-set-only.** The union re-verify runs on **arbitrary union bytes outside any
+>   attempt lifecycle**, so it can re-run only guardrails that are sound in that context — the
+>   `scope:"integration"` set (whole-repo build, whole suite). A colliding sibling's per-attempt
+>   `local` guardrails would **false-fail** at the union: fragment-readers checking
+>   `GUARDRAILS_STATE_FRAGMENT` (no fragment exists at a union), anti-tautology
+>   `tests-fail-on-current-code` (inverted once the sibling's code is merged), and guardrails for
+>   not-yet-run downstream tasks. Running the `local` set at the union is therefore **withheld by
+>   design** — it is exactly the false-failure removed this session ("Fix A").
+> - **RESIDUAL.** A hunk an AI-merge silently drops on a **shared file** (overlapping `writeScope`s of
+>   colliding siblings) is re-verified at the union ONLY by an integration-scoped guardrail. A drop
+>   catchable **solely** by a sibling's `local` guardrail is NOT re-verified at the union (it surfaces
+>   at the terminal `integrationGate`, or not at all).
+> - **MITIGATION (authoring, not runtime).** The well-authored plan covers the residual with a
+>   `scope:"integration"` guardrail on the integration / fan-in task asserting the shared file's
+>   **union invariant** (every colliding sibling's contribution survives the merge — union-safe per
+>   §4.3 above), as the texttools showcase does with `components-union-verified`. `plan-breakdown`
+>   emits such a union-guardrail when it generates overlapping `writeScope`s; `guardrails-review` emits
+>   a **WEAK** finding when colliding writeScopes carry no integration union-guardrail (its
+>   "overlapping-writeScope union-guardrail" structural probe). This is the chosen v1 resolution:
+>   convert the silent gap into a **visible authoring-time nudge**; the runtime contract is unchanged.
+
+Because the re-verify runs on arbitrary union bytes outside any attempt
 lifecycle, it uses a **public attempt-decoupled re-verify seam** (NOT the attempt-bound internal
 guardrail runner). The re-verify child process runs with cwd = the integration worktree and
 `GUARDRAILS_WORKSPACE` set to that same path (#124) — so a guardrail reading `$GUARDRAILS_WORKSPACE`
