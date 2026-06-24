@@ -487,9 +487,23 @@ and guardrail's process working directory is set to the SAME directory that
 `GUARDRAILS_WORKSPACE` names: in worktree mode the task's isolated **segment worktree**; in serial
 shared-workspace mode the plan `workspace`; at a union re-verify the integration worktree (§4.3).
 This means a file the action writes *relative to its cwd* — not only via `$GUARDRAILS_WORKSPACE` —
-lands in the segment worktree that `Integrate` commits, never the user's main checkout. (A
-`workingDirectory` action override, when set, is the one exception: it stays resolved relative to
-`GUARDRAILS_PLAN_DIR`, below, so its anchor is the same path in both modes.)
+lands in the segment worktree that `Integrate` commits, never the user's main checkout.
+
+A `workingDirectory` action override, when set, is resolved **relative to the plan dir** (the
+default cwd is the workspace; the override re-bases that cwd onto the plan dir). In **serial**
+shared-workspace mode that is the main checkout's plan dir (`GUARDRAILS_PLAN_DIR`, below) —
+unchanged. In **worktree** mode the plan folder is physically present *inside* the segment (it is
+committed in the repo), so the override is resolved relative to the **segment's copy of the plan
+dir** (#135) — otherwise an override-using task's cwd would escape into the user's main checkout, the
+same write-escape class as #134. Concretely: the plan dir sits at `<workspace>/<rel>`; in worktree
+mode the override resolves under `<segment>/<rel>/<override>`. If the plan dir is *not* under the
+workspace (the relative path escapes — the abnormal case; normal plans nest the plan folder inside
+the repo), worktree isolation of the override cannot be expressed and the harness **falls back to the
+main-checkout plan-dir anchor** rather than fabricate a broken segment path. An override that itself
+climbs out of the segment (e.g. `../sibling`) is normalized and resolved, not rejected — containment
+is not hard-enforced. This redirect is purely the process **cwd**; `GUARDRAILS_PLAN_DIR` and the
+prompt-runner `--add-dir` grant stay the main checkout's plan dir (harness-owned state I/O lives
+there, below).
 
 **`GUARDRAILS_PLAN_DIR` and the prompt-runner `--add-dir` grant stay the MAIN checkout's plan dir
 in worktree mode** (#134) — they are NOT redirected to the worktree's checked-out copy of the plan
