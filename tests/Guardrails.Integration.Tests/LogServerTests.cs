@@ -329,6 +329,145 @@ public sealed class LogServerTests
         }
     }
 
+    // --- #141 item 4: empty-file marking in /files -------------------------------------------
+
+    [Fact]
+    public async Task Files_FileDetails_CarriesSize_AndFlagsEmptyFile()
+    {
+        // #141 item 4: a zero-byte capture (empty stdout/stderr) must be distinguishable. /files now
+        // emits a fileDetails[] of { name, size, empty } per file alongside the bare names.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "has content");
+        temp.WriteLog("01-alpha", attempt: 1, "action-stderr.log", string.Empty); // empty capture
+        await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/files");
+        using JsonDocument doc = JsonDocument.Parse(json);
+
+        var details = doc.RootElement.GetProperty("fileDetails").EnumerateArray()
+            .ToDictionary(e => e.GetProperty("name").GetString()!, e => e);
+
+        Assert.True(details["action-stdout.log"].GetProperty("size").GetInt64() > 0);
+        Assert.False(details["action-stdout.log"].GetProperty("empty").GetBoolean());
+        Assert.Equal(0, details["action-stderr.log"].GetProperty("size").GetInt64());
+        Assert.True(details["action-stderr.log"].GetProperty("empty").GetBoolean());
+    }
+
+    [Fact]
+    public async Task TaskPage_Js_HasEmptyOptionHandling_AndSourceFetch()
+    {
+        // JS is not executed in tests, so assert the page carries the hooks: the empty-option marking
+        // (the .empty class + " (empty)" suffix, #141 item 4) and the Source fetch (#141 item 3).
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "x");
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha")]);
+
+        string html = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha");
+
+        Assert.Contains("(empty)", html);                 // the empty suffix the option handler appends
+        Assert.Contains("fileDetails", html);             // the page reads the per-file empty flags
+        Assert.Contains("/source", html);                 // it fetches the Source list
+        Assert.Contains("/sourcefile?name=", html);       // and a click views one source file's text
+        Assert.Contains("<h2>Source</h2>", html);         // the Source section header
+    }
+
+    // --- #141 item 3: source routes ----------------------------------------------------------
+
+    [Fact]
+    public async Task Source_ListsActionAndGuardrailFiles()
+    {
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha")]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/source");
+        using JsonDocument doc = JsonDocument.Parse(json);
+
+        string[] names = doc.RootElement.GetProperty("sources").EnumerateArray()
+            .Select(e => e.GetProperty("name").GetString()!).ToArray();
+
+        Assert.Contains("action.ps1", names);
+        Assert.Contains("01-check.ps1", names);
+        Assert.Equal("action.ps1", names[0]); // action leads the list
+    }
+
+    [Fact]
+    public async Task Source_IncludesGuardrailJsonSidecar_WhenPresent()
+    {
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha", withSidecar: true)]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/source");
+        using JsonDocument doc = JsonDocument.Parse(json);
+
+        string[] names = doc.RootElement.GetProperty("sources").EnumerateArray()
+            .Select(e => e.GetProperty("name").GetString()!).ToArray();
+
+        Assert.Contains("01-check.json", names);
+    }
+
+    [Fact]
+    public async Task Source_FlagsEmptySourceFile()
+    {
+        // #141 item 4 applied to the Source list: a zero-byte guardrail script is flagged empty.
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha", emptyGuardrail: true)]);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/source");
+        using JsonDocument doc = JsonDocument.Parse(json);
+
+        JsonElement guardrail = doc.RootElement.GetProperty("sources").EnumerateArray()
+            .Single(e => e.GetProperty("name").GetString() == "01-check.ps1");
+        Assert.True(guardrail.GetProperty("empty").GetBoolean());
+    }
+
+    [Fact]
+    public async Task SourceFile_ServesAGuardrailScriptText()
+    {
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha")]);
+
+        string body = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/sourcefile?name=01-check.ps1");
+
+        Assert.Equal("exit 0\n", body); // the guardrail script's raw text
+    }
+
+    [Fact]
+    public async Task SourceFile_ServesTheActionText()
+    {
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha")]);
+
+        string body = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/sourcefile?name=action.ps1");
+
+        Assert.Equal("Write-Output 'the action body'\n", body);
+    }
+
+    [Fact]
+    public async Task SourceFile_UnknownName_IsRejected()
+    {
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha")]);
+
+        HttpResponseMessage response = await Http.GetAsync(
+            $"{server.BaseUrl}tasks/01-alpha/sourcefile?name=not-a-source.ps1", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SourceFile_TraversalName_IsRejected()
+    {
+        // A traversal name resolves against the KNOWN source set only — it has no entry, so it is
+        // rejected. The path is never built from the request, so traversal is impossible by construction.
+        using var temp = new TempPlan();
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha")]);
+
+        HttpResponseMessage response = await Http.GetAsync(
+            $"{server.BaseUrl}tasks/01-alpha/sourcefile?name=..%2F..%2Fstate.json", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
     // --- helpers ----------------------------------------------------------------------------
 
     private static int FreeLoopbackPort()
@@ -359,6 +498,47 @@ public sealed class LogServerTests
         Action = new ActionDefinition { Path = "action.ps1", Kind = ActionKind.Script },
         Guardrails = [new GuardrailDefinition { Name = "01-x", Path = "01-x.ps1", Kind = ActionKind.Script }]
     };
+
+    /// <summary>
+    /// A task whose action + guardrail paths point at REAL files written under <paramref name="temp"/>
+    /// (so the source routes can serve their content). Mirrors the loader: absolute paths, a guardrail
+    /// <c>.json</c> sidecar when <paramref name="withSidecar"/>. The action body is non-empty; the
+    /// guardrail script is written empty when <paramref name="emptyGuardrail"/> so the empty-marking is
+    /// exercised against a zero-byte source.
+    /// </summary>
+    private static TaskNode TaskWithRealSources(
+        TempPlan temp, string id, bool withSidecar = false, bool emptyGuardrail = false)
+    {
+        string taskDir = Path.Combine(temp.Dir, "tasks", id);
+        string guardrailsDir = Path.Combine(taskDir, "guardrails");
+        Directory.CreateDirectory(guardrailsDir);
+
+        string actionPath = Path.Combine(taskDir, "action.ps1");
+        File.WriteAllText(actionPath, "Write-Output 'the action body'\n");
+
+        string guardrailPath = Path.Combine(guardrailsDir, "01-check.ps1");
+        File.WriteAllText(guardrailPath, emptyGuardrail ? string.Empty : "exit 0\n");
+
+        var guardrails = new List<GuardrailDefinition>
+        {
+            new() { Name = "01-check", Path = guardrailPath, Kind = ActionKind.Script }
+        };
+
+        if (withSidecar)
+        {
+            // The loader includes a guardrail's <name>.json metadata sidecar in the source set.
+            File.WriteAllText(Path.Combine(guardrailsDir, "01-check.json"), "{ \"timeoutSeconds\": 30 }\n");
+        }
+
+        return new TaskNode
+        {
+            Id = id,
+            Directory = taskDir,
+            Description = "task " + id,
+            Action = new ActionDefinition { Path = actionPath, Kind = ActionKind.Script },
+            Guardrails = guardrails
+        };
+    }
 
     /// <summary>A throwaway plan directory under the temp path; cleaned up on dispose.</summary>
     private sealed class TempPlan : IDisposable

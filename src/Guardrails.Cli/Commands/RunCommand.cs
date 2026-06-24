@@ -162,18 +162,32 @@ public static class RunCommand
 
             Func<string, string?>? logUrlForTask = logServer is null ? null : logServer.UrlForTask;
 
+            // The on-the-fly static site (issue #141 item 2) is written for BOTH the live and the
+            // --no-ui paths — a file:// "all tasks" page that updates as tasks settle, useful headless
+            // or interactive. It lives under logs/<runId>/, the same tree the executor writes attempts
+            // into and the live server serves. The inner observer (live table or plain console) is
+            // wrapped so the site is rewritten after each forwarded event.
+            string logsRoot = Path.Combine(probe.Plan.PlanDirectory, "logs", runId);
+
             RunReport report;
             if (live)
             {
-                await using var observer = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
-                report = await ExecuteAsync(probe.Plan, observer, cancellationToken).ConfigureAwait(false);
+                await using var liveObserver = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
+                var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
+                siteObserver.WriteInitialIndex();      // initial all-pending index BEFORE we link to it
+                PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
+                report = await ExecuteAsync(probe.Plan, siteObserver, cancellationToken).ConfigureAwait(false);
             }
             else
             {
-                report = await ExecuteAsync(probe.Plan, new ConsoleRunObserver(io.Out), cancellationToken).ConfigureAwait(false);
+                var siteObserver = new OnTheFlyLogSiteObserver(
+                    new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
+                siteObserver.WriteInitialIndex();
+                PrintStaticIndexLink(logsRoot, io);
+                report = await ExecuteAsync(probe.Plan, siteObserver, cancellationToken).ConfigureAwait(false);
             }
 
-            return Finish(report, probe.Plan.PlanDirectory, runId, io);
+            return Finish(report, probe.Plan, runId, io);
         }
         finally
         {
@@ -204,9 +218,21 @@ public static class RunCommand
     }
 
     /// <summary>Print the summary and map the report to the process exit code (SSOT §7).</summary>
-    private static int Finish(RunReport report, string planDirectory, string runId, IConsoleIo io)
+    private static int Finish(RunReport report, Core.Model.PlanDefinition plan, string runId, IConsoleIo io)
     {
+        string planDirectory = plan.PlanDirectory;
+        string logsRoot = Path.Combine(planDirectory, "logs", runId);
+
+        // Write the DURABLE final site (issue #141 item 2): all-static links, NO meta-refresh, every
+        // task page — so the artifact left on disk is complete and self-contained (identical to
+        // `logs --export`). The during-run writer left a refreshing index with live links; this
+        // replaces it. Best-effort: a render hiccup must never change the run's exit code.
+        WriteDurableFinalSite(logsRoot, plan, planDirectory);
+
         PrintSummary(report, planDirectory, runId, io);
+
+        // The "all tasks" static page link at run END (alongside the post-mortem logs pointer).
+        PrintStaticIndexLink(logsRoot, io);
 
         if (report.Cancelled)
         {
@@ -214,6 +240,54 @@ public static class RunCommand
         }
 
         return report.AllSucceeded ? ExitCodes.Success : ExitCodes.TaskFailed;
+    }
+
+    /// <summary>
+    /// Render the durable, self-contained static site (all-static links, no refresh, every task page)
+    /// at run end via <see cref="LogSiteRenderer.ExportSite"/>, reading the freshly-persisted journal
+    /// for per-task status. No-op (and never throws) when the journal is absent — a fully-resumed /
+    /// all-skipped run writes no logs, so there is nothing to render.
+    /// </summary>
+    private static void WriteDurableFinalSite(string logsRoot, Core.Model.PlanDefinition plan, string planDirectory)
+    {
+        string journalPath = RunJournal.PathFor(planDirectory);
+        if (!File.Exists(journalPath) || !Directory.Exists(logsRoot))
+        {
+            return;
+        }
+
+        try
+        {
+            JournalDocument document = JournalReader.Read(journalPath);
+            LogSiteRenderer.ExportSite(logsRoot, plan.Tasks, document);
+        }
+        catch (IOException)
+        {
+            // Best-effort durable site — a transient lock must never flip the run's exit code.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // ditto — a logs-tree permission hiccup is not a run failure.
+        }
+    }
+
+    /// <summary>
+    /// Print a clickable <c>file://</c> link to the run's static "all tasks" index
+    /// (<c>logs/&lt;runId&gt;/index.html</c>, issue #141 item 2) — the during-run refreshing page at run
+    /// start, the durable page at run end. Emits an OSC 8 hyperlink only when the terminal can render
+    /// one (matching the post-mortem pointer's gate); otherwise the plain absolute path, which is
+    /// copy-pasteable. No-op when the index does not exist (nothing was rendered).
+    /// </summary>
+    private static void PrintStaticIndexLink(string logsRoot, IConsoleIo io)
+    {
+        string indexPath = Path.GetFullPath(Path.Combine(logsRoot, "index.html"));
+        if (!File.Exists(indexPath))
+        {
+            return;
+        }
+
+        bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
+        io.Out.WriteLine($"All tasks (static log site): {Hyperlink(indexPath, linkable)}");
     }
 
     private static Task<RunReport> ExecuteAsync(

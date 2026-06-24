@@ -163,10 +163,12 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         _logUrlForTask?.Invoke(taskId) is { } url ? $"[link={url}]view log[/]" : null;
 
     /// <summary>
-    /// Spectre markup for a durable <c>logs</c> link to a task's on-disk log directory
-    /// (<c>logs/&lt;runId&gt;/&lt;id&gt;/</c>, holding every attempt's action output, guardrail logs and
-    /// feedback — SSOT §8). A <c>file://</c> OSC 8 hyperlink that survives the run — the entry point
-    /// for a post-mortem on any finished task, not just failures. Null when no plan dir / run id.
+    /// Spectre markup for a durable <c>logs</c> link to a task's STATIC log page
+    /// (<c>logs/&lt;runId&gt;/&lt;id&gt;/index.html</c>) — the self-contained inlined view of every attempt's
+    /// output, guardrail logs and the task's Source section (#141 item 1). A <c>file://</c> OSC 8
+    /// hyperlink that survives the run: the on-the-fly site writer (issue #141 item 2) writes this page
+    /// when the task finishes, so a click opens a rendered HTML page rather than a raw file listing in
+    /// the OS file browser. Null when no plan dir / run id.
     /// </summary>
     private string? PostMortemLinkMarkup(string taskId)
     {
@@ -175,9 +177,19 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             return null;
         }
 
-        string dir = Path.GetFullPath(Path.Combine(_planDirectory, "logs", _runId, taskId));
-        return $"[link={new Uri(dir).AbsoluteUri}]logs[/]";
+        string page = PostMortemPagePath(_planDirectory, _runId, taskId);
+        return $"[link={new Uri(page).AbsoluteUri}]logs[/]";
     }
+
+    /// <summary>
+    /// The absolute path the finished-task <c>logs</c> link targets: the task's STATIC log page
+    /// <c>logs/&lt;runId&gt;/&lt;taskId&gt;/index.html</c> (issue #141 item 1), NOT the log directory. The
+    /// on-the-fly site writer (#141 item 2) writes this page on finish, so the link opens a rendered
+    /// HTML page rather than a raw OS file-browser listing. Public (not private) because the Cli
+    /// assembly ships no InternalsVisibleTo — same test-seam rationale as <c>RunCommand.Hyperlink</c>.
+    /// </summary>
+    public static string PostMortemPagePath(string planDirectory, string runId, string taskId) =>
+        Path.GetFullPath(Path.Combine(planDirectory, "logs", runId, taskId, "index.html"));
 
     public void GuardrailFinished(TaskNode task, GuardrailResult result) =>
         Update(task.Id, null, result.Passed

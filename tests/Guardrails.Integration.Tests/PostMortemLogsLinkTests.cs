@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Guardrails.Cli;
 using Guardrails.Cli.Commands;
+using Guardrails.Cli.Ui;
 
 namespace Guardrails.Integration.Tests;
 
@@ -68,6 +69,27 @@ public sealed class PostMortemLogsLinkTests
         // Redirected/CI output must stay clean — no OSC 8 escape sequence leaks. (The OSC 8
         // introducer "]8;;" is printable, so the ordinary substring check is safe here.)
         Assert.DoesNotContain("]8;;", output);
+    }
+
+    [Fact]
+    public void FinishedTaskLink_TargetsStaticPage_NotTheDirectory()
+    {
+        // #141 item 1: the finished-task "logs" link must open the task's STATIC PAGE
+        // (logs/<runId>/<taskId>/index.html), not the log DIRECTORY (which opened a raw OS file
+        // browser). Red-before this fix the path ended at the directory; green-after it ends at the
+        // static index.html the on-the-fly writer produces.
+        string planDir = OperatingSystem.IsWindows() ? @"C:\Dev AI\plan" : "/tmp/dev ai/plan";
+        const string runId = "2026-06-24T00-00-00Z-run";
+        const string taskId = "01-first";
+
+        string page = LiveRunObserver.PostMortemPagePath(planDir, runId, taskId);
+
+        string sep = Path.DirectorySeparatorChar.ToString();
+        string expectedTail = Path.Combine("logs", runId, taskId, "index.html");
+        Assert.EndsWith(expectedTail, page);                 // ends at the static page, not the dir
+        Assert.NotEqual(
+            Path.GetFullPath(Path.Combine(planDir, "logs", runId, taskId)), page); // not the bare dir
+        Assert.Contains($"{taskId}{sep}index.html", page);   // the per-task page file specifically
     }
 
     private static async Task<(int ExitCode, string Output)> InvokeCapturingAsync(params string[] args)

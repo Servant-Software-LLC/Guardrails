@@ -58,6 +58,34 @@ public sealed class LogSiteExportTests
     }
 
     [Fact]
+    public async Task Run_NoExport_WritesDurableStaticSite_OnTheFly()
+    {
+        // #141 item 2: a plain `run` (no `--export`) now writes the static site under logs/<runId>/ as
+        // the run proceeds, leaving a DURABLE final index (all-static links, NO meta-refresh) and the
+        // finished task's page — without anyone calling `logs --export`.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int runExit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        Assert.Equal(ExitCodes.Success, runExit);
+
+        string runId = RunId(plan.PlanDir);
+        string siteIndex = Path.Combine(plan.PlanDir, "logs", runId, "index.html");
+        string taskPage = Path.Combine(plan.PlanDir, "logs", runId, "01-first", "index.html");
+
+        Assert.True(File.Exists(siteIndex), "the run should write the static index on the fly");
+        Assert.True(File.Exists(taskPage), "the finished task's static page should exist after the run");
+
+        string index = await File.ReadAllTextAsync(siteIndex, TestContext.Current.CancellationToken);
+        // The DURABLE final index: all-static, no refresh (the during-run refreshing index was replaced).
+        Assert.DoesNotContain("http-equiv=\"refresh\"", index);
+        Assert.Contains("01-first/index.html", index);
+        Assert.Contains("data-status=\"succeeded\"", index);
+
+        // The run prints a clickable "all tasks" static-site link (#141 item 2).
+        Assert.Contains("All tasks (static log site):", output);
+    }
+
+    [Fact]
     public async Task Export_IsIdempotent_RegeneratesTheWholeSite()
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
