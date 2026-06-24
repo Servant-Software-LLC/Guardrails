@@ -292,6 +292,16 @@ optional:
   set = the union of all `scope: "integration"` guardrails (typically the whole-repo build
   + the full test suite); the harness re-runs that set at every union point and on the
   terminal gate's merged HEAD. Leave a task-local guardrail at its `"local"` default.
+- **Overlapping writeScopes → author a `scope:"integration"` union-guardrail on the shared file
+  (#132).** When ≥2 tasks have OVERLAPPING `writeScope`s on a shared file (colliding siblings the
+  AI-merge unions), emit one `scope:"integration"` guardrail on the integration / fan-in task
+  asserting the shared file's UNION invariant — the merged file still holds every sibling's
+  contribution (each distinctive marker present, conflict-marker-free), union-safe (#125), as the
+  texttools showcase does with `components-union-verified`. The union re-verify is integration-set-only
+  (SSOT §4.3), so a dropped hunk on the shared file is re-verified at the union ONLY by an
+  integration-scoped guardrail. Prefer **disjoint** scopes (a collision is usually a plan-shape smell);
+  emit the union-guardrail when the overlap is genuine. (Catalogue → overlapping-writeScope
+  union-guardrail.)
 - A terminal integration task must declare `integrationGate: true` in its `task.json` — it
   marks the terminal whole-repo integration gate, the final soundness boundary run once on
   the fully merged plan-branch HEAD (SSOT §3.3). Validation enforces this: a plan with ≥2

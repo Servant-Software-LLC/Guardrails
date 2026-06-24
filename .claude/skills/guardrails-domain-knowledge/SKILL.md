@@ -89,12 +89,20 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   command. It's a speed/flake trade-off, sound only against output the action couldn't fabricate.
   **Guardrail scope** (SSOT section 4.3): a guardrail declares an optional `scope` (`"local"`
   default, or `"integration"`). The **integration-guardrail set** = all `scope: "integration"`
-  guardrails across the plan (typically the whole-repo build + full test suite). At every union
-  point the harness re-runs on merged bytes: (1) the union task's full guardrail set; (2) every
-  **colliding sibling's FULL guardrail set -- unconditionally** (no touched-files filter for
-  colliding siblings, B-3); (3) the integration set. The touched-files local-skip applies **only**
-  to a distant, non-colliding task's `local` guardrails. The terminal `integrationGate` sink runs
-  the same integration set on the final merged HEAD.
+  guardrails across the plan (typically the whole-repo build + full test suite). At **every** union
+  point (a fan-in or a non-FF plan-branch integration) the harness re-runs, on the merged bytes,
+  **the integration set ONLY** -- one set, run uniformly at every union and again on the final merged
+  HEAD by the terminal `integrationGate` sink. There is **no** per-task or per-colliding-sibling
+  guardrail selection at a union in v1: the integration set IS the whole re-verify. (The earlier
+  "union task's own set + each colliding sibling's full set + integration set" three-part model was
+  **never implemented** -- `ShouldRunAtUnion` had zero callers; SSOT section 4.3 is integration-set-only.)
+  **Accepted residual (#132):** because the union re-verify is integration-set-only, a hunk an AI-merge
+  silently drops on a **shared file** (overlapping `writeScope`s of colliding siblings) is re-verified
+  at the union ONLY by an integration-scoped guardrail; a drop catchable solely by a sibling's `local`
+  guardrail is NOT re-run at the union (running `local` guardrails on union bytes false-fails -- no
+  fragment, inverted anti-tautology). The mitigation is **authoring, not runtime**: author a
+  `scope:"integration"` union-guardrail on the shared file (`plan-breakdown` emits one for overlapping
+  scopes; `guardrails-review` flags its absence WEAK). See SSOT section 4.3 "Accepted residual".
 - **State**: snapshot-in / fragment-out. Attempt gets an immutable snapshot
   (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment (`GUARDRAILS_STATE_OUT`);
   harness (single writer) deep-merges fragments into `state/state.json` in completion order after
@@ -147,9 +155,9 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     exit code are **never** the verdict. AI-merge resolves harness-internal unions only; withheld
     at the `--merge-on-success` user-branch boundary.
   - **The verdict** (for both clean-auto and AI-resolved) is the **deterministic re-verify**:
-    re-run the union task's own guardrails + the integration-guardrail set on the merged bytes via
-    the attempt-decoupled `IReVerifier` seam (no attempt lifecycle, no action result). Any fail ->
-    `reset --hard preHead`; `needs-human`; no fragment, no `mergeSequence`.
+    re-run **the integration-guardrail set** (integration-set-only, SSOT section 4.3) on the merged
+    bytes via the attempt-decoupled `IReVerifier` seam (no attempt lifecycle, no action result). Any
+    fail -> `reset --hard preHead`; `needs-human`; no fragment, no `mergeSequence`.
   - AI-merge + re-verify run in a private forked worktree **off** the serialize lock; only the
     final integration of the verified result into the plan branch is **under the lock**.
 - **B1 atomic settle** (under the serialize lock, fixed order): (1) deep-merge fragment into
