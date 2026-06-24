@@ -763,9 +763,17 @@ public sealed class TaskExecutor : ITaskExecutor
     /// worktree, so files the action writes <i>relative to its cwd</i> — not only via
     /// <c>$GUARDRAILS_WORKSPACE</c> — land in the segment that <see cref="GitWorktreeProvider.Integrate"/>
     /// commits; in serial shared-workspace mode it is the plan <see cref="PlanDefinition.Workspace"/>
-    /// (byte-identical to before). A <c>WorkingDirectory</c> override stays resolved relative to the
-    /// plan dir (<c>GUARDRAILS_PLAN_DIR</c>, the MAIN checkout — the single writer of harness state),
-    /// not the segment, so the override's anchor is the same path in both modes.
+    /// (byte-identical to before).
+    /// <para>
+    /// A <c>WorkingDirectory</c> override is — per SSOT §5.1 — relative to the plan dir. In SERIAL
+    /// mode the plan dir is the main checkout's plan dir (byte-identical to before). In WORKTREE mode
+    /// the plan folder physically lives <i>inside</i> the segment (it is committed in the repo), so the
+    /// override resolves relative to the SEGMENT's copy of the plan dir (issue #135) — otherwise an
+    /// override-using task's cwd would escape into the user's main checkout, the same write-escape
+    /// class as #134. <c>GUARDRAILS_PLAN_DIR</c> and the prompt-runner <c>--add-dir</c> grant remain
+    /// anchored to the MAIN checkout (harness-owned state I/O lives there, #134) — this redirect is
+    /// purely the process <b>cwd</b>.
+    /// </para>
     /// </summary>
     private string ResolveWorkingDirectory(TaskNode task, WorktreeHandle worktree)
     {
@@ -774,8 +782,75 @@ public sealed class TaskExecutor : ITaskExecutor
             return EffectiveWorkspace(worktree);
         }
 
-        return Path.GetFullPath(Path.Combine(_plan.PlanDirectory, task.Action.WorkingDirectory));
+        string mainCheckoutAnchor = Path.GetFullPath(
+            Path.Combine(_plan.PlanDirectory, task.Action.WorkingDirectory));
+
+        // Serial mode (no real git segment): anchor at the main-checkout plan dir, byte-identical to
+        // before. Only worktree mode redirects the override into the segment.
+        if (!IsRealGitSegment(worktree))
+        {
+            return mainCheckoutAnchor;
+        }
+
+        // Worktree mode: re-anchor the override under the segment's copy of the plan dir. The plan dir
+        // lives at <workspace>/<rel> in the main checkout; its segment twin is at <segment>/<rel>.
+        // Canonicalize both endpoints (#135 edge 1) so GetRelativePath compares like-for-like — without
+        // it a symlinked TEMP root (macOS /var → /private/var, and the symlinked CI temp dirs) can make
+        // a genuinely-nested plan dir look like it escapes the workspace and emit a spurious "..".
+        string canonicalWorkspace = Canonicalize(_plan.Workspace);
+        string canonicalPlanDir = Canonicalize(_plan.PlanDirectory);
+        string relPlanFromWorkspace = Path.GetRelativePath(canonicalWorkspace, canonicalPlanDir);
+
+        // Edge 2: the plan dir is NOT under the workspace (rel escapes — starts with ".." or is rooted).
+        // Worktree isolation of the override cannot be expressed (there is no segment twin of a plan dir
+        // that lives outside the checked-out tree), so fall back to the main-checkout anchor rather than
+        // fabricate a broken segment path. Normal plans nest the plan folder inside the repo (under the
+        // workspace), so this is the abnormal case.
+        if (EscapesBase(relPlanFromWorkspace))
+        {
+            return mainCheckoutAnchor;
+        }
+
+        // Re-anchor: <segment>/<rel-plan-dir>/<override>. Path.GetFullPath normalizes any ".."/subdirs
+        // in the override (edge 3) — an override like "../sibling" that resolves OUTSIDE the segment is
+        // a misconfiguration we resolve rather than crash on; containment is not hard-enforced here.
+        string segmentPlanDir = Path.Combine(worktree.WorktreePath, relPlanFromWorkspace);
+        return Path.GetFullPath(Path.Combine(segmentPlanDir, task.Action.WorkingDirectory));
     }
+
+    /// <summary>
+    /// Canonicalize an existing directory path for a like-for-like <see cref="Path.GetRelativePath"/>
+    /// comparison (#135 edge 1): <see cref="Path.GetFullPath"/> normalizes separators and collapses
+    /// <c>..</c>, and — when the directory exists — <see cref="Directory.ResolveLinkTarget"/> resolves
+    /// a final-segment symlink (the shape of a symlinked TEMP/CI root). Best-effort: a missing path or
+    /// a resolve failure returns the <see cref="Path.GetFullPath"/> form, never throws.
+    /// </summary>
+    private static string Canonicalize(string path)
+    {
+        string full = Path.GetFullPath(path);
+        try
+        {
+            // returnFinalTarget: true follows a chain of links on the final segment to its real target.
+            FileSystemInfo? target = Directory.ResolveLinkTarget(full, returnFinalTarget: true);
+            return target is not null ? Path.GetFullPath(target.FullName) : full;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return full;
+        }
+    }
+
+    /// <summary>
+    /// True when a relative path produced by <see cref="Path.GetRelativePath"/> does NOT stay within
+    /// its base: it climbs out (a leading <c>..</c> segment) or came back rooted (the two paths share
+    /// no common root, e.g. different drives on Windows). Such a path cannot be re-anchored under the
+    /// segment (#135 edge 2).
+    /// </summary>
+    private static bool EscapesBase(string relativePath) =>
+        Path.IsPathRooted(relativePath)
+        || relativePath == ".."
+        || relativePath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+        || relativePath.StartsWith("../", StringComparison.Ordinal);
 
     /// <summary>
     /// Serial-only cwd resolution for <see cref="RevalidateAsync"/> (issue #102): there is no segment

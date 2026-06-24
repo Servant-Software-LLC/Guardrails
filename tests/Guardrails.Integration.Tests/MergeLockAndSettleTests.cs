@@ -395,6 +395,98 @@ public sealed class MergeLockAndSettleTests
         }
     }
 
+    /// <summary>
+    /// The subdir (relative to the plan dir) a <c>WorkingDirectory</c> override points its cwd at —
+    /// the load-bearing #135 anchor: in worktree mode this must resolve to the SEGMENT's copy of the
+    /// plan dir, NOT the main checkout's. Committed empty in the repo so the segment checkout contains
+    /// it (a process cannot start with a non-existent working directory).
+    /// </summary>
+    private const string OverrideSubdir = "override-cwd";
+
+    /// <summary>
+    /// Creates a single-task worktree-mode plan whose task sets <c>action.workingDirectory</c> to a
+    /// SUBDIR of the plan dir and whose action writes <see cref="CwdRelativeFile"/> RELATIVE TO ITS CWD
+    /// (NOT via <c>$GUARDRAILS_WORKSPACE</c>) — the #135 shape. <c>maxParallelism: 2</c> forces worktree
+    /// mode. With the bug the override anchors at the MAIN checkout's plan dir (cwd =
+    /// <c>&lt;repo&gt;/plan/override-cwd</c>) so the file escapes the segment; with the fix it anchors at
+    /// the SEGMENT's plan dir (cwd = <c>&lt;segment&gt;/plan/override-cwd</c>) so the file is committed.
+    /// The <c>override-cwd</c> subdir is committed (with a <c>.gitkeep</c>) so the segment checkout has it.
+    /// </summary>
+    private static string CreateWorkingDirectoryOverridePlan(string repoPath)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(planDir);
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+        // The override target must exist in the checked-out SEGMENT (a process cannot start with a
+        // non-existent cwd). git does not track empty directories, so seed a .gitkeep — that committed
+        // file forces the directory to materialize in the segment checkout.
+        Directory.CreateDirectory(Path.Combine(planDir, OverrideSubdir));
+        File.WriteAllText(Path.Combine(planDir, OverrideSubdir, ".gitkeep"), "");
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 2
+            }
+            """);
+
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+        WriteOverrideCwdTaskInRepo(planDir, "01-override-writer", OverrideSubdir);
+        return planDir;
+    }
+
+    /// <summary>
+    /// Writes a task with an <c>action.workingDirectory</c> override (<paramref name="overrideSubdir"/>,
+    /// relative to the plan dir) whose action creates <see cref="CwdRelativeFile"/> using a path RELATIVE
+    /// to the process cwd. The action SCRIPT path is absolute (discovered from the task folder), so only
+    /// the cwd — where the relative write lands — is governed by the override anchor under test.
+    /// </summary>
+    private static void WriteOverrideCwdTaskInRepo(string planDir, string taskId, string overrideSubdir)
+    {
+        string taskDir = Path.Combine(planDir, "tasks", taskId);
+        Directory.CreateDirectory(taskDir);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $$"""
+            {
+              "description": "working-directory override write {{taskId}}",
+              "dependsOn": [],
+              "action": {
+                "workingDirectory": "{{overrideSubdir}}"
+              }
+            }
+            """);
+
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
+                $"Set-Content -NoNewline -Path '{CwdRelativeFile}' -Value '{CwdRelativeContent}'\n" +
+                "exit 0\n");
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"), "exit 0\n");
+        }
+        else
+        {
+            string actionPath = Path.Combine(taskDir, "action.sh");
+            File.WriteAllText(actionPath,
+                "#!/usr/bin/env bash\n" +
+                $"printf '%s' '{CwdRelativeContent}' > '{CwdRelativeFile}'\n" +
+                "exit 0\n");
+            File.SetUnixFileMode(actionPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            string guardrailPath = Path.Combine(taskDir, "guardrails", "01-check.sh");
+            File.WriteAllText(guardrailPath, "#!/usr/bin/env bash\nexit 0\n");
+            File.SetUnixFileMode(guardrailPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+    }
+
     private static void WriteTaskInRepo(string planDir, string taskId, string[] dependsOn)
     {
         string taskDir = Path.Combine(planDir, "tasks", taskId);
@@ -666,6 +758,137 @@ public sealed class MergeLockAndSettleTests
 
         string status = TempGitRepo.Git(repo.RepoPath, "status", "--porcelain");
         Assert.DoesNotContain(CwdRelativeFile, status, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 2c — issue #135: a worktree-mode WorkingDirectory override anchors at the SEGMENT
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #135 regression (residual of #134): in worktree mode a task's explicit
+    /// <c>action.workingDirectory</c> override must resolve relative to the SEGMENT's copy of the plan
+    /// dir, NOT the user's MAIN checkout. The override points cwd at <c>&lt;plan&gt;/override-cwd</c>;
+    /// the action writes <see cref="CwdRelativeFile"/> RELATIVE TO ITS CWD (deliberately NOT via
+    /// <c>$GUARDRAILS_WORKSPACE</c>).
+    ///
+    /// With the bug (override anchored at <c>_plan.PlanDirectory</c> = the main checkout) the cwd is
+    /// <c>&lt;repo&gt;/plan/override-cwd</c>, so the file lands in the MAIN checkout's plan-dir subdir,
+    /// the segment commit captures it NOT, and the integrated plan branch lacks it. With the fix the cwd
+    /// is <c>&lt;segment&gt;/plan/override-cwd</c>, so the file is committed in the segment, FF'd onto the
+    /// plan branch, and the MAIN checkout is untouched.
+    ///
+    /// Mirrors <see cref="WorktreeMode_ActionCwd_IsSegmentWorktree_NotMainCheckout"/> (the #134 no-override
+    /// twin), but the committed path is under the override subdir: <c>plan/override-cwd/cwd-written.txt</c>.
+    /// </summary>
+    [Fact]
+    public async Task WorktreeMode_WorkingDirectoryOverride_AnchorsAtSegment_NotMainCheckout()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateWorkingDirectoryOverridePlan(repo.RepoPath);
+        // Commit the plan (incl. the empty override-cwd subdir) so the segment checkout contains it.
+        TempGitRepo.Git(repo.RepoPath, "add", "-A");
+        TempGitRepo.Git(repo.RepoPath, "-c", "core.autocrlf=false",
+            "commit", "-m", "add #135 override plan");
+        string initialHead = repo.HeadSha(repo.RepoPath);
+
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        var (report, _) = await RunWithProviderAsync(
+            planDir, provider, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "override-cwd write task must succeed; " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        const string planBranch = "guardrails/plan";
+        // The committed path of the cwd-relative write: <plan-dir-name>/<override-subdir>/<file>,
+        // relative to the repo root (the workspace). With the bug this path is absent from the segment
+        // commit (the write went to the main checkout) — the plan branch's tree would not contain it.
+        string committedPath = $"plan/{OverrideSubdir}/{CwdRelativeFile}";
+
+        // ── The override-relative write IS captured in the segment commit on the integrated plan branch.
+        string tracked = TempGitRepo.Git(repo.RepoPath, "ls-tree", "--name-only", "-r", planBranch);
+        Assert.Contains(committedPath, tracked, StringComparison.Ordinal);
+
+        string committedContent = TempGitRepo.Git(repo.RepoPath, "show", $"{planBranch}:{committedPath}");
+        Assert.Equal(CwdRelativeContent, committedContent);
+
+        // ── The user's MAIN checkout is NOT mutated: HEAD did not advance, and the override write is
+        //    NOT present in the main checkout's override subdir (neither on disk nor as a status entry).
+        Assert.Equal(initialHead, repo.HeadSha(repo.RepoPath));
+
+        string mainCheckoutWrite = Path.Combine(repo.RepoPath, "plan", OverrideSubdir, CwdRelativeFile);
+        Assert.False(File.Exists(mainCheckoutWrite),
+            $"#135: '{committedPath}' must NOT exist in the user's main checkout — a worktree-mode " +
+            "WorkingDirectory override must write into the SEGMENT's plan dir, not the user's tree.");
+
+        string status = TempGitRepo.Git(repo.RepoPath, "status", "--porcelain");
+        Assert.DoesNotContain(CwdRelativeFile, status, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 2d — issue #135: SERIAL-mode WorkingDirectory override is UNCHANGED (plan-dir anchor)
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #135 invariant: the #135 fix is worktree-mode ONLY. In SERIAL mode a
+    /// <c>action.workingDirectory</c> override stays anchored at the plan
+    /// <see cref="PlanDefinition.Workspace"/>'s plan dir — byte-identical to before. With
+    /// <c>workspace: "."</c> the workspace IS the plan dir, so the override <c>override-cwd</c> resolves
+    /// to <c>&lt;plan&gt;/override-cwd</c> and the cwd-relative write lands there in the user's own
+    /// checkout (serial has no segment to isolate into).
+    /// </summary>
+    [Fact]
+    public async Task SerialMode_WorkingDirectoryOverride_AnchorsAtPlanDir_Unchanged()
+    {
+        // A plain temp plan dir (NO git repo): maxParallelism 1 → serial mode, workspace "." = plan dir.
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-135-serial-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(planDir);
+            Directory.CreateDirectory(Path.Combine(planDir, "state"));
+            // The override target dir must exist before the process starts.
+            Directory.CreateDirectory(Path.Combine(planDir, OverrideSubdir));
+
+            File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+                """
+                {
+                  "version": 1,
+                  "guardrailMode": "failFast",
+                  "workspace": ".",
+                  "defaultRetries": 0,
+                  "maxParallelism": 1
+                }
+                """);
+            Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+            WriteOverrideCwdTaskInRepo(planDir, "01-override-writer", OverrideSubdir);
+
+            PlanLoadResult load = new PlanLoader().Load(planDir);
+            Assert.NotNull(load.Plan);
+            Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
+
+            Scheduler scheduler = SchedulerFactory.Create(
+                load.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+            RunReport report = await scheduler.RunAsync(
+                load.Plan!, TestContext.Current.CancellationToken);
+
+            Assert.True(report.AllSucceeded,
+                "serial override write task must succeed; " +
+                string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+            // Serial anchor is the plan dir + override subdir, in the user's own checkout — unchanged.
+            string expected = Path.Combine(planDir, OverrideSubdir, CwdRelativeFile);
+            Assert.True(File.Exists(expected),
+                $"serial #135 invariant: the override-relative write must land at '{expected}' " +
+                "(plan-dir anchor, unchanged).");
+            Assert.Equal(CwdRelativeContent, File.ReadAllText(expected));
+        }
+        finally
+        {
+            try { Directory.Delete(planDir, recursive: true); } catch (IOException) { /* best-effort */ }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
