@@ -18,13 +18,20 @@ namespace Guardrails.Cli.Ui;
 ///   <item><c>GET /</c> — landing page listing every task, each linking to its log page.</item>
 ///   <item><c>GET /tasks/{id}</c> — a page that tails an attempt's log directory (latest by default).</item>
 ///   <item><c>GET /tasks/{id}/files[?attempt=N]</c> — JSON: the selected attempt number, every
-///     available attempt number, and the files in the selected attempt (default = latest).</item>
+///     available attempt number, and the files in the selected attempt (default = latest), with a
+///     <c>fileDetails[]</c> carrying each file's size + <c>empty</c> flag (#141 item 4).</item>
 ///   <item><c>GET /tasks/{id}/file?name={f}[&amp;attempt=N]</c> — the raw text of one log file
 ///     from the selected attempt (default = latest; tailed by the page).</item>
+///   <item><c>GET /tasks/{id}/source</c> — JSON listing the task's action file + guardrail scripts /
+///     sidecars (each <c>{ name, label, empty }</c>) for the page's "Source" section (#141 item 3).</item>
+///   <item><c>GET /tasks/{id}/sourcefile?name={f}</c> — the raw text of ONE of the task's known source
+///     files, resolved only through the precomputed source set (an unknown / traversal name is rejected).</item>
 /// </list>
 ///
-/// The <c>{id}</c> must be a known task id and <c>{name}</c> a bare filename inside the attempt
-/// directory — both are validated to keep the file surface inside <c>logs/&lt;runId&gt;/&lt;id&gt;/</c>.
+/// The <c>{id}</c> must be a known task id. For <c>file</c>, <c>{name}</c> must be a bare filename
+/// inside the attempt directory (validated to keep the surface inside <c>logs/&lt;runId&gt;/&lt;id&gt;/</c>);
+/// for <c>sourcefile</c>, <c>{name}</c> must match one of the task's declared source files (the path is
+/// the known absolute <see cref="LogSiteRenderer.SourceFile"/> path, never derived from the request).
 /// </summary>
 public sealed class LogServer : IAsyncDisposable
 {
@@ -43,6 +50,12 @@ public sealed class LogServer : IAsyncDisposable
     private readonly string _baseUrl;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _acceptLoop;
+
+    // Per-task source files (the action + every guardrail script + any .json sidecar), precomputed from
+    // the plan's TaskNode definitions so the source routes (#141 item 3) resolve a requested name ONLY
+    // against this known set — path-safe by construction (an unknown name never resolves to a path).
+    // Keyed by task id; the inner map is filename → SourceFile (absolute path + label).
+    private readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, LogSiteRenderer.SourceFile>> _sourcesByTask;
 
     // Per-file read cache, keyed by absolute path. The accept loop serves requests concurrently,
     // so all access is under _fileCacheLock. A cached entry is reused ONLY when the file's current
@@ -67,6 +80,44 @@ public sealed class LogServer : IAsyncDisposable
         _tasks = tasks;
         _statusForTask = statusForTask;
         _taskIds = new HashSet<string>(tasks.Select(t => t.Id), StringComparer.Ordinal);
+        _sourcesByTask = BuildSourceMap(tasks);
+    }
+
+    /// <summary>
+    /// Precompute each task's known source files (the action + every guardrail script + any <c>.json</c>
+    /// sidecar) from the plan's <see cref="TaskNode"/> definitions, keyed task id → (filename →
+    /// <see cref="LogSiteRenderer.SourceFile"/>). The source routes (#141 item 3) resolve a requested
+    /// <c>name</c> ONLY through this map, so an unknown / traversal name simply has no entry and is
+    /// rejected — the file surface stays the known source set, never an arbitrary path. A duplicate
+    /// filename (e.g. a guardrail named after the action) keeps the first; labels remain unique enough
+    /// for the UI. Reuses the renderer's discovery so the live and static views list the SAME files.
+    /// </summary>
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, LogSiteRenderer.SourceFile>> BuildSourceMap(
+        IReadOnlyList<TaskNode> tasks)
+    {
+        var map = new Dictionary<string, IReadOnlyDictionary<string, LogSiteRenderer.SourceFile>>(StringComparer.Ordinal);
+        foreach (TaskNode task in tasks)
+        {
+            var byName = new Dictionary<string, LogSiteRenderer.SourceFile>(StringComparer.Ordinal);
+            foreach (LogSiteRenderer.SourceFile source in SourcesFor(task))
+            {
+                byName.TryAdd(source.Name, source);
+            }
+
+            map[task.Id] = byName;
+        }
+
+        return map;
+    }
+
+    /// <summary>The ordered source files surfaced for one task: action first, then its guardrail scripts/sidecars.</summary>
+    private static IEnumerable<LogSiteRenderer.SourceFile> SourcesFor(TaskNode task)
+    {
+        yield return LogSiteRenderer.ActionSource(task);
+        foreach (LogSiteRenderer.SourceFile guardrail in LogSiteRenderer.GuardrailSources(task))
+        {
+            yield return guardrail;
+        }
     }
 
     /// <summary>The base URL the server is listening on, e.g. <c>http://localhost:54321/</c>.</summary>
@@ -241,6 +292,12 @@ public sealed class LogServer : IAsyncDisposable
                     context.Request.QueryString["name"],
                     ParseAttempt(context.Request.QueryString["attempt"]));
                 return;
+            case "source":
+                WriteJson(context, SourceJson(taskId));
+                return;
+            case "sourcefile":
+                WriteSourceFile(context, taskId, context.Request.QueryString["name"]);
+                return;
             default:
                 TrySetStatus(context, HttpStatusCode.NotFound);
                 return;
@@ -302,6 +359,9 @@ public sealed class LogServer : IAsyncDisposable
                 writer.WriteString("preferred", preferred);
             }
 
+            // The bare filename list stays for back-compat (the page reads d.files for the simple
+            // case). fileDetails carries each file's size + empty bool so the page can grey a
+            // zero-byte capture's <option> and append " (empty)" (#141 item 4).
             writer.WriteStartArray("files");
             foreach (string file in files)
             {
@@ -309,10 +369,108 @@ public sealed class LogServer : IAsyncDisposable
             }
 
             writer.WriteEndArray();
+
+            writer.WriteStartArray("fileDetails");
+            foreach (string file in files)
+            {
+                long size = FileSize(Path.Combine(attemptDir!, file));
+                writer.WriteStartObject();
+                writer.WriteString("name", file);
+                writer.WriteNumber("size", size);
+                writer.WriteBoolean("empty", size == 0);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
             writer.WriteEndObject();
         }
 
         return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>
+    /// JSON for <c>GET /tasks/{id}/source</c> (#141 item 3): the action file + every guardrail script
+    /// and <c>.json</c> sidecar this task declares, each <c>{ name, label, empty }</c>. The page renders
+    /// this as the "Source" list; a click fetches the raw text via <c>/sourcefile?name=…</c>. <c>empty</c>
+    /// marks a zero-byte source the same way the file dropdown marks an empty capture (#141 item 4).
+    /// </summary>
+    private string SourceJson(string taskId)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartArray("sources");
+            // Discovery order (action first, then guardrails) — re-derived from the TaskNode rather than
+            // the lookup map, whose iteration order is unspecified.
+            foreach (LogSiteRenderer.SourceFile source in OrderedSources(taskId))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", source.Name);
+                writer.WriteString("label", source.Label);
+                writer.WriteBoolean("empty", FileSize(source.Path) == 0);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>Re-derive a task's source files in display order (action, then guardrails) for the JSON.</summary>
+    private IEnumerable<LogSiteRenderer.SourceFile> OrderedSources(string taskId)
+    {
+        TaskNode? task = _tasks.FirstOrDefault(t => string.Equals(t.Id, taskId, StringComparison.Ordinal));
+        return task is null ? Array.Empty<LogSiteRenderer.SourceFile>() : SourcesFor(task);
+    }
+
+    /// <summary>
+    /// Serve <c>GET /tasks/{id}/sourcefile?name=…</c> (#141 item 3): the raw text of ONE of the task's
+    /// known source files, resolved ONLY through the precomputed source set. An unknown name (or a
+    /// traversal attempt) has no entry and is rejected — the path is never built from the request, so
+    /// the surface is inherently confined to the action + guardrail files the plan declares.
+    /// </summary>
+    private void WriteSourceFile(HttpListenerContext context, string taskId, string? name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            TrySetStatus(context, HttpStatusCode.BadRequest);
+            return;
+        }
+
+        if (!_sourcesByTask.TryGetValue(taskId, out var sources) ||
+            !sources.TryGetValue(name, out LogSiteRenderer.SourceFile source))
+        {
+            // Not one of THIS task's known sources — reject (covers unknown names and any traversal,
+            // since the path is the known SourceFile.Path, never derived from the request).
+            TrySetStatus(context, HttpStatusCode.NotFound);
+            return;
+        }
+
+        if (!File.Exists(source.Path))
+        {
+            // Declared but absent on disk (e.g. a mid-edit plan) — empty body, not a crash.
+            WriteText(context, string.Empty);
+            return;
+        }
+
+        WriteText(context, ReadFileCached(source.Path));
+    }
+
+    /// <summary>The file's byte length, or 0 when it is absent / unreadable (treated as "empty" for the UI).</summary>
+    private static long FileSize(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? info.Length : 0;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
     }
 
     private void WriteFile(HttpListenerContext context, string taskId, string? name, int? requestedAttempt)
@@ -599,13 +757,25 @@ __STYLE__
   &middot; file <select id="file"></select>
   &middot; <span id="tick">live</span></div>
 <pre id="log">waiting for log output…</pre>
+<h2>Source</h2>
+<div class="bar" id="source">loading source…</div>
 <script>
 const TASK = __TASK_JSON__;
 let current = null;          // selected file name
 let attempt = null;          // selected attempt number (null = follow latest)
 let pinned = false;          // true once the user explicitly picks an attempt — stop auto-following latest
+let sourceLoaded = false;    // the Source list is static per task — load it once
 
 function attemptQuery() { return attempt === null ? '' : `?attempt=${encodeURIComponent(attempt)}`; }
+
+// Apply the empty-file marking to one <option>: grey it (the .empty CSS class) and suffix " (empty)"
+// when the file is zero bytes, so an empty stdout/stderr capture is distinguishable in the dropdown
+// (#141 item 4).
+function markOption(o, name, empty) {
+  o.value = name;
+  o.textContent = empty ? name + ' (empty)' : name;
+  o.classList.toggle('empty', !!empty);
+}
 
 async function refreshFiles() {
   try {
@@ -632,16 +802,20 @@ async function refreshFiles() {
     }
     if (!pinned && d.attempt != null) { attempt = d.attempt; asel.value = d.attempt; }
 
+    // Build the file <select> from fileDetails (carrying each file's empty flag) when present,
+    // falling back to the bare names. A zero-byte file's option is greyed + " (empty)" (#141 item 4).
     const sel = document.getElementById('file');
     const have = new Set([...sel.options].map(o => o.value));
-    for (const f of d.files) {
-      if (!have.has(f)) {
+    const details = d.fileDetails ?? (d.files ?? []).map(n => ({ name: n, empty: false }));
+    for (const fd of details) {
+      if (!have.has(fd.name)) {
         const o = document.createElement('option');
-        o.value = f; o.textContent = f; sel.appendChild(o);
+        markOption(o, fd.name, fd.empty);
+        sel.appendChild(o);
       }
     }
-    if (current === null && d.files.length) {
-      sel.value = d.preferred ?? d.files[0];
+    if (current === null && details.length) {
+      sel.value = d.preferred ?? details[0].name;
       current = sel.value;
     }
   } catch (e) { /* server stopped — run probably ended */ }
@@ -664,6 +838,43 @@ async function refreshLog() {
   } catch (e) { /* transient */ }
 }
 
+// The "Source" section (#141 item 3): list the task's action + guardrail files; clicking one fetches
+// its raw text into the log <pre> with a header, so a thrown guardrail's script is one click away. The
+// set is static per task, so it is fetched once. An empty source is greyed + " (empty)" (#141 item 4).
+async function loadSource() {
+  if (sourceLoaded) return;
+  try {
+    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/source`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const host = document.getElementById('source');
+    host.innerHTML = '';
+    (d.sources ?? []).forEach((s, i) => {
+      if (i > 0) host.appendChild(document.createTextNode(' · '));
+      const a = document.createElement('a');
+      a.href = '#';
+      a.textContent = s.empty ? s.label + ' (empty)' : s.label;
+      if (s.empty) a.classList.add('empty');
+      a.addEventListener('click', (ev) => { ev.preventDefault(); viewSource(s.name, s.label); });
+      host.appendChild(a);
+    });
+    sourceLoaded = true;
+  } catch (e) { /* server stopped */ }
+}
+
+async function viewSource(name, label) {
+  try {
+    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/sourcefile?name=${encodeURIComponent(name)}`);
+    const pre = document.getElementById('log');
+    if (!r.ok) { pre.textContent = 'could not load source: ' + label; return; }
+    const t = await r.text();
+    pre.textContent = '── source: ' + label + ' ──\n\n' + (t.length ? t : '(empty)');
+    // Stop tailing a log over the source view: clear the file selection until the user re-picks one.
+    current = null;
+    document.getElementById('tick').textContent = 'viewing source: ' + label;
+  } catch (e) { /* transient */ }
+}
+
 document.getElementById('file').addEventListener('change', () => {
   current = document.getElementById('file').value;
   refreshLog();
@@ -681,6 +892,7 @@ document.getElementById('attempt').addEventListener('change', () => {
 
 setInterval(refreshFiles, 2000);
 setInterval(refreshLog, 1000);
+loadSource();
 refreshFiles().then(refreshLog);
 </script>
 </body>

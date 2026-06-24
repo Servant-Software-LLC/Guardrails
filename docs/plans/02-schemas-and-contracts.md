@@ -29,7 +29,8 @@ plan-name/
 │   └── merge-conflicts.log      # harness-owned, gitignored (§6.3)
 ├── logs/
 │   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
-│   └── <runId>/index.html       # OPTIONAL durable static log site — non-authored (§12.3)
+│   ├── <runId>/<task-id>/index.html   # static per-task log page — non-authored (§12.2/§12.3)
+│   └── <runId>/index.html       # static log-site index — written on the fly during a run + by --export (§12.3)
 └── tasks/
     └── <NN-verb-object>/        # task id = folder name, kebab-case, NN = topological hint
         ├── task.json            # task manifest (§3)
@@ -646,7 +647,7 @@ analysis — the default remains that the harness does not mutate the user's che
   from `seed.json` (or `{}`) when missing. `guardrails run --fresh` deletes runtime
   state and re-seeds. The `--fresh` deletion list is: `run.json`, `state.json`,
   `merge-conflicts.log`, `state/captured/`, and the plan-root `logs/` tree (all runs'
-  attempt artifacts and any exported static log site, §8/§12.3). It does **NOT** delete
+  attempt artifacts and any static log site, on-the-fly or exported, §8/§12.3). It does **NOT** delete
   `state/guardrails-review.json` — that marker is a committed plan artifact (§13),
   planHash-keyed so it self-invalidates on any edit, NOT per-run runtime state.
 - The **harness is the single writer** of `state.json`. Child processes never touch it.
@@ -1352,16 +1353,23 @@ decisions — the deterministic engine owns them.
 A small **loopback-only** HTTP server surfaces each task's per-attempt log artifacts (§8) in a
 browser, so a human can answer "is it actually working?" without leaving the terminal — live
 during a run, or after the fact. It serves the same on-disk files documented in §8; it adds no new
-artifacts and is never part of the plan contract (the loader/validator ignore it entirely).
+artifacts and is never part of the plan contract (the loader/validator ignore it entirely). The
+task page also surfaces a **Source** section — the task's action file and `guardrails/*` scripts
+(derived from the plan's `TaskNode`, not from `logs/`) — so a thrown guardrail's script is one
+click from its failing log (issue #141 item 3).
 
 **Binding and safety.** The server binds to the numeric loopback address `127.0.0.1` on a port (an
 automatically chosen free ephemeral port by default), **never** to a routable interface — logs may
 echo secrets, so they are never exposed off the local machine (the numeric bind is deliberate, so a
 custom `/etc/hosts` mapping of `localhost` cannot widen the exposure). Responses carry
-`X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. The file surface is confined to
+`X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`. The log-file surface is confined to
 `logs/<runId>/<task-id>/` (SSOT §8): the run is selected by the journal's `runId` (§7), the requested
 task id must be one the plan declares, and the requested filename must be a bare name inside the
-selected `attempt-N/` directory (no traversal).
+selected `attempt-N/` directory (no traversal). The **source** surface (`/source`, `/sourcefile`) is
+confined a different way — to the task's *known* source set (action + guardrails + sidecars,
+precomputed from the `TaskNode`): a requested `name` is resolved through that set, and the served path
+is the known absolute source path, **never** built from the request — so an unknown / traversal name
+simply has no entry and is rejected (path-safe by construction).
 
 **Attempt selection.** Both `files` and `file` take an optional `attempt=N` query: the selected
 attempt is that `attempt-N/` directory when it exists, else the latest attempt (an unknown/absent N
@@ -1374,9 +1382,11 @@ live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 | Route | Serves |
 |---|---|
 | `GET /` | landing page — every task linking to its log page (the `logs` variant also shows each task's journal status) |
-| `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt) |
-| `GET /tasks/{id}/files[?attempt=N]` | JSON `{ attempt, attempts[], preferred, files[] }` — the SELECTED attempt number (default = latest), every available attempt number ascending, a preferred file to open first (`transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log`, else the first file), and the selected attempt's files |
+| `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt), plus a **Source** section (issue #141 item 3) |
+| `GET /tasks/{id}/files[?attempt=N]` | JSON `{ attempt, attempts[], preferred, files[], fileDetails[] }` — the SELECTED attempt number (default = latest), every available attempt number ascending, a preferred file to open first (`transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log`, else the first file), the selected attempt's filenames, and a `fileDetails[]` of `{ name, size, empty }` per file (so a zero-byte capture is greyed + "(empty)" in the file dropdown — issue #141 item 4) |
 | `GET /tasks/{id}/file?name={f}[&attempt=N]` | the raw text of one log file from the selected attempt (default = latest; read with a shared handle so an in-flight writer is not blocked) |
+| `GET /tasks/{id}/source` | JSON `{ sources[] }` of `{ name, label, empty }` — the task's action file + each guardrail script and `.json` sidecar (issue #141 item 3), derived from the plan's `TaskNode` (`action.path` + `guardrails/*`), so a thrown guardrail's script is one click from its log |
+| `GET /tasks/{id}/sourcefile?name={f}` | the raw text of ONE of the task's known source files. `{name}` is resolved **only** against the precomputed source set (action + guardrails + sidecars); an unknown / traversal name has no entry and is rejected — the served path is the known absolute source path, never derived from the request, so the surface is inherently confined to the declared sources |
 
 ### 12.1 `guardrails run` — live log links
 
@@ -1385,6 +1395,21 @@ clickable per-task "view log" links. It is started **only** on the interactive p
 output not redirected) — nobody clicks links in CI or piped output — and a bind failure is
 **non-fatal**: the run prints one warning and proceeds without links. The server's lifetime is the
 run; it is disposed when the run ends.
+
+**On-the-fly static site (issue #141 item 2).** Independently of the server, `run` also keeps the
+**static** log site (§12.3) up to date as the run proceeds — on **both** the live and the `--no-ui`
+paths, since a `file://` "all tasks" page is useful headless too. A decorator `IRunObserver`
+(`OnTheFlyLogSiteObserver`) wraps the real observer, and after each forwarded event rewrites
+`logs/<runId>/index.html` via the same `LogSiteRenderer`: at run start an all-pending index; on a
+task **starting** it flips to `running` and (when the live server is up) links to the live URL; on a
+task **finishing** it writes that task's static page and the index links to it. The during-run index
+carries a `meta refresh` so a `file://` view picks up the rewrites. At run **end**, the durable final
+site is written (`ExportSite` — all-static links, **no** refresh, every task page), so the artifact
+left on disk is complete and self-contained — identical to `logs --export`. The run prints a
+clickable `file://` link to this static "all tasks" index at **start and end**, alongside the live
+URL. A finished task's terminal `logs` link (the live table's post-mortem link) targets that task's
+**static page** `logs/<runId>/<task-id>/index.html` — a rendered HTML page — not the log directory
+(issue #141 item 1). Site writes are best-effort: a render hiccup never changes the run's exit code.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -1416,27 +1441,34 @@ failure exits `1`.
 
 ### 12.3 Durable static export (`guardrails logs --export`)
 
-`guardrails logs [folder] --export` renders a **self-contained static HTML site** of the
-journal-selected run's logs and exits `0` — it does **not** start the server or block. The site is
-written **next to the artifacts it renders**, under the `logs/` audit tree (never `state/`, which
-holds mutable run state):
+The same **self-contained static HTML site** is produced two ways: **during a run** (written on the
+fly as tasks settle — §12.1) and **post-hoc** by `guardrails logs [folder] --export`, which renders
+the journal-selected run's logs and exits `0` without starting the server or blocking. Either way the
+site is written **next to the artifacts it renders**, under the `logs/` audit tree (never `state/`,
+which holds mutable run state):
 - `logs/<runId>/<task-id>/index.html` — one page per task that has attempts on disk, inlining that
   task's per-attempt artifacts (§8): each attempt shows its preferred file (`transcript.md`, else
   `claude-stream.jsonl`, else `action-stdout.log`) inlined, plus relative `file://` links to the
-  attempt's other files (a large raw stream is linked, not inlined — #103 decision 5).
+  attempt's other files (a large raw stream is linked, not inlined — #103 decision 5; a zero-byte file
+  is greyed + "(empty)" — #141 item 4). A **Source** section follows the attempts: relative `file://`
+  links back to the action file and every `guardrails/*` script + `.json` sidecar (#141 item 3), the
+  static twin of the live page's Source list.
 - `logs/<runId>/index.html` — the site index, a **projection of the journal** (§7) regenerated on
-  every export (never appended): every task with its status word; a task with attempts on disk is a
-  **link** to its page, a not-yet-run task is **plain text** (the #103 linkability rule).
+  every write (never appended): every task with its status word; a task with attempts on disk is a
+  **link** to its page, a not-yet-run task is **plain text** (the #103 linkability rule). The
+  **during-run** index additionally carries a `meta refresh` and links a *running* task to the live
+  server; the **final / `--export`** index has **no** refresh and **all-static** links (durable,
+  non-flickering).
 
 Pages are produced by the **same renderer** the live/post-mortem server uses (`LogSiteRenderer`,
 which owns the shared page shell — CSS, layout, status colours — that the live `LogServer` templates
-also embed) — there is **no forked static look-alike** (#103 Request 2). The export is re-runnable and
-idempotent (regenerates the whole site each call, like `guardrails graph`). It is **non-authored
-audit** (excluded from `guardrails.baseline`, like `diagram.html`, because it lives under `logs/`) and
-is cleared with the rest of `logs/` by `--fresh` (§6.1). `--port`/`--task` are serve-mode options and
-are ignored with `--export`. A missing/in-flight attempt artifact renders as "no output captured" — a
-static snapshot of an in-flight run is valid and never errors. *(On-settle auto-write of each task's
-page during a live run is a deferred follow-up; the re-runnable command is the v1 surface.)*
+also embed) — there is **no forked static look-alike** (#103 Request 2). Each write is re-runnable and
+idempotent (regenerates the whole site each call, like `guardrails graph`); the during-run writer and
+`--export` produce the same durable bytes at run end. It is **non-authored audit** (excluded from
+`guardrails.baseline`, like `diagram.html`, because it lives under `logs/`) and is cleared with the
+rest of `logs/` by `--fresh` (§6.1). `--port`/`--task` are serve-mode options and are ignored with
+`--export`. A missing/in-flight attempt artifact renders as "no output captured" — a static snapshot
+of an in-flight run is valid and never errors.
 
 ---
 
