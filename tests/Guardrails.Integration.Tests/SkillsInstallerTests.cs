@@ -26,11 +26,13 @@ public sealed class SkillsInstallerTests : IDisposable
         WriteFile(Path.Combine(_source, "guardrails-review", "SKILL.md"), "# guardrails-review");
     }
 
+    private const string TestVersion = "9.9.9-test";
+
     [Fact]
     public void InstallAll_CopiesEveryBundledSkill_PreservingNestedStructure()
     {
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(_source, _target, force: false);
+            SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
 
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.Equal(SkillsInstaller.SkillOutcome.Installed, r.Outcome));
@@ -48,7 +50,7 @@ public sealed class SkillsInstallerTests : IDisposable
         WriteFile(Path.Combine(_target, "plan-breakdown", "stale-extra.md"), "remove me");
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(_source, _target, force: true);
+            SkillsInstaller.InstallAll(_source, _target, force: true, TestVersion);
 
         SkillsInstaller.SkillResult planBreakdown = results.Single(r => r.Name == "plan-breakdown");
         Assert.Equal(SkillsInstaller.SkillOutcome.Installed, planBreakdown.Outcome);
@@ -64,7 +66,7 @@ public sealed class SkillsInstallerTests : IDisposable
         WriteFile(Path.Combine(_target, "plan-breakdown", "SKILL.md"), "EXISTING — DO NOT TOUCH");
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(_source, _target, force: false);
+            SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
 
         SkillsInstaller.SkillResult planBreakdown = results.Single(r => r.Name == "plan-breakdown");
         Assert.Equal(SkillsInstaller.SkillOutcome.Skipped, planBreakdown.Outcome);
@@ -80,11 +82,54 @@ public sealed class SkillsInstallerTests : IDisposable
     }
 
     [Fact]
+    public void InstallAll_StampsVersionMarker_OnEveryInstalledSkill()
+    {
+        SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
+
+        string planBreakdownMarker = Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version");
+        string guardrailsReviewMarker = Path.Combine(_target, "guardrails-review", ".guardrails-skill-version");
+
+        Assert.True(File.Exists(planBreakdownMarker));
+        Assert.Equal(TestVersion, File.ReadAllText(planBreakdownMarker));
+        Assert.Equal(TestVersion, File.ReadAllText(guardrailsReviewMarker));
+    }
+
+    [Fact]
+    public void InstallAll_Skipped_LeavesExistingMarkerUntouched()
+    {
+        // A pre-existing install carrying an OLDER stamp — the drift signal we must preserve.
+        WriteFile(Path.Combine(_target, "plan-breakdown", "SKILL.md"), "EXISTING");
+        WriteFile(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version"), "1.0.0-old");
+
+        IReadOnlyList<SkillsInstaller.SkillResult> results =
+            SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
+
+        Assert.Equal(SkillsInstaller.SkillOutcome.Skipped,
+            results.Single(r => r.Name == "plan-breakdown").Outcome);
+
+        // The stale marker is left exactly as it was — NOT bumped to the new version.
+        Assert.Equal("1.0.0-old",
+            File.ReadAllText(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version")));
+    }
+
+    [Fact]
+    public void InstallAll_ForceReinstall_UpdatesTheVersionMarker()
+    {
+        WriteFile(Path.Combine(_target, "plan-breakdown", "SKILL.md"), "EXISTING");
+        WriteFile(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version"), "1.0.0-old");
+
+        SkillsInstaller.InstallAll(_source, _target, force: true, TestVersion);
+
+        Assert.Equal(TestVersion,
+            File.ReadAllText(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version")));
+    }
+
+    [Fact]
     public void InstallAll_MissingSourceDir_Throws()
     {
         string missing = Path.Combine(_root, "does-not-exist");
         Assert.Throws<DirectoryNotFoundException>(
-            () => SkillsInstaller.InstallAll(missing, _target, force: false));
+            () => SkillsInstaller.InstallAll(missing, _target, force: false, TestVersion));
     }
 
     [Fact]

@@ -56,7 +56,9 @@ public static class SkillsCommand
 
         var forceOption = new Option<bool>("--force")
         {
-            Description = "Overwrite a skill folder that already exists in the target (otherwise it is skipped)."
+            Description = "Overwrite a skill folder that already exists in the target — required to refresh "
+                + "(and re-stamp the version of) an installed skill, otherwise it is skipped. "
+                + "`guardrails --version` warns about skipped/stale skills."
         };
 
         var command = new Command(name, "Install the bundled skills into Claude Code's skills directory.");
@@ -95,9 +97,10 @@ public static class SkillsCommand
         }
 
         string targetDir = SkillsInstaller.ResolveTargetDir(target, project);
+        string toolVersion = GuardrailsVersion.Current;
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(sourceSkillsDir, targetDir, force);
+            SkillsInstaller.InstallAll(sourceSkillsDir, targetDir, force, toolVersion);
 
         foreach (SkillsInstaller.SkillResult result in results)
         {
@@ -114,7 +117,7 @@ public static class SkillsCommand
         int skipped = results.Count(r => r.Outcome == SkillsInstaller.SkillOutcome.Skipped);
 
         io.Out.WriteLine();
-        io.Out.WriteLine($"{installed} skill(s) installed, {skipped} skipped → {targetDir}");
+        io.Out.WriteLine($"{installed} skill(s) installed (v{toolVersion}), {skipped} skipped → {targetDir}");
         io.Out.WriteLine("Restart Claude Code; /plan-breakdown and /guardrails-review are then available.");
 
         return ExitCodes.Success;

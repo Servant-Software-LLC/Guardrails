@@ -29,6 +29,22 @@ public static class CommandFactory
         rootCommand.Add(MergeCommand.Create(io));
         rootCommand.Add(SkillsCommand.Create(io));
         rootCommand.Add(SkillsCommand.CreateInstallAlias(io));
+
+        WireVersionDriftWarning(rootCommand, io);
         return rootCommand;
+    }
+
+    /// <summary>
+    /// Replace the built-in <c>--version</c> action with one that, after printing the version to
+    /// stdout, warns on stderr about installed skills whose stamped version has drifted from this
+    /// harness (issue #152). The version line on stdout is unchanged; the exit code stays 0.
+    /// </summary>
+    private static void WireVersionDriftWarning(RootCommand rootCommand, IConsoleIo io)
+    {
+        VersionOption? versionOption = rootCommand.Options.OfType<VersionOption>().FirstOrDefault();
+        if (versionOption is not null)
+        {
+            versionOption.Action = new VersionWithDriftAction(io);
+        }
     }
 }
