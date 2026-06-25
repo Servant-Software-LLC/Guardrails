@@ -157,7 +157,10 @@ public static class RunCommand
         {
             if (logServer is not null)
             {
-                io.Out.WriteLine($"Live task logs: {logServer.BaseUrl} (Ctrl/Cmd-click a task's \"view log\" link)\n");
+                // The canonical "all tasks" page is the static index file (printed by
+                // PrintStaticIndexLink below); this http server is just the tailing backend that the
+                // static index links a RUNNING task to (issue #143). De-emphasised accordingly.
+                io.Out.WriteLine($"Live tailing server (active tasks): {logServer.BaseUrl}\n");
             }
 
             Func<string, string?>? logUrlForTask = logServer is null ? null : logServer.UrlForTask;

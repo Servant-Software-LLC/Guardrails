@@ -13,9 +13,17 @@ namespace Guardrails.Cli.Ui;
 /// off the local machine). The lifetime is the run: <see cref="TryStart"/> at the top,
 /// <see cref="DisposeAsync"/> in a finally.
 ///
+/// The CANONICAL "all tasks" page is the static index file (<c>logs/&lt;runId&gt;/index.html</c>,
+/// rendered by <see cref="LogSiteRenderer"/>) — durable and server-independent. This live server is
+/// the active-only TAILING backend reached BY clicking a running task from that static index, so it
+/// no longer serves its own all-tasks landing: <c>GET /</c> is a pointer note at the static index's
+/// PATH (a browser can't follow <c>http→file</c>, so the path is shown as text), and the per-task
+/// page is an active-task DEADEND (no "all tasks" link — the user hits Back) (issue #143).
+///
 /// Routes:
 /// <list type="bullet">
-///   <item><c>GET /</c> — landing page listing every task, each linking to its log page.</item>
+///   <item><c>GET /</c> — a small pointer note directing the user to the canonical static index file
+///     (this server only tails active tasks; it cannot link to <c>file://</c>).</item>
 ///   <item><c>GET /tasks/{id}</c> — a page that tails an attempt's log directory (latest by default).</item>
 ///   <item><c>GET /tasks/{id}/files[?attempt=N]</c> — JSON: the selected attempt number, every
 ///     available attempt number, and the files in the selected attempt (default = latest), with a
@@ -46,7 +54,6 @@ public sealed class LogServer : IAsyncDisposable
     private readonly string _logsRoot;
     private readonly IReadOnlyList<TaskNode> _tasks;
     private readonly HashSet<string> _taskIds;
-    private readonly Func<string, string?>? _statusForTask;
     private readonly string _baseUrl;
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _acceptLoop;
@@ -71,14 +78,12 @@ public sealed class LogServer : IAsyncDisposable
         HttpListener listener,
         string baseUrl,
         string logsRoot,
-        IReadOnlyList<TaskNode> tasks,
-        Func<string, string?>? statusForTask)
+        IReadOnlyList<TaskNode> tasks)
     {
         _listener = listener;
         _baseUrl = baseUrl;
         _logsRoot = logsRoot;
         _tasks = tasks;
-        _statusForTask = statusForTask;
         _taskIds = new HashSet<string>(tasks.Select(t => t.Id), StringComparer.Ordinal);
         _sourcesByTask = BuildSourceMap(tasks);
     }
@@ -138,19 +143,12 @@ public sealed class LogServer : IAsyncDisposable
     /// <param name="tasks">The plan's tasks — the only ids the server will serve.</param>
     /// <param name="port">Listen port; 0 selects a free ephemeral port.</param>
     /// <param name="warn">Where a bind failure's single warning line is written.</param>
-    /// <param name="statusForTask">
-    /// Optional resolver mapping a task id to a status word (e.g. <c>succeeded</c>,
-    /// <c>needs-human</c>). When supplied, the landing page renders a coloured Status column —
-    /// used by <c>guardrails logs</c> (a standalone viewer has no terminal table to carry status).
-    /// Null = no Status column (the live run path, where the terminal table shows status).
-    /// </param>
     public static LogServer? TryStart(
         string planDirectory,
         string runId,
         IReadOnlyList<TaskNode> tasks,
         int port,
-        TextWriter warn,
-        Func<string, string?>? statusForTask = null)
+        TextWriter warn)
     {
         try
         {
@@ -192,7 +190,7 @@ public sealed class LogServer : IAsyncDisposable
                 // run is selected by the journal's runId (the live run owns it; the post-mortem reads
                 // it for the Status column), so the server walks exactly that run's tree.
                 string logsRoot = Path.Combine(planDirectory, "logs", runId);
-                var server = new LogServer(listener, baseUrl, logsRoot, tasks, statusForTask);
+                var server = new LogServer(listener, baseUrl, logsRoot, tasks);
                 server._acceptLoop = Task.Run(server.AcceptLoopAsync);
                 return server;
             }
@@ -252,7 +250,7 @@ public sealed class LogServer : IAsyncDisposable
 
         if (segments.Length == 0)
         {
-            WriteHtml(context, LandingHtml());
+            WriteHtml(context, PointerNoteHtml());
             return;
         }
 
@@ -639,30 +637,19 @@ public sealed class LogServer : IAsyncDisposable
 
     // --- HTML -------------------------------------------------------------------------------
 
-    private string LandingHtml()
+    /// <summary>
+    /// The <c>GET /</c> pointer note (issue #143): the canonical "all tasks" page is the static index
+    /// FILE (<c>&lt;logsRoot&gt;/index.html</c>), which is durable and works without this server. A browser
+    /// cannot follow an <c>http→file://</c> link, so the static index's absolute path is shown as text for
+    /// the user to open. This live server only tails ACTIVE tasks — it deliberately no longer serves an
+    /// all-tasks landing of its own.
+    /// </summary>
+    private string PointerNoteHtml()
     {
-        bool withStatus = _statusForTask is not null;
-        var rows = new StringBuilder();
-        foreach (TaskNode task in _tasks)
-        {
-            string idEnc = Uri.EscapeDataString(task.Id);
-            rows.Append("<tr><td><a href=\"/tasks/").Append(idEnc).Append("\">")
-                .Append(WebUtility.HtmlEncode(task.Id)).Append("</a></td>");
-
-            if (withStatus)
-            {
-                string status = _statusForTask!(task.Id) ?? "unknown";
-                rows.Append("<td class=\"status\" data-status=\"").Append(WebUtility.HtmlEncode(status))
-                    .Append("\">").Append(WebUtility.HtmlEncode(status)).Append("</td>");
-            }
-
-            rows.Append("<td>").Append(WebUtility.HtmlEncode(task.Description)).Append("</td></tr>");
-        }
-
-        return LandingTemplate
+        string indexPath = Path.GetFullPath(Path.Combine(_logsRoot, "index.html"));
+        return PointerNoteTemplate
             .Replace("__STYLE__", LogSiteRenderer.SharedStyle)
-            .Replace("__STATUS_TH__", withStatus ? "<th>Status</th>" : string.Empty)
-            .Replace("__ROWS__", rows.ToString());
+            .Replace("__INDEX_PATH__", WebUtility.HtmlEncode(indexPath));
     }
 
     private static string TaskPageHtml(string taskId) =>
@@ -715,7 +702,7 @@ public sealed class LogServer : IAsyncDisposable
 
     // --- templates (placeholders filled per request) ----------------------------------------
 
-    private const string LandingTemplate = """
+    private const string PointerNoteTemplate = """
 <!doctype html>
 <html lang="en">
 <head>
@@ -728,13 +715,11 @@ __STYLE__
 </head>
 <body>
 <h1>Guardrails run — task logs</h1>
-<p>Attempt logs for each task, bound to localhost. Click a task to tail its log.</p>
-<table>
-<thead><tr><th>Task</th>__STATUS_TH__<th>Description</th></tr></thead>
-<tbody>
-__ROWS__
-</tbody>
-</table>
+<p>This run's <strong>all-tasks page</strong> is the static index file — open it in your browser:</p>
+<pre>__INDEX_PATH__</pre>
+<p>This live server only <strong>tails active tasks</strong>. Reach a running task by clicking it on
+the static index above; this page cannot link to the file directly (a browser blocks
+<code>http://</code> &rarr; <code>file://</code>).</p>
 </body>
 </html>
 """;
@@ -752,8 +737,7 @@ __STYLE__
 </head>
 <body>
 <h1>__TASK_HTML__</h1>
-<div class="bar"><a href="/">&larr; all tasks</a>
-  &middot; attempt <select id="attempt"></select>
+<div class="bar">attempt <select id="attempt"></select>
   &middot; file <select id="file"></select>
   &middot; <span id="tick">live</span></div>
 <pre id="log">waiting for log output…</pre>

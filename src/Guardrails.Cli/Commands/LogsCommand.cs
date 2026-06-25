@@ -2,17 +2,18 @@ using System.CommandLine;
 using System.Diagnostics;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Journal;
-using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails logs [folder] [--port n] [--task id] [--no-open]</c> — serve the same web log
-/// viewer as a live <c>run</c>, but against the PERSISTED on-disk logs, decoupled from any active
-/// run. The post-mortem companion to the run-time server (issue #23): review an overnight run, or
-/// evaluate whether a passing task's guardrails were strong enough — from the same attempt logs.
-/// Reads per-task status from the run journal so the landing page shows pass/needs-human/fail.
-/// Bound to localhost; runs until Ctrl-C. Defaults to the current directory when omitted.
+/// <c>guardrails logs [folder] [--port n] [--task id] [--no-open]</c> — review a plan's PERSISTED
+/// on-disk logs, decoupled from any active run. The post-mortem companion to the run-time viewer
+/// (issue #23): review an overnight run, or evaluate whether a passing task's guardrails were strong
+/// enough — from the same attempt logs. The canonical "all tasks" entry point is the static index FILE
+/// (<c>logs/&lt;runId&gt;/index.html</c>), regenerated from the journal here and advertised by its
+/// <c>file://</c> path (issue #143); a live tailing server is also started so a running task's live
+/// page works (a completed run simply leaves it unused). Bound to localhost; runs until Ctrl-C.
+/// Defaults to the current directory when omitted.
 /// </summary>
 public static class LogsCommand
 {
@@ -96,10 +97,15 @@ public static class LogsCommand
             return ExitCodes.Success;
         }
 
-        Func<string, string?> statusForTask = StatusResolver(document);
+        // The canonical "all tasks" page is the static index FILE (issue #143) — durable and
+        // server-independent. (Re)generate the static site for this run so the entry point reflects
+        // the journal as it stands now, then advertise its file:// path. The live server below is the
+        // active-task tailing backend the static index links a running task to.
+        string siteRoot = Path.Combine(probe.Plan.PlanDirectory, "logs", document.RunId);
+        string staticIndexPath = Path.GetFullPath(LogSiteRenderer.ExportSite(siteRoot, probe.Plan.Tasks, document));
 
         LogServer? server = LogServer.TryStart(
-            probe.Plan.PlanDirectory, document.RunId, probe.Plan.Tasks, port, output, statusForTask);
+            probe.Plan.PlanDirectory, document.RunId, probe.Plan.Tasks, port, output);
         if (server is null)
         {
             return ExitCodes.HarnessError; // TryStart already explained why
@@ -107,24 +113,29 @@ public static class LogsCommand
 
         await using (server.ConfigureAwait(false))
         {
-            string openUrl = server.BaseUrl;
+            // --task is a convenience that opens straight to a running task's live tailing page; with
+            // no --task the entry point is the canonical static index file (the all-tasks page).
+            string? openTaskUrl = null;
             if (!string.IsNullOrWhiteSpace(task))
             {
                 if (server.UrlForTask(task) is { } taskUrl)
                 {
-                    openUrl = taskUrl;
+                    openTaskUrl = taskUrl;
                 }
                 else
                 {
-                    output.WriteLine($"Unknown task '{task}' — opening the task list instead.");
+                    output.WriteLine($"Unknown task '{task}' — opening the static all-tasks index instead.");
                 }
             }
 
-            output.WriteLine($"Serving logs at {server.BaseUrl} — press Ctrl-C to stop.");
+            bool linkable = !Console.IsOutputRedirected && Spectre.Console.AnsiConsole.Profile.Capabilities.Links;
+            output.WriteLine($"All tasks (static log site): {RunCommand.Hyperlink(staticIndexPath, linkable)}");
+            output.WriteLine($"Live tailing server (active tasks): {server.BaseUrl} — press Ctrl-C to stop.");
 
             if (!noOpen)
             {
-                OpenBrowser(openUrl);
+                // Open the running task's live page when one was named; otherwise the static index file.
+                OpenBrowser(openTaskUrl ?? new Uri(staticIndexPath).AbsoluteUri);
             }
 
             try
@@ -153,26 +164,4 @@ public static class LogsCommand
             // Headless / no registered browser — the URL was printed, so the user can open it.
         }
     }
-
-    /// <summary>
-    /// Build the per-task status resolver the landing page uses: a task present in the journal
-    /// maps to its <see cref="StatusText"/> word; an id absent from the journal is "unknown".
-    /// Extracted (and exposed) so the real journal→status-word mapping is testable without a
-    /// stand-in lambda. The Cli assembly ships no InternalsVisibleTo, so this is public rather
-    /// than internal; behavior is unchanged — <see cref="RunAsync"/> uses exactly this resolver.
-    /// </summary>
-    public static Func<string, string?> StatusResolver(JournalDocument document) =>
-        id => document.Tasks.TryGetValue(id, out TaskJournalEntry? entry) ? StatusText(entry.Status) : "unknown";
-
-    /// <summary>Map a journal <see cref="JournalTaskStatus"/> to the SSOT status word shown in the UI.</summary>
-    public static string StatusText(JournalTaskStatus status) => status switch
-    {
-        JournalTaskStatus.Pending => "pending",
-        JournalTaskStatus.Running => "running",
-        JournalTaskStatus.Succeeded => "succeeded",
-        JournalTaskStatus.NeedsHuman => "needs-human",
-        JournalTaskStatus.Blocked => "blocked",
-        JournalTaskStatus.Failed => "failed",
-        _ => status.ToString()
-    };
 }

@@ -7,27 +7,37 @@ namespace Guardrails.Integration.Tests;
 
 /// <summary>
 /// Exercises the loopback <see cref="LogServer"/> end-to-end over a temp plan folder with
-/// hand-written attempt logs: the landing page lists tasks, the per-task <c>/files</c> and
-/// <c>/file</c> endpoints surface the latest attempt's log files, unknown tasks 404, and the
-/// file endpoint refuses to escape the attempt directory. The server binds to localhost only.
+/// hand-written attempt logs. The canonical "all tasks" page is the static index FILE (issue #143),
+/// so the live <c>/</c> route is a pointer note at that file's path (NOT a task table) and the
+/// per-task page is an active-task deadend (no "all tasks" link). The per-task <c>/files</c> and
+/// <c>/file</c> endpoints surface the latest attempt's log files, unknown tasks 404, and the file
+/// endpoint refuses to escape the attempt directory. The server binds to localhost only.
 /// </summary>
 public sealed class LogServerTests
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     [Fact]
-    public async Task Landing_ListsEveryTask_WithLinks()
+    public async Task Root_IsPointerNote_ToStaticIndexFile_NotATaskTable()
     {
+        // Issue #143: the http server no longer serves its own all-tasks landing. GET / is a small note
+        // pointing at the canonical static index FILE by path (a browser blocks http→file, so it is
+        // shown as text), and it does NOT render the dynamic task table / per-task /tasks/{id} links.
         using var temp = new TempPlan();
         IReadOnlyList<TaskNode> tasks = [Task("01-alpha", "First task"), Task("02-beta", "Second task")];
         await using LogServer server = Start(temp.Dir, tasks);
 
         string html = await GetStringAsync(server.BaseUrl);
 
-        Assert.Contains("01-alpha", html);
-        Assert.Contains("02-beta", html);
-        Assert.Contains("/tasks/01-alpha", html);
-        Assert.Contains("Second task", html);
+        // It names the static index file's path under this run's logs/<runId>/ tree.
+        string indexPath = Path.GetFullPath(Path.Combine(temp.Dir, "logs", TempPlan.RunId, "index.html"));
+        Assert.Contains(indexPath, html);
+        Assert.Contains("static index", html);
+
+        // The retired landing's task table / per-task links are gone.
+        Assert.DoesNotContain("/tasks/01-alpha", html);
+        Assert.DoesNotContain("<th>Description</th>", html);
+        Assert.DoesNotContain("<th>Status</th>", html);
     }
 
     [Fact]
@@ -241,32 +251,19 @@ public sealed class LogServerTests
     }
 
     [Fact]
-    public async Task Landing_WithStatusProvider_RendersColouredStatusColumn()
+    public async Task TaskPage_IsActiveDeadend_HasNoAllTasksLink()
     {
+        // Issue #143: the live per-task tailing page is an active-task DEADEND — reached by clicking a
+        // running task on the static index, left via the browser Back button. It carries no "all tasks"
+        // navigation back to the (now retired) http landing.
         using var temp = new TempPlan();
-        IReadOnlyList<TaskNode> tasks = [Task("01-alpha", "First"), Task("02-beta", "Second")];
-        LogServer? server = LogServer.TryStart(temp.Dir, TempPlan.RunId, tasks, port: 0, TextWriter.Null,
-            statusForTask: id => id == "01-alpha" ? "succeeded" : "needs-human");
-        Assert.NotNull(server);
-
-        await using (server)
-        {
-            string html = await GetStringAsync(server!.BaseUrl);
-            Assert.Contains("<th>Status</th>", html);
-            Assert.Contains("data-status=\"succeeded\"", html);
-            Assert.Contains("data-status=\"needs-human\"", html);
-        }
-    }
-
-    [Fact]
-    public async Task Landing_WithoutStatusProvider_HasNoStatusColumn()
-    {
-        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "x");
         await using LogServer server = Start(temp.Dir, [Task("01-alpha", "First")]);
 
-        string html = await GetStringAsync(server.BaseUrl);
+        string html = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha");
 
-        Assert.DoesNotContain("<th>Status</th>", html);
+        Assert.DoesNotContain("all tasks", html);     // no "← all tasks" link text
+        Assert.DoesNotContain("href=\"/\"", html);    // and no link back to the root landing
     }
 
     [Fact]
