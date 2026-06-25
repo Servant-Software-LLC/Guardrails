@@ -20,5 +20,15 @@ public enum MergeOnSuccessResult
     /// refused to run git over uncommitted user work and halted to needs-human (plan 08 §5.3 / F4).
     /// The user's branch was not modified.
     /// </summary>
-    DirtyWorkingTree
+    DirtyWorkingTree,
+
+    /// <summary>
+    /// The user-facing merge commit was REJECTED by one of the user's git hooks (e.g. GitGuardian's
+    /// <c>pre-commit</c> found a secret, or — as in issues #149/#150 — the hook ran offline and
+    /// failed). The harness ran <c>git merge --abort</c> so the user's branch is left CLEAN at its
+    /// original HEAD, and the verified plan branch is left intact for a manual merge. This is a
+    /// graceful halt, NOT a failure of the work: every task passed and is durable on the plan branch.
+    /// The hook's stderr is surfaced to the user via <see cref="RunReport.MergeOnSuccessDetail"/>.
+    /// </summary>
+    HookRejected
 }

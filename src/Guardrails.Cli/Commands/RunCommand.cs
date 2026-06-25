@@ -242,12 +242,102 @@ public static class RunCommand
         // The "all tasks" static page link at run END (alongside the post-mortem logs pointer).
         PrintStaticIndexLink(logsRoot, io);
 
+        // Issue #150 — honest halt for an infrastructure fault. The scheduler returned an ABORTED
+        // report instead of throwing; render a one-line diagnostic + remedy as the headline, write
+        // the FULL exception to the run logs (a dev tool keeps the detail, just not as the headline),
+        // and exit non-zero — never a raw unhandled stack trace as the headline.
+        if (report.Abort is { } abort)
+        {
+            WriteAbortDetailToLogs(logsRoot, abort);
+            io.Out.WriteLine();
+            io.Out.WriteLine($"RUN ABORTED: {abort.Headline}");
+            io.Out.WriteLine($"  {abort.Remedy}");
+            io.Out.WriteLine($"  Full fault detail written to {Path.GetFullPath(Path.Combine(logsRoot, "abort.log"))}");
+            return ExitCodes.HarnessError;
+        }
+
         if (report.Cancelled)
         {
             return ExitCodes.Cancelled;
         }
 
+        // Issue #150 — a wholly-green run whose end-of-run delivery to the user's branch was HALTED
+        // (a git hook rejected the user-facing merge, a conflict, or a dirty user tree) is NOT a
+        // clean success: the work is durable on the plan branch, but the user must act. Render the
+        // actionable message and exit non-zero. A FastForwarded/Merged delivery, or no mergeOnSuccess
+        // at all (null), leaves the success verdict untouched.
+        if (report.AllSucceeded
+            && report.MergeOnSuccessOutcome is { } mergeOutcome
+            && mergeOutcome is not (MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged))
+        {
+            PrintMergeOnSuccessHalt(report, plan, mergeOutcome, io);
+            return ExitCodes.TaskFailed;
+        }
+
         return report.AllSucceeded ? ExitCodes.Success : ExitCodes.TaskFailed;
+    }
+
+    /// <summary>
+    /// Render the actionable end-of-run delivery halt (issue #150). The plan branch carries all the
+    /// (verified) work; only the optional merge back into the user's branch was refused. For a hook
+    /// rejection the user's own hook stderr (<see cref="RunReport.MergeOnSuccessDetail"/>) is shown
+    /// verbatim so they see exactly why and can resolve it or disable the hook for the merge.
+    /// </summary>
+    private static void PrintMergeOnSuccessHalt(
+        RunReport report, Core.Model.PlanDefinition plan, MergeOnSuccessResult outcome, IConsoleIo io)
+    {
+        TextWriter output = io.Out;
+        string planBranch = $"guardrails/{Path.GetFileName(plan.PlanDirectory)}";
+
+        output.WriteLine();
+        switch (outcome)
+        {
+            case MergeOnSuccessResult.HookRejected:
+                output.WriteLine(
+                    $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                    "branch was rejected by your git hook:");
+                if (!string.IsNullOrWhiteSpace(report.MergeOnSuccessDetail))
+                {
+                    output.WriteLine($"  {report.MergeOnSuccessDetail}");
+                }
+                output.WriteLine(
+                    "  Resolve and merge manually, or disable the hook for the merge. Your branch is " +
+                    "unchanged (the merge was aborted).");
+                break;
+
+            case MergeOnSuccessResult.Conflict:
+                output.WriteLine(
+                    $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                    "branch CONFLICTED with a change made on your branch during the run; AI-merge is " +
+                    "withheld here (SSOT §5.3). Your branch is unchanged — merge `" + planBranch +
+                    "` manually.");
+                break;
+
+            case MergeOnSuccessResult.DirtyWorkingTree:
+                output.WriteLine(
+                    $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                    "branch was refused because your working tree has uncommitted changes. Commit or " +
+                    "stash them, then merge `" + planBranch + "` manually.");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Write an aborted run's FULL fault detail (issue #150) to <c>logs/&lt;runId&gt;/abort.log</c> so
+    /// the console headline stays a one-liner while the dev keeps the whole exception. Best-effort —
+    /// a logs-tree write hiccup must never change the run's exit code or mask the abort.
+    /// </summary>
+    private static void WriteAbortDetailToLogs(string logsRoot, Core.Execution.RunAbort abort)
+    {
+        try
+        {
+            Directory.CreateDirectory(logsRoot);
+            File.WriteAllText(
+                Path.Combine(logsRoot, "abort.log"),
+                $"{abort.Headline}\n\n{abort.Remedy}\n\n--- full fault detail ---\n{abort.Detail}\n");
+        }
+        catch (IOException) { /* best-effort */ }
+        catch (UnauthorizedAccessException) { /* best-effort */ }
     }
 
     /// <summary>

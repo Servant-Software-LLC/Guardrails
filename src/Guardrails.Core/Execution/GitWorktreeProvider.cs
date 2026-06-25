@@ -135,9 +135,13 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
         // Stage and commit all changes in the segment (--allow-empty for tasks that only write
         // to GUARDRAILS_STATE_OUT with no file changes in the working tree).
+        // --no-verify (issue #149): this is an INTERNAL plumbing commit in a throwaway segment
+        // worktree — machine bookkeeping, never the user's deliverable. A global user git hook
+        // (e.g. GitGuardian's pre-commit, which fired offline and crashed the run in the incident)
+        // must NOT gate it. User hooks run only on the user-facing merge (MergePlanBranchIntoUserBranch).
         GitIn(segment.WorktreePath, "add", "-A");
         string commitMsg = $"Guardrails-Task: {taskId}\nGuardrails-Run: {integ.RunId}";
-        GitIn(segment.WorktreePath, "commit", "--allow-empty", "-m", commitMsg);
+        GitIn(segment.WorktreePath, "commit", "--no-verify", "--allow-empty", "-m", commitMsg);
 
         // C2: capture the segment's commit sha so a downstream fan-out ForkFromTip forks off the
         // producer's recorded sha (W-2), never a live rev-parse of an inheritor-advanced branch.
@@ -179,7 +183,10 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     public string CommitStagedMerge(IntegrationHandle integ, string taskId, CancellationToken ct)
     {
         string commitMsg = $"Guardrails-Task: {taskId}\nGuardrails-Run: {integ.RunId}";
-        GitIn(integ.IntegrationWorktreePath, "commit", "-m", commitMsg);
+        // --no-verify (issue #149): the union merge commit in the harness-owned integration worktree
+        // is an INTERNAL plumbing commit (machine bookkeeping on the plan branch), not the user's
+        // deliverable — user git hooks must NOT gate it. They run only on the user-facing merge.
+        GitIn(integ.IntegrationWorktreePath, "commit", "--no-verify", "-m", commitMsg);
         _preMergeIntegHead = "";
         return GitIn(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
     }
@@ -214,8 +221,15 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <inheritdoc />
+    public string? LastMergeOnSuccessDetail { get; private set; }
+
+    /// <inheritdoc />
     public MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct)
     {
+        // Reset any rejection detail captured by a prior call (this provider is run-scoped, but a
+        // resumed run could call the merge more than once over its lifetime).
+        LastMergeOnSuccessDetail = null;
+
         // F4: never run git over uncommitted user work. A dirty working tree refuses the merge —
         // even an ff-only merge that adds only new files (no textual conflict with the dirty paths)
         // would silently interleave the user's WIP with the plan's output. Halt to needs-human.
@@ -225,6 +239,9 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         }
 
         // Try fast-forward first — the common case when the user's branch didn't advance.
+        // CAVEAT (issue #149, intended): a fast-forward creates NO commit, so no commit hook fires
+        // here — identical to a manual `git merge --ff-only`. The user's hooks (GitGuardian/lint)
+        // therefore run only on the non-FF MERGE COMMIT below, never on the FF path.
         try
         {
             Git("merge", "--ff-only", integ.PlanBranchName);
@@ -247,8 +264,22 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             return MergeOnSuccessResult.Conflict;
         }
 
-        // No conflict: commit the merge.
-        Git("commit", "--no-edit");
+        // No conflict: commit the merge. This is the USER-FACING commit on the user's REAL branch,
+        // so it KEEPS the user's git hooks (issue #149 — the product owner's explicit decision):
+        // GitGuardian/lint SHOULD run here exactly like a manual `git merge`. A non-throwing call
+        // captures the hook's exit code AND stderr (the existing TryGitIn discards stderr).
+        var (_, stderr, exit) = TryGitInWithStderr(_repoPath, "commit", "--no-edit");
+        if (exit != 0)
+        {
+            // The user's hook rejected the merge commit (e.g. GitGuardian found a secret, or ran
+            // offline and failed — issues #149/#150). Abort the staged merge (best-effort) so the
+            // user's branch is left CLEAN at its original HEAD; leave the plan branch intact. This
+            // is a graceful halt: the work all passed and is durable on the plan branch.
+            try { Git("merge", "--abort"); } catch (InvalidOperationException) { /* already clean */ }
+            LastMergeOnSuccessDetail = stderr.Trim();
+            return MergeOnSuccessResult.HookRejected;
+        }
+
         return MergeOnSuccessResult.Merged;
     }
 
@@ -509,6 +540,17 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
     private static (string stdout, int exitCode) TryGitIn(string workingDir, params string[] args)
     {
+        var (stdout, _, exitCode) = TryGitInWithStderr(workingDir, args);
+        return (stdout, exitCode);
+    }
+
+    /// <summary>
+    /// Like <see cref="TryGitIn"/> but RETURNS the captured stderr (issue #150): a non-throwing git
+    /// call surfacing both the exit code and stderr so a hook rejection's message can be shown to the
+    /// user. The plain <see cref="TryGitIn"/> reads and discards stderr; this variant returns it.
+    /// </summary>
+    private static (string stdout, string stderr, int exitCode) TryGitInWithStderr(string workingDir, params string[] args)
+    {
         var psi = new ProcessStartInfo("git")
         {
             WorkingDirectory = workingDir,
@@ -519,8 +561,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         foreach (var arg in args) psi.ArgumentList.Add(arg);
         using var proc = Process.Start(psi)!;
         string stdout = proc.StandardOutput.ReadToEnd();
-        proc.StandardError.ReadToEnd();
+        string stderr = proc.StandardError.ReadToEnd();
         proc.WaitForExit();
-        return (stdout, proc.ExitCode);
+        return (stdout, stderr, proc.ExitCode);
     }
 }
