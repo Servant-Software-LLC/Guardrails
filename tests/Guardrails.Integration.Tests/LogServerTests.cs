@@ -368,6 +368,25 @@ public sealed class LogServerTests
         Assert.Contains("<h2>Source</h2>", html);         // the Source section header
     }
 
+    [Fact]
+    public async Task TaskPage_Js_SourceViewPausesTailing_WithResumeControl_Issue147()
+    {
+        // #147: clicking a Source link must not get overwritten by the 1s tail tick. JS isn't executed
+        // in tests, so assert the page carries the hooks: a viewingSource pause flag, refreshLog gated on
+        // it (so it can't re-derive `current` and clobber the source view), and a "back to live log"
+        // resume control + handler.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "x");
+        await using LogServer server = Start(temp.Dir, [TaskWithRealSources(temp, "01-alpha")]);
+
+        string html = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha");
+
+        Assert.Contains("let viewingSource", html);           // the pause flag
+        Assert.Contains("if (viewingSource) return;", html);  // refreshLog gated on it (no clobber)
+        Assert.Contains("id=\"resume\"", html);               // the "back to live log" control
+        Assert.Contains("backToLiveLog", html);               // and the resume handler
+    }
+
     // --- #141 item 3: source routes ----------------------------------------------------------
 
     [Fact]

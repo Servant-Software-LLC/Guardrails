@@ -739,7 +739,8 @@ __STYLE__
 <h1>__TASK_HTML__</h1>
 <div class="bar">attempt <select id="attempt"></select>
   &middot; file <select id="file"></select>
-  &middot; <span id="tick">live</span></div>
+  &middot; <span id="tick">live</span>
+  &middot; <a id="resume" href="#" hidden>&#8617; back to live log</a></div>
 <pre id="log">waiting for log output…</pre>
 <h2>Source</h2>
 <div class="bar" id="source">loading source…</div>
@@ -749,6 +750,7 @@ let current = null;          // selected file name
 let attempt = null;          // selected attempt number (null = follow latest)
 let pinned = false;          // true once the user explicitly picks an attempt — stop auto-following latest
 let sourceLoaded = false;    // the Source list is static per task — load it once
+let viewingSource = false;   // true while a Source file is shown in the log <pre> — pause tailing (#147)
 
 function attemptQuery() { return attempt === null ? '' : `?attempt=${encodeURIComponent(attempt)}`; }
 
@@ -806,6 +808,9 @@ async function refreshFiles() {
 }
 
 async function refreshLog() {
+  // While a Source file is shown in the <pre>, do NOT tail a log over it (#147): refreshLog re-derives
+  // `current` from the file <select>, which would otherwise undo viewSource's pause within one tick.
+  if (viewingSource) return;
   const sel = document.getElementById('file');
   current = sel.value || current;
   if (!current) return;
@@ -853,20 +858,37 @@ async function viewSource(name, label) {
     if (!r.ok) { pre.textContent = 'could not load source: ' + label; return; }
     const t = await r.text();
     pre.textContent = '── source: ' + label + ' ──\n\n' + (t.length ? t : '(empty)');
-    // Stop tailing a log over the source view: clear the file selection until the user re-picks one.
+    // Pause tailing so the 1s refreshLog tick can't overwrite the source view (#147). Cleared by the
+    // "back to live log" control or by picking a file/attempt.
+    viewingSource = true;
     current = null;
+    document.getElementById('resume').hidden = false;
     document.getElementById('tick').textContent = 'viewing source: ' + label;
   } catch (e) { /* transient */ }
 }
 
+// Resume live tailing from a Source view (#147): clear the pause, hide the control, fetch the log now.
+function backToLiveLog() {
+  viewingSource = false;
+  document.getElementById('resume').hidden = true;
+  refreshLog();
+}
+
+document.getElementById('resume').addEventListener('click', (ev) => { ev.preventDefault(); backToLiveLog(); });
+
 document.getElementById('file').addEventListener('change', () => {
+  // Picking a file resumes live tailing of it, ending any Source view (#147).
+  viewingSource = false;
+  document.getElementById('resume').hidden = true;
   current = document.getElementById('file').value;
   refreshLog();
 });
 
 document.getElementById('attempt').addEventListener('change', () => {
   // Pin to the user's chosen attempt and reset the file list, since a different attempt has its
-  // own files (and may prefer a different default file).
+  // own files (and may prefer a different default file). Also ends any Source view (#147).
+  viewingSource = false;
+  document.getElementById('resume').hidden = true;
   attempt = Number(document.getElementById('attempt').value);
   pinned = true;
   current = null;
