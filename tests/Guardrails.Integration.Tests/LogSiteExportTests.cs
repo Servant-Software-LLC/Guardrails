@@ -197,6 +197,115 @@ public sealed class LogSiteExportTests
         }
     }
 
+    [Fact]
+    public void TaskPage_RendersInlineFileCombobox_TogglesContent_OfflineNoFetch()
+    {
+        // #145 Feature 2: the static task page replaces the `·`-separated file LINK row with a per-attempt
+        // file <select> that toggles INLINED content (a file:// page can't fetch siblings). Assert the
+        // combobox, the inlined hidden bodies, the empty-marked option for a zero-byte file, the toggle
+        // script, and that the Source section + back-link survive.
+        string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            string attemptDir = Path.Combine(logsRoot, "01-task", "attempt-1");
+            Directory.CreateDirectory(attemptDir);
+            // The preferred file (transcript.md) has content; a second file has content; a third is 0 bytes.
+            File.WriteAllText(Path.Combine(attemptDir, "transcript.md"), "PREFERRED transcript body");
+            File.WriteAllText(Path.Combine(attemptDir, "action-stdout.log"), "stdout body");
+            File.WriteAllText(Path.Combine(attemptDir, "action-stderr.log"), string.Empty); // zero-byte
+
+            var tasks = new[] { FakeTask("01-task", "Has files") };
+            var journal = new JournalDocument
+            {
+                RunId = "run-combobox",
+                PlanHash = "sha256:deadbeef",
+                Tasks = new Dictionary<string, TaskJournalEntry>
+                {
+                    ["01-task"] = new() { Status = Core.Journal.TaskStatus.Succeeded },
+                },
+            };
+
+            LogSiteRenderer.ExportSite(logsRoot, tasks, journal);
+
+            string page = File.ReadAllText(Path.Combine(logsRoot, "01-task", "index.html"));
+
+            // A file <select> combobox scoped to attempt 1, with an option per file.
+            Assert.Contains("<select class=\"fileselect\" data-attempt=\"1\">", page);
+            Assert.Contains("data-file=\"transcript.md\"", page);
+            Assert.Contains("data-file=\"action-stdout.log\"", page);
+            Assert.Contains("data-file=\"action-stderr.log\"", page);
+
+            // The preferred file (transcript.md) is the selected option AND its body is the visible one.
+            Assert.Contains("data-file=\"transcript.md\" selected", page);
+            Assert.Contains("PREFERRED transcript body", page);
+
+            // Every file's content is inlined as a hidden <pre class="filebody"> (siblings hidden, no fetch).
+            Assert.Contains("<pre class=\"filebody\" hidden data-attempt=\"1\" data-file=\"action-stdout.log\">", page);
+            Assert.Contains("stdout body", page);
+
+            // The zero-byte file's option is empty-marked + "(empty)" and its body says "no output captured".
+            Assert.Contains("<option class=\"empty\" data-attempt=\"1\" data-file=\"action-stderr.log\">action-stderr.log (empty)</option>", page);
+            Assert.Contains("data-file=\"action-stderr.log\">no output captured</pre>", page);
+
+            // The toggle script is present and is pure DOM (no fetch — offline file:// page).
+            Assert.Contains("select.fileselect", page);
+            Assert.Contains("addEventListener('change'", page);
+            Assert.DoesNotContain("fetch(", page);
+
+            // The OLD link row is gone — files are no longer relative <a href="attempt-1/...">.
+            Assert.DoesNotContain("href=\"attempt-1/", page);
+
+            // The Source section and the back-link are untouched.
+            Assert.Contains("<h2>Source</h2>", page);
+            Assert.Contains("<a href=\"../index.html\">&larr; all tasks</a>", page);
+        }
+        finally
+        {
+            try { Directory.Delete(logsRoot, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void WriteInitialIndex_Static_WritesAllPendingIndex_SoTheStartLinkIsNotDangling()
+    {
+        // #145 Bug 1: the live path must write the initial index (and print its link) BEFORE the Spectre
+        // Live region starts. The static OnTheFlyLogSiteObserver.WriteInitialIndex makes that possible —
+        // assert it writes an all-pending index.html so the link printed at run start is not dangling.
+        string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            var tasks = new[]
+            {
+                FakeTask("01-a", "First task"),
+                FakeTask("02-b", "Second task"),
+            };
+
+            OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, "run-initial", tasks, liveUrlForTask: null);
+
+            string indexPath = Path.Combine(logsRoot, "index.html");
+            Assert.True(File.Exists(indexPath), "the static WriteInitialIndex must write index.html so the start link is not dangling");
+
+            string index = File.ReadAllText(indexPath);
+            // Every task is listed, all PENDING, and as plain text (no per-task page link yet). Assert the
+            // STATUS CELL form (the CSS shell legitimately mentions every data-status value in its rules).
+            Assert.Contains("01-a", index);
+            Assert.Contains("02-b", index);
+            Assert.Contains("<td class=\"status\" data-status=\"pending\">pending</td>", index);
+            Assert.DoesNotContain("data-status=\"running\">running</td>", index);
+            Assert.DoesNotContain("data-status=\"succeeded\">succeeded</td>", index);
+            Assert.DoesNotContain("href=\"01-a/index.html\"", index); // no task is a link yet (all plain text)
+            Assert.DoesNotContain("href=\"02-b/index.html\"", index);
+            // During-run index carries the meta-refresh so a file:// view re-reads it as it is rewritten.
+            Assert.Contains("http-equiv=\"refresh\"", index);
+        }
+        finally
+        {
+            try { Directory.Delete(logsRoot, recursive: true); } catch (IOException) { }
+        }
+    }
+
     private static Core.Model.TaskNode FakeTask(string id, string description) => new()
     {
         Id = id,
