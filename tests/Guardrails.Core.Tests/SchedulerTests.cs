@@ -223,14 +223,15 @@ public sealed class SchedulerTests
     }
 
     [Fact]
-    public async Task UnexpectedExecutorThrow_TerminatesTheRun_AndSurfacesTheFault()
+    public async Task UnexpectedExecutorThrow_TerminatesTheRun_AndReturnsAnAbortedReport()
     {
         // Regression for the worker loop catching ONLY OperationCanceledException: a task whose
         // executor throws any OTHER exception used to escape the worker, leaving Remaining never
         // decremented and the channel never completed, so sibling workers blocked forever and the
-        // whole run HUNG. The fix records the fault, drains siblings, and surfaces it as a harness
-        // error (SSOT §7: a non-zero, non-actionable exit). A bounded timeout makes a regression
-        // fail as a timeout, not a suite hang.
+        // whole run HUNG. The fix records the fault, drains siblings, and (issue #150) surfaces it as
+        // an ABORTED RunReport — an honest halt the CLI renders + exits non-zero, NOT an unhandled
+        // re-throw that escaped to the CLI as a raw stack-trace headline. A bounded timeout makes a
+        // regression fail as a timeout, not a suite hang.
         PlanDefinition plan = Plan(
             Task("01-boom"),
             Task("02-dependent", "01-boom"),
@@ -250,9 +251,15 @@ public sealed class SchedulerTests
         Assert.False(deadline.IsCancellationRequested, "the run hung — the scheduler did not terminate after an unexpected executor throw");
         Assert.Same(run, finished);
 
-        // The fault is surfaced (non-zero/harness-error semantics), not swallowed.
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => run);
-        Assert.Same(boom, ex.InnerException);
+        // The fault is surfaced as an aborted report (honest halt), NOT thrown unhandled.
+        RunReport report = await run;
+        Assert.True(report.Aborted, "an unexpected executor throw must produce an aborted report (issue #150)");
+        Assert.NotNull(report.Abort);
+        // The full fault text is preserved for the logs (a dev tool keeps the detail).
+        Assert.Contains("no interpreter registered for '.qux'", report.Abort!.Detail);
+        // A headline + remedy exist for the console one-liner.
+        Assert.False(string.IsNullOrWhiteSpace(report.Abort.Headline));
+        Assert.False(string.IsNullOrWhiteSpace(report.Abort.Remedy));
     }
 
     [Fact]

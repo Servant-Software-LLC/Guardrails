@@ -191,11 +191,26 @@ public sealed class Scheduler
 
         await Task.WhenAll(workers).ConfigureAwait(false);
 
+        // Issue #150 — honest halt instead of an unhandled crash. An unexpected infrastructure fault
+        // (a task executor or integration step threw — e.g. an offline GitGuardian pre-commit hook
+        // failing an INTERNAL commit, or git being unavailable) used to RE-THROW here, escaping
+        // unhandled to the CLI as a raw stack-trace headline. Instead, build an ABORTED report that
+        // carries the fault reason, still run the end-of-run cleanup sweep below, and let the CLI
+        // render a one-line diagnostic + remedy (full detail to the logs) and exit non-zero.
         if (_fault is { } fault)
         {
-            throw new InvalidOperationException(
-                $"A task executor threw an unexpected exception; the run was aborted: {fault.Message}",
-                fault);
+            var abortReport = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                with { Abort = BuildAbort(fault) };
+
+            // Clean up this run's still-live worktrees exactly as the success path does, so an aborted
+            // run does not orphan more than the next run's prune pre-pass already reclaims (the
+            // intentional "fix, don't restart" retention of non-green segments still holds).
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                EndOfRunSweep(context, integ);
+            }
+
+            return abortReport;
         }
 
         RunReport report = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested);
@@ -228,9 +243,16 @@ public sealed class Scheduler
         // and mergeOnSuccess is enabled. AI-merge is withheld: a conflict halts to needs-human
         // with the plan branch intact (SSOT §5.3).
         MergeOnSuccessResult? mergeOutcome = null;
+        string? mergeDetail = null;
         if (report.AllSucceeded && plan.Config.MergeOnSuccess && _worktreeProvider != null && integ != null)
         {
             mergeOutcome = _worktreeProvider.MergePlanBranchIntoUserBranch(integ, cancellationToken);
+            // Issue #150: when the user's git hook rejected the user-facing merge, surface the hook's
+            // stderr so the CLI can show the actual reason (and a remedy) instead of a bare outcome.
+            if (mergeOutcome == MergeOnSuccessResult.HookRejected)
+            {
+                mergeDetail = _worktreeProvider.LastMergeOnSuccessDetail;
+            }
         }
 
         // --- M2 end-of-run cleanup sweep (closes #126) -----------------------------------
@@ -247,8 +269,22 @@ public sealed class Scheduler
             EndOfRunSweep(context, integ);
         }
 
-        return report with { MergeOnSuccessOutcome = mergeOutcome };
+        return report with { MergeOnSuccessOutcome = mergeOutcome, MergeOnSuccessDetail = mergeDetail };
     }
+
+    /// <summary>
+    /// Build the <see cref="RunAbort"/> for an infrastructure fault (issue #150): a one-line headline
+    /// + remedy for the console, and the full exception text for the run logs. A dev tool keeps the
+    /// detail — just not as the headline.
+    /// </summary>
+    private static RunAbort BuildAbort(Exception fault) => new()
+    {
+        Headline = $"The run was aborted by an unexpected infrastructure fault: {fault.Message}",
+        Remedy = "See the full exception in the run logs below. This is a harness/environment fault "
+               + "(e.g. an offline or failing git hook on an internal commit, or git unavailable), "
+               + "not a task failure — resolve it and re-run to resume.",
+        Detail = fault.ToString()
+    };
 
     /// <summary>
     /// plan 08 topology-wiring M2 §D (#126): remove every segment/fork worktree directory owned by a

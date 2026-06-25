@@ -78,4 +78,44 @@ public sealed record RunReport
     /// Implemented by task 22.
     /// </summary>
     public MergeOnSuccessResult? MergeOnSuccessOutcome { get; init; }
+
+    /// <summary>
+    /// Free-text detail for the merge-on-success outcome when it carries one — specifically the git
+    /// hook's stderr when <see cref="MergeOnSuccessOutcome"/> is
+    /// <see cref="MergeOnSuccessResult.HookRejected"/> (issues #149/#150). Null otherwise. The CLI
+    /// renders this verbatim so the user sees exactly why their hook rejected the user-branch merge.
+    /// </summary>
+    public string? MergeOnSuccessDetail { get; init; }
+
+    /// <summary>
+    /// Non-null when the run was ABORTED by an unexpected infrastructure fault (a task executor or an
+    /// integration step threw — e.g. an offline git hook failing an INTERNAL commit, or git itself
+    /// being unavailable). Rather than propagating an unhandled exception out of the scheduler
+    /// (issue #150), the run terminates the worker pool, runs the end-of-run cleanup sweep, and
+    /// returns a report carrying this reason. The CLI renders a one-line diagnostic + remedy, writes
+    /// the FULL exception to the run logs, and exits non-zero — an honest halt, never a raw stack
+    /// trace as the headline. When set, treat the run as failed regardless of per-task outcomes.
+    /// </summary>
+    public RunAbort? Abort { get; init; }
+
+    /// <summary>True when the run was aborted by an infrastructure fault (see <see cref="Abort"/>).</summary>
+    public bool Aborted => Abort is not null;
+}
+
+/// <summary>
+/// Carries why a run was aborted by an unexpected infrastructure fault (issue #150). The
+/// <see cref="Headline"/> is the one-line human diagnostic the CLI shows; <see cref="Detail"/>
+/// is the full exception text written to the run logs (a dev tool keeps the detail — just not as
+/// the headline). <see cref="Remedy"/> is an actionable next step.
+/// </summary>
+public sealed record RunAbort
+{
+    /// <summary>One-line, human-readable summary of what went wrong (the console headline).</summary>
+    public required string Headline { get; init; }
+
+    /// <summary>An actionable next step for the human (e.g. "run git online", "fix the hook").</summary>
+    public required string Remedy { get; init; }
+
+    /// <summary>The full fault text (typically the exception's ToString()) for the run logs.</summary>
+    public required string Detail { get; init; }
 }

@@ -49,9 +49,21 @@ public interface IWorktreeProvider
 
     /// <summary>
     /// After all tasks succeed, fast-forward (or merge) the user's original branch to the tip of
-    /// the completed plan branch (plan 08 SSOT §5.3 / mergeOnSuccess).
+    /// the completed plan branch (plan 08 SSOT §5.3 / mergeOnSuccess). The user-facing merge commit
+    /// KEEPS the user's git hooks (issue #149): when a hook rejects it the result is
+    /// <see cref="MergeOnSuccessResult.HookRejected"/> and the hook's stderr is exposed via
+    /// <see cref="LastMergeOnSuccessDetail"/> for the Scheduler to thread into the report.
     /// </summary>
     MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct);
+
+    /// <summary>
+    /// The git hook's stderr captured by the most recent <see cref="MergePlanBranchIntoUserBranch"/>
+    /// call when it returned <see cref="MergeOnSuccessResult.HookRejected"/> (issues #149/#150);
+    /// null otherwise. Read by the Scheduler immediately after the merge call to populate
+    /// <see cref="RunReport.MergeOnSuccessDetail"/>. Default null for fake providers that have no
+    /// real git hooks.
+    /// </summary>
+    string? LastMergeOnSuccessDetail => null;
 
     /// <summary>
     /// Undo a non-FF merge that was staged in the integration worktree by <see cref="Integrate"/>

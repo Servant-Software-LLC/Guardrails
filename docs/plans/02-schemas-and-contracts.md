@@ -604,8 +604,25 @@ as well as on merge commits**, so resume can read FF integrations (§7); (3) con
 can never treat a task succeeded-by-commit while its state is missing. Every non-success path is a
 single `git reset --hard preHead` (NOT `merge --abort`, which fails rc=128 on the dirtied-tracked
 path) — leaving state, git, and journal all UNCHANGED, never half-merged, and the user's checkout
-untouched. A git/IO failure during integration is a `needs-human` halt routed through the normal
-failed path, never an uncaught throw.
+untouched.
+
+**Internal commits bypass user git hooks (#149).** Every commit the harness makes for its own
+bookkeeping — the segment integration commit (`git commit --no-verify --allow-empty …` in `Integrate`)
+and the non-FF union merge commit (`git commit --no-verify …` in `CommitStagedMerge`) — runs with
+`--no-verify`. These are machine commits in throwaway worktrees on the `guardrails/<plan>` branch, not
+the user's deliverable; a global user `pre-commit` hook (e.g. GitGuardian's `ggshield`) must never gate
+them. The incident that motivated this: an offline `ggshield` `pre-commit` hook failed the internal
+state-marker commit and crashed the run. User hooks run only on the **user-facing** merge-back (below).
+
+**A git/IO failure during integration is a `needs-human` halt** routed through the normal failed path,
+never an uncaught throw. More broadly, **any unexpected infrastructure fault during a run** (a task
+executor or an integration step throwing — git unavailable, a failing internal hook that somehow still
+fired, an IO error) is an **honest halt, not an unhandled crash (#150)**: the scheduler terminates the
+worker pool, runs the end-of-run cleanup sweep, and returns an **aborted `RunReport`** carrying a
+`RunAbort` (one-line `Headline` + `Remedy` for the console, full exception `Detail` for the logs). The
+CLI renders the one-liner + remedy, writes the full fault to `logs/<runId>/abort.log`, and exits
+non-zero (harness error) — never a raw stack trace as the headline. An aborted report is failed
+regardless of per-task outcomes.
 
 **Retry preserves upstream work:** a failed attempt is `git reset --hard <taskBase> + git clean -fd`
 in its segment worktree (keeping every upstream/sibling commit; `taskBase ≠ preHead`), not a
@@ -617,8 +634,27 @@ discard-and-recreate.
 A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch intact — never a
 force-overwrite. Default OFF leaves the plan branch for the user to review and merge. The merge-back
 outcome is reported as `MergeOnSuccessResult` (`FastForwarded` / `Merged` / `Conflict` /
-`DirtyWorkingTree`); a dirty user working tree is refused **before any git merge runs** (the harness
-never runs git over uncommitted user work) and returns `DirtyWorkingTree`.
+`DirtyWorkingTree` / `HookRejected`); a dirty user working tree is refused **before any git merge runs**
+(the harness never runs git over uncommitted user work) and returns `DirtyWorkingTree`.
+
+**The user-facing merge KEEPS the user's git hooks (#149).** This is the deliberate complement to the
+internal-commit isolation above: when the verified plan branch lands on the user's real branch, their
+`pre-commit`/`commit-msg` hooks (GitGuardian, lint, …) SHOULD run, exactly like a manual `git merge`.
+The non-FF merge commit (`git commit --no-edit`, no `--no-verify`) therefore runs them.
+- **`HookRejected`**: a hook rejected that merge commit (e.g. a secret found, or — as in the incident —
+  the hook ran offline and failed). The harness runs `git merge --abort` (best-effort) so the user's
+  branch is left **clean at its original HEAD**, leaves the plan branch intact, and returns
+  `HookRejected` carrying the hook's **stderr** (threaded out via `RunReport.MergeOnSuccessDetail`) so
+  the CLI shows the actual reason + a remedy ("resolve and merge manually, or disable the hook for the
+  merge"). The tasks all passed and are durable on the plan branch — a graceful halt, not a failure.
+- **Inherent FF caveat (intended):** the fast-forward delivery path creates **no commit**, so no commit
+  hook fires there — identical to a manual `git merge --ff-only`. Hooks run only on the non-FF merge
+  commit. A user who needs the hook to vet every delivery should expect it only when the merge-back is
+  non-FF (their branch advanced during the run).
+
+A wholly-green run whose delivery is HALTED (`Conflict` / `DirtyWorkingTree` / `HookRejected`) exits
+non-zero at the CLI: the work is durable on the plan branch but the user must act. A `FastForwarded` /
+`Merged` delivery, or no `mergeOnSuccess` at all, leaves the green (exit 0) verdict untouched.
 
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
@@ -812,9 +848,13 @@ overwrite the fix. It is a single-task verification, **not** a run — the rest 
   failing guardrails are reported, the task settles `needs-human` (still a non-green halt the human must
   keep working); exit `2`. No agent is spawned in either case.
 
-**Harness exit codes**: `0` all succeeded · `1` harness/validation error ·
-`2` the operation completed but an actionable condition was found — for `run`: a task is
-needs-human/blocked; for `graph --check`: the diagram is stale or missing (the "regenerate"
+**Harness exit codes**: `0` all succeeded · `1` harness/validation error — including a run **aborted**
+by an unexpected infrastructure fault (#150: an honest halt rendered from the aborted `RunReport`, full
+fault in `logs/<runId>/abort.log`, never a raw stack trace) · `2` the operation completed but an
+actionable condition was found — for `run`: a task is needs-human/blocked, OR every task passed but the
+opt-in end-of-run delivery to the user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or
+`HookRejected` `MergeOnSuccessResult` — the work is durable on the plan branch, the user must finish the
+merge); for `graph --check`: the diagram is stale or missing (the "regenerate"
 signal); for `lock --check`: the folder has drifted from the baseline or the baseline is missing
 (the "re-baseline" signal); for `merge`: there are unresolved conflicts to resolve, or the BASE
 baseline is missing and must be established first (§11.5) · `3` cancelled.
