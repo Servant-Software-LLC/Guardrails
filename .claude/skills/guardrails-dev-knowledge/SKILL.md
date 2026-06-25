@@ -69,6 +69,23 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   from `AppContext.BaseDirectory/skills`. Repo bootstrap: `install.ps1` (root, tested) and
   `install.sh` (root, untested twin) verify dotnet, install/update the tool, then run
   `guardrails skills install`.
+- **Skill-version stamping + `--version` drift (#152, `docs/DEPLOYMENT.md` §Skill versioning
+  and drift detection)**: each INSTALLED skill folder is stamped with a
+  `.guardrails-skill-version` marker (`SkillVersionReport.MarkerFileName`) whose only content is
+  the harness version — the normalised `InformationalVersion` from `GuardrailsVersion.Current`
+  (= what `guardrails --version` prints). Written by `SkillsInstaller.StampVersion` on every
+  INSTALLED skill; a SKIPPED skill keeps its old/absent marker (that staleness is the drift
+  signal). The CLI tool version and an installed skill's version are **independent** — updating
+  the tool does NOT refresh installed skills, because `skills install` SKIPS an already-present
+  folder unless `--force` (the silent-skip trap: a stale `/plan-breakdown` keeps emitting
+  legacy output for an older harness with no error — the incident a preview.25 harness produced
+  a `captureHashes`/no-`writeScope` folder). `guardrails --version` now surfaces this:
+  `VersionWithDriftAction` keeps stdout as the bare version line (scripts parse it, unchanged)
+  and writes a drift-warning block to **stderr** — exit code stays 0 — for any known skill
+  (set = bundled `AppContext.BaseDirectory/skills`) found under `~/.claude/skills` or
+  `./.claude/skills` whose marker is missing (`unversioned`) or `≠` the harness (compared via
+  `SkillVersionReport.Build`, `GuardrailsVersion.Normalize` strips `+build`). Remedy it warns:
+  `guardrails skills install --force`.
 
 ## Commands
 
