@@ -1350,13 +1350,31 @@ decisions — the deterministic engine owns them.
 
 ## 12. Log viewer (`run` live links + `guardrails logs`)
 
-A small **loopback-only** HTTP server surfaces each task's per-attempt log artifacts (§8) in a
-browser, so a human can answer "is it actually working?" without leaving the terminal — live
-during a run, or after the fact. It serves the same on-disk files documented in §8; it adds no new
-artifacts and is never part of the plan contract (the loader/validator ignore it entirely). The
-task page also surfaces a **Source** section — the task's action file and `guardrails/*` scripts
-(derived from the plan's `TaskNode`, not from `logs/`) — so a thrown guardrail's script is one
-click from its failing log (issue #141 item 3).
+The **canonical "all tasks" page is the static index file** `logs/<runId>/index.html` (§12.3) — a
+`file://` artifact that is **durable** (it works after the harness stops) and has **no server
+dependency**. A small **loopback-only** HTTP server is the **transient tailing backend** for
+**active** tasks: it surfaces each task's per-attempt log artifacts (§8) live while a run is in
+flight, so a human can answer "is it actually working?" without leaving the terminal. The static
+index links a *running* task to this server; the user clicks through, tails the live page, and hits
+the browser **Back** button to return. The server serves the same on-disk files documented in §8; it
+adds no new artifacts and is never part of the plan contract (the loader/validator ignore it
+entirely). The task page also surfaces a **Source** section — the task's action file and
+`guardrails/*` scripts (derived from the plan's `TaskNode`, not from `logs/`) — so a thrown
+guardrail's script is one click from its failing log (issue #141 item 3).
+
+**Static is the durable site; live is an active-only leaf (issue #143).** Because the live server
+dies when the harness stops, it is deliberately **not** part of the durable navigable site:
+
+- `GET /` is **not** an all-tasks landing. It is a small **pointer note** naming the canonical static
+  index file by its absolute path (a browser blocks `http://` → `file://`, so the path is shown as
+  **text** to open, not linked). The server cannot — and does not — render a second, harness-dependent
+  task table.
+- The live per-task page is an active-task **deadend**: it carries **no** "all tasks" navigation. The
+  user arrives by clicking a running task on the static index and leaves via the browser Back button.
+
+Rationale: the static pages are durable and server-independent; the live page is inherently transient,
+so it is an active-task leaf, not part of the durable navigable site. The journal-projected **Status**
+table lives on the static index (§12.3), which is the single all-tasks surface.
 
 **Binding and safety.** The server binds to the numeric loopback address `127.0.0.1` on a port (an
 automatically chosen free ephemeral port by default), **never** to a routable interface — logs may
@@ -1381,8 +1399,8 @@ live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 
 | Route | Serves |
 |---|---|
-| `GET /` | landing page — every task linking to its log page (the `logs` variant also shows each task's journal status) |
-| `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt), plus a **Source** section (issue #141 item 3) |
+| `GET /` | a **pointer note** (issue #143) naming the canonical static index file `logs/<runId>/index.html` by its absolute path (shown as text — a browser blocks `http://` → `file://`); **not** an all-tasks table |
+| `GET /tasks/{id}` | a page that tails an attempt's log directory for task `{id}` (latest by default; an attempt selector navigates to any prior attempt), plus a **Source** section (issue #141 item 3). An active-task **deadend** — no "all tasks" link (issue #143); the user reaches it from the static index and returns via Back |
 | `GET /tasks/{id}/files[?attempt=N]` | JSON `{ attempt, attempts[], preferred, files[], fileDetails[] }` — the SELECTED attempt number (default = latest), every available attempt number ascending, a preferred file to open first (`transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log`, else the first file), the selected attempt's filenames, and a `fileDetails[]` of `{ name, size, empty }` per file (so a zero-byte capture is greyed + "(empty)" in the file dropdown — issue #141 item 4) |
 | `GET /tasks/{id}/file?name={f}[&attempt=N]` | the raw text of one log file from the selected attempt (default = latest; read with a shared handle so an in-flight writer is not blocked) |
 | `GET /tasks/{id}/source` | JSON `{ sources[] }` of `{ name, label, empty }` — the task's action file + each guardrail script and `.json` sidecar (issue #141 item 3), derived from the plan's `TaskNode` (`action.path` + `guardrails/*`), so a thrown guardrail's script is one click from its log |
@@ -1390,8 +1408,12 @@ live viewer can inspect a finished `attempt-1` while `attempt-2` runs.
 
 ### 12.1 `guardrails run` — live log links
 
-`run` starts the server as a **companion to the live progress table** and prints its base URL plus
-clickable per-task "view log" links. It is started **only** on the interactive path (a live UI,
+`run` starts the server as the **active-task tailing backend** companion to the live progress table.
+The **prominent** "all tasks" line the run prints is the clickable `file://` link to the canonical
+**static index** (below); the live server's base URL is printed de-emphasised as the *live tailing
+server (active tasks)* — the user navigates from the static index, which links a running task to it
+(issue #143). The live progress table still carries clickable per-task "view log" links for running
+tasks (to `http://…/tasks/{id}`). The server is started **only** on the interactive path (a live UI,
 output not redirected) — nobody clicks links in CI or piped output — and a bind failure is
 **non-fatal**: the run prints one warning and proceeds without links. The server's lifetime is the
 run; it is disposed when the run ends.
@@ -1418,21 +1440,25 @@ URL. A finished task's terminal `logs` link (the live table's post-mortem link) 
 
 ### 12.2 `guardrails logs` — post-mortem viewer
 
-`guardrails logs [folder] [--port n] [--task id] [--no-open]` serves the **same** viewer over a
-plan's **persisted** logs, decoupled from any active run — the post-mortem companion for reviewing
-an overnight run, or judging whether a *passing* task's guardrails were strong enough, from the
-same attempt logs. It runs until Ctrl-C, then exits `0`. The folder argument defaults to the
-current directory and follows the §7 plan-file → task-folder fixup.
+`guardrails logs [folder] [--port n] [--task id] [--no-open]` reviews a plan's **persisted** logs,
+decoupled from any active run — the post-mortem companion for reviewing an overnight run, or judging
+whether a *passing* task's guardrails were strong enough, from the same attempt logs. It
+(re)generates the **static** site for the journal-selected run and advertises the canonical static
+index file (`logs/<runId>/index.html`) as the **entry point** by its `file://` path (issue #143), and
+also starts the live tailing server (so a *running* task's live page works — for a completed run the
+server simply goes unused). With `--no-open` it opens nothing; otherwise it opens the static index
+(or, with `--task`, the named running task's live page). It runs until Ctrl-C, then exits `0`. The
+folder argument defaults to the current directory and follows the §7 plan-file → task-folder fixup.
 
-Unlike the live links, the post-mortem landing page reads the run journal (§7) and renders a
-coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked` / `failed` /
-`pending`) per task — a standalone viewer has no terminal table to carry status.
+The journal-projected coloured **Status** column (`succeeded` / `running` / `needs-human` / `blocked`
+/ `failed` / `pending`) lives on that static index (§12.3), which is the single all-tasks surface —
+the live server no longer renders one (issue #143).
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--port <n>` | `0` | Port for the viewer. `0` = an automatically chosen free port. Bound to localhost only. |
-| `--task <id>` | (none) | Open straight to this task's log page instead of the task list. An unknown id falls back to the task list with a notice. |
-| `--no-open` | off | Do not launch a browser; just print the URL (headless hosts). |
+| `--port <n>` | `0` | Port for the live tailing server. `0` = an automatically chosen free port. Bound to localhost only. |
+| `--task <id>` | (none) | Open straight to this task's live tailing page instead of the static index. An unknown id falls back to the static index with a notice. |
+| `--no-open` | off | Do not launch a browser; just print the static index path + server URL (headless hosts). |
 
 **Exit codes.** `0` on a clean serve or clean shutdown (Ctrl-C). A load/validate failure prints
 diagnostics and exits `1`. When the plan has **no run journal yet** (never run), `logs` prints a
