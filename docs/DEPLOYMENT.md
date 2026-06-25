@@ -70,7 +70,9 @@ guardrails skills install --force                                      # refresh
 
 `dotnet tool update` cleanly replaces the harness binary and the skills bundled *inside*
 the package; only the copies you previously installed into `~/.claude/skills` need the
-`--force` refresh. Restart Claude Code afterwards.
+`--force` refresh. Restart Claude Code afterwards. After updating, `guardrails --version`
+warns (on stderr) about any installed skill still on an older stamp — see
+[Skill versioning and drift detection](#skill-versioning-and-drift-detection).
 
 ---
 
@@ -184,6 +186,38 @@ The three bundled skills:
 Without `--force`, a skill folder that already exists in the target is left untouched
 and reported as skipped. Restart Claude Code (or start a new session) and confirm
 `/plan-breakdown` appears.
+
+### Skill versioning and drift detection
+
+Each **installed** skill folder is stamped with a `.guardrails-skill-version` marker
+file whose only content is the harness version that installed it (e.g.
+`1.0.0-preview.25`). A `skipped` skill keeps its old (or absent) marker — that stale
+marker is exactly the drift signal.
+
+This is why **`--force` is required to refresh an already-installed skill**: a plain
+`skills install` *skips* a folder that already exists, so it would neither re-copy the
+skill body nor update its version stamp. The silent-skip trap is real — a stale
+installed `/plan-breakdown` will keep producing output for an older harness with no
+visible error.
+
+To surface that drift, **`guardrails --version`** checks the skills installed under
+`~/.claude/skills` and `./.claude/skills` against the running harness. The version line
+on **stdout** is unchanged (scripts that parse `guardrails --version` keep working); when
+an installed skill is stale or unversioned, a warning block is written to **stderr**
+naming each skill, its location, its installed version (or `unversioned`), and the
+remedy — and the exit code stays `0` (the check is informational):
+
+```text
+1.0.0-preview.25
+
+WARNING: 1 installed Guardrails skill(s) do not match this harness (v1.0.0-preview.25):
+  - plan-breakdown [v1.0.0-preview.24] in C:\Users\you\.claude\skills
+A stale skill can silently produce output for an older harness.
+Remedy: run `guardrails skills install --force`.
+```
+
+When everything matches (or nothing is installed, or this build carries no bundled
+skills), `--version` prints only the version line.
 
 > **Last resort — manual copy.** If you only have the source checkout (no installed
 > tool), copy the folders by hand from the repo root:

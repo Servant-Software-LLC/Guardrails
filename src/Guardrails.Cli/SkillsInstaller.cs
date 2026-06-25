@@ -29,12 +29,20 @@ public static class SkillsInstaller
     /// <paramref name="targetDir"/>. With <paramref name="force"/>, an existing target skill
     /// folder is replaced; without it, an existing folder is left untouched and reported
     /// <see cref="SkillOutcome.Skipped"/>. Results are ordered by skill name (ordinal).
+    ///
+    /// Each INSTALLED skill folder is stamped with a <c>.guardrails-skill-version</c> marker
+    /// containing exactly <paramref name="toolVersion"/> (single line, no timestamp), so
+    /// <c>guardrails --version</c> can later detect drift. A SKIPPED skill is left untouched —
+    /// its old or absent marker is precisely the stale-install signal we want to surface.
     /// </summary>
     /// <exception cref="DirectoryNotFoundException">
     /// <paramref name="sourceSkillsDir"/> does not exist.
     /// </exception>
-    public static IReadOnlyList<SkillResult> InstallAll(string sourceSkillsDir, string targetDir, bool force)
+    public static IReadOnlyList<SkillResult> InstallAll(
+        string sourceSkillsDir, string targetDir, bool force, string toolVersion)
     {
+        ArgumentNullException.ThrowIfNull(toolVersion);
+
         if (!Directory.Exists(sourceSkillsDir))
         {
             throw new DirectoryNotFoundException(
@@ -70,10 +78,21 @@ public static class SkillsInstaller
             }
 
             CopyDirectory(skillDir, destination);
+            StampVersion(destination, toolVersion);
             results.Add(new SkillResult(name, SkillOutcome.Installed));
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Write the version marker into a freshly installed skill folder. The content is exactly
+    /// <paramref name="toolVersion"/> (no timestamp), keeping it deterministic and testable.
+    /// </summary>
+    private static void StampVersion(string skillDir, string toolVersion)
+    {
+        string markerPath = Path.Combine(skillDir, SkillVersionReport.MarkerFileName);
+        File.WriteAllText(markerPath, toolVersion);
     }
 
     /// <summary>
