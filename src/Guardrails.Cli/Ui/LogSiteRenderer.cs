@@ -236,11 +236,18 @@ public static class LogSiteRenderer
     // --- per-task page (inlined attempts + source) ------------------------------------------
 
     /// <summary>
-    /// One task's static page: every attempt on disk, each inlining its PREFERRED file's content (the
-    /// transcript, else the raw stream, else action stdout) plus a list of the attempt's other files as
-    /// relative <c>file://</c> links the browser can reach (zero-byte files greyed + "(empty)", #141 item
-    /// 4), followed by a Source section linking the action file + guardrail scripts from
-    /// <c>&lt;task.Directory&gt;</c> (#141 item 3). No polling — the content is baked in.
+    /// One task's static page: every attempt on disk, each carrying a file <c>&lt;select&gt;</c> combobox
+    /// that toggles between that attempt's files, all inlined as hidden <c>&lt;pre class="filebody"&gt;</c>
+    /// blocks (the PREFERRED file — transcript, else raw stream, else action stdout — shown first). A
+    /// <c>file://</c> page can't fetch siblings, so every file's content is baked in and shown/hidden by a
+    /// tiny vanilla-JS DOM toggle (NO fetch — works offline on <c>file://</c>); zero-byte files render
+    /// "no output captured" and get an <c>empty</c>-marked option with a " (empty)" suffix (#141 item 4).
+    /// A Source section (action file + guardrail scripts from <c>&lt;task.Directory&gt;</c>, #141 item 3)
+    /// and the "← all tasks" back-link follow, unchanged.
+    ///
+    /// <para>Trade-off (#145 Feature 2): inlining every file bloats the page by the full size of each raw
+    /// stream. Accepted for the audit/demo use — the page already inlined the preferred file in full, and
+    /// a <c>file://</c> page has no other way to show siblings — so it is deliberately uncapped.</para>
     /// </summary>
     private static string TaskPage(string logsRoot, TaskNode task)
     {
@@ -254,25 +261,7 @@ public static class LogSiteRenderer
             string? preferred = PreferenceOrder.FirstOrDefault(files.Contains) ?? files.FirstOrDefault();
 
             sections.Append("<h2>attempt ").Append(n).Append("</h2>");
-
-            // Inline the preferred file's content; link out to the rest (raw stream can be large — a
-            // relative file:// link reaches it without inlining multi-MB into the HTML, #103 decision 5).
-            string body = preferred is not null ? ReadOrEmpty(Path.Combine(attemptDir, preferred)) : string.Empty;
-            sections.Append("<div class=\"bar\">showing <code>").Append(Enc(preferred ?? "(no files)")).Append("</code></div>");
-            sections.Append("<pre>").Append(Enc(body.Length > 0 ? body : "no output captured")).Append("</pre>");
-
-            if (files.Count > 0)
-            {
-                sections.Append("<div class=\"bar\">files: ");
-                sections.Append(string.Join(" · ", files.Select(f =>
-                {
-                    bool empty = IsZeroByte(Path.Combine(attemptDir, f));
-                    string label = empty ? $"{Enc(f)} (empty)" : Enc(f);
-                    string cls = empty ? " class=\"empty\"" : string.Empty;
-                    return $"<a{cls} href=\"attempt-{n}/{Uri.EscapeDataString(f)}\">{label}</a>";
-                })));
-                sections.Append("</div>");
-            }
+            AppendAttemptFiles(sections, attemptDir, n, files, preferred);
         }
 
         if (attempts.Count == 0)
@@ -297,10 +286,85 @@ public static class LogSiteRenderer
 <h1>{Enc(task.Id)}</h1>
 <div class="bar"><a href="../index.html">&larr; all tasks</a> &middot; {Enc(task.Description)}</div>
 {sections}
+{FileToggleScript}
 </body>
 </html>
 """;
     }
+
+    /// <summary>
+    /// Render one attempt's file combobox: a <c>&lt;select&gt;</c> listing every file in the attempt (the
+    /// <paramref name="preferred"/> one pre-selected; zero-byte files <c>empty</c>-marked + " (empty)"),
+    /// then every file's content inlined as a hidden <c>&lt;pre class="filebody"&gt;</c> (only the preferred
+    /// one shown). All elements carry <c>data-attempt="N"</c> + <c>data-file="..."</c> so the toggle script
+    /// scopes show/hide to THIS attempt — multiple attempts on the page never collide. Content is
+    /// HTML-encoded (arbitrary logs / LLM output) via <see cref="Enc"/> and read through the shared-handle
+    /// <see cref="ReadOrEmpty"/>. An attempt with no files shows a single "no output captured" body.
+    /// </summary>
+    private static void AppendAttemptFiles(
+        StringBuilder sections, string attemptDir, int attempt, IReadOnlyList<string> files, string? preferred)
+    {
+        if (files.Count == 0)
+        {
+            sections.Append("<div class=\"bar\">showing <code>(no files)</code></div>");
+            sections.Append("<pre class=\"filebody\" data-attempt=\"").Append(attempt)
+                .Append("\" data-file=\"\">").Append(Enc("no output captured")).Append("</pre>");
+            return;
+        }
+
+        // The file <select>: one option per file, scoped to this attempt; the preferred file is selected.
+        sections.Append("<div class=\"bar\">file <select class=\"fileselect\" data-attempt=\"").Append(attempt).Append("\">");
+        foreach (string f in files)
+        {
+            bool empty = IsZeroByte(Path.Combine(attemptDir, f));
+            string label = empty ? $"{f} (empty)" : f;
+            string sel = string.Equals(f, preferred, StringComparison.Ordinal) ? " selected" : string.Empty;
+            string cls = empty ? " class=\"empty\"" : string.Empty;
+            sections.Append("<option").Append(cls)
+                .Append(" data-attempt=\"").Append(attempt).Append('"')
+                .Append(" data-file=\"").Append(Enc(f)).Append('"').Append(sel).Append('>')
+                .Append(Enc(label)).Append("</option>");
+        }
+
+        sections.Append("</select></div>");
+
+        // Inline every file's content as a hidden <pre>; only the preferred file's block is shown. A
+        // file:// page can't fetch siblings, so all bodies are baked in and the <select> toggles them
+        // (no fetch). Encode every body — arbitrary logs / LLM output. (Trade-off: this bloats the page
+        // by the full raw-stream size; accepted for audit/demo — see TaskPage's remarks. Uncapped.)
+        foreach (string f in files)
+        {
+            string raw = ReadOrEmpty(Path.Combine(attemptDir, f));
+            bool shown = string.Equals(f, preferred, StringComparison.Ordinal);
+            string hidden = shown ? string.Empty : " hidden";
+            sections.Append("<pre class=\"filebody\"").Append(hidden)
+                .Append(" data-attempt=\"").Append(attempt).Append('"')
+                .Append(" data-file=\"").Append(Enc(f)).Append("\">")
+                .Append(Enc(raw.Length > 0 ? raw : "no output captured")).Append("</pre>");
+        }
+    }
+
+    /// <summary>
+    /// The vanilla-JS toggle that wires every per-attempt file <c>&lt;select&gt;</c>: on change it hides
+    /// every <c>.filebody</c> for that attempt and unhides the one whose <c>data-file</c> matches the
+    /// selected option, scoped by <c>data-attempt</c> so attempts don't collide. Pure DOM — NO fetch —
+    /// because this is a static <c>file://</c> page (a fetch of a sibling file is blocked offline).
+    /// </summary>
+    private const string FileToggleScript = """
+<script>
+(function () {
+  document.querySelectorAll('select.fileselect').forEach(function (sel) {
+    sel.addEventListener('change', function () {
+      var attempt = sel.getAttribute('data-attempt');
+      var file = sel.options[sel.selectedIndex].getAttribute('data-file');
+      document.querySelectorAll('pre.filebody[data-attempt="' + attempt + '"]').forEach(function (pre) {
+        pre.hidden = pre.getAttribute('data-file') !== file;
+      });
+    });
+  });
+})();
+</script>
+""";
 
     /// <summary>
     /// The static "Source" section (#141 item 3): a list of relative <c>file://</c> links from the task's

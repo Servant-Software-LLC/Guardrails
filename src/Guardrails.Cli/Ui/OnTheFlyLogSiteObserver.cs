@@ -68,9 +68,40 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
 
     /// <summary>
     /// Write the initial all-pending index at run start (every task pending, plain text), so the "all
-    /// tasks" page exists and is browsable the moment the run begins. Best-effort.
+    /// tasks" page exists and is browsable the moment the run begins. Best-effort. Delegates to the
+    /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?})"/>.
     /// </summary>
-    public void WriteInitialIndex() => RenderIndex();
+    public void WriteInitialIndex() => WriteInitialIndex(_logsRoot, _runId, _tasks, _liveUrlForTask);
+
+    /// <summary>
+    /// Write the initial all-pending index (every task <c>pending</c>, plain link, with the during-run
+    /// meta-refresh) WITHOUT an observer instance, so the live path can write it — and print the
+    /// link to it — BEFORE constructing <see cref="LiveRunObserver"/> (which starts the Spectre
+    /// <c>AnsiConsole.Live</c> region in its ctor). Any console write into an active Live region
+    /// corrupts the table, so the initial index + its static-index link must be emitted first (#145
+    /// Bug 1). Best-effort: a render failure is swallowed (a UX nicety never aborts the run).
+    /// </summary>
+    /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree the index is written into.</param>
+    /// <param name="runId">The run id (titles the rendered index).</param>
+    /// <param name="tasks">The plan's tasks, in plan order — the rows of the index.</param>
+    /// <param name="liveUrlForTask">Unused at the all-pending start (no task is running yet); accepted
+    /// so the static signature matches the instance's link-resolution surface for callers.</param>
+    public static void WriteInitialIndex(
+        string logsRoot,
+        string runId,
+        IReadOnlyList<TaskNode> tasks,
+        Func<string, string?>? liveUrlForTask)
+    {
+        _ = liveUrlForTask; // no task is running at the all-pending start, so no live link is resolved yet
+        string pending = LogSiteRenderer.StatusText(Core.Journal.TaskStatus.Pending);
+        TryRender(() => LogSiteRenderer.WriteIndex(
+            logsRoot,
+            runId,
+            tasks,
+            statusResolver: _ => pending,
+            linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
+            includeRefresh: true));
+    }
 
     public void TaskStarting(TaskNode task)
     {

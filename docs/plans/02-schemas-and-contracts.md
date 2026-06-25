@@ -1473,12 +1473,16 @@ the journal-selected run's logs and exits `0` without starting the server or blo
 site is written **next to the artifacts it renders**, under the `logs/` audit tree (never `state/`,
 which holds mutable run state):
 - `logs/<runId>/<task-id>/index.html` — one page per task that has attempts on disk, inlining that
-  task's per-attempt artifacts (§8): each attempt shows its preferred file (`transcript.md`, else
-  `claude-stream.jsonl`, else `action-stdout.log`) inlined, plus relative `file://` links to the
-  attempt's other files (a large raw stream is linked, not inlined — #103 decision 5; a zero-byte file
-  is greyed + "(empty)" — #141 item 4). A **Source** section follows the attempts: relative `file://`
-  links back to the action file and every `guardrails/*` script + `.json` sidecar (#141 item 3), the
-  static twin of the live page's Source list.
+  task's per-attempt artifacts (§8): each attempt carries a file `<select>` **combobox** that toggles
+  between that attempt's files, **all inlined** as hidden `<pre>` blocks (the preferred file —
+  `transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log` — shown first). A `file://`
+  page can't fetch siblings, so every file's content is baked in and shown/hidden by a tiny vanilla-JS
+  DOM toggle (**no fetch** — works offline on `file://`), replacing the old `·`-separated link row
+  (#145 Feature 2). A zero-byte file renders "no output captured" and its option is greyed + "(empty)"
+  (#141 item 4). Inlining every file bloats the page by the full raw-stream size — accepted (uncapped)
+  for the audit/demo use, since `file://` has no other way to show siblings. A **Source** section
+  follows the attempts: relative `file://` links back to the action file and every `guardrails/*`
+  script + `.json` sidecar (#141 item 3), the static twin of the live page's Source list.
 - `logs/<runId>/index.html` — the site index, a **projection of the journal** (§7) regenerated on
   every write (never appended): every task with its status word; a task with attempts on disk is a
   **link** to its page, a not-yet-run task is **plain text** (the #103 linkability rule). The

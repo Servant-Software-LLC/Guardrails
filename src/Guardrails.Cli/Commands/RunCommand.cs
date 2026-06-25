@@ -175,10 +175,15 @@ public static class RunCommand
             RunReport report;
             if (live)
             {
+                // Write the initial all-pending index AND print its link BEFORE constructing
+                // LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live region, and any
+                // console write into an active Live region corrupts the table (#145 Bug 1). So the
+                // static-index write + its link must precede the live region.
+                OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
+                PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
+
                 await using var liveObserver = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
                 var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
-                siteObserver.WriteInitialIndex();      // initial all-pending index BEFORE we link to it
-                PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
                 report = await ExecuteAsync(probe.Plan, siteObserver, cancellationToken).ConfigureAwait(false);
             }
             else
