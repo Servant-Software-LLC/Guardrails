@@ -168,11 +168,35 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (W-1: a trailer on a surviving segment ref that never FF'd is not authoritative).
 - **End-of-run delivery**: when the run drains green AND `mergeOnSuccess`/`--merge-on-success` is
   set, the harness merges the plan branch into the user's original branch. **AI-merge is NOT used
-  here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
-  intact. Default OFF.
+  here.** A conflict / failed re-verify / dirty user tree halts, plan branch intact. Default OFF.
+  The outcome is a `MergeOnSuccessResult`: `FastForwarded` / `Merged` (delivered, exit 0) or
+  `Conflict` / `DirtyWorkingTree` / `HookRejected` (halted; work is durable on the plan branch, exit 2).
+- **Hook policy at the two commit boundaries (#149)** — internal vs user-facing commits are treated
+  oppositely:
+  - **Internal bookkeeping commits bypass user hooks.** The segment integration commit (`Integrate`,
+    `--no-verify --allow-empty`) and the non-FF union merge commit (`CommitStagedMerge`, `--no-verify`)
+    run with `--no-verify` — they are machine commits in throwaway worktrees on `guardrails/<plan>`,
+    not the user's deliverable, so a global `pre-commit` hook (e.g. GitGuardian `ggshield`) must never
+    gate harness plumbing. (Motivating incident: an offline `ggshield` hook failed an internal marker
+    commit and crashed a run.)
+  - **The user-facing merge-back KEEPS hooks** — deliberately, exactly like a manual `git merge`. The
+    non-FF merge commit runs the user's `pre-commit`/`commit-msg` hooks. If a hook rejects it, the
+    harness `git merge --abort`s (user branch left clean at its pre-merge HEAD), leaves the plan branch
+    intact, surfaces the hook's stderr, and returns `HookRejected` — a graceful delivery-halt, not a
+    crash. **Inherent FF caveat (intended):** an FF delivery creates no commit, so no commit hook fires
+    there; hooks run on the non-FF merge commit only.
+- **Honest halt on infrastructure faults (#150)**: an unexpected fault during a run (a task executor or
+  integration git step throwing — e.g. git unavailable) is NOT an unhandled crash. The scheduler returns
+  an **aborted `RunReport`** carrying a `RunAbort` (one-line `Headline`/`Remedy` + full exception
+  `Detail`); the CLI renders the one-liner + remedy, writes the full fault to `logs/<runId>/abort.log`,
+  and exits non-zero (harness error, exit 1). End-of-run cleanup still runs. An aborted report is failed
+  regardless of per-task outcomes.
 - Resume: `succeeded` is terminal (use `guardrails reset` to force);
   `needs-human`/`failed`/`blocked` -> fresh budget; crashed `running` -> `pending`.
-- Harness exit codes: 0 green / 1 error / 2 needs-human / 3 cancelled.
+- Harness exit codes: 0 green / 1 harness or validation error (incl. a run **aborted** by an
+  infrastructure fault, #150) / 2 needs-human or blocked, OR a wholly-green run whose opt-in delivery
+  was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /
+  3 cancelled. See SSOT section 7.1.
 - A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
   no retry burn on a genuine human decision.
 
