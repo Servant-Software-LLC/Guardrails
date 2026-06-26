@@ -7,10 +7,11 @@ this file when it detects a .NET workspace (`.slnx` / `.sln` / `.csproj`). On a
 JVM/Go/Python project these patterns are wrong or irrelevant — use that stack's file
 instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
-Every stack file answers the same six standard questions first (§1–§6), in this order, so
+Every stack file answers the same six standard questions first (§1–§6, including §4.1 stub-based
+TDD `build-passes` + `tests-fail-on-stubs`), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
-§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors, §18 name-convention seam, then WPF).
+§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -201,6 +202,58 @@ not the token" rule.
 - **Remember the solution-build blind spot (pattern 1):** the terminal `dotnet build
   <solution>` does NOT catch an unregistered project — that's why pattern 1's solution-file
   `file-contains` guardrail exists. Don't let the terminal build stand in for it.
+
+### 4.1 Stub-based TDD "red" — `build-passes` + `tests-fail-on-stubs` for a BEHAVIORAL type (#155)
+
+The .NET realization of the catalogue's stub-based TDD decision (catalogue → "Stub-based TDD"). For a
+**behavioral** type under test, the test-author task writes the test file AND the minimal stubs (a
+skeleton class whose members `throw new NotImplementedException();`) so the test project COMPILES. Its
+two guardrails replace the old single compile-coupled check, in cheapest-first filename order:
+
+`guardrails/01-build-passes.ps1` — proves the test file is syntactically valid and type-correct (the
+stubs supply the types). Garbage that does not compile fails HERE, unambiguously:
+
+```powershell
+# catches: a test file that does not COMPILE - garbage, or a real syntax/type error. With the
+#          minimal stubs the test-author task wrote, the test project must build; a non-compiling
+#          "test" exits dotnet test non-zero identically to a failing one, so without this the red
+#          signal is gameable by garbage (#155).
+dotnet build tests/Inventory.Tests --nologo -v q
+if ($LASTEXITCODE -ne 0) {
+    Write-Output "tests/Inventory.Tests does not build - the test file or its stubs are not type-correct"
+    exit 1
+}
+exit 0
+```
+
+`guardrails/02-tests-fail-on-stubs.ps1` — proves TDD red. Because guardrail 01 already proved the
+build succeeds, a non-zero `dotnet test` now unambiguously means **the tests ran and FAILED** (the
+stubs throw `NotImplementedException`), not that something failed to compile:
+
+```powershell
+# catches: tautological tests - tests that PASS against the stubs verify nothing. With the build
+#          green (guardrail 01), a non-zero exit here means the tests ran and FAILED against the
+#          NotImplementedException stubs = TDD red. A zero exit means the behavior is already present
+#          (or the test asserts nothing) - either way the tests are tautological.
+dotnet test tests/Inventory.Tests --filter "Category=Stats" --nologo
+if ($LASTEXITCODE -eq 0) {
+    Write-Output "the Stats tests PASS against the NotImplementedException stubs - they are tautological (no real behavior is asserted)"
+    exit 1
+}
+exit 0
+```
+
+The test-author `task.json` `writeScope` covers **both** the test file and the stub file(s); the
+implementation `task.json` `writeScope` **EXCLUDES** the test file but **TARGETS** the stub file(s)
+(it fills real logic over the skeletons — `src/Inventory.Cli/` covers a stub under that surface). The
+implementation task's `02-stats-tests-pass.ps1` then runs the SAME `--filter` and requires exit 0.
+
+**Data-model exception (no behavioral stub possible).** For a pure enum/record/value type, COLLAPSE
+the split (define the type + assert `tests-pass` in one task; state "data model — no behavioral stub
+possible"). If you keep the split, omit `build-passes` (the test references the not-yet-existing type,
+so it won't compile against current code — that non-zero exit IS the red), keep
+`tests-fail-on-current-code`, and strengthen `covers-key-behaviors` STRUCTURALLY (assert the
+`[Fact]`/`[Theory]` attribute is present, not just that the enum-value tokens appear — §17).
 
 ## 5. Grep-scope contamination risks specific to .NET layout
 
@@ -1012,6 +1065,35 @@ ones), not the whole list. Scope to the one test file (grep-scope rule, §5). Th
 test *names* the behavior, not that it *asserts* it — the residual is the `tests-fail-on-current-code`
 red plus human review. The breakdown report must **list which enumerated behaviors went unchecked** so
 the reviewer can decide whether to add more terms.
+
+### 17.1 Structural [Fact]/[Theory] check — strengthen the data-model TDD-split coverage (#155)
+
+When a **data-model** test-author task keeps the TDD split (catalogue → "Stub-based TDD" → data-model
+exception), its `tests-fail-on-current-code` red is a *compile* failure — gameable by a file that
+merely names the enum-value tokens in a comment. A bare-keyword `covers-key-behaviors` then also
+false-passes on that comment. Strengthen it: require an actual xUnit **test attribute** in the file,
+not just the domain tokens. A comment naming `TcApiLocal` does not carry a `[Fact]`/`[Theory]`:
+
+```powershell
+# catches: a data-model test file that NAMES the behaviors in a comment (satisfying a bare-keyword
+#          covers-check and a compile-coupled red) but encodes no actual test - assert a real
+#          [Fact]/[Theory] attribute is present, the structural construct a comment cannot fake (#155).
+$f = "tests/Importer.Tests/ImportModeTests.cs"
+$content = Get-Content $f -Raw
+if ($content -notmatch '(?m)^\s*\[(Fact|Theory)\]') {
+    Write-Output "$f declares no [Fact]/[Theory] test - the enum-value tokens appear only as text (a comment cannot satisfy this)"
+    exit 1
+}
+if ($content -notmatch 'TcApiLocal') {
+    Write-Output "$f does not reference ImportMode.TcApiLocal - add a test asserting that enum value"
+    exit 1
+}
+exit 0
+```
+
+Pair the structural `[Fact]`/`[Theory]` presence check with the 2–3 distinctive domain tokens. For a
+**behavioral** type prefer the §4.1 `build-passes` + `tests-fail-on-stubs` pair instead — the build
+guardrail already proves the test file is real code, so the attribute check adds less there.
 <!-- END ADDED SECTION #75 -->
 
 <!-- BEGIN ADDED SECTION #96 — name-convention seam (auto-merge friendly; do not merge into prose above) -->

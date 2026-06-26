@@ -144,7 +144,7 @@ A task is right-sized when ALL hold:
    If describing the outcome needs "and", consider splitting.
 2. **Guardrail-boundary rule (load-bearing):** split exactly where verification
    changes character. "Implement parser + write its tests" splits because the
-   test-task's guardrails (tests exist, tests-fail-on-stub) differ from the
+   test-task's guardrails (the tests build + fail on stubs) differ from the
    parser-task's (tests pass). Conversely "create the file AND register it in the
    index" stays one task if a single guardrail checks both.
 3. **One-session rule:** a competent agent finishes it in one focused session
@@ -153,18 +153,23 @@ A task is right-sized when ALL hold:
    fix would redo an hour of work, the task is too coarse.
 5. **TDD default for code deliverables.** When the primary deliverable is code (a
    library, feature, service behavior, or algorithm), the guardrail-boundary rule (rule
-   2) almost always fires: a test-author task's guardrail (`tests-fail-on-current-code`)
-   and the implementation task's guardrail (`specific-tests-pass`) are different in
-   character. Default to splitting into two consecutive tasks:
+   2) almost always fires: a test-author task's "red" guardrail (`build-passes` +
+   `tests-fail-on-stubs` for a behavioral type, or `tests-fail-on-current-code` for a
+   data model — Step 5's stub-based TDD rule) and the implementation task's guardrail
+   (`specific-tests-pass`) are different in character. Default to splitting into two
+   consecutive tasks:
 
    1. `NN-author-tests-<feature>` — writes tests encoding the behavior BEFORE it exists
    2. `NM-implement-<feature>` — makes those tests pass without modifying them
 
    Collapse to a single task only when (a) tests for this behavior **already exist** in
-   the repo, or (b) the behavior is too simple to have meaningful unit tests — state the
-   reason explicitly in the task description or breakdown report. When in doubt, split: the test-author
-   task is cheap and its `tests-fail-on-current-code` guardrail is the strongest
-   anti-tautology check the skill has.
+   the repo, (b) the behavior is too simple to have meaningful unit tests, or (c) the
+   deliverable is a **pure data model** (an enum/record/value type with no behavioral stub
+   possible — the type declaration IS the implementation, so the TDD "red" has no stub-vs-real
+   distinction; Step 5's stub-based TDD rule) — state the reason explicitly in the task
+   description or breakdown report. When in doubt, split: the test-author task is cheap and
+   its anti-tautology guardrails (`build-passes` + `tests-fail-on-stubs` for a behavioral
+   type — Step 5) are the strongest anti-tautology check the skill has.
 
 ### Over-size split-check — a CHECK WITH TEETH, not advice (#111)
 
@@ -432,12 +437,35 @@ upstream task that creates it:
   implementation task (the TDD default in Step 2 means this fires for most code tasks).
   Three things follow automatically:
 
-  **Test-author task guardrails.** `tests-fail-on-current-code` (archetype #8) is
-  required. Keep `tests-build` unless the new tests reference not-yet-existing symbols (a
-  new type, method, or constant) that make the project un-compilable against current code —
-  in that case drop it, since a build guardrail that always fails due to missing symbols
-  adds noise without signal. When tests exercise only existing API surface (a CLI flag, a
-  file path, a response code), keep `tests-build`.
+  **Test-author task guardrails — the "red" must COMPILE and FAIL, not just exit non-zero
+  (#155).** A guardrail that accepts ANY non-zero `dotnet test` exit as the TDD "red" is
+  gameable: a test file that does **not compile** exits non-zero identically to one that
+  compiles and fails, so garbage passes — and the implementation task (whose `writeScope`
+  excludes the test file) can't fix the compile error, dead-ending the run at `needsHuman`.
+  True TDD red = the tests **compile and fail**. The guardrail form splits on the **type
+  under test** (catalogue → "Stub-based TDD" is the SSOT; `stacks/dotnet.md §4.1`):
+
+  - **Behavioral type (a class with methods/logic) → the test-author task ALSO writes the
+    minimal STUBS.** The task produces two artifacts: the test file AND the minimal skeleton
+    stubs the tests need to COMPILE (interface decls / classes whose members throw
+    `NotImplementedException` or return `default`). Its guardrails are the TWO-guardrail pair,
+    cheapest-first: **`build-passes`** (archetype #3 — with the stubs the test project compiles,
+    so garbage fails HERE unambiguously) then **`tests-fail-on-stubs`** (the #8 form — the build
+    being green means a non-zero `dotnet test` now unambiguously means the tests **ran and
+    FAILED** against the throwing stubs = TDD red). The implementation task fills real logic over
+    the stubs (its scope TARGETS them; see below).
+  - **Data model (enum/record/value type — no behavioral stub possible) → COLLAPSE by default.**
+    The type declaration IS the implementation, so there is no stub-vs-real distinction. Default
+    to a single task (define the type + assert `tests-pass`) and **state the reason explicitly**:
+    "data model — no behavioral stub possible". If you keep the split, note the anti-tautology is
+    weaker, keep `tests-fail-on-current-code` (the test references the not-yet-existing type, so a
+    compile failure IS the red — omit a separate `tests-build`, which would fail at the same
+    moment), and **strengthen `covers-key-behaviors` STRUCTURALLY** — assert a real
+    `[Fact]`/`[Theory]` attribute is present (`stacks/dotnet.md §17.1`), not just that the
+    enum-value tokens appear (a comment satisfies a bare keyword grep).
+  - **Mixed task (data + behavioral) → lean BEHAVIORAL.** Stub the behavioral parts so the whole
+    test file compiles, and use the `build-passes` + `tests-fail-on-stubs` pair; the data-model
+    members come along inside the same compiling file.
 
   **`writeScope` test-exclusion — the deterministic TDD test-protection (SSOT §3.4).**
   Tests are protected by (i) physical worktree isolation and (ii) the harness's
@@ -449,30 +477,37 @@ upstream task that creates it:
   **writes nothing** — it only inspects the diff. Set the two scopes so the implementation
   cannot author the tests:
 
-  - **Test-author `task.json`: declare a `writeScope` covering the test file(s) it authors.**
-    List each test file (or its directory) workspace-relative — the surface this task is
-    permitted to write.
+  - **Test-author `task.json`: declare a `writeScope` covering the test file(s) AND, for a
+    behavioral type, the STUB file(s) it authors (#155).** List each test file and each stub
+    file (or their directories) workspace-relative — the surface this task is permitted to
+    write. For a behavioral type the test-author task writes both the test and the minimal
+    `NotImplementedException` stubs the tests compile against, so BOTH belong in scope:
 
     ```jsonc
     {
-      "description": "Author failing tests for <feature>",
+      "description": "Author failing tests + minimal stubs for <feature>",
       "dependsOn": ["..."],
       "stableId": "…",
-      "writeScope": ["tests/MyProject/MyFeatureTests.cs"]
+      "writeScope": ["tests/MyProject/MyFeatureTests.cs", "src/MyProject/MyFeature.cs"]
     }
     ```
 
-  - **Implementation `task.json`: declare a `writeScope` that EXCLUDES those test files.**
-    Scope it to the implementation surface (e.g. `src/MyProject/`) and do NOT list the test
-    files. The write-scope check then deterministically enforces "the implementation may not
-    write the tests" — an edit to a test file falls outside the implementation's scope and
-    fails the check. This is the **replacement** for the removed
+    (For a data-model task with no stub, the scope is just the test file, as before.)
+
+  - **Implementation `task.json`: declare a `writeScope` that EXCLUDES the test file but
+    TARGETS the stub file(s) (#155).** Scope it to the implementation surface (e.g.
+    `src/MyProject/`, which COVERS the stub the test-author created) and do NOT list the test
+    file. The implementation fills real logic over the skeleton stubs; the write-scope check
+    then deterministically enforces "the implementation may not write the tests" — an edit to
+    a test file falls outside the implementation's scope and fails the check. If a stub lives
+    OUTSIDE the implementation's directory surface, list that stub file explicitly so the impl
+    may overwrite it. This is the **replacement** for the removed
     `captureHashes`/`tests-untouched`/`restoreOnRetry` triad; no hashing, no restore, no
     downstream `tests-untouched` guardrail.
 
     ```jsonc
     {
-      "description": "Implement <feature> so the tests pass",
+      "description": "Implement <feature> so the tests pass (fill logic over the stubs)",
       "dependsOn": ["NN-author-tests-<feature>"],
       "stableId": "…",
       "writeScope": ["src/MyProject/"]
@@ -487,15 +522,20 @@ upstream task that creates it:
   scope (**GR2020**) — so emit a real surface or none.
 
   **Action prompt for both tasks.** The declared scope is injected into the action prompt as
-  advisory context (the deterministic check is the gate). The test-author `## Task` section
-  must tell the agent: (a) the exact test file path(s) and any category/trait convention the
-  repo uses; (b) the tests MUST fail against the current code — this is intentional, not a
-  mistake; (c) do NOT implement the behavior, only the tests. The implementation `## Task`
-  must say plainly: **do not edit the authored tests; make them pass by fixing the
+  advisory context, but the harness ALSO enforces it mechanically — so every test-author prompt
+  must carry a **Scope boundary (harness-enforced)** paragraph (#154; Step 6 has the authoring
+  rule and exact shape). The test-author `## Task` section must tell the agent: (a) the exact
+  test file path(s), and — for a behavioral type — the exact STUB file path(s) to create with
+  `NotImplementedException` skeletons so the test project COMPILES (#155), plus any category/trait
+  convention the repo uses; (b) the tests MUST COMPILE and FAIL against the stubs — failing is
+  intentional, NOT compiling is a mistake to fix; (c) do NOT implement the behavior — write the
+  tests and only the minimal throwing stubs. The implementation `## Task` must say plainly: **fill
+  real logic over the stub file(s); do NOT edit the authored tests; make them pass by fixing the
   implementation; if the authored tests are genuinely wrong or incompatible, emit
-  `{"needsHuman": "<why>"}` rather than changing them** — an out-of-scope edit to a test file
-  fails the write-scope check and burns a retry. Neither task needs to compute or write any
-  hash. See `references/example-breakdown.md` for the complete worked `action.prompt.md`.
+  `{"needsHuman": "<why>"}` rather than changing them** — an out-of-scope edit to a test file fails
+  the write-scope check and burns a retry. Neither task needs to compute or write any hash. See
+  `references/example-breakdown.md` for the complete worked `action.prompt.md` (including the Scope
+  boundary paragraph and the stub file).
 - **A test-author behavior needs a production-code testability SEAM that doesn't exist yet →
   insert an upstream production-seam task (#84).** Distinct from the compile-coupled-DTO case
   above: there the missing symbol is a **type the test constructs**, so forcing the whole test
@@ -713,6 +753,34 @@ Per `references/schemas.md`, exactly:
   task's guardrails>
   ```
 
+- **Test-author prompts must carry a `Scope boundary (harness-enforced)` paragraph (#154).**
+  Every generated test-author `action.prompt.md` includes — **immediately after the target
+  file-path statement** — a paragraph that: (a) names the **exact allowed path(s)** (the test
+  file AND, for a behavioral type, the stub file(s) the task's `writeScope` covers — #155);
+  (b) states the harness runs a post-action `git diff` membership check and **REJECTS any edit
+  outside those path(s)** — production files, neighbouring tests, the `.csproj`, anything; (c)
+  states an out-of-scope edit **fails the task immediately and consumes a retry** (not a
+  guardrail miss it can recover from inline); and (d) **redirects the "fix the upstream compile
+  error" impulse** — a compile error from a missing symbol in **another** file must be surfaced
+  as `{"needsHuman": "<what is missing>"}` to the state-out path, NOT fixed by editing that
+  file. The last sentence is load-bearing: it sends the natural "just fix the neighbouring file"
+  reflex to `needsHuman` rather than an out-of-scope edit that burns a retry. Verbatim shape (the
+  allowed paths are the union of this task's `writeScope`):
+
+  ```markdown
+  **Scope boundary (harness-enforced):** Write only to
+  `<tests/MyProject/MyFeatureTests.cs>` and `<src/MyProject/MyFeature.cs>` (the stub file).
+  After this task completes, the harness runs a `git diff` check and rejects any edit outside
+  these paths — including changes to other production files, neighbouring test files, or the
+  `.csproj`. An out-of-scope edit fails the task immediately and consumes a retry. If you hit a
+  compile error caused by a missing symbol in another file, do NOT edit that file — write
+  `{"needsHuman": "<what is missing>"}` to the state-out path and stop.
+  ```
+
+  (For a data-model task with no stub, the paragraph names only the test file.) The harness
+  injects `writeScope` as advisory context at run time, but that injection is information, not a
+  constraint with teeth — this paragraph supplies the consequence (`/guardrails-review` flags its
+  absence WEAK).
 - **Test-bootstrap / test-author action prompts must name the framework or halt — never
   guess.** When the framework was resolved (Step 5 cases 1–3), name it concretely (e.g.
   "an xUnit.v3 test project") and tell the agent to mirror existing projects' package
@@ -1264,7 +1332,8 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 - [ ] UI-facing plan (described screen/page/browser-served component) → a `build-ui-<screen>` task per surface (alongside its backend, not instead of it) AND UI-presence guardrails: asset-exists (scoped to the page/asset file) + a served-markup assertion EXTENDING the §8 smoke-test (body contains a known UI string, not just HTTP 200), both deterministic — no prompt-judge on visual quality. Exit-criterion naming a UI action ⇒ a task builds that UI, or the Step 7.0 self-review failure is reported.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
-- [ ] Inserted test-author tasks include tests-fail-on-current-code; implementation tasks declare a `writeScope` that EXCLUDES the test files (TDD test-exclusion — replaces the captureHashes/restoreOnRetry/tests-untouched triad).
+- [ ] Inserted test-author tasks carry the right TDD "red" for the type under test (#155): a BEHAVIORAL type → the task also writes minimal `NotImplementedException` stubs, its `writeScope` covers test + stub file(s), and its guardrails are `build-passes` + `tests-fail-on-stubs`; a DATA MODEL → collapsed to one task (reason stated) or, if split, `tests-fail-on-current-code` + a STRUCTURAL `[Fact]`/`[Theory]` covers-key-behaviors check. Implementation tasks declare a `writeScope` that EXCLUDES the test file but TARGETS the stub file(s) (TDD test-exclusion — replaces the captureHashes/restoreOnRetry/tests-untouched triad).
+- [ ] (#154) Every generated test-author `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph after the target-file-path statement: it names the exact allowed path(s) (test + stub), states the harness's post-action `git diff` membership check rejects out-of-scope edits, states an out-of-scope edit fails the task and consumes a retry, and redirects an upstream missing-symbol compile error to `{"needsHuman": …}` rather than editing that file.
 - [ ] A test-author behavior that needs a production injection seam (a fake/double injected into a type with no injection point) → an upstream `add-<component>-<seam>-seam` task (pure structural production change, build + a structural seam-exists check, TDD-exempt) the test-author task `dependsOn`; the seam was NOT left to the test task to invent or to its `needsHuman` escape (#84).
 - [ ] A task that fans out over an external/unknown-size set (crawl, recursive glob, API listing) → modeled as a scripted-ETL `script` action (volume off the turn budget), NOT an agent-per-item loop; discover-size-first probe added where the count is unknown; bulk-capture split from bounded per-item curation (#100).
 - [ ] Step 7.0b deliverable-coverage self-review ran: every numbered design deliverable (placement-table row, top-level `§`-section, "what's-asked" item) maps to ≥1 task; any body/`§`-deliverable lacking a milestone home was flagged, not silently dropped; uncovered deliverables are blocking decisions in the report; a `guardrails-review` coverage probe is surfaced (#110).

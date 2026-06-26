@@ -80,7 +80,19 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   upstream test-author task owns (the deterministic write-scope test-exclusion, SSOT
   §3.4), so an edit to a test file fails the harness's read-only write-scope check. An
   implementation task with no `writeScope`, or one whose scope covers the test files, is
-  gameable. Inserted test tasks missing tests-fail-on-current-code.
+  gameable. Inserted test tasks missing the TDD "red" guardrail for their type (#155): a
+  BEHAVIORAL-type test-author task missing the `build-passes` + `tests-fail-on-stubs` pair
+  (a lone non-zero-exit red passes on a non-compiling garbage test file — BLOCKER); a
+  data-model task split without a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
+- **Missing scope-boundary warning (#154)**: for any test-author task (`author-tests-*` / a
+  task whose deliverable is a test file), check that `action.prompt.md` contains an explicit
+  **harness-enforcement paragraph** — it must name the allowed path(s) (test file AND, under
+  #155, any stub file the `writeScope` covers), the post-action `git diff` membership check,
+  the retry consequence of an out-of-scope edit, and the `{"needsHuman": …}` redirect for an
+  upstream missing-symbol compile error. Absence is a **WEAK** finding — the harness injects
+  `writeScope` at run time, but without the consequence the agent may still drift on a compile
+  error and fix a neighbouring file (an out-of-scope edit that burns a retry). Fix: add the
+  Scope boundary paragraph (plan-breakdown Step 6 has the verbatim shape).
 - **Unactionable failures**: guardrails that fail without printing a usable reason
   (retry feedback quality).
 - **Grep-scope contamination**: a file-content guardrail that greps the project tree
@@ -323,7 +335,9 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Terminal/e2e tasks claiming an output quantity assert a STRICTLY POSITIVE value (no hollow `Assert.Equal(0,…)` / `NotNull` / bare `exit 0`); every structural property check is accessor-order-insensitive (no `\{\s*get` / `\{\s*set` anchor).
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Coverage gaps cite the exact unverified completion criterion.
-- [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files; no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
+- [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files (but may TARGET the stub file the test-author wrote, #155); no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
+- [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
+- [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).

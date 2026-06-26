@@ -31,9 +31,14 @@ Non-executable plan content: none (both items have observable deliverables).
 
 - "Implement --stats" is one verifiable outcome. Its strongest guardrail is
   **specific-tests-pass** — the output format is fully specified, perfect for tests.
-  But the tests don't exist. **Catalogue rule: INSERT a test-author task upstream**
-  whose own guardrails include **tests-fail-on-current-code** (proving the tests
-  actually encode the not-yet-built behavior).
+  But the tests don't exist. **Catalogue rule: INSERT a test-author task upstream.**
+  `--stats` is a **behavioral** deliverable (a `StatsCommand` class computes the counts),
+  so by the stub-based TDD rule (catalogue → "Stub-based TDD"; SKILL Step 5) the test-author
+  task ALSO writes the **minimal stub** (`StatsCommand` whose `Render` throws
+  `NotImplementedException`) so the tests COMPILE, and its guardrails are the two-guardrail
+  pair **`build-passes`** (the test file is type-correct against the stub) + **`tests-fail-on-stubs`**
+  (the tests run and FAIL against the throwing stub — true TDD red, not a compile failure that
+  garbage could fake). The implementation task then fills real logic over the stub.
 - README update is a separate task — its verification (file-contains) is a different
   character than the implementation's (tests), and bundling it would make a doc typo
   burn an expensive implementation retry.
@@ -76,18 +81,23 @@ as designed, not scope creep.
 }
 ```
 
-### `tasks/01-author-stats-tests/` — **INSERTED TASK**
+### `tasks/01-author-stats-tests/` — **INSERTED TASK** (behavioral type → tests + minimal stubs)
 
-`task.json` — declares a `writeScope` covering the one test file this task authors. That scope
-is the test-author half of the TDD test-protection: this task may write the test file; the
-implementation task (02) declares a `writeScope` that EXCLUDES it, so the harness's deterministic
-write-scope check (SSOT §3.4) catches an implementation that edits the tests instead of fixing the
-code. No `captureHashes`, no `restoreOnRetry`, no downstream `tests-untouched` guardrail.
+`task.json` — `--stats` is **behavioral** (a `StatsCommand` class renders the output), so this
+test-author task writes BOTH the test file AND the minimal stub the tests compile against, and its
+`writeScope` covers both paths (#155). That scope is the test-author half of the TDD test-protection:
+this task may write the test file and the stub; the implementation task (02) declares a `writeScope`
+that EXCLUDES the test file but TARGETS the stub (`src/Inventory.Cli/` covers it), so the harness's
+deterministic write-scope check (SSOT §3.4) catches an implementation that edits the **tests** instead
+of fixing the code. No `captureHashes`, no `restoreOnRetry`, no downstream `tests-untouched` guardrail.
 ```jsonc
 {
-  "description": "Author failing unit tests that encode the --stats output format (total line + sorted per-category lines)",
+  "description": "Author failing unit tests + a minimal StatsCommand stub for the --stats output format (total line + sorted per-category lines)",
   "dependsOn": [],
-  "writeScope": ["tests/Inventory.Tests/StatsCommandTests.cs"]
+  "writeScope": [
+    "tests/Inventory.Tests/StatsCommandTests.cs",
+    "src/Inventory.Cli/StatsCommand.cs"
+  ]
 }
 ```
 
@@ -103,52 +113,70 @@ code. No `captureHashes`, no `restoreOnRetry`, no downstream `tests-untouched` g
 
 ## Task
 Author unit tests in `tests/Inventory.Tests/StatsCommandTests.cs` (trait/category
-`Stats`) that encode the --stats contract BEFORE it is implemented:
-- `inventory --stats` against a fixture items file prints `total: N` first,
-- then one `«category»: N` line per category, sorted ordinally by category name.
-Use the existing test conventions in tests/Inventory.Tests. The tests MUST fail (or
-be unable to find the flag) against the current code — they test behavior that does
-not exist yet. Do not implement the flag.
+`Stats`) that encode the --stats contract BEFORE it is implemented, plus the **minimal
+stub** the tests compile against in `src/Inventory.Cli/StatsCommand.cs`.
 
-You do NOT need to hash the test file or write anything to state. Publish nothing to state.
+**Scope boundary (harness-enforced):** Write only to
+`tests/Inventory.Tests/StatsCommandTests.cs` and `src/Inventory.Cli/StatsCommand.cs` (the
+stub). After this task completes, the harness runs a `git diff` check and rejects any edit
+outside these paths — including changes to other production files, neighbouring test files,
+or the `.csproj`. An out-of-scope edit fails the task immediately and consumes a retry. If you
+hit a compile error caused by a missing symbol in another file, do NOT edit that file — write
+`{"needsHuman": "<what is missing>"}` to the state-out path and stop.
+
+The stub is a real `StatsCommand` class whose `Render(...)` method
+`throw new NotImplementedException();` — just enough for the test project to COMPILE. The tests
+must then encode the behavior:
+- `StatsCommand.Render` against a fixture items file produces `total: N` first,
+- then one `«category»: N` line per category, sorted ordinally by category name.
+Use the existing test conventions in tests/Inventory.Tests. The tests MUST **compile** (against
+the stub) and **fail** (the stub throws) — failing is intentional, NOT compiling is a mistake.
+Do not implement the real --stats logic.
+
+You do NOT need to hash anything or write to state. Publish nothing to state.
 ```
 
-`guardrails/01-tests-build.ps1`
+`guardrails/01-build-passes.ps1`
 ```powershell
-# catches: test code that doesn't compile (a "test" that can't run verifies nothing)
+# catches: a test file that does not COMPILE - garbage or a real type error. With the minimal
+#          StatsCommand stub in place the test project must build; a non-compiling "test" exits
+#          dotnet test non-zero identically to a failing one, so without this the red signal is
+#          gameable by garbage (#155).
 dotnet build tests/Inventory.Tests --nologo -v q
 if ($LASTEXITCODE -ne 0) {
-    Write-Output "tests/Inventory.Tests does not build"
+    Write-Output "tests/Inventory.Tests does not build - the test file or the StatsCommand stub is not type-correct"
     exit 1
 }
 exit 0
 ```
 
-`guardrails/02-tests-fail-on-current-code.ps1`
+`guardrails/02-tests-fail-on-stubs.ps1`
 ```powershell
-# catches: tautological tests — tests that already pass against code with NO --stats
-#          flag encode nothing about the new behavior
+# catches: tautological tests — tests that PASS against the NotImplementedException stub encode
+#          nothing about the new behavior. The build being green (guardrail 01) means a non-zero
+#          exit here unambiguously means the tests RAN and FAILED against the stub = TDD red (#155).
 dotnet test tests/Inventory.Tests --filter "Category=Stats" --nologo
 if ($LASTEXITCODE -eq 0) {
-    Write-Output "the new Stats tests PASS against current code - they are tautological"
+    Write-Output "the Stats tests PASS against the NotImplementedException stub - they are tautological"
     exit 1
 }
 exit 0
 ```
 
 (No `state-fragment-written` guardrail is needed: this task publishes nothing to state. Its
-test files are protected downstream by task 02's `writeScope` excluding them, not by any state
-hand-off.)
+test file is protected downstream by task 02's `writeScope` excluding it, not by any state
+hand-off — while task 02's scope still TARGETS the `StatsCommand.cs` stub so it can fill the logic.)
 
 ### `tasks/02-implement-stats-flag/`
 
-`task.json` — declares a `writeScope` scoped to the implementation source that EXCLUDES the test
-file task 01 owns. The harness's deterministic write-scope check (SSOT §3.4) then fails this task
-if its diff touches `tests/Inventory.Tests/StatsCommandTests.cs` — "the implementation may not write
+`task.json` — declares a `writeScope` scoped to the implementation source. `src/Inventory.Cli/`
+COVERS the `StatsCommand.cs` stub task 01 wrote (so this task may fill its logic) and EXCLUDES the
+test file `tests/Inventory.Tests/StatsCommandTests.cs`. The harness's deterministic write-scope check
+(SSOT §3.4) then fails this task if its diff touches the test file — "the implementation may not write
 the tests", enforced without any hash compare or `tests-untouched` guardrail.
 ```jsonc
 {
-  "description": "Implement --stats in src/Inventory.Cli so the Stats tests pass",
+  "description": "Implement --stats in src/Inventory.Cli (fill StatsCommand logic over the stub) so the Stats tests pass",
   "dependsOn": ["01-author-stats-tests"],
   "writeScope": ["src/Inventory.Cli/"]
 }
@@ -157,10 +185,13 @@ the tests", enforced without any hash compare or `tests-untouched` guardrail.
 `action.prompt.md` — same harness-contract header, then:
 ```markdown
 ## Task
-Implement the `--stats` flag in `src/Inventory.Cli` per the format the Stats tests
-encode (total line, then sorted per-category lines, read from data/items.json).
-Make the `Category=Stats` tests pass without modifying the tests.
-Publish nothing to state.
+Implement the `--stats` flag in `src/Inventory.Cli` by filling real logic into the
+`StatsCommand.Render(...)` stub (replace the `NotImplementedException`) per the format the
+Stats tests encode (total line, then sorted per-category lines, read from data/items.json).
+Make the `Category=Stats` tests pass WITHOUT modifying the tests — editing
+`tests/Inventory.Tests/StatsCommandTests.cs` is outside this task's writeScope and fails the
+harness's git-diff check. If the authored tests are genuinely wrong, write
+`{"needsHuman": "<why>"}` rather than editing them. Publish nothing to state.
 ```
 
 `guardrails/01-build.ps1` → `# catches: code that doesn't compile` + `dotnet build --nologo -v q`, exit-code contract.
@@ -251,19 +282,25 @@ gate's merged HEAD. This is the `scope: "integration"` guardrail GR2018 requires
 >
 > | Task | Action | Guardrails (archetypes) | dependsOn |
 > |---|---|---|---|
-> | 01-author-stats-tests *(INSERTED)* | prompt | tests-build (3), tests-fail-on-current-code (8); `writeScope` owns the test file | — |
-> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4); `writeScope` excludes the test file | 01 |
+> | 01-author-stats-tests *(INSERTED)* | prompt | build-passes (3), tests-fail-on-stubs (8); `writeScope` owns the test file + the `StatsCommand` stub; Scope boundary paragraph | — |
+> | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4); `writeScope` targets the stub, EXCLUDES the test file | 01 |
 > | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
 > | 04-suite-green | script | full-suite (4, terminal-only, `scope: "integration"`); `integrationGate: true` | 02, 03 |
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
-> pass" and those tests didn't exist. Its `tests-fail-on-current-code` guardrail proves
-> they're not tautological. The TDD pair's `writeScope` declarations protect the tests
-> deterministically: task 01 owns `tests/Inventory.Tests/StatsCommandTests.cs` in its scope;
-> task 02's scope (`src/Inventory.Cli/`) EXCLUDES it, so the harness's read-only write-scope
-> check (SSOT §3.4) fails 02 if its diff edits the tests — no hashing, no `tests-untouched`
-> guardrail. `04-suite-green` is the terminal `integrationGate: true` sink the two leaves fan
-> into; its full-suite check is `scope: "integration"`. `guardrails validate add-stats-flag` → OK.
+> pass" and those tests didn't exist. `--stats` is behavioral, so this task also writes the
+> minimal `StatsCommand` stub (`NotImplementedException`) the tests compile against, and its
+> `build-passes` + `tests-fail-on-stubs` pair makes the TDD "red" mean "compiles AND fails"
+> rather than "exits non-zero" (which non-compiling garbage would fake — #155). Its
+> `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph naming both
+> allowed paths and redirecting an upstream compile error to `needsHuman` (#154). The TDD
+> pair's `writeScope` declarations protect the tests deterministically: task 01 owns
+> `tests/Inventory.Tests/StatsCommandTests.cs` AND `src/Inventory.Cli/StatsCommand.cs`; task
+> 02's scope (`src/Inventory.Cli/`) TARGETS the stub but EXCLUDES the test file, so the
+> harness's read-only write-scope check (SSOT §3.4) fails 02 if its diff edits the tests — no
+> hashing, no `tests-untouched` guardrail. `04-suite-green` is the terminal `integrationGate:
+> true` sink the two leaves fan into; its full-suite check is `scope: "integration"`.
+> `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
 > or add, then run `/guardrails-review add-stats-flag` before executing.
