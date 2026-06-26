@@ -1082,6 +1082,18 @@ task-level `feedback.md` captures:
 - The evidence the triage drew on.
 - For a `guardrails-tool` diagnosis: the drafted GH-issue title and body.
 
+**Structured `triage.json` sidecar — for the console summary (issue #163).**
+
+When the triage output is the structured JSON above, triage ALSO writes a compact, machine-readable
+sibling `logs/<runId>/<task-id>/triage.json` — `{ "diagnosis", "summary", "ghIssueTitle"? }` — next
+to `feedback.md`. `summary` is a one-line diagnosis distilled from `ghIssueTitle` (tool problems) or
+`analysis` (local problems); `ghIssueTitle` is present only for a `guardrails-tool` diagnosis. The
+sidecar lets the `run` summary surface the **root-cause category + one-line** per needs-human task
+directly in the console (and annotate tasks that share a category) without the user opening each
+`feedback.md`. It is **advisory and additive**: an unstructured or failed triage writes no sidecar,
+and the summary then falls back to the `feedback.md` pointer alone. The sidecar never gates anything
+and is never read as a verdict.
+
 **Needs-human message pointer.**
 
 The task's `needs-human` message (surfaced in the run summary and `guardrails status`) references

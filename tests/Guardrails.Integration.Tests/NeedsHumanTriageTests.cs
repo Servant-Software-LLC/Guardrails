@@ -306,6 +306,87 @@ public sealed class NeedsHumanTriageTests
     }
 
     /// <summary>
+    /// issue #163: when the triage output is the documented structured JSON, triage writes a compact
+    /// machine-readable <c>triage.json</c> sidecar next to <c>feedback.md</c> so the CLI run summary
+    /// can surface the root-cause category + one-line diagnosis (and ghIssueTitle when present) WITHOUT
+    /// the user opening each feedback.md. Assert the sidecar exists and carries the structured fields,
+    /// readable via <see cref="TriageSummaryReader"/>.
+    /// </summary>
+    [Fact]
+    public async Task Triage_WritesStructuredTriageJsonSidecar_ForConsoleSummary()
+    {
+        const string toolResult =
+            """{"diagnosis":"guardrails-tool","ghIssueTitle":"plan-breakdown emits stableId as state-out key","ghIssueBody":"Repro: ..."}""";
+
+        var runner = new RecordingRunner("ai-triage") { CannedResultText = toolResult };
+        var triage = new NeedsHumanTriage(runner);
+
+        using var plan = new StatePlanBuilder(defaultRetries: 0)
+            .AddTask("04-author-tests", guardrailBody: StatePlanBuilder.Fail("fails"));
+
+        await RunWithTriageAsync(plan.PlanDir, triage, TestContext.Current.CancellationToken);
+
+        string taskLogDir = TaskLogDir(plan.PlanDir, "04-author-tests");
+        Assert.True(File.Exists(Path.Combine(taskLogDir, "triage.json")),
+            "a structured triage diagnosis must leave a triage.json sidecar for the console summary");
+
+        TriageSummary? summary = TriageSummaryReader.TryRead(taskLogDir);
+        Assert.NotNull(summary);
+        Assert.Equal("guardrails-tool", summary!.Diagnosis);
+        Assert.Equal("plan-breakdown emits stableId as state-out key", summary.OneLine);
+        Assert.Equal("plan-breakdown emits stableId as state-out key", summary.GhIssueTitle);
+    }
+
+    /// <summary>
+    /// issue #163: a <c>local-repo</c> diagnosis (no <c>ghIssueTitle</c>) still produces a sidecar with
+    /// the category and a one-line distilled from <c>analysis</c>; <c>ghIssueTitle</c> is null/absent.
+    /// </summary>
+    [Fact]
+    public async Task Triage_LocalRepoDiagnosis_SidecarHasCategoryAndOneLine_NoIssueTitle()
+    {
+        const string localResult =
+            """{"diagnosis":"local-repo","analysis":"The guardrail expectations are self-contradictory.\nSecond line of detail."}""";
+
+        var runner = new RecordingRunner("ai-triage") { CannedResultText = localResult };
+        var triage = new NeedsHumanTriage(runner);
+
+        using var plan = new StatePlanBuilder(defaultRetries: 0)
+            .AddTask("05-impl", guardrailBody: StatePlanBuilder.Fail("fails"));
+
+        await RunWithTriageAsync(plan.PlanDir, triage, TestContext.Current.CancellationToken);
+
+        TriageSummary? summary = TriageSummaryReader.TryRead(TaskLogDir(plan.PlanDir, "05-impl"));
+        Assert.NotNull(summary);
+        Assert.Equal("local-repo", summary!.Diagnosis);
+        // One-line is the FIRST line of analysis (the summary must stay scannable).
+        Assert.Equal("The guardrail expectations are self-contradictory.", summary.OneLine);
+        Assert.Null(summary.GhIssueTitle);
+    }
+
+    /// <summary>
+    /// issue #163: when the triage output is NOT structured (no diagnosis JSON), no sidecar is written
+    /// and <see cref="TriageSummaryReader.TryRead"/> returns null — so the console summary falls back
+    /// to the feedback pointer alone, unchanged. (The feedback.md itself is still written.)
+    /// </summary>
+    [Fact]
+    public async Task Triage_UnstructuredOutput_WritesNoSidecar()
+    {
+        var runner = new RecordingRunner("ai-triage") { CannedResultText = "free-form prose, not JSON" };
+        var triage = new NeedsHumanTriage(runner);
+
+        using var plan = new StatePlanBuilder(defaultRetries: 0)
+            .AddTask("06-doomed", guardrailBody: StatePlanBuilder.Fail("fails"));
+
+        await RunWithTriageAsync(plan.PlanDir, triage, TestContext.Current.CancellationToken);
+
+        string taskLogDir = TaskLogDir(plan.PlanDir, "06-doomed");
+        Assert.True(File.Exists(Path.Combine(taskLogDir, "feedback.md")), "feedback.md is still written");
+        Assert.False(File.Exists(Path.Combine(taskLogDir, "triage.json")),
+            "an unstructured triage output must NOT leave a sidecar — the summary falls back gracefully");
+        Assert.Null(TriageSummaryReader.TryRead(taskLogDir));
+    }
+
+    /// <summary>
     /// With <c>triageAutoFile</c> unset/default (<c>false</c>), triage only DRAFTS the GH
     /// issue (title+body) INTO <c>feedback.md</c> and files NOTHING to a remote. Assert no
     /// auto-file/GH-API side effect occurs by default (drafts only).
