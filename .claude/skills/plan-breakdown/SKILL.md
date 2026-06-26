@@ -307,6 +307,18 @@ optional:
   integration-scoped guardrail. Prefer **disjoint** scopes (a collision is usually a plan-shape smell);
   emit the union-guardrail when the overlap is genuine. (Catalogue → overlapping-writeScope
   union-guardrail.)
+  - **On removing a dependency edge, re-evaluate the union guardrail's expected contributions (#159).**
+    When a regeneration (Step 8) or a hand-edit **removes a dependency edge** (task B no longer
+    `dependsOn` task A — e.g. a mode deferred, a producer demoted to a disconnected leaf), re-examine
+    **every** `scope:"integration"` union guardrail on the fan-in task. If any of them still checks for
+    a contribution token that **only task A could produce** and A is no longer in the fan-in task's
+    **ancestor set** (no directed path A → fan-in), the guardrail has gone stale: it now implicitly
+    requires a disconnected task to stay in the plan, and if A is later removed the integration gate
+    fails spuriously with a confusing "shared file is missing `<token>`" — a stale-guardrail bug, not
+    a merge failure. Resolve it one of two ways: **(a)** add an alternative DAG path from A to the
+    fan-in task (make the dependency the guardrail relies on explicit), or **(b)** remove the now-stale
+    contribution check for A's token from the union guardrail. This is the authoring-side complement to
+    the `guardrails-review` "Union guardrail ancestor staleness" probe (#159).
 - A terminal integration task must declare `integrationGate: true` in its `task.json` — it
   marks the terminal whole-repo integration gate, the final soundness boundary run once on
   the fully merged plan-branch HEAD (SSOT §3.3). Validation enforces this: a plan with ≥2
@@ -359,6 +371,23 @@ optional:
   that one greps `Program.cs` + smoke-tests a route for a *server serving over a port*; this one
   asserts a *factory/container constructs and injects an internal collaborator*. A plan can need
   both — wire the entry point to the launcher AND wire a collaborator into the factory.)
+- **Dispatch / factory pairing (#158 — is the RIGHT impl wired to the RIGHT mode?)** — does this task
+  **dispatch from an enum / discriminated value to one of ≥2 concrete implementations**
+  (`ImportMode.TcApiLocal → new TcApiLocalImporter()`, a `switch`/`if` selecting a handler per mode)?
+  The build passes with the pairings **swapped** (either concrete type satisfies the interface in either
+  branch), and if the dispatch tests inject a **substituted fake** (`RecordingImporter` / `FakeHandler`
+  via DI) they assert only that *an* importer was called, never **which concrete type** — so an inverted
+  wiring (Mode B → the wrong importer) ships fully green. A bare keyword check that all enum values AND
+  all type names appear *somewhere* in the file does NOT catch it (all are present regardless of
+  pairing). Add **one proximity check per pairing** (catalogue → "Dispatch / factory wiring";
+  `stacks/dotnet.md §10d`): assert `<EnumValue>` sits within a bounded window (`[\s\S]{0,300}`,
+  multiline-dotall, both orders) of `<ConcreteType>` in the dispatch file, scoped to that one file.
+  **Decision gate:** if the dispatch tests already assert the concrete TYPE NAME
+  (`Assert.IsType<TcApiLocalImporter>` on the resolved object), the test catches the swap — OMIT the
+  proximity check and say so in the covering guardrail's `# catches:` comment. Distinct from #120
+  composition-root wiring (which asks whether the impl is constructed/injected at all); this asks
+  whether each mode got the right one. Fire only when **both** hold: ≥2 concrete impls selected by an
+  enum, AND the dispatch tests use seam-injection (not type assertions).
 - **Executable entry-point wiring** — does the plan describe a **server or CLI executable
   outcome** (signals below)? Component tasks (scaffold, handler, routes) each compile and
   unit-test green, and the terminal whole-solution build passes — yet *nothing wires the
@@ -921,6 +950,24 @@ to preserve edits against).
    task is **not** the continuation → **mint a fresh `stableId`** (or let it drop). If genuinely
    ambiguous, **mint fresh and note it** — the merge then takes REMOTE rather than risk a wrong
    preserve. Be deliberate: this judgment is what the merge relies on.
+
+   **1a. Re-align each `covers-key-behaviors` guardrail with its EDITED action prompt (#157).**
+   Whenever this regeneration **edits a continuation task's action prompt** — removes a scenario
+   (a mode/behavior dropped from scope), narrows the scope, or renames a behavior — you MUST, in
+   the SAME pass, scan that task's `covers-key-behaviors` guardrail for any required token that
+   matches the removed/renamed scenario and **remove or replace it** so the guardrail and prompt
+   cannot drift apart. The drift this prevents: the merge preserves the human-edited (or prior)
+   coverage guardrail while REMOTE rewrites the prompt, so the guardrail keeps requiring a token
+   (e.g. `CommanderRest`) the prompt no longer asks the agent to encode — a correct
+   implementation then fails the guardrail on **every** attempt and the task dead-ends at
+   `needsHuman` (the #157 failure mode the GR2026 lint and the `guardrails-review` stale-coverage
+   probe also catch, after the fact). Concretely, for each edited prompt: diff its scenario list
+   against the matching guardrail's `if ($content -match "<token>")` / `-notmatch … exit 1` lines;
+   for every token whose scenario the edit removed, delete that `if`-block (and decrement any
+   `$hits -lt N` threshold) or replace the token with the renamed scenario's distinctive term. A
+   token that survives in the guardrail must still be named in the rewritten prompt. Re-running the
+   Step 4 covers-key-behaviors selection on the new prompt is the clean way to regenerate the
+   guardrail from scratch when the scenario list changed substantially.
 2. **Dry-run the merge:** `guardrails merge <folder> --remote <staging>`. Branch on the exit code:
    - **Exit `0`** — no conflicts. Proceed to apply (step 3).
    - **Exit `2`** — read the output to disambiguate (this code has two meanings):

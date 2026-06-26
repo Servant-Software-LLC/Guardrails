@@ -508,6 +508,75 @@ both go green over an unwired feature. A full-suite-green gate over seam-injecte
 The .NET realization (the reflection-on-factory pattern + the drive-the-real-factory integration
 test) is `stacks/dotnet.md §10`.
 
+## Dispatch / factory wiring — the CORRECT concrete type is paired with the CORRECT mode (#158)
+
+The **next failure past #120.** #120 asks "is the component wired at all?"; this asks "is it wired to
+the **right** mode?". When a dispatch wires N enum/discriminated values to N concrete implementations
+(`ImportMode.TcApiLocal → new TcApiLocalImporter()`, `ImportMode.CommanderRest → new
+CommanderRestImporter()`), an agent can **swap the pairings** — route Mode B to the wrong importer and
+Mode C to the other — and ship the feature **inverted**. The usual gates all stay green:
+
+- the **build** passes (both concrete types exist and satisfy the interface, so either compiles in
+  either branch);
+- the **dispatch tests** pass — they inject a **substituted fake** (`RecordingImporter` / `FakeHandler`)
+  via DI and assert only that *the registered `ICommanderImporter` was called*, never **which concrete
+  type** was registered (seam-injection proves routing, not type identity);
+- a **bare keyword check** (`if ($content -notmatch "ImportMode|TcApiLocal") …`) passes in the inverted
+  case too — every enum value and every type name is present *somewhere* in the dispatch file regardless
+  of how they're paired.
+
+So the swap survives every check that doesn't bind a **specific enum value to a specific concrete type**.
+
+### The archetype: one proximity check per enum→concrete pairing
+
+For each of the N pairings, add **one** guardrail asserting `<EnumValue>` appears within a **bounded
+window** (~300 characters — a single short `if` block) of `<ConcreteType>` in the dispatch file. Use a
+**multiline-dotall** window `[\s\S]{0,300}` (matches across newlines), checked in **both orders** so the
+declaration order inside the block doesn't matter — NOT single-line `.{0,300}` (which stops at the first
+newline and false-fails a multi-line block):
+
+```powershell
+# catches: the wrong concrete importer wired to the TcApiLocal mode (e.g. swapped with
+#          CommanderRestImporter) - build + seam-injected dispatch tests + a bare keyword
+#          check all pass on the inverted wiring; only the per-pairing proximity check fails.
+$file = "src/Commander/ImporterDispatch.cs"
+$content = Get-Content $file -Raw
+if ($content -notmatch "TcApiLocal[\s\S]{0,300}TcApiLocalImporter|TcApiLocalImporter[\s\S]{0,300}TcApiLocal") {
+    Write-Output "TcApiLocal mode is not paired with TcApiLocalImporter in $file - verify the correct importer is wired to the correct ImportMode branch (a swap passes the build and the seam-injected dispatch tests)"
+    exit 1
+}
+exit 0
+```
+
+Emit **one such check per pairing** (one for each `<EnumValue, ConcreteType>` couple). The 300-char
+window covers a single short `if`/`switch`-arm block; **widen it** for a longer block, but keep it tight
+enough that an *unrelated* later branch naming the other type can't accidentally fall inside the window.
+Scope the grep to the **one dispatch file** the wiring task owns (grep-scope rule).
+
+### WHEN to use it — both conditions must hold
+
+Emit the pairing checks only when **both** are true; otherwise they are noise:
+
+1. The task **selects among ≥2 concrete implementations by an enum / discriminated value** (a real
+   dispatch with a real chance of a swap — a single implementation cannot be mis-paired); AND
+2. the dispatch tests use a **substituted fake / seam-injection** (`RecordingImporter`, `FakeHandler`,
+   an `InMemoryX` registered via DI) that proves *routing* but **not type identity** — so the swap is
+   invisible to the test suite.
+
+### DECISION GATE — omit when the tests already assert the concrete type
+
+**If the dispatch tests assert the concrete TYPE NAME** (e.g. `Assert.IsType<TcApiLocalImporter>(...)`
+on the object the dispatch resolved for Mode C, not merely that *an* importer was called), the test
+**already catches the swap** and this guardrail is **redundant** — **omit it** and state why in the
+`# catches:` comment of whatever guardrail covers the dispatch (e.g. `# pairing not separately checked:
+DispatchTests assert IsType<TcApiLocalImporter> for Mode C, so a swap fails the tests`). Adding the
+proximity check on top of a type-asserting test is duplicate coverage, not extra safety.
+
+Relation to #120: composition-root wiring asks whether `FooImpl` is constructed/injected *at all*; this
+asks whether — given it IS wired — each mode got the **right** impl. A plan can need both (wire the
+dispatch into the production path AND prove each mode's pairing). A `.NET` realization is
+`stacks/dotnet.md §10d`; this catalogue section is the universal archetype.
+
 ## Production testability seam — insert it upstream of the test-author task (#84)
 
 A test-author task can correctly refuse to author a behavior it knows is **unsatisfiable as

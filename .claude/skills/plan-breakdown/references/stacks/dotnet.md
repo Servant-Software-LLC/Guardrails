@@ -619,6 +619,39 @@ This is strictly weaker — `new FooImpl(` can sit in a dead branch the producti
 and the grep cannot tell. Use it only when the factory cannot be driven from a test at all; prefer
 10a, then 10b. Mark 10a/10b `scope: "integration"` when they drive the whole assembled feature.
 
+### 10d. Dispatch / factory pairing — the right concrete type for the right mode (#158)
+
+The .NET realization of the catalogue's "Dispatch / factory wiring" archetype. #10 above asks whether
+`FooImpl` is constructed/injected **at all**; this asks whether — given a dispatch from an `enum`
+`ImportMode` to one of ≥2 `ICommanderImporter` impls — **each mode resolved the right concrete type**.
+The build passes with the branches **swapped** (every impl satisfies `ICommanderImporter`, so either
+compiles in either arm), and a seam-injected dispatch test (`RecordingImporter` registered via DI,
+asserting only that `ICommanderImporter.ImportAsync` was called) passes on the inverted wiring — it
+never checks the concrete type. Emit **one proximity guardrail per pairing**, scoped to the one dispatch
+file, with a **multiline-dotall** window in **both orders** (`[\s\S]{0,300}`, NOT single-line `.{0,300}`
+which stops at the first newline):
+
+```powershell
+# catches: ImportMode.TcApiLocal wired to the WRONG importer (e.g. swapped with CommanderRestImporter).
+#          Build + the seam-injected DispatchTests (RecordingImporter via DI) + a bare ImportMode|TcApiLocal
+#          keyword check ALL pass on the inverted wiring; only this per-pairing proximity check fails.
+$file = "src/Commander/ImporterDispatch.cs"
+$content = Get-Content $file -Raw
+if ($content -notmatch "TcApiLocal[\s\S]{0,300}TcApiLocalImporter|TcApiLocalImporter[\s\S]{0,300}TcApiLocal") {
+    Write-Output "$file does not pair ImportMode.TcApiLocal with TcApiLocalImporter within one block - verify the correct importer is wired to the correct ImportMode branch"
+    exit 1
+}
+exit 0
+```
+
+Repeat for each `<ImportMode value, ConcreteImporter>` couple. **Decision gate (omit when redundant):**
+if the dispatch test asserts the concrete type — `Assert.IsType<TcApiLocalImporter>(dispatch.Resolve(ImportMode.TcApiLocal))`
+— the test already catches the swap; drop the proximity guardrail and record why in the covering
+guardrail's `# catches:` comment. The C# type-asserting test is the **stronger** form when you can
+resolve the real concrete object without standing up the whole feature; the source-proximity grep is the
+fallback when the dispatch can only be inspected statically (the resolution is buried behind DI you can't
+easily drive in a guardrail). Prefer the type assertion, then the proximity grep.
+
 ## 11. Strip comments before a forbidden-keyword scan — SQL and C# syntax (#97, #98)
 
 The catalogue's comment-blind keyword-scan rule (catalogue → "Comment-blind keyword scan"): a
