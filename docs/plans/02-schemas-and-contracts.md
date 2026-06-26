@@ -466,6 +466,39 @@ vars stay deliberately absent (there is no action at a union point). `plan-break
 build/test guardrails `scope: "integration"`; `guardrails-review` flags an integration-sensitive plan
 whose integration set is missing or too thin to be the union's whole re-verify (BLOCKER).
 
+### 4.4 Stale `covers-key-behaviors` coverage (validated, GR2026 — warning)
+
+The `covers-key-behaviors` archetype (`plan-breakdown` guardrail catalogue) greps the one test file a
+task authors for a handful of distinctive literal terms drawn from the task's action prompt — one
+`if ($content -match "<token>")` per behavior — so a single trivially-failing stub cannot satisfy a
+multi-behavior prompt. When the action prompt is edited mid-lifecycle (a scenario removed, scope
+narrowed) but its coverage guardrail is **not** updated to match, the guardrail keeps requiring a token
+the prompt no longer mentions: a correct implementation following the prompt can never satisfy it, so
+the task gets "need `<token>`" retry feedback that contradicts the prompt and dead-ends at
+`needs-human` on **every** attempt (issue #157).
+
+`guardrails validate` surfaces this drift as a **WARNING (GR2026)**, never an error: for each task it
+locates the covers-key-behaviors-style script guardrail, extracts its required tokens, and
+cross-references each against the SAME task's action prompt text with a **case-insensitive whole-word
+keyword-presence** check; a token absent from the prompt is reported as stale (naming the token and the
+task). It is a **heuristic**, deliberately conservative to protect the zero-false-positive spirit even
+for a warning:
+
+- **Archetype recognition** fires only when confident — either the issue's canonical `$hits -lt N`
+  threshold is present, OR the guardrail carries the canonical `covers-key-behaviors` file name (the
+  per-term `-notmatch … exit 1` form the catalogue emits, which has no `$hits` counter). Anything else
+  is not treated as the archetype.
+- **Token extraction** takes only a quoted string literal on the right of a `-match`/`-notmatch`
+  against the scanned content variable (`$content`/`$tn`/`$code`/`$text`/`$file`), and only when the
+  literal is a **clear keyword** — alphanumerics plus `. _ -`, ≥3 chars, no regex metacharacters. A
+  regex-shaped literal (anchors, classes, alternations, escapes) is skipped: it cannot be confidently
+  keyword-matched against prose.
+- **Limits (stated so authors don't over-trust it).** Surface keyword presence in the prose is a strong
+  signal, not a proof: a token named only via a synonym is a possible false negative, and a generic
+  token reused in an unrelated sentence is a possible false negative the other way. When in doubt the
+  heuristic stays silent. The `guardrails-review` "stale coverage" probe (issue #157 §2) is the
+  human-judgement complement; the breakdown skill keeps the two in sync at authoring time (§157 §3).
+
 ---
 
 ## 5. Child-process contract

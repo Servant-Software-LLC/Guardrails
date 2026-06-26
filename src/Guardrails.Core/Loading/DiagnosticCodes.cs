@@ -184,4 +184,17 @@ public static class DiagnosticCodes
     /// pass <c>--skip-review-check</c> on <c>run</c> to proceed. (GR2024 is reserved elsewhere.)
     /// </summary>
     public const string ReviewMarkerMissingOrStale = "GR2025";
+
+    /// <summary>
+    /// A task's <c>covers-key-behaviors</c>-style guardrail requires a coverage token that the SAME
+    /// task's action prompt never mentions (SSOT §3/§4, issue #157 §1). When an action prompt is
+    /// edited (a scenario removed, scope narrowed) but its coverage guardrail is not updated to match,
+    /// the guardrail keeps requiring the now-removed token — a correct implementation following the
+    /// prompt can never satisfy it, so the task dead-ends at <c>needs-human</c> on every attempt. A
+    /// WARNING, never an error: this is a HEURISTIC (case-insensitive keyword-presence cross-reference),
+    /// only emitted when the covers-key-behaviors archetype and a clear literal token are both
+    /// confidently identified — when in doubt it stays silent (zero-false-positive spirit, even for a
+    /// warning).
+    /// </summary>
+    public const string StaleCoverageToken = "GR2026";
 }

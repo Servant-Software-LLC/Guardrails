@@ -35,6 +35,7 @@ public sealed class PlanValidator
         ValidateDependencies(plan, diagnostics);
         ValidateNoCycles(plan, diagnostics);
         ValidateCrossTaskStateReferences(plan, diagnostics);
+        ValidateStaleCoverageTokens(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
         ValidateIntegrationGatePresent(plan, diagnostics);
         ValidateIntegrationGateNonEmpty(plan, diagnostics);
@@ -675,6 +676,102 @@ public sealed class PlanValidator
         }
 
         return keys;
+    }
+
+    /// <summary>
+    /// Stale-coverage WARNING (GR2026, issue #157 §1). For each task, locate its
+    /// <c>covers-key-behaviors</c>-style script guardrail (the archetype that greps a test file for
+    /// distinctive literal terms — recognised by a <c>$hits -lt N</c> threshold or the canonical
+    /// guardrail name, see <see cref="CoverageGuardrailHeuristic"/>), extract its required tokens, and
+    /// cross-reference each against the SAME task's action body text (case-insensitive keyword
+    /// presence). A token the action prompt never mentions is almost certainly STALE — the prompt was
+    /// edited (a scenario removed, scope narrowed) without updating the guardrail — so a correct
+    /// implementation following the prompt can never satisfy it and the task dead-ends at needs-human
+    /// on every attempt.
+    ///
+    /// <para>This is a HEURISTIC, never an error: it fires ONLY when the archetype and a clear literal
+    /// keyword are both confidently identified (the extraction is conservative — quoted, metachar-free,
+    /// ≥3-char literals on a <c>-match</c>/<c>-notmatch</c> against the scanned content variable). Its
+    /// limits: surface keyword presence in the prose is a strong signal but not a proof — a token named
+    /// only in a synonym, or mentioned in an unrelated sentence, can produce a false negative or
+    /// positive; when in doubt the heuristic stays silent. A guardrail body that cannot be read is
+    /// skipped (other checks surface the structural problem).</para>
+    /// </summary>
+    private static void ValidateStaleCoverageTokens(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            // Cross-reference is against this task's action body text (the action prompt, typically
+            // action.prompt.md). If the action is unreadable, skip — nothing to compare against.
+            string? actionText = TryReadAllText(task.Action.Path);
+            if (actionText is null)
+            {
+                continue;
+            }
+
+            foreach (GuardrailDefinition guardrail in task.Guardrails)
+            {
+                // Only script guardrails carry the covers-key-behaviors archetype (a prompt guardrail
+                // is prose, not a `$content -match` grep).
+                if (guardrail.Kind != ActionKind.Script)
+                {
+                    continue;
+                }
+
+                string? guardrailBody = TryReadAllText(guardrail.Path);
+                if (guardrailBody is null)
+                {
+                    continue;
+                }
+
+                IReadOnlyList<string> tokens =
+                    CoverageGuardrailHeuristic.ExtractCoverageTokens(guardrailBody, guardrail.Name);
+
+                foreach (string token in tokens)
+                {
+                    if (!ActionMentions(actionText, token))
+                    {
+                        diagnostics.Add(Warning(DiagnosticCodes.StaleCoverageToken, guardrail.Path,
+                            $"Task '{task.Id}' guardrail '{guardrail.Name}' requires the coverage token " +
+                            $"'{token}', but the task's action prompt never mentions it. If the prompt was " +
+                            "edited (a scenario removed or scope narrowed) without updating this guardrail, " +
+                            "the token is stale: a correct implementation following the prompt can never " +
+                            "satisfy the guardrail, so the task will fail every attempt and dead-end at " +
+                            "needs-human. Remove or update the token in the guardrail, or add the behavior " +
+                            "back to the action prompt (heuristic WARNING — SSOT §4, issue #157)."));
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Case-insensitive keyword-presence test: does <paramref name="actionText"/> mention
+    /// <paramref name="token"/> bounded by non-alphanumerics? An alphanumeric boundary (rather than a
+    /// raw substring) avoids a spurious match inside an unrelated longer identifier (token
+    /// <c>ProcessId</c> must not match <c>ProcessIdentifier</c>) while still finding the token in
+    /// prose, in punctuation (<c>XtcFileOnly.</c>, <c>(TcApiLocal)</c>), or in dotted/qualified code.
+    /// The token is metachar-free (the heuristic only extracts clear keywords) but is regex-escaped
+    /// defensively before matching.
+    /// </summary>
+    private static bool ActionMentions(string actionText, string token)
+    {
+        string pattern = $@"(?<![A-Za-z0-9]){Regex.Escape(token)}(?![A-Za-z0-9])";
+        return Regex.IsMatch(actionText, pattern,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    /// <summary>Read a file's text, or null when it is missing/unreadable (a structural problem other checks surface).</summary>
+    private static string? TryReadAllText(string path)
+    {
+        try
+        {
+            return File.ReadAllText(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static void ValidateGuardrailsPresent(PlanDefinition plan, List<Diagnostic> diagnostics)
