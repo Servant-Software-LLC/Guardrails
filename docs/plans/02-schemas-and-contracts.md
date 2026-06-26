@@ -462,9 +462,11 @@ lifecycle, it uses a **public attempt-decoupled re-verify seam** (NOT the attemp
 guardrail runner). The re-verify child process runs with cwd = the integration worktree and
 `GUARDRAILS_WORKSPACE` set to that same path (#124) — so a guardrail reading `$GUARDRAILS_WORKSPACE`
 resolves files identically in-attempt and at re-verify; the `GUARDRAILS_ACTION_*` attempt-lifecycle
-vars stay deliberately absent (there is no action at a union point). `plan-breakdown` marks the
-build/test guardrails `scope: "integration"`; `guardrails-review` flags an integration-sensitive plan
-whose integration set is missing or too thin to be the union's whole re-verify (BLOCKER).
+vars stay deliberately absent (there is no action at a union point). `plan-breakdown` marks a
+**union-safe conditional invariant** (the conflict-marker / overlapping-writeScope union-guardrail)
+`scope: "integration"` — NOT the full build/test, which are terminal postconditions kept `local`
+(#165, the §4.3 terminal-postcondition anti-pattern); `guardrails-review` flags an integration-sensitive
+plan whose integration set is missing or too thin to be the union's whole re-verify (BLOCKER).
 
 ### 4.4 Stale `covers-key-behaviors` coverage (validated, GR2026 — warning)
 
