@@ -5,9 +5,9 @@ namespace Guardrails.Cli;
 
 /// <summary>
 /// Replaces the built-in <c>--version</c> action so the version line is followed by a
-/// skill-drift warning when an installed Guardrails skill's stamped version no longer matches
-/// the running harness (issue #152 — a stale installed <c>/plan-breakdown</c> silently produced
-/// legacy output).
+/// skill-drift warning when an installed Guardrails skill's <c>SKILL.md</c> frontmatter version
+/// (<c>metadata.guardrails-version</c>, issue #156) no longer matches the running harness
+/// (issue #152 — a stale installed <c>/plan-breakdown</c> silently produced legacy output).
 ///
 /// Contract: the harness version is written to <b>stdout</b> exactly as the built-in option
 /// would (scripts parse <c>guardrails --version</c>); any drift warning goes to <b>stderr</b>;

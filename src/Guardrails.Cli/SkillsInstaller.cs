@@ -8,9 +8,22 @@ namespace Guardrails.Cli;
 /// Kept free of console and CLI concerns so it can be unit-tested against a fake source base
 /// dir without a packaged tool. The command layer (<see cref="Commands.SkillsCommand"/>) owns
 /// resolving paths, printing, and exit codes.
+///
+/// The installed version is carried INSIDE each bundled <c>SKILL.md</c>'s frontmatter
+/// (<c>metadata.guardrails-version</c>, injected at build by
+/// <see cref="SkillFrontmatterStamper"/>), so install is a plain copy that preserves it — no
+/// install-time mutation. <c>guardrails --version</c> later reads that frontmatter to detect
+/// drift (<see cref="SkillVersionReport"/>).
 /// </summary>
 public static class SkillsInstaller
 {
+    /// <summary>
+    /// The legacy sidecar marker written by preview.26 (issue #152). Superseded by the
+    /// frontmatter key (#156); a <c>--force</c> install deletes any leftover so it cannot
+    /// linger and confuse a future reader.
+    /// </summary>
+    public const string LegacySidecarFileName = ".guardrails-skill-version";
+
     /// <summary>What happened to a single skill folder during an install.</summary>
     public enum SkillOutcome
     {
@@ -27,22 +40,21 @@ public static class SkillsInstaller
     /// <summary>
     /// Copy every bundled skill folder under <paramref name="sourceSkillsDir"/> into
     /// <paramref name="targetDir"/>. With <paramref name="force"/>, an existing target skill
-    /// folder is replaced; without it, an existing folder is left untouched and reported
+    /// folder is replaced (and any leftover preview.26 <c>.guardrails-skill-version</c> sidecar
+    /// removed); without it, an existing folder is left untouched and reported
     /// <see cref="SkillOutcome.Skipped"/>. Results are ordered by skill name (ordinal).
     ///
-    /// Each INSTALLED skill folder is stamped with a <c>.guardrails-skill-version</c> marker
-    /// containing exactly <paramref name="toolVersion"/> (single line, no timestamp), so
-    /// <c>guardrails --version</c> can later detect drift. A SKIPPED skill is left untouched —
-    /// its old or absent marker is precisely the stale-install signal we want to surface.
+    /// The version is intrinsic to the copied <c>SKILL.md</c> (its
+    /// <c>metadata.guardrails-version</c> frontmatter, stamped at build), so a plain recursive
+    /// copy carries it; a SKIPPED skill is left untouched — its old or absent frontmatter
+    /// version is precisely the stale-install signal <c>guardrails --version</c> surfaces.
     /// </summary>
     /// <exception cref="DirectoryNotFoundException">
     /// <paramref name="sourceSkillsDir"/> does not exist.
     /// </exception>
     public static IReadOnlyList<SkillResult> InstallAll(
-        string sourceSkillsDir, string targetDir, bool force, string toolVersion)
+        string sourceSkillsDir, string targetDir, bool force)
     {
-        ArgumentNullException.ThrowIfNull(toolVersion);
-
         if (!Directory.Exists(sourceSkillsDir))
         {
             throw new DirectoryNotFoundException(
@@ -73,26 +85,17 @@ public static class SkillsInstaller
             {
                 // Windows-safe (issue #109): a previously installed skill folder may contain a
                 // read-only file; SafeDelete strips the attribute before deleting so a forced
-                // reinstall never fails with Access Denied.
+                // reinstall never fails with Access Denied. This also removes any leftover
+                // preview.26 .guardrails-skill-version sidecar (issue #156 migration), since the
+                // whole stale folder is deleted before the fresh copy.
                 SafeDelete.DeleteDirectory(destination);
             }
 
             CopyDirectory(skillDir, destination);
-            StampVersion(destination, toolVersion);
             results.Add(new SkillResult(name, SkillOutcome.Installed));
         }
 
         return results;
-    }
-
-    /// <summary>
-    /// Write the version marker into a freshly installed skill folder. The content is exactly
-    /// <paramref name="toolVersion"/> (no timestamp), keeping it deterministic and testable.
-    /// </summary>
-    private static void StampVersion(string skillDir, string toolVersion)
-    {
-        string markerPath = Path.Combine(skillDir, SkillVersionReport.MarkerFileName);
-        File.WriteAllText(markerPath, toolVersion);
     }
 
     /// <summary>

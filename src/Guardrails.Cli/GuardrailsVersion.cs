@@ -7,9 +7,9 @@ namespace Guardrails.Cli;
 /// assembly's <see cref="AssemblyInformationalVersionAttribute"/> (the value
 /// <c>guardrails --version</c> prints), normalised by stripping any <c>+build</c> metadata —
 /// everything from the first <c>'+'</c> onward. Falls back to the assembly version when the
-/// attribute is absent. The stamp written into an installed skill
-/// (<c>.guardrails-skill-version</c>) and the harness version compared against it both come
-/// from here, so they stay consistent.
+/// attribute is absent. The version stamped into a bundled skill's <c>SKILL.md</c> frontmatter
+/// (<c>metadata.guardrails-version</c>, at build) and the harness version compared against it
+/// both derive from the same build, so they stay consistent.
 ///
 /// A local Debug build reports the csproj placeholder (e.g. <c>1.0.0-preview.1</c>); a packed
 /// tool reports the real package version. The pure drift logic

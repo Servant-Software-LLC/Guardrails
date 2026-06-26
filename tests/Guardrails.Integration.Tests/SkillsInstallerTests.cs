@@ -5,7 +5,10 @@ namespace Guardrails.Integration.Tests;
 /// <summary>
 /// Covers the pure copy logic behind <c>guardrails skills install</c>: copying every bundled
 /// skill folder from a fake source base dir into a temp target, the <c>--force</c> overwrite
-/// path, and the no-force skip-and-report path. No packaged tool is needed — the helper takes
+/// path, and the no-force skip-and-report path. The version travels INSIDE each bundled
+/// <c>SKILL.md</c> frontmatter (stamped at build, issue #156), so install is a plain copy that
+/// writes no sidecar — and a <c>--force</c> install removes a leftover preview.26
+/// <c>.guardrails-skill-version</c> sidecar. No packaged tool is needed — the helper takes
 /// (sourceSkillsDir, targetDir, force) directly.
 /// </summary>
 public sealed class SkillsInstallerTests : IDisposable
@@ -20,19 +23,18 @@ public sealed class SkillsInstallerTests : IDisposable
         _source = Path.Combine(_root, "skills");
         _target = Path.Combine(_root, "target");
 
-        // A fake bundle: two skills, one with a nested references/ subfolder.
+        // A fake bundle: two skills, one with a nested references/ subfolder. The SKILL.md
+        // bodies stand in for the build-stamped frontmatter copies (content is opaque to copy).
         WriteFile(Path.Combine(_source, "plan-breakdown", "SKILL.md"), "# plan-breakdown");
         WriteFile(Path.Combine(_source, "plan-breakdown", "references", "catalogue.md"), "# catalogue");
         WriteFile(Path.Combine(_source, "guardrails-review", "SKILL.md"), "# guardrails-review");
     }
 
-    private const string TestVersion = "9.9.9-test";
-
     [Fact]
     public void InstallAll_CopiesEveryBundledSkill_PreservingNestedStructure()
     {
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
+            SkillsInstaller.InstallAll(_source, _target, force: false);
 
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.Equal(SkillsInstaller.SkillOutcome.Installed, r.Outcome));
@@ -43,6 +45,18 @@ public sealed class SkillsInstallerTests : IDisposable
     }
 
     [Fact]
+    public void InstallAll_WritesNoSidecarMarker()
+    {
+        // The version lives in SKILL.md frontmatter now; install must NOT create a sidecar.
+        SkillsInstaller.InstallAll(_source, _target, force: false);
+
+        Assert.False(File.Exists(Path.Combine(
+            _target, "plan-breakdown", SkillsInstaller.LegacySidecarFileName)));
+        Assert.False(File.Exists(Path.Combine(
+            _target, "guardrails-review", SkillsInstaller.LegacySidecarFileName)));
+    }
+
+    [Fact]
     public void InstallAll_WithForce_OverwritesExistingSkillFolder()
     {
         // Pre-seed a stale copy with extra cruft that a clean overwrite must remove.
@@ -50,7 +64,7 @@ public sealed class SkillsInstallerTests : IDisposable
         WriteFile(Path.Combine(_target, "plan-breakdown", "stale-extra.md"), "remove me");
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(_source, _target, force: true, TestVersion);
+            SkillsInstaller.InstallAll(_source, _target, force: true);
 
         SkillsInstaller.SkillResult planBreakdown = results.Single(r => r.Name == "plan-breakdown");
         Assert.Equal(SkillsInstaller.SkillOutcome.Installed, planBreakdown.Outcome);
@@ -61,12 +75,30 @@ public sealed class SkillsInstallerTests : IDisposable
     }
 
     [Fact]
+    public void InstallAll_WithForce_RemovesLeftoverPreview26Sidecar()
+    {
+        // A prior preview.26 install left a sidecar; --force must not leave it lingering
+        // (issue #156 migration), since a fresh copy carries no sidecar.
+        WriteFile(Path.Combine(_target, "plan-breakdown", "SKILL.md"), "OLD");
+        WriteFile(
+            Path.Combine(_target, "plan-breakdown", SkillsInstaller.LegacySidecarFileName),
+            "1.0.0-preview.26");
+
+        SkillsInstaller.InstallAll(_source, _target, force: true);
+
+        Assert.False(File.Exists(Path.Combine(
+            _target, "plan-breakdown", SkillsInstaller.LegacySidecarFileName)));
+        Assert.Equal("# plan-breakdown",
+            File.ReadAllText(Path.Combine(_target, "plan-breakdown", "SKILL.md")));
+    }
+
+    [Fact]
     public void InstallAll_WithoutForce_LeavesExistingFolderUntouched_AndReportsSkipped()
     {
         WriteFile(Path.Combine(_target, "plan-breakdown", "SKILL.md"), "EXISTING — DO NOT TOUCH");
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
+            SkillsInstaller.InstallAll(_source, _target, force: false);
 
         SkillsInstaller.SkillResult planBreakdown = results.Single(r => r.Name == "plan-breakdown");
         Assert.Equal(SkillsInstaller.SkillOutcome.Skipped, planBreakdown.Outcome);
@@ -82,46 +114,18 @@ public sealed class SkillsInstallerTests : IDisposable
     }
 
     [Fact]
-    public void InstallAll_StampsVersionMarker_OnEveryInstalledSkill()
+    public void InstallAll_WithoutForce_LeavesLeftoverSidecarUntouched()
     {
-        SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
-
-        string planBreakdownMarker = Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version");
-        string guardrailsReviewMarker = Path.Combine(_target, "guardrails-review", ".guardrails-skill-version");
-
-        Assert.True(File.Exists(planBreakdownMarker));
-        Assert.Equal(TestVersion, File.ReadAllText(planBreakdownMarker));
-        Assert.Equal(TestVersion, File.ReadAllText(guardrailsReviewMarker));
-    }
-
-    [Fact]
-    public void InstallAll_Skipped_LeavesExistingMarkerUntouched()
-    {
-        // A pre-existing install carrying an OLDER stamp — the drift signal we must preserve.
+        // Without --force a present folder (with its stale sidecar) is the drift signal we keep.
         WriteFile(Path.Combine(_target, "plan-breakdown", "SKILL.md"), "EXISTING");
-        WriteFile(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version"), "1.0.0-old");
+        WriteFile(
+            Path.Combine(_target, "plan-breakdown", SkillsInstaller.LegacySidecarFileName),
+            "1.0.0-preview.26");
 
-        IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(_source, _target, force: false, TestVersion);
+        SkillsInstaller.InstallAll(_source, _target, force: false);
 
-        Assert.Equal(SkillsInstaller.SkillOutcome.Skipped,
-            results.Single(r => r.Name == "plan-breakdown").Outcome);
-
-        // The stale marker is left exactly as it was — NOT bumped to the new version.
-        Assert.Equal("1.0.0-old",
-            File.ReadAllText(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version")));
-    }
-
-    [Fact]
-    public void InstallAll_ForceReinstall_UpdatesTheVersionMarker()
-    {
-        WriteFile(Path.Combine(_target, "plan-breakdown", "SKILL.md"), "EXISTING");
-        WriteFile(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version"), "1.0.0-old");
-
-        SkillsInstaller.InstallAll(_source, _target, force: true, TestVersion);
-
-        Assert.Equal(TestVersion,
-            File.ReadAllText(Path.Combine(_target, "plan-breakdown", ".guardrails-skill-version")));
+        Assert.True(File.Exists(Path.Combine(
+            _target, "plan-breakdown", SkillsInstaller.LegacySidecarFileName)));
     }
 
     [Fact]
@@ -129,7 +133,7 @@ public sealed class SkillsInstallerTests : IDisposable
     {
         string missing = Path.Combine(_root, "does-not-exist");
         Assert.Throws<DirectoryNotFoundException>(
-            () => SkillsInstaller.InstallAll(missing, _target, force: false, TestVersion));
+            () => SkillsInstaller.InstallAll(missing, _target, force: false));
     }
 
     [Fact]

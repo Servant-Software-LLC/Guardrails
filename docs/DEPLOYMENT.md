@@ -189,29 +189,50 @@ and reported as skipped. Restart Claude Code (or start a new session) and confir
 
 ### Skill versioning and drift detection
 
-Each **installed** skill folder is stamped with a `.guardrails-skill-version` marker
-file whose only content is the harness version that installed it (e.g.
-`1.0.0-preview.25`). A `skipped` skill keeps its old (or absent) marker — that stale
-marker is exactly the drift signal.
+Each bundled skill's `SKILL.md` carries the harness version **inside its own
+frontmatter**, under `metadata.guardrails-version` (e.g. `1.0.0-preview.27`):
+
+```yaml
+---
+name: plan-breakdown
+description: |
+  Break a reviewed markdown plan into a Guardrails task folder …
+metadata:
+  guardrails-version: 1.0.0-preview.27
+---
+```
+
+This key is **injected at build/pack time** (it is a release fact, not author-typed):
+the build stamps the version into the bundled `SKILL.md` copies in the tool's output, so
+the repo-source `.claude/skills/**/SKILL.md` files stay clean. `skills install` is then a
+**plain copy** — the version travels inside the skill, even with a manual copy — and there
+is no separate sidecar file.
 
 This is why **`--force` is required to refresh an already-installed skill**: a plain
 `skills install` *skips* a folder that already exists, so it would neither re-copy the
-skill body nor update its version stamp. The silent-skip trap is real — a stale
+skill body nor update its frontmatter version. The silent-skip trap is real — a stale
 installed `/plan-breakdown` will keep producing output for an older harness with no
 visible error.
 
-To surface that drift, **`guardrails --version`** checks the skills installed under
-`~/.claude/skills` and `./.claude/skills` against the running harness. The version line
-on **stdout** is unchanged (scripts that parse `guardrails --version` keep working); when
-an installed skill is stale or unversioned, a warning block is written to **stderr**
-naming each skill, its location, its installed version (or `unversioned`), and the
-remedy — and the exit code stays `0` (the check is informational):
+> **Migration from preview.26.** preview.26 (issue #152) stamped the version into a
+> separate `.guardrails-skill-version` sidecar file. A skill installed by preview.26 has
+> **no frontmatter version**, so a newer tool reports it `unversioned` — which is exactly
+> the "run `--force`" nudge. A `--force` reinstall overwrites the folder with a
+> frontmatter-stamped copy and removes the orphaned sidecar.
+
+To surface that drift, **`guardrails --version`** reads `metadata.guardrails-version` from
+each `SKILL.md` installed under `~/.claude/skills` and `./.claude/skills` and compares it to
+the running harness. The version line on **stdout** is unchanged (scripts that parse
+`guardrails --version` keep working); when an installed skill is stale or unversioned, a
+warning block is written to **stderr** naming each skill, its location, its installed version
+(or `unversioned`), and the remedy — and the exit code stays `0` (the check is
+informational):
 
 ```text
-1.0.0-preview.25
+1.0.0-preview.27
 
-WARNING: 1 installed Guardrails skill(s) do not match this harness (v1.0.0-preview.25):
-  - plan-breakdown [v1.0.0-preview.24] in C:\Users\you\.claude\skills
+WARNING: 1 installed Guardrails skill(s) do not match this harness (v1.0.0-preview.27):
+  - plan-breakdown [v1.0.0-preview.26] in C:\Users\you\.claude\skills
 A stale skill can silently produce output for an older harness.
 Remedy: run `guardrails skills install --force`.
 ```
