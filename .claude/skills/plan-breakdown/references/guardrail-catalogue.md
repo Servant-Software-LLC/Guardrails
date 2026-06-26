@@ -1346,8 +1346,13 @@ if ($allowed -notcontains $value) {
 exit 0
 ```
 
-Drop the allowed-set block when no downstream task branches on the value. Namespace the
-key under the producing task id, matching the fragment convention (schemas.md §6.2).
+Drop the allowed-set block when no downstream task branches on the value. The fragment the
+producing action writes namespaces the value under the producing task's **FOLDER NAME** as the
+single top-level key (`{ "01-research-tsw-write-mechanism": { "tsw_mechanism_recommended": … } }`),
+matching the fragment convention (schemas.md §6.2) — **the folder name, NOT the `stableId`** (an
+internal regeneration token the harness rejects as a foreign key). This guardrail indexes the
+fragment under that **same folder name** (`$fragment.'01-research-tsw-write-mechanism'` above), so
+the producing prompt and this guardrail must agree on the folder name as the key.
 
 Per task: **minimum 1, typical 2–3, soft max 4** guardrails. Order them
 **cheapest-first** by filename (`01-exists`, `02-builds`, `03-tests`, `04-review`) —

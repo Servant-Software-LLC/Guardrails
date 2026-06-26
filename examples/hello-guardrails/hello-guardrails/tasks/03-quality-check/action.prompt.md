@@ -3,6 +3,11 @@
   harness provides in this prompt's appended sections.
 - Write ONLY your new/changed keys as a JSON object fragment to the
   `GUARDRAILS_STATE_OUT` path. Do not echo the whole snapshot back.
+- Write everything you publish under your task's FOLDER NAME as the single top-level
+  key — the name of the directory this `task.json` lives in (here `03-quality-check`),
+  NOT the `stableId`. The harness REJECTS a fragment keyed by anything else (every
+  attempt), so: `{ "03-quality-check": { "someKey": "someValue" } }`. (This task
+  publishes nothing to state — the rule still documents the contract for an editor.)
 - If a previous-attempt feedback section is appended below, this is a RETRY: read it
   first and fix those specific failures; do not start over.
 - If you cannot proceed without a human decision, write

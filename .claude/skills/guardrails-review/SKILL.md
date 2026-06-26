@@ -343,6 +343,18 @@ produces and the repo doesn't already contain → a missing guardrail-enabling t
   producer** (reads `GUARDRAILS_STATE_FRAGMENT`, asserts non-null/non-empty) — otherwise
   the action can skip writing the key and the consumer runs with null. (Catalogue
   state-output leaf.)
+- **State-out key MUST be the task FOLDER NAME, never the `stableId` (#164).** For every
+  state-writing prompt, read the fragment example/instruction in the `## Task` body and the
+  harness-contract header. The single top-level key must be **this task's folder name** (the
+  directory the `task.json` lives in). A fragment example keyed by anything else — most often
+  the task's `stableId` (a `^[a-z0-9][a-z0-9._-]*$` token like `j9hf6y` that is NOT the folder
+  name), a foreign task's folder name, or an arbitrary shared key — is a **BLOCKER**: the
+  harness rejects it as a foreign/unowned key on **every** attempt (single-writer-per-key, SSOT
+  §6.2), rolling back file writes and dead-ending the task at `needsHuman` (the #164 failure
+  loop). Cross-check that the producer's state-output guardrail indexes the **same** folder name
+  (`$fragment.'<folder-name>'.<key>`); a mismatch between the prompt's key and the guardrail's
+  index is the same BLOCKER. Fix: rewrite the fragment example to
+  `{ "<this-task-folder-name>": { … } }` and align the guardrail's index.
 - `promptRunners` present iff prompts exist; `allowedTools` scoped, not blanket.
 
 ### 6. Report
@@ -391,6 +403,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files (but may TARGET the stub file the test-author wrote, #155); no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
 - [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
 - [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
+- [ ] Every state-writing prompt's fragment example/key is the task's FOLDER NAME (never the `stableId` or a foreign/shared key), and the producer's state-output guardrail indexes that same folder name — a `stableId`-shaped or otherwise-unowned key is a BLOCKER (harness rejects it every attempt → `needsHuman` loop, #164).
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).

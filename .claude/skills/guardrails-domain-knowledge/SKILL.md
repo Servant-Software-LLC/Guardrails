@@ -107,7 +107,10 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment (`GUARDRAILS_STATE_OUT`);
   harness (single writer) deep-merges fragments into `state/state.json` in completion order after
   guardrails pass. **Single-writer-per-key is ENFORCED, not a convention (SSOT section 6.2)**:
-  a fragment's top-level keys must each equal the writing task's OWN id (reserved keys -- none in
+  a fragment's top-level keys must each equal the writing task's OWN id -- which is its **FOLDER
+  NAME** (the directory the `task.json` lives in, e.g. `02-generate-greeting`), NOT its `stableId`
+  (an internal regeneration token; a `stableId`-keyed fragment is rejected as foreign, #164)
+  (reserved keys -- none in
   v1). A foreign task id or any arbitrary shared key makes the fragment invalid-fragment -- it is
   rejected (not stripped), the attempt fails and retries with feedback, and nothing merges. This
   makes the harness the sole writer of every task's namespace. Scalars/arrays last-writer-wins

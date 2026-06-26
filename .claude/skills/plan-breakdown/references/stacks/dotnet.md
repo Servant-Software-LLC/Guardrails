@@ -925,7 +925,8 @@ max-turns and dies; raising `maxTurns` only moves the wall). Three task shapes, 
 ### 14a. Discover-size-first probe (where N is unknown)
 
 A cheap upstream task that enumerates/counts the in-scope set BEFORE the crawl commits to an approach
-(the "8 expected → 409 actual" calibration). Write the count to state (under the task's own id) and
+(the "8 expected → 409 actual" calibration). Write the count to state under the task's **FOLDER NAME**
+as the single top-level key (the directory the `task.json` lives in, NOT the `stableId`, #164) and
 guard the fragment key:
 
 ```powershell
