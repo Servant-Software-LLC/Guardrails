@@ -436,13 +436,77 @@ public static class RunCommand
         output.WriteLine($"Logs (post-mortem any task — pass or fail): {Hyperlink(logsRoot, linkable)}");
         output.WriteLine($"  each task's attempts are under <task-id>{sep}attempt-N{sep}");
 
-        foreach (TaskResult needsHuman in report.Tasks.Where(t =>
+        PrintNeedsHumanSections(report, logsRoot, output);
+    }
+
+    /// <summary>
+    /// Print the post-run NEEDS HUMAN sections, resolving each task's triage diagnosis from the
+    /// on-disk <c>triage.json</c> sidecar in its task-level log dir. Thin production wrapper over the
+    /// pure <see cref="RenderNeedsHumanSections"/> (which is unit-tested with an injected resolver).
+    /// </summary>
+    private static void PrintNeedsHumanSections(RunReport report, string logsRoot, TextWriter output) =>
+        RenderNeedsHumanSections(
+            report.Tasks, logsRoot, output,
+            taskLogDir => TriageSummaryReader.TryRead(taskLogDir));
+
+    /// <summary>
+    /// Render the post-run NEEDS HUMAN sections (issue #163): per failed/needs-human task, surface the
+    /// AI triage root-cause CATEGORY + one-line diagnosis (and the drafted GH-issue title when present)
+    /// directly in the console — so the user does not open each <c>feedback.md</c>. When several tasks
+    /// share a diagnosis category the repeat is annotated ("same root cause as …") so one fix resolving
+    /// several failures is obvious at a glance. A task with no structured triage (unstructured or failed
+    /// — <paramref name="triageFor"/> returns null) renders the prior shape, unchanged. The leading line
+    /// stays parseable: <c>NEEDS HUMAN: &lt;task-id&gt; — &lt;summary&gt;</c>.
+    /// <para>
+    /// Pure (no IO) — the triage lookup is injected as <paramref name="triageFor"/> (the task-level log
+    /// dir → <see cref="TriageSummary"/>), so the production path reads the sidecar and tests inject a
+    /// fake. Public for the same reason <see cref="Hyperlink"/> is: the Cli assembly ships no
+    /// InternalsVisibleTo.
+    /// </para>
+    /// </summary>
+    public static void RenderNeedsHumanSections(
+        IReadOnlyList<TaskResult> tasks,
+        string logsRoot,
+        TextWriter output,
+        Func<string, TriageSummary?> triageFor)
+    {
+        // First task id seen per category, so a later same-category task can point back to it.
+        var firstTaskForCategory = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (TaskResult needsHuman in tasks.Where(t =>
                      t.Outcome is TaskOutcome.ActionFailed or TaskOutcome.GuardrailFailed
                          or TaskOutcome.InvalidFragment or TaskOutcome.NeedsHuman))
         {
             output.WriteLine();
             output.WriteLine($"NEEDS HUMAN: {needsHuman.TaskId} — {needsHuman.Summary}");
-            output.WriteLine($"  Inspect {logsRoot}{Path.DirectorySeparatorChar}{needsHuman.TaskId}{Path.DirectorySeparatorChar} (latest attempt's feedback.md has the full failure detail),");
+
+            string taskLogDir = Path.Combine(logsRoot, needsHuman.TaskId);
+            if (triageFor(taskLogDir) is { } triage)
+            {
+                string rootCause = string.IsNullOrWhiteSpace(triage.OneLine)
+                    ? $"Root cause [{triage.Diagnosis}]"
+                    : $"Root cause [{triage.Diagnosis}]: {triage.OneLine}";
+
+                // Group annotation: a second-or-later task in the same category points back to the
+                // first, making "one fix resolves several failures" visible without opening files.
+                if (firstTaskForCategory.TryGetValue(triage.Diagnosis, out string? firstTask))
+                {
+                    rootCause += $" (same root cause as {firstTask})";
+                }
+                else
+                {
+                    firstTaskForCategory[triage.Diagnosis] = needsHuman.TaskId;
+                }
+
+                output.WriteLine($"  {rootCause}");
+                if (!string.IsNullOrWhiteSpace(triage.GhIssueTitle)
+                    && !string.Equals(triage.GhIssueTitle, triage.OneLine, StringComparison.Ordinal))
+                {
+                    output.WriteLine($"  Draft GH issue: {triage.GhIssueTitle}");
+                }
+            }
+
+            output.WriteLine($"  Inspect {taskLogDir}{Path.DirectorySeparatorChar} (latest attempt's feedback.md has the full failure detail),");
             output.WriteLine("  fix the action or guardrails, then re-run to resume.");
         }
     }

@@ -173,9 +173,12 @@ survive if a human runs the prompt outside the harness.
 - Prompt guardrail: write `{ "pass": bool, "reason": string }` to `GUARDRAILS_VERDICT_OUT`.
 - Action state: read `GUARDRAILS_STATE_IN` (snapshot), write a JSON object fragment to
   `GUARDRAILS_STATE_OUT`. **Single-writer-per-key is ENFORCED (SSOT §6.2):** a fragment's
-  top-level keys must each be the task's OWN id (reserved keys — none in v1). A foreign task id
-  or any arbitrary shared key makes the fragment invalid — it is rejected (not stripped), the
-  attempt fails, and nothing merges. Invalid (non-object/unparseable) fragment = attempt fails too.
+  top-level keys must each be the task's **own id = its FOLDER NAME** — the directory the
+  `task.json` lives in, e.g. `{ "02-generate-greeting": { … } }` (reserved keys — none in v1).
+  **The key is NOT the `stableId`** (an internal regeneration token, §3); a `stableId`-shaped
+  top-level key is a foreign/unowned key. A foreign task id or any arbitrary shared key makes the
+  fragment invalid — it is rejected (not stripped), the attempt fails, and nothing merges (every
+  retry). Invalid (non-object/unparseable) fragment = attempt fails too.
 - Retry: attempt ≥ 2 receives `GUARDRAILS_FEEDBACK` (path to feedback.md).
 - Guardrails see `GUARDRAILS_ACTION_STDOUT/_STDERR/_RESULT` and `GUARDRAILS_STATE_FRAGMENT`.
 - cwd of every child process = `workspace`. Plan-folder paths arrive absolute via env vars.

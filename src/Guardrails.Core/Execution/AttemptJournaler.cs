@@ -124,6 +124,13 @@ internal sealed class AttemptJournaler
     {
         string? validatedFragmentPath = null;
 
+        // Worktree mode: a state-rejected non-final attempt has its segment reset to taskBase before
+        // the next attempt (TaskExecutor F2 reset), so the attempt's FILE writes are reverted too. The
+        // rejection feedback discloses that rollback (issue #162) so the agent re-authors its files
+        // instead of fixing only the key and then failing a file-exists guardrail. The final attempt is
+        // never reset, so it claims no rollback.
+        bool fileWritesRolledBack = !isFinal;
+
         if (File.Exists(fragmentOutPath))
         {
             string raw;
@@ -132,7 +139,7 @@ internal sealed class AttemptJournaler
             {
                 string msg = $"cannot read fragment: {ex.Message}";
                 return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
-                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg), isFinal,
+                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
                     costUsd: action.CostUsd);
@@ -144,7 +151,7 @@ internal sealed class AttemptJournaler
             {
                 string msg = $"fragment is not valid JSON: {ex.Message}";
                 return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
-                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg), isFinal,
+                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
                     costUsd: action.CostUsd);
@@ -155,7 +162,7 @@ internal sealed class AttemptJournaler
                 string kind = node is null ? "null" : node.GetValueKind().ToString().ToLowerInvariant();
                 string msg = $"invalid state fragment: top-level value must be a JSON object, was {kind}";
                 return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
-                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg), isFinal,
+                    RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
                     costUsd: action.CostUsd);
@@ -170,7 +177,7 @@ internal sealed class AttemptJournaler
             {
                 string reason = $"foreign top-level key(s): {string.Join(", ", foreignKeys.Select(k => $"'{k}'"))}";
                 return FailedAttempt(task, attemptNumber, startedAt, relativeLogDir, logDir,
-                    RetryPolicy.ForForeignKey(task, attemptNumber, foreignKeys), isFinal,
+                    RetryPolicy.ForForeignKey(task, attemptNumber, foreignKeys, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = reason },
                     costUsd: action.CostUsd);

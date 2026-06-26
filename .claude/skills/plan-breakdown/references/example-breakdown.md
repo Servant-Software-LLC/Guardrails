@@ -106,6 +106,10 @@ of fixing the code. No `captureHashes`, no `restoreOnRetry`, no downstream `test
 ## Harness contract (do not remove)
 - Read input state from the JSON file at the GUARDRAILS_STATE_IN path provided in the
   appended sections; write ONLY new/changed keys as a JSON object to GUARDRAILS_STATE_OUT.
+- Write everything you publish under your task's FOLDER NAME as the single top-level key —
+  the name of the directory this task.json lives in (here `01-author-stats-tests`), NOT the
+  stableId. The harness REJECTS a fragment keyed by anything else (every attempt), so:
+  `{ "01-author-stats-tests": { "someKey": "someValue" } }`.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - If you cannot proceed without a human decision, write {"needsHuman": "<question>"}
@@ -330,3 +334,31 @@ Violations, by rule:
 A wrong implementation that prints unsorted categories, mislabels the total, and
 never touches the README has a real chance of passing this folder. That is the
 failure mode this skill exists to prevent.
+
+---
+
+# The state-out key is the FOLDER NAME, never the stableId (#164)
+
+The worked plan above publishes nothing to state, so here is the shape for a task that
+DOES. Suppose `01-research-tsw-write-mechanism` (folder name) has
+`"stableId": "j9hf6y"` in its `task.json` and must publish its chosen mechanism for a
+downstream task to branch on. The fragment it writes to `GUARDRAILS_STATE_OUT`:
+
+```json
+{ "01-research-tsw-write-mechanism": { "tsw_mechanism_recommended": "rest-api" } }
+```
+
+The single top-level key is the task's **FOLDER NAME** — the directory the `task.json`
+lives in. It is **NOT** the `stableId`. This is wrong and the harness rejects it on
+**every** attempt as a foreign/unowned key (the #164 failure loop — attempt 1 rejected,
+files rolled back, every retry repeats it, dead-ending at `needsHuman`):
+
+```json
+{ "j9hf6y": { "tsw_mechanism_recommended": "rest-api" } }   // WRONG — stableId as key
+```
+
+`stableId` is an **internal regeneration-identity token** (§11), never the state key.
+The producing prompt's `## Task` shows the correct folder-name-keyed fragment, the
+harness-contract header repeats the rule, and the state-output guardrail indexes the
+same folder name (`$fragment.'01-research-tsw-write-mechanism'.tsw_mechanism_recommended`)
+— prompt, header, and guardrail all agree on the folder name as the key.

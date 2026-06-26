@@ -331,9 +331,13 @@ optional:
   that a downstream task reads (via `GUARDRAILS_STATE_IN`)? Add the fragment-key-present
   guardrail (catalogue → state-output leaf): read `GUARDRAILS_STATE_FRAGMENT`, parse JSON,
   assert the key non-null + non-empty (+ allowed-set if a downstream task branches on it).
-  A task's action may write state ONLY under its own task id — single-writer-per-key is enforced
-  (SSOT §6.2); writing under another task's id or a shared key rejects the fragment and fails the
-  attempt.
+  **A task's action may write state ONLY under its own task FOLDER NAME as the single top-level
+  key** — single-writer-per-key is enforced (SSOT §6.2). The key is the **directory name** the
+  `task.json` lives in (e.g. `04-author-tests-tcapi-local`), **NOT** the task's `stableId` (an
+  internal regeneration token — the harness rejects a fragment keyed by the `stableId` as a
+  foreign/unowned key). Writing under another task's folder name or any shared key likewise
+  rejects the fragment and fails the attempt every retry. The generated prompt must state this
+  rule with a concrete `{ "<folder-name>": { … } }` example (Step 6 authoring rule).
 - **Build-descriptor registration** — does the task add a module/project to a build
   descriptor (a `.csproj` to a `.slnx`)? Add the stack file's registration guardrail on the
   DESCRIPTOR, not just the new file (`stacks/dotnet.md §1`). A descriptor build passes with
@@ -746,8 +750,10 @@ Per `references/schemas.md`, exactly:
   Scope `allowedTools` to what the actions genuinely need.
 - `task.json` per task: `description` (one actionable line), `dependsOn`, a **`stableId`**
   (see below), and overrides only when justified. One `action.*` file per task folder.
-- **`stableId` — mint one per task by default.** It is the identity key the regeneration merge
-  (§11) uses to track a task across renumber/rename. The schema marks it OPTIONAL (a task without
+- **`stableId` — mint one per task by default.** It is an **internal regeneration-identity
+  token** the regeneration merge (§11) uses to track a task across renumber/rename — it is
+  **NEVER the state-out key** (the state key is the task FOLDER NAME; see the state-output rule
+  in Step 4 and the harness-contract header below). The schema marks it OPTIONAL (a task without
   one falls back to its folder name for identity), but the breakdown mints one per task so
   regeneration can preserve human edits. Mint once; never reuse for a different task; duplicates
   fail validation (**GR2010**). **Format (GR2011):** a `stableId` must match
@@ -772,6 +778,11 @@ Per `references/schemas.md`, exactly:
   - Read input state from the JSON file at the GUARDRAILS_STATE_IN path provided in
     the appended sections; write ONLY new/changed keys as a JSON object to
     GUARDRAILS_STATE_OUT.
+  - Write everything you publish under your task's FOLDER NAME as the single top-level
+    key — the name of the directory this task.json lives in (e.g.
+    `04-author-tests-tcapi-local`), NOT the stableId. The harness REJECTS a fragment
+    keyed by anything else (every attempt), so:
+    `{ "04-author-tests-tcapi-local": { "someKey": "someValue" } }`.
   - If a previous-attempt feedback section is appended, this is a RETRY: fix those
     specific failures; do not start over.
   - If you cannot proceed without a human decision, write
@@ -781,6 +792,24 @@ Per `references/schemas.md`, exactly:
   <the actual instruction: exact file paths, and completion criteria that MATCH this
   task's guardrails>
   ```
+
+  When you emit this header into a real task, substitute that task's actual folder name
+  into the example (`{ "<this-task-folder-name>": { … } }`) so the agent copies the
+  right token. A task that publishes nothing to state keeps the line as-is — it is
+  harmless and documents the rule for a later editor.
+
+- **Every state-writing prompt must state the folder-name-as-key rule with a concrete
+  example (#164).** When a task's action publishes any state (the Step 4 state-output leaf
+  fired), the generated `## Task` body must, where it tells the agent to write the fragment,
+  show the exact shape keyed by **this task's folder name** —
+  `{ "<this-task-folder-name>": { "<key>": <value> } }` with the real folder name
+  substituted — and the harness-contract header above already carries the folder-name rule.
+  Do NOT key the example by the `stableId`: a `stableId`-shaped token
+  (e.g. `j9hf6y`) as the top-level key is rejected by the harness as a foreign/unowned key on
+  **every** attempt, dead-ending the task at `needsHuman` (the exact #164 failure loop). The
+  state-output guardrail you add reads `GUARDRAILS_STATE_FRAGMENT` and indexes the value under
+  that same folder name (`$fragment.'<this-task-folder-name>'.<key>`), so the prompt and the
+  guardrail must agree on the folder name as the key.
 
 - **Test-author prompts must carry a `Scope boundary (harness-enforced)` paragraph (#154).**
   Every generated test-author `action.prompt.md` includes — **immediately after the target

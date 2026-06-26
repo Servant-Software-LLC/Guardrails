@@ -136,6 +136,57 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void ForeignKey_WhenFileWritesRolledBack_DisclosesTheRollback()
+    {
+        // issue #162: in worktree mode a state-rejected non-final attempt has its segment reset to
+        // taskBase before the next attempt, so the attempt's FILE writes are reverted too. The
+        // feedback must disclose this so the agent re-authors its files instead of fixing only the key
+        // and then failing a file-exists guardrail against files it believes still exist.
+        string feedback = RetryPolicy.ForForeignKey(
+            Task("04-author-tests"), attempt: 1, ["j9hf6y"], fileWritesRolledBack: true);
+
+        Assert.Contains("## File writes were also rolled back", feedback);
+        Assert.Contains("re-author ALL files", feedback);
+        Assert.Contains("do not assume", feedback);
+        Assert.Contains("j9hf6y", feedback);            // the original key error is still present
+    }
+
+    [Fact]
+    public void ForeignKey_WhenNoRollback_DoesNotClaimAFileRollback()
+    {
+        // Serial mode (file writes persist across attempts) and the final attempt (never reset) pass
+        // fileWritesRolledBack:false — the feedback must NOT claim a rollback that did not happen.
+        string feedback = RetryPolicy.ForForeignKey(Task("04-author-tests"), attempt: 1, ["j9hf6y"]);
+
+        Assert.DoesNotContain("File writes were also rolled back", feedback);
+        Assert.DoesNotContain("re-author ALL files", feedback);
+        Assert.Contains("j9hf6y", feedback);            // the key error itself is unchanged
+    }
+
+    [Fact]
+    public void InvalidFragment_WhenFileWritesRolledBack_DisclosesTheRollback()
+    {
+        // issue #162: the rollback disclosure attaches to EVERY state-rejection class, not only the
+        // foreign-key one — an unparseable / non-object fragment is reset the same way in worktree mode.
+        string feedback = RetryPolicy.ForInvalidFragment(
+            Task("04-author-tests"), attempt: 2, "fragment is not valid JSON", fileWritesRolledBack: true);
+
+        Assert.Contains("fragment is not valid JSON", feedback);     // the original reason is preserved
+        Assert.Contains("## File writes were also rolled back", feedback);
+        Assert.Contains("re-author ALL files", feedback);
+    }
+
+    [Fact]
+    public void InvalidFragment_WhenNoRollback_DoesNotClaimAFileRollback()
+    {
+        string feedback = RetryPolicy.ForInvalidFragment(
+            Task("04-author-tests"), attempt: 2, "fragment root is an array");
+
+        Assert.DoesNotContain("File writes were also rolled back", feedback);
+        Assert.Contains("fragment root is an array", feedback);
+    }
+
+    [Fact]
     public void LongOutput_IsTailTruncated()
     {
         string longError = string.Join('\n', Enumerable.Range(1, 500).Select(i => $"line {i}"));

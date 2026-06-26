@@ -177,8 +177,13 @@ public static class RetryPolicy
     private static bool IsTestsUntouched(string name) =>
         name.Contains("untouched", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Compose feedback for an attempt rejected because its state fragment was invalid (SSOT §6.2).</summary>
-    public static string ForInvalidFragment(TaskNode task, int attempt, string reason)
+    /// <summary>
+    /// Compose feedback for an attempt rejected because its state fragment was invalid (SSOT §6.2).
+    /// When <paramref name="fileWritesRolledBack"/> is true (worktree mode: the segment is reset to
+    /// taskBase before the next attempt — issue #162), the feedback also discloses that the attempt's
+    /// FILE writes were reverted, so the agent re-authors them rather than assuming they survived.
+    /// </summary>
+    public static string ForInvalidFragment(TaskNode task, int attempt, string reason, bool fileWritesRolledBack = false)
     {
         var text = new StringBuilder();
         AppendHeader(text, task, attempt);
@@ -187,6 +192,7 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The file written to GUARDRAILS_STATE_OUT must be a single JSON object, e.g.");
         text.AppendLine($"`{{ \"{task.Id}\": {{ \"someKey\": \"someValue\" }} }}`.");
+        AppendRollbackDisclosure(text, fileWritesRolledBack);
         return text.ToString();
     }
 
@@ -196,7 +202,13 @@ public static class RetryPolicy
     /// single-writer-per-key, issue #48). Names the exact offending key(s) so a confused (non-malicious)
     /// agent drops the stray key on retry and writes ONLY under its own id.
     /// </summary>
-    public static string ForForeignKey(TaskNode task, int attempt, IReadOnlyList<string> foreignKeys)
+    /// <param name="fileWritesRolledBack">
+    /// True in worktree mode (the segment is reset to taskBase before the next attempt — issue #162):
+    /// the feedback then ALSO discloses that the attempt's FILE writes were reverted, so the agent
+    /// re-authors them instead of fixing only the key and then failing a <c>file-exists</c> guardrail
+    /// against files it believes still exist.
+    /// </param>
+    public static string ForForeignKey(TaskNode task, int attempt, IReadOnlyList<string> foreignKeys, bool fileWritesRolledBack = false)
     {
         var text = new StringBuilder();
         AppendHeader(text, task, attempt);
@@ -213,7 +225,30 @@ public static class RetryPolicy
         text.AppendLine("shared key) is rejected and NOTHING is merged. Remove the stray top-level key(s)");
         text.AppendLine("above and nest everything you publish under your own id, e.g.");
         text.AppendLine($"`{{ \"{task.Id}\": {{ \"someKey\": \"someValue\" }} }}`.");
+        AppendRollbackDisclosure(text, fileWritesRolledBack);
         return text.ToString();
+    }
+
+    /// <summary>
+    /// Append the file-write rollback disclosure (issue #162) when a state-rejected attempt's worktree
+    /// is reset to <c>taskBase</c> before the next attempt — so the agent re-authors ALL files instead
+    /// of fixing only the state key and assuming its prior file writes survived. No-op when no rollback
+    /// occurred (serial mode, where file writes persist across attempts, or the final attempt, which is
+    /// never reset). Scoped to the state-rejection path per the issue.
+    /// </summary>
+    private static void AppendRollbackDisclosure(StringBuilder text, bool fileWritesRolledBack)
+    {
+        if (!fileWritesRolledBack)
+        {
+            return;
+        }
+
+        text.AppendLine();
+        text.AppendLine("## File writes were also rolled back");
+        text.AppendLine();
+        text.AppendLine("Because the state fragment was rejected, all file writes from this attempt were");
+        text.AppendLine("reverted. On your next attempt, re-author ALL files from scratch — do not assume");
+        text.AppendLine("any file you wrote in a previous attempt is still present on disk.");
     }
 
     /// <summary>
