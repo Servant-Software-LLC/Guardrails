@@ -69,23 +69,24 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   from `AppContext.BaseDirectory/skills`. Repo bootstrap: `install.ps1` (root, tested) and
   `install.sh` (root, untested twin) verify dotnet, install/update the tool, then run
   `guardrails skills install`.
-- **Skill-version stamping + `--version` drift (#152, `docs/DEPLOYMENT.md` §Skill versioning
-  and drift detection)**: each INSTALLED skill folder is stamped with a
-  `.guardrails-skill-version` marker (`SkillVersionReport.MarkerFileName`) whose only content is
-  the harness version — the normalised `InformationalVersion` from `GuardrailsVersion.Current`
-  (= what `guardrails --version` prints). Written by `SkillsInstaller.StampVersion` on every
-  INSTALLED skill; a SKIPPED skill keeps its old/absent marker (that staleness is the drift
-  signal). The CLI tool version and an installed skill's version are **independent** — updating
-  the tool does NOT refresh installed skills, because `skills install` SKIPS an already-present
-  folder unless `--force` (the silent-skip trap: a stale `/plan-breakdown` keeps emitting
-  legacy output for an older harness with no error — the incident a preview.25 harness produced
-  a `captureHashes`/no-`writeScope` folder). `guardrails --version` now surfaces this:
-  `VersionWithDriftAction` keeps stdout as the bare version line (scripts parse it, unchanged)
-  and writes a drift-warning block to **stderr** — exit code stays 0 — for any known skill
-  (set = bundled `AppContext.BaseDirectory/skills`) found under `~/.claude/skills` or
-  `./.claude/skills` whose marker is missing (`unversioned`) or `≠` the harness (compared via
-  `SkillVersionReport.Build`, `GuardrailsVersion.Normalize` strips `+build`). Remedy it warns:
-  `guardrails skills install --force`.
+- **Skill-version stamping + `--version` drift (#152/#156, `docs/DEPLOYMENT.md` §Skill versioning
+  and drift detection)**: each skill's version now lives **inside its own `SKILL.md`
+  frontmatter**, under `metadata.guardrails-version` (e.g. `1.0.0-preview.27`) — NOT in the
+  separate `.guardrails-skill-version` sidecar of #152, which #156 replaced. The key is
+  **injected at build/pack time** into the BUNDLED `SKILL.md` copies (the repo-source
+  `.claude/skills/**/SKILL.md` files stay clean — it is a release fact, not author-typed). Because
+  the version travels inside the skill body, `skills install` is then a **plain copy** with no
+  sidecar to write. The CLI tool version and an installed skill's version are **independent** —
+  updating the tool does NOT refresh installed skills, because `skills install` SKIPS an
+  already-present folder unless `--force` (the silent-skip trap: a stale `/plan-breakdown` keeps
+  emitting legacy output for an older harness with no error — the incident a preview.25 harness
+  produced a `captureHashes`/no-`writeScope` folder). `guardrails --version` surfaces drift:
+  it keeps stdout as the bare version line (scripts parse it, unchanged) and writes a
+  drift-warning block to **stderr** — exit code stays 0 — for any known skill found under
+  `~/.claude/skills` or `./.claude/skills` whose `metadata.guardrails-version` is missing
+  (`unversioned`) or `≠` the harness. Remedy it warns: `guardrails skills install --force`, which
+  overwrites the folder with a frontmatter-stamped copy **and removes any orphaned preview.26
+  sidecar**.
 
 ## Commands
 
@@ -116,7 +117,8 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   state key (#121); GR2023 = a prompt-runner `maxOutputTokens` ≤ 0 (#114). GR2025
   (WARNING) = plan missing/stale a `/guardrails-review` marker (#79, SSOT §13) — surfaced
   at the CLI command layer (`PlanValidator.ReviewMarkerDiagnostic`), NOT inside
-  `PlanValidator.Validate`. Next free: GR1010 / GR2024 / GR2026.
+  `PlanValidator.Validate`. GR2024 (StagingOutputsInvalid) and GR2026 (StaleCoverageToken, the
+  #157 stale-`covers-key-behaviors` warning, SSOT §4.4) are both TAKEN. Next free: GR1010 / GR2027.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;
