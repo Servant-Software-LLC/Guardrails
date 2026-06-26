@@ -203,9 +203,10 @@ public sealed class TaskExecutor : ITaskExecutor
 
             // F2: in worktree mode, reset the segment to taskBase + clean before the next attempt
             // so attempt N+1 starts on a pristine tree and never inherits attempt N's WIP (the
-            // wip.txt-survives defect). Guarded on a real git segment (non-empty path + a real
-            // taskBase sha, not the all-zeros placeholder a fake provider supplies).
-            if (!isFinal && IsRealGitSegment(worktree))
+            // wip.txt-survives defect). Failure-kind-agnostic: EVERY non-final worktree attempt resets,
+            // which is exactly why the timeout / max-turns feedback above discloses the rollback via the
+            // SAME WorktreeWillReset predicate — the claim and the reset are guaranteed to agree (#167).
+            if (WorktreeWillReset(worktree, isFinal))
             {
                 GitWorktreeProvider.ResetSegment(worktree.WorktreePath, worktree.TaskBase);
             }
@@ -497,15 +498,23 @@ public sealed class TaskExecutor : ITaskExecutor
         if (!action.Succeeded)
         {
             // Compose signal-specific feedback so a retry CHANGES BEHAVIOR rather than re-hitting the
-            // same wall: output-cap (#114) → "write incrementally / split"; timeout (#119) → "continue
-            // from preserved partial work, don't re-explore". A genuine error keeps the prompt/script
-            // failure feedback. The journal outcome distinguishes timeout / output-cap / action-failed
-            // so a human (and §9 triage) sees a budget/tool issue, not a generic failure.
+            // same wall: output-cap (#114) → "write incrementally / split"; timeout (#119) / max-turns
+            // (#129) → "go straight at the deliverable, don't re-explore". A genuine error keeps the
+            // prompt/script failure feedback. The journal outcome distinguishes timeout / output-cap /
+            // action-failed so a human (and §9 triage) sees a budget/tool issue, not a generic failure.
+            //
+            // #167: in worktree mode a non-final FAILED attempt has its segment reset to taskBase +
+            // cleaned before the next attempt (the F2 reset below — failure-kind-agnostic), so the
+            // attempt's FILE writes are reverted. The timeout / max-turns feedback must then NOT claim
+            // the partial work is "preserved on disk"; it discloses the reset and instructs re-authoring.
+            // Same signal #162 uses, computed here because this feedback is composed in BOTH modes
+            // (unlike the state-rejection path, which only runs in worktree mode).
+            bool fileWritesRolledBack = WorktreeWillReset(worktree, isFinal);
             string feedback = action.FailureKind switch
             {
                 PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber),
-                PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber),
-                PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber),
+                PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber, fileWritesRolledBack),
+                PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber, fileWritesRolledBack),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult())
             };
 
@@ -640,6 +649,17 @@ public sealed class TaskExecutor : ITaskExecutor
         return _journaler.CompleteSucceededOrInvalidFragment(
             task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
     }
+
+    /// <summary>
+    /// True when the segment WILL be reset to <c>taskBase</c> + cleaned before the next attempt — i.e.
+    /// this is a real git segment (worktree mode) AND not the final attempt. This is the single
+    /// failure-kind-agnostic signal that the attempt's FILE writes are about to be reverted: it gates
+    /// the F2 retry reset (below) and, identically, the <c>fileWritesRolledBack</c> disclosure threaded
+    /// into the timeout / max-turns retry feedback (issue #167) — so the feedback's claim and the
+    /// actual reset can never disagree. Serial mode and the final attempt return false (no reset).
+    /// </summary>
+    internal static bool WorktreeWillReset(WorktreeHandle worktree, bool isFinal) =>
+        !isFinal && IsRealGitSegment(worktree);
 
     /// <summary>
     /// True when <paramref name="worktree"/> is a real git segment (worktree mode) rather than a

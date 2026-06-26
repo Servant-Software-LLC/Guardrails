@@ -59,23 +59,46 @@ public static class RetryPolicy
     /// Compose feedback for a prompt action that exhausted its TURN budget (issue #129 / #94). A
     /// max-turns termination is NOT a logic failure — the agent was making real progress and simply
     /// ran out of turns mid-task (often reverse-engineering an unfamiliar SDK). The harness has
-    /// already AUTO-ESCALATED the next attempt's turn budget (see <c>TaskExecutor</c>), and the
-    /// partial work is PRESERVED in the segment worktree — so the retry must continue from it and
-    /// spend its turns on the deliverable, not re-exploration. Distinct from a generic action failure
-    /// so a human (and §9 triage) sees a budget issue, not "the agent failed".
+    /// already AUTO-ESCALATED the next attempt's turn budget (see <c>TaskExecutor</c>), so the retry
+    /// must spend its turns on the deliverable, not re-exploration. Distinct from a generic action
+    /// failure so a human (and §9 triage) sees a budget issue, not "the agent failed".
     /// </summary>
-    public static string ForMaxTurnsExceeded(TaskNode task, int attempt)
+    /// <param name="fileWritesRolledBack">
+    /// True in worktree mode for a non-final attempt (the segment is reset to taskBase + cleaned
+    /// before the next attempt — issue #167): the partial work on disk is GONE, so the feedback must
+    /// NOT tell the agent to continue from it; it discloses the reset and instructs re-authoring ALL
+    /// files. False in serial mode (file writes persist) and on the final attempt (never reset), where
+    /// the existing "continue from preserved partial work" guidance is kept.
+    /// </param>
+    public static string ForMaxTurnsExceeded(TaskNode task, int attempt, bool fileWritesRolledBack = false)
     {
         var text = new StringBuilder();
         AppendHeader(text, task, attempt);
         text.AppendLine("## The previous attempt ran out of turns");
         text.AppendLine();
         text.AppendLine("The previous attempt hit the max-turns cap and was stopped mid-progress — this is a TURN");
-        text.AppendLine("BUDGET exhaustion, NOT a logic error. Its PARTIAL WORK is preserved in your workspace. The");
-        text.AppendLine("harness has RAISED the turn budget for this attempt, but do not waste the headroom:");
-        text.AppendLine();
-        text.AppendLine("- CONTINUE from the partial work already on disk; do NOT start over or re-read the whole");
-        text.AppendLine("  codebase to re-orient.");
+        // #167: only the "PARTIAL WORK is preserved" claim is mode-dependent. In worktree mode the
+        // attempt's writes are reverted (rollback note below), so that claim is false — drop it; the
+        // raised-turn-budget advice is valid in BOTH modes and is kept. Serial mode is byte-for-byte
+        // unchanged.
+        if (fileWritesRolledBack)
+        {
+            text.AppendLine("BUDGET exhaustion, NOT a logic error. The harness has RAISED the turn budget for this");
+            text.AppendLine("attempt, but do not waste the headroom:");
+            text.AppendLine();
+            text.AppendLine("- Do NOT continue from on-disk files: the partial work was reverted (see the rollback");
+            text.AppendLine("  note below). You need NOT re-explore from scratch either — carry forward what you");
+            text.AppendLine("  LEARNED and go straight to producing the deliverable.");
+        }
+        else
+        {
+            text.AppendLine("BUDGET exhaustion, NOT a logic error. Its PARTIAL WORK is preserved in your workspace. The");
+            text.AppendLine("harness has RAISED the turn budget for this attempt, but do not waste the headroom:");
+            text.AppendLine();
+            text.AppendLine("- CONTINUE from the partial work already on disk; do NOT start over or re-read the whole");
+            text.AppendLine("  codebase to re-orient.");
+        }
+
         text.AppendLine("- Work DIRECTLY toward the deliverable. Batch related edits, avoid redundant exploration,");
         text.AppendLine("  and don't re-discover what a prior attempt already established.");
         text.AppendLine("- Prioritise getting the change to COMPILE and the guardrails to GO GREEN first; refine after.");
@@ -83,30 +106,55 @@ public static class RetryPolicy
         text.AppendLine("  distinct sub-features, or needs an expensive one-time setup better done by an upstream task),");
         text.AppendLine("  STOP and write {\"needsHuman\": \"<this task is under-budgeted for turns; suggest a split or a");
         text.AppendLine("  higher maxTurns>\"} to GUARDRAILS_STATE_OUT rather than burning more attempts.");
+        AppendRollbackDisclosure(text, fileWritesRolledBack);
         return text.ToString();
     }
 
     /// <summary>
     /// Compose feedback for a prompt/script action that TIMED OUT (issue #119). A timeout means the
-    /// task needed more wall-clock, and the partial work is PRESERVED in the segment worktree — so the
-    /// retry must continue from it, not re-explore from scratch (the wasteful "15 reads, 0 edits" retry
-    /// the issue documents). The harness also extends the retry's clock (see <c>TaskExecutor</c>).
+    /// task needed more wall-clock, so the retry must go straight at the deliverable rather than
+    /// re-explore from scratch (the wasteful "15 reads, 0 edits" retry the issue documents). The
+    /// harness also extends the retry's clock (see <c>TaskExecutor</c>).
     /// </summary>
-    public static string ForTimeout(TaskNode task, int attempt)
+    /// <param name="fileWritesRolledBack">
+    /// True in worktree mode for a non-final attempt (the segment is reset to taskBase + cleaned
+    /// before the next attempt — issue #167): the partial work on disk is GONE, so the feedback must
+    /// NOT tell the agent to continue from it; it discloses the reset and instructs re-authoring ALL
+    /// files. False in serial mode (file writes persist) and on the final attempt (never reset), where
+    /// the existing "continue from preserved partial work" guidance is kept.
+    /// </param>
+    public static string ForTimeout(TaskNode task, int attempt, bool fileWritesRolledBack = false)
     {
         var text = new StringBuilder();
         AppendHeader(text, task, attempt);
         text.AppendLine("## The previous attempt timed out");
         text.AppendLine();
-        text.AppendLine("The previous attempt ran out of time and was stopped. Its PARTIAL WORK is preserved in");
-        text.AppendLine("your workspace — do NOT start over and do NOT re-read the whole codebase to re-orient.");
-        text.AppendLine();
-        text.AppendLine("- CONTINUE from the partial work already on disk; build on it.");
+        // #167: only the "PARTIAL WORK is preserved" claim is mode-dependent. In worktree mode the
+        // attempt's writes are reverted (rollback note below), so that claim is false — drop it; the
+        // "don't re-explore, the clock matters" advice is valid in BOTH modes and is kept. Serial mode
+        // is byte-for-byte unchanged.
+        if (fileWritesRolledBack)
+        {
+            text.AppendLine("The previous attempt ran out of time and was stopped. Its partial work was reverted (see");
+            text.AppendLine("the rollback note below), so re-author the files — but do NOT waste the extended clock");
+            text.AppendLine("re-reading the whole codebase to re-orient: carry forward what you LEARNED and go straight");
+            text.AppendLine("to the deliverable.");
+            text.AppendLine();
+        }
+        else
+        {
+            text.AppendLine("The previous attempt ran out of time and was stopped. Its PARTIAL WORK is preserved in");
+            text.AppendLine("your workspace — do NOT start over and do NOT re-read the whole codebase to re-orient.");
+            text.AppendLine();
+            text.AppendLine("- CONTINUE from the partial work already on disk; build on it.");
+        }
+
         text.AppendLine("- Prioritise getting the change to COMPILE and the guardrails to GO GREEN first; refine after.");
         text.AppendLine("- Make focused edits — minimise exploration, maximise progress, because the clock matters.");
         text.AppendLine("- If this task bundles several distinct sub-features and cannot finish in the time given,");
         text.AppendLine("  STOP and write {\"needsHuman\": \"<this task is under-sized for the timeout; suggest a split>\"}");
         text.AppendLine("  to GUARDRAILS_STATE_OUT rather than burning more attempts.");
+        AppendRollbackDisclosure(text, fileWritesRolledBack);
         return text.ToString();
     }
 
@@ -230,11 +278,12 @@ public static class RetryPolicy
     }
 
     /// <summary>
-    /// Append the file-write rollback disclosure (issue #162) when a state-rejected attempt's worktree
-    /// is reset to <c>taskBase</c> before the next attempt — so the agent re-authors ALL files instead
-    /// of fixing only the state key and assuming its prior file writes survived. No-op when no rollback
-    /// occurred (serial mode, where file writes persist across attempts, or the final attempt, which is
-    /// never reset). Scoped to the state-rejection path per the issue.
+    /// Append the file-write rollback disclosure when a non-final attempt's worktree is reset to
+    /// <c>taskBase</c> + cleaned before the next attempt — so the agent re-authors ALL files instead
+    /// of assuming its prior file writes survived. The single source of the disclosure WORDING, shared
+    /// by the state-rejection path (issue #162) and the timeout / max-turns paths (issue #167) so every
+    /// "your prior writes are gone" message stays consistent. No-op when no rollback occurred (serial
+    /// mode, where file writes persist across attempts, or the final attempt, which is never reset).
     /// </summary>
     private static void AppendRollbackDisclosure(StringBuilder text, bool fileWritesRolledBack)
     {

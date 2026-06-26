@@ -222,8 +222,9 @@ public sealed class RetryPolicyTests
     [Fact]
     public void Timeout_Feedback_TellsAgentToContinueFromPartialWork_NotReExplore()
     {
-        // #119: the retry must continue from the preserved partial work and prioritise compile/green,
-        // not re-read the whole codebase (the wasteful "15 reads, 0 edits" retry the issue documents).
+        // #119 (serial mode, the default — file writes persist across attempts): the retry must
+        // continue from the preserved partial work and prioritise compile/green, not re-read the whole
+        // codebase (the wasteful "15 reads, 0 edits" retry the issue documents).
         string feedback = RetryPolicy.ForTimeout(Task("18-merge-engine"), attempt: 2);
 
         Assert.Contains("timed out", feedback);
@@ -231,5 +232,71 @@ public sealed class RetryPolicyTests
         Assert.Contains("CONTINUE", feedback);
         Assert.Contains("do NOT start over", feedback, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("needsHuman", feedback);          // split-suggestion escape
+        Assert.DoesNotContain("File writes were also rolled back", feedback); // no false rollback claim
+    }
+
+    [Fact]
+    public void Timeout_Feedback_WhenFileWritesRolledBack_DisclosesReset_AndDropsPreservedClaim()
+    {
+        // #167: in worktree mode a non-final timed-out attempt has its segment reset to taskBase +
+        // cleaned before the next attempt, so the partial work on disk is GONE. The feedback must NOT
+        // claim it is "preserved on disk"; it discloses the reset and instructs re-authoring.
+        string feedback = RetryPolicy.ForTimeout(Task("18-merge-engine"), attempt: 2, fileWritesRolledBack: true);
+
+        Assert.Contains("timed out", feedback);
+        Assert.Contains("## File writes were also rolled back", feedback);
+        Assert.Contains("re-author ALL files", feedback);
+        Assert.DoesNotContain("preserved in your workspace", feedback);  // the false claim is gone
+        Assert.DoesNotContain("CONTINUE from the partial work already on disk", feedback);
+        // The still-valid timeout advice survives: a larger clock, work efficiently, don't re-explore.
+        Assert.Contains("re-read", feedback, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("needsHuman", feedback);
+    }
+
+    [Fact]
+    public void MaxTurns_Feedback_TellsAgentToContinueFromPartialWork_NotReExplore()
+    {
+        // #129 / #94 (serial mode, the default): a max-turns termination is a budget exhaustion mid-
+        // progress, not a logic error — the retry continues from the preserved partial work with a
+        // raised turn budget, spending its turns on the deliverable, not re-exploration.
+        string feedback = RetryPolicy.ForMaxTurnsExceeded(Task("12-implement"), attempt: 2);
+
+        Assert.Contains("ran out of turns", feedback);
+        Assert.Contains("CONTINUE from the partial work already on disk", feedback);
+        Assert.Contains("do NOT start over", feedback, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("needsHuman", feedback);          // under-budget escape
+        Assert.DoesNotContain("File writes were also rolled back", feedback); // no false rollback claim
+    }
+
+    [Fact]
+    public void MaxTurns_Feedback_WhenFileWritesRolledBack_DisclosesReset_AndDropsPreservedClaim()
+    {
+        // #167: in worktree mode a non-final max-turns attempt has its segment reset to taskBase +
+        // cleaned before the next attempt, so the partial work on disk is GONE. The feedback must NOT
+        // tell the agent to continue from on-disk files; it discloses the reset and instructs
+        // re-authoring — while keeping the still-valid "you have a larger turn budget; work directly"
+        // advice (the turn-budget raise applies whether or not the files were rolled back).
+        string feedback = RetryPolicy.ForMaxTurnsExceeded(Task("12-implement"), attempt: 2, fileWritesRolledBack: true);
+
+        Assert.Contains("ran out of turns", feedback);
+        Assert.Contains("## File writes were also rolled back", feedback);
+        Assert.Contains("re-author ALL files", feedback);
+        Assert.DoesNotContain("CONTINUE from the partial work already on disk", feedback); // false claim gone
+        Assert.Contains("RAISED the turn budget", feedback);   // the still-valid budget advice survives
+        Assert.Contains("needsHuman", feedback);
+    }
+
+    [Fact]
+    public void TimeoutAndMaxTurns_FinalAttempt_DoNotClaimAFileRollback()
+    {
+        // Consistent with #162: the final attempt is never reset, so the executor passes
+        // fileWritesRolledBack:false — the feedback must not claim a rollback that will not happen.
+        string timeout = RetryPolicy.ForTimeout(Task("18-merge"), attempt: 3, fileWritesRolledBack: false);
+        string maxTurns = RetryPolicy.ForMaxTurnsExceeded(Task("18-merge"), attempt: 3, fileWritesRolledBack: false);
+
+        Assert.DoesNotContain("File writes were also rolled back", timeout);
+        Assert.Contains("preserved", timeout);                 // serial/final keeps the existing guidance
+        Assert.DoesNotContain("File writes were also rolled back", maxTurns);
+        Assert.Contains("CONTINUE from the partial work already on disk", maxTurns);
     }
 }
