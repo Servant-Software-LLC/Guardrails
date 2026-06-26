@@ -247,8 +247,9 @@ exit 0
 `task.json` — sets `integrationGate: true` (SSOT §3.3): this is the run's terminal whole-repo
 integration gate, the lone sink the two leaf tasks (02, 03) fan into. The plan has ≥2 leaf tasks
 and a fan-in, so validation requires **exactly one** `integrationGate: true` sink (GR2017) carrying
-**at least one** `scope: "integration"` guardrail (GR2018) — `01-full-suite` below is that guardrail.
-A terminal whole-suite gate is a genuinely repo-wide task, so it declares **no `writeScope`**.
+**at least one** `scope: "integration"` guardrail (GR2018) — `01-union-clean` below is that
+guardrail (a **union-safe invariant**, NOT the whole suite). A terminal whole-suite gate is a
+genuinely repo-wide task, so it declares **no `writeScope`**.
 ```jsonc
 {
   "description": "Whole test suite green (terminal gate)",
@@ -257,9 +258,49 @@ A terminal whole-suite gate is a genuinely repo-wide task, so it declares **no `
 }
 ```
 
-`action.ps1` → `exit 0` (a pure verification task; the guardrail is the point).
+`action.ps1` → `exit 0` (a pure verification task; the guardrails are the point).
 
-`guardrails/01-full-suite.ps1`
+The gate carries **two** guardrails, cheapest-first, with the right scopes (#165):
+
+`guardrails/01-union-clean.ps1` — the `scope: "integration"` guardrail GR2018 requires. It is a
+**union-safe conditional invariant** (conflict-marker-free + non-empty), so it passes trivially at
+intermediate unions where a leaf has not integrated yet. It does **NOT** assert "both leaves' work
+is present" (a terminal postcondition that would false-RED at the first union) — it gates on each file
+being present, then verifies it:
+```powershell
+# catches: a union that left git conflict markers in the merged bytes, or an empty source/doc file —
+# the deterministic verdict on EVERY union's bytes, re-run at each non-FF integration and the terminal HEAD.
+# scope:"integration" → MUST be union-safe (#125): gate-then-verify, never "require both leaves present".
+$ws = $env:GUARDRAILS_WORKSPACE
+if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
+foreach ($rel in @('src/Inventory.Cli/StatsCommand.cs', 'README.md')) {
+    $p = Join-Path $ws $rel
+    if (-not (Test-Path $p)) { continue }   # not integrated at this union yet — fine
+    $content = Get-Content -Raw -Path $p
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        Write-Output "$rel is empty on the merged bytes"
+        exit 1
+    }
+    if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+        Write-Output "$rel contains git conflict markers — the union did not cleanly integrate"
+        exit 1
+    }
+}
+exit 0
+```
+`guardrails/01-union-clean.json`:
+```jsonc
+{
+  "description": "Union invariant: merged files are non-empty and conflict-marker-free",
+  "scope": "integration"
+}
+```
+
+`guardrails/02-full-suite.ps1` — the whole test suite. This is **LOCAL** (no `scope` key): a full
+suite is a **terminal postcondition**, not a union-safe invariant — it runs only here, in the gate's
+own attempt on its segment worktree after both leaves have merged. Marking it `scope: "integration"`
+would re-run it at every intermediate union and, on any TDD plan, red-halt a correct partial merge
+(#165):
 ```powershell
 # catches: the --stats work regressing anything elsewhere in the suite
 dotnet test --nologo
@@ -269,14 +310,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 exit 0
 ```
-
-`guardrails/01-full-suite.json` — marks the whole-suite check `scope: "integration"` (SSOT §4.3),
-so it joins the run's integration-guardrail set re-run at every union point and on the terminal
-gate's merged HEAD. This is the `scope: "integration"` guardrail GR2018 requires on the gate sink.
+`guardrails/02-full-suite.json` (LOCAL — the `scope` key is deliberately ABSENT):
 ```jsonc
 {
-  "description": "Whole test suite green",
-  "scope": "integration"
+  "description": "Whole test suite green"
 }
 ```
 
@@ -289,7 +326,7 @@ gate's merged HEAD. This is the `scope: "integration"` guardrail GR2018 requires
 > | 01-author-stats-tests *(INSERTED)* | prompt | build-passes (3), tests-fail-on-stubs (8); `writeScope` owns the test file + the `StatsCommand` stub; Scope boundary paragraph | — |
 > | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4); `writeScope` targets the stub, EXCLUDES the test file | 01 |
 > | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
-> | 04-suite-green | script | full-suite (4, terminal-only, `scope: "integration"`); `integrationGate: true` | 02, 03 |
+> | 04-suite-green | script | union-clean (union-safe invariant, `scope: "integration"`) + full-suite (4, terminal-only, **LOCAL**); `integrationGate: true` | 02, 03 |
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
 > pass" and those tests didn't exist. `--stats` is behavioral, so this task also writes the
@@ -303,8 +340,11 @@ gate's merged HEAD. This is the `scope: "integration"` guardrail GR2018 requires
 > 02's scope (`src/Inventory.Cli/`) TARGETS the stub but EXCLUDES the test file, so the
 > harness's read-only write-scope check (SSOT §3.4) fails 02 if its diff edits the tests — no
 > hashing, no `tests-untouched` guardrail. `04-suite-green` is the terminal `integrationGate:
-> true` sink the two leaves fan into; its full-suite check is `scope: "integration"`.
-> `guardrails validate add-stats-flag` → OK.
+> true` sink the two leaves fan into. Its GR2018 `scope: "integration"` guardrail is the
+> **union-safe** `01-union-clean` (conflict-marker-free + non-empty, gate-then-verify — safe at
+> every union); the whole-suite `02-full-suite` is **LOCAL** (no `scope`), because a full suite
+> is a terminal postcondition that would red-halt a correct intermediate union if it re-ran there
+> (#165). `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
 > or add, then run `/guardrails-review add-stats-flag` before executing.

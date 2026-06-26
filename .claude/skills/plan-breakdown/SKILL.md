@@ -292,11 +292,51 @@ optional:
   must stand on its own line and be easy to scan. Applies to every archetype, build /
   exit-code checks included.
 - "All tests pass" appears ONLY on a terminal integration task.
-- Mark build / whole-suite test guardrails with `scope: "integration"` in their sidecar
-  JSON (deterministic) or prompt frontmatter (SSOT §4.3). The run's integration-guardrail
-  set = the union of all `scope: "integration"` guardrails (typically the whole-repo build
-  + the full test suite); the harness re-runs that set at every union point and on the
-  terminal gate's merged HEAD. Leave a task-local guardrail at its `"local"` default.
+- **A full build / whole-suite test guardrail on the terminal gate is a terminal
+  postcondition → keep it LOCAL (#165).** Do NOT mark `01-solution-builds` /
+  `02-all-tests-pass` (the whole-repo build and full test suite) `scope: "integration"`.
+  Omit the `scope` key (default `"local"`) so they run ONLY at the terminal gate — in the
+  gate task's own attempt, on its segment worktree, AFTER every upstream task has merged.
+  That is the correct and ONLY moment a full build / full suite should run. A `scope:
+  "integration"` guardrail re-runs at **every** union point (every fan-in / non-FF
+  integration), on partial merges where downstream tasks have NOT run yet. In a TDD plan a
+  Wave-2 union contains test files that reference types implemented in Wave 3+, so a whole
+  build / whole suite FAILS at that intermediate union and the harness rolls the wave back —
+  even though every per-task guardrail passed. That is exactly the **#125
+  terminal-postcondition-at-integration-scope anti-pattern** (decision test: *"would this
+  pass on a partial merge with a downstream task unsettled?"* — a full build/suite would
+  NOT). Marking it integration-scoped red-halts a correct run. (Catalogue → "A
+  `scope:"integration"` guardrail MUST be UNION-SAFE".)
+- **The terminal gate MUST still carry ≥1 `scope: "integration"` UNION-SAFE invariant
+  guardrail (GR2018).** GR2018 requires the gate sink to carry at least one
+  `scope: "integration"` guardrail — but that guardrail is the **conditional union invariant**,
+  NOT the build/suite. It asserts something true of any valid intermediate union — "every
+  produced file present is non-empty and conflict-marker-free", "every contribution PRESENT
+  in the union is intact" — so it passes trivially BEFORE a contributing task has run. Its
+  content checks MUST be **UNION-SAFE = CONDITIONAL**: `IF contribution X is present, verify
+  it's real`, never `REQUIRE X present`. The conditional pattern (the `parallel-hello`
+  template; `examples/parallel-hello/.../01-whole-repo-greeting.ps1`):
+
+  ```powershell
+  # Union-safe: gate on the artifact being present, then verify it — pass trivially when absent.
+  $outDir = Join-Path $ws 'out'
+  if (-not (Test-Path $outDir)) { exit 0 }   # nothing produced at this union yet — fine
+  foreach ($f in Get-ChildItem -Path $outDir -Filter '*.txt' -File) {
+      $content = Get-Content -Raw -Path $f.FullName
+      if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+          Write-Output ("out/" + $f.Name + " contains git conflict markers — the union did not cleanly integrate")
+          exit 1
+      }
+  }
+  exit 0
+  ```
+
+  A contribution-present check uses the same conditional shape — `if ($content -match
+  "<token>") { if ($content -notmatch '<real-construct>') { $failures += "<token> present
+  only as comment — construct missing" } }` — so it false-passes (correctly) before the
+  contributing task has run, and tightens once that task's hunk lands. The
+  overlapping-writeScope union-guardrail (next bullet, #132) IS this integration-scoped
+  guardrail — make THAT, not the build/suite, the one that satisfies GR2018.
 - **Overlapping writeScopes → author a `scope:"integration"` union-guardrail on the shared file
   (#132).** When ≥2 tasks have OVERLAPPING `writeScope`s on a shared file (colliding siblings the
   AI-merge unions), emit one `scope:"integration"` guardrail on the integration / fan-in task
@@ -1413,7 +1453,7 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 - [ ] A test-author behavior that needs a production injection seam (a fake/double injected into a type with no injection point) → an upstream `add-<component>-<seam>-seam` task (pure structural production change, build + a structural seam-exists check, TDD-exempt) the test-author task `dependsOn`; the seam was NOT left to the test task to invent or to its `needsHuman` escape (#84).
 - [ ] A task that fans out over an external/unknown-size set (crawl, recursive glob, API listing) → modeled as a scripted-ETL `script` action (volume off the turn budget), NOT an agent-per-item loop; discover-size-first probe added where the count is unknown; bulk-capture split from bounded per-item curation (#100).
 - [ ] Step 7.0b deliverable-coverage self-review ran: every numbered design deliverable (placement-table row, top-level `§`-section, "what's-asked" item) maps to ≥1 task; any body/`§`-deliverable lacking a milestone home was flagged, not silently dropped; uncovered deliverables are blocking decisions in the report; a `guardrails-review` coverage probe is surfaced (#110).
-- [ ] A parallel plan (`maxParallelism` > 1) declares exactly one `integrationGate: true` sink carrying a `scope: "integration"` guardrail; build / whole-suite guardrails are marked `scope: "integration"`.
+- [ ] A parallel plan (`maxParallelism` > 1) declares exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail, and that integration-scoped guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if contribution X present, verify it's real"), NOT the full build or whole suite. The full build (`01-solution-builds`) and whole-suite test (`02-all-tests-pass`) on the terminal gate are **LOCAL** (no `scope` key) — marking them `scope: "integration"` is the #125 anti-pattern: they red-halt correct intermediate unions where downstream TDD tasks have not run yet (#165).
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.

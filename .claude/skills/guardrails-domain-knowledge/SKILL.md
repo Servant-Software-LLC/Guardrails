@@ -135,8 +135,11 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     "re-run later"). A cleared pause is never journaled (observe-only).
   - **OutputCap** (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, default raised to 64000 via `maxOutputTokens`):
     distinct `output-cap` outcome + actionable "write incrementally / split" retry feedback.
-  - **Timeout**: distinct `timeout` outcome + "continue from preserved partial work" feedback, and
-    the retry clock is EXTENDED (1x -> 1.5x -> 2.25x, capped 4x).
+  - **Timeout**: distinct `timeout` outcome + **mode-aware** retry feedback (issue #167) -- in
+    **serial** mode "continue from preserved partial work"; in **worktree** mode the non-final
+    attempt's segment is reset to `taskBase` + cleaned, so the feedback discloses the file-write
+    rollback and instructs re-authoring (never the false "partial work preserved" claim). The retry
+    clock is EXTENDED (1x -> 1.5x -> 2.25x, capped 4x). (SSOT section 7.)
 - **Per-run cost cap** (`maxCostUsd` in `guardrails.json`, optional decimal USD): when
   the journal's cumulative cost reaches/exceeds the cap, the scheduler stops launching new
   attempts -- each not-yet-launched task settles `needs-human` ("cost cap reached") and its

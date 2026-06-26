@@ -897,13 +897,26 @@ for the golden reference.)
 
 ## A `scope:"integration"` guardrail MUST be UNION-SAFE (#125)
 
-This is an authoring constraint on **which assertion** a `scope: "integration"` guardrail may make —
-distinct from the mechanical "mark the build/suite as integration" rule. Per SSOT **§4.3**, the run's
-integration-guardrail set re-runs at **EVERY union point** — every fan-in and every **non-FF**
-plan-branch integration (SSOT §5.3 case B), on the merged bytes, *before* the merge commit and
-*before any downstream action* — **not only on the terminal `integrationGate` sink**. The terminal
-gate and the per-union re-verify are **one mechanism at two scopes** (§4.3). So an integration
-guardrail runs at moments when **downstream tasks have not run yet**.
+This is an authoring constraint on **which assertion** a `scope: "integration"` guardrail may make.
+Per SSOT **§4.3**, the run's integration-guardrail set re-runs at **EVERY union point** — every
+fan-in and every **non-FF** plan-branch integration (SSOT §5.3 case B), on the merged bytes, *before*
+the merge commit and *before any downstream action* — **not only on the terminal `integrationGate`
+sink**. The terminal gate and the per-union re-verify are **one mechanism at two scopes** (§4.3). So
+an integration guardrail runs at moments when **downstream tasks have not run yet**.
+
+**The full build and whole test suite on the terminal gate are NOT integration-scoped (#165).** It is
+tempting to think "the whole-repo build + full suite ARE the integration set, so mark them
+`scope: "integration"`." That is the **#125 anti-pattern**, not the rule. A full build and a full test
+suite are **terminal postconditions**, not union-safe invariants: at an intermediate union in a TDD
+plan, the merged bytes contain test files referencing types whose implementation task has not run yet,
+so `dotnet build` / `dotnet test` FAIL on those merged bytes and the harness rolls the whole wave back
+— even though every per-task guardrail passed. Apply the decision test (*"would this pass on a partial
+merge with a downstream task unsettled?"*): a full build/suite answers **no**. So `01-solution-builds`
+and `02-all-tests-pass` on the terminal gate are **LOCAL** (no `scope` key) — they run only in the
+gate task's own attempt, on its segment worktree, after every upstream task has merged, which is the
+correct and ONLY moment for a full build + full suite. The `scope: "integration"` guardrail GR2018
+requires on the gate is instead a **union-safe conditional invariant** (below) — typically the
+conflict-marker / union-invariant check, never the build or the suite.
 
 **The rule: assert a union-safe INVARIANT, never a terminal POSTCONDITION.** A `scope:"integration"`
 guardrail must assert something true of **any valid intermediate union** — an invariant like "every
@@ -935,6 +948,42 @@ anti-patterns list).
 
 Do not fork the contract here — §4.3 (re-verify at every union) and §5.3 (FF vs union) are the SSOT;
 this section is doctrine *about how to author within* that contract.
+
+### The union-safe form is CONDITIONAL: "if X is present, verify it" — never "require X" (#165)
+
+Because the guardrail re-runs at intermediate unions where only a SUBSET of contributing tasks has
+integrated, every content check inside a `scope: "integration"` guardrail must be written as a
+**conditional** — gate on the contribution being present, then verify it — so it passes trivially
+before the contributing task has run:
+
+```powershell
+# Union-safe: gate-then-verify. Absent contribution → pass (the producing task hasn't run yet).
+$path = Join-Path $ws 'src/Importers/CommanderLauncher.cs'
+if (-not (Test-Path $path)) { exit 0 }          # nothing to verify at this union yet
+$content = Get-Content -Raw -Path $path
+$failures = @()
+if ($content -match 'test-commander-rest') {     # the REST contribution has landed — now require it real
+    if ($content -notmatch '"test-commander-rest"') {
+        $failures += "test-commander-rest present only as comment — route string literal missing"
+    }
+}
+if ($content -match 'ImportMode') {              # the dispatch contribution has landed — require the construct
+    if ($content -notmatch 'ImportMode\.\w+|switch.*ImportMode|case ImportMode') {
+        $failures += "ImportMode present only as comment — dispatch construct missing"
+    }
+}
+if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+    $failures += "conflict markers remain — the union did not cleanly integrate"
+}
+if ($failures.Count -gt 0) { Write-Output ($failures -join "; "); exit 1 }
+exit 0
+```
+
+The **unconditional** form (`if ($content -notmatch "test-commander-rest") { exit 1 }`) is the bug: it
+fails at the intermediate union BEFORE the REST task has run, red-halting a healthy partial merge. The
+conditional form is correct at every union — it tightens as each contribution lands and is fully
+satisfied only at the terminal HEAD. This is the same shape as the conflict-marker check (which gates
+on the file existing) and the overlapping-writeScope union-guardrail below.
 
 ### Overlapping writeScopes need a `scope:"integration"` union-guardrail on the shared file (#132)
 
