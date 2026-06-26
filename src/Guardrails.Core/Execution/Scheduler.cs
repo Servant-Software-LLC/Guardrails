@@ -94,10 +94,23 @@ public sealed class Scheduler
 
         // Create the integration handle once for this run (worktree mode only).
         string runId = Guid.NewGuid().ToString("N")[..8];
-        IntegrationHandle? integ = _worktreeProvider?.CreateIntegration(
-            planName: Path.GetFileName(plan.PlanDirectory),
-            runId: runId,
-            cancellationToken);
+        IntegrationHandle? integ;
+        try
+        {
+            integ = _worktreeProvider?.CreateIntegration(
+                planName: Path.GetFileName(plan.PlanDirectory),
+                runId: runId,
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Issue #150/#160 — CreateIntegration runs BEFORE the worker loop's fault capture, so a
+            // setup fault (e.g. a plan folder with no usable name component → the #160 guard's clear
+            // diagnostic, or git unavailable) would otherwise escape unhandled as a raw stack trace.
+            // Surface it through the same honest-halt ABORTED report the CLI renders cleanly.
+            return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                with { Abort = BuildAbort(ex) };
+        }
 
         // B1_1/F1 resume pre-pass: a task is already green if the JOURNAL says Succeeded OR it is
         // already integrated on the PLAN BRANCH (a Guardrails-Task: trailer reachable from the tip).

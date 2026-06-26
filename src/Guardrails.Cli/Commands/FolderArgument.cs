@@ -27,6 +27,19 @@ public static class FolderArgument
         string.IsNullOrWhiteSpace(value) ? Directory.GetCurrentDirectory() : value;
 
     /// <summary>
+    /// Strip a single trailing directory separator from a plan-folder argument so the plan name
+    /// derived downstream (<c>Path.GetFileName</c> in branch naming, log paths, workspace
+    /// derivation) is never empty. Issue #160: <c>guardrails run .\plans\0009-foo\</c> with a
+    /// trailing separator made <c>Path.GetFileName</c> return <c>""</c>, the harness built the
+    /// invalid branch name <c>guardrails/</c>, and git exited 128. <see
+    /// cref="Path.TrimEndingDirectorySeparator(string)"/> covers both
+    /// <see cref="Path.DirectorySeparatorChar"/> and <see cref="Path.AltDirectorySeparatorChar"/>
+    /// and deliberately leaves a bare root (e.g. <c>C:\</c> or <c>/</c>) untouched.
+    /// </summary>
+    public static string Normalize(string value) =>
+        string.IsNullOrEmpty(value) ? value : Path.TrimEndingDirectorySeparator(value);
+
+    /// <summary>
     /// Resolve as <see cref="Resolve"/> does, then apply the plan-file → task-folder fixup
     /// (<see cref="ResolveMarkdownArgument"/>): when the folder was omitted, print one line
     /// naming the current directory; when the user passed the plan SOURCE FILE (a <c>.md</c>
@@ -34,6 +47,9 @@ public static class FolderArgument
     /// folder and print one info line. Used by every plan command's action so the behaviour
     /// stays consistent. A genuinely-bad path falls through unchanged so the existing
     /// <c>GR1001</c> "Plan folder does not exist" error still fires downstream.
+    ///
+    /// <para>A trailing directory separator is stripped first (<see cref="Normalize"/>, issue
+    /// #160) so the plan name derived downstream is never empty.</para>
     /// </summary>
     public static string ResolveAndAnnounce(string? value, TextWriter output)
     {
@@ -44,7 +60,7 @@ public static class FolderArgument
             return current;
         }
 
-        return ResolveMarkdownArgument(value, output);
+        return ResolveMarkdownArgument(Normalize(value), output);
     }
 
     /// <summary>

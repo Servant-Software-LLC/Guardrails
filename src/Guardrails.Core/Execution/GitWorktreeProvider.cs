@@ -30,6 +30,17 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// <inheritdoc />
     public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct)
     {
+        // Defense in depth (issue #160): a plan-name component that is empty/whitespace would build
+        // the invalid branch name "guardrails/" and let git reject it with a raw exit-128 stack
+        // trace. Fail with a clear, diagnosed message instead so the CLI's honest-halt path can
+        // render it. The CLI normalizes a trailing path separator upstream (FolderArgument), so
+        // reaching here empty signals a genuinely unnameable plan folder.
+        if (string.IsNullOrWhiteSpace(planName))
+        {
+            throw new InvalidOperationException(
+                $"could not derive a plan name from '{planName}' — the plan folder has no usable name component.");
+        }
+
         string originalBranch = Git("rev-parse", "--abbrev-ref", "HEAD").Trim();
         string originalHead = Git("rev-parse", "HEAD").Trim();
         string planBranch = $"guardrails/{planName}";
