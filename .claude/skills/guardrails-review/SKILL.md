@@ -75,12 +75,41 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
 - **Coverage gap**: the action's stated completion criteria exceed what guardrails
   verify — name the unverified criterion. (E.g. action says "sorted by category";
   no guardrail checks sorting.)
+- **Stale coverage check (#157)**: the inverse of the coverage gap — here a
+  `covers-key-behaviors` guardrail requires MORE than the action prompt asks for, so a
+  CORRECT implementation following the prompt can never satisfy it. For every
+  `covers-key-behaviors` guardrail (one `if ($content -match "<token>")` / `-notmatch …
+  exit 1` per behavior, or a `$hits -lt N` threshold), verify each required token is named —
+  directly or via an obvious synonym — somewhere in the SAME task's action prompt. A token
+  the guardrail's `match` requires but the prompt's scenario list does NOT mention →
+  **BLOCKER** with the message: "guardrail requires `<token>` but action prompt does not
+  mention it — the task will fail every attempt." (Mechanism: the implementation follows the
+  prompt, the guardrail keeps demanding the removed token, every attempt gets contradictory
+  "need `<token>`" retry feedback and the task dead-ends at `needsHuman`.) This is the
+  **human-judgement complement** to the deterministic **GR2026** warning `guardrails validate`
+  already emits (SSOT §4.4): the lint is a conservative keyword-presence heuristic (it stays
+  silent on a synonym or a regex-shaped token); the reviewer resolves the cases the lint can't
+  — confirm a flagged token really is stale (the prompt dropped the scenario) vs named only via
+  a synonym (a false positive to clear), and catch a stale token the lint skipped because it was
+  regex-shaped. Cross-check `validate`'s GR2026 output against this pass; don't merely re-report it.
 - **Tests gameable**: implementation tasks whose tests can be edited by the same
   action — the implementation task's `writeScope` must EXCLUDE the test files its
   upstream test-author task owns (the deterministic write-scope test-exclusion, SSOT
   §3.4), so an edit to a test file fails the harness's read-only write-scope check. An
   implementation task with no `writeScope`, or one whose scope covers the test files, is
-  gameable. Inserted test tasks missing tests-fail-on-current-code.
+  gameable. Inserted test tasks missing the TDD "red" guardrail for their type (#155): a
+  BEHAVIORAL-type test-author task missing the `build-passes` + `tests-fail-on-stubs` pair
+  (a lone non-zero-exit red passes on a non-compiling garbage test file — BLOCKER); a
+  data-model task split without a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
+- **Missing scope-boundary warning (#154)**: for any test-author task (`author-tests-*` / a
+  task whose deliverable is a test file), check that `action.prompt.md` contains an explicit
+  **harness-enforcement paragraph** — it must name the allowed path(s) (test file AND, under
+  #155, any stub file the `writeScope` covers), the post-action `git diff` membership check,
+  the retry consequence of an out-of-scope edit, and the `{"needsHuman": …}` redirect for an
+  upstream missing-symbol compile error. Absence is a **WEAK** finding — the harness injects
+  `writeScope` at run time, but without the consequence the agent may still drift on a compile
+  error and fix a neighbouring file (an out-of-scope edit that burns a retry). Fix: add the
+  Scope boundary paragraph (plan-breakdown Step 6 has the verbatim shape).
 - **Unactionable failures**: guardrails that fail without printing a usable reason
   (retry feedback quality).
 - **Grep-scope contamination**: a file-content guardrail that greps the project tree
@@ -151,6 +180,23 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   still holds every sibling's contribution, union-safe per #125). This is an **authoring nudge**, not a
   harness bug: the integration-set-only union re-verify is an accepted v1 design (#132). (Catalogue →
   overlapping-writeScope union-guardrail; SSOT §4.3 "Accepted residual".)
+- **Union guardrail ancestor staleness (#159)**: for every `scope:"integration"` union guardrail on a
+  fan-in / integration task, identify each **expected-contribution token** (the string it
+  `match`/`notmatch`-checks for in the shared file), and for each token identify which task(s) would
+  **produce** it (the task whose action / `writeScope` writes that marker). Then verify every producing
+  task is in the **ancestor set** of the integration task — there is a directed path producer → fan-in in
+  the DAG. If a producing task is NOT an ancestor — a **disconnected leaf** or a **side branch** with no
+  path to the fan-in — flag it **WEAK**: "Union guardrail checks for `<token>` contributed by task
+  `<N>`, but task `<N>` is not an ancestor of the integration task. If task `<N>` is later removed, this
+  guardrail will fail spuriously. Either add a DAG edge (`<N>` → fan-in task) to make the dependency
+  explicit, or remove the `<token>` check from the union guardrail." The trap is silent: a disconnected
+  producer **still runs** (the harness executes every task), so the guardrail passes **today** — but the
+  integration gate now **implicitly requires** a task no edge declares it depends on, and the day that
+  task is deferred/removed the gate red-halts with a confusing "shared file is missing `<token>`" that
+  reads as a merge failure but is a **stale guardrail**. This is the run-time-fragility analogue of the
+  #132 nudge above — there the residual is a dropped hunk on a shared file; here it is a contribution
+  check whose producer fell out of the ancestor set. (Relates to #132/#125; the plan-breakdown side adds
+  the matching rule on dependency-edge removal, Step 4.)
 - **Unregistered module**: a task adds a module/project to a build descriptor (`.csproj`
   → `.slnx`) but no guardrail checks the DESCRIPTOR names it — a descriptor build passes
   with the project unregistered. (Stack file → build-descriptor registration.)
@@ -170,6 +216,24 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   output, or reflect on the constructed object for the non-null collaborator with a contrast case —
   the `Factory_Wires*` shape). Missing wiring task OR a seam-injecting guardrail OR reliance on
   whole-suite green to cover wiring = BLOCKER. (Catalogue → composition-root section, `stacks/dotnet.md §10`.)
+- **Wrong-implementation swap (#158)**: the next failure past #120 — given the dispatch IS wired,
+  is the **right concrete type paired with the right mode**? For a dispatch / wiring task that routes
+  **≥2 enum (or discriminated) values to ≥2 concrete types** AND whose dispatch tests use
+  **seam-injection** (`RecordingImporter` / `FakeHandler` patterns that replace the real impl via DI and
+  assert only that *an* importer was called), verify a **per-pairing proximity check** exists — one
+  guardrail per pairing asserting `<EnumValue>` sits within a bounded window (`[\s\S]{0,300}`,
+  multiline-dotall, both orders) of `<ConcreteType>` in the dispatch file. The swap to hunt: an agent
+  routes Mode B → the wrong importer and Mode C → the other; the **build passes** (either type satisfies
+  the interface in either branch), the **seam-injected dispatch tests pass** (they never check which
+  concrete type was registered), and a **bare keyword check** that all enum values AND all type names
+  appear *somewhere* passes too (all present regardless of pairing) — the feature ships inverted on a
+  fully green suite. Flag **WEAK if the per-pairing check is missing**; **BLOCKER if the only concrete
+  check is `tests-pass` with seam-injection tests** (nothing binds enum to type, so a swap is fully
+  invisible). **Do NOT flag** when the dispatch tests already assert the concrete TYPE NAME
+  (`Assert.IsType<TcApiLocalImporter>` on the resolved object) — the test catches the swap and the
+  proximity check is redundant (the catalogue's decision gate). Distinct from #120 (built-but-unwired):
+  there nothing wires the impl at all; here it is wired but possibly to the wrong mode. (Catalogue →
+  "Dispatch / factory wiring"; `stacks/dotnet.md §10d`; relates to #120.)
 - **Vacuous `writeScope`**: a task declares `writeScope: ["**"]`, a bare top-level dir, or
   any over-broad surface that owns everything — the write-scope check (SSOT §3.4) then
   discriminates nothing and is theater (`validate` warns GR2020). The honest move is to omit
@@ -323,13 +387,18 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Terminal/e2e tasks claiming an output quantity assert a STRICTLY POSITIVE value (no hollow `Assert.Equal(0,…)` / `NotNull` / bare `exit 0`); every structural property check is accessor-order-insensitive (no `\{\s*get` / `\{\s*set` anchor).
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Coverage gaps cite the exact unverified completion criterion.
-- [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files; no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
+- [ ] Every `covers-key-behaviors` guardrail's required tokens are each named (directly or via synonym) in the SAME task's action prompt; a token the guardrail requires but the prompt never mentions is a BLOCKER ("the task will fail every attempt") — the human-judgement complement to the deterministic GR2026 warning (#157).
+- [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files (but may TARGET the stub file the test-author wrote, #155); no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
+- [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
+- [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
+- [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing.
+- [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
 <!-- BEGIN ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every "task A calls `B.Method()`" guardrail anchors on BOTH the type reference and the dotted call (`\.Method\s*\(`), never a bare method-name grep (#76).

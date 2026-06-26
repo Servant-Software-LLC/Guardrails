@@ -223,6 +223,75 @@ public sealed class FolderArgumentTests : IDisposable
         Assert.Equal(string.Empty, writer.ToString());
     }
 
+    // --- Normalize (issue #160: trailing separator never yields an empty plan name) --------
+
+    [Fact]
+    public void Normalize_TrailingSeparator_StrippedSoPlanNameIsNonEmpty()
+    {
+        // The #160 symptom: a plan folder passed WITH a trailing separator must derive the same
+        // clean plan name (Path.GetFileName) as the same path WITHOUT it — never "".
+        string withSep = Path.Combine("plans", "0009-foo") + Path.DirectorySeparatorChar;
+        string withoutSep = Path.Combine("plans", "0009-foo");
+
+        string normalized = FolderArgument.Normalize(withSep);
+
+        Assert.Equal(withoutSep, normalized);
+        Assert.Equal("0009-foo", Path.GetFileName(normalized));
+        Assert.False(string.IsNullOrEmpty(Path.GetFileName(normalized)),
+            "Plan name derived from the normalized path must be non-empty (the #160 branch component).");
+    }
+
+    [Fact]
+    public void Normalize_AltSeparator_OnWindows_AlsoStripped()
+    {
+        // TrimEndingDirectorySeparator covers AltDirectorySeparatorChar on Windows ('/').
+        if (Path.DirectorySeparatorChar == '/')
+        {
+            return; // POSIX: '/' is the primary separator, already covered by the main test.
+        }
+
+        string withAltSep = "plans/0009-foo/";
+
+        string normalized = FolderArgument.Normalize(withAltSep);
+
+        Assert.Equal("plans/0009-foo", normalized);
+        Assert.Equal("0009-foo", Path.GetFileName(normalized));
+    }
+
+    [Fact]
+    public void Normalize_BareRoot_IsNotMangled()
+    {
+        // A bare root must survive intact — TrimEndingDirectorySeparator leaves it alone.
+        string root = Path.GetPathRoot(Directory.GetCurrentDirectory())!;
+
+        Assert.Equal(root, FolderArgument.Normalize(root));
+    }
+
+    [Fact]
+    public void Normalize_NoTrailingSeparator_ReturnedUnchanged()
+    {
+        string folder = Path.Combine("plans", "0009-foo");
+
+        Assert.Equal(folder, FolderArgument.Normalize(folder));
+    }
+
+    [Fact]
+    public void ResolveAndAnnounce_TrailingSeparator_DerivesSameCleanFolderAndPlanName()
+    {
+        // End-to-end through the seam every command calls: a real folder passed WITH a trailing
+        // separator resolves to the same path as WITHOUT it, so the downstream plan-name component
+        // (Path.GetFileName) is "0009-foo", not "" (the #160 crash).
+        string folder = Path.Combine(_scratch, "0009-foo");
+        Directory.CreateDirectory(folder);
+        string withSep = folder + Path.DirectorySeparatorChar;
+
+        using var writer = new StringWriter();
+        string result = FolderArgument.ResolveAndAnnounce(withSep, writer);
+
+        Assert.Equal(folder, result);
+        Assert.Equal("0009-foo", Path.GetFileName(result));
+    }
+
     // --- ResolveAndAnnounce (the seam every command calls) --------------------------------
 
     [Fact]

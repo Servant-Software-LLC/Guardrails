@@ -140,6 +140,29 @@ public sealed class GitWorktreeLifecycleTests
     }
 
     /// <summary>
+    /// Defense in depth (issue #160): an empty/whitespace plan name would build the invalid branch
+    /// name <c>guardrails/</c> and let git reject it with a raw exit-128. CreateIntegration must
+    /// instead throw a CLEAR, diagnosed <see cref="InvalidOperationException"/> naming the problem,
+    /// before it ever shells out to git.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CreateIntegration_EmptyPlanName_ThrowsClearDiagnostic_NotRawGit128(string planName)
+    {
+        using var repo = new TempGitRepo();
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => provider.CreateIntegration(planName, "run-160", CancellationToken.None));
+
+        Assert.Contains("could not derive a plan name", ex.Message, StringComparison.Ordinal);
+        // No half-created plan branch is left behind — the guard fires before any git call.
+        Assert.False(repo.BranchExists("guardrails/"),
+            "The invalid 'guardrails/' branch must never be created.");
+    }
+
+    /// <summary>
     /// A linear chain of tasks reuses ONE segment worktree passed along the chain.
     /// The worktree path is identical for every linear hop — this is the reuse lever.
     /// </summary>

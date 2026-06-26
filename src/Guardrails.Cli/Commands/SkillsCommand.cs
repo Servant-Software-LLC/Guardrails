@@ -57,7 +57,7 @@ public static class SkillsCommand
         var forceOption = new Option<bool>("--force")
         {
             Description = "Overwrite a skill folder that already exists in the target — required to refresh "
-                + "(and re-stamp the version of) an installed skill, otherwise it is skipped. "
+                + "an installed skill (and remove any stale version sidecar), otherwise it is skipped. "
                 + "`guardrails --version` warns about skipped/stale skills."
         };
 
@@ -100,7 +100,7 @@ public static class SkillsCommand
         string toolVersion = GuardrailsVersion.Current;
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(sourceSkillsDir, targetDir, force, toolVersion);
+            SkillsInstaller.InstallAll(sourceSkillsDir, targetDir, force);
 
         foreach (SkillsInstaller.SkillResult result in results)
         {

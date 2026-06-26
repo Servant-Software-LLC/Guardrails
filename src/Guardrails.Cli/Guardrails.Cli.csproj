@@ -38,6 +38,20 @@
   </ItemGroup>
 
   <!--
+    Build-only assets (issue #156): the MSBuild task that stamps metadata.guardrails-version
+    into the bundled SKILL.md output copies. The task source is compiled by
+    RoslynCodeTaskFactory at build time, so it must NOT be part of the C# compile (it pulls in
+    Microsoft.Build types the shipped tool never references). The .targets is imported below.
+  -->
+  <ItemGroup>
+    <Compile Remove="Build\StampSkillVersionsTask.cs" />
+    <None Include="Build\StampSkillVersionsTask.cs" />
+    <None Include="Build\StampSkillVersions.targets" />
+  </ItemGroup>
+
+  <Import Project="Build\StampSkillVersions.targets" />
+
+  <!--
     Bundle the agent-side skills INTO the tool so a single `dotnet tool install` carries
     them. Each file is Content with CopyToOutputDirectory=PreserveNewest and a Link that
     places it under skills/<name>/... in the build output. The dotnet-tool packaging target

@@ -30,16 +30,20 @@ Python project.
 | 5 | **lint/format clean** | script | The repo already has a configured linter (never introduce one ad hoc) | Style/usage violations the repo's standards forbid |
 | 6 | **schema-validates** | script | Task emits structured data and a schema exists (or you inserted a schema-author task) | Structurally invalid output |
 | 7 | **port/endpoint-answers** | script (probe + curl, owns process start/stop, with timeout) | Task delivers a running service behavior | Service that builds but doesn't actually serve |
-| 8 | **tests-fail-on-current-code** | script | THE distinctive one — for inserted test-author tasks; run the new tests against the pre-implementation code and require failure (or skipped-with-reason) | Tautological tests that pass against a stub and verify nothing |
+| 8 | **build-passes + tests-fail-on-stubs** (behavioral) · **tests-fail-on-current-code** (data-model) | script | THE distinctive one — the TDD "red" signal for inserted test-author tasks. The **form depends on the type under test** — see the stub-based TDD section below (it is the SSOT for choosing) | Tautological tests that pass against a stub and verify nothing |
 
-> **Compile-coupled tests:** when the new tests reference not-yet-existing symbols
-> (a new property, constant, or type), the test project won't even compile against
-> current code — so a separate tests-build guardrail would fail at the same moment
-> tests-fail-on-current-code requires failure. In that case DROP the tests-build
-> guardrail and let tests-fail-on-current-code carry both (non-zero exit = compile
-> failure OR test failure, either proves non-tautology). Keep tests-build only when
-> the tests compile against current code (e.g. they exercise a CLI flag or file
-> output rather than new API surface).
+> **The TDD "red" must COMPILE and FAIL, never merely exit non-zero.** A non-compiling
+> test file exits `dotnet test` non-zero *identically* to a compiling-but-failing one, so a
+> guardrail that accepts **any** non-zero exit as "red" passes on **garbage that does not
+> compile** — and the implementation task (whose `writeScope` excludes the test file) cannot
+> fix it, so the run dead-ends at `needsHuman`. True TDD red is "tests compile AND fail."
+> Achieving it splits on the type under test, and the **stub-based TDD decision (next
+> section) is the SSOT**: a **behavioral type** (a class with methods/logic) gets the
+> **two-guardrail** `build-passes` + `tests-fail-on-stubs` pattern (the test-author task also
+> writes minimal stubs so the tests compile); a **data model** (enum/record/value type, no
+> behavioral stub possible) defaults to **collapsing the split** and asserting `tests-pass` in
+> one task, or keeps `tests-fail-on-current-code` as a compile-coupled red with a strengthened
+> structural `covers-key-behaviors`. Read that section before selecting either form.
 | 9 | **verify-recorded-action-result (don't replay)** | script | The action ALREADY ran an expensive command (a build+test) and the postcondition is expressible from what it recorded — verify the recorded output/artifact instead of re-running the command | A wasteful replay of the action's own work — see the dedicated section for the GOOD-vs-BAD-target rules (this is a speed/flake trade-off, NOT a free correctness win) |
 | 10 | **prompt-judge** | `.prompt.md` (writes `{pass, reason}` verdict) | **LAST RESORT** — see the demotion gate | Genuinely subjective properties: tone, clarity, design taste |
 
@@ -335,6 +339,90 @@ writes one. If the action does not produce a runner-written result file and the 
 "evidence" of success is its prose stdout, you have **no** GOOD target: keep the honest
 replay (`specific-tests-pass`, #4) rather than demoting to an echo-judge.
 
+## Stub-based TDD — the "red" must COMPILE and FAIL, not just exit non-zero (#155)
+
+This is the SSOT for **how to author the TDD "red" guardrail** on an inserted test-author task.
+The decision-tree's Code branch and archetype #8 both point here.
+
+**The failure this fixes.** A test-author task whose anti-tautology guardrail accepts a **compile
+failure** as the "red" signal is gameable. `dotnet test --filter …` exits non-zero whether the test
+file **compiles and fails** (true TDD red) or **does not compile at all** (garbage):
+
+```csharp
+// ImportMode TcApiLocal XtcFileOnly CommanderRest ImportResult   ← satisfies a bare-keyword covers-check
+class Garbage { DOES_NOT_COMPILE }                                ← exits dotnet test non-zero
+```
+
+That garbage passes `tests-fail-on-current-code` (non-zero exit) *and* a bare-keyword
+`covers-key-behaviors` (the tokens appear in a comment) — **all three test-author guardrails go green
+on a file that compiles to nothing**. The downstream implementation task's `writeScope` **excludes**
+the test file, so it cannot fix the compile error — the run dead-ends at `needsHuman` with no
+actionable error on the task that caused it. True TDD red = **the tests compile and fail**, not
+"something exits non-zero."
+
+The fix splits on the **type under test**.
+
+### Behavioral type (a class with methods/logic) → the test-author task ALSO writes the stubs
+
+When the type under test has behavior (methods, an algorithm, a service), the test-author task
+produces **two** artifacts: the **test file** AND the **minimal stubs** the tests need to COMPILE —
+interface declarations / skeleton classes whose members throw `NotImplementedException` (or return
+`default`). The test-author task's `writeScope` covers **both** the test file and the stub file(s).
+
+Replace the single compile-coupled guardrail with **TWO** guardrails (cheapest-first):
+
+1. **`build-passes`** (archetype #3) — `dotnet build` (stack equivalent) succeeds. With the stubs in
+   place this is a hard proof the **test file is syntactically valid and type-correct**. Garbage
+   fails here unambiguously — there is no longer any confusion between "missing types" and "syntax
+   error," because the stubs supply the types.
+2. **`tests-fail-on-stubs`** (the #8 form) — `dotnet test --filter …` exits non-zero. Because the
+   build now **succeeds** (guardrail 1 proved it), a non-zero exit unambiguously means **the tests
+   ran and FAILED** — the stubs throw `NotImplementedException`, so the behavior is genuinely absent.
+   That is TDD red.
+
+The **implementation task's `writeScope` still EXCLUDES the test file** (the deterministic
+test-protection, SSOT §3.4 — unchanged) but now **TARGETS the stub file(s)**: it fills real logic
+over the skeletons the test-author created. If the stub lives under the same implementation surface
+the impl scope already names (e.g. `src/Foo/`), the scope already covers it; if the stub lives
+elsewhere, list it in the impl scope explicitly. Either way the test file is out of the impl's scope.
+
+This pattern is **language-agnostic** — every compiled language has a build step, and the
+two-guardrail split is identical in all of them (the .NET commands are `stacks/dotnet.md §4`).
+
+### Data model (enum, record, value type — no behavioral stub possible) → collapse, or strengthen
+
+A pure data model has **no behavioral stub**: the type declaration IS the full implementation. A test
+that checks "can I set `Mode = TcApiLocal`" passes the instant the type exists — there is no stub-vs-real
+distinction, so the two-guardrail behavioral pattern does not apply. **Default: collapse the TDD split
+into a single task** — define the type and assert `tests-pass` in one go — and **state the reason
+explicitly** in the task description / breakdown report: *"data model — no behavioral stub possible."*
+
+If you keep the split anyway (the type is large enough that authoring its tests first adds value):
+- The anti-tautology check is **weaker** here — say so in the report.
+- Keep `tests-fail-on-current-code` as the compile-coupled red (the test references the not-yet-existing
+  type, so the file won't compile against current code — non-zero exit IS the red, and a separate
+  `build-passes` would fail at the same moment, so omit it).
+- **Strengthen `covers-key-behaviors` with a STRUCTURAL check** rather than a bare keyword grep:
+  assert the test file actually carries `[Fact]`/`[Theory]` **attributes** (not just that the domain
+  tokens appear in text) — `(?m)^\s*\[(Fact|Theory)\]` — so a comment naming the enum values cannot
+  satisfy the coverage check. (This is the structural-vs-keyword rule, §"file-contains", applied to
+  the test-attribute construct; `stacks/dotnet.md §17`.)
+
+### Mixed task (data + behavioral) → lean behavioral
+
+When a task is **mixed** — it adds both a data model and behavior (the commander-import example: an
+`ImportMode` enum AND an importer that acts on it) — **lean behavioral**: write the minimal stubs for
+the behavioral parts so the whole test file COMPILES, and use the two-guardrail `build-passes` +
+`tests-fail-on-stubs` pattern. The data-model members come along for free inside the same compiling
+file; the behavioral stubs are what make the build pass and the tests fail honestly.
+
+### Why this is the strongest anti-tautology check the skill has
+
+A compile failure is a *weak* red (garbage produces it). `build-passes` + `tests-fail-on-stubs` is a
+*strong* red: the file must be type-correct (build) **and** the behavior must be genuinely absent
+(tests fail against throwing stubs). It is strictly stronger than the old single-guardrail form, and
+it removes the dead-end where the implementation task could never repair a non-compiling test file.
+
 ## Composition-root wiring — the component is CONSTRUCTED/INJECTED in production (#120)
 
 **The recurring lesson, the highest-impact false-green the skill emits.** A plan adds a
@@ -419,6 +507,75 @@ both go green over an unwired feature. A full-suite-green gate over seam-injecte
 
 The .NET realization (the reflection-on-factory pattern + the drive-the-real-factory integration
 test) is `stacks/dotnet.md §10`.
+
+## Dispatch / factory wiring — the CORRECT concrete type is paired with the CORRECT mode (#158)
+
+The **next failure past #120.** #120 asks "is the component wired at all?"; this asks "is it wired to
+the **right** mode?". When a dispatch wires N enum/discriminated values to N concrete implementations
+(`ImportMode.TcApiLocal → new TcApiLocalImporter()`, `ImportMode.CommanderRest → new
+CommanderRestImporter()`), an agent can **swap the pairings** — route Mode B to the wrong importer and
+Mode C to the other — and ship the feature **inverted**. The usual gates all stay green:
+
+- the **build** passes (both concrete types exist and satisfy the interface, so either compiles in
+  either branch);
+- the **dispatch tests** pass — they inject a **substituted fake** (`RecordingImporter` / `FakeHandler`)
+  via DI and assert only that *the registered `ICommanderImporter` was called*, never **which concrete
+  type** was registered (seam-injection proves routing, not type identity);
+- a **bare keyword check** (`if ($content -notmatch "ImportMode|TcApiLocal") …`) passes in the inverted
+  case too — every enum value and every type name is present *somewhere* in the dispatch file regardless
+  of how they're paired.
+
+So the swap survives every check that doesn't bind a **specific enum value to a specific concrete type**.
+
+### The archetype: one proximity check per enum→concrete pairing
+
+For each of the N pairings, add **one** guardrail asserting `<EnumValue>` appears within a **bounded
+window** (~300 characters — a single short `if` block) of `<ConcreteType>` in the dispatch file. Use a
+**multiline-dotall** window `[\s\S]{0,300}` (matches across newlines), checked in **both orders** so the
+declaration order inside the block doesn't matter — NOT single-line `.{0,300}` (which stops at the first
+newline and false-fails a multi-line block):
+
+```powershell
+# catches: the wrong concrete importer wired to the TcApiLocal mode (e.g. swapped with
+#          CommanderRestImporter) - build + seam-injected dispatch tests + a bare keyword
+#          check all pass on the inverted wiring; only the per-pairing proximity check fails.
+$file = "src/Commander/ImporterDispatch.cs"
+$content = Get-Content $file -Raw
+if ($content -notmatch "TcApiLocal[\s\S]{0,300}TcApiLocalImporter|TcApiLocalImporter[\s\S]{0,300}TcApiLocal") {
+    Write-Output "TcApiLocal mode is not paired with TcApiLocalImporter in $file - verify the correct importer is wired to the correct ImportMode branch (a swap passes the build and the seam-injected dispatch tests)"
+    exit 1
+}
+exit 0
+```
+
+Emit **one such check per pairing** (one for each `<EnumValue, ConcreteType>` couple). The 300-char
+window covers a single short `if`/`switch`-arm block; **widen it** for a longer block, but keep it tight
+enough that an *unrelated* later branch naming the other type can't accidentally fall inside the window.
+Scope the grep to the **one dispatch file** the wiring task owns (grep-scope rule).
+
+### WHEN to use it — both conditions must hold
+
+Emit the pairing checks only when **both** are true; otherwise they are noise:
+
+1. The task **selects among ≥2 concrete implementations by an enum / discriminated value** (a real
+   dispatch with a real chance of a swap — a single implementation cannot be mis-paired); AND
+2. the dispatch tests use a **substituted fake / seam-injection** (`RecordingImporter`, `FakeHandler`,
+   an `InMemoryX` registered via DI) that proves *routing* but **not type identity** — so the swap is
+   invisible to the test suite.
+
+### DECISION GATE — omit when the tests already assert the concrete type
+
+**If the dispatch tests assert the concrete TYPE NAME** (e.g. `Assert.IsType<TcApiLocalImporter>(...)`
+on the object the dispatch resolved for Mode C, not merely that *an* importer was called), the test
+**already catches the swap** and this guardrail is **redundant** — **omit it** and state why in the
+`# catches:` comment of whatever guardrail covers the dispatch (e.g. `# pairing not separately checked:
+DispatchTests assert IsType<TcApiLocalImporter> for Mode C, so a swap fails the tests`). Adding the
+proximity check on top of a type-asserting test is duplicate coverage, not extra safety.
+
+Relation to #120: composition-root wiring asks whether `FooImpl` is constructed/injected *at all*; this
+asks whether — given it IS wired — each mode got the **right** impl. A plan can need both (wire the
+dispatch into the production path AND prove each mode's pairing). A `.NET` realization is
+`stacks/dotnet.md §10d`; this catalogue section is the universal archetype.
 
 ## Production testability seam — insert it upstream of the test-author task (#84)
 
@@ -1048,10 +1205,23 @@ What is the task's primary deliverable?
 │                                │  writeScope test-exclusion rule below
 │                                └─ INSERT a test-author task upstream BY DEFAULT (SKILL Step 2
 │                                   TDD rule); skip only if tests already exist or behavior is
-│                                   too simple for unit tests — state why in task description
-│                                   (test-author: tests-fail-on-current-code (8) + declares a
-│                                    writeScope covering the test files in task.json; tests-build
-│                                    only if tests compile against current code)
+│                                   too simple for unit tests — state why in task description.
+│                                   The test-author "red" guardrail SPLITS on the type under test
+│                                   (stub-based TDD section above — the SSOT):
+│                                   • BEHAVIORAL type (class/method/logic) → the test-author task
+│                                     ALSO writes the minimal STUBS so the tests COMPILE, its
+│                                     writeScope covers the test file AND the stub file(s), and its
+│                                     guardrails are build-passes (3) + tests-fail-on-stubs (8). The
+│                                     IMPLEMENTATION task's writeScope EXCLUDES the test file but
+│                                     TARGETS the stub file(s) (fills logic over the skeletons).
+│                                   • DATA MODEL (enum/record/value type — no behavioral stub) →
+│                                     COLLAPSE the split into one define-type-and-assert-tests-pass
+│                                     task; state "data model — no behavioral stub possible". If you
+│                                     keep the split, note the anti-tautology is weaker, keep
+│                                     tests-fail-on-current-code (8), and strengthen
+│                                     covers-key-behaviors with a STRUCTURAL [Fact]/[Theory] check.
+│                                   • MIXED (data + behavioral) → lean BEHAVIORAL (stub the
+│                                     behavioral parts so the whole file compiles).
 ├── A runnable script/tool     → file-exists + command-exit-code on a representative invocation
 ├── A running service /        → entry-point-wiring (grep: the entry point references the launcher)
 │    server / CLI executable      + port/endpoint-answers (#7: START the binary, POLL a route,

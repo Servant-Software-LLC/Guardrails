@@ -1,0 +1,53 @@
+<Project>
+
+  <!--
+    Build-time injection of metadata.guardrails-version into the BUNDLED SKILL.md copies
+    (issue #156). The version is a build/release fact, so we stamp the OUTPUT copies under
+    $(OutDir)skills/**/SKILL.md and the copies the pack target sweeps into the nupkg — never
+    the repo-source files under .claude/skills/** (those stay clean; `git status` is clean
+    after a build).
+
+    The transform lives in StampSkillVersionsTask.cs, compiled on the fly by
+    RoslynCodeTaskFactory (no extra build dependency shipped in the tool). The .csproj removes
+    that file from the normal C# compile so it is build-only.
+  -->
+  <UsingTask
+      TaskName="StampSkillVersionsTask"
+      TaskFactory="RoslynCodeTaskFactory"
+      AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Language="cs"
+            Source="$(MSBuildThisFileDirectory)StampSkillVersionsTask.cs" />
+    </Task>
+  </UsingTask>
+
+  <!--
+    Stamp the build OUTPUT copies. Runs after the content (the bundled skills) has been copied
+    into $(OutDir). AfterTargets=Build covers `dotnet build`/`dotnet run`; the pack target
+    (below) re-runs it so a clean `dotnet pack` without a prior build is also stamped.
+  -->
+  <Target Name="StampBundledSkillVersions" AfterTargets="Build">
+    <ItemGroup>
+      <_BundledSkillManifest Include="$(OutDir)skills\**\SKILL.md" />
+    </ItemGroup>
+    <StampSkillVersionsTask
+        Condition="'@(_BundledSkillManifest)' != ''"
+        SkillFiles="@(_BundledSkillManifest)"
+        Version="$(Version)" />
+  </Target>
+
+  <!--
+    `dotnet pack` packs the build output's content; ensure the stamp is applied before the
+    nupkg is assembled even when pack runs without a preceding Build target in this invocation.
+  -->
+  <Target Name="StampBundledSkillVersionsBeforePack" BeforeTargets="GenerateNuspec;Pack">
+    <ItemGroup>
+      <_BundledSkillManifestPack Include="$(OutDir)skills\**\SKILL.md" />
+    </ItemGroup>
+    <StampSkillVersionsTask
+        Condition="'@(_BundledSkillManifestPack)' != ''"
+        SkillFiles="@(_BundledSkillManifestPack)"
+        Version="$(Version)" />
+  </Target>
+
+</Project>
