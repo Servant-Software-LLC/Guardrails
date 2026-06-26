@@ -33,8 +33,9 @@ public enum PromptFailureKind
 
     /// <summary>
     /// The runner process exceeded its timeout and was killed (issue #119). Distinct from a generic
-    /// error so the retry carries timeout-specific feedback ("partial work is preserved — continue
-    /// from it, don't re-explore") and the retry clock can be extended.
+    /// error so the retry carries timeout-specific feedback (serial mode: "partial work is preserved —
+    /// continue from it, don't re-explore"; worktree mode: "your writes were rolled back — re-author,
+    /// don't re-explore", issue #167) and the retry clock can be extended.
     /// </summary>
     Timeout,
 

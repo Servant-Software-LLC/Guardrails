@@ -184,7 +184,12 @@ not the token" rule.
   exit 0
   ```
 - **Build the whole solution** belongs to ONE terminal integration task only (catalogue:
-  "all tests pass" / whole-suite green is terminal-only):
+  "all tests pass" / whole-suite green is terminal-only). **This guardrail is LOCAL — no
+  `scope` key (#165).** A whole-solution build is a **terminal postcondition**, not a
+  union-safe invariant: at an intermediate union in a TDD plan the merged bytes contain test
+  files referencing types whose implementation task has not run yet, so the solution build
+  FAILS there and the harness rolls the wave back. Keep it LOCAL so it runs only in the
+  terminal gate's own attempt, after every upstream task has merged (`01-solution-builds`):
   ```powershell
   # catches: a project that builds alone but breaks the solution (e.g. unregistered or a broken ref)
   dotnet build PoC/ConformedSources/WorksoftMigrator.slnx -c Release --nologo
@@ -194,8 +199,48 @@ not the token" rule.
   }
   exit 0
   ```
+  Its sidecar declares **no `scope`** (defaults to `"local"`):
+  ```jsonc
+  // 01-solution-builds.json — LOCAL (runs only at the terminal gate's action)
+  { "description": "Full solution build — catches cross-project compilation errors after all plan tasks merge" }
+  ```
 - **Tests:** filter to THIS task's tests (`dotnet test <proj> --filter "Category=Stats" --nologo`),
-  per archetype #4; the whole-suite `dotnet test` (no filter) is the terminal gate.
+  per archetype #4; the whole-suite `dotnet test` (no filter) is the **terminal gate** and is
+  likewise **LOCAL — no `scope` key (#165)** (a whole suite is a terminal postcondition for the
+  same reason: a Wave-2 union holds tests for not-yet-implemented types):
+  ```jsonc
+  // 02-all-tests-pass.json — LOCAL (runs only at the terminal gate's action)
+  { "description": "Full test suite — catches regressions in all existing tests and verifies all new tests pass on merged HEAD" }
+  ```
+- **The terminal gate's `scope: "integration"` guardrail (GR2018) is a CONDITIONAL union
+  invariant, not the build/suite (#165).** GR2018 still requires the gate sink to carry ≥1
+  `scope: "integration"` guardrail — make that the union-safe conflict-marker / union-invariant
+  check (the overlapping-writeScope union-guardrail, §10/§17 and the catalogue), written in the
+  **conditional gate-then-verify form** so it passes trivially at unions where a contribution has
+  not landed:
+  ```powershell
+  # catches: a union that dropped a colliding sibling's hunk or left conflict markers on a shared file.
+  # scope:"integration" — union-safe: gate on the file/contribution being present, THEN verify it.
+  $ws = $env:GUARDRAILS_WORKSPACE; if ([string]::IsNullOrEmpty($ws)) { $ws = (Get-Location).Path }
+  $path = Join-Path $ws 'PoC/ConformedSources/Importers/CommanderLauncher.cs'
+  if (-not (Test-Path $path)) { exit 0 }          # not produced at this union yet — nothing to verify
+  $content = Get-Content -Raw -Path $path
+  if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+      Write-Output "CommanderLauncher.cs contains git conflict markers — the union did not cleanly integrate"
+      exit 1
+  }
+  if ($content -match 'ImportMode') {             # dispatch contribution landed — require the real construct
+      if ($content -notmatch 'ImportMode\.\w+|switch.*ImportMode|case ImportMode') {
+          Write-Output "ImportMode present only as comment — dispatch construct missing after union"
+          exit 1
+      }
+  }
+  exit 0
+  ```
+  ```jsonc
+  // 03-launcher-union-verified.json — INTEGRATION-scoped, union-safe conditional invariant
+  { "description": "Union invariant on the shared launcher: conflict-marker-free; each landed contribution is real", "scope": "integration" }
+  ```
 - Always pass `--nologo` (and `-v q` on builds) so the one actionable failure line isn't
   buried in banner noise. Declare no interpreter for `dotnet` — it's a build tool the
   guardrail invokes, not a script interpreter (those go in `guardrails.json: interpreters`).

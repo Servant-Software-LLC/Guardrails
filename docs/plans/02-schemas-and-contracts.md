@@ -462,9 +462,11 @@ lifecycle, it uses a **public attempt-decoupled re-verify seam** (NOT the attemp
 guardrail runner). The re-verify child process runs with cwd = the integration worktree and
 `GUARDRAILS_WORKSPACE` set to that same path (#124) — so a guardrail reading `$GUARDRAILS_WORKSPACE`
 resolves files identically in-attempt and at re-verify; the `GUARDRAILS_ACTION_*` attempt-lifecycle
-vars stay deliberately absent (there is no action at a union point). `plan-breakdown` marks the
-build/test guardrails `scope: "integration"`; `guardrails-review` flags an integration-sensitive plan
-whose integration set is missing or too thin to be the union's whole re-verify (BLOCKER).
+vars stay deliberately absent (there is no action at a union point). `plan-breakdown` marks a
+**union-safe conditional invariant** (the conflict-marker / overlapping-writeScope union-guardrail)
+`scope: "integration"` — NOT the full build/test, which are terminal postconditions kept `local`
+(#165, the §4.3 terminal-postcondition anti-pattern); `guardrails-review` flags an integration-sensitive
+plan whose integration set is missing or too thin to be the union's whole re-verify (BLOCKER).
 
 ### 4.4 Stale `covers-key-behaviors` coverage (validated, GR2026 — warning)
 
@@ -819,16 +821,23 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 **Attempt outcomes** (the per-attempt `outcome` field; distinct from task `status`):
 - `action-failed` — a generic non-zero action / `is_error` with no recognized signal.
 - `timeout` — the action (or a guardrail) exceeded its timeout (issue #119). The retry carries
-  timeout-specific feedback ("continue from the preserved partial work; don't re-explore") AND a
-  **longer clock** (1× → 1.5× → 2.25× …, capped 4×) — a same-clock retry just re-times-out.
+  timeout-specific feedback ("don't re-explore; go straight at the deliverable") AND a **longer clock**
+  (1× → 1.5× → 2.25× …, capped 4×) — a same-clock retry just re-times-out. The feedback is **mode-aware**
+  (issue #167): in serial mode it says "continue from the preserved partial work"; in worktree mode, where
+  a non-final attempt's segment is reset to `taskBase` + cleaned before the next attempt, it instead
+  discloses the file-write rollback and instructs re-authoring (the same disclosure as the state-rejection
+  path, §6.2) — never the false "your partial work is preserved on disk" claim.
 - `output-cap` — a prompt action's response exceeded the runner's output-token cap (issue #114). A
   budget-exhaustion failure distinct from `action-failed` so a human (and §9 triage) sees the agent
   ran out of OUTPUT budget; the retry carries "write incrementally / split" feedback.
 - `max-turns` — a prompt action exhausted its TURN budget mid-progress (issue #129 / #94; Claude
   `error_max_turns`). A budget-exhaustion failure distinct from `action-failed` so a human (and §9
-  triage) sees the agent ran out of TURNS — not a logic failure. The retry carries "continue from the
-  preserved partial work; work directly" feedback AND a **raised turn budget** (1× → 1.5× → 2.25× …,
-  capped 4×, rounded up) — a same-budget retry just re-exhausts at the same cap.
+  triage) sees the agent ran out of TURNS — not a logic failure. The retry carries "work directly toward
+  the deliverable" feedback AND a **raised turn budget** (1× → 1.5× → 2.25× …, capped 4×, rounded up) —
+  a same-budget retry just re-exhausts at the same cap. Like the timeout feedback, this is **mode-aware**
+  (issue #167): serial mode says "continue from the preserved partial work"; worktree mode discloses the
+  segment reset / file-write rollback and instructs re-authoring (the raised-turn-budget advice survives
+  in both modes).
 - `rate-limited` — a transient infrastructure limit did not clear within
   `transientPauseBudgetSeconds` (issue #115). The harness paused+re-ran WITHOUT consuming the retry
   budget; only on budget exhaustion did it settle `needs-human` with this outcome ("re-run later"). A
@@ -993,13 +1002,16 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
     ("write incrementally / split; or `needsHuman` if inherently too large") and records the distinct
     `output-cap` outcome (§7).
   - **`MaxTurns`** (issue #129 / #94): the agent exhausted its TURN budget mid-progress (the
-    `error_max_turns` subtype). Consumes the budget like `Error` but composes "continue from the
-    preserved partial work; work directly; or `needsHuman` if under-budgeted" feedback, records the
-    distinct `max-turns` outcome (§7), AND **auto-escalates the next attempt's `maxTurns`** (1× → 1.5×
-    → 2.25× …, capped 4×, rounded up — the same shape as the timeout clock) so the retry has turn
-    headroom instead of re-hitting the same cap.
-  - **`Timeout`** (issue #119): records `timeout` (§7), composes "continue from preserved partial work"
-    feedback, and the retry's clock is extended.
+    `error_max_turns` subtype). Consumes the budget like `Error` but composes "work directly toward the
+    deliverable; or `needsHuman` if under-budgeted" feedback, records the distinct `max-turns` outcome
+    (§7), AND **auto-escalates the next attempt's `maxTurns`** (1× → 1.5× → 2.25× …, capped 4×, rounded
+    up — the same shape as the timeout clock) so the retry has turn headroom instead of re-hitting the
+    same cap. The feedback is **mode-aware** (issue #167): serial mode keeps "continue from the preserved
+    partial work"; worktree mode discloses the segment reset / file-write rollback and instructs
+    re-authoring.
+  - **`Timeout`** (issue #119): records `timeout` (§7), composes mode-aware feedback (serial: "continue
+    from preserved partial work"; worktree: "your file writes were rolled back — re-author", issue #167),
+    and the retry's clock is extended.
 - **Observer signal.** `IRunObserver.PromptPaused(task, reason, backoff, pauseCount)` surfaces a
   transient pause so an operator sees a HEALTHY task waiting out a limit, not a failing one. Default
   no-op (non-CLI observers need not handle it).

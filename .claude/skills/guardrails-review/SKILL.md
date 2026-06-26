@@ -257,12 +257,31 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   verifies nothing. Zero gates on a multi-leaf/fan-in plan, two-or-more gates, or a gate with no
   integration-scoped guardrail is a BLOCKER (`validate` enforces GR2017/GR2018, but call it out
   with the missing/empty sink named).
-- **Build/suite not marked `scope: "integration"`**: the whole-repo build and full test-suite
-  guardrails must declare `scope: "integration"` (SSOT §4.3) so they join the integration set
-  re-run at every union point and on the terminal gate. A whole-suite or whole-repo-build
-  guardrail left at the `"local"` default is a coverage gap on an integration-sensitive (parallel)
-  plan — the union points and the terminal gate would re-run nothing. Flag it (BLOCKER on a
-  parallel plan with unions; WEAK otherwise) and name the guardrail to re-scope.
+- **Full build / whole suite marked `scope: "integration"` on the terminal gate (#165 — BLOCKER)**:
+  a **whole-repo build** (`dotnet build <solution>`) or **full test suite** (`dotnet test` with no
+  filter) guardrail on the terminal integration gate that declares `scope: "integration"` is the
+  **#125 terminal-postcondition anti-pattern**. The integration set re-runs at EVERY union point
+  (SSOT §4.3), and a full build/suite is a **terminal postcondition**, not a union-safe invariant: at
+  an intermediate union in a TDD plan the merged bytes contain test files referencing types whose
+  implementation task has not run yet, so the build/suite FAILS there and the harness rolls the whole
+  wave back — even though every per-task guardrail passed (decision test: *"would this pass on a
+  partial merge with a downstream task unsettled?"* — a full build/suite answers **no**). Flag it
+  **BLOCKER** (it red-halts correct intermediate unions). Fix: drop the `scope` key (make the full
+  build/suite **LOCAL** — it then runs only at the terminal gate's own attempt, the correct moment),
+  and ensure the gate still carries a separate `scope: "integration"` **union-safe** guardrail to
+  satisfy GR2018 (next check). (Catalogue → "A `scope:"integration"` guardrail MUST be UNION-SAFE";
+  SSOT §4.3/§5.3.)
+- **Terminal gate's integration-scoped guardrail not union-safe / missing (#165, GR2018 — BLOCKER)**:
+  the gate sink must carry **≥1** `scope: "integration"` guardrail (GR2018), and that guardrail must
+  be a **union-safe CONDITIONAL invariant** — conflict-marker-free / non-empty, or "IF contribution X
+  is present, verify it's real" (gate-then-verify), so it passes trivially before a contributing task
+  has run. The full build/suite does NOT qualify (previous check). If the gate's ONLY
+  integration-scoped guardrail is the build/suite, or its union guardrail is written **unconditionally**
+  (`if ($content -notmatch "<token>") { exit 1 }` — requires a contribution that a partial merge may
+  not hold yet), flag **BLOCKER**: it either leaves the gate with no real union coverage or red-halts
+  a healthy partial merge. Fix: author a conditional union invariant (the `parallel-hello`
+  `01-whole-repo-greeting` template; the overlapping-writeScope union-guardrail, #132). (Catalogue →
+  union-safe CONDITIONAL form; SSOT §4.3.)
 - **Over-scoped task (#111 — is this too coarse to land in one session / retry cheaply?)**: a task
   trips the plan-breakdown Step 2 split-trigger — (a) it bundles multiple distinct deliverables
   ("do X **and** Y **and** Z"); (b) it has a wide blast radius (deletes ≥3 source files, or
@@ -404,7 +423,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
 - [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
 - [ ] Every state-writing prompt's fragment example/key is the task's FOLDER NAME (never the `stableId` or a foreign/shared key), and the producer's state-output guardrail indexes that same folder name — a `stableId`-shaped or otherwise-unowned key is a BLOCKER (harness rejects it every attempt → `needsHuman` loop, #164).
-- [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail; the whole-repo build and full test suite are marked `scope: "integration"`.
+- [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail, and that guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if X present, verify it"), NOT the full build or whole suite. A full-build or whole-suite guardrail marked `scope: "integration"` on the terminal gate is the #125 terminal-postcondition anti-pattern → **BLOCKER** (it red-halts correct intermediate unions where downstream TDD tasks have not run yet); the full build/suite must be **LOCAL** (#165).
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
