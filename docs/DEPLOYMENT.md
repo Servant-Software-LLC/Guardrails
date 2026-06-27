@@ -202,15 +202,18 @@ metadata:
 ---
 ```
 
-This key is **injected at build/pack time** (it is a release fact, not author-typed):
-the build stamps the version into the bundled `SKILL.md` copies in the tool's output, so
-the repo-source `.claude/skills/**/SKILL.md` files stay clean. `skills install` is then a
-**plain copy** — the version travels inside the skill, even with a manual copy — and there
-is no separate sidecar file.
+This key is **stamped at install** by `guardrails skills install` (using the tool's own
+version — a release fact, not author-typed): after copying each skill into the install
+target, the command writes `metadata.guardrails-version` into the installed `SKILL.md`'s
+frontmatter. The bundled/published `SKILL.md` copies stay unstamped, and the repo-source
+`.claude/skills/**/SKILL.md` files stay clean — only the installed copy carries the
+version. (Stamping at install, not at build, is what makes the version survive a
+`PackAsTool` package, whose payload is a fresh `dotnet publish` of the unstamped source —
+see issue #169.) There is no separate sidecar file.
 
 This is why **`--force` is required to refresh an already-installed skill**: a plain
 `skills install` *skips* a folder that already exists, so it would neither re-copy the
-skill body nor update its frontmatter version. The silent-skip trap is real — a stale
+skill body nor re-stamp its frontmatter version. The silent-skip trap is real — a stale
 installed `/plan-breakdown` will keep producing output for an older harness with no
 visible error.
 

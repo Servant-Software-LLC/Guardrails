@@ -9,11 +9,14 @@ namespace Guardrails.Cli;
 /// dir without a packaged tool. The command layer (<see cref="Commands.SkillsCommand"/>) owns
 /// resolving paths, printing, and exit codes.
 ///
-/// The installed version is carried INSIDE each bundled <c>SKILL.md</c>'s frontmatter
-/// (<c>metadata.guardrails-version</c>, injected at build by
-/// <see cref="SkillFrontmatterStamper"/>), so install is a plain copy that preserves it — no
-/// install-time mutation. <c>guardrails --version</c> later reads that frontmatter to detect
-/// drift (<see cref="SkillVersionReport"/>).
+/// The installed version is stamped INTO each installed <c>SKILL.md</c>'s frontmatter
+/// (<c>metadata.guardrails-version</c>) at install time via
+/// <see cref="SkillFrontmatterStamper"/>, using the running tool's own version. Stamping at
+/// install (rather than at build) is what makes the version survive a <c>PackAsTool</c>
+/// package: the packed payload is a fresh <c>dotnet publish</c> of the UNSTAMPED repo source,
+/// so a build-time stamp never reaches the shipped <c>.nupkg</c> (issue #169) — but the
+/// install command writes the version into the install target, which is what
+/// <c>guardrails --version</c> later reads to detect drift (<see cref="SkillVersionReport"/>).
 /// </summary>
 public static class SkillsInstaller
 {
@@ -44,17 +47,26 @@ public static class SkillsInstaller
     /// removed); without it, an existing folder is left untouched and reported
     /// <see cref="SkillOutcome.Skipped"/>. Results are ordered by skill name (ordinal).
     ///
-    /// The version is intrinsic to the copied <c>SKILL.md</c> (its
-    /// <c>metadata.guardrails-version</c> frontmatter, stamped at build), so a plain recursive
-    /// copy carries it; a SKIPPED skill is left untouched — its old or absent frontmatter
-    /// version is precisely the stale-install signal <c>guardrails --version</c> surfaces.
+    /// Each INSTALLED skill's top-level <c>SKILL.md</c> frontmatter is then stamped with
+    /// <paramref name="toolVersion"/> (under <c>metadata.guardrails-version</c>) via
+    /// <see cref="SkillFrontmatterStamper"/>, so the installed copy carries the running tool's
+    /// version even though the bundled/published source is unstamped (issue #169). A skill
+    /// folder with no top-level <c>SKILL.md</c> is copied but not stamped. A SKIPPED skill is
+    /// left untouched — its old or absent frontmatter version is precisely the stale-install
+    /// signal <c>guardrails --version</c> surfaces.
     /// </summary>
+    /// <param name="toolVersion">
+    /// The version to stamp into each installed <c>SKILL.md</c> (normally
+    /// <see cref="GuardrailsVersion.Current"/>; explicit so tests inject a known value).
+    /// </param>
     /// <exception cref="DirectoryNotFoundException">
     /// <paramref name="sourceSkillsDir"/> does not exist.
     /// </exception>
     public static IReadOnlyList<SkillResult> InstallAll(
-        string sourceSkillsDir, string targetDir, bool force)
+        string sourceSkillsDir, string targetDir, bool force, string toolVersion)
     {
+        ArgumentNullException.ThrowIfNull(toolVersion);
+
         if (!Directory.Exists(sourceSkillsDir))
         {
             throw new DirectoryNotFoundException(
@@ -92,10 +104,32 @@ public static class SkillsInstaller
             }
 
             CopyDirectory(skillDir, destination);
+            StampInstalledSkillVersion(destination, toolVersion);
             results.Add(new SkillResult(name, SkillOutcome.Installed));
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Stamp <paramref name="toolVersion"/> into the destination skill folder's top-level
+    /// <c>SKILL.md</c> frontmatter (<c>metadata.guardrails-version</c>). If the folder has no
+    /// top-level <c>SKILL.md</c>, there is nothing to stamp and the skill is left as copied.
+    /// </summary>
+    private static void StampInstalledSkillVersion(string destination, string toolVersion)
+    {
+        string skillMd = Path.Combine(destination, SkillVersionReport.SkillFileName);
+        if (!File.Exists(skillMd))
+        {
+            return;
+        }
+
+        string original = File.ReadAllText(skillMd);
+        string stamped = SkillFrontmatterStamper.Stamp(original, toolVersion);
+        if (!string.Equals(stamped, original, StringComparison.Ordinal))
+        {
+            File.WriteAllText(skillMd, stamped);
+        }
     }
 
     /// <summary>

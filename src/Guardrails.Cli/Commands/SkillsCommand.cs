@@ -100,7 +100,7 @@ public static class SkillsCommand
         string toolVersion = GuardrailsVersion.Current;
 
         IReadOnlyList<SkillsInstaller.SkillResult> results =
-            SkillsInstaller.InstallAll(sourceSkillsDir, targetDir, force);
+            SkillsInstaller.InstallAll(sourceSkillsDir, targetDir, force, toolVersion);
 
         foreach (SkillsInstaller.SkillResult result in results)
         {

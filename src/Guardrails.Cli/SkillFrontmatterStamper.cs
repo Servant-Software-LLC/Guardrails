@@ -1,11 +1,13 @@
 namespace Guardrails.Cli;
 
 /// <summary>
-/// Build-time injection of <c>metadata.guardrails-version</c> into a skill's
-/// <c>SKILL.md</c> frontmatter (issue #156). The version is a build/release fact, not an
-/// author-typed value, so a pack/build step stamps it into the BUNDLED copies of each
-/// <c>SKILL.md</c> — the repo-source files stay clean. <see cref="SkillVersionReport"/>
-/// later reads the same key back to detect drift.
+/// Injection of <c>metadata.guardrails-version</c> into a skill's <c>SKILL.md</c>
+/// frontmatter (issue #156). The version is a release fact, not an author-typed value, so
+/// <see cref="SkillsInstaller"/> stamps it into each INSTALLED copy of <c>SKILL.md</c> at
+/// install time (issue #169 — the bundled/published source is left unstamped, since a
+/// <c>PackAsTool</c> package would otherwise ship the unstamped publish output). The
+/// repo-source files stay clean. <see cref="SkillVersionReport"/> later reads the same key
+/// back to detect drift.
 ///
 /// The transform is a surgical, line-oriented edit of the leading <c>---</c>-fenced YAML
 /// block: it preserves every other key (notably the multiline <c>description: |</c> block)
@@ -19,8 +21,8 @@ namespace Guardrails.Cli;
 /// </list>
 /// A file without a leading frontmatter fence is returned unchanged (nothing to stamp).
 ///
-/// Pure (string in, string out) so the MSBuild stamping task and the unit tests exercise the
-/// identical logic with no disk or console concerns.
+/// Pure (string in, string out) so the install step and the unit tests exercise the identical
+/// logic with no disk or console concerns.
 /// </summary>
 public static class SkillFrontmatterStamper
 {
