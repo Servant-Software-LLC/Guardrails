@@ -817,6 +817,17 @@ public sealed class Scheduler
     /// (§3.3) failed on the final plan-branch HEAD. The failure is attributed to the
     /// <c>integrationGate:true</c> sink task (or, absent one, the last task in plan order) so the
     /// run is not certified and mergeOnSuccess is refused.
+    /// <para>
+    /// #175 attribution: a terminal-gate (typically whole-repo build/test) failure on the merged HEAD
+    /// is frequently a MERGE COLLISION — two tasks with OVERLAPPING <c>writeScope</c> on a shared file
+    /// both wrote new content there and git's 3-way merge silently kept both (a semantic duplicate, no
+    /// textual conflict marker). The harness cannot generically detect the duplicate (that is the build
+    /// guardrail's job), but it CAN name the suspects: the diagnosis lists every overlapping-writeScope
+    /// task pair and the shared path so a human immediately sees "this looks like a merge collision
+    /// between task A and task B on &lt;file&gt;" instead of a bare build error. Advisory and robust —
+    /// based PURELY on the writeScope-overlap structure (never the error text / a CS-code), and adds
+    /// nothing when no writeScopes overlap.
+    /// </para>
     /// </summary>
     private static RunReport WithTerminalGateFailure(
         PlanDefinition plan, RunReport report, ReVerifyResult gate)
@@ -826,16 +837,62 @@ public sealed class Scheduler
             ?? plan.Tasks[^1].Id;
 
         string failed = string.Join(", ", gate.FailedGuardrails.Select(g => g.Name));
+        string summary = $"terminal integration gate failed on final HEAD: {failed}";
+
+        string? collisionHint = OverlappingWriteScopeHint(plan);
+        if (collisionHint is not null)
+        {
+            summary += $". {collisionHint}";
+        }
+
         var rewritten = report.Tasks.Select(t => t.TaskId == gateTaskId
             ? t with
             {
                 Outcome = TaskOutcome.NeedsHuman,
                 Guardrails = gate.FailedGuardrails,
-                Summary = $"terminal integration gate failed on final HEAD: {failed}"
+                Summary = summary
             }
             : t).ToList();
 
         return report with { Tasks = rewritten };
+    }
+
+    /// <summary>
+    /// Build the #175 merge-collision advisory: scan the plan for every pair of tasks whose
+    /// <c>writeScope</c>s OVERLAP on a shared path, and describe each pair + its shared file(s). Returns
+    /// null when no two writeScopes overlap (no collision is possible, so the hint would be noise). The
+    /// hint is attribution only — it does NOT assert a collision OCCURRED, only that these tasks COULD
+    /// have collided on the shared file, which is exactly the structural signal a human needs to triage
+    /// a duplicate-definition build break a textual merge could not catch.
+    /// </summary>
+    private static string? OverlappingWriteScopeHint(PlanDefinition plan)
+    {
+        IReadOnlyList<TaskNode> scoped = plan.Tasks
+            .Where(t => t.WriteScope is { Count: > 0 })
+            .ToList();
+
+        var pairs = new List<string>();
+        for (int i = 0; i < scoped.Count; i++)
+        {
+            for (int j = i + 1; j < scoped.Count; j++)
+            {
+                IReadOnlyList<string> shared = WriteScope.OverlappingEntries(
+                    scoped[i].WriteScope!, scoped[j].WriteScope!);
+                if (shared.Count > 0)
+                {
+                    pairs.Add($"'{scoped[i].Id}' & '{scoped[j].Id}' (shared: {string.Join(", ", shared)})");
+                }
+            }
+        }
+
+        if (pairs.Count == 0)
+        {
+            return null;
+        }
+
+        return "This may be a merge collision: the following task pairs have OVERLAPPING writeScopes on a " +
+               "shared file, so an AI/3-way merge could have combined both contributions into a semantic " +
+               $"duplicate (e.g. a duplicate class/member) that only the build/test gate catches — {string.Join("; ", pairs)}";
     }
 
     private static RunReport BuildReport(

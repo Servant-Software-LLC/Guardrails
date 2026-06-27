@@ -272,6 +272,24 @@ Edge sources, in priority order:
 parallelism is free, false edges serialize the run. Record a one-line justification
 per edge (in the task description or the breakdown report). Verify acyclicity.
 
+**(d) transitive COMPILATION dependency — a verified task compiles a test file that references
+another task's type (#176).** Edge source (a) covers a task that reads another's FILE; this covers
+a task that **compiles** a file referencing another's TYPE. When a task **B**'s verification runs
+`dotnet build` / `dotnet test` (filtered or whole-suite), it compiles the **entire test project** —
+including `.cs` test files authored by **other** tasks. If an ancestor test-author task **A** wrote a
+test file that references a type **produced by an implementation task C**, then B's compilation
+depends on C even though B never reads C's file directly — and if C is **not** already in B's
+ancestor set, B's working tree lacks `C`'s output and the compile **fails on an error B cannot fix**
+(the type lives in C's `writeScope`, not B's). The trapped agent then redefines the missing type in
+its OWN scope to make the compile pass, colliding with C's copy at the AI-merge → a duplicate-class
+CS0101 (the plan-0009 #176/#175/#174 failure chain). **Rule:** when a task's verification compiles a
+test project containing an ancestor test-author task's tests that reference types from another
+implementation task, add that implementation task to the verifying task's `dependsOn` — so its output
+is present in the working tree and the test project compiles. (Sparsest-DAG caveat still applies:
+add the edge only when an ancestor test file actually references the other task's type; do not couple
+to every implementation task defensively. The `guardrails-review` "Transitive compilation dependency"
+probe flags the case you miss.)
+
 ## Step 4 — Select guardrails (read `references/guardrail-catalogue.md` first)
 
 Apply the decision tree per task, using BOTH layers loaded in Step 0: the universal
@@ -347,6 +365,21 @@ optional:
   integration-scoped guardrail. Prefer **disjoint** scopes (a collision is usually a plan-shape smell);
   emit the union-guardrail when the overlap is genuine. (Catalogue → overlapping-writeScope
   union-guardrail.)
+  - **Shared CODE file both tasks define into → add a DUPLICATE-DEFINITION check (#175).** When the
+    overlapping-`writeScope` file is a CODE file and **both** colliding tasks could ADD a
+    type/member DEFINITION to it (a `class`/`record`/`interface`/`enum`/method), the union-guardrail's
+    conflict-marker + contribution-present checks are NOT enough: a 3-way / AI-merge of two branches
+    that each appended the **same** new definition to **different** regions keeps **both** copies with
+    **no textual conflict marker**, so the merged file holds a **duplicate definition** (CS0101) that
+    only the build catches — the exact #175 trap that red-halted plan-0009's terminal gate. Add a
+    **duplicate-definition count check** to the same `scope:"integration"` union-guardrail: count
+    occurrences of each definition both siblings could add and fail when **>1**, naming the AI-merge
+    duplicate. Keep it **union-safe/conditional** (#165) — place it inside the existing file-present
+    gate so it passes trivially at a union where the file hasn't landed. The .NET realization is
+    `[regex]::Matches($content,'class\s+<Name>').Count -gt 1` (`stacks/dotnet.md §19`). The harness can
+    only *attribute* this collision at the gate (name the colliding `writeScope` pairs, SSOT §3.3); the
+    duplicate-definition check is the authoring-side PREVENTION. (Catalogue → overlapping-writeScope
+    union-guardrail, duplicate-definition sub-check.)
   - **On removing a dependency edge, re-evaluate the union guardrail's expected contributions (#159).**
     When a regeneration (Step 8) or a hand-edit **removes a dependency edge** (task B no longer
     `dependsOn` task A — e.g. a mode deferred, a producer demoted to a disconnected leaf), re-examine
@@ -483,6 +516,20 @@ optional:
   (`(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)`), or better, read the
   runner-recorded count / state key and assert `> 0`. Catalogue → positive-effect / non-hollow
   assertion.
+- **Negative assertion — an EXCLUDED scenario must be verified ABSENT (#176)** — does this task's
+  action prompt **explicitly exclude** a scenario/keyword the deliverable must NOT contain ("Mode C /
+  `CommanderRest` is wizard-blocked — do NOT include it in the dispatch tests"; "the importer must NOT
+  call `X` directly")? The positive `covers-key-behaviors` guardrail only checks that the **kept**
+  scenarios are PRESENT — it says nothing about the excluded one, so the agent can include the removed
+  scenario **undetected** (which is how the excluded `CommanderRest` slipped into plan-0009's dispatch
+  tests and fed the #176 compile trap). Emit a **negative-assertion guardrail** — a fail-on-present
+  check that the excluded keyword is ABSENT: `if ($content -match "CommanderRest") { Write-Output "…";
+  exit 1 }` (scoped to the one file the task owns). It is a legitimate, deterministic archetype, the
+  mirror of `covers-key-behaviors`; **pair it with** the positive coverage check (catalogue → negative
+  assertion; `stacks/dotnet.md §20`). Note `guardrails validate`'s **GR2026 stays silent** on this
+  guardrail's keyword — correctly, post-#177: GR2026 flags only POSITIVE require-present coverage tokens
+  (SSOT §4.4), so a fail-on-present keyword intentionally absent from the prompt is NOT a stale-coverage
+  warning. Do not omit or weaken the negative assertion to silence a (now non-existent) GR2026 warning.
 - **Structural impl / keyword match** — any "implements/extends/declares" check uses the
   stack file's declaration regex (`stacks/dotnet.md §3`), never a bare type-name grep. A
   property-declaration check must be **accessor-order-insensitive** (#112) — key on the

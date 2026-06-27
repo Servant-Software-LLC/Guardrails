@@ -46,6 +46,7 @@ Python project.
 > structural `covers-key-behaviors`. Read that section before selecting either form.
 | 9 | **verify-recorded-action-result (don't replay)** | script | The action ALREADY ran an expensive command (a build+test) and the postcondition is expressible from what it recorded — verify the recorded output/artifact instead of re-running the command | A wasteful replay of the action's own work — see the dedicated section for the GOOD-vs-BAD-target rules (this is a speed/flake trade-off, NOT a free correctness win) |
 | 10 | **prompt-judge** | `.prompt.md` (writes `{pass, reason}` verdict) | **LAST RESORT** — see the demotion gate | Genuinely subjective properties: tone, clarity, design taste |
+| 11 | **negative assertion** (`if -match … exit 1`) | script | The action prompt EXCLUDES a scenario/keyword the file must NOT contain ("do NOT include `X`", "must NOT call `Y` directly") — the mirror of `covers-key-behaviors`; pair it with the positive check | A removed/forbidden scenario the agent included anyway — undetected by a presence-only coverage check (#176) |
 
 ### file-contains: structural vs. keyword matching (universal)
 
@@ -1011,6 +1012,38 @@ of any valid intermediate union, never a terminal "all N present" postcondition 
 partial merge). The well-authored plan covers the residual this way; `guardrails-review` emits a WEAK
 finding when colliding writeScopes carry no such union-guardrail.
 
+**Duplicate-definition sub-check on a shared CODE file (#175).** When the shared overlapping-`writeScope`
+file is a **code file** and **both** colliding tasks could ADD a type/member DEFINITION to it (each
+appends a `class`/`record`/`interface`/`enum`/method the other does not), the conflict-marker +
+contribution-present checks are **not enough**. A 3-way / AI-merge of two branches that each appended the
+**same** new definition to **different** regions of the file produces **no textual conflict marker** —
+git keeps **both** copies — so the union-guardrail's conflict-marker check passes while the merged file
+holds a **duplicate definition**. For C# that is a CS0101 ("already contains a definition for …") the
+build catches only at the terminal gate — the exact #175 failure that red-halted plan-0009 (task 07 and
+task 09 both defined `CommanderRestImporter` in `Launcher.cs`). Add a **duplicate-definition count check**
+to the same `scope:"integration"` union-guardrail: for each definition both siblings could add, count
+occurrences and fail when **>1**, naming the AI-merge duplicate. Keep it **union-safe/conditional** — run
+it only inside the file-present gate, so it passes trivially at a union where the file hasn't landed. The
+.NET realization counts the declaration with `[regex]::Matches($content, 'class\s+CommanderRestImporter').Count`
+and fails on `-gt 1` (`stacks/dotnet.md §19`):
+
+```powershell
+# Inside the file-present gate of the union-guardrail (so it's union-safe):
+$classMatches = ([regex]::Matches($content, 'class\s+CommanderRestImporter')).Count
+if ($classMatches -gt 1) {
+    Write-Output "Launcher.cs contains $classMatches definitions of CommanderRestImporter - the AI-merge produced a duplicate class (overlapping writeScopes); remove all but one"
+    exit 1
+}
+```
+
+The harness can only **attribute** this collision at the gate — name the colliding `writeScope` task
+pairs + the shared path on the `needs-human` diagnosis (SSOT §3.3, #175) — it cannot generically detect a
+semantic duplicate (that is the build guardrail's job). The duplicate-definition check is the authoring-
+side **prevention**: it catches the duplicate at the union, before the terminal gate. The deeper fix for
+the plan-0009 case is the missing DAG edge that trapped the agent into redefining the class at all — see
+the transitive-compilation-dependency rule (plan-breakdown Step 3 / `guardrails-review` §2, #176); the
+duplicate-definition check is the union-side safety net when an overlap is genuinely needed.
+
 <!-- BEGIN ADDED SECTION #76 — method-call anchoring (auto-merge friendly; do not merge into prose above) -->
 ## Method-call anchoring — match the call construct, not a bare method name (#76)
 
@@ -1176,6 +1209,51 @@ faithfulness check; the residual (does the test actually exercise the behavior?)
 enumerated behaviors were NOT covered** by the key-behaviors guardrail, so the human reviewer can
 decide whether to add checks. The .NET realization is `stacks/dotnet.md §17`.
 <!-- END ADDED SECTION #75 -->
+
+<!-- BEGIN ADDED SECTION #176 — negative assertion (auto-merge friendly; do not merge into prose above) -->
+## Negative assertion — verify an EXCLUDED scenario is ABSENT (#176)
+
+The **mirror** of `covers-key-behaviors`. That archetype checks a kept scenario is **present**
+(`if ($content -notmatch "X") { … exit 1 }` — "X must be present"). The **negative assertion** checks
+an **excluded** scenario is **absent** (`if ($content -match "X") { … exit 1 }` — "X must be absent").
+Both are first-class deterministic archetypes; the polarity of the `if` distinguishes them.
+
+**When to emit one.** Whenever a task's action prompt **explicitly excludes** a scenario/keyword the
+deliverable must NOT contain — "Mode C / `CommanderRest` is wizard-blocked, do NOT include it in the
+dispatch tests"; "the importer must NOT call the concrete writer directly"; "the read-only artifact
+must NOT contain `MERGE`/`EXEC`". A presence-only coverage check says nothing about the excluded
+scenario, so the agent can include the removed thing **undetected**. In plan-0009 the dispatch
+test-author task's prompt removed `CommanderRest`, but no guardrail forbade it — the agent re-added it,
+and that reference compiled-coupled the downstream wiring task to a type produced by a non-ancestor
+(the #176 transitive-compilation trap). A single fail-on-present line would have caught it.
+
+```powershell
+# catches: a dispatch test file that references CommanderRest - Mode C is wizard-blocked and the action
+#          prompt explicitly EXCLUDED it, but the positive covers-key-behaviors check only verifies the
+#          KEPT scenarios are present, so a re-added CommanderRest would slip through undetected (#176).
+$f = "tests/Importer.Tests/MigrateDispatchTests.cs"
+$content = Get-Content $f -Raw
+if ($content -match "CommanderRest") {
+    Write-Output "$f references CommanderRest - Mode C is wizard-blocked and must not appear in the dispatch tests"
+    exit 1
+}
+exit 0
+```
+
+**Pair it with the positive `covers-key-behaviors`**, do not replace it — the two are complementary
+lower bounds: the positive check verifies the kept scenarios are named, the negative check verifies the
+excluded one stays out. Scope both to the **one file** the task owns (grep-scope rule).
+
+**GR2026 is (correctly) SILENT on a negative assertion (#177).** `guardrails validate`'s GR2026
+stale-coverage lint flags only **POSITIVE require-present** coverage tokens — a token a `-notmatch …
+exit` (fail-on-absent) or `-match … $hits++` (presence-counting) block requires to be **present** in
+the authored file, which the action prompt is therefore expected to mention (SSOT §4.4). A negative
+assertion's keyword is **intentionally absent** from the prompt (that is the whole point — it was
+excluded), so GR2026 must NOT warn about it; a warning there is the #177 false positive that was fixed
+by classifying match-line polarity. Do **not** weaken or delete a legitimate negative assertion to
+silence a GR2026 warning — post-#177 there is none to silence. The .NET realization is
+`stacks/dotnet.md §20`.
+<!-- END ADDED SECTION #176 -->
 
 <!-- BEGIN ADDED SECTION #96 — producer<->consumer name-convention seam (auto-merge friendly; do not merge into prose above) -->
 ## Name-convention seam — producer files ⟷ consumer lookup by a derived name (#96)
@@ -1474,7 +1552,18 @@ should fail before an expensive test run or a paid judge ever starts.
   union-safe (#125), like the texttools showcase's `components-union-verified`. Prefer **disjoint**
   writeScopes (the disjoint-scope CHECK flags the collision); emit the union-guardrail when the overlap
   is genuine. See the overlapping-writeScope union-guardrail section above. WEAK — an authoring nudge,
-  not a harness bug.
+  not a harness bug. **When the shared file is CODE both siblings define into**, that union-guardrail
+  must ALSO carry a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count
+  -gt 1`, union-safe) — a 3-way merge keeps both copies of an appended definition with no conflict marker
+  (CS0101), the #175 residual the harness can only attribute at the gate (SSOT §3.3). See the
+  duplicate-definition sub-check in the overlapping-writeScope section; `stacks/dotnet.md §19`.
+- **Excluded scenario left unverified** (#176): a task whose action prompt **excludes** a
+  scenario/keyword ("do NOT include `CommanderRest`", "must NOT call `X` directly") but whose guardrails
+  carry only PRESENCE checks (`covers-key-behaviors`) and no **negative assertion** for the excluded
+  keyword — so the agent can re-add the removed scenario undetected (the plan-0009 #176 trap). Fix: emit
+  a fail-on-present negative assertion (`if ($content -match "<keyword>") { … exit 1 }`), paired with the
+  positive coverage check. See the negative-assertion section above; `stacks/dotnet.md §20`. WEAK
+  (BLOCKER when the excluded scenario traps a downstream compile).
 - **Echo-judge**: a prompt-judge evaluating the action's own claim of success (its
   summary, its commit message) rather than the artifact.
 - **Replay-the-action**: a guardrail that **re-runs the action's own command** (e.g. a

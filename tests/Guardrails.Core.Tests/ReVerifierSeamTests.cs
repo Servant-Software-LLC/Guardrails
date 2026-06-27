@@ -223,4 +223,119 @@ public sealed class ReVerifierSeamTests : IDisposable
             Environment.SetEnvironmentVariable("GR_EXPECTED_WORKSPACE", null);
         }
     }
+
+    // =========================================================================
+    // #173: adversarial-but-valid quoting must run through the REAL script path
+    // (ScriptUnitRunner → InterpreterMap → ProcessRunner) with NO parser error.
+    //
+    // The reported symptom — a single-quoted string with embedded double-quotes
+    // (e.g. '"test-commander-rest"') raising pwsh "Missing closing '}'" — can only
+    // arise when the script CONTENT is fed through a -Command / shell-string layer
+    // that strips the outer single quotes. The harness never does that: it invokes
+    // `pwsh -NoProfile -ExecutionPolicy Bypass -File <path>` via ArgumentList (SSOT
+    // §5.1/§5.2), so pwsh parses the file's own bytes. These tests LOCK that contract:
+    // a guardrail whose body contains '"..."' (and other tricky-but-valid quoting)
+    // must execute correctly — expected exit code, expected stdout, no parser error —
+    // through the same ScriptUnitRunner the in-attempt and re-verify paths share.
+    // =========================================================================
+
+    [Theory]
+    [MemberData(nameof(AdversarialQuotingCases))]
+    public async Task AdversarialQuoting_RunsThroughRealScriptPath_NoParserError(
+        string caseName, string windowsBody, string posixBody, bool expectPass, string expectedStdoutToken)
+    {
+        // The exact #173 reproduction lives in the first case: a single-quoted regex
+        // literal containing embedded double-quotes, matched against content that does
+        // NOT contain it, so the guardrail takes the `if {...}` branch (exit 1) — the
+        // branch whose opening `{` the reporter's parser error pointed at.
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition g = WriteGuardrailScript(
+            "01-" + caseName, OperatingSystem.IsWindows() ? windowsBody : posixBody);
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot, [g], TestContext.Current.CancellationToken);
+
+        // A parser error would surface as a non-zero exit with the script never producing
+        // its own stdout token — so asserting BOTH the pass/fail verdict AND the expected
+        // stdout token proves the script genuinely PARSED and RAN, not that it merely failed.
+        GuardrailResult? failure = result.FailedGuardrails.SingleOrDefault();
+
+        Assert.True(
+            result.Passed == expectPass,
+            $"case '{caseName}': expected Passed={expectPass} but the guardrail " +
+            (result.Passed
+                ? "passed unexpectedly"
+                : $"failed: {failure?.Reason}") +
+            ". A pwsh ParserError (#173) would show as an unexpected failure here.");
+
+        // The reason a failing guardrail surfaces is its FIRST stdout line; a passing one
+        // we re-run to capture stdout would be redundant — instead the failing cases assert
+        // their printed token, proving the body parsed and reached its Write-Output.
+        if (!expectPass)
+        {
+            Assert.NotNull(failure);
+            Assert.Contains(expectedStdoutToken, failure!.Reason ?? string.Empty, StringComparison.Ordinal);
+            // Belt-and-braces: the classic #173 mis-parse renders as "Missing closing"; assert
+            // that phrase never leaks into the failure reason for ANY case.
+            Assert.DoesNotContain("Missing closing", failure.Reason ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    public static TheoryData<string, string, string, bool, string> AdversarialQuotingCases() => new()
+    {
+        // Case 1 — the exact #173 shape: single-quoted regex with embedded double-quotes,
+        // taking the if-block (the `{` the reporter's caret pointed at). Content lacks the
+        // token, so -notmatch is true → exit 1, printing the marker.
+        {
+            "embedded-double-quotes",
+            "$content = 'route(rest)'\n" +
+            "if ($content -notmatch '\"test-commander-rest\"') {\n" +
+            "    Write-Output 'MISSING_PROBE'\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "Write-Output 'PRESENT'\n" +
+            "exit 0\n",
+            "#!/usr/bin/env bash\n" +
+            "content='route(rest)'\n" +
+            "if ! printf '%s' \"$content\" | grep -q '\"test-commander-rest\"'; then\n" +
+            "    echo 'MISSING_PROBE'\n" +
+            "    exit 1\n" +
+            "fi\n" +
+            "echo 'PRESENT'\n" +
+            "exit 0\n",
+            /* expectPass */ false,
+            /* expectedStdoutToken */ "MISSING_PROBE"
+        },
+        // Case 2 — single-quoted string mixing a double-quote AND a brace character inside
+        // the literal, again entering an if-block. A naive quote-stripping layer would let
+        // the `}` inside the literal terminate the block early.
+        {
+            "quote-and-brace-in-literal",
+            "if ('x' -ne 'a\"}b') {\n" +
+            "    Write-Output 'TOOK_BRANCH'\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "exit 0\n",
+            "#!/usr/bin/env bash\n" +
+            "if [ 'x' != 'a\"}b' ]; then\n" +
+            "    echo 'TOOK_BRANCH'\n" +
+            "    exit 1\n" +
+            "fi\n" +
+            "exit 0\n",
+            /* expectPass */ false,
+            /* expectedStdoutToken */ "TOOK_BRANCH"
+        },
+        // Case 3 — a passing guardrail whose body STILL contains '"..."' to prove embedded
+        // double-quotes parse fine on the success path too (exit 0, no parser error).
+        {
+            "embedded-double-quotes-passing",
+            "$pattern = '\"test-commander-rest\"'\n" +
+            "if ($pattern.Length -gt 0) { exit 0 } else { Write-Output 'EMPTY'; exit 1 }\n",
+            "#!/usr/bin/env bash\n" +
+            "pattern='\"test-commander-rest\"'\n" +
+            "if [ -n \"$pattern\" ]; then exit 0; else echo 'EMPTY'; exit 1; fi\n",
+            /* expectPass */ true,
+            /* expectedStdoutToken */ ""
+        },
+    };
 }

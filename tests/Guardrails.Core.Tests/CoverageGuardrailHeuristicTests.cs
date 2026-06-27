@@ -106,4 +106,94 @@ public sealed class CoverageGuardrailHeuristicTests
         string body = "dotnet build\nif ($LASTEXITCODE -ne 0) { exit 1 }\nexit 0\n";
         Assert.Empty(CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "01-build-passes"));
     }
+
+    // --- polarity (issue #177): a `-match … exit 1` block is a NEGATIVE assertion (token must be
+    // ABSENT), so its token is NOT a coverage token; only require-PRESENT tokens are extracted. ----
+
+    [Fact]
+    public void NegativeAssertion_MatchThenFailExit_IsNotACoverageToken()
+    {
+        // The #177 case: fail when CommanderRest is PRESENT ⇒ the token must be ABSENT ⇒ not coverage.
+        string body =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -match \"CommanderRest\") {\n" +
+            "    Write-Output \"contains a CommanderRest reference — Mode C is wizard-blocked\"\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "exit 0\n";
+
+        Assert.Empty(
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
+    }
+
+    [Fact]
+    public void PositiveAssertion_MultiLineNotMatchExit_IsACoverageToken()
+    {
+        // Preserve #157: the canonical multi-line `-notmatch … exit 1` per-term form (the catalogue's
+        // actual shape, where the literal and exit are on different lines) requires the token PRESENT.
+        string body =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -notmatch 'ProcessId') {\n" +
+            "    Write-Output \"does not test ProcessID keying\"\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "if ($content -notmatch 'RollupCount') {\n" +
+            "    Write-Output \"does not test rollup counts\"\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "exit 0\n";
+
+        Assert.Equal(new[] { "ProcessId", "RollupCount" },
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
+    }
+
+    [Fact]
+    public void MixedPolarity_KeepsRequirePresentTokens_ExcludesNegativeAssertion()
+    {
+        // Some require-present `-notmatch … exit 1` tokens alongside a `-match … exit 1` negative token.
+        // Only the require-present tokens are coverage tokens; the negative assertion is excluded.
+        string body =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -notmatch 'XtcFileOnly') { exit 1 }\n" +
+            "if ($content -notmatch 'TcApiLocal') { exit 1 }\n" +
+            "if ($content -match 'CommanderRest') { Write-Output 'forbidden'; exit 1 }\n" +
+            "exit 0\n";
+
+        Assert.Equal(new[] { "XtcFileOnly", "TcApiLocal" },
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
+    }
+
+    [Fact]
+    public void HitsCountingForm_LastTokenNotSwallowedByThresholdExit()
+    {
+        // Regression guard for the polarity windowing: the trailing `if ($hits -lt N) { … exit 1 }`
+        // threshold's exit must NOT be read as the last `-match … $hits++` block's decision, or the
+        // last counted token would be wrongly excluded.
+        string body =
+            "$hits = 0\n" +
+            "if ($content -match 'XtcFileOnly') { $hits++ }\n" +
+            "if ($content -match 'TcApiLocal') { $hits++ }\n" +
+            "if ($content -match 'CommanderRest') { $hits++ }\n" +
+            "if ($hits -lt 3) { Write-Output 'missing a scenario'; exit 1 }\n" +
+            "exit 0\n";
+
+        Assert.Equal(new[] { "XtcFileOnly", "TcApiLocal", "CommanderRest" },
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
+    }
+
+    [Fact]
+    public void MatchWithoutHitsOrExit_IsNotConfidentlyRequirePresent_Excluded()
+    {
+        // A bare `-match` block that neither increments $hits nor fails the guardrail can't be
+        // confidently classed require-present ⇒ excluded (conservatism). The $hits -lt threshold keeps
+        // the body recognised as the archetype.
+        string body =
+            "$hits = 0\n" +
+            "if ($content -match 'Ambiguous') { Write-Output 'noted' }\n" +
+            "if ($content -match 'RealToken') { $hits++ }\n" +
+            "if ($hits -lt 1) { exit 1 }\n";
+
+        Assert.Equal(new[] { "RealToken" },
+            CoverageGuardrailHeuristic.ExtractCoverageTokens(body, "03-covers-key-behaviors"));
+    }
 }

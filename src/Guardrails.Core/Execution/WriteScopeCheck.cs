@@ -1,4 +1,6 @@
+using System;
 using System.Diagnostics;
+using System.Linq;
 
 namespace Guardrails.Core.Execution;
 
@@ -71,6 +73,34 @@ public static class WriteScopeCheck
             Passed = offending.Count == 0,
             OffendingPaths = offending
         };
+    }
+
+    /// <summary>
+    /// True when the post-action working tree has ANY change versus <paramref name="taskBase"/> —
+    /// a modified, deleted, or new/untracked file (issue #174). Uses the same stage-then-diff
+    /// primitive as <see cref="Check"/> (so new/untracked files surface), independent of any
+    /// declared <c>writeScope</c>. Drives the no-op short-circuit: a task whose action made NO file
+    /// changes this attempt (and wrote no state fragment) cannot fix a guardrail failure by
+    /// retrying. FAILS OPEN — a git error returns <c>true</c> (assume the action DID change
+    /// something) so an undiffable tree NEVER triggers the short-circuit; the inverse of the
+    /// write-scope check's fail-closed posture, because here "true" is the safe, retry-preserving
+    /// answer.
+    /// </summary>
+    public static bool HasFileChanges(string repoPath, string taskBase)
+    {
+        try
+        {
+            RunGit(repoPath, "add", "-A");
+            string diff = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
+            return diff.Split('\n', StringSplitOptions.RemoveEmptyEntries).Any(l => l.Trim().Length > 0);
+        }
+        catch (InvalidOperationException)
+        {
+            // Fail OPEN: an undiffable tree must not be read as "no changes" — that would let the
+            // no-op short-circuit fire on a task that may genuinely have written files. Preserve the
+            // full retry budget instead.
+            return true;
+        }
     }
 
     /// <summary>

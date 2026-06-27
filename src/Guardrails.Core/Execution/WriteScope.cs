@@ -40,6 +40,36 @@ public static class WriteScope
         return false;
     }
 
+    /// <summary>
+    /// The distinct write-scope entries from <paramref name="a"/> that share at least one concrete
+    /// path with some entry of <paramref name="b"/> (issue #175). Used to NAME the shared file(s) /
+    /// directory(ies) in a terminal-gate failure diagnosis when two tasks' writeScopes overlap — so a
+    /// human sees "this looks like a merge collision on &lt;file&gt;" rather than a bare build error.
+    /// Returns the offending entries in their declared order, de-duplicated; empty when the scopes are
+    /// disjoint. The entries are returned AS DECLARED (un-normalized) so the message echoes exactly
+    /// what the plan author wrote.
+    /// </summary>
+    public static IReadOnlyList<string> OverlappingEntries(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        var shared = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string gA in a)
+        {
+            string[] pA = Normalize(gA).Split('/');
+            foreach (string gB in b)
+            {
+                string[] pB = Normalize(gB).Split('/');
+                if (CanOverlap(pA, 0, pB, 0, new Dictionary<(int, int), bool>()))
+                {
+                    if (seen.Add(gA))
+                        shared.Add(gA);
+                    break;
+                }
+            }
+        }
+        return shared;
+    }
+
     // A bare entry with no glob metacharacter is normalised file-vs-directory by whether the
     // last segment looks like a FILE (carries an extension: a dot that is neither leading nor
     // trailing) or a DIRECTORY (no dot, or a leading-dot dotfile dir like '.github', or a

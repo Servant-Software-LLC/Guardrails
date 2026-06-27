@@ -414,9 +414,20 @@ internal sealed class AttemptJournaler
 /// One attempt's terminal result plus the feedback file it left for the next attempt.
 /// <see cref="TransientReason"/> is set ONLY for a transient pause (issue #115): the operator-facing
 /// cause (with any reset hint), which the loop passes to <see cref="IRunObserver.PromptPaused"/>.
+/// <para>
+/// <see cref="ActionWasNoOp"/> and <see cref="GuardrailFailureFingerprint"/> drive the no-op
+/// short-circuit (issue #174): set ONLY on a guardrail-failed attempt. <see cref="ActionWasNoOp"/>
+/// is true when the action exited 0, wrote no state fragment, and made no file changes this attempt;
+/// <see cref="GuardrailFailureFingerprint"/> is a canonical signature of the failed guardrails'
+/// names + reasons + output. When two consecutive attempts are BOTH no-ops AND carry the IDENTICAL
+/// fingerprint, a further attempt cannot differ — the loop escalates to needs-human immediately
+/// instead of exhausting the retry budget.
+/// </para>
 /// </summary>
 internal sealed record AttemptResult(
     TaskResult Result,
     string? FeedbackPath,
     string? TransientReason = null,
-    AttemptOutcome? Outcome = null);
+    AttemptOutcome? Outcome = null,
+    bool ActionWasNoOp = false,
+    string? GuardrailFailureFingerprint = null);

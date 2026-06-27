@@ -267,6 +267,20 @@ sole whole-repo soundness boundary for FF chains and AI-resolved unions):
   guardrail (§4.3). An integration gate with no integration-scoped guardrail would verify nothing —
   the gate is the terminal soundness boundary and must not be empty.
 
+**Merge-collision attribution on gate failure (issue #175).** When the terminal gate fails on the
+final merged HEAD, the failure is attributed to the gate sink task and surfaced as `needs-human`. A
+gate failure (typically the whole-repo build/test) is frequently a **merge collision**: two tasks
+with **overlapping `writeScope`** on a shared file both wrote new content there, and an AI/3-way merge
+silently kept both — a semantic duplicate (e.g. a duplicate class/member) with **no textual conflict
+marker**, catchable only at the build gate. The harness does NOT (and cannot generically) detect the
+semantic duplicate — that is the build guardrail's job, and the union-guardrail prevention is
+authoring-side (§4.3 "Accepted residual"). What the harness DOES is **attribution**: the gate-failure
+diagnosis enumerates every task pair whose `writeScope`s overlap and names the shared path(s), so a
+human immediately sees *"this looks like a merge collision between task A and task B on `<file>`"*
+rather than a bare build error. The hint is advisory and structural — derived PURELY from the
+`writeScope`-overlap topology (never the compiler error text / a CS-code), and **added only when two
+or more `writeScope`s overlap** (nothing is appended for a plan with disjoint scopes).
+
 ### 3.4 Write-scope check (`writeScope`)
 
 `writeScope` is an optional list of **workspace-relative path prefixes / globs** declaring the
@@ -495,6 +509,16 @@ for a warning:
   literal is a **clear keyword** — alphanumerics plus `. _ -`, ≥3 chars, no regex metacharacters. A
   regex-shaped literal (anchors, classes, alternations, escapes) is skipped: it cannot be confidently
   keyword-matched against prose.
+- **Polarity — POSITIVE (require-present) tokens only (issue #177).** GR2026 applies to coverage
+  tokens the prompt is *expected to mention* because the guardrail requires them to be **present** in
+  the authored file. A guardrail can instead make a **negative assertion** — fail when a keyword is
+  present (`if ($content -match "Foo") { … exit 1 }`) — whose keyword is *intentionally absent* from
+  the prompt; flagging that as stale is a false positive. Each match-line is therefore classified by
+  the polarity that makes its `exit <non-zero>` fire: a `-notmatch … exit` block (fail-on-absent) and
+  a `-match … $hits++` counting block are **require-present** (kept); a `-match … exit` block
+  (fail-on-present, a negative assertion) is **require-absent** (excluded). When a line's polarity
+  cannot be confidently classified the token is dropped — a silent false negative, never the #177
+  false positive.
 - **Limits (stated so authors don't over-trust it).** Surface keyword presence in the prose is a strong
   signal, not a proof: a token named only via a synonym is a possible false negative, and a generic
   token reused in an unrelated sentence is a possible false negative the other way. When in doubt the
@@ -854,8 +878,23 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
   explicit way to force a re-run.
 - `needs-human` — retry budget exhausted, OR (issue #115) a transient limit that did not clear within
-  the pause budget (a `rate-limited` attempt — re-run later). All *transitive* dependents become
-  `blocked`. Independent branches keep running.
+  the pause budget (a `rate-limited` attempt — re-run later), OR (issue #174) a **no-op deadlock**
+  short-circuit (below). All *transitive* dependents become `blocked`. Independent branches keep running.
+
+**No-op-deadlock short-circuit (issue #174).** After a guardrail-failed attempt, the harness settles
+`needs-human` IMMEDIATELY — instead of exhausting the remaining retry budget — when **both** hold:
+(a) the action made **no observable change** this attempt (it exited 0, wrote no state fragment, and —
+in a real git segment — touched no file versus `taskBase`: a *genuine no-op*), AND (b) the guardrail
+failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op action
+cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op against a
+merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a further
+attempt has zero probability of differing. This fires on the **2nd** such attempt (the earliest point
+both conditions can be observed). It is **conservative**: it never fires when the action wrote a
+fragment or any file (the action DID work, so retrying may help), never in serial mode / under the
+fake provider (no `taskBase` to prove "no writes"), and never when the guardrail output CHANGED between
+attempts (those can still converge). The short-circuit settles the task `needs-human` via the same
+status transition as budget exhaustion; only a non-final attempt takes this path (the final attempt
+already exhausts to `needs-human`).
 - Resume rules (`guardrails run` on an existing journal): `succeeded` → skip;
   `needs-human` / `failed` / `blocked` → `pending` with a fresh retry budget;
   `running` (crashed previous run) → `pending`, attempt numbering continues.
