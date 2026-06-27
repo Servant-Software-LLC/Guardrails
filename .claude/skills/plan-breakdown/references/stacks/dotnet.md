@@ -11,7 +11,7 @@ Every stack file answers the same six standard questions first (§1–§6, inclu
 TDD `build-passes` + `tests-fail-on-stubs`), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
-§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, then WPF).
+§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, §19 duplicate-definition union sub-check, §20 negative assertion, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -1270,6 +1270,79 @@ while still catching a *wrong-name* drift. This pairs with §8 (the exe serves s
 root is the described UI): §18 proves **every derived-name lookup across the set resolves to the right
 artifact**.
 <!-- END ADDED SECTION #96 -->
+
+<!-- BEGIN ADDED SECTION #175 — duplicate-definition union sub-check (auto-merge friendly; do not merge into prose above) -->
+## 19. Duplicate-definition union sub-check — a shared `.cs` two tasks both define into (#175)
+
+The .NET realization of the catalogue's **duplicate-definition sub-check** (catalogue →
+overlapping-writeScope union-guardrail). When **≥2 tasks have overlapping `writeScope` on a shared
+`.cs` file** and **both** can append a type/member DEFINITION to it, a 3-way / AI-merge that keeps both
+copies of the same new definition produces **no conflict marker** — git unions two appends to different
+regions cleanly — so the merged file holds a **duplicate class/member**: `CS0101` ("already contains a
+definition for …") / `CS0111`, surfaced only by the build at the terminal gate. This is the exact #175
+failure of plan-0009: task 07 and task 09 both wrote `class CommanderRestImporter` into `Launcher.cs`.
+
+Add a **duplicate-definition count check** to the shared file's `scope:"integration"` union-guardrail.
+It belongs **inside the file-present gate** of the conditional union-guardrail (§4's
+`launcher-union-verified` shape) so it stays **union-safe** — it does nothing at a union where the file
+has not landed yet:
+
+```powershell
+# Inside the union-guardrail, after the conflict-marker check, still under `if (Test-Path $path)`:
+# catches: an AI/3-way merge that kept BOTH task 07's and task 09's `class CommanderRestImporter`
+#          appended to Launcher.cs (overlapping writeScope, no textual conflict) - a CS0101 duplicate
+#          the build catches only at the terminal gate (#175). Count the declaration; >1 is the merge dup.
+$classMatches = ([regex]::Matches($content, 'class\s+CommanderRestImporter')).Count
+if ($classMatches -gt 1) {
+    Write-Output "Launcher.cs contains $classMatches definitions of CommanderRestImporter - the AI-merge produced a duplicate class (overlapping writeScopes); remove all but one"
+    exit 1
+}
+```
+
+Match the declaration keyword for the construct both siblings could add — `class\s+<Name>`,
+`record\s+<Name>`, `interface\s+<Name>`, `enum\s+<Name>` — count `[regex]::Matches(...).Count`, fail on
+`-gt 1`, and **name the duplicate** in the failure line (it becomes the human's diagnosis). One check per
+definition both writeScopes could produce. This is the union-side safety net; the deeper fix for the
+plan-0009 trap is the **missing DAG edge** that forced the agent to redefine the class in its own scope
+at all — see §15/the transitive-compilation rule (plan-breakdown Step 3, #176). The harness contributes
+**attribution** at the gate (it names the colliding `writeScope` task pairs + shared path on the
+`needs-human` diagnosis, SSOT §3.3), not detection — this guardrail is the detection.
+<!-- END ADDED SECTION #175 -->
+
+<!-- BEGIN ADDED SECTION #176 — negative assertion (auto-merge friendly; do not merge into prose above) -->
+## 20. Negative assertion — an EXCLUDED scenario verified ABSENT from a `.cs` file (#176)
+
+The .NET realization of the catalogue's **negative-assertion** archetype (catalogue → negative
+assertion). The **mirror** of §17 `covers-key-behaviors`: §17 fails when a kept token is **absent**
+(`-notmatch … exit`); a negative assertion fails when an excluded token is **present** (`-match …
+exit`). Emit one whenever a task's action prompt **explicitly excludes** a scenario/keyword the authored
+file must NOT contain — a wizard-blocked mode, a forbidden construct, a removed scenario. Without it the
+positive coverage check (which only verifies the KEPT scenarios) lets the agent re-add the excluded one
+undetected; in plan-0009 a re-added `CommanderRest` reference in the dispatch tests compile-coupled a
+downstream wiring task to a non-ancestor's type (the #176 trap):
+
+```powershell
+# catches: a dispatch test file that references CommanderRest - Mode C is wizard-blocked and the action
+#          prompt EXCLUDED it, but the positive covers-key-behaviors (§17) only checks the KEPT scenarios
+#          are present, so a re-added CommanderRest slips through. Fail-on-PRESENT is the negative assertion.
+$f = "tests/Importer.Tests/MigrateDispatchTests.cs"
+$content = Get-Content $f -Raw
+if ($content -match "CommanderRest") {
+    Write-Output "$f references CommanderRest - Mode C is wizard-blocked and must not appear in the dispatch tests"
+    exit 1
+}
+exit 0
+```
+
+**Pair it with the §17 positive check**, do not replace it — keep one `03-covers-key-behaviors.ps1`
+(or a sibling guardrail) that asserts the kept scenarios present AND a negative-assertion line that
+asserts the excluded one absent, both scoped to the one file. **GR2026 stays silent on the negative
+assertion's keyword by design** (#177): `CoverageGuardrailHeuristic` classifies match-line polarity and
+treats only `-notmatch … exit` / `-match … $hits++` (require-present) blocks as coverage tokens; a
+`-match … exit` (require-absent) block is excluded (SSOT §4.4). The excluded keyword is intentionally
+absent from the prompt — that is the point — so a GR2026 warning there would be the #177 false positive.
+Do not weaken or delete the negative assertion to silence GR2026; post-#177 there is nothing to silence.
+<!-- END ADDED SECTION #176 -->
 
 ## WPF structural checks (#11 F5/F6)
 

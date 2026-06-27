@@ -180,6 +180,21 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   still holds every sibling's contribution, union-safe per #125). This is an **authoring nudge**, not a
   harness bug: the integration-set-only union re-verify is an accepted v1 design (#132). (Catalogue →
   overlapping-writeScope union-guardrail; SSOT §4.3 "Accepted residual".)
+  - **Duplicate-definition sub-check on a shared CODE file (#175)**: tighten the above when the shared
+    overlapping-`writeScope` file is a CODE file and **both** colliding tasks could ADD a type/member
+    DEFINITION to it (each writes a `class`/`record`/`interface`/`enum`/method the other doesn't). A
+    3-way / AI-merge of two branches that each appended the SAME new definition to **different** regions
+    of the file produces **no textual conflict marker** — git keeps both copies — so a conflict-marker
+    check passes while the merged file holds a **duplicate definition** (the CS0101 that red-halted
+    plan-0009's terminal gate, #175). Require the `scope:"integration"` union-guardrail to carry a
+    **duplicate-definition count check** for each definition both siblings could add — count occurrences
+    and fail when **>1** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1` in .NET), naming the
+    AI-merge duplicate. Keep it union-safe/conditional (#165) — run it only inside the existing
+    file-present gate, so it passes trivially at a union where the file hasn't landed. A conflict-marker /
+    contribution-present union-guardrail with **no** duplicate-definition count on a shared code file two
+    tasks both define into → **WEAK** (the silent semantic-duplicate residual the harness can only
+    *attribute* at the gate, not prevent, SSOT §3.3). (Catalogue → overlapping-writeScope union-guardrail;
+    `stacks/dotnet.md §19`; SSOT §3.3 / §4.3 "Accepted residual".)
 - **Union guardrail ancestor staleness (#159)**: for every `scope:"integration"` union guardrail on a
   fan-in / integration task, identify each **expected-contribution token** (the string it
   `match`/`notmatch`-checks for in the shared file), and for each token identify which task(s) would
@@ -337,11 +352,53 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   (Catalogue → name-convention seam; `stacks/dotnet.md §18`.) BLOCKER on a UI/transport/convention-heavy
   plan — the failure is invisible to the whole suite.
 <!-- END ADDED PROBES #74/#75/#76/#96 -->
+<!-- BEGIN ADDED PROBES #176 — transitive compilation dependency · negative-assertion gap -->
+- **Transitive compilation dependency — a test-author ancestor references a non-ancestor's type (#176)**:
+  the §3 "missing edge" check applied at the IMPLICIT COMPILATION level, not just the direct-artifact
+  level. For **each** task **B** whose verification step runs `dotnet build` / `dotnet test` (it compiles a
+  test project): identify B's ancestor **test-author** tasks (ancestors that write `.cs` test files — those
+  files are in the test project B compiles). For each such test file, consider the types its **action
+  prompt's scenarios / deliverables ALLOW it to reference** (the enumerated scenarios, the named
+  collaborators — not every type imaginable). If any of those types is **PRODUCED by an implementation task
+  C that is NOT in B's ancestor set**, flag the **missing edge B←C**. The decision rule, stated verbatim:
+  *"Task B's verification compiles the output of ancestor test-author task A. A's prompt allows referencing
+  types produced by task C. C is not in B's ancestor set → missing edge B←C (add `C` to B's `dependsOn`, or
+  the agent will be trapped — it can't fix a compile error in a file outside its writeScope, and may
+  compensate by redefining the type in its own scope → a duplicate-definition merge collision)."* This is
+  the exact failure chain of plan-0009: task 09's `dotnet test --filter` compiled the test project holding
+  task 08's `MigrateDispatchTests.cs`, which referenced `CommanderRestImporter` produced by task 07 — and 07
+  was NOT in 09's ancestor set, so 09 hit an unfixable compile error and redefined the class in its own
+  writeScope (`Launcher.cs`), colliding with 07's copy at the AI-merge (CS0101, #175/#174). Severity: **WEAK**
+  when the trap merely risks a wasted retry / `needsHuman`; **BLOCKER** when the test file's scenarios
+  plainly reference the non-ancestor type (the compile failure is certain). Fix: add the producing
+  implementation task to B's `dependsOn` so its output is present in B's working tree. (Distinct from the
+  direct-artifact missing-edge check, §3 — there B reads C's FILE; here B COMPILES a file that references
+  C's TYPE.) (plan-breakdown Step 3 adds the matching authoring rule.)
+- **Negative-assertion gap — a prompt excludes a scenario but no guardrail forbids it (#176)**: when a
+  task's action prompt **EXPLICITLY EXCLUDES** a scenario/keyword ("Mode C / `CommanderRest` is
+  wizard-blocked — do NOT include it in the dispatch tests"; "the importer must NOT call `X` directly"),
+  the corresponding guardrail must carry a **NEGATIVE assertion** verifying the excluded keyword is
+  **ABSENT** — `if ($content -match "CommanderRest") { Write-Output "…"; exit 1 }` (fail-on-present).
+  Without it, the agent is free to include the removed scenario **undetected**: the positive
+  `covers-key-behaviors` only checks PRESENCE of the kept scenarios, so a stray excluded scenario sails
+  through (exactly what slipped past plan-0009's task 08 and fed the #176 compile trap). For every
+  test-author / implementation task whose prompt names an excluded scenario, confirm a fail-on-present
+  guardrail exists for that keyword; if absent, flag **WEAK** (the exclusion is unenforced) — **BLOCKER**
+  when the excluded scenario is the very thing that traps a downstream compile (the #176 case). Fix: add a
+  fail-on-present negative-assertion guardrail (catalogue → negative assertion; `stacks/dotnet.md §20`),
+  paired with the positive `covers-key-behaviors`. Note it is **correct** that `guardrails validate`'s
+  GR2026 stays SILENT on this guardrail's keyword (post-#177 GR2026 flags only POSITIVE require-present
+  coverage tokens, SSOT §4.4) — a GR2026 warning on a negative assertion would be the #177 false positive,
+  not a signal to remove the guardrail. (plan-breakdown Step 4 adds the matching authoring rule.)
+<!-- END ADDED PROBES #176 -->
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
 - **Missing edges**: task B reads a state key or file only task A produces, with no
-  path A→B.
+  path A→B. **Apply this at the IMPLICIT COMPILATION level too** (#176): if B's verification
+  compiles a test project containing an ancestor test-author task's `.cs` file that references a
+  type produced by a non-ancestor implementation task, that is a missing edge — see the
+  "Transitive compilation dependency" probe in §2.
 - **False edges** serializing genuinely parallel work.
 - A terminal task aggregates (suite green / e2e) so the run has a meaningful end.
 - **Exactly one integration-gate sink on a parallel plan.** A plan with ≥2 leaf tasks or
@@ -429,7 +486,9 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
-- [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing.
+- [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.
+- [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
+- [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
 - [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
 <!-- BEGIN ADDED CHECKS #74/#75/#76/#96 -->
