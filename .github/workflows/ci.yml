@@ -44,3 +44,24 @@ jobs:
       # plan changes without regenerating the diagram, this fails CI. (#3)
       - name: Example diagram is fresh (graph --check)
         run: dotnet run --project src/Guardrails.Cli --configuration Release --no-build -- graph examples/hello-guardrails/hello-guardrails --check
+
+  # End-to-end packaged-tool smoke (#171): pack the REAL tool package, install it to an
+  # isolated --tool-path, run `skills install` + `--version`, and FAIL if the skills/ payload
+  # is missing, an installed SKILL.md is unstamped, or --version reports drift. This catches a
+  # "build-green-but-package-broken" state the build/test suite cannot see (it asserts against
+  # $(OutDir), not the packaged artifact — exactly how #169 shipped broken across preview.27–30).
+  # Ubuntu alone suffices: the bug was platform-agnostic, and the script is the same one the
+  # release pipeline runs as a pre-publish gate.
+  packaged-tool-smoke:
+    name: packaged-tool-smoke (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Smoke (pack → install → assert)
+        run: .github/scripts/smoke-packaged-tool.sh

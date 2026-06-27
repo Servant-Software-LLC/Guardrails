@@ -6,8 +6,11 @@
 # default for local `dotnet pack`; the tag is the source of truth for a published release.
 # NuGet refuses to republish an existing version, so cutting a new release = pushing a new tag.
 #
-# Flow: the 3-OS test matrix must pass on the tagged commit; only then does the `publish`
-# job pack and push to NuGet.org.
+# Flow: the 3-OS test matrix AND the packaged-tool smoke (#171) must pass on the tagged
+# commit; only then does the `publish` job pack and push to NuGet.org. The smoke packs the
+# tag version, installs the .nupkg to an isolated tool-path, and asserts the skills/ payload
+# shipped and is version-stamped (a build-green-but-package-broken state — e.g. #169 — fails
+# here before it can publish).
 #
 # AUTH — Trusted Publishing (OIDC). No long-lived API key to create, store, or rotate.
 # Configure once:
@@ -58,9 +61,31 @@ jobs:
       - name: Test (Integration)
         run: dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --configuration Release --no-build
 
+  # Pre-publish packaged-tool smoke (#171): pack the tool with the TAG version (the same
+  # derivation the publish job uses), install it to an isolated --tool-path, run
+  # `skills install` + `--version`, and FAIL on a missing skills/ payload, an unstamped
+  # SKILL.md, or a drift warning. The publish job `needs:` this, so a build-green-but-
+  # package-broken state CANNOT reach NuGet.org — this is the backstop that would have
+  # stopped preview.27 from publishing #169. Same script the PR `ci.yml` job runs.
+  packaged-tool-smoke:
+    name: packaged-tool-smoke (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Smoke (pack tag version → install → assert)
+        # Strip the leading `v` from the tag so it packs/installs the exact version the
+        # publish job will push (tag v1.0.0-preview.2 → 1.0.0-preview.2).
+        run: .github/scripts/smoke-packaged-tool.sh "${GITHUB_REF_NAME#v}"
+
   publish:
     name: pack and publish to NuGet.org
-    needs: test
+    needs: [test, packaged-tool-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read

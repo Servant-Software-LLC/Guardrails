@@ -243,6 +243,14 @@ Remedy: run `guardrails skills install --force`.
 When everything matches (or nothing is installed, or this build carries no bundled
 skills), `--version` prints only the version line.
 
+> **Release gate (#171).** Because the version stamp lives in the *packaged* artifact and
+> not the build output, the publish pipeline is gated by an end-to-end packaged-tool smoke
+> (`.github/scripts/smoke-packaged-tool.sh`, run by both `ci.yml` and `release.yml`). It
+> packs the tool, installs the `.nupkg` to an isolated `--tool-path`, and FAILS the release
+> if the bundled `skills/` payload is missing, any installed `SKILL.md` lacks
+> `metadata.guardrails-version`, or `--version` reports drift/`unversioned` — so a
+> build-green-but-package-broken state (the #169 class) cannot reach NuGet.org.
+
 > **Last resort — manual copy.** If you only have the source checkout (no installed
 > tool), copy the folders by hand from the repo root:
 >

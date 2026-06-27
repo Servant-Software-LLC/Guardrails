@@ -21,3 +21,7 @@
 
 # --- Committed test fixtures (loaded in place by the Core test suite). ---
 /tests/Guardrails.Core.Tests/TestData/** eol=lf
+
+# --- CI shell scripts: must stay LF so the bash shebang / `set -euo pipefail` run on the
+#     Linux CI runner (a CRLF checkout breaks `#!/usr/bin/env bash`). ---
+/.github/scripts/*.sh eol=lf
