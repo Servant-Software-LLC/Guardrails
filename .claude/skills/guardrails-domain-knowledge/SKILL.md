@@ -83,6 +83,16 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (MUST write `{pass, reason}` verdict JSON to `GUARDRAILS_VERDICT_OUT` -- CLI exit
   codes are never semantic). Ordered by filename, cheapest first. ALL must pass.
   Every guardrail opens with a `catches:` comment naming the wrong implementation it would catch.
+  **Negative assertion (#176):** a legitimate deterministic archetype -- the mirror of a presence check.
+  A presence/`covers-key-behaviors` check fails when a kept token is ABSENT (`if -notmatch "X" { exit 1 }`
+  = "X must be present"); a **negative assertion** fails when an EXCLUDED token is PRESENT (`if -match
+  "X" { exit 1 }` = "X must be absent"). Emit one when an action prompt explicitly excludes a
+  scenario/keyword the artifact must NOT contain (a wizard-blocked mode, a forbidden construct); pair it
+  with the positive coverage check. **GR2026 is (correctly) SILENT on a negative assertion (post-#177):**
+  the stale-coverage lint flags only POSITIVE require-present coverage tokens (a `-notmatch … exit` /
+  `-match … $hits++` block); a `-match … exit` (require-absent) token is excluded, because its keyword is
+  intentionally absent from the prompt (SSOT section 4.4). A GR2026 warning on a negative assertion would
+  be the #177 false positive -- not a reason to remove the guardrail.
   **Verify-don't-replay (#62):** a guardrail receives the action's recorded outcome --
   `GUARDRAILS_ACTION_RESULT` (`{kind, exitCode, summary}`), `_STDOUT`, `_STDERR` (SSOT
   section 5.1) -- and may verify a postcondition from it instead of re-running the action's
@@ -126,6 +136,17 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
 - Retry budget exhausted -> `needs-human`; transitive dependents -> `blocked`;
   **independent branches keep running**.
+- **No-op-deadlock short-circuit (#174)**: a guardrail-failed attempt escalates to `needs-human`
+  IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**
+  hold: (a) the action made **no observable change** this attempt (exited 0, wrote no state fragment,
+  and -- in a real git segment -- touched no file vs `taskBase`: a *genuine no-op*), AND (b) the
+  guardrail failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op
+  action cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op
+  against an AI-merge duplicate, #175), and an unchanged failure proves nothing converged -- so a
+  further attempt has zero probability of differing. **Conservative**: never fires when the action wrote
+  a fragment or any file, never in serial mode / under the fake provider (no `taskBase` to prove "no
+  writes"), never when the guardrail output CHANGED between attempts (those can still converge). Same
+  `needs-human` transition as budget exhaustion. (SSOT section 7.)
 - **Prompt-runner failure classification** (SSOT section 9, #114/#115/#119): a non-success prompt
   result is classified (in the runner quarantine) into `Transient` | `OutputCap` | `Timeout` | `Error`.
   - **Transient** (429/503/529, "overloaded", rate/session/usage limit): does NOT consume the retry
@@ -166,6 +187,19 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     fail -> `reset --hard preHead`; `needs-human`; no fragment, no `mergeSequence`.
   - AI-merge + re-verify run in a private forked worktree **off** the serialize lock; only the
     final integration of the verified result into the plan branch is **under the lock**.
+- **Merge-collision attribution on gate failure (#175)**: when the terminal `integrationGate` fails on
+  the final merged HEAD (typically the whole-repo build/test), the `needs-human` diagnosis is **enriched**
+  with merge-collision suspects -- the harness scans the plan for every task pair whose `writeScope`s
+  **overlap** and appends those pairs + the shared path(s), so a human sees *"this may be a merge collision
+  between '07-...' & '09-...' (shared: Launcher.cs)"* rather than a bare build error. A gate failure is
+  frequently a 3-way/AI-merge that silently kept **both** copies of a definition two overlapping-scope
+  tasks each appended to a shared file -- a duplicate class/member (CS0101) with **no conflict marker**.
+  The hint is **advisory + structural** -- derived PURELY from the `writeScope`-overlap topology (never the
+  compiler error text / a CS-code), added **only** when ≥2 `writeScope`s overlap (nothing for disjoint
+  scopes). It is **attribution, not prevention**: the harness cannot generically detect a semantic
+  duplicate (that is the build guardrail's job); the PREVENTION is authoring -- the overlapping-writeScope
+  union-guardrail's **duplicate-definition check** (`plan-breakdown` emits it, `guardrails-review` flags
+  its absence; catalogue → overlapping-writeScope union-guardrail). (SSOT section 3.3.)
 - **B1 atomic settle** (under the serialize lock, fixed order): (1) deep-merge fragment into
   `state.json`; (2) `git commit` the integration carrying `Guardrails-Task`/`Guardrails-Run`
   trailers (FF'd commits AND merge commits); (3) consume `mergeSequence` + journal `Succeeded`.
