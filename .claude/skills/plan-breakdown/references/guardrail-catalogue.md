@@ -26,7 +26,7 @@ Python project.
 | 1 | **file-exists / file-contains** (regex) | script | Any artifact-producing task — almost always guardrail #1 | Agent claimed success without producing the artifact, or produced the wrong shape |
 | 2 | **command-exit-code** | script | Task output is itself runnable; CLI behavior checks | Artifact exists but is broken when actually executed |
 | 3 | **build-passes** | script (`dotnet build`) | Any code-producing task | Code that doesn't compile |
-| 4 | **specific-tests-pass** | script (`dotnet test --filter`) | Behavior implementation — filter to THIS task's tests; whole-suite green belongs to a terminal integration task only | Wrong behavior, regressions in the targeted area |
+| 4 | **specific-tests-pass** | script (`dotnet test --filter`) | Behavior implementation — filter to THIS task's tests; whole-suite green belongs to a terminal integration task only. **Re-emit failure DETAIL at the end of stdout so it reaches the retry tail (#179 — "Failure detail must reach the retry tail" below)** | Wrong behavior, regressions in the targeted area |
 | 5 | **lint/format clean** | script | The repo already has a configured linter (never introduce one ad hoc) | Style/usage violations the repo's standards forbid |
 | 6 | **schema-validates** | script | Task emits structured data and a schema exists (or you inserted a schema-author task) | Structurally invalid output |
 | 7 | **port/endpoint-answers** | script (probe + curl, owns process start/stop, with timeout) | Task delivers a running service behavior | Service that builds but doesn't actually serve |
@@ -896,6 +896,52 @@ contract automatically — the prompt only needs the criterion. See
 `examples/hello-guardrails/hello-guardrails/tasks/03-quality-check/guardrails/02-tone-is-friendly.prompt.md`
 for the golden reference.)
 
+## Failure detail must reach the retry tail (#179)
+
+A guardrail's failure feedback is only as good as **what survives the tail.** When a guardrail
+exits non-zero, the harness feeds the next attempt the **tail** of that guardrail's stdout — the
+last ~60 lines, then the last 4000 chars (a fixed harness contract, `RetryPolicy.AppendTail`; a
+guardrail cannot change the tail size). For most guardrails this is fine: a `file-contains` or
+`build-passes` check prints **one** actionable line and that line IS the tail. The trap is a
+**test-runner** guardrail.
+
+**The trap.** Default / minimal-verbosity `dotnet test` (and many other runners) prints each
+failure's **assertion message and exception/stack trace INLINE, mid-run**, then ends with only
+`[FAIL] <name>` lines and a `Failed: N, Passed: M` count. A guardrail that does
+`dotnet test … ; if ($LASTEXITCODE -ne 0) { Write-Output "tests failing"; exit 1 }` therefore puts
+only the test **names** in the tail. The agent sees **WHAT** failed but not **WHY** — no
+`Assert.Equal() Failure / Expected / Actual`, no `JsonException` path — and generates ineffective
+retries. The motivating case (#179, plan-0009 task 10) consumed **12 attempts** and escalated to
+`needsHuman` before a human ran the tests manually to read a two-line JSON error the tail had cut.
+
+**The rule.** A guardrail that asserts a test suite **PASSES** must make the failure DETAIL
+(assertion/exception text) the **LAST thing on stdout**, so the harness tail captures it — not just
+the `[FAIL] <name>` summary. The robust, runner-order-independent form is **capture → emit the full
+log → re-emit the failure-signal lines at the very end**, bounded so the re-emitted block fits the
+~60-line tail in the common few-failures case, with one final actionable reason line beneath it:
+
+1. Capture the runner's combined output (`$out = dotnet test … 2>&1`).
+2. Emit the full log first (so the attempt's saved output is complete).
+3. On failure, `Select-String` the failure-signal lines (`[FAIL]`, `Error Message:`, `Assert.`,
+   `Exception`, `Stack Trace:`, `Expected:`, `Actual:`), bound them (~40 lines), and re-emit them
+   under a clear header at the END.
+4. Print the single actionable reason line last.
+
+This is **deterministic** — it does not depend on logger ordering. You MAY *also* raise verbosity
+(`--logger "console;verbosity=detailed"`, which moves failure messages into the end-of-run summary),
+but the re-emit is the load-bearing part: it puts the detail in the tail even with several failures.
+The exact regex and the full PowerShell pattern live in the **stack file**
+(`references/stacks/dotnet.md §4.2`); other stacks instantiate the same capture-and-re-emit shape
+for their runner.
+
+**Polarity — re-emit only where exit 0 is the pass.** This applies to every `tests-pass` /
+`all-tests-pass` / `specific-tests-pass` realization (archetype #4) and to any test driving a
+production seam (composition-root wiring). It does **NOT** apply to the **inverse** TDD-red checks —
+`tests-fail-on-stubs` / `tests-fail-on-current-code` (archetype #8), where a **non-zero** exit is
+the SUCCESS: there is no failure to feed back, and re-emitting would surface the EXPECTED red as if
+it were a problem. Match the construct's polarity: re-emit failure detail only on the checks whose
+pass is exit 0.
+
 ## A `scope:"integration"` guardrail MUST be UNION-SAFE (#125)
 
 This is an authoring constraint on **which assertion** a `scope: "integration"` guardrail may make.
@@ -1580,6 +1626,15 @@ should fail before an expensive test run or a paid judge ever starts.
   tautology because a non-zero action already failed the attempt before any guardrail ran
   (the recorded exit code is ALWAYS 0 at guardrail time). Fix: read a runner-written
   structured result (TRX) or a produced artifact, never the action's self-report.
+- **Failure detail lost to the tail** (#179): a `tests-pass` guardrail that runs `dotnet test`
+  (or any runner whose default output prints assertion/exception text **mid-run** and ends with
+  only `[FAIL] <name>` + a count) and exits 1 on failure — but never re-emits the detail. The
+  harness feeds back only the **tail** of stdout (last ~60 lines / 4000 chars), so the agent sees
+  WHAT failed, not WHY, and retries blind (plan-0009 burned 12 attempts to `needsHuman`). Fix:
+  capture → emit full log → **re-emit the failure-signal lines at the END** so they land in the
+  tail (see "Failure detail must reach the retry tail" below; the .NET regex is `stacks/dotnet.md
+  §4.2`). The INVERSE checks — a `tests-fail-on-stubs` red, where a non-zero exit is success — do
+  NOT re-emit (there is no failure to feed back).
 - **Over-broad**: "all tests pass" on an early task — it fails for unrelated reasons,
   poisons retries with noise, and serializes the DAG. Whole-suite green belongs to one
   terminal integration task.

@@ -212,6 +212,12 @@ not the token" rule.
   // 02-all-tests-pass.json — LOCAL (runs only at the terminal gate's action)
   { "description": "Full test suite — catches regressions in all existing tests and verifies all new tests pass on merged HEAD" }
   ```
+  **Every `dotnet test` guardrail that asserts tests PASS MUST re-emit the failure DETAIL at the
+  end of stdout — see §4.2 (#179).** The bare `dotnet test … ; if ($LASTEXITCODE -ne 0) { … }`
+  forms shown above and in §10a are the *skeleton*; for a guardrail that asserts tests pass,
+  wrap that skeleton in §4.2's capture-then-re-emit form so the assertion/exception text lands in
+  the harness retry-feedback tail. (The §4.1 `tests-fail-on-stubs` red check is the INVERSE — a
+  NON-zero exit is its success — so it does NOT re-emit; §4.2 says which archetypes do.)
 - **The terminal gate's `scope: "integration"` guardrail (GR2018) is a CONDITIONAL union
   invariant, not the build/suite (#165).** GR2018 still requires the gate sink to carry ≥1
   `scope: "integration"` guardrail — make that the union-safe conflict-marker / union-invariant
@@ -299,6 +305,69 @@ possible"). If you keep the split, omit `build-passes` (the test references the 
 so it won't compile against current code — that non-zero exit IS the red), keep
 `tests-fail-on-current-code`, and strengthen `covers-key-behaviors` STRUCTURALLY (assert the
 `[Fact]`/`[Theory]` attribute is present, not just that the enum-value tokens appear — §17).
+
+### 4.2 Put the failure DETAIL in the tail — re-emit assertion/exception lines at the END (#179)
+
+The catalogue's failure-detail-in-tail doctrine (catalogue → "Failure detail must reach the retry
+tail"), realized for .NET. The harness feeds a failed guardrail's **stdout tail** back to the next
+attempt as the retry feedback — the last 60 lines, then the last 4000 chars (a fixed harness contract,
+`RetryPolicy.AppendTail`; not something a guardrail can change). Default / minimal-verbosity
+`dotnet test` emits each failure's **assertion message and exception/stack trace INLINE, mid-run**,
+and ends with only `[FAIL] <name>` lines plus the `Failed: N, Passed: M` count. So a bare
+`dotnet test … ; if ($LASTEXITCODE -ne 0) { Write-Output "tests failing"; exit 1 }` puts only the
+test *names* in the tail — the agent sees **what** failed but not **why**, and retries blind. (The
+motivating case: plan-0009 task 10 burned 12 attempts to `needsHuman` before a human ran the tests
+manually to read a one-line `$.itemOutcomes[0].status` JSON error the tail had cut.)
+
+**Rule — every `dotnet test` guardrail that asserts tests PASS must make the failure detail the LAST
+thing on stdout**, so the harness tail captures it. The robust form (works regardless of logger
+ordering, and across several failures) is **capture → emit the full log → re-emit the
+failure-signal lines at the very end**:
+
+```powershell
+# catches: an implementation whose output deviates from the specified format. Re-emits the
+#          assertion/exception lines at the END so they land in the harness retry-feedback tail
+#          (the last ~60 lines of stdout) - default `dotnet test` prints them mid-run and ends with
+#          only `[FAIL] <name>` + the count, so the tail would otherwise show WHAT failed, not WHY (#179).
+$out = dotnet test tests/Inventory.Tests --filter "Category=Stats" --no-build --nologo 2>&1
+$out | ForEach-Object { Write-Output $_ }                 # full log first (for the attempt's saved output)
+if ($LASTEXITCODE -ne 0) {
+    $detail = $out |
+        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+        ForEach-Object { $_.Line } |
+        Select-Object -First 40                            # bound the block so it fits the ~60-line tail
+    Write-Output ""
+    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+    Write-Output "Stats tests failing - flag not implemented to spec (see failure details above)"
+    exit 1
+}
+exit 0
+```
+
+Notes that make it robust:
+
+- **The re-emit is the load-bearing part**, not the verbosity flag. You MAY also pass
+  `--logger "console;verbosity=detailed"` (which moves failure messages into the end-of-run summary),
+  but logger ordering varies by SDK/framework; the explicit capture-and-re-emit **deterministically**
+  puts the assertion/exception lines at the tail even with several failures. Prefer it.
+- **Bound the re-emitted block** (`Select-Object -First 40` above) so it fits the ~60-line tail in the
+  common few-failures case — an unbounded re-emit on a large failing suite would itself overflow the
+  tail and re-bury the first failures. 40 lines leaves room for the framing + the final reason line.
+- **`--no-build`** assumes an upstream `build-passes` guardrail (§4 / §4.1) already compiled the
+  project; drop it if this is the only check that compiles the tests.
+- **Keep ONE final actionable reason line** after the re-emitted block (the §4 / catalogue
+  one-actionable-line rule still holds) — it is the human-readable summary at the very bottom of the
+  tail; the re-emitted detail sits just above it.
+
+**Which archetypes re-emit, precisely:** every realization that asserts tests **PASS** — the §4
+filtered `specific-tests-pass`, the §4.1 implementation `02-…-tests-pass` (the SAME `--filter`, exit 0
+required), the §4 whole-suite terminal `02-all-tests-pass`, and the §10a `production-wiring` /
+`specific-tests-pass` driver. The §4.1 `tests-fail-on-stubs` and the data-model
+`tests-fail-on-current-code` are the **INVERSE** — a NON-zero exit is their SUCCESS, so there is no
+failure to feed back and they do **not** re-emit (re-emitting there would surface the EXPECTED red as
+if it were a problem). Match the construct's polarity: re-emit only where exit 0 is the pass.
 
 ## 5. Grep-scope contamination risks specific to .NET layout
 
@@ -609,6 +678,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 exit 0
 ```
+
+The skeleton above asserts tests PASS (exit 0 is the pass), so it MUST adopt §4.2's
+capture-then-re-emit form — wrap the `dotnet test … --filter "…ProductionWiringTests"` call so a
+production-wiring failure's assertion/exception text lands in the harness retry tail, not just the
+`[FAIL]` name (#179).
 
 The test file is itself a deliverable — insert it via the TDD pair (author the production-wiring test
 red, then the wiring task makes it green). The test-author task's `tests-fail-on-current-code`
