@@ -267,6 +267,20 @@ sole whole-repo soundness boundary for FF chains and AI-resolved unions):
   guardrail (§4.3). An integration gate with no integration-scoped guardrail would verify nothing —
   the gate is the terminal soundness boundary and must not be empty.
 
+**Merge-collision attribution on gate failure (issue #175).** When the terminal gate fails on the
+final merged HEAD, the failure is attributed to the gate sink task and surfaced as `needs-human`. A
+gate failure (typically the whole-repo build/test) is frequently a **merge collision**: two tasks
+with **overlapping `writeScope`** on a shared file both wrote new content there, and an AI/3-way merge
+silently kept both — a semantic duplicate (e.g. a duplicate class/member) with **no textual conflict
+marker**, catchable only at the build gate. The harness does NOT (and cannot generically) detect the
+semantic duplicate — that is the build guardrail's job, and the union-guardrail prevention is
+authoring-side (§4.3 "Accepted residual"). What the harness DOES is **attribution**: the gate-failure
+diagnosis enumerates every task pair whose `writeScope`s overlap and names the shared path(s), so a
+human immediately sees *"this looks like a merge collision between task A and task B on `<file>`"*
+rather than a bare build error. The hint is advisory and structural — derived PURELY from the
+`writeScope`-overlap topology (never the compiler error text / a CS-code), and **added only when two
+or more `writeScope`s overlap** (nothing is appended for a plan with disjoint scopes).
+
 ### 3.4 Write-scope check (`writeScope`)
 
 `writeScope` is an optional list of **workspace-relative path prefixes / globs** declaring the

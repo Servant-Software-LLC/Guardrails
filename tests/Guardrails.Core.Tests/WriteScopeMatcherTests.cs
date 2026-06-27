@@ -371,4 +371,56 @@ public sealed class WriteScopeMatcherTests
                 [$"**/*{ext}"])
         };
     }
+
+    // =========================================================================
+    // OverlappingEntries — the #175 attribution primitive: which entries of `a`
+    // share a concrete path with some entry of `b` (consistent with Overlaps).
+    // =========================================================================
+
+    [Fact]
+    public void OverlappingEntries_SharedLiteralFile_ReturnsThatEntry()
+    {
+        IReadOnlyList<string> shared = WriteScope.OverlappingEntries(
+            ["Launcher.cs", "src/Other.cs"],
+            ["Launcher.cs"]);
+
+        Assert.Equal(["Launcher.cs"], shared);
+    }
+
+    [Fact]
+    public void OverlappingEntries_DisjointScopes_ReturnsEmpty()
+    {
+        IReadOnlyList<string> shared = WriteScope.OverlappingEntries(
+            ["A.cs"],
+            ["B.cs"]);
+
+        Assert.Empty(shared);
+    }
+
+    [Fact]
+    public void OverlappingEntries_GlobOverlap_ReturnsTheDeclaredEntryVerbatim()
+    {
+        // A directory glob from `a` and a literal from `b` share src/Foo/Bar.cs; the entry is
+        // returned AS DECLARED ("src/Foo/") — not the normalized "src/Foo/**".
+        IReadOnlyList<string> shared = WriteScope.OverlappingEntries(
+            ["src/Foo/"],
+            ["src/Foo/Bar.cs"]);
+
+        Assert.Equal(["src/Foo/"], shared);
+    }
+
+    [Fact]
+    public void OverlappingEntries_IsConsistentWithOverlaps()
+    {
+        // Whenever Overlaps is true, OverlappingEntries is non-empty; when false, it is empty.
+        string[] a = ["src/A/**", "Launcher.cs"];
+        string[] b = ["Launcher.cs"];
+        Assert.True(WriteScope.Overlaps(a, b));
+        Assert.NotEmpty(WriteScope.OverlappingEntries(a, b));
+
+        string[] c = ["src/A/**"];
+        string[] d = ["src/B/**"];
+        Assert.False(WriteScope.Overlaps(c, d));
+        Assert.Empty(WriteScope.OverlappingEntries(c, d));
+    }
 }
