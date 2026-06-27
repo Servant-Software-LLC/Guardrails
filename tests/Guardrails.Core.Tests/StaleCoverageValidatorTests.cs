@@ -131,6 +131,71 @@ public sealed class StaleCoverageValidatorTests : IDisposable
         Assert.DoesNotContain(Validate(dir), d => d.Code == Gr2026);
     }
 
+    [Fact]
+    public void NegativeAssertion_TokenAbsentFromPrompt_NoWarning()
+    {
+        // Issue #177: a NEGATIVE assertion (fail when CommanderRest is PRESENT) intentionally checks the
+        // token is ABSENT from the authored file — so its absence from the prompt is EXPECTED, not stale.
+        // GR2026 must NOT fire (the false positive #177 reports).
+        string actionPrompt = "Write dispatch tests. Mode C is wizard-blocked, so do not exercise it.\n";
+        string coverage =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -match 'CommanderRest') {\n" +
+            "    Write-Output 'MigrateDispatchTests.cs contains a CommanderRest reference'\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "exit 0\n";
+
+        string dir = PlanWithPromptTask(actionPrompt, coverage);
+
+        Assert.DoesNotContain(Validate(dir), d => d.Code == Gr2026);
+    }
+
+    [Fact]
+    public void MixedPolarity_WarnsOnlyOnMissingRequirePresentToken_NeverOnNegativeAssertion()
+    {
+        // The prompt mentions XtcFileOnly (require-present, satisfied) but NOT TcApiLocal (require-present,
+        // stale) and NOT CommanderRest (negative assertion, expected absent). GR2026 fires on TcApiLocal
+        // ONLY — never on the negative assertion.
+        string actionPrompt = "Write tests for the XtcFileOnly scenario.\n";
+        string coverage =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -notmatch 'XtcFileOnly') { exit 1 }\n" +
+            "if ($content -notmatch 'TcApiLocal') { exit 1 }\n" +
+            "if ($content -match 'CommanderRest') { Write-Output 'forbidden'; exit 1 }\n" +
+            "exit 0\n";
+
+        string dir = PlanWithPromptTask(actionPrompt, coverage);
+
+        Diagnostic diagnostic = Assert.Single(Validate(dir), d => d.Code == Gr2026);
+        Assert.Contains("TcApiLocal", diagnostic.Message);
+        Assert.DoesNotContain("CommanderRest", diagnostic.Message);
+    }
+
+    [Fact]
+    public void MultiLineNotMatchForm_StaleToken_StillWarnsGr2026()
+    {
+        // Preserve #157 for the catalogue's REAL multi-line `-notmatch … exit 1` shape (literal and
+        // exit on different lines): a require-present token missing from the prompt is still stale.
+        string actionPrompt = "Encode a test asserting ProcessID keying.\n";
+        string coverage =
+            "$content = Get-Content $f -Raw\n" +
+            "if ($content -notmatch 'ProcessId') {\n" +
+            "    Write-Output 'does not test ProcessID keying'\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "if ($content -notmatch 'RollupCount') {\n" +
+            "    Write-Output 'does not test rollup counts'\n" +
+            "    exit 1\n" +
+            "}\n" +
+            "exit 0\n";
+
+        string dir = PlanWithPromptTask(actionPrompt, coverage);
+
+        Diagnostic diagnostic = Assert.Single(Validate(dir), d => d.Code == Gr2026);
+        Assert.Contains("RollupCount", diagnostic.Message);
+    }
+
     // --- on-disk plan builder ---------------------------------------------------------------
 
     private IReadOnlyList<Diagnostic> Validate(string dir)

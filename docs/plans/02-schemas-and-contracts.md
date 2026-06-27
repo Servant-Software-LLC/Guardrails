@@ -509,6 +509,16 @@ for a warning:
   literal is a **clear keyword** — alphanumerics plus `. _ -`, ≥3 chars, no regex metacharacters. A
   regex-shaped literal (anchors, classes, alternations, escapes) is skipped: it cannot be confidently
   keyword-matched against prose.
+- **Polarity — POSITIVE (require-present) tokens only (issue #177).** GR2026 applies to coverage
+  tokens the prompt is *expected to mention* because the guardrail requires them to be **present** in
+  the authored file. A guardrail can instead make a **negative assertion** — fail when a keyword is
+  present (`if ($content -match "Foo") { … exit 1 }`) — whose keyword is *intentionally absent* from
+  the prompt; flagging that as stale is a false positive. Each match-line is therefore classified by
+  the polarity that makes its `exit <non-zero>` fire: a `-notmatch … exit` block (fail-on-absent) and
+  a `-match … $hits++` counting block are **require-present** (kept); a `-match … exit` block
+  (fail-on-present, a negative assertion) is **require-absent** (excluded). When a line's polarity
+  cannot be confidently classified the token is dropped — a silent false negative, never the #177
+  false positive.
 - **Limits (stated so authors don't over-trust it).** Surface keyword presence in the prose is a strong
   signal, not a proof: a token named only via a synonym is a possible false negative, and a generic
   token reused in an unrelated sentence is a possible false negative the other way. When in doubt the
