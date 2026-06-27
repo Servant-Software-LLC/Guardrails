@@ -854,8 +854,23 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
   explicit way to force a re-run.
 - `needs-human` — retry budget exhausted, OR (issue #115) a transient limit that did not clear within
-  the pause budget (a `rate-limited` attempt — re-run later). All *transitive* dependents become
-  `blocked`. Independent branches keep running.
+  the pause budget (a `rate-limited` attempt — re-run later), OR (issue #174) a **no-op deadlock**
+  short-circuit (below). All *transitive* dependents become `blocked`. Independent branches keep running.
+
+**No-op-deadlock short-circuit (issue #174).** After a guardrail-failed attempt, the harness settles
+`needs-human` IMMEDIATELY — instead of exhausting the remaining retry budget — when **both** hold:
+(a) the action made **no observable change** this attempt (it exited 0, wrote no state fragment, and —
+in a real git segment — touched no file versus `taskBase`: a *genuine no-op*), AND (b) the guardrail
+failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op action
+cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op against a
+merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a further
+attempt has zero probability of differing. This fires on the **2nd** such attempt (the earliest point
+both conditions can be observed). It is **conservative**: it never fires when the action wrote a
+fragment or any file (the action DID work, so retrying may help), never in serial mode / under the
+fake provider (no `taskBase` to prove "no writes"), and never when the guardrail output CHANGED between
+attempts (those can still converge). The short-circuit settles the task `needs-human` via the same
+status transition as budget exhaustion; only a non-final attempt takes this path (the final attempt
+already exhausts to `needs-human`).
 - Resume rules (`guardrails run` on an existing journal): `succeeded` → skip;
   `needs-human` / `failed` / `blocked` → `pending` with a fresh retry budget;
   `running` (crashed previous run) → `pending`, attempt numbering continues.

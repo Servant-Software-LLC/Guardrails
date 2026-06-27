@@ -96,6 +96,13 @@ public sealed class TaskExecutor : ITaskExecutor
         // retry does not hit the identical wall. A same-budget retry just re-exhausts at the same cap.
         int maxTurnsRetries = 0;
 
+        // #174 no-op-deadlock short-circuit: the previous guardrail-failed attempt's no-op flag and
+        // failure fingerprint. When the CURRENT attempt is ALSO a no-op with the IDENTICAL fingerprint,
+        // a further attempt provably cannot differ — escalate to needs-human immediately instead of
+        // exhausting the budget on the same un-fixable failure. Null until the first guardrail failure.
+        bool previousAttemptWasNoOp = false;
+        string? previousFailureFingerprint = null;
+
         for (int attemptIndex = 1; attemptIndex <= budget; attemptIndex++)
         {
             bool isFinal = attemptIndex == budget;
@@ -190,6 +197,38 @@ public sealed class TaskExecutor : ITaskExecutor
             }
 
             feedbackPath = attempt.FeedbackPath;
+
+            // #174: no-op-deadlock short-circuit. A guardrail-failed attempt whose action made NO
+            // observable change (exited 0, wrote no fragment, touched no file) AND whose guardrail
+            // failure is byte-identical to the PREVIOUS attempt's — which was ALSO a no-op — proves a
+            // further attempt cannot differ (a no-op cannot fix a merge artifact, and an unchanged
+            // failure shows nothing converged). Escalate to needs-human NOW (on the 2nd such attempt)
+            // instead of reproducing the identical failure through the rest of the budget. The just-
+            // recorded attempt is journaled `running`; RecordSettle flips the task to needs-human
+            // without a synthetic attempt — the same shape the budget-exhaustion path settles to.
+            // Gated on a present fingerprint, so only a genuine guardrail failure (never an action
+            // failure / timeout / invalid-fragment) participates; those reset the tracking below.
+            if (!isFinal
+                && attempt.GuardrailFailureFingerprint is { Length: > 0 } currentFingerprint
+                && attempt.ActionWasNoOp
+                && previousAttemptWasNoOp
+                && string.Equals(currentFingerprint, previousFailureFingerprint, StringComparison.Ordinal))
+            {
+                _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+                return last with
+                {
+                    Outcome = TaskOutcome.NeedsHuman,
+                    Summary = $"{last.Summary} — action is a no-op and the guardrail failure is " +
+                              "unchanged; retrying will not help, escalating to needs-human " +
+                              $"(after {attemptIndex} identical attempt(s))"
+                };
+            }
+
+            // Carry this attempt's no-op + fingerprint signals forward for the next iteration's
+            // comparison. A non-guardrail failure (null fingerprint) clears the tracking so a later
+            // guardrail failure is only matched against another guardrail failure.
+            previousAttemptWasNoOp = attempt.ActionWasNoOp && attempt.GuardrailFailureFingerprint is not null;
+            previousFailureFingerprint = attempt.GuardrailFailureFingerprint;
 
             // §3.5: clear the per-task staging tree before the next attempt so a failed action
             // (whose move never ran) cannot leak attempt N's staged scaffolding into attempt N+1.
@@ -621,7 +660,7 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
             string feedback = RetryPolicy.ForGuardrailFailures(task, attemptNumber, guardrails.Results);
-            return _journaler.FailedAttempt(
+            AttemptResult failedResult = _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                 guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
                 new TaskResult
@@ -634,6 +673,16 @@ public sealed class TaskExecutor : ITaskExecutor
                 },
                 failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
                 costUsd: action.CostUsd);
+
+            // #174: attach the no-op + failure-fingerprint signals so the attempt loop can detect a
+            // provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
+            // byte-identical to the previous attempt's. Two such attempts in a row cannot converge, so
+            // the loop escalates to needs-human immediately rather than burning the rest of the budget.
+            return failedResult with
+            {
+                ActionWasNoOp = ActionMadeNoChanges(action, fragmentOutPath, worktree),
+                GuardrailFailureFingerprint = FingerprintFailures(failed)
+            };
         }
 
         // --- merge fragment or defer to Scheduler (worktree mode) -----------------------
@@ -660,6 +709,54 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     internal static bool WorktreeWillReset(WorktreeHandle worktree, bool isFinal) =>
         !isFinal && IsRealGitSegment(worktree);
+
+    /// <summary>
+    /// True when this attempt's action made NO change the harness can observe (issue #174): it
+    /// exited 0 (a successful, no-op-style action — only the success path reaches this), wrote no
+    /// state fragment, AND — in a real git segment — touched no file versus <c>taskBase</c>. Such an
+    /// action cannot possibly fix a guardrail failure by being re-run, so when its guardrail failure
+    /// also repeats byte-for-byte the loop short-circuits to needs-human.
+    /// <para>
+    /// CONSERVATIVE by construction: returns <c>false</c> (never short-circuit) when the action wrote
+    /// a fragment, when it is NOT a real git segment (serial mode / fake provider — there is no
+    /// taskBase to diff, so "no file writes" is unprovable), or when the git diff fails (the
+    /// <see cref="WriteScopeCheck.HasFileChanges"/> fail-open). A task whose action DID work is thus
+    /// never mistaken for a no-op.
+    /// </para>
+    /// </summary>
+    private static bool ActionMadeNoChanges(ActionRun action, string fragmentOutPath, WorktreeHandle worktree)
+    {
+        // A failed action never reaches the guardrail stage; defensively require success anyway.
+        if (!action.Succeeded)
+        {
+            return false;
+        }
+
+        // A written state fragment is an observable effect: the action DID something.
+        if (File.Exists(fragmentOutPath))
+        {
+            return false;
+        }
+
+        // Serial mode / fake provider: no taskBase to diff against, so we cannot PROVE the action
+        // wrote nothing. Be conservative and preserve the full retry budget.
+        if (!IsRealGitSegment(worktree))
+        {
+            return false;
+        }
+
+        return !WriteScopeCheck.HasFileChanges(worktree.WorktreePath, worktree.TaskBase);
+    }
+
+    /// <summary>
+    /// A canonical, attempt-stable signature of an attempt's failed guardrails (issue #174): each
+    /// failed guardrail's name, one-line reason, and full output, joined with record separators. Two
+    /// attempts whose fingerprints are EQUAL produced byte-identical guardrail failures — combined
+    /// with both attempts being no-ops, that proves a further attempt cannot differ. Empty/whitespace
+    /// inputs never collide with a real failure (a real failure always carries at least a name).
+    /// </summary>
+    private static string FingerprintFailures(IReadOnlyList<GuardrailResult> failed) =>
+        string.Join("", failed.Select(g => $"{g.Name}{g.Reason}{g.Output}"));
 
     /// <summary>
     /// True when <paramref name="worktree"/> is a real git segment (worktree mode) rather than a
