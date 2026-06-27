@@ -5,7 +5,7 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace Guardrails.Core.Prompts;
 
 /// <summary>
-/// Reads the build-stamped version out of a skill's <c>SKILL.md</c> frontmatter
+/// Reads the install-stamped version out of a skill's <c>SKILL.md</c> frontmatter
 /// (<c>metadata.guardrails-version</c>, issue #156). Frontmatter is the same leading
 /// <c>---</c>-fenced YAML block the prompt/skill files use (SSOT §4.2); the value is
 /// deserialized with the same YamlDotNet pipeline rather than hand-rolled, so quoting and

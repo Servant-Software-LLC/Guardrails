@@ -69,24 +69,30 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   from `AppContext.BaseDirectory/skills`. Repo bootstrap: `install.ps1` (root, tested) and
   `install.sh` (root, untested twin) verify dotnet, install/update the tool, then run
   `guardrails skills install`.
-- **Skill-version stamping + `--version` drift (#152/#156, `docs/DEPLOYMENT.md` §Skill versioning
+- **Skill-version stamping + `--version` drift (#152/#156/#169, `docs/DEPLOYMENT.md` §Skill versioning
   and drift detection)**: each skill's version now lives **inside its own `SKILL.md`
   frontmatter**, under `metadata.guardrails-version` (e.g. `1.0.0-preview.27`) — NOT in the
   separate `.guardrails-skill-version` sidecar of #152, which #156 replaced. The key is
-  **injected at build/pack time** into the BUNDLED `SKILL.md` copies (the repo-source
-  `.claude/skills/**/SKILL.md` files stay clean — it is a release fact, not author-typed). Because
-  the version travels inside the skill body, `skills install` is then a **plain copy** with no
-  sidecar to write. The CLI tool version and an installed skill's version are **independent** —
-  updating the tool does NOT refresh installed skills, because `skills install` SKIPS an
-  already-present folder unless `--force` (the silent-skip trap: a stale `/plan-breakdown` keeps
-  emitting legacy output for an older harness with no error — the incident a preview.25 harness
-  produced a `captureHashes`/no-`writeScope` folder). `guardrails --version` surfaces drift:
-  it keeps stdout as the bare version line (scripts parse it, unchanged) and writes a
-  drift-warning block to **stderr** — exit code stays 0 — for any known skill found under
-  `~/.claude/skills` or `./.claude/skills` whose `metadata.guardrails-version` is missing
-  (`unversioned`) or `≠` the harness. Remedy it warns: `guardrails skills install --force`, which
-  overwrites the folder with a frontmatter-stamped copy **and removes any orphaned preview.26
-  sidecar**.
+  **stamped at INSTALL time** by `guardrails skills install` (via `SkillFrontmatterStamper`,
+  using the tool's own version `GuardrailsVersion.Current` — a release fact, not author-typed):
+  after copying each skill into the target, the command writes `metadata.guardrails-version` into
+  the installed `SKILL.md`. The BUNDLED/published copies are intentionally **unstamped** and the
+  repo-source `.claude/skills/**/SKILL.md` files stay clean — only the installed copy carries the
+  version. (#169: stamping must happen at install, not build — `PackAsTool` packs a fresh
+  `dotnet publish` of the unstamped source, so any build-time stamp on `$(OutDir)` never reached
+  the `.nupkg`; the old `StampSkillVersions.targets`/Task was REMOVED.) The CLI tool version and
+  an installed skill's version are **independent** — updating the tool does NOT refresh installed
+  skills, because `skills install` SKIPS an already-present folder unless `--force` (the
+  silent-skip trap: a stale `/plan-breakdown` keeps emitting legacy output for an older harness
+  with no error — the incident a preview.25 harness produced a `captureHashes`/no-`writeScope`
+  folder); a SKIPPED skill keeps its old/absent stamp (the drift signal), a `--force` reinstall
+  re-stamps. `guardrails --version` surfaces drift: it keeps stdout as the bare version line
+  (scripts parse it, unchanged) and writes a drift-warning block to **stderr** — exit code stays
+  0 — for any known skill found under `~/.claude/skills` or `./.claude/skills` whose
+  `metadata.guardrails-version` is missing (`unversioned`) or `≠` the harness. (It reads INSTALLED
+  skills; from the bundled dir it derives only folder names, never their version.) Remedy it
+  warns: `guardrails skills install --force`, which overwrites the folder with a
+  frontmatter-stamped copy **and removes any orphaned preview.26 sidecar**.
 
 ## Commands
 

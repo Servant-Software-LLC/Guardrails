@@ -4,12 +4,12 @@ using Guardrails.Core.Prompts;
 namespace Guardrails.Integration.Tests;
 
 /// <summary>
-/// Covers <see cref="SkillFrontmatterStamper"/> — the build-time injection of
-/// <c>metadata.guardrails-version</c> into a <c>SKILL.md</c> frontmatter (issue #156). The
-/// MSBuild stamping task (StampSkillVersionsTask) carries a verbatim copy of this algorithm; a
-/// round-trip through <see cref="SkillFrontmatter.ReadGuardrailsVersion"/> pins the contract the
-/// task relies on. Each case asserts the rest of the frontmatter (notably the multiline
-/// <c>description: |</c> block) survives untouched.
+/// Covers <see cref="SkillFrontmatterStamper"/> — the injection of
+/// <c>metadata.guardrails-version</c> into a <c>SKILL.md</c> frontmatter (issue #156), now run
+/// at install time by <see cref="SkillsInstaller"/> (issue #169). A round-trip through
+/// <see cref="SkillFrontmatter.ReadGuardrailsVersion"/> pins the read/write contract. Each case
+/// asserts the rest of the frontmatter (notably the multiline <c>description: |</c> block)
+/// survives untouched.
 /// </summary>
 public sealed class SkillFrontmatterStamperTests
 {

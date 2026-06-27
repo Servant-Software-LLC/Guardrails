@@ -208,4 +208,58 @@ public sealed class SkillVersionReportTests
 
         Assert.False(report.Single().Drifted);
     }
+
+    [Fact]
+    public void InstalledAtVersionX_ThenScannedAtX_ReportsNoDrift()
+    {
+        // End-to-end with the real on-disk read (issue #169): install an UNSTAMPED source at X,
+        // then the reader over the install root finds metadata.guardrails-version = X → no drift.
+        using var sb = new Sandbox();
+        string source = sb.MakeRoot("source");
+        string install = sb.MakeRoot("install");
+        WriteUnstampedSource(source, "plan-breakdown");
+        WriteUnstampedSource(source, "guardrails-review");
+
+        SkillsInstaller.InstallAll(source, install, force: false, "1.0.0-preview.30");
+
+        IReadOnlyList<SkillVersionStatus> report =
+            SkillVersionReport.Build("1.0.0-preview.30", KnownSkills, new[] { install });
+
+        Assert.Equal(2, report.Count);
+        Assert.All(report, s =>
+        {
+            Assert.Equal("1.0.0-preview.30", s.InstalledVersion);
+            Assert.False(s.Drifted);
+        });
+    }
+
+    [Fact]
+    public void InstalledAtVersionX_ThenScannedAtY_ReportsDrift_NotUnversioned()
+    {
+        // After a real install at X, a newer harness Y sees a stamped-but-mismatched version
+        // (drifted), NOT 'unversioned' — unversioned is reserved for a truly absent stamp.
+        using var sb = new Sandbox();
+        string source = sb.MakeRoot("source");
+        string install = sb.MakeRoot("install");
+        WriteUnstampedSource(source, "plan-breakdown");
+
+        SkillsInstaller.InstallAll(source, install, force: false, "1.0.0-preview.29");
+
+        IReadOnlyList<SkillVersionStatus> report =
+            SkillVersionReport.Build("1.0.0-preview.30", KnownSkills, new[] { install });
+
+        SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
+        Assert.Equal("1.0.0-preview.29", status.InstalledVersion); // a real value, not null
+        Assert.True(status.Drifted);
+    }
+
+    /// <summary>Write an UNSTAMPED source SKILL.md (frontmatter fence, no metadata block).</summary>
+    private static void WriteUnstampedSource(string root, string skill)
+    {
+        string skillDir = Path.Combine(root, skill);
+        Directory.CreateDirectory(skillDir);
+        File.WriteAllText(
+            Path.Combine(skillDir, "SKILL.md"),
+            $"---\nname: {skill}\ndescription: a skill\n---\n# {skill}\n");
+    }
 }
