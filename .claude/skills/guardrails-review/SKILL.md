@@ -112,6 +112,21 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   Scope boundary paragraph (plan-breakdown Step 6 has the verbatim shape).
 - **Unactionable failures**: guardrails that fail without printing a usable reason
   (retry feedback quality).
+- **Failure detail lost to the tail (#179)**: for every guardrail that asserts a test suite
+  **PASSES** (a `tests-pass` / `all-tests-pass` / `specific-tests-pass`, or a test driving a
+  production seam), check it **re-emits the failure DETAIL at the END of stdout**. The harness
+  feeds back only the **tail** of a failed guardrail's stdout (last ~60 lines / 4000 chars); default
+  `dotnet test` prints each failure's assertion/exception text mid-run and ends with only
+  `[FAIL] <name>` + a count. A bare `dotnet test … ; if ($LASTEXITCODE -ne 0) { Write-Output "…";
+  exit 1 }` therefore tails out the test NAMES only — the next attempt sees WHAT failed, not WHY,
+  and retries blind (plan-0009 burned 12 attempts to `needsHuman`). Tell: no
+  `Select-String`/re-emit of failure-signal lines (`Error Message:`, `Assert.`, `Exception`,
+  `Expected:`, `Actual:`) after the `dotnet test` call. Fix: the capture → emit-full-log →
+  re-emit-at-the-end pattern (catalogue → "Failure detail must reach the retry tail";
+  `stacks/dotnet.md §4.2`). **WEAK** (the run still passes/fails correctly; it degrades retry
+  feedback, costing attempts). Do NOT flag the INVERSE `tests-fail-on-stubs` /
+  `tests-fail-on-current-code` checks — a non-zero exit is their success, so there is no failure
+  detail to feed back.
 - **Grep-scope contamination**: a file-content guardrail that greps the project tree
   (`Get-ChildItem -Recurse | Select-String`) instead of the one file the task owns — a
   same-wave sibling sharing the term can satisfy it. (Catalogue anti-pattern.)
@@ -488,6 +503,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.
 - [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
+- [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
 - [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).

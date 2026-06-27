@@ -309,6 +309,16 @@ optional:
   reason line is what a human reviews and what the next attempt reads as feedback, so it
   must stand on its own line and be easy to scan. Applies to every archetype, build /
   exit-code checks included.
+- **A `tests-pass` guardrail MUST re-emit the failure DETAIL at the END of stdout (#179).**
+  The harness feeds back only the **tail** of a failed guardrail's stdout (last ~60 lines).
+  Default `dotnet test` prints each failure's assertion/exception text mid-run and ends with
+  only `[FAIL] <name>` + a count — so a bare `dotnet test; if ($LASTEXITCODE -ne 0) {…}` puts
+  only the test NAMES in the tail and the next attempt sees WHAT failed, not WHY (it then
+  retries blind — plan-0009 burned 12 attempts). For any guardrail that asserts tests PASS, use
+  the catalogue's capture → emit-full-log → re-emit-failure-lines-at-the-end pattern (catalogue
+  → "Failure detail must reach the retry tail"; .NET regex in `stacks/dotnet.md §4.2`). The
+  INVERSE TDD-red checks (`tests-fail-on-stubs`, where a non-zero exit is success) do NOT
+  re-emit. This is in addition to — not a replacement for — the single actionable reason line.
 - "All tests pass" appears ONLY on a terminal integration task.
 - **A full build / whole-suite test guardrail on the terminal gate is a terminal
   postcondition → keep it LOCAL (#165).** Do NOT mark `01-solution-builds` /

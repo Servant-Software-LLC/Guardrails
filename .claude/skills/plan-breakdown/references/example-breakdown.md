@@ -200,12 +200,25 @@ harness's git-diff check. If the authored tests are genuinely wrong, write
 
 `guardrails/01-build.ps1` → `# catches: code that doesn't compile` + `dotnet build --nologo -v q`, exit-code contract.
 
-`guardrails/02-stats-tests-pass.ps1`
+`guardrails/02-stats-tests-pass.ps1` — captures the run, emits the full log, then **re-emits the
+failure detail at the END** so the assertion/exception text lands in the harness retry-feedback tail
+(the last ~60 lines), not just the `[FAIL] <name>` summary default `dotnet test` leaves there (#179;
+`stacks/dotnet.md §4.2`):
 ```powershell
-# catches: an implementation whose output deviates from the specified format
-dotnet test tests/Inventory.Tests --filter "Category=Stats" --nologo
+# catches: an implementation whose output deviates from the specified format. Re-emits the
+#          assertion/exception lines at the END so they reach the harness retry-feedback tail -
+#          default `dotnet test` prints them mid-run and ends with only `[FAIL] <name>` + a count,
+#          so the tail would otherwise show WHAT failed, not WHY (#179).
+$out = dotnet test tests/Inventory.Tests --filter "Category=Stats" --no-build --nologo 2>&1
+$out | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) {
-    Write-Output "Stats tests failing - flag not implemented to spec"
+    $detail = $out |
+        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+        ForEach-Object { $_.Line } | Select-Object -First 40
+    Write-Output ""
+    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    Write-Output "Stats tests failing - flag not implemented to spec (see failure details above)"
     exit 1
 }
 exit 0
@@ -302,10 +315,19 @@ own attempt on its segment worktree after both leaves have merged. Marking it `s
 would re-run it at every intermediate union and, on any TDD plan, red-halt a correct partial merge
 (#165):
 ```powershell
-# catches: the --stats work regressing anything elsewhere in the suite
-dotnet test --nologo
+# catches: the --stats work regressing anything elsewhere in the suite. Re-emits the failing
+#          assertion/exception lines at the END so they reach the harness retry-feedback tail
+#          (last ~60 lines), not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179).
+$out = dotnet test --nologo 2>&1
+$out | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) {
-    Write-Output "full suite has failures after the --stats work"
+    $detail = $out |
+        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+        ForEach-Object { $_.Line } | Select-Object -First 40
+    Write-Output ""
+    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    Write-Output "full suite has failures after the --stats work (see failure details above)"
     exit 1
 }
 exit 0
