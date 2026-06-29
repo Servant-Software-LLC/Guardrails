@@ -11,7 +11,7 @@ Every stack file answers the same six standard questions first (§1–§6, inclu
 TDD `build-passes` + `tests-fail-on-stubs`), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
-§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, §19 duplicate-definition union sub-check, §20 negative assertion, §21 baseline-green root, then WPF).
+§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, §19 duplicate-definition union sub-check, §20 negative assertion, §21 baseline-green (preflight) root, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -1418,15 +1418,24 @@ absent from the prompt — that is the point — so a GR2026 warning there would
 Do not weaken or delete the negative assertion to silence GR2026; post-#177 there is nothing to silence.
 <!-- END ADDED SECTION #176 -->
 
-## 21. Baseline-green root — the EXISTING area tests pass on the current code (#181)
+## 21. Baseline-green (preflight) root — the EXISTING area tests pass on the current code (#181)
 
-The .NET realization of the catalogue's **baseline-green / start-from-green** archetype (catalogue →
-"Baseline-green / start-from-green"). For a **brownfield** plan (it modifies project(s) that already
-have tests in the touched area), SKILL.md Step 5 inserts a ROOT task `00-baseline-<area>-tests-green`:
-a **no-op `exit 0` action** + **one guardrail** that runs the EXISTING area tests and asserts they
-PASS on the current code — "never build on red." For a **greenfield** plan there are no existing area
-tests; SKIP it (do not author a `dotnet test` over a project with no tests — it trivially passes and
-certifies nothing).
+The .NET realization of the catalogue's **baseline-green / start-from-green (preflight)** archetype
+(catalogue → "Baseline-green / start-from-green (preflight)") — the existing-area-tests-green instance,
+the only positive baseline emitted today (the same no-op-root shape extends to build-green / endpoint-up,
+none emitted yet). For a **brownfield** plan (it modifies project(s) that already have tests in the
+touched area, and the worth-it gate passes), SKILL.md Step 5 inserts a ROOT task
+`00-baseline-<area>-tests-green` **per touched test project** (deduped one-per-area): a **TRUE no-op
+`exit 0` action** (writes nothing) + **one guardrail** that runs the EXISTING area tests **via
+`--filter`** and asserts they PASS on the current code — "never build on red." For a **greenfield** plan
+there are no existing area tests; SKIP it (do not author a `dotnet test` over a project with no tests —
+it trivially passes and certifies nothing).
+
+**Scope via `--filter`, NEVER a whole-project `dotnet test` at the root.** A whole-project test at the
+DAG root hits the **#165/#176 compile-coupling trap**: a mid-TDD project does not compile (its test
+project references types later implementation tasks have not produced yet), so the root false-reds with a
+compile error no work task can fix, dead-ending the run. The `--filter` selects the existing,
+currently-passing tests of the touched area ONLY (excluding any about-to-be-authored category).
 
 `action.ps1` — the verification is the guardrail, not the action:
 
@@ -1499,9 +1508,11 @@ Notes on the scope and the edges:
 - **It is NOT the terminal gate.** The whole-suite §4 terminal `02-all-tests-pass` (a green END on
   EVERYTHING at the sink, LOCAL) is complementary — keep both. The baseline is the green START on the
   EXISTING area at the root.
-- **Composes with #174.** The action is a genuine no-op (`exit 0`, writes nothing), so a RED baseline
-  short-circuits to `needsHuman` on the 2nd attempt (no-op-deadlock, SSOT §7) with the actionable
-  re-emitted detail above — the correct fast halt, since a no-op cannot fix pre-existing breakage.
+- **Composes with #174/#182.** The action is a TRUE no-op (`exit 0`, writes nothing), so a RED baseline
+  short-circuits to `needsHuman` on the 2nd attempt (no-op-deadlock, SSOT §7) — in BOTH serial and
+  worktree mode now (#182), with the actionable re-emitted detail above — the correct fast halt, since a
+  no-op cannot fix pre-existing breakage. (A baseline action that touched a file or wrote a fragment
+  would DEFEAT this short-circuit and burn the full retry budget — keep the action a genuine no-op.)
 
 ## WPF structural checks (#11 F5/F6)
 
