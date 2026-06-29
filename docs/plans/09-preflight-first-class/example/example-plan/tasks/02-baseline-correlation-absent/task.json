@@ -1,0 +1,5 @@
+{
+  "description": "PREFLIGHT (NEGATIVE baseline, for attribution): the RequestId field is ABSENT from the charge result NOW, so a later 'it is present' gate is provably this plan's doing. The same scope:\"precondition\" guardrail with INVERTED polarity. No-op action.",
+  "stableId": "pf-neg",
+  "dependsOn": []
+}

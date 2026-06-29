@@ -1,0 +1,5 @@
+{
+  "description": "PREFLIGHT (positive unit-test baseline): the existing Acme.Payments.Core.Tests are already green before any work runs. No-op action — the guardrail IS the work.",
+  "stableId": "pf-core",
+  "dependsOn": []
+}

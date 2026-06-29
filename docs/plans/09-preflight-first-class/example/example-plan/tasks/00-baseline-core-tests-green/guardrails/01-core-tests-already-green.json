@@ -1,0 +1,4 @@
+{
+  "description": "POSITIVE preflight: Acme.Payments.Core.Tests are already green NOW (fail fast on a broken start).",
+  "scope": "precondition"
+}

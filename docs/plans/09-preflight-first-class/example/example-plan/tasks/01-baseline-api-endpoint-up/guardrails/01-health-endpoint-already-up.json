@@ -1,0 +1,4 @@
+{
+  "description": "POSITIVE non-test preflight: Acme.Payments.Api's GET /health route is already wired and responding NOW. The endpoint-up generalization (deterministic byte check, not a live probe).",
+  "scope": "precondition"
+}

@@ -1,0 +1,4 @@
+{
+  "description": "NEGATIVE preflight (attribution): the RequestId field is ABSENT from the charge result now. Inverted polarity — FAILS if it is already present. Generalizes tests-fail-on-current-code.",
+  "scope": "precondition"
+}

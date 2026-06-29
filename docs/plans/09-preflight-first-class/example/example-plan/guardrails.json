@@ -1,0 +1,34 @@
+{
+  // ============================================================================================
+  // SIMULATION — NOT a real plan folder, NOT validatable by today's harness.
+  //
+  // This folder illustrates the DEFERRED Phase-2 "first-class preflight" design from
+  // ../../09-preflight-first-class.md (#183). The marker `scope:"precondition"` on the
+  // preflight tasks' guardrail sidecars is the design's PROPOSED-not-yet-implemented value:
+  // today's loader/validator only recognise `scope:"local"` and `scope:"integration"`
+  // (GR2021 rejects anything else), and there is no pre-DAG preflight phase. Running
+  // `guardrails validate` on THIS folder is EXPECTED to fail on the precondition scope.
+  // The committed diagram.html was generated from a VALIDATING TWIN (preconditions downgraded
+  // to scope:"local") and then enhanced to colour the preflight lane — see ./README.md.
+  // ============================================================================================
+  "version": 1,
+  "maxParallelism": 4,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  "workspace": "..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
+      "maxTurns": 50,
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 20
+      }
+    }
+  }
+}
