@@ -125,6 +125,28 @@ public sealed class NeedsHumanTriageTests
             : $"printf '%s' '{{\"needsHuman\": \"{question}\"}}' > \"$GUARDRAILS_STATE_OUT\"";
     }
 
+    /// <summary>
+    /// A succeeding action (exit 0, no fragment) whose STDOUT changes every attempt (counter-file
+    /// driven). This keeps the task from being a serial no-op-deadlock (issue #182): an action that
+    /// behaves differently each attempt is NOT short-circuited, so the task genuinely exhausts its full
+    /// retry budget — which is what the mid-retry-triage assertions below need to exercise. Without it,
+    /// a plain <c>exit 0</c> + stable guardrail failure now escalates early on the 2nd attempt and never
+    /// reaches the budget-exhaustion triage transition.
+    /// </summary>
+    private static string ChangingOutputAction() => StatePlanBuilder.UsePowerShell
+        ? """
+          $f = Join-Path $env:GUARDRAILS_PLAN_DIR 'a.count'
+          Add-Content -Path $f -Value 'x'
+          Write-Output ("action run " + (Get-Content $f).Count)
+          exit 0
+          """
+        : """
+          f="$GUARDRAILS_PLAN_DIR/a.count"
+          echo x >> "$f"
+          echo "action run $(wc -l < "$f" | tr -d '[:space:]')"
+          exit 0
+          """;
+
     // ─────────────────────────────────────────────────────────────────────────────────────────
     // Tests
     // ─────────────────────────────────────────────────────────────────────────────────────────
@@ -141,9 +163,11 @@ public sealed class NeedsHumanTriageTests
         var runner = new RecordingRunner("ai-triage");
         var triage = new NeedsHumanTriage(runner);
 
-        // 1 retry → 2 attempts; the guardrail always fails → needs-human via exhaustion.
+        // 1 retry → 2 attempts; the guardrail always fails → needs-human via exhaustion. The action's
+        // output changes each attempt so the #182 serial no-op short-circuit never pre-empts the
+        // budget-exhaustion transition this test is about.
         using var plan = new StatePlanBuilder(defaultRetries: 1)
-            .AddTask("01-doomed", guardrailBody: StatePlanBuilder.Fail("always fails"));
+            .AddTask("01-doomed", actionBody: ChangingOutputAction(), guardrailBody: StatePlanBuilder.Fail("always fails"));
 
         RunReport report = await RunWithTriageAsync(plan.PlanDir, triage, TestContext.Current.CancellationToken);
 
@@ -188,10 +212,12 @@ public sealed class NeedsHumanTriageTests
         var runner = new RecordingRunner("ai-triage");
         var triage = new NeedsHumanTriage(runner);
 
-        // 2 retries → 3 attempts; all fail the guardrail. Triage fires only on the
-        // terminal transition (after attempt 3), NOT between attempts 1→2 or 2→3.
+        // 2 retries → 3 attempts; all fail the guardrail. Triage fires only on the terminal transition
+        // (after attempt 3), NOT between attempts 1→2 or 2→3. The action's output changes each attempt
+        // so the #182 serial no-op short-circuit never escalates early (a plain exit-0 action with a
+        // stable guardrail failure would now needs-human on attempt 2, never reaching exhaustion).
         using var plan = new StatePlanBuilder(defaultRetries: 2)
-            .AddTask("01-multi-fail", guardrailBody: StatePlanBuilder.Fail("never passes"));
+            .AddTask("01-multi-fail", actionBody: ChangingOutputAction(), guardrailBody: StatePlanBuilder.Fail("never passes"));
 
         RunReport report = await RunWithTriageAsync(plan.PlanDir, triage, TestContext.Current.CancellationToken);
 

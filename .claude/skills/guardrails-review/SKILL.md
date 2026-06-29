@@ -72,6 +72,44 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   deterministic archetype that could replace it, or confirm none can (the 4-question
   demotion gate).
 - **Over-broad**: "all tests pass" anywhere except a terminal integration task.
+- **Missing / malformed positive-baseline (preflight) root on a brownfield plan (#181)**: does the plan
+  build onto **existing code that already has tests in the touched area** (a brownfield plan — it modifies
+  project(s) with existing test coverage), yet carry **no `00-baseline-<area>-tests-green` root**? Without
+  it, a work task's `tests-pass` guardrail can fail from PRE-EXISTING breakage (misattributed → wasted
+  retries → late `needsHuman`), and a new test's "red" is ambiguous (missing-behavior vs already-broken).
+  The baseline root is a **TRUE no-op `exit 0` action** (writes nothing) + ONE guardrail running the
+  EXISTING area tests **via `--filter`** and asserting they PASS on the current code (area-scoped,
+  deduped one-per-area, using the #179 re-emit form), with `dependsOn: []` and **every** work task in that
+  area transitively depending on it ("never build on red"). Check, if a baseline IS present:
+  - **(a) Targets only the PRE-EXISTING tests via `--filter`** — NOT the about-to-be-authored red tests
+    (it runs at the root on the starting state — a baseline that would run a sibling `author-tests` task's
+    failing tests is mis-scoped), and **NOT the whole suite/project**. A whole-project `dotnet test` at
+    the root hits the #165/#176 compile-coupling trap (a mid-TDD project does not compile → false red no
+    work task can fix). A whole-suite-scoped baseline is a **BLOCKER**.
+  - **(b) The action is a GENUINE no-op** (`exit 0`, writes no file, no state fragment). A baseline whose
+    "action" actually does work — touches a file, writes a fragment, runs a fix-up — **DEFEATS** the
+    #174/#182 no-op-deadlock short-circuit, so a RED start burns the full retry budget the slow way
+    instead of halting fast. A **non-no-op baseline action is a BLOCKER** (it silently removes the
+    fast-red-halt the archetype exists to provide).
+  - **(c) It is genuinely the ROOT** (`dependsOn: []`) and all work tasks in the area reach it
+    transitively (a baseline no task depends on does nothing).
+  - **(d) Deduped one-per-area** — one baseline per distinct touched test project, each gating only its
+    subtree, NOT one global whole-repo root serializing the DAG.
+  - **(e) Distinct from the terminal full-suite gate** (green START at the root vs green END at the sink
+    — a plan needs both).
+  - **(f) The worth-it gate held** — target pre-exists, MODIFIES-not-creates, deterministic + cheap (NO
+    process start), strictly narrower than the terminal gate, ≥2 work tasks build on the area.
+  The inverse error: a **vacuous baseline on a GREENFIELD plan** (a `dotnet test` over a project with zero
+  tests, which trivially passes) — it certifies nothing while looking like a gate; greenfield must have NO
+  baseline. Composes with #174/#182 (a RED baseline = a no-op whose guardrail fails → the no-op-deadlock
+  short-circuit escalates fast to an actionable `needsHuman` in BOTH serial and worktree now). The
+  negative "not yet present" baseline is NOT a separate archetype — it already IS
+  `tests-fail-on-current-code`/`tests-fail-on-stubs` (do not expect, or flag the absence of, a parallel
+  "negative preflight"). **WEAK** when the area is plausibly green at the start and only the baseline is
+  missing; **BLOCKER** when there is concrete reason the area's existing tests are already red (every work
+  task then mis-fails), or when a present baseline is whole-suite-scoped or has a non-no-op action.
+  (Catalogue → "Baseline-green / start-from-green (preflight)"; `stacks/dotnet.md §21`. plan-breakdown
+  Step 5 adds the matching insertion rule.)
 - **Coverage gap**: the action's stated completion criteria exceed what guardrails
   verify — name the unverified criterion. (E.g. action says "sorted by category";
   no guardrail checks sorting.)
@@ -495,6 +533,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
 - [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
 - [ ] Every state-writing prompt's fragment example/key is the task's FOLDER NAME (never the `stableId` or a foreign/shared key), and the producer's state-output guardrail indexes that same folder name — a `stableId`-shaped or otherwise-unowned key is a BLOCKER (harness rejects it every attempt → `needsHuman` loop, #164).
+- [ ] A **brownfield** plan (modifies project(s) with existing tests in the touched area, worth-it gate passing) has a `00-baseline-<area>-tests-green` ROOT per touched area — a **TRUE no-op** `exit 0` action (writes nothing) + a guardrail running the EXISTING area tests **via `--filter`** asserting they pass (area-scoped, deduped one-per-area, #179-re-emit form), `dependsOn: []`, with every work task in that area transitively depending on it ("never build on red"); its guardrail targets the PRE-EXISTING tests via `--filter`, NOT the about-to-be-authored red tests and NOT the whole suite (whole-suite scope hits the #165/#176 compile-coupling trap → BLOCKER); the action is a genuine no-op (a non-no-op action defeats the #174/#182 short-circuit → BLOCKER); it is DISTINCT from the terminal full-suite gate (green START at the root vs green END at the sink). A **greenfield** plan (or one failing the worth-it gate) has NO baseline (a vacuous `dotnet test` over a zero-test project is itself a finding). Missing baseline on brownfield is WEAK (BLOCKER when the area's existing tests are in fact red at start). Composes with #174/#182 (RED baseline → fast `needsHuman` in BOTH serial and worktree) (#181).
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail, and that guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if X present, verify it"), NOT the full build or whole suite. A full-build or whole-suite guardrail marked `scope: "integration"` on the terminal gate is the #125 terminal-postcondition anti-pattern → **BLOCKER** (it red-halts correct intermediate unions where downstream TDD tasks have not run yet); the full build/suite must be **LOCAL** (#165).
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).

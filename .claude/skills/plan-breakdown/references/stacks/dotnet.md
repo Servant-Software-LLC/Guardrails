@@ -11,7 +11,7 @@ Every stack file answers the same six standard questions first (§1–§6, inclu
 TDD `build-passes` + `tests-fail-on-stubs`), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
-§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, §19 duplicate-definition union sub-check, §20 negative assertion, then WPF).
+§11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, §19 duplicate-definition union sub-check, §20 negative assertion, §21 baseline-green (preflight) root, then WPF).
 Each pattern's PowerShell example
 follows the catalogue's conventions: a leading `# catches:` line, one actionable
 `Write-Output` line on failure, explicit `exit 1` / `exit 0`. Scope every grep to the one
@@ -1417,6 +1417,102 @@ treats only `-notmatch … exit` / `-match … $hits++` (require-present) blocks
 absent from the prompt — that is the point — so a GR2026 warning there would be the #177 false positive.
 Do not weaken or delete the negative assertion to silence GR2026; post-#177 there is nothing to silence.
 <!-- END ADDED SECTION #176 -->
+
+## 21. Baseline-green (preflight) root — the EXISTING area tests pass on the current code (#181)
+
+The .NET realization of the catalogue's **baseline-green / start-from-green (preflight)** archetype
+(catalogue → "Baseline-green / start-from-green (preflight)") — the existing-area-tests-green instance,
+the only positive baseline emitted today (the same no-op-root shape extends to build-green / endpoint-up,
+none emitted yet). For a **brownfield** plan (it modifies project(s) that already have tests in the
+touched area, and the worth-it gate passes), SKILL.md Step 5 inserts a ROOT task
+`00-baseline-<area>-tests-green` **per touched test project** (deduped one-per-area): a **TRUE no-op
+`exit 0` action** (writes nothing) + **one guardrail** that runs the EXISTING area tests **via
+`--filter`** and asserts they PASS on the current code — "never build on red." For a **greenfield** plan
+there are no existing area tests; SKIP it (do not author a `dotnet test` over a project with no tests —
+it trivially passes and certifies nothing).
+
+**Scope via `--filter`, NEVER a whole-project `dotnet test` at the root.** A whole-project test at the
+DAG root hits the **#165/#176 compile-coupling trap**: a mid-TDD project does not compile (its test
+project references types later implementation tasks have not produced yet), so the root false-reds with a
+compile error no work task can fix, dead-ending the run. The `--filter` selects the existing,
+currently-passing tests of the touched area ONLY (excluding any about-to-be-authored category).
+
+`action.ps1` — the verification is the guardrail, not the action:
+
+```powershell
+# A no-op: this task does no work. Its guardrail (the EXISTING area tests pass) is the point - it
+# gates the DAG root on the touched area being green before any work task runs.
+exit 0
+```
+
+`guardrails/01-baseline-area-tests-pass.ps1` — run the EXISTING test project(s) covering the area the
+plan modifies and assert they ALL pass. **Scope to the AREA** (the test project, or a `--filter` /
+category over it), NOT the whole suite. It asserts tests PASS (exit 0 is the pass), so it adopts §4.2's
+**capture → emit full log → re-emit failure-signal lines at the END** form so a RED baseline's WHY
+reaches the harness retry-feedback tail (#179):
+
+```powershell
+# catches: a brownfield plan building on a RED base - the EXISTING tests in the area future tasks will
+#          modify are already failing on the starting code. Asserting them green at the DAG root means a
+#          later work task's tests-pass failure is attributable to THAT task, not pre-existing breakage,
+#          and a new test's red is unambiguous (#181). Re-emits the failure DETAIL at the END so a red
+#          baseline's WHY reaches the harness retry tail, not just `[FAIL] <name>` (#179, §4.2).
+# Scope to the AREA (the existing test project / a --filter), NOT the whole suite.
+$out = dotnet test tests/Inventory.Tests --filter "Category!=Stats" --nologo 2>&1
+$out | ForEach-Object { Write-Output $_ }                  # full log first (for the attempt's saved output)
+if ($LASTEXITCODE -ne 0) {
+    $detail = $out |
+        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+        ForEach-Object { $_.Line } |
+        Select-Object -First 40                            # bound the block so it fits the ~60-line tail
+    Write-Output ""
+    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+    Write-Output "the existing tests in tests/Inventory.Tests are already failing on the starting code - fix the pre-existing breakage before this plan builds on it (#181)"
+    exit 1
+}
+exit 0
+```
+
+`task.json` — the DAG ROOT (`dependsOn: []`); it does no work, so it declares **no `writeScope`**:
+
+```jsonc
+{
+  "description": "Baseline: the existing tests in the touched area (tests/Inventory.Tests) pass on the starting code - never build on red (#181)",
+  "dependsOn": []
+}
+```
+
+`guardrails/01-baseline-area-tests-pass.json`:
+
+```jsonc
+{
+  "description": "Existing area tests pass on the current code (baseline-green root, #181)"
+}
+```
+
+Notes on the scope and the edges:
+
+- **Existing tests ONLY, before the TDD-red tasks.** The baseline runs at the root on the STARTING
+  state, BEFORE any inserted `author-tests` task adds its intentionally-failing new tests. If
+  `$baselineArea` is a project a later `author-tests` task ALSO adds failing tests into (e.g. it adds a
+  `Category=Stats` test class to `tests/Inventory.Tests`), use a `--filter` that **excludes** the
+  about-to-be-authored category (`--filter "Category!=Stats"` above) so the baseline can never go red on
+  tests that don't exist yet. In worktree mode the root's tree IS the starting state (no new tests), so
+  this is natural — the filter just makes the intent explicit and robust if the baseline is ever re-run
+  on a later tree.
+- **Make every work task transitively depend on it.** Add `00-baseline-<area>-tests-green` to the
+  `dependsOn` of the existing roots (the test-author tasks, any seam tasks, the first implementation
+  tasks); everything downstream reaches it transitively. Nothing runs against a red base.
+- **It is NOT the terminal gate.** The whole-suite §4 terminal `02-all-tests-pass` (a green END on
+  EVERYTHING at the sink, LOCAL) is complementary — keep both. The baseline is the green START on the
+  EXISTING area at the root.
+- **Composes with #174/#182.** The action is a TRUE no-op (`exit 0`, writes nothing), so a RED baseline
+  short-circuits to `needsHuman` on the 2nd attempt (no-op-deadlock, SSOT §7) — in BOTH serial and
+  worktree mode now (#182), with the actionable re-emitted detail above — the correct fast halt, since a
+  no-op cannot fix pre-existing breakage. (A baseline action that touched a file or wrote a fragment
+  would DEFEAT this short-circuit and burn the full retry budget — keep the action a genuine no-op.)
 
 ## WPF structural checks (#11 F5/F6)
 

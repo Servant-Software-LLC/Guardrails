@@ -96,12 +96,17 @@ public sealed class TaskExecutor : ITaskExecutor
         // retry does not hit the identical wall. A same-budget retry just re-exhausts at the same cap.
         int maxTurnsRetries = 0;
 
-        // #174 no-op-deadlock short-circuit: the previous guardrail-failed attempt's no-op flag and
-        // failure fingerprint. When the CURRENT attempt is ALSO a no-op with the IDENTICAL fingerprint,
-        // a further attempt provably cannot differ — escalate to needs-human immediately instead of
-        // exhausting the budget on the same un-fixable failure. Null until the first guardrail failure.
+        // #174 / #182 no-op-deadlock short-circuit: the previous guardrail-failed attempt's no-op flag,
+        // failure fingerprint, and (serial mode) action-output fingerprint. When the CURRENT attempt is
+        // ALSO a no-op with the IDENTICAL guardrail fingerprint — plus, in serial mode, an identical
+        // action-output fingerprint — a further attempt provably cannot differ, so escalate to
+        // needs-human immediately instead of exhausting the budget. Null until the first guardrail
+        // failure. Whether the SERIAL gate applies is fixed for the whole task by the worktree handle:
+        // a real git segment uses the worktree gate (taskBase file diff), else the serial gate.
+        bool isRealGitSegment = IsRealGitSegment(worktree);
         bool previousAttemptWasNoOp = false;
         string? previousFailureFingerprint = null;
+        string? previousActionOutputFingerprint = null;
 
         for (int attemptIndex = 1; attemptIndex <= budget; attemptIndex++)
         {
@@ -198,21 +203,34 @@ public sealed class TaskExecutor : ITaskExecutor
 
             feedbackPath = attempt.FeedbackPath;
 
-            // #174: no-op-deadlock short-circuit. A guardrail-failed attempt whose action made NO
-            // observable change (exited 0, wrote no fragment, touched no file) AND whose guardrail
-            // failure is byte-identical to the PREVIOUS attempt's — which was ALSO a no-op — proves a
-            // further attempt cannot differ (a no-op cannot fix a merge artifact, and an unchanged
-            // failure shows nothing converged). Escalate to needs-human NOW (on the 2nd such attempt)
-            // instead of reproducing the identical failure through the rest of the budget. The just-
-            // recorded attempt is journaled `running`; RecordSettle flips the task to needs-human
-            // without a synthetic attempt — the same shape the budget-exhaustion path settles to.
-            // Gated on a present fingerprint, so only a genuine guardrail failure (never an action
+            // #174 / #182: no-op-deadlock short-circuit. A guardrail-failed attempt whose action made NO
+            // observable change AND whose guardrail failure is byte-identical to the PREVIOUS attempt's —
+            // which was ALSO a no-op — proves a further attempt cannot differ (a no-op cannot fix a merge
+            // artifact, and an unchanged failure shows nothing converged). Escalate to needs-human NOW (on
+            // the 2nd such attempt) instead of reproducing the identical failure through the rest of the
+            // budget. The just-recorded attempt is journaled `running`; RecordSettle flips the task to
+            // needs-human without a synthetic attempt — the same shape the budget-exhaustion path settles
+            // to. Gated on a present fingerprint, so only a genuine guardrail failure (never an action
             // failure / timeout / invalid-fragment) participates; those reset the tracking below.
+            //
+            // "No observable change" differs by mode:
+            //   - WORKTREE (#174): exit 0, no fragment, no file diff vs taskBase — ActionWasNoOp already
+            //     encodes all three, so the worktree gate needs nothing more.
+            //   - SERIAL (#182): no taskBase to diff, so ActionWasNoOp encodes only exit 0 + no fragment.
+            //     The serial gate ADDS the requirement that the action's stdout/stderr fingerprint is
+            //     byte-identical across the two attempts — confident, conservative evidence the action
+            //     itself behaved identically (a task slowly CONVERGING via changing output is never
+            //     short-circuited). This does NOT loosen the byte-identical-guardrail-failure requirement.
+            bool serialGateMet = isRealGitSegment
+                || (previousActionOutputFingerprint is not null
+                    && string.Equals(attempt.ActionOutputFingerprint, previousActionOutputFingerprint, StringComparison.Ordinal));
+
             if (!isFinal
                 && attempt.GuardrailFailureFingerprint is { Length: > 0 } currentFingerprint
                 && attempt.ActionWasNoOp
                 && previousAttemptWasNoOp
-                && string.Equals(currentFingerprint, previousFailureFingerprint, StringComparison.Ordinal))
+                && string.Equals(currentFingerprint, previousFailureFingerprint, StringComparison.Ordinal)
+                && serialGateMet)
             {
                 _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
                 return last with
@@ -226,9 +244,13 @@ public sealed class TaskExecutor : ITaskExecutor
 
             // Carry this attempt's no-op + fingerprint signals forward for the next iteration's
             // comparison. A non-guardrail failure (null fingerprint) clears the tracking so a later
-            // guardrail failure is only matched against another guardrail failure.
+            // guardrail failure is only matched against another guardrail failure. The action-output
+            // fingerprint feeds the serial gate; it is irrelevant to (and ignored by) the worktree gate.
             previousAttemptWasNoOp = attempt.ActionWasNoOp && attempt.GuardrailFailureFingerprint is not null;
             previousFailureFingerprint = attempt.GuardrailFailureFingerprint;
+            previousActionOutputFingerprint = attempt.GuardrailFailureFingerprint is not null
+                ? attempt.ActionOutputFingerprint
+                : null;
 
             // §3.5: clear the per-task staging tree before the next attempt so a failed action
             // (whose move never ran) cannot leak attempt N's staged scaffolding into attempt N+1.
@@ -674,14 +696,18 @@ public sealed class TaskExecutor : ITaskExecutor
                 failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
                 costUsd: action.CostUsd);
 
-            // #174: attach the no-op + failure-fingerprint signals so the attempt loop can detect a
-            // provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
+            // #174 / #182: attach the no-op + failure-fingerprint signals so the attempt loop can detect
+            // a provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
             // byte-identical to the previous attempt's. Two such attempts in a row cannot converge, so
             // the loop escalates to needs-human immediately rather than burning the rest of the budget.
+            // The action-output fingerprint (stdout+stderr) is the serial-mode evidence the action
+            // behaved identically across the two attempts — required by the serial gate, ignored by the
+            // worktree gate (which proves "no change" via the taskBase file diff instead).
             return failedResult with
             {
                 ActionWasNoOp = ActionMadeNoChanges(action, fragmentOutPath, worktree),
-                GuardrailFailureFingerprint = FingerprintFailures(failed)
+                GuardrailFailureFingerprint = FingerprintFailures(failed),
+                ActionOutputFingerprint = FingerprintActionOutput(action)
             };
         }
 
@@ -711,17 +737,26 @@ public sealed class TaskExecutor : ITaskExecutor
         !isFinal && IsRealGitSegment(worktree);
 
     /// <summary>
-    /// True when this attempt's action made NO change the harness can observe (issue #174): it
+    /// True when this attempt's action made NO change the harness can observe (issues #174 / #182): it
     /// exited 0 (a successful, no-op-style action — only the success path reaches this), wrote no
-    /// state fragment, AND — in a real git segment — touched no file versus <c>taskBase</c>. Such an
-    /// action cannot possibly fix a guardrail failure by being re-run, so when its guardrail failure
-    /// also repeats byte-for-byte the loop short-circuits to needs-human.
+    /// state fragment, AND — in a real git segment (worktree mode) — touched no file versus
+    /// <c>taskBase</c>. Such an action cannot possibly fix a guardrail failure by being re-run, so when
+    /// its guardrail failure also repeats byte-for-byte the loop short-circuits to needs-human.
+    /// <para>
+    /// SERIAL MODE (#182): there is no <c>taskBase</c> to prove "no file writes", so the file-diff half
+    /// is unavailable. A serial attempt is therefore a no-op CANDIDATE on exit-0 + no-fragment alone;
+    /// the loop pairs this with the stronger serial gate — the action's stdout/stderr fingerprint must
+    /// be IDENTICAL across the two attempts AND the guardrail failure byte-identical — so a task that
+    /// silently writes a file (no fragment, no stdout) but whose guardrail nonetheless fails the IDENTICAL
+    /// way across two such attempts is still escalated (the unchanged guardrail output proves the write,
+    /// if any, was irrelevant to convergence). See the short-circuit block in <see cref="ExecuteAsync"/>.
+    /// </para>
     /// <para>
     /// CONSERVATIVE by construction: returns <c>false</c> (never short-circuit) when the action wrote
-    /// a fragment, when it is NOT a real git segment (serial mode / fake provider — there is no
-    /// taskBase to diff, so "no file writes" is unprovable), or when the git diff fails (the
-    /// <see cref="WriteScopeCheck.HasFileChanges"/> fail-open). A task whose action DID work is thus
-    /// never mistaken for a no-op.
+    /// a fragment, or — in a real git segment — when the git diff reports file changes (the
+    /// <see cref="WriteScopeCheck.HasFileChanges"/> fail-open keeps a task that DID work from being
+    /// mistaken for a no-op). The serial path never loosens the byte-identical-guardrail-failure
+    /// requirement that is the core "cannot converge" evidence.
     /// </para>
     /// </summary>
     private static bool ActionMadeNoChanges(ActionRun action, string fragmentOutPath, WorktreeHandle worktree)
@@ -738,11 +773,13 @@ public sealed class TaskExecutor : ITaskExecutor
             return false;
         }
 
-        // Serial mode / fake provider: no taskBase to diff against, so we cannot PROVE the action
-        // wrote nothing. Be conservative and preserve the full retry budget.
+        // Serial mode / fake provider: no taskBase to diff against, so "no file writes" is unprovable.
+        // The action is a no-op CANDIDATE here; the loop's serial gate (identical action stdout/stderr
+        // AND identical guardrail failure across two such attempts) supplies the confidence the file
+        // diff would in worktree mode (#182).
         if (!IsRealGitSegment(worktree))
         {
-            return false;
+            return true;
         }
 
         return !WriteScopeCheck.HasFileChanges(worktree.WorktreePath, worktree.TaskBase);
@@ -757,6 +794,21 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     private static string FingerprintFailures(IReadOnlyList<GuardrailResult> failed) =>
         string.Join("", failed.Select(g => $"{g.Name}{g.Reason}{g.Output}"));
+
+    /// <summary>
+    /// A canonical signature of an attempt's ACTION output — its stdout joined to its stderr with a
+    /// record separator (issue #182). In serial mode, where there is no <c>taskBase</c> to diff files
+    /// against, two attempts whose action-output fingerprints are EQUAL produced byte-identical stdout
+    /// and stderr — the proxy for "the action behaved identically this attempt". Combined with both
+    /// attempts being serial no-op candidates (exit 0, no fragment) AND a byte-identical guardrail
+    /// failure, this is the conservative serial signal that a further attempt cannot differ. A prompt
+    /// action carries empty plain streams (its transcript is the stream-json file, not stdout), so its
+    /// fingerprint is the empty string — for a prompt action the guardrail-failure identity remains the
+    /// decisive evidence. The two streams are joined with a record separator so a stdout/stderr
+    /// boundary cannot collide (stdout "ab"+stderr "c" must not equal stdout "a"+stderr "bc").
+    /// </summary>
+    private static string FingerprintActionOutput(ActionRun action) =>
+        string.Concat(action.StandardOutput, "", action.StandardError);
 
     /// <summary>
     /// True when <paramref name="worktree"/> is a real git segment (worktree mode) rather than a
