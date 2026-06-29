@@ -13,5 +13,5 @@ Add middleware to `Acme.Payments.Api` that:
 - Edit only `Acme.Payments.Api/`. Your `writeScope` is exactly that folder.
 - This task `dependsOn` `01-baseline-api-endpoint-up`: the run already proved `/health` was up
   BEFORE the change, so this task's "/health still 200" guardrail is provably testing the effect
-  of YOUR middleware, not a pre-existing break. That is the attribution the endpoint preflight
-  buys.
+  of YOUR middleware, not a pre-existing break. That is the attribution the Bucket-A endpoint
+  baseline buys.

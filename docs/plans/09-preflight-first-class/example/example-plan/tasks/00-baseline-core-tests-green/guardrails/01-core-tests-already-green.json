@@ -1,4 +1,4 @@
 {
-  "description": "POSITIVE preflight: Acme.Payments.Core.Tests are already green NOW (fail fast on a broken start).",
-  "scope": "precondition"
+  "description": "Bucket A (positive baseline): Acme.Payments.Core.Tests are already green NOW (fail fast on a broken start). A no-op-root doctrine task with a scope:\"local\" guardrail — ships and validates today.",
+  "scope": "local"
 }

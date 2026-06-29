@@ -5,7 +5,8 @@
 Add a `RequestId` to `Acme.Payments.Core`'s charge pipeline so that:
 
 - the new tests authored in `03-author-correlation-tests` go GREEN, and
-- the pre-existing `Acme.Payments.Core.Tests` STAY green (the `00` preflight baselined them).
+- the pre-existing `Acme.Payments.Core.Tests` STAY green (the `00` Bucket-A baseline established
+  that they were green at the start).
 
 ## Constraints
 
@@ -16,9 +17,9 @@ Add a `RequestId` to `Acme.Payments.Core`'s charge pipeline so that:
 - A charge with a supplied request id surfaces that id on `ChargeResult.RequestId`; a charge
   without one surfaces a generated, non-empty id.
 
-## Why this task transitively depends on the preflights
+## Why this task transitively depends on the baselines
 
-It `dependsOn` `03-author-correlation-tests`, which in turn `dependsOn` both the positive core
-baseline (`00`) and the negative absence baseline (`02`). So this implementation runs only after
-the run proved the starting point was sound and the new field was provably absent — the
-attribution chain the first-class preflight design is built to guarantee.
+It `dependsOn` `03-author-correlation-tests`, which in turn `dependsOn` both the Bucket-A positive
+core baseline (`00`) and the Bucket-B negative absence baseline (`02`). So this implementation runs
+only after the run proved the starting point was sound and the new field was provably absent — the
+attribution chain the baseline doctrine is built to guarantee.

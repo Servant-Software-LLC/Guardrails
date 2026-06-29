@@ -1,9 +1,10 @@
 # Plan: correlate payments requests with a request-id (BROWNFIELD)
 
-> **This is an ILLUSTRATIVE sample plan.** It exists only to show what a breakdown looks
-> like when first-class preflight (Phase-2 of `../09-preflight-first-class.md`, #183) is in
-> play. It is *not* wired to a real repo and is *not* an input to `/plan-breakdown`. See
-> `./README.md` for what is simulated.
+> **This is an ILLUSTRATIVE sample plan.** It shows what a breakdown looks like under the
+> preflight **partition** (`../09-preflight-first-class.md`, #183): Buckets A + B ship as
+> doctrine (and validate today), and a single Bucket-C slice is the deferred per-task JIT
+> precondition. It is *not* wired to a real repo and is *not* an input to `/plan-breakdown`.
+> See `./README.md` for what is real and what is simulated.
 
 ## Context
 
@@ -25,25 +26,32 @@ Every charge processed by `Acme.Payments` carries a `RequestId` that is:
 1. generated (or read from the inbound `X-Request-Id` header) by API middleware, and
 2. threaded through `Acme.Payments.Core`'s charge pipeline so it appears in the charge result.
 
-## Why this plan exercises preflight beyond unit tests
+## Why this plan exercises the partition beyond unit tests
 
-This is the case the first-class design is *about* — two **different baseline polarities and
-shapes** are warranted, and only one of them is a unit-test baseline:
+This is the case the design is *about* — it exercises all three buckets, and only one of them is
+a unit-test baseline:
 
-- A **positive unit-test baseline** on `Acme.Payments.Core`: the touched library's existing
-  tests are **already green**. If they are red *before* we start, the run halts with "your
-  starting point is broken" rather than letting the implementation task burn its whole retry
-  budget trying to make a gate green that was never green to begin with.
-- A **non-test, positive "endpoint-up" baseline** on `Acme.Payments.Api`: `GET /health`
-  already returns `200`. This is the generalization the design formalizes — a baseline that
-  is *not* a unit-test run (an endpoint already responding, SSOT §"Positive vs negative
-  modeling"). In the sample folder it is mocked as a fixed-fixture check (the design's
-  volume-control gate forbids a *real* live endpoint hit as a pre-DAG preflight — BLOCKER (e)).
-- A **negative baseline** for attribution: the new `RequestId` field is **absent** from the
-  charge result today. Proving its absence *now* means a later "it's present" gate is provably
-  *this plan's* doing, not pre-existing. This polarity is the existing
-  `tests-fail-on-current-code` anti-tautology archetype, **generalized** — the sample
-  cross-references it rather than forking it.
+- **Bucket A — a positive unit-test baseline** on `Acme.Payments.Core` (task `00`): the touched
+  library's existing tests are **already green**. If they are red *before* we start, the run
+  halts with "your starting point is broken" rather than letting the implementation task burn its
+  whole retry budget trying to make a gate green that was never green to begin with. This is
+  real doctrine — a no-op-root task with a `scope:"local"` guardrail.
+- **Bucket A — a non-test, positive "endpoint-up" baseline** on `Acme.Payments.Api` (task `01`):
+  `GET /health` already returns `200`. This is the generalization the design formalizes — a
+  baseline that is *not* a unit-test run (an endpoint already responding). In the sample folder
+  it is mocked as a **deterministic byte-check** that the route is wired (the volume-control gate
+  forbids a *real* live endpoint hit in a baseline — BLOCKER (e)).
+- **Bucket B — a negative baseline** for attribution (task `02`): the new `RequestId` field is
+  **absent** from the charge result today. Proving its absence *now* means a later "it's present"
+  gate is provably *this plan's* doing, not pre-existing. It runs **one-shot at run start** and is
+  `scope:"local"` so it is never re-run at a union/terminal gate (#165/#132 union-inversion). It
+  cross-references the existing `tests-fail-on-current-code` anti-tautology archetype rather than
+  forking it.
+- **Bucket C — a per-task JIT dependency-delivery precondition** (carried by task `05`): the one
+  genuinely first-class slice, **still DEFERRED/SIMULATED**. It verifies that the producer (`04`)
+  actually delivered the `RequestId` threading `05` builds against, in `05`'s own worktree at
+  `taskBase`, before `05`'s action. It lives in `05`'s `preflights/` folder, which the loader
+  ignores — so it does not affect validation.
 
 ## Work (the real tasks)
 

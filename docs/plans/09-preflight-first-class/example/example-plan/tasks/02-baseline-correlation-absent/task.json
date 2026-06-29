@@ -1,5 +1,5 @@
 {
-  "description": "PREFLIGHT (NEGATIVE baseline, for attribution): the RequestId field is ABSENT from the charge result NOW, so a later 'it is present' gate is provably this plan's doing. The same scope:\"precondition\" guardrail with INVERTED polarity. No-op action.",
+  "description": "Bucket B (negative/assert-absent baseline, for attribution): the RequestId field is ABSENT from the charge result NOW, so a later 'it is present' gate is provably this plan's doing. A no-op-root doctrine task; ONE-SHOT at run start; inverted polarity.",
   "stableId": "pf-neg",
   "dependsOn": []
 }

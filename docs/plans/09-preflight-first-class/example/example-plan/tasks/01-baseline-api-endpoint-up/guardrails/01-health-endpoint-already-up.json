@@ -1,4 +1,4 @@
 {
-  "description": "POSITIVE non-test preflight: Acme.Payments.Api's GET /health route is already wired and responding NOW. The endpoint-up generalization (deterministic byte check, not a live probe).",
-  "scope": "precondition"
+  "description": "Bucket A (positive NON-TEST baseline): Acme.Payments.Api's GET /health route is already wired NOW. A deterministic byte-check on the wired source (NOT a live probe). A no-op-root doctrine task with a scope:\"local\" guardrail — ships and validates today.",
+  "scope": "local"
 }

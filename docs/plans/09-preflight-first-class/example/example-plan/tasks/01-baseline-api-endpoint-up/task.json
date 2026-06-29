@@ -1,5 +1,5 @@
 {
-  "description": "PREFLIGHT (positive NON-TEST baseline): Acme.Payments.Api GET /health already returns 200 before any work runs. The generalization the design is about — a baseline that is not a unit-test run. No-op action.",
+  "description": "Bucket A (positive NON-TEST baseline): Acme.Payments.Api GET /health already returns 200 before any work runs — the generalization beyond unit tests. A no-op-root doctrine task; every API modifier dependsOn it (deduped one-per-area).",
   "stableId": "pf-api",
   "dependsOn": []
 }
