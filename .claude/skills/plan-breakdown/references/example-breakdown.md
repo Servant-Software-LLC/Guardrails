@@ -1,8 +1,9 @@
 # Worked example — a complete breakdown, end to end
 
 This is the few-shot reference for the plan-breakdown procedure. Input: a small,
-reviewed plan. Output: a 4-task folder — including one **inserted** task the plan
-never mentioned, because a guardrail needed it.
+reviewed plan. Output: a 5-task folder — including two **inserted** tasks the plan
+never mentioned: a brownfield baseline-green root (#181) and a TDD test-author task,
+each because a guardrail or doctrine needed it.
 
 ## Input plan (`add-stats-flag.md`)
 
@@ -17,6 +18,15 @@ never mentioned, because a guardrail needed it.
 > 2. Update README.md to document the new flag.
 >
 > Done when the flag works against the sample data file and the docs mention it.
+
+## Step 0 — brownfield (the area already has tests)
+
+The plan modifies `src/Inventory.Cli`, an EXISTING CLI with an existing `tests/Inventory.Tests`
+project. That makes this a **brownfield** plan (`$baselineArea = tests/Inventory.Tests`): Step 5 inserts
+a **baseline-green ROOT** so the existing tests are confirmed green BEFORE any work runs ("never build
+on red", #181). (A greenfield plan — a new project with no existing tests — would SKIP the baseline and
+the report would state why; the runnable `examples/**` greeting demos are greenfield and correctly carry
+no baseline.)
 
 ## Step 1 — scratch table
 
@@ -42,15 +52,25 @@ Non-executable plan content: none (both items have observable deliverables).
 - README update is a separate task — its verification (file-contains) is a different
   character than the implementation's (tests), and bundling it would make a doc typo
   burn an expensive implementation retry.
+- Because the plan is brownfield (Step 0), a **baseline-green ROOT**
+  `00-baseline-inventory-tests-green` is inserted: a no-op (`exit 0`) action + a guardrail
+  that runs the EXISTING `tests/Inventory.Tests` tests and asserts they pass on the starting
+  code. It is the DAG root (`dependsOn: []`); the test-author task depends on it, so every
+  task transitively does. Its guardrail filters to the PRE-EXISTING tests
+  (`--filter "Category!=Stats"`) so it never goes red on the about-to-be-authored `Stats`
+  tests (#181).
 - A terminal **whole-suite green** task closes the DAG (the only place "all tests
-  pass" is allowed).
-- Edges: `02-implement` depends on `01-author-tests` (guardrail dependency: 02's
-  guardrail runs 01's artifact). `03-update-readme` depends on `02-implement`
-  (semantic: documents real behavior). `04-suite-green` depends on 02 and 03.
-  No prose-order-only edges.
+  pass" is allowed). The baseline and the terminal gate are **complementary** — green START
+  on the EXISTING area at the root, green END on EVERYTHING at the sink.
+- Edges: `01-author-tests` depends on `00-baseline-inventory-tests-green` (the baseline root —
+  nothing runs against a red base). `02-implement` depends on `01-author-tests` (guardrail
+  dependency: 02's guardrail runs 01's artifact). `03-update-readme` depends on `02-implement`
+  (semantic: documents real behavior). `04-suite-green` depends on 02 and 03. No
+  prose-order-only edges.
 
-Plan said 2 steps; the breakdown emits **4 tasks**. That delta is the skill working
-as designed, not scope creep.
+Plan said 2 steps; the breakdown emits **5 tasks** (a baseline root, a TDD test-author task,
+the implementation, the README, and the terminal gate). That delta is the skill working as
+designed, not scope creep.
 
 ## Steps 5–6 — every generated file
 
@@ -81,6 +101,57 @@ as designed, not scope creep.
 }
 ```
 
+### `tasks/00-baseline-inventory-tests-green/` — **INSERTED TASK** (brownfield baseline-green root, #181)
+
+`task.json` — the DAG ROOT (`dependsOn: []`). It does no work, so it declares **no `writeScope`**. The
+verification is the guardrail, not the action.
+```jsonc
+{
+  "description": "Baseline: the existing tests in tests/Inventory.Tests pass on the starting code before any work runs - never build on red (#181)",
+  "dependsOn": []
+}
+```
+
+`action.ps1`
+```powershell
+# A no-op: this task does no work. Its guardrail (the existing area tests pass) is the point - it
+# gates the DAG root on tests/Inventory.Tests being green before any work task runs (#181).
+exit 0
+```
+
+`guardrails/01-baseline-area-tests-pass.ps1` — runs the EXISTING `tests/Inventory.Tests`, **filtered to
+the pre-existing tests** (`Category!=Stats`) so the about-to-be-authored `Stats` tests can never make
+the baseline red, and re-emits the failure detail at the END so a red baseline's WHY reaches the retry
+tail (#179; `stacks/dotnet.md §21`):
+```powershell
+# catches: a brownfield plan building on a RED base - the existing tests in tests/Inventory.Tests are
+#          already failing on the starting code. Asserting them green at the DAG root means a later
+#          work task's tests-pass failure is attributable to THAT task, not pre-existing breakage, and
+#          the new Stats tests' red is unambiguous (#181). Re-emits the failure DETAIL at the END so a
+#          red baseline's WHY reaches the harness retry tail (#179, §4.2). Filtered to the PRE-EXISTING
+#          tests (Category!=Stats) - it must NOT run the about-to-be-authored Stats tests.
+$out = dotnet test tests/Inventory.Tests --filter "Category!=Stats" --nologo 2>&1
+$out | ForEach-Object { Write-Output $_ }
+if ($LASTEXITCODE -ne 0) {
+    $detail = $out |
+        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+        ForEach-Object { $_.Line } | Select-Object -First 40
+    Write-Output ""
+    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    Write-Output "the existing tests in tests/Inventory.Tests are already failing on the starting code - fix the pre-existing breakage before this plan builds on it (#181)"
+    exit 1
+}
+exit 0
+```
+`guardrails/01-baseline-area-tests-pass.json`:
+```jsonc
+{ "description": "Existing area tests pass on the current code (baseline-green root, #181)" }
+```
+
+(No state, no `writeScope`. This is the brownfield baseline-green root; a greenfield plan would omit
+this task entirely and the report would say why.)
+
 ### `tasks/01-author-stats-tests/` — **INSERTED TASK** (behavioral type → tests + minimal stubs)
 
 `task.json` — `--stats` is **behavioral** (a `StatsCommand` class renders the output), so this
@@ -93,7 +164,7 @@ of fixing the code. No `captureHashes`, no `restoreOnRetry`, no downstream `test
 ```jsonc
 {
   "description": "Author failing unit tests + a minimal StatsCommand stub for the --stats output format (total line + sorted per-category lines)",
-  "dependsOn": [],
+  "dependsOn": ["00-baseline-inventory-tests-green"],
   "writeScope": [
     "tests/Inventory.Tests/StatsCommandTests.cs",
     "src/Inventory.Cli/StatsCommand.cs"
@@ -341,14 +412,28 @@ exit 0
 
 ## Step 7 — the closing report (what the skill says to the user)
 
-> Breakdown of `add-stats-flag.md` → `add-stats-flag/` — **4 tasks** (plan listed 2):
+> Breakdown of `add-stats-flag.md` → `add-stats-flag/` — **5 tasks** (plan listed 2):
 >
 > | Task | Action | Guardrails (archetypes) | dependsOn |
 > |---|---|---|---|
-> | 01-author-stats-tests *(INSERTED)* | prompt | build-passes (3), tests-fail-on-stubs (8); `writeScope` owns the test file + the `StatsCommand` stub; Scope boundary paragraph | — |
+> | 00-baseline-inventory-tests-green *(INSERTED)* | script (`exit 0`) | baseline-area-tests-pass (existing `tests/Inventory.Tests`, `Category!=Stats`, #179-re-emit) | — |
+> | 01-author-stats-tests *(INSERTED)* | prompt | build-passes (3), tests-fail-on-stubs (8); `writeScope` owns the test file + the `StatsCommand` stub; Scope boundary paragraph | 00 |
 > | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4); `writeScope` targets the stub, EXCLUDES the test file | 01 |
 > | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
 > | 04-suite-green | script | union-clean (union-safe invariant, `scope: "integration"`) + full-suite (4, terminal-only, **LOCAL**); `integrationGate: true` | 02, 03 |
+>
+> Inserted: `00-baseline-inventory-tests-green` — this is a **brownfield** plan (it modifies
+> the existing `src/Inventory.Cli` with an existing `tests/Inventory.Tests`), so a
+> baseline-green ROOT confirms the EXISTING area tests pass on the starting code BEFORE any
+> work runs ("never build on red", #181). It is a no-op (`exit 0`) action gated by one
+> guardrail that runs `tests/Inventory.Tests` filtered to the pre-existing tests
+> (`Category!=Stats`, so it never goes red on the about-to-be-authored `Stats` tests) and
+> asserts they pass, re-emitting the failure detail at the END (#179) so a red baseline's WHY
+> reaches the retry tail. It is the DAG root (`dependsOn: []`); `01-author-stats-tests` depends
+> on it, so every task transitively does. It is **distinct** from the terminal `04-suite-green`
+> gate: green START on the EXISTING area at the root vs green END on EVERYTHING at the sink. A
+> red baseline composes with the #174 no-op-deadlock short-circuit — the no-op can't fix
+> pre-existing breakage, so it escalates fast to an actionable `needsHuman`.
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
 > pass" and those tests didn't exist. `--stats` is behavioral, so this task also writes the
@@ -391,6 +476,10 @@ Violations, by rule:
   says it did — gate question 4.
 - **No inserted test task**, so nothing proves the output format — the deterministic
   evidence the plan offered ("format: one line total: N…") was thrown away.
+- **No baseline-green root** (#181), though the plan is brownfield (it builds on the
+  existing `tests/Inventory.Tests`) — so if the area's existing tests were already red, the
+  one task's guardrail would fail on pre-existing breakage and the failure would be
+  misattributed to "implement --stats and update the README."
 - A doc typo retry would re-run the whole implementation — retry-cheapness violated.
 
 A wrong implementation that prints unsorted categories, mislabels the total, and

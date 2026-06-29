@@ -424,6 +424,86 @@ A compile failure is a *weak* red (garbage produces it). `build-passes` + `tests
 (tests fail against throwing stubs). It is strictly stronger than the old single-guardrail form, and
 it removes the dead-end where the implementation task could never repair a non-compiling test file.
 
+## Baseline-green / start-from-green — verify the EXISTING area tests pass BEFORE any work runs (#181)
+
+**"Never build on red."** Stub-based TDD (above) gives the *new* behavior its red→green signal; this
+archetype guarantees the **starting** state was green so that signal is sound. For a plan that builds
+onto **existing** code, nothing in the rest of the catalogue verifies that the existing unit tests
+**in the area future tasks will modify** pass *before* work begins. The failures that causes:
+
+- **Misattribution.** A work task's `tests-pass` guardrail can fail from PRE-EXISTING breakage, not the
+  task's own change → the failure is blamed on the task, retries are wasted, and the run reaches
+  `needsHuman` late, on the wrong task.
+- **Ambiguous red.** A new test's "red" is only meaningful if the area was green to start — otherwise
+  "red because the behavior is missing" is indistinguishable from "red because the area was already
+  broken." The green baseline is the prerequisite that makes red→green attribution sound (it is
+  TDD-*adjacent*, the precondition, not a step of the cycle).
+- **Wasted budget.** A full DAG run against an already-broken base burns time/$$ before surfacing the
+  real problem.
+
+### When it fires — BROWNFIELD only
+
+- **Brownfield** = the plan modifies project(s)/module(s) that ALREADY have existing tests in the
+  touched area → **insert the baseline-green ROOT** (below).
+- **Greenfield** = a new project, or no existing tests in the touched area → **SKIP it** (nothing to
+  baseline) and state the reason in the breakdown report. Do **NOT** emit a vacuous baseline: a
+  `dotnet test` over a project with zero tests trivially "passes" and certifies nothing while looking
+  like a gate — strictly worse than no baseline. (SKILL.md Step 0 sets `$baselineArea`; Step 5 inserts.)
+
+### The shape — a no-op action + an existing-tests-PASS guardrail, at the DAG root
+
+The inserted task is `00-baseline-<area>-tests-green` (fit the existing naming/numbering convention;
+the `00-` prefix sorts it first). Two parts:
+
+1. **No-op action — `exit 0`** (a `script` action). **The verification is the GUARDRAIL, not the
+   action** — the task does no work; it exists to gate the DAG on the area being green. Same shape as a
+   terminal gate's `action.ps1 → exit 0`.
+2. **One guardrail: the EXISTING area tests PASS on the CURRENT code.** Run the existing test
+   project(s) covering exactly the projects the plan modifies (`$baselineArea` — the test project, or a
+   `--filter`/category over it) and assert they ALL pass (exit 0). **Scope to the AREA, not necessarily
+   the whole suite** — "at a minimum, the area future tasks will work in." Keep it bounded: too wide a
+   scope re-imports unrelated flakiness into the root and serializes the run on it.
+
+**It is the DAG ROOT (`dependsOn: []`) and EVERY work task transitively `dependsOn` it** — make the
+existing roots (test-author / seam / first-implementation tasks) depend on it; everything else reaches
+it transitively. Nothing runs against a red base. Acyclicity is preserved (the root has no incoming
+edge).
+
+### Three load-bearing edges
+
+1. **Existing tests ONLY, ordered BEFORE the TDD-red tasks.** The baseline asserts the PRE-PLAN tests
+   pass; it runs at the root on the STARTING workspace state, BEFORE any inserted `author-tests` task
+   adds its intentionally-FAILING new tests. So its guardrail must target the **existing** test
+   project(s)/area and must NOT accidentally run (and fail on) the about-to-be-authored red tests. In
+   worktree mode the root task's tree IS the starting state (no new tests yet), which makes this
+   natural; if `$baselineArea` is a whole project a later `author-tests` task will ALSO add failing
+   tests into, prefer a `--filter`/category selecting only the pre-existing tests, so the baseline can
+   never go red on tests that don't exist yet.
+2. **Distinct from the terminal full-suite gate.** Baseline = green START on EXISTING tests at the DAG
+   **root**; terminal `integrationGate` = green END on EVERYTHING at the **sink**. They are
+   complementary — emit both on a brownfield plan, and state both in the report.
+3. **The PASS guardrail is a tests-pass archetype → it MUST use the #179 failure-detail-re-emit
+   pattern** (capture → emit full log → re-emit failure-signal lines at the END), so a RED baseline's
+   WHY (the failing assertion/exception) reaches the retry tail, not just `[FAIL] <name>`. (The .NET
+   realization is `stacks/dotnet.md §21`, which reuses §4.2's re-emit form.)
+
+### Composes with the no-op-deadlock short-circuit (#174)
+
+Because the action is a genuine no-op (`exit 0`, writes nothing), a RED baseline = a no-op action whose
+guardrail fails identically each attempt → the **#174 no-op-deadlock short-circuit** escalates to
+`needsHuman` on the **2nd** attempt instead of burning the full retry budget (SSOT §7, "No-op-deadlock
+short-circuit"). A no-op cannot
+fix a failure it did not cause, so the fast, actionable escalation IS the correct outcome. Make the
+guardrail's final reason line say so: *"the area's existing tests are already failing on the starting
+code — fix the pre-existing breakage before this plan builds on it."* That message is the #181 + #174 +
+#179 composition in one line: a clear WHY (re-emitted detail above it), an actionable instruction, and a
+fast halt.
+
+**Decision-tree leaf:** *the plan is BROWNFIELD (modifies project(s) with existing tests in the touched
+area)* → INSERT a `00-baseline-<area>-tests-green` ROOT (no-op `exit 0` action + a guardrail that runs
+the EXISTING area tests and asserts they pass, #179-re-emit form, area-scoped), `dependsOn: []`, with
+every work task transitively depending on it. GREENFIELD → skip and state why; never a vacuous baseline.
+
 ## Composition-root wiring — the component is CONSTRUCTED/INJECTED in production (#120)
 
 **The recurring lesson, the highest-impact false-green the skill emits.** A plan adds a
@@ -1465,6 +1545,14 @@ What is the task's primary deliverable?
 └── Refactor (no new behavior) → build-passes + existing-tests-still-pass (the suite IS the guardrail)
 ```
 
+**Plan-level (not a per-task deliverable): BROWNFIELD → a baseline-green ROOT (#181).** Orthogonal to
+the per-task tree above, ask once of the WHOLE plan: does it modify project(s) with existing tests in
+the touched area? If yes (brownfield), INSERT a `00-baseline-<area>-tests-green` ROOT — a no-op
+`exit 0` action + a guardrail running the EXISTING area tests and asserting they pass (area-scoped,
+#179-re-emit form) — `dependsOn: []`, with every work task transitively depending on it ("never build
+on red"). If greenfield (new project / no existing tests in the area), skip it and state why; never
+emit a vacuous baseline. See the baseline-green / start-from-green section above; `stacks/dotnet.md §21`.
+
 **Verify-recorded-result vs. replay (the Code/Refactor branches).** When the *action
 itself* already ran the expensive build+test (e.g. a `dotnet build; dotnet test` action)
 and recorded a GOOD target — a produced artifact or a runner-written TRX — prefer
@@ -1638,6 +1726,20 @@ should fail before an expensive test run or a paid judge ever starts.
 - **Over-broad**: "all tests pass" on an early task — it fails for unrelated reasons,
   poisons retries with noise, and serializes the DAG. Whole-suite green belongs to one
   terminal integration task.
+- **No baseline on a brownfield plan / a vacuous baseline** (#181): a plan that modifies project(s)
+  with **existing tests in the touched area** but has **no baseline-green root** — so a work task's
+  `tests-pass` guardrail can fail from PRE-EXISTING breakage (misattributed → wasted retries → late
+  `needsHuman`), and a new test's "red" is ambiguous (missing-behavior vs already-broken). Fix: insert
+  a `00-baseline-<area>-tests-green` ROOT (no-op `exit 0` action + a guardrail running the EXISTING
+  area tests asserting they pass, area-scoped, #179-re-emit form), `dependsOn: []`, with every work
+  task transitively depending on it ("never build on red"). It is **distinct** from the terminal
+  full-suite gate (green START at the root vs green END at the sink — emit both). Composes with #174: a
+  RED baseline = a no-op whose guardrail fails → the no-op-deadlock short-circuit escalates fast to an
+  actionable `needsHuman`. The **inverse** error is just as wrong — a **vacuous baseline** on a
+  GREENFIELD plan (a `dotnet test` over a project with zero tests, which trivially passes): it certifies
+  nothing while looking like a gate; greenfield must SKIP the baseline and state why. See the
+  baseline-green / start-from-green section above; `stacks/dotnet.md §21`. WEAK (BLOCKER when the
+  area's existing tests are in fact red at the start — every work task then mis-fails).
 - **Compiles-but-never-runs** (server/executable plans, #64): the breakdown emits component
   tasks (scaffold exe, implement launcher, implement routes) each guarded by build +
   unit-tests, plus a terminal whole-solution build — but **no task wires the entry point to
