@@ -4,21 +4,41 @@
 > authorizes NO implementation milestones today. It records (1) the generalized **preflight
 > principle**, (2) the **determination** — reached by a 4-lens review (architect /
 > devil's-advocate / harness-developer / skill-author) that **unanimously converged** — to ship
-> the principle as **DOCTRINE first** and **defer first-class status**, (3) the **deferred
-> Phase-2 first-class design** so it is ready if and when the trigger fires, and (4) the explicit
-> **trigger criteria** and **BLOCKERs** any Phase-2 work must clear before it may start. The
+> the principle as **DOCTRINE first** and **defer first-class status**, (3) the **PARTITION** of
+> the preflight space into three buckets (A shared baseline / B negative attribution / C per-task
+> dependency-delivery), only one of which is a candidate for a first-class harness phase, (4) the
+> **deferred Bucket-C design** so it is ready if and when the trigger fires, and (5) the explicit
+> **trigger criteria** and **BLOCKERs** any Bucket-C work must clear before it may start. The
 > contract additions sketched in §"Contract / SSOT impact" are a **forward design**, not yet
 > applied to `02-schemas-and-contracts.md` (the SSOT) — they land there only in the change that
-> implements Phase 2, never before (invariant 4).
+> implements Bucket C, never before (invariant 4).
 >
 > **One-line claim, scoped honestly:** a brownfield task that **modifies** (not creates) a verified
 > thing can have its end-of-task gate evaluated *before* the task — a **preflight baseline**. The
 > principle is real and ships now as doctrine; it is **fully expressible with existing primitives**
 > (a no-op-action ROOT task + a guardrail + a DAG edge), so a schema field / harness phase / new
-> exit code would be **machinery for no new behavior** — ceremony — until a real dogfooded
-> *non-test* preflight proves the doctrine archetype cannot express it. "A prompt may propose, only
-> a deterministic gate may certify" — and a preflight is just that gate, run one step earlier to
-> fail fast and attribute correctly.
+> exit code would be **machinery for no new behavior** — ceremony — until a real dogfooded case
+> proves the doctrine archetype cannot express it. "A prompt may propose, only a deterministic gate
+> may certify" — and a preflight is just that gate, run one step earlier to fail fast and attribute
+> correctly.
+>
+> **The PARTITION (the spine of this document).** A team pushback — *"preflight is a PER-TASK
+> just-in-time phase (`<task>/preflights/`), not a global pre-DAG run phase"* — was evaluated by the
+> 4-lens team and the product owner adopted a **partition**: per-task JIT is reserved for **one
+> slice only**; doctrine keeps the rest. The preflight space splits into three buckets, and
+> **conflating them is the design error this partition exists to prevent**:
+>
+> | Bucket | What it claims | Home | Status |
+> |---|---|---|---|
+> | **A — shared positive baseline** | "this AREA starts from green" (the #181 case) | **doctrine** — a no-op-root TASK, one per area | **shipped** (preview.34); explicitly **NOT** moved per-task |
+> | **B — negative / assert-absent baseline** | "the thing this task introduces is ABSENT now" | **one-shot, pre-merge** — doctrine root no-op today; deferred global one-shot if ever first-class | **doctrine**; **FORBIDDEN at per-task scope** (union-inversion) |
+> | **C — per-task JIT dependency-delivery precondition** | "did my producer actually deliver the type/route/symbol I build against, in MY forked worktree at `taskBase`, right now" | the ONLY slice that justifies a per-task JIT preflight | **DEFERRED** behind the sharpened trigger; **folder-vs-flag is the open decision** |
+>
+> Bucket C is the one capability the *global pre-DAG phase* (the shape the earlier draft of this doc
+> proposed) **structurally cannot express** — the phase runs before any producer has run, so it can
+> never check "did my producer deliver." That, and nothing else, is what a per-task JIT preflight is
+> for. Buckets A and B are settled by doctrine and are recorded here so a future reader does not try
+> to push them per-task (A has no honest per-task home; B false-halts per-task — both shown below).
 
 ---
 
@@ -39,47 +59,65 @@ green to begin with.
 **The generalized principle (the synthesis this plan formalizes):** *any* brownfield task whose
 **end-of-task postcondition guardrail can be evaluated BEFORE the task** — because the task
 **MODIFIES / extends** rather than **CREATES** the verified thing — should be able to carry a
-**preflight** establishing a baseline. Two polarities:
+**preflight** establishing a baseline. Two polarities, and a third, *temporally distinct* concern:
 
 - **POSITIVE baseline** ("already green / already up") → **fail fast on a broken start.** The thing
   the task will modify is verified to be working *now*; if it is not, halt before spending the task.
   Beyond unit tests: an endpoint already responding, a build already green, a DI registration
-  already present, a schema already valid, a route already resolving.
+  already present, a schema already valid, a route already resolving. This is **Bucket A** when it
+  is a property of an AREA shared by ≥2 tasks (the #181 case).
 - **NEGATIVE baseline** ("not yet present") → **attribution.** The thing the task will *add* is
   verified to be **absent** now, so a later "it's present" gate is provably the task's own doing,
   not pre-existing. **This polarity already exists** as the `plan-breakdown`
   `tests-fail-on-current-code` / `tests-fail-on-stubs` anti-tautology archetype — a preflight design
-  must **cross-reference** it, never fork it (see §"Negative vs positive modeling").
+  must **cross-reference** it, never fork it. This is **Bucket B**, and its polarity is *inherently a
+  "before the whole run" claim* — which is exactly why it is **forbidden at per-task scope** (see
+  §"The partition").
+- **PER-TASK DEPENDENCY-DELIVERY precondition** ("did my producer deliver the thing I build
+  against — in MY worktree, at the moment I run") → **a precondition the positive *area* baseline
+  cannot state**, because it is about a value produced *by an earlier task within the run*, not a
+  property of the starting repo. This is **Bucket C** — the only slice that needs a per-task,
+  just-in-time evaluation, and the only first-class candidate left open.
+
+**Polarity is necessary but not sufficient to place a preflight.** The earlier draft of this doc
+treated "positive vs negative" as the whole taxonomy and proposed a single *global pre-DAG phase*
+for both. The partition adds the missing axis — **WHEN** the claim is true and **WHOSE** worktree it
+is true in — and that axis is what separates A/B (run-global, settled by doctrine) from C
+(task-local, JIT, the only first-class candidate).
 
 **Ambiguity named & narrowed.** The word "first-class" is the load-bearing ambiguity, and the
 brief leaves three readings open. I narrow them up front so the determination below is unambiguous:
 
 1. **"First-class" = a recognized authoring archetype** (doctrine: a named pattern
-   `plan-breakdown` emits and `guardrails-review` probes for). **This is Phase 0 — shipping now.**
-2. **"First-class" = a harness-acted contract** (a `task.json` field, a dedicated pre-DAG phase, a
-   distinct journal status / outcome / exit-code branch). **This is Phase 2 — DEFERRED**, designed
-   below, gated on the trigger.
+   `plan-breakdown` emits and `guardrails-review` probes for). **This is Phase 0 — shipping now**,
+   and it is the settled home for **Buckets A and B**.
+2. **"First-class" = a harness-acted contract** (a new `<task>/preflights/` folder OR a `task.json`
+   flag, with a distinct outcome / exit-code branch). **This is Phase 2 — DEFERRED**, and the
+   partition **scopes it down to Bucket C only**: the per-task JIT dependency-delivery precondition.
+   The earlier draft's "dedicated *pre-DAG* phase" is **withdrawn** — a pre-DAG phase cannot express
+   Bucket C (it runs before any producer), and Buckets A/B do not need it (doctrine covers them).
 3. **"First-class" = the harness auto-derives preflights** (it inspects a task and decides "this
    modifies, so inject a baseline"). **REJECTED outright** — "modifies-not-creates" is **undecidable
    by the harness** (see the determination and BLOCKER (b)). Auto-derivation false-fails on every
    legitimate TDD-red / coverage guardrail, which is *designed* to be red before the task.
 
-The brief settles which reading we pursue and when: **(1) now, (2) deferred behind a trigger, (3)
-never.**
+The brief settles which reading we pursue and when: **(1) now (Buckets A + B), (2) deferred behind a
+trigger and scoped to Bucket C only, (3) never.**
 
 ---
 
 ## Placement (harness | skill | schema | docs | v2 | out of scope)
 
-| Concern | Phase | Placement |
-|---|---|---|
-| The **preflight principle** as a named authoring archetype (catalogue entry + insertion rule + a `guardrails-review` probe) | **Phase 0 (now)** | **skill** — `plan-breakdown` guardrail catalogue + `guardrails-review`; the #181 positive unit-test baseline is the first instance |
-| **#181** — positive existing-tests-green baseline for brownfield plans (the canonical doctrine instance) | **Phase 0 (now)** | **skill** — `plan-breakdown` Step-0 scan + a baseline ROOT task; no harness change |
-| **#182** — serial-mode fix to the #174 no-op short-circuit, so the fast red-halt holds in BOTH modes | **Phase 1 (now)** | **harness** — `TaskExecutor` / no-op short-circuit (a bug fix to an existing mechanism, NOT new machinery) |
-| First-class harness contract: a guardrail `scope: "precondition"` value + a pre-DAG **preflight phase** reusing the integration worktree at user HEAD | **Phase 2 (DEFERRED)** | **harness + schema** — designed in §"The deferred Phase-2 first-class design"; lands in the SSOT only when implemented |
-| The harness **auto-deriving** pre-applicability ("this task modifies, inject a baseline") | **REJECTED** | **out of scope, permanently** — undecidable; false-fails every TDD-red gate |
-| Negative baseline as a NEW mechanism | **REJECTED** | **out of scope** — it already IS `tests-fail-on-current-code` / `tests-fail-on-stubs`; cross-reference, never fork |
-| "Many preflights" volume / cost management | **Phase 2 constraint** | **skill** — the volume-control "worth-it" gate (§"Volume-control gate"), carried into any Phase-2 design |
+| Concern | Bucket | Phase | Placement |
+|---|---|---|---|
+| The **preflight principle** as a named authoring archetype (catalogue entry + insertion rule + a `guardrails-review` probe) | A + B | **Phase 0 (now)** | **skill** — `plan-breakdown` guardrail catalogue + `guardrails-review`; the #181 positive unit-test baseline is the first instance |
+| **#181** — positive existing-tests-green baseline for brownfield plans (area-wide start-from-green) | **A** | **Phase 0 (now)** | **skill** — `plan-breakdown` Step-0 scan + a no-op baseline ROOT task, one per area; **no harness change**. Explicitly **NOT** moved per-task (no honest per-task home — §"Bucket A"). |
+| **Negative / assert-absent baseline** ("the thing this task adds is absent now") | **B** | **Phase 0 (now)** | **skill** — already IS `tests-fail-on-current-code` / `tests-fail-on-stubs`; a doctrine root no-op one-shot. **FORBIDDEN at per-task scope** (union-inversion — §"Bucket B"). Cross-reference, never fork. |
+| **#182** — serial-mode fix to the #174 no-op short-circuit, so the fast red-halt holds in BOTH modes | (supports A) | **Phase 1 (now)** | **harness** — `TaskExecutor` / no-op short-circuit (a bug fix to an existing mechanism, NOT new machinery) |
+| First-class **per-task JIT dependency-delivery precondition** — a new `<task>/preflights/` folder **OR** a `task.json` no-burn-precondition flag | **C** | **Phase 2 (DEFERRED)** | **harness + schema** — designed in §"The deferred Bucket-C design"; **folder-vs-flag is the open decision**; lands in the SSOT only when implemented |
+| The harness **auto-deriving** pre-applicability ("this task modifies, inject a baseline") | — | **REJECTED** | **out of scope, permanently** — undecidable; false-fails every TDD-red gate |
+| A **global pre-DAG preflight phase** for A/B (the earlier draft's shape) | — | **WITHDRAWN** | A/B are settled by doctrine; the phase cannot express C. No global phase is pursued. |
+| "Many preflights" volume / cost management | A + C | **constraint** | **skill** — the volume-control "worth-it" gate (§"Volume-control gate"), re-pointed to the partition |
 
 ---
 
@@ -94,36 +132,44 @@ The determination below is, at bottom, an **invariant argument**. Named, with ho
    *harness-side judgment* ("does this task modify?") that is not deterministic at all — the
    strongest reason to reject it.
 2. **Harness is the single writer of merged state; children get snapshots, write fragments.**
-   *Untouched by doctrine; lightly strained by Phase 2.* A doctrine preflight is a no-op-action ROOT
-   task — it writes no fragment, merges nothing, and reads the user's HEAD read-only. The Phase-2
-   pre-DAG phase runs **before** any segment worktree exists, against the integration worktree at
-   user HEAD; it must remain a **read-only baseline check that produces no fragment and no commit**,
-   or it strains this invariant. Designed to write nothing (§Phase-2).
+   *Untouched by doctrine; barely strained by Bucket C.* A Bucket-A/B doctrine preflight is a
+   no-op-action ROOT task — it writes no fragment, merges nothing, and reads its bytes read-only. The
+   Bucket-C per-task precondition runs **inside the consuming task's own segment worktree at
+   `taskBase`**, *before* the task's action — it is a **read-only check that produces no fragment and
+   no commit** (it precedes the action, which is the only thing that may write a fragment). It never
+   touches merged state. Designed to write nothing (§"The deferred Bucket-C design").
 3. **Verdicts come from files, never CLI exit codes.** *Respected.* A preflight's pass/fail is a
    guardrail verdict (deterministic exit / prompt verdict file) exactly as any guardrail — the
    preflight is not a new verdict source, just the same source evaluated one step earlier.
 4. **`02-schemas-and-contracts.md` is the schema SSOT — a contract change lands there in the SAME
-   change that motivates it.** *This is why Phase 2 is deferred and its SSOT edits are NOT yet
-   applied.* Doctrine (Phase 0) touches **no contract** — it is fully expressible with the existing
-   `task.json` + guardrail + `dependsOn` primitives, so there is no SSOT edit to make. A Phase-2
-   `scope: "precondition"` value, journal status, and exit-code branch WOULD be SSOT edits — and per
-   this invariant they land **only** in the change that implements them, never speculatively.
-   Shipping the marker now, ahead of behavior, would put a contract in the SSOT the harness does not
-   honor — the precise anti-pattern this invariant forbids.
+   change that motivates it.** *This is why Bucket C is deferred and its SSOT edits are NOT yet
+   applied — and this rewrite makes NO SSOT change.* Doctrine (Buckets A + B) touches **no contract**
+   — it is fully expressible with the existing `task.json` + guardrail + `dependsOn` primitives, so
+   there is no SSOT edit to make. A Bucket-C contract — *either* a new `<task>/preflights/` folder +
+   `TaskOutcome.precondition-failed` + GR2027, *or* a one-line `task.json` no-burn-precondition flag —
+   WOULD be an SSOT edit, and per this invariant it lands **only** in the change that implements it,
+   never speculatively. Which of the two it is remains the load-bearing open decision; **neither is
+   written to the SSOT by this document**.
 5. **Honest halts — nothing marked done unverified; needs-human is a feature.** *Respected and
    extended.* A red positive-baseline preflight is the most honest halt there is: "your starting
    point is already broken; I will not pretend my task can fix what it does not own." The fast
    red-halt (Phase 1 / #182) makes that halt *cheap* in both modes rather than a full-budget burn.
-6. **Plain files, light setup — no databases, daemons, or SaaS in v1.** *Respected.* Doctrine is
-   pure authoring (files in the task folder). Phase 2 adds no dependency — it reuses the existing
-   integration worktree and guardrail-runner seams.
+6. **Plain files, light setup — no databases, daemons, or SaaS in v1.** *Respected.* Doctrine
+   (Buckets A + B) is pure authoring (files in the task folder). Bucket C adds no dependency — it
+   reuses the existing segment worktree at `taskBase` and the `IReVerifier` guardrail-runner seam, and
+   the **live-probe ban** keeps it to deterministic byte checks (no process/daemon/network).
 
-**The decisive invariant pairing is 1 + 4.** The principle is fully expressible with existing
+**The decisive invariant pairing is 1 + 4.** Buckets A and B are fully expressible with existing
 primitives (invariant-4 says "no SSOT edit needed → no contract change → it is doctrine"), and the
-only "first-class" reading that would add real *capability* is auto-derivation — which invariant 1
-forbids because "modifies-not-creates" is a non-deterministic harness judgment. What is left for a
-first-class field to buy is **polish, not capability** — and a marker the harness does not act on is
-**ceremony** (the no-new-machinery-for-no-new-behavior rule). Hence: doctrine first, defer the rest.
+auto-derivation reading that would add real *capability* on top of them is forbidden by invariant 1
+("modifies-not-creates" is a non-deterministic harness judgment). For A and B a first-class field
+buys only **polish, not capability** — ceremony. **Bucket C is the one place the partition finds a
+capability doctrine cannot express**: a check evaluated *in the consuming task's forked worktree at
+the moment it runs*, against a value an *earlier task produced* — which neither a no-op ROOT task
+nor a global pre-DAG phase can state. So Bucket C is the only first-class candidate, and even it is
+gated, because it is still unproven that it is not just "the consuming task's first guardrail + a
+no-burn flag" (the open decision below). Hence: doctrine first (A + B), defer Bucket C behind a
+sharpened trigger, build no global phase at all.
 
 ---
 
@@ -142,12 +188,14 @@ reader does not relitigate it:
    implementation task depends on.)
 
 2. **A marker the harness does not act on is ceremony** (invariant: no new machinery for no new
-   behavior). A `task.json` `"preflight": true` field — or a `scope: "precondition"` guardrail value
-   — that the harness merely *records* but does not *schedule differently* buys nothing the
-   no-op-ROOT-task already buys. It is a label, and a label is not a feature. A field earns its place
-   **only** when the harness does something with it the DAG cannot already express (a pre-DAG phase, a
-   distinct outcome) — and that "something" is **polish** (one node instead of N edges; a dedicated
-   journal status; a cheaper one-shot phase), not new capability.
+   behavior). A `task.json` `"preflight": true` field — or a guardrail `scope` value — that the
+   harness merely *records* but does not *schedule differently* buys nothing the no-op-ROOT-task
+   already buys for Buckets A and B. It is a label, and a label is not a feature. A first-class
+   contract earns its place **only** when the harness does something with it the DAG cannot already
+   express — and the partition finds exactly **one** such thing: **Bucket C**, a check run inside the
+   consuming task's worktree at `taskBase`, before its action, asserting an earlier task delivered a
+   dependency. That is genuinely new behavior (a per-task JIT precondition with fail-fast-no-burn
+   semantics), not polish — which is why C, and *only* C, is a live first-class candidate.
 
 3. **"Modifies-not-creates" is UNDECIDABLE by the harness → auto-derivation is REJECTED.** The
    *only* reading of "first-class" that buys genuine capability is the harness inferring
@@ -168,381 +216,536 @@ reader does not relitigate it:
    be a second name for a shipped pattern — drift, not feature. Any preflight doctrine must
    **cross-reference** the anti-tautology archetype as the negative polarity, not introduce a rival.
 
-**Therefore:** ship the principle as **doctrine** (Phase 0), fix the fast-halt in serial mode
-(Phase 1), and **defer first-class** (Phase 2) behind an explicit trigger. First-class status buys
-*polish* (a pre-DAG phase, one node instead of N, a dedicated outcome) — real, but not worth a
-contract change until a dogfooded **non-test** preflight proves the doctrine archetype cannot
-express it AND cost evidence shows "many preflights" pays.
+**Therefore:** ship the principle as **doctrine** for Buckets A and B (Phase 0), fix the fast-halt in
+serial mode (Phase 1), and **defer Bucket C** (Phase 2) behind a sharpened trigger. Build **no global
+pre-DAG phase** — A and B do not need it and C cannot use it. Bucket C is deferred not because it is
+mere polish (it is real new behavior) but because **it is not yet proven distinct from "the consuming
+task's first guardrail + a no-burn flag"** (the F5 reduction, §"The open decision"), and because **no
+real dogfooded instance** of it has been captured (§"Trigger"). Absent that artifact, C stays
+deferred and the per-task-JIT pushback is recorded as **"considered; scoped to dependency-delivery;
+gated."**
 
 ---
 
-## Phasing
+## The partition (the spine — three buckets, one first-class candidate)
 
-| Phase | What | Where | Status |
-|---|---|---|---|
-| **Phase 0** | **The DOCTRINE archetype** — a named "baseline / preflight" entry in the `plan-breakdown` guardrail catalogue (positive + negative polarity, the insertion rule, the volume-control gate) + a `guardrails-review` probe; **#181** (positive existing-tests-green baseline) is the canonical first instance. **No schema field, no harness phase, no contract change.** | **skill** (`plan-breakdown`, `guardrails-review`) | **Shipping (targeted preview.34)** |
-| **Phase 1** | **#182** — the serial-mode fix to the #174 no-op short-circuit, so the cheap red-halt ("the gate failed, the action changed nothing, escalate immediately rather than burn the budget") holds in **both** serial and worktree mode. A doctrine preflight's value depends on a *fast* halt; today the short-circuit is worktree-only (it needs `taskBase` to prove "no writes"). | **harness** (`TaskExecutor` / no-op short-circuit) | **Shipping (targeted preview.34)** |
-| **Phase 2** | **First-class status** — the deferred design below (a `scope: "precondition"` guardrail value + a pre-DAG preflight phase). **Only if the trigger fires.** | **harness + schema + skill** | **DEFERRED** (this plan) |
+The pushback *"preflight is a per-task JIT phase, not a global pre-DAG phase"* is **half right**, and
+the partition records exactly which half. The preflight space has three buckets that look alike
+(each is "a deterministic check run before work") but differ on the two axes that matter: **WHEN** the
+claim is true (run-global vs at-the-moment-a-task-runs) and **WHOSE worktree** it is true in (the
+starting repo vs the consuming task's forked `taskBase`). Place a preflight by those axes, not by
+polarity alone.
 
-**Phase 0 and Phase 1 are the product of #183 today.** Phase 2 is the contents of this plan, held in
-reserve. The phasing is deliberately ordered so the cheap, contract-free, fully-expressible wins ship
-first and the expensive contract change waits for evidence.
+### Bucket A — Shared positive baseline ("this AREA starts from green") — SETTLED, doctrine
 
----
+**Claim:** the touched area's existing verification (its tests, its build) is **green at the start of
+the run**. The #181 case.
 
-## The deferred Phase-2 first-class design (the plan if/when triggered)
+**Why it has no honest per-task home — and therefore is NOT moved per-task.** A start-from-green
+baseline is a property of an **AREA**, not of a task. If it were attached to a task as a per-task JIT
+preflight it would have to be one of two dishonest things:
 
-This is the design to implement **if** the trigger (§"Trigger criteria") fires — not before. It is
-recorded now so the decision is captured while the 4-lens context is fresh, and so a future
-implementer inherits a vetted starting point rather than re-deriving it under pressure.
+1. **"First task only" lie** — run the baseline only at the first task that touches the area, and the
+   model has to encode "first" (which task? a race in parallel mode? the property is about the area,
+   not about whichever task happens to be scheduled first). The baseline's truth has nothing to do
+   with *which* task runs first.
+2. **"Duplicate N times on post-merge bytes" error** — run it at every task that touches the area,
+   and the later tasks evaluate it at *their* `taskBase`, which has **earlier siblings' merges
+   already applied**. A start-from-green check at a later `taskBase` is no longer checking the
+   *start* — it is checking post-merge bytes, which is a different (and union-inverting) claim.
 
-### The model (the architect-recommended minimal option)
+The honest home is exactly what ships: **one no-op-action ROOT task carrying the area's baseline
+guardrail, that every modifier in the area `dependsOn`** — evaluated once, against the run's starting
+bytes, deduped per area. **plan-09's settled answer: Bucket A stays doctrine and is explicitly NOT a
+per-task preflight.**
 
-A first-class preflight is **a guardrail with `scope: "precondition"`** run in a **pre-DAG preflight
-phase**, against the **integration worktree at the user's HEAD**, before any segment worktree is
-created and before the scheduler dequeues the first task.
+### Bucket B — Negative / assert-absent baseline ("the thing this task adds is absent now") — SETTLED, one-shot only
 
-- **`scope: "precondition"` — a third guardrail-scope value** (alongside `"local"` and
-  `"integration"`, SSOT §4.3). A precondition guardrail is **not** part of an attempt lifecycle and
-  **not** part of the integration set re-run at unions. It is collected at load time into the run's
-  **precondition set** and run once, up front, by the preflight phase. (It attaches to the baseline
-  ROOT task's `guardrails/`, so authoring stays familiar; the scope value is what lifts it into the
-  pre-DAG phase instead of a normal first-wave task.)
-- **The preflight phase** runs after the run-level pre-flight gate (git-repo / dirty-tree, SSOT §2 —
-  note the **naming collision**, BLOCKER (f)) and **before** plan-branch / segment-worktree
-  creation. It evaluates the precondition set against the integration worktree checked out at the
-  **user's HEAD** (the architect-recommended reuse: no new worktree — the integration worktree
-  already exists at user HEAD at this point in the run, before any task has advanced it). It is
-  **read-only**: no fragment, no commit, no state write (invariant 2).
-- **Outcome on a failed precondition:** the run halts **before any task starts** with a dedicated
-  outcome (a NEGATIVE polarity preflight inverts: it must FAIL when the thing is unexpectedly
-  *present*). No segment worktree was ever created; no token was spent on an action; the halt is the
-  cheapest possible. This is the polish the field buys over N `dependsOn` edges: **one phase, one
-  node, one shot** — not a baseline task replicated as a dependency of every modifier, each
-  re-running the same check.
+**Claim:** the artifact the plan will *introduce* (a `RequestId` field, a new route, a new
+registration) is **absent now**, so a later "it's present" gate is provably the plan's own doing.
 
-**Why reuse the integration worktree at user HEAD (vs a fresh worktree or the user's checkout):** it
-is the **minimal** option — the integration worktree is created at run start off the user's HEAD
-anyway (SSOT §1), so the preflight phase runs against bytes that already exist with **zero extra
-worktree cost** and **zero write to the user's checkout** (read-only, invariant 2). A fresh
-throwaway worktree would be pure cost; running against the user's live checkout would violate the
-read-only-for-the-whole-run guarantee.
+**Why it is FORBIDDEN at per-task scope.** Negative polarity is, by construction, a claim that is
+**true before the run and false after the work is done** — the same shape that makes
+`tests-fail-on-current-code` a `local` (never `integration`) guardrail (#165): re-run it at a *later*
+task's `taskBase`, after the producing task has merged, and the thing **is** present, so the
+"assert-absent" check **false-halts**. A per-task negative preflight at a downstream `taskBase`
+re-imports the **union-inversion class** (the #165 / #132 lesson) exactly. Negative polarity is
+inherently a **"before the whole run"** claim; it has meaning at one point in time only — the run's
+start.
 
-### Positive vs negative modeling
+**Therefore Bucket B runs ONCE, pre-merge** — today as a doctrine root no-op task (the same shape as
+A, inverted polarity); as the deferred global one-shot *if* a first-class assert-absent capability is
+ever built. **Record explicitly: a Bucket-B check is NEVER part of the integration / union re-verify
+set and NEVER part of the terminal gate.** It is a cross-reference to, not a fork of, the
+`tests-fail-on-current-code` / `tests-fail-on-stubs` anti-tautology archetype: a negative baseline is
+the *generalization* of that archetype to non-test artifacts (a route, a registration), evaluated
+one-shot at the start, not a competing mechanism.
 
-- **POSITIVE** (`tests-already-green`, `endpoint-already-up`, `build-already-green`,
-  `registration-already-present`): the precondition guardrail **passes when the thing verifies** and
-  **fails when it is broken**. A failure halts the run as "broken start."
-- **NEGATIVE** (`not-yet-present` attribution): the precondition guardrail **fails when the thing is
-  already present** (so a later "present" gate is provably the task's doing). This is the
-  anti-tautology archetype's polarity. A first-class negative preflight is **the same `scope:
-  "precondition"` guardrail with inverted polarity** — and the design must **explicitly cross-reference
-  `tests-fail-on-current-code` / `tests-fail-on-stubs`** so the two never diverge: a negative
-  preflight is the *generalization* of that archetype to non-test artifacts (a route, a registration),
-  not a competing mechanism.
+### Bucket C — Per-task JIT dependency-delivery precondition — the ONLY first-class candidate, DEFERRED
 
-### The determination heuristic (when a preflight is emittable at all)
+**Claim:** *"did my producer actually deliver the type / route / symbol I build against — in MY
+forked worktree at `taskBase`, at the moment I run?"* A consuming task `dependsOn` a producer; the
+producer was supposed to add `IPaymentGateway`, or wire `/health`, or export a symbol. Bucket C
+verifies, **inside the consumer's own segment worktree at `taskBase`, before the consumer's action
+runs**, that the producer's contribution is actually present in the bytes the consumer inherited.
 
-Two predicates, with sharply different decidability — this distinction is the spine of the whole
-design, and conflating them is how auto-derivation goes wrong:
+**Why this is the one slice the global pre-DAG phase structurally CANNOT express.** The pre-DAG phase
+(the earlier draft's shape) runs **before any producer has run** — so it can *never* check "did my
+producer deliver," because at pre-DAG time no producer has produced anything. Bucket A and B are true
+or false against the *starting* repo, which the pre-DAG phase can see; Bucket C is true or false
+against an *intermediate, per-consumer* state that only exists once an upstream task has merged into
+the consumer's `taskBase`. That is a fundamentally **per-task, just-in-time** evaluation — and it is
+the *only* thing in the preflight space that is. This is the half of the pushback that is right.
+
+**Polarity:** Bucket C is **positive and monotone-safe under merges** — "the type IS present" only
+*becomes more true* as more merges land, so it never union-inverts the way a negative check does.
+That monotone-safety is part of what makes it the safe per-task slice (and part of the trigger, §"The
+sharpened trigger").
+
+**Status: DEFERRED behind the sharpened trigger, AND behind the folder-vs-flag open decision.** Even
+having isolated Bucket C as the one genuine first-class candidate, *how* it is realized is unsettled
+(§"The open decision"), and *whether a real instance of it exists that is not reducible to a plain
+`dependsOn` edge or the consumer's own first guardrail* is unproven (§"The sharpened trigger").
+
+### The decidability heuristic (carried forward, applies to A/B authoring; C is producer-keyed)
+
+Two predicates with sharply different decidability — conflating them is how auto-derivation goes
+wrong:
 
 - **D1 — "target pre-exists" is DECIDABLE** from the `plan-breakdown` Step-0 scan. Whether the
-  artifact the task touches *already exists in the repo* (a file, a test project, a route table) is
-  observable at breakdown time. A preflight is **only** emittable when D1 holds — there is nothing to
-  baseline if the thing does not exist yet.
-- **D2 — "modifies-not-creates" is an AUTHORING HEURISTIC ONLY.** Whether the task *modifies* the
-  pre-existing thing (preflight-applicable) or *replaces / ignores* it is a judgment about intent
-  that **neither the harness nor a reliable static rule can make** (this is exactly the
-  undecidability that kills auto-derivation). D2 lives in the **skill's** authoring judgment, and it
-  **MUST UNDER-FIRE**: when in doubt, emit no preflight. A missing preflight costs a (rare) full-budget
-  burn on a broken start; a wrongly-emitted preflight false-halts a *correct* plan before it runs —
-  the second is far worse (it blocks correct work), so the heuristic is biased to silence.
+  artifact a Bucket-A/B baseline references *already exists in the repo* is observable at breakdown
+  time. A baseline is **only** emittable when D1 holds — there is nothing to baseline (A) or to
+  assert-absent against a known prior shape (B) if the thing's context does not exist.
+- **D2 — "modifies-not-creates" is an AUTHORING HEURISTIC ONLY.** Whether the task *modifies* a
+  pre-existing thing or *replaces / ignores* it is a judgment about intent that **neither the harness
+  nor a reliable static rule can make** (the undecidability that kills auto-derivation). D2 lives in
+  the **skill's** authoring judgment and **MUST UNDER-FIRE**: when in doubt, emit no preflight. A
+  missing preflight costs a (rare) full-budget burn; a wrongly-emitted one false-halts a *correct*
+  plan — strictly worse — so the heuristic is biased to silence.
 
-**This is the auto-derivation rejection, restated as a contract:** the harness consumes D1+D2 only as
-an **already-authored** `scope: "precondition"` guardrail. It never *derives* applicability itself.
-The skill (a human-reviewed authoring step) makes the D2 call; the harness only *runs* what was
-authored and reviewed.
-
-### Harness surface a Phase-2 implementation touches
-
-Recorded so the scope of the deferred work is honest (every item is **forward design**, not yet in
-the SSOT or the code):
-
-- **Loader / `RawManifests` / `PlanValidator`** — parse and validate the `scope: "precondition"`
-  guardrail value; collect the precondition set; a **new GR code** (next free structural code —
-  **GR2027** against the live `DiagnosticCodes.cs`, whose current highest is GR2026) for a malformed
-  precondition (e.g. a precondition guardrail on a non-root task, or a precondition guardrail that
-  also carries an attempt-lifecycle dependency).
-- **A new scheduler call site** — the preflight phase, invoked **before segment-worktree creation**
-  and after the run-level pre-flight gate. Reuses the attempt-decoupled **`IReVerifier`** seam (SSOT
-  §4.3 — it already runs a guardrail set against arbitrary bytes outside an attempt lifecycle, with
-  cwd = the integration worktree and no `GUARDRAILS_ACTION_*` vars), which is the exact shape a
-  precondition check needs. **No new guardrail machinery** — the precondition set is just a third set
-  the `IReVerifier` runs, at a third site.
-- **A new `TaskOutcome` / journal status / `run.json` record** — a distinct `outcome` (e.g.
-  `precondition-failed`) and/or a run-level preflight record, so a human sees "the run never started:
-  your baseline was broken," not a generic task failure. Distinct from `needs-human` on a task because
-  *no task ran*.
-- **A new exit-code branch in §7** — a preflight halt is an actionable non-green condition. It most
-  naturally maps to **exit 2** (the existing "operation completed but an actionable condition was
-  found" bucket), with the §7 narrative extended to name the preflight halt as one of its causes —
-  rather than minting a brand-new code (KISS: the exit-code space is already a known contract;
-  exit 2 already means "you have something to fix, work is durable / unstarted").
-
-**Explicitly recorded: AUTO-DERIVATION IS REJECTED.** No part of a Phase-2 implementation may have
-the harness infer pre-applicability. The harness runs an *authored* precondition set; it never
-decides *which* checks should be preconditions.
+For Bucket C the keying is different and *easier*: a C precondition is keyed to a **`dependsOn`
+edge** (consumer→producer) the author already drew — "this consumer depends on that producer for
+symbol X." There is no modify-vs-create judgment; there is a concrete delivered artifact named by the
+dependency. **The harness still never derives it** — the skill authors the C precondition against the
+edge, the human reviews it, the harness only runs what was authored (the auto-derivation rejection,
+restated as a contract).
 
 ---
 
-## The BLOCKERs a Phase-2 design MUST confront (acceptance gates)
+## The deferred Bucket-C design (the plan if/when triggered)
 
-From the adversarial lens. These are **not** "considerations" — they are **gates**: a Phase-2 design
-that does not have a concrete answer to each does not ship. Listed as the explicit constraints the
-trigger-time work must clear.
+This is the design to implement **if** the trigger (§"The sharpened trigger") fires **and** the
+folder-vs-flag open decision is resolved — not before. It is recorded now so the decision is captured
+while the 4-lens context is fresh, and so a future implementer inherits a vetted starting point.
 
-- **(a) Cost-on-the-common-green-path / EV-inversion ("many preflights").** A preflight pays only
-  when the *broken-start* case is common enough that the fail-fast saving exceeds the cost of running
-  the check on *every* (usually green) run. One preflight is cheap; **N preflights run unconditionally
-  up front invert the cost model on the common already-green path** — you pay N checks every run to
-  save a rare full-budget burn. **Gate:** the design must show the expected value is positive *as
-  preflights multiply* — bounded by the volume-control gate (§next), and ideally measured (the
-  trigger requires cost evidence). A preflight phase that runs a heavy suite (full build, full test
-  run) on every green run is a tax, not a saving.
+### The model — a per-task JIT precondition at `taskBase`
 
-- **(b) The undecidable modify-vs-create judgment → false-halt + vacuous-green classes.** Already the
-  spine of the determination. **Gate:** the design must keep D2 (modifies-not-creates) **out of the
-  harness entirely** (authoring-only, under-firing) and prove that no precondition guardrail can be
-  auto-applied to a TDD-red / coverage gate. A false-halt (a correct plan refused before it runs) is
-  the worst failure mode here — strictly worse than the burn a missing preflight costs.
+A Bucket-C preflight is a **deterministic check the consuming task runs in its own segment worktree
+at `taskBase`, before its action, that fails fast (without burning a retry attempt) if the
+dependency it builds against was not delivered.** It is *not* a guardrail in the attempt lifecycle (a
+guardrail runs *after* the action and *consumes* an attempt); it is a **precondition** that runs
+*before* the action and short-circuits the attempt loop entirely if the inherited bytes are not as
+the dependency promised.
 
-- **(c) Serial-mode fast-halt — depends on #174 / #182.** A preflight's value is a *cheap* halt. The
-  #174 no-op short-circuit (escalate immediately when the action changed nothing and the gate failure
-  is unchanged) is **worktree-only today** (it needs `taskBase` to prove "no writes"). In serial mode
-  a red doctrine-preflight gate still burns the full retry budget. **Gate:** Phase 2 must not ship the
-  fast-halt promise until **#182** lands the serial-mode fix. (This is *why #182 is Phase 1* — it is a
-  prerequisite for the preflight value proposition, not a tangent.)
+Two candidate realizations remain open (§"The open decision"); both share this runtime shape:
 
-- **(d) Negative-baseline union-inversion (the `tests-fail-on-current-code` false-fail-at-union
-  lesson).** A negative preflight ("not yet present") is, by construction, a check that is **red after
-  the work is done** — exactly the inversion that makes `tests-fail-on-current-code` a `local` (never
-  `integration`) guardrail (#165): re-running it at a union point, after the code it tests is merged,
-  false-fails. **Gate:** a `scope: "precondition"` guardrail must be **excluded from the union
-  re-verify set and from the terminal gate** (it is a pre-DAG one-shot, never re-run on merged bytes),
-  or it re-imports the #165/#132 union-inversion class. The precondition scope must be a *separate*
-  set from the integration set precisely so it is never re-run post-merge.
+- **Where it runs:** in the consuming task's **segment worktree at `taskBase`** — the bytes the
+  consumer actually inherited, *after* its producers merged in. This is the state no pre-DAG phase
+  can see.
+- **When it runs:** inside `TaskExecutor.ExecuteAsync`, **before the attempt loop** — it gates entry
+  to the loop. A pass lets the attempts proceed normally; a fail short-circuits to `needs-human`
+  **without consuming a retry attempt** (the no-burn property).
+- **Read-only:** it precedes the action, so it writes no fragment and no commit (invariant 2). It is
+  a single-shot deterministic byte check (see the live-probe ban below).
+- **Blast radius:** a Bucket-C failure blocks **only that task and its transitive dependents** via
+  the existing scheduler path; **independent branches keep running.** This is *strictly better* than
+  the withdrawn global phase's plan-wide halt — it reduces the old flaky-SPOF BLOCKER (e) from
+  whole-plan to **per-cone**.
 
-- **(e) A flaky root preflight = a plan-wide single point of failure.** A doctrine preflight is a ROOT
-  task every modifier depends on; a first-class preflight halts the *entire run* before it starts. A
-  **flaky** preflight (a slow endpoint check, a timing-sensitive build) therefore fails the **whole
-  plan** intermittently — the blast radius of a flake is maximal. **Gate:** the volume-control gate's
-  "deterministic-and-cheap (NO process start)" rule is a hard constraint, not a preference — a
-  preflight that starts a server / hits a network endpoint is exactly the flaky-SPOF the gate forbids.
-  (This is the same lesson as the v2-deferred E2E-browser archetype, the flakiest guardrail shape —
-  roadmap bet #5.)
+### Live-probe ban (a HARD constraint on Bucket C — lifted verbatim from the volume-control gate)
 
-- **(f) Naming collision — SSOT §2 already uses "pre-flight."** The run-level dirty-tree / git-repo
-  check (GR2015) is **already called "a run pre-flight"** in SSOT §2 ("`guardrails validate` and a run
-  **pre-flight** reject a non-git-top-level workspace"). A first-class **task/phase** "preflight" needs
-  a **distinct name** to avoid two meanings of one word in one contract. **Gate:** before any SSOT
-  edit, choose a non-colliding name. Candidates for the open decision (§"Open decisions"): **baseline
-  phase / baseline check** (matches the doctrine archetype name and the #181 "test baseline"
-  language), or **precondition phase** (matches the proposed `scope: "precondition"` value). The
-  doctrine (Phase 0) sidesteps the collision entirely by using **"baseline"** in the catalogue, never
-  "preflight" — preserving "pre-flight" for the run-level gate. **Recommendation: standardize on
-  "baseline" for the archetype and "precondition" for the scope value; reserve "pre-flight" for the
-  run-level §2 gate.**
+A Bucket-C precondition is a **deterministic byte check only**: **single-shot, NO process start, NO
+poll, NO network.** The intuitive "is my dependency's endpoint *up*?" must be expressed as a
+**byte-check on the wired source** (e.g. `Select-String 'MapGet("/health")'` over the producer's
+committed file in `taskBase`), **never** as `Invoke-WebRequest` / a live HTTP call. This is the same
+rule the volume-control gate's "deterministic-and-cheap (NO process start)" clause states for
+baselines; it is **lifted verbatim into the Bucket-C contract**, not softened. A live probe in a
+precondition is exactly the flake the ban exists to forbid — and even reduced to per-cone (above), a
+flaky precondition is a needless intermittent block on a whole sub-DAG.
+
+### Harness feasibility (the harness-developer assessment — a feasibility note, still gated)
+
+Recorded as the forward implementation shape so the deferred scope is honest. **Every item is forward
+design, not yet in the SSOT or the code:**
+
+- **Slot-in point:** Bucket C slots into `TaskExecutor.ExecuteAsync` **before the attempt loop**.
+- **Runner reuse:** it reuses the existing attempt-decoupled **`IReVerifier`** seam (SSOT §4.3 — it
+  already runs a guardrail set against arbitrary bytes outside an attempt lifecycle, cwd = a given
+  worktree, no `GUARDRAILS_ACTION_*` vars) — here pointed at the consumer's `taskBase`. **No new
+  guardrail-runner machinery.**
+- **Parallelism:** naturally parallel — each consumer evaluates its own precondition in its own
+  worktree; dependents block via the **existing scheduler path** (the same closure used for
+  `needs-human` propagation).
+- **It DISSOLVES the #182 / serial-mode prerequisite** the withdrawn global design treated as a
+  blocker: a Bucket-C precondition **short-circuits the loop and never enters the retry budget**, in
+  **both** modes — so the "cheap halt depends on the serial-mode no-op short-circuit" coupling
+  (BLOCKER (c)) does not apply to C. (It still applied to the *doctrine* Bucket-A red-halt, which is
+  why #182 shipped — but C's fail-fast is structural, not budget-dependent.)
+- **Outcome:** `precondition-failed` → `needs-human` → **exit 2** (no new exit code — exit 2 already
+  means "actionable condition found; work durable / unstarted").
+- **Effort: S–M.**
+
+These are the **forward implementation shape**, still gated on the trigger and the open decision.
+
+> **Worked example.** A SIMULATED breakdown lives at
+> [`09-preflight-first-class/example/`](09-preflight-first-class/example/). It currently illustrates
+> the *earlier* (global pre-DAG `scope:"precondition"`) shape and **will be re-authored to the
+> partition in a separate reviewed step** — recasting its three "preflight" tasks as a Bucket-A
+> doctrine root, a Bucket-B one-shot, and a single Bucket-C consuming-task illustration (folder or
+> flag), with the simulated third scope value removed. Until then, read the example as *historical*
+> against this revised doc; the re-author spec is in the rewrite report accompanying this change.
+
+**Explicitly recorded: AUTO-DERIVATION IS REJECTED.** No part of a Bucket-C implementation may have
+the harness infer pre-applicability. The harness runs an *authored* precondition; it never decides
+*which* checks should be preconditions. The skill authors the C precondition against a `dependsOn`
+edge, the human reviews it.
 
 ---
 
-## Volume-control gate (the "worth-it" rule — carry into any design)
+## The open decision — `<task>/preflights/` folder vs `task.json` no-burn flag (DO NOT resolve here)
 
-A preflight (doctrine OR first-class) is emitted **only** when **all** of the following hold. This is
-the skill-author's discipline that keeps "many preflights" from inverting the cost model (BLOCKER
-(a)) and from becoming a flaky SPOF (BLOCKER (e)):
+**How Bucket C is realized is unsettled.** This is the load-bearing open decision; this document
+frames it and does **not** resolve it. Two options, then the decisive question.
+
+### Option 1 — a new optional `<task>/preflights/` folder
+
+A consuming task gains an optional sibling of `guardrails/` named `preflights/`, holding ≥1
+deterministic check run at `taskBase` before the action. Strengths (the architect's earlier
+preference):
+
+- **Self-documenting** — `preflights/` *names* the precondition concept on disk; a reviewer sees it
+  is not an ordinary guardrail.
+- **Physically separate from lifecycle guardrails** — it is structurally *impossible* for a
+  precondition to drift into the attempt lifecycle, the integration set, or the terminal gate, because
+  it lives in a different folder the runner treats differently. (This directly answers the
+  union-inversion concern by construction — see BLOCKER (d) disposition.)
+
+Costs: a **new folder** in the task contract; a **new `TaskOutcome.precondition-failed`**; a **new
+GR2027** (next free structural code — live highest is GR2026 — for a malformed `preflights/` entry,
+e.g. a non-deterministic precondition or a precondition with no `dependsOn` edge to key against); and
+a **validator surface** to parse/validate it.
+
+### Option 2 — a `task.json` flag on the existing FIRST guardrail
+
+The devil's-advocate **F5 reduction**: if the *only* behavioral delta over "the consuming task's own
+first guardrail" is **fail-fast without burning a retry attempt**, then a **one-line `task.json`
+flag** — marking the task's existing first guardrail as a no-retry-burn precondition — **beats a whole
+new folder.** No new folder, no new outcome string beyond a flag's branch, far less validator surface.
+The check still lives in `guardrails/01-…`; the flag changes only *when* it runs (before the action,
+gating loop entry) and *what a failure costs* (no attempt burned).
+
+### The decisive question (answer BEFORE any build)
+
+**Is a Bucket-C dependency-delivery check genuinely DISTINCT from "the consuming task's first
+guardrail + a no-burn flag"?**
+
+- **If the only delta is no-burn fail-fast → Option 2 wins.** A precondition that is just "run the
+  consumer's first check early and don't spend an attempt if it fails" is a *scheduling* tweak, and a
+  flag is the KISS expression of a scheduling tweak. A new folder would be ceremony (the
+  no-machinery-for-no-new-behavior rule again).
+- **If it needs true precondition semantics the guardrail lifecycle cannot express → Option 1 wins.**
+  If a C check must run *before* the action with a *distinct outcome* and a *distinct on-disk
+  identity* that a lifecycle guardrail structurally cannot carry (e.g. it must never be eligible for
+  the integration set, never be retried, never be confused with a postcondition), then the folder
+  earns its surface.
+
+**This is the load-bearing open decision. It is NOT resolved here.** It is resolved at trigger time,
+informed by the *real captured instance* the trigger requires — because the instance's shape is what
+tells us whether the delta is "just no-burn" (Option 2) or "true precondition semantics" (Option 1).
+Deciding it now, before an instance exists, risks building the wrong one.
+
+---
+
+## The BLOCKERs and their dispositions under the partition
+
+From the adversarial lens. The withdrawn global pre-DAG phase had to clear all six as live gates; the
+**partition dissolves or reduces most of them**, because Bucket C is a per-task JIT check on the live
+path, not an up-front whole-plan phase. Each is recorded with its disposition.
+
+- **(a) Cost-on-the-common-green-path / EV-inversion ("many preflights") — REDUCED.** The global phase
+  ran N checks unconditionally up front on every (usually green) run — an EV-inversion as preflights
+  multiply. **Bucket C runs only along the LIVE path:** a consumer's precondition runs only when that
+  consumer runs, gated by its own `dependsOn` arrival — there is **no unconditional up-front cost**.
+  Bucket A stays **deduped one-per-area** (the volume-control gate). The EV-inversion of "N preflights
+  every run" does not arise for C, and is bounded for A by dedup. Still bounded by the volume-control
+  gate below.
+
+- **(b) The undecidable modify-vs-create judgment → false-halt + vacuous-green — UNCHANGED for A/B,
+  N/A for C.** D2 (modifies-not-creates) stays **out of the harness entirely** (authoring-only,
+  under-firing) for Bucket-A/B baselines. **Bucket C does not face D2 at all** — it is keyed to a
+  concrete `dependsOn` edge naming a delivered artifact, not to a modify-vs-create intent judgment. A
+  false-halt (a correct plan refused) remains the worst failure mode for A/B authoring; the under-fire
+  rule and `guardrails-review` are the mitigation.
+
+- **(c) Serial-mode fast-halt (depends on #174 / #182) — DISSOLVED for C.** The withdrawn design
+  coupled the cheap halt to the #174/#182 no-op short-circuit (worktree-only until #182). **Bucket C
+  does not need that coupling:** a precondition **short-circuits the attempt loop and never enters the
+  retry budget**, in **both** serial and worktree mode (harness feasibility note). #182 still shipped
+  for the *doctrine* Bucket-A red-halt (a real Phase-1 need), but C's fail-fast is **structural**, not
+  budget-dependent — so this is no longer a Bucket-C blocker.
+
+- **(d) Negative-baseline union-inversion — DISSOLVED for C; it is the REASON B is one-shot-only.**
+  A negative check is red after the work is done — re-running it post-merge false-halts (#165/#132).
+  Disposition is two-sided: **(i) Bucket C never joins the integration / union / terminal set** (it is
+  a per-task precondition at `taskBase`, never re-run on merged bytes — by construction under either
+  realization: a `preflights/` folder the runner never adds to the integration set, or a flagged
+  guardrail that gates loop-entry only). **(ii) This same inversion is precisely WHY Bucket B negative
+  polarity is FORBIDDEN per-task** and stays a one-shot at the run's start — a negative check at a
+  downstream `taskBase` sees earlier merges and false-halts. Union-inversion is dissolved for C and is
+  the load-bearing argument for B's one-shot placement.
+
+- **(e) A flaky preflight = a single point of failure — REDUCED from plan-wide to per-cone.** The
+  global phase halted the *entire run* on a flake (maximal blast radius). **A Bucket-C failure blocks
+  only that task + its transitive dependents; independent branches keep running** (harness feasibility
+  note). Combined with the **live-probe ban** (deterministic byte checks only — NO process start, poll,
+  or network), a C precondition cannot be a network-flake SPOF at all, and even a deterministic
+  failure is scoped to one cone. **Strictly better than the global phase's plan-wide halt.**
+
+- **(f) Naming collision (`scope: "precondition"` vs SSOT §2 "pre-flight") — DISSOLVED.** The withdrawn
+  design proposed a *third* guardrail-`scope` value `"precondition"`, colliding with the run-level
+  "pre-flight" gate (GR2015) in SSOT §2. **Bucket C uses neither a third scope value nor the word
+  "preflight" as a scope:** it is a `<task>/preflights/` **folder** (Option 1) or a `task.json`
+  **flag** (Option 2). No third `scope` value is added. The collision does not arise. (The doctrine
+  archetype keeps using **"baseline"** in the catalogue — never "preflight" — preserving "pre-flight"
+  for the run-level §2 gate, exactly as today.)
+
+---
+
+## Volume-control gate (the "worth-it" rule — re-pointed to the partition)
+
+The volume-control gate is the skill-author's discipline that keeps preflights from inverting the
+cost model and from becoming a flaky SPOF. **Under the partition it splits cleanly by destination:**
+
+**For a SHARED baseline (Bucket A — a doctrine no-op ROOT task), emit ONLY when ALL hold:**
 
 1. **Pre-exists** — the baselined thing already exists in the repo (D1, decidable from the Step-0
    scan). Nothing to baseline otherwise.
 2. **Modifies** — the task *modifies* it, not *creates / replaces* it (D2, the authoring heuristic —
    **under-fire** when in doubt).
-3. **Deterministic-and-cheap — NO process start.** The baseline check is a fast deterministic
-   evaluation (a file grep, a static analysis, an already-fast unit subset) — **never** a server
-   start, a network endpoint hit, or a flaky timing-dependent probe (BLOCKER (e)). A preflight that
-   needs a process up is exactly the flaky SPOF the gate forbids.
-4. **Strictly-narrower-than-the-terminal-gate.** The preflight verifies *less* than the run's
-   terminal whole-repo gate (it baselines the *touched area*, not the whole repo). A preflight that
-   duplicates the terminal gate's full suite is the cost-inversion of BLOCKER (a) — pay the whole gate
-   twice.
+3. **Deterministic-and-cheap — NO process start.** A fast deterministic evaluation (a file grep, a
+   static analysis, an already-fast unit subset) — **never** a server start, a network endpoint hit,
+   or a flaky timing-dependent probe. (This same clause is **lifted verbatim into the Bucket-C
+   live-probe ban**.)
+4. **Strictly-narrower-than-the-terminal-gate.** The baseline verifies *less* than the run's terminal
+   whole-repo gate (it baselines the *touched area*, not the whole repo) — never a duplicate of the
+   terminal suite.
 5. **Shared-by-≥2-tasks.** The baseline is a precondition for **two or more** modifier tasks. A
-   baseline relevant to exactly one task is just that task's own first guardrail — no preflight needed.
+   baseline relevant to exactly one task is just that task's own first guardrail — no baseline needed.
 6. **Deduped-per-area.** One baseline per touched area, not one per task — N tasks touching the same
-   area share ONE baseline node (this is the polish a first-class phase buys over N `dependsOn`
-   edges; in doctrine it is one ROOT task the N tasks depend on).
+   area `dependsOn` ONE no-op ROOT task.
 
-If a candidate preflight fails **any** of these, it is **not emitted** — it stays an ordinary task
+**For a PER-TASK dependency-delivery precondition (Bucket C — DEFERRED), additionally:** the
+**live-probe ban** (clause 3 verbatim — deterministic byte check, NO process/poll/network); the check
+is **positive / monotone-safe under merges** (not negative — negatives are Bucket B, one-shot); and it
+is **not reducible** to a plain `dependsOn` edge or the consumer's own first guardrail (else it is not
+a distinct preflight — the open decision's decisive question). Bucket C is *not* subject to the
+"shared-by-≥2 / deduped-per-area" clauses — it is intrinsically per-consumer.
+
+If a candidate fails **any** applicable clause, it is **not emitted** — it stays an ordinary task
 guardrail (or is omitted). The gate is biased to *not* emit, consistent with the under-fire rule.
 
 ---
 
-## Trigger criteria for Phase 2 (the gate to actually do first-class)
+## The sharpened trigger for Bucket C (the gate to actually build it)
 
-Phase 2 stays deferred **until both** of the following are demonstrated — not argued, demonstrated:
+The earlier trigger ("a dogfooded *non-test* preflight + cost evidence that *many* preflights pay")
+was aimed at the withdrawn global phase. The partition **replaces it** with a trigger aimed precisely
+at Bucket C. Build Bucket C **ONLY** when a DOGFOODED case appears that is **ALL** of:
 
-1. **A dogfooded NON-test preflight the doctrine archetype genuinely cannot express.** A real
-   breakdown of a real plan produces a preflight that is *not* a unit-test baseline (an endpoint-up
-   baseline, a registration-present baseline, a route-resolves baseline) **and** that the
-   no-op-ROOT-task + guardrail + `dependsOn` doctrine pattern cannot cleanly capture. If the doctrine
-   pattern captures it, there is nothing first-class to build (the field would be ceremony, per the
-   determination). The non-test requirement is deliberate: the test baseline (#181) is already proven
-   to fit doctrine, so it can never be the trigger.
+- **(a) Task-local** — about a value an *earlier task in the run* produced into the consumer's
+  `taskBase`, **not** run-global like start-from-green (which is Bucket A doctrine).
+- **(b) Positive-polarity / monotone-safe under merges** — "the type / route / symbol IS present,"
+  which only becomes *more* true as merges land — **not** negative / assert-absent (which is Bucket B,
+  forbidden per-task, one-shot at the start).
+- **(c) NOT reducible** to the consuming task's own first guardrail **or** to a plain `dependsOn`
+  edge. If a `dependsOn` edge already guarantees the producer ran and the consumer's first guardrail
+  already catches the missing symbol at normal attempt cost, there is nothing distinct to build — this
+  is the open decision's decisive question, applied as a trigger clause.
+- **(d) NOT already caught by the #174/#182 no-op short-circuit** — if the consumer's first attempt
+  already fails-and-escalates cheaply via the existing no-op short-circuit, the marginal value of a
+  precondition is nil.
 
-2. **Measured cost evidence that multiple preflights pay.** Real run data (journal cost
-   aggregation, SSOT §7) showing that the broken-start case is common enough, and the preflight cheap
-   enough, that running the precondition set up front on every (mostly green) run has **positive
-   expected value as preflights multiply** (BLOCKER (a)). Intuition is not evidence; the cost cap and
-   per-attempt cost are already logged in v1, so this is measurable.
+**Candidate archetypes (not yet captured):** the **#176 transitive-compile-dependency** shape (a
+consumer that compiles against a type a non-adjacent producer was supposed to add) and the **#159
+stale-union** shape are the most likely places a real Bucket-C instance will surface. **But a REAL
+captured instance is required — not a hypothesized one.** A worked sketch is not a trigger; a dogfood
+run that *actually* produced the shape, with the four clauses demonstrably satisfied, is.
 
-**Until both fire, Phase 2 does not start.** Doctrine (Phase 0) + the #182 fix (Phase 1) are the
-delivered answer to #183. This issue (#183) remains the durable home for the trigger watch.
+**Absent such an artifact, Bucket C stays deferred and the per-task-JIT pushback is recorded as
+"considered; scoped to dependency-delivery; gated."** Buckets A (doctrine, shipped) and B (doctrine
+one-shot) + the #182 fix are the delivered answer to #183. This issue (#183) remains the durable home
+for the trigger watch.
 
 ---
 
 ## Contract / SSOT impact
 
-**Phase 0 (doctrine): NO contract change.** The principle is expressible with the existing
-`task.json`, guardrail, and `dependsOn` primitives. There is **nothing to edit in
-`02-schemas-and-contracts.md`** — which is itself the proof that it is doctrine, not a feature
-(invariant 4). The change lives entirely in the `plan-breakdown` catalogue and `guardrails-review`
-(skill files), not the SSOT.
+**THIS REWRITE MAKES NO SSOT CHANGE.** Bucket C stays deferred; per invariant 4 a contract lands in
+`02-schemas-and-contracts.md` only in the change that implements it. This section is a **forward
+design** so the future change is pre-scoped — nothing here is applied now.
 
-**Phase 1 (#182): a behavior fix, no new contract.** The #174 no-op short-circuit (SSOT §7) is
-extended to fire in serial mode; the §7 narrative gains a sentence on serial-mode coverage. No new
-field, status, or code — it is a fix to a documented mechanism.
+**Buckets A + B (doctrine): NO contract change.** Expressible with the existing `task.json`,
+guardrail, and `dependsOn` primitives — the proof that they are doctrine, not features (invariant 4).
+The change lives entirely in the `plan-breakdown` catalogue and `guardrails-review` (skill files).
 
-**Phase 2 (DEFERRED): the forward SSOT edits — NOT YET APPLIED.** Recorded here as a forward design
-so the scope is honest; they land in the SSOT **only** in the change that implements Phase 2
-(invariant 4). Spelled out for that future change:
+**#182 (serial-mode no-op short-circuit): a behavior fix, no new contract.** The #174 no-op
+short-circuit (SSOT §7) was extended to fire in serial mode; the §7 narrative gained a sentence on
+serial-mode coverage. No new field, status, or code.
 
-- **§4.3 (Guardrail scope)** — add a **third** value: `scope: "precondition"`. A precondition
-  guardrail is collected into the run's **precondition set**, run **once** by the pre-DAG preflight
-  phase against the integration worktree at user HEAD, **NEVER** part of an attempt lifecycle, **NEVER**
-  re-run at a union point, and **NEVER** part of the terminal integration gate (BLOCKER (d) — it would
-  union-invert). Explicitly distinct from both `"local"` and `"integration"`.
-- **§3 / §3.x (task.json)** — the baseline ROOT task carries its precondition guardrail(s); a new
-  validation rule (preconditions only on a root/no-dependency task; never mixed with attempt-lifecycle
-  guardrails on the same task).
-- **§7 (run.json / outcomes)** — a new `outcome` (e.g. `precondition-failed`) and a run-level preflight
-  record: "the run did not start — baseline X was broken / unexpectedly present." Distinct from a task
-  `needs-human` because no task ran.
-- **§7.1 (exit codes)** — extend the **exit 2** narrative to name the preflight halt as one of its
-  causes (no new code — exit 2 already means "actionable condition found").
-- **Diagnostic codes** — **GR2027** (next free structural code; live highest is GR2026) for a
-  malformed precondition declaration.
-- **Naming** — adopt the BLOCKER (f) resolution: "**precondition**" for the scope value, "**baseline**"
-  for the authoring archetype, and reserve "**pre-flight**" for the existing run-level §2 gate. The
-  word "preflight" (one word, no hyphen) is avoided in the SSOT to prevent the collision.
+**Bucket C (DEFERRED): the forward SSOT edits — NOT YET APPLIED, and SHAPE-DEPENDENT on the open
+decision.** The edit set differs by realization; both are recorded so whichever wins is pre-scoped:
+
+- **If Option 1 (`<task>/preflights/` folder):**
+  - **§3 / §3.x (task.json / task folder layout)** — define the optional `<task>/preflights/` sibling
+    of `guardrails/`: ≥1 deterministic check, run at `taskBase` before the action, keyed to a
+    `dependsOn` edge. A new validation rule (preconditions are deterministic-only — live-probe ban;
+    keyed to an existing `dependsOn` edge).
+  - **§7 (run.json / outcomes)** — a new `outcome`: **`precondition-failed`** → `needs-human` (the
+    consuming task did not start its action). Distinct from a postcondition `needs-human`.
+  - **§7.1 (exit codes)** — extend the **exit 2** narrative to name a precondition halt as one of its
+    causes (**no new code** — exit 2 already means "actionable condition found; work durable /
+    unstarted").
+  - **Diagnostic codes** — **GR2027** (next free structural code; live highest is GR2026) for a
+    malformed `preflights/` entry.
+- **If Option 2 (`task.json` no-burn-precondition flag):**
+  - **§3 / §3.x (task.json)** — a single optional flag marking the task's existing FIRST guardrail as
+    a no-retry-burn precondition (run before the action, gating loop entry; a failure does not consume
+    an attempt). Far smaller surface — **no new folder, no new scope value.**
+  - **§7 / §7.1** — the same `precondition-failed` / exit-2 disposition; possibly no GR2027 if the
+    flag's validation folds into existing guardrail validation.
+- **In NEITHER option** is a third `scope` value (`"precondition"`) added — the partition dissolved
+  that (BLOCKER (f)). **Naming** stays: "**baseline**" for the Bucket-A/B authoring archetype,
+  "**precondition**" for the Bucket-C concept, and "**pre-flight**" reserved for the run-level §2 gate;
+  the word "preflight" as a *scope value* is not introduced.
 
 ---
 
-## Open decisions (resolve BEFORE Phase 2 starts)
+## Open decisions (resolve BEFORE Bucket C is built)
 
-1. **The name (BLOCKER (f)).** Confirm "precondition" (scope value) + "baseline" (archetype) +
-   "pre-flight" reserved for the run-level §2 gate. (Recommended above; needs the product owner's
-   sign-off because it touches the SSOT vocabulary.)
-2. **Precise `scope: "precondition"` semantics.** Exactly which guardrail forms may carry it
-   (deterministic-only, per the cheap-no-process gate? or prompt preconditions too?); whether a
-   precondition guardrail may read `GUARDRAILS_STATE_IN` (probably not — no state exists pre-DAG).
-3. **Where the preflight phase runs, precisely.** Confirmed-recommended: against the **integration
-   worktree at user HEAD**, after the run-level pre-flight gate, before segment-worktree creation. The
-   open part: in **serial mode** (no integration worktree) it runs against the user's checkout
-   read-only — confirm that is acceptable and that it is genuinely read-only there.
-4. **The exit-code / journal additions.** Confirm exit 2 (not a new code) and the exact new `outcome`
-   string (`precondition-failed`?).
-5. **Negative-polarity expression.** Confirm a negative preflight is "the same `scope: "precondition"`
-   guardrail with inverted pass/fail," cross-referenced to `tests-fail-on-current-code`, rather than a
-   separate construct.
+1. **THE LOAD-BEARING ONE — `<task>/preflights/` folder (Option 1) vs `task.json` no-burn flag
+   (Option 2)** (§"The open decision"). Decided by the decisive question: is a Bucket-C check
+   genuinely distinct from "the consumer's first guardrail + a no-burn flag"? Resolved at trigger
+   time, **informed by the real captured instance** the trigger requires — *not* pre-decided here.
+2. **`precondition-failed` outcome + exit-2 mapping.** Confirm the new `outcome` string
+   (`precondition-failed`) and that it maps to **exit 2** (no new code). Common to both options.
+3. **GR2027 scope.** Whether a malformed precondition needs a dedicated **GR2027** (Option 1, a
+   `preflights/` entry) or folds into existing guardrail validation (Option 2, a flag).
+4. **Precondition read-surface.** Whether a Bucket-C precondition may read `GUARDRAILS_STATE_IN`
+   (it runs after producers, so producer state *does* exist at `taskBase` — unlike the withdrawn
+   pre-DAG phase) — and the live-probe ban (deterministic byte check only) as a hard validation rule.
+5. **Naming confirmation.** "**baseline**" for the Bucket-A/B archetype, "**precondition**" for the
+   Bucket-C concept, "**pre-flight**" reserved for the run-level §2 gate; no new `scope` value, no
+   "preflight" scope token. (Recommended; touches SSOT vocabulary, needs product-owner sign-off.)
 
 ---
 
 ## Devil's-advocate self-critique
 
-Run against my own determination, per the operating contract. The strongest counter-arguments and my
+Run against my own partition, per the operating contract. The strongest counter-arguments and my
 responses:
 
-- **Counter (strongest): "Deferring first-class is just deferring the unification — you will end up
-  with the doctrine no-op-ROOT-task pattern *plus* a half-considered field later, which is more total
-  complexity than designing it once now."** *Response:* This is the real risk, and it is why this
-  document exists — the Phase-2 design is recorded **now**, while the 4-lens context is fresh, so
-  "later" inherits a vetted design, not a blank page. But designing the *contract* now (and putting it
-  in the SSOT) would violate invariant 4 (a contract the harness does not yet honor) and the
-  no-ceremony rule, and — decisively — we **do not yet know** whether the field buys capability over
-  doctrine, because no non-test preflight has been dogfooded. Building the field before that evidence
-  risks building the *wrong* field (e.g. one shaped only for the test case #181, which doctrine already
-  handles). The deferral is not "decide later with no plan"; it is "execute *this* plan when evidence
-  arrives." That is cheaper than building a speculative contract and reworking it.
+- **Counter (strongest, against the partition itself): "Three buckets is over-taxonomy. You have
+  manufactured a distinction (A vs B vs C) to *look* like you resolved the per-task-vs-global pushback,
+  when in truth all three are 'a deterministic check run before some work' and a single mechanism could
+  carry all three — the partition is complexity dressed as rigor."** *Response:* The buckets are not a
+  presentation device — they differ on a **load-bearing operational axis** that a single mechanism
+  provably cannot span: **where and when the claim is true.** A (start-from-green) is true only against
+  the run's *starting* bytes; B (assert-absent) is true only at the run's *start* and false ever after
+  (it union-inverts if re-run); C (dependency-delivered) is true only in a *consumer's* worktree
+  *after a producer merged in*. A single "global pre-DAG phase" can express A and B but is *structurally
+  blind* to C (no producer has run). A single "per-task JIT check" can express C but **lies or
+  duplicates** for A (no honest per-task home) and **false-halts** for B (union-inversion at a
+  downstream `taskBase`). No one mechanism spans all three without one of these failures — that
+  impossibility *is* the partition. The taxonomy earns its keep by telling us A/B are doctrine (no
+  build) and only C is a first-class candidate (and even C is gated). It *reduces* total built
+  machinery, it does not add it.
 
-- **Counter: "The volume-control gate's 'deterministic-and-cheap, no process start' rule (BLOCKER (e))
-  rules out the most compelling preflight — 'is the endpoint already up?' — which is the exact 'plane
-  on the runway' intuition #183 opens with."** *Response:* Correct, and this is an honest tension. An
-  endpoint-up preflight is *exactly* the flaky SPOF that fails a whole plan intermittently. The gate
-  does not forbid baselining an endpoint forever — it forbids it **as a cheap deterministic preflight**;
-  a server-dependent baseline belongs in a task's own guardrail (where its flake blast-radius is one
-  task with a retry budget), not in a pre-DAG phase that halts the whole run. If a dogfooded case
-  proves an endpoint preflight is *worth* the flake risk, that is precisely Trigger criterion 1
-  ("a non-test preflight the doctrine cannot express") — and the Phase-2 design would then have to
-  confront BLOCKER (e) head-on (e.g. a bounded-retry preflight phase). The gate is the conservative
-  default, not a permanent veto.
+- **Counter: "The live-probe ban rules out the most compelling preflight — 'is my dependency's
+  endpoint *up*?' — which is the exact 'plane on the runway' intuition #183 opens with."** *Response:*
+  Correct, and it is an honest tension — but the partition handles it better than the withdrawn global
+  phase did. A live endpoint probe is *exactly* the flaky SPOF the ban forbids. Under the partition the
+  ban costs less: the "endpoint up" intuition becomes a **byte-check on the wired source** in the
+  consumer's `taskBase` (the route is `MapGet`-registered in the producer's committed file) — which is
+  deterministic, single-shot, and *is* expressible as Bucket C. A genuinely *live* check still belongs
+  in a task's own guardrail (flake blast-radius = one task's retry budget), exactly as
+  `05-wire-…`'s `health-still-200` does in the example. The ban is a conservative default lifted
+  verbatim from the volume-control gate, not a new veto.
 
-- **Counter: "Three guardrail scope values (`local` / `integration` / `precondition`) is scope-creep
-  on §4.3 — the scope field was supposed to be a binary local/integration distinction."** *Response:*
-  Granted that a third value adds surface. But it is the *minimal* expression of "run once, pre-DAG,
-  never at a union" — the alternative (a separate `task.json` boolean + a parallel collection
-  mechanism) is *more* surface and duplicates the set-collection the `scope` field already does. And
-  critically, the third value is **deferred** — it lands only with Phase 2, only if the trigger fires;
-  it is not speculative surface added now. If the trigger never fires, §4.3 stays binary forever.
+- **Counter: "Reserving Bucket C as a per-task JIT slice is just the pushback re-badged — you conceded
+  the per-task model and dressed the concession as a partition."** *Response:* Partly conceded, and
+  that is the honest record: the pushback's *half that is right* (a genuine per-task JIT need exists) is
+  adopted as Bucket C. The *half that is wrong* (that ALL preflight is per-task JIT, including
+  start-from-green) is rejected with a concrete failure for each: A has no honest per-task home, B
+  false-halts per-task. So this is not a re-badge — it is an adjudication that took one slice and
+  refused the other two, with stated reasons. And even the adopted slice is **gated** behind a real
+  captured instance and the folder-vs-flag decision, so nothing is conceded into a build prematurely.
 
-- **Counter: "Phase 1 (#182) is being smuggled in as 'part of preflight' when it is really a
-  standalone serial-mode bug fix."** *Response:* True that #182 is a standalone fix; false that it is a
-  smuggle. It is named as Phase 1 precisely because the *preflight value proposition* (a cheap
-  red-halt) is **dependent** on it in serial mode (BLOCKER (c)) — shipping doctrine preflights while
-  the serial-mode halt still burns the full budget would deliver a half-working promise. Listing the
-  dependency explicitly is the honest move; #182 ships on its own merits regardless.
+- **Counter: "The folder-vs-flag decision is being dodged — an architect who cannot decide between a
+  new folder and a one-line flag has not finished the design."** *Response:* It is deliberately, not
+  lazily, left open. The decisive question — is a C check distinct from "the consumer's first guardrail
+  + a no-burn flag"? — is **answerable only by the shape of a real instance**, which the trigger
+  requires before any build. Deciding now, instance-free, is precisely how one builds the *wrong*
+  surface (a whole `preflights/` folder for what turns out to be a one-line flag, or a flag too weak
+  for what turns out to need true precondition semantics). The KISS-correct move is to record both
+  options, the question that chooses between them, and the artifact that answers the question — then
+  stop. That is finished design discipline, not an unfinished design.
 
 ---
 
 ## Implementation handoff (agent + filesTouched + sequencing)
 
-**This plan authorizes NO Phase-2 implementation.** The handoff below is the **trigger-time** plan —
-the sequence to execute *if and only if* the §"Trigger criteria" fire. What ships *now* (Phase 0 +
-Phase 1) is handed off under #181 and #182, not under this document.
+**This plan authorizes NO Bucket-C implementation.** The handoff below is the **trigger-time** plan —
+the sequence to execute *if and only if* the §"The sharpened trigger" criteria fire. Buckets A + B
+ship *now* as doctrine under #181 (+ the #182 fix), not under this document.
 
-**Now (Phase 0 + Phase 1 — under #181 / #182, for reference, not this plan's deliverable):**
-- `guardrails-skill-author` — `plan-breakdown` catalogue (the "baseline" archetype: positive +
-  negative polarity, the volume-control gate, the under-fire D2 rule, cross-reference to
-  `tests-fail-on-current-code`) + `guardrails-review` probe. `filesTouched`:
-  `.claude/skills/plan-breakdown/**`, `.claude/skills/guardrails-review/**`. (#181)
+**Now (doctrine, Buckets A + B — under #181 / #182, for reference, not this plan's deliverable):**
+- `guardrails-skill-author` — `plan-breakdown` catalogue (the "baseline" archetype: positive (A) +
+  negative (B) polarity, the volume-control gate, the under-fire D2 rule, cross-reference to
+  `tests-fail-on-current-code`, and the explicit "A is NOT per-task / B is one-shot-only" rules) +
+  `guardrails-review` probe. `filesTouched`: `.claude/skills/plan-breakdown/**`,
+  `.claude/skills/guardrails-review/**`. (#181)
 - `guardrails-harness-developer` — the #182 serial-mode no-op short-circuit fix + tests.
-  `filesTouched`: `src/Guardrails.Core/Execution/**` (the short-circuit), `tests/**`. (#182)
+  `filesTouched`: `src/Guardrails.Core/Execution/**` (the short-circuit), `tests/**`. (#182, shipped)
 
-**Trigger-time (Phase 2 — gated, do NOT start until the trigger fires):**
-1. **Architect (this agent)** — re-open this plan, resolve the §"Open decisions", deliver the Phase-2
-   design as a **draft PR for inline human review** (#106 design-of-record → draft-PR loop) **before**
-   any implementation milestone. `filesTouched`: `docs/plans/09-preflight-first-class.md` (promote from
-   DEFERRED to active) + the verbatim `docs/plans/02-schemas-and-contracts.md` edit set.
-2. **`guardrails-harness-developer`** — `scope: "precondition"` parsing/validation (GR2027), the
-   precondition-set collection, the pre-DAG preflight phase (reusing `IReVerifier`), the new
-   `TaskOutcome` / journal record, the exit-2 branch extension. `filesTouched`:
-   `src/Guardrails.Core/Loading/**`, `src/Guardrails.Core/Execution/**`, `src/Guardrails.Core/Model/**`,
+**Trigger-time (Bucket C — gated, do NOT start until the trigger fires AND a real instance is
+captured):**
+1. **Architect (this agent)** — re-open this plan, **resolve the folder-vs-flag open decision against
+   the captured instance**, resolve the remaining §"Open decisions", deliver the Bucket-C design as a
+   **draft PR for inline human review** (#106 design-of-record → draft-PR loop) **before** any
+   implementation milestone. `filesTouched`: `docs/plans/09-preflight-first-class.md` (promote from
+   DEFERRED to active) + the verbatim `docs/plans/02-schemas-and-contracts.md` edit set (whichever
+   option won).
+2. **`guardrails-harness-developer`** — the chosen Bucket-C realization: **Option 1** =
+   `<task>/preflights/` folder parsing/validation (GR2027) + the `TaskExecutor.ExecuteAsync`
+   pre-attempt-loop precondition check (reusing `IReVerifier` at `taskBase`) + `precondition-failed`
+   outcome + exit-2 branch; **Option 2** = the `task.json` no-burn-precondition flag + the same
+   pre-loop gating + outcome. `filesTouched`: `src/Guardrails.Core/Loading/**`,
+   `src/Guardrails.Core/Execution/**` (the `TaskExecutor` pre-loop slot), `src/Guardrails.Core/Model/**`,
    `src/Guardrails.Cli/**`, `docs/plans/02-schemas-and-contracts.md` (same change), `tests/**`.
-   Sequencing: SSOT edit + parsing/validation first, then the phase + outcome + exit code.
-3. **`guardrails-skill-author`** — upgrade the doctrine "baseline" archetype to emit `scope:
-   "precondition"` for the qualifying cases, keeping the doctrine no-op-ROOT-task form for the rest.
-   `filesTouched`: `.claude/skills/plan-breakdown/**`, `.claude/skills/guardrails-review/**`.
-4. **`guardrails-test-author`** — precondition-phase tests, the false-halt / union-inversion negative
-   tests (BLOCKERs (b) + (d)), the serial-mode read-only assertion. `filesTouched`: `tests/**`.
+   Sequencing: SSOT edit + parsing/validation first, then the pre-loop check + outcome + exit code.
+3. **`guardrails-skill-author`** — teach the catalogue to emit the Bucket-C precondition (folder or
+   flag) for the qualifying dependency-delivery case, keyed to the `dependsOn` edge, keeping Bucket-A/B
+   doctrine unchanged. `filesTouched`: `.claude/skills/plan-breakdown/**`,
+   `.claude/skills/guardrails-review/**`.
+4. **`guardrails-test-author`** — Bucket-C pre-loop tests (pass → loop proceeds; fail → `needs-human`
+   with **no attempt burned**, in BOTH modes), the **never-joins-the-integration-set** assertion
+   (BLOCKER (d)), the per-cone blast-radius test (independent branches keep running), and the
+   live-probe-ban rejection test. `filesTouched`: `tests/**`.
 
-Sequencing rule: **#182 (Phase 1) must land before Phase 2** (BLOCKER (c)); the architect's
-draft-PR review (step 1) must complete before any harness work (step 2) starts (#106).
+Sequencing rule: the architect's draft-PR review (step 1) — including the **folder-vs-flag
+resolution** — must complete before any harness work (step 2) starts (#106). #182 is already shipped,
+so it is no longer a Bucket-C prerequisite (C's fail-fast is structural, not budget-dependent —
+BLOCKER (c) disposition).
 
 ---
 
@@ -551,17 +754,28 @@ draft-PR review (step 1) must complete before any harness work (step 2) starts (
 This document is itself the new plan-of-record (`docs/plans/09-preflight-first-class.md`). The
 following companion edits are **proposed, not yet applied** (the lead approves, then they are made):
 
-1. **`docs/plans/03-roadmap.md`** — no v1-milestone change. Optionally add a one-line note under the
-   risk register or a "deferred designs" pointer: *"Preflight first-class — DEFERRED design of record
-   in `09-preflight-first-class.md` (#183); doctrine (#181) + serial-mode fast-halt (#182) ship the
-   principle; first-class is gated on a dogfooded non-test preflight + cost evidence."* (Proposed; the
-   roadmap's v2-bet list is for active bets, and preflight-first-class is deferred-behind-a-trigger,
-   so a pointer is lighter than a full bet entry.)
-2. **`docs/plans/02-schemas-and-contracts.md`** — **NO edit now.** The forward edit set in §"Contract
-   / SSOT impact" lands here **only** in the change that implements Phase 2 (invariant 4). Recorded
-   here so the future change is pre-scoped.
+1. **`docs/plans/03-roadmap.md`** — no v1-milestone change. Optionally add a one-line "deferred
+   designs" pointer: *"Preflight first-class — DEFERRED design of record in
+   `09-preflight-first-class.md` (#183). The preflight space is partitioned: Buckets A
+   (start-from-green) + B (assert-absent) ship as doctrine (#181, +#182 fast-halt); only Bucket C
+   (per-task JIT dependency-delivery) is a first-class candidate, gated on a real captured instance and
+   an unresolved `preflights/`-folder-vs-`task.json`-flag decision."* (Proposed; the roadmap's v2-bet
+   list is for active bets, and Bucket C is deferred-behind-a-trigger, so a pointer is lighter than a
+   full bet entry.)
+2. **`docs/plans/02-schemas-and-contracts.md`** — **NO edit now.** The shape-dependent forward edit
+   set in §"Contract / SSOT impact" lands here **only** in the change that implements Bucket C, with
+   whichever realization the open decision selects (invariant 4). Recorded here so the future change is
+   pre-scoped.
 3. **`docs/plans/README.md`** (the plan index) — add the `09-preflight-first-class.md` entry as a
    **DEFERRED design**, distinguishing it from the active plan-of-record docs. (Proposed.)
+4. **`docs/plans/09-preflight-first-class/example/`** — the worked example will be **re-authored to the
+   partition** in a separate reviewed step (NOT this pass): the three current "preflight" tasks are
+   re-cast as **Bucket A doctrine roots** (`00-baseline-core-tests-green`), **Bucket B one-shot**
+   (`02-baseline-correlation-absent`), and a **single Bucket-C consuming-task illustration** carrying a
+   `preflights/`-folder (or flagged-guardrail) dependency-delivery check; the simulated
+   `scope:"precondition"` markers are removed entirely (no third scope value exists under the
+   partition). See the rewrite report for the precise re-author spec. (Pointer added; the example
+   itself is unchanged by this pass.)
 
-No skill or SSOT edit is made by this document — Phase 0 / Phase 1 ship under #181 / #182; this plan
-records the deferred Phase-2 design and its trigger.
+No skill or SSOT edit is made by this document — Buckets A + B ship under #181 (+#182); this plan
+records the deferred Bucket-C design, its sharpened trigger, and the folder-vs-flag open decision.
