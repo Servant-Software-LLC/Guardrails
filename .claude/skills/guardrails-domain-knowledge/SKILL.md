@@ -136,17 +136,21 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
 - Retry budget exhausted -> `needs-human`; transitive dependents -> `blocked`;
   **independent branches keep running**.
-- **No-op-deadlock short-circuit (#174)**: a guardrail-failed attempt escalates to `needs-human`
+- **No-op-deadlock short-circuit (#174 / #182)**: a guardrail-failed attempt escalates to `needs-human`
   IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**
-  hold: (a) the action made **no observable change** this attempt (exited 0, wrote no state fragment,
-  and -- in a real git segment -- touched no file vs `taskBase`: a *genuine no-op*), AND (b) the
+  hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
   guardrail failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op
   action cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op
   against an AI-merge duplicate, #175), and an unchanged failure proves nothing converged -- so a
-  further attempt has zero probability of differing. **Conservative**: never fires when the action wrote
-  a fragment or any file, never in serial mode / under the fake provider (no `taskBase` to prove "no
-  writes"), never when the guardrail output CHANGED between attempts (those can still converge). Same
-  `needs-human` transition as budget exhaustion. (SSOT section 7.)
+  further attempt has zero probability of differing. **"No observable change" is mode-specific**: in
+  **worktree mode** it is exit 0 + no state fragment + no file diff vs `taskBase`; in **serial mode**
+  (#182, no `taskBase`) it is exit 0 + no state fragment + the action's **stdout/stderr byte-identical**
+  across the two attempts (the proxy for "the action behaved identically"). The byte-identical guardrail
+  failure is the load-bearing "cannot converge" evidence in both modes. **Conservative**: never fires
+  when the action wrote a fragment, never in worktree mode when the segment diff reports file changes,
+  never in serial mode when the action's stdout/stderr CHANGED across attempts, never when the guardrail
+  output CHANGED between attempts (those can still converge). Same `needs-human` transition as budget
+  exhaustion. (SSOT section 7.)
 - **Prompt-runner failure classification** (SSOT section 9, #114/#115/#119): a non-success prompt
   result is classified (in the runner quarantine) into `Transient` | `OutputCap` | `Timeout` | `Error`.
   - **Transient** (429/503/529, "overloaded", rate/session/usage limit): does NOT consume the retry

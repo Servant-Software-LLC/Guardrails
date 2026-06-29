@@ -881,17 +881,31 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   the pause budget (a `rate-limited` attempt — re-run later), OR (issue #174) a **no-op deadlock**
   short-circuit (below). All *transitive* dependents become `blocked`. Independent branches keep running.
 
-**No-op-deadlock short-circuit (issue #174).** After a guardrail-failed attempt, the harness settles
-`needs-human` IMMEDIATELY — instead of exhausting the remaining retry budget — when **both** hold:
-(a) the action made **no observable change** this attempt (it exited 0, wrote no state fragment, and —
-in a real git segment — touched no file versus `taskBase`: a *genuine no-op*), AND (b) the guardrail
-failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op action
-cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op against a
-merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a further
-attempt has zero probability of differing. This fires on the **2nd** such attempt (the earliest point
-both conditions can be observed). It is **conservative**: it never fires when the action wrote a
-fragment or any file (the action DID work, so retrying may help), never in serial mode / under the
-fake provider (no `taskBase` to prove "no writes"), and never when the guardrail output CHANGED between
+**No-op-deadlock short-circuit (issues #174 / #182).** After a guardrail-failed attempt, the harness
+settles `needs-human` IMMEDIATELY — instead of exhausting the remaining retry budget — when **both**
+hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
+guardrail failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op
+action cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op
+against a merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a
+further attempt has zero probability of differing. This fires on the **2nd** such attempt (the earliest
+point both conditions can be observed).
+
+"No observable change" is established per mode, because the two modes have different evidence available:
+- **Worktree mode (#174):** the action exited 0, wrote no state fragment, AND touched no file versus
+  `taskBase` (proven by the segment-vs-`taskBase` git diff).
+- **Serial mode (#182):** there is no `taskBase` to diff files against, so the file-diff half is
+  unavailable. The serial signal substitutes a **byte-identical action-output** requirement: the action
+  exited 0, wrote no state fragment, AND its **stdout/stderr is byte-identical** across the two attempts
+  (the proxy for "the action behaved identically this attempt"). Combined with the byte-identical
+  guardrail failure, this is the conservative evidence that a further attempt cannot differ — even if the
+  action silently wrote a workspace file, an unchanged guardrail output across two such attempts proves
+  that write (if any) is irrelevant to convergence. The serial path **never** loosens the
+  byte-identical-guardrail-failure requirement that is the core "cannot converge" evidence.
+
+It is **conservative**: it never fires when the action wrote a state fragment (the action DID work, so
+retrying may help), never in worktree mode when the segment diff reports file changes, never in serial
+mode when the action's stdout/stderr CHANGED between attempts (a task slowly converging via changing
+output keeps its full budget), and never (in either mode) when the guardrail output CHANGED between
 attempts (those can still converge). The short-circuit settles the task `needs-human` via the same
 status transition as budget exhaustion; only a non-final attempt takes this path (the final attempt
 already exhausts to `needs-human`).

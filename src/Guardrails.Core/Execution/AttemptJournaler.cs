@@ -415,12 +415,18 @@ internal sealed class AttemptJournaler
 /// <see cref="TransientReason"/> is set ONLY for a transient pause (issue #115): the operator-facing
 /// cause (with any reset hint), which the loop passes to <see cref="IRunObserver.PromptPaused"/>.
 /// <para>
-/// <see cref="ActionWasNoOp"/> and <see cref="GuardrailFailureFingerprint"/> drive the no-op
-/// short-circuit (issue #174): set ONLY on a guardrail-failed attempt. <see cref="ActionWasNoOp"/>
-/// is true when the action exited 0, wrote no state fragment, and made no file changes this attempt;
-/// <see cref="GuardrailFailureFingerprint"/> is a canonical signature of the failed guardrails'
-/// names + reasons + output. When two consecutive attempts are BOTH no-ops AND carry the IDENTICAL
-/// fingerprint, a further attempt cannot differ — the loop escalates to needs-human immediately
+/// <see cref="ActionWasNoOp"/>, <see cref="ActionOutputFingerprint"/> and
+/// <see cref="GuardrailFailureFingerprint"/> drive the no-op short-circuit (issues #174 / #182): set
+/// ONLY on a guardrail-failed attempt. <see cref="ActionWasNoOp"/> is true when the action exited 0,
+/// wrote no state fragment, and — in a real git segment (worktree mode) — made no file changes this
+/// attempt; <see cref="GuardrailFailureFingerprint"/> is a canonical signature of the failed
+/// guardrails' names + reasons + output; <see cref="ActionOutputFingerprint"/> is a canonical
+/// signature of the action's own stdout+stderr (the serial-mode proxy for "the action behaved
+/// identically", since serial mode has no <c>taskBase</c> to diff files against).
+/// Worktree mode (#174): two consecutive attempts that are BOTH no-ops AND carry the IDENTICAL
+/// guardrail fingerprint cannot differ — the loop escalates to needs-human immediately. Serial mode
+/// (#182): with no <c>taskBase</c>, the loop additionally requires the action output fingerprint to
+/// match across the two attempts before escalating — the loop escalates to needs-human immediately
 /// instead of exhausting the retry budget.
 /// </para>
 /// </summary>
@@ -430,4 +436,5 @@ internal sealed record AttemptResult(
     string? TransientReason = null,
     AttemptOutcome? Outcome = null,
     bool ActionWasNoOp = false,
-    string? GuardrailFailureFingerprint = null);
+    string? GuardrailFailureFingerprint = null,
+    string? ActionOutputFingerprint = null);
