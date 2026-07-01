@@ -1,14 +1,17 @@
-# Architecture: Preflights & guardrails, first-class at two scopes — DEFERRED design (#183)
+# Architecture: Preflights & guardrails, first-class at two scopes — PLANNED (plan of record, #183)
 
-> **Status: DEFERRED design-of-record.** This document is NOT an input to `/plan-breakdown` and
-> authorizes NO implementation milestones today. It records the **target model** the product owner
-> sketched — *preflights and guardrails are each first-class at two scopes, and the folder layout
-> mirrors exactly that* — together with the partition's preserved polarity analysis (re-homed, not
-> discarded), the diagram-rendering change the model implies, the harness phases/outcomes a future
-> implementation would add, and the open questions held for the team and owner. The contract
-> additions sketched in §"Contract / SSOT impact" are a **forward design**, not yet applied to
-> `02-schemas-and-contracts.md` (the SSOT) — they land there only in the change that implements them,
-> never before (invariant 4). **This rewrite makes NO SSOT change.**
+> **Status: PLANNED — the approved plan of record.** The product owner has greenlit implementation:
+> this design is now being **built, dogfooded via Guardrails itself** (its own `/plan-breakdown` breaks
+> this design into a task DAG that Guardrails runs to build the feature — see §"Implementation
+> approach"). **Trigger fired 2026-07-01** — the owner committed to build the whole two-scope feature.
+> The load-bearing decisions are all **settled**: the two-scope model (preflights and guardrails each
+> first-class at PLAN-LEVEL and TASK-LEVEL, the folder layout mirroring exactly that), the plan-level
+> folder **placement (plan root — siblings of `tasks/` and `guardrails.json`)**, the hardening
+> (B1/B2/B3), and the **advisory** live-probe guidance. It also carries the partition's preserved
+> polarity analysis (re-homed, not discarded), the diagram-rendering change the model implies, and the
+> harness phases/outcomes the implementation adds. Per invariant 4, **plan-09 itself still makes NO SSOT
+> change**: the contract additions sketched in §"Contract / SSOT impact" are the **implementation spec**
+> for the SSOT/harness/skill edits, which land in the implementing change (next), never in this plan doc.
 
 ---
 
@@ -89,9 +92,12 @@ in dedicated phases — at **two scopes**. The one reading still **REJECTED outr
 auto-derivation (the harness inferring "this task modifies, so inject a baseline"): "modifies-not-
 creates" is **undecidable by the harness** and false-fails every legitimate TDD-red / coverage gate
 (which is *designed* to be red before its task). The skill authors the checks; the harness runs only
-what was authored. The remaining ambiguity — **exact on-disk placement of the plan-level folders**
-(plan-root vs inside `tasks/`) — is recorded as an open question, with a recommendation, not silently
-resolved (§"Open questions").
+what was authored. The last remaining open question — **exact on-disk placement of the plan-level
+folders** — is now **DECIDED: plan root.** The plan-level folders are `<plan>/preflights/` and
+`<plan>/guardrails/`, **siblings of `tasks/` and `guardrails.json` at the plan root** — not nested
+inside `tasks/`. Rationale: plan-level checks bracket the WHOLE plan, so their logical home is the
+plan root, alongside the run config — not among the per-task folders (which would imply they are
+tasks). (§"Open questions" records the decision.)
 
 ---
 
@@ -107,8 +113,9 @@ resolved (§"Open questions").
 | Authoring the checks (which preflight/guardrail goes in which folder, the polarity rules, the volume-control gate, the **advisory** live-probe guidance) | both | **skill** — `plan-breakdown` catalogue steers + `guardrails-review` WARNs (the live-probe guidance is advisory, NOT harness-enforced) |
 | The harness **auto-deriving** pre-applicability ("this task modifies, inject a baseline") | — | **out of scope, permanently** — undecidable; false-fails every TDD-red gate |
 
-Everything below the diagram line is **DEFERRED design** — recorded so the future change is
-pre-scoped, applied to neither the SSOT nor the code by this document.
+Everything below the diagram line is the **implementation spec** for the PLANNED build — the SSOT and
+harness/skill edits it describes are the implementation work (next), authored in the implementing
+change, not applied to the SSOT or the code by this plan doc (invariant 4).
 
 ---
 
@@ -144,13 +151,14 @@ Named, with how the two-scope model bears on each:
    any guardrail — no new verdict source, just the same source evaluated at a new phase.
 
 4. **`02-schemas-and-contracts.md` is the schema SSOT — a contract change lands there in the SAME
-   change that motivates it.** *This is why the design is DEFERRED and its SSOT edits are NOT yet
-   applied — and this rewrite makes NO SSOT change.* The new folders (`<plan>/preflights/`,
-   `<plan>/guardrails/`, `tasks/<id>/preflights/`), the new outcomes (`plan-preflight-failed`,
-   `task-preflight-failed`, `plan-guardrail-failed`), the new top-level journal sections
-   (`planPreflights`, `planGuardrails`) + their resume rules, the new pre-DAG/terminal phases, the §10
-   renderer change, and the `integrationGate`-task-kind migration (GR2017 retired, GR2018 re-homed) are
-   all **forward design**; each lands in the SSOT **only** in the change that implements it.
+   change that motivates it.** *This is why plan-09 itself still makes NO SSOT change even though the
+   feature is now PLANNED: the SSOT edits land WITH the implementing change, not in this plan doc.* The
+   new folders (`<plan>/preflights/`, `<plan>/guardrails/`, `tasks/<id>/preflights/`), the new outcomes
+   (`plan-preflight-failed`, `task-preflight-failed`, `plan-guardrail-failed`), the new top-level
+   journal sections (`planPreflights`, `planGuardrails`) + their resume rules, the new pre-DAG/terminal
+   phases, the §10 renderer change, and the `integrationGate`-task-kind migration (GR2017 retired,
+   GR2018 re-homed) are the **implementation spec**; each lands in the SSOT **only** in the change that
+   implements it.
 
 5. **Honest halts — nothing marked done unverified; needs-human is a feature.** *Respected and
    extended.* A red plan-level preflight is the most honest halt there is: "your starting point is
@@ -517,14 +525,14 @@ This is a **non-trivial renderer rewrite** — the node/edge model changes from 
 done-nodes, all free nodes" to "containers with nested checks, invisible anchors carrying
 container→container edges." The anchor-node reality and the version-sensitivity mean the renderer must
 be **prototyped against the bundled Mermaid version before the build commits to the container model.**
-Specced here as a deferred SSOT §10 change; the implementation handoff names it.
+Specced here as the SSOT §10 change to land WITH the implementation; the implementation handoff names it.
 
 ---
 
-## Harness phases to spec (still deferred — design only)
+## Harness phases to spec (the implementation spec)
 
-Three phases a future implementation would add, plus the `IReVerifier` reuse. **Every item is forward
-design, not yet in the SSOT or the code.**
+Three phases the implementation adds, plus the `IReVerifier` reuse. **Every item is the implementation
+spec — it lands in the SSOT and the code in the implementing change, not in this plan doc (invariant 4).**
 
 ### Pre-DAG phase — evaluate `<plan>/preflights/` once
 
@@ -732,10 +740,22 @@ the test matrix (handoff step 4) exercises every phase in **serial AND worktree 
 
 ## Open questions
 
-This hardening pass **CLOSED** the load-bearing ones. The record below states what is now closed (with
-the resolution) and what remains open for the owner.
+This design's open questions are now **all closed.** The load-bearing hardening questions were closed
+by the hardening pass; the **one remaining question — plan-level folder placement — is now DECIDED by
+the owner: plan root.** The record below states each closure with its resolution.
 
-### CLOSED by this pass
+### CLOSED by owner decision
+
+- **CLOSED — plan-level folder placement = PLAN ROOT.** The plan-level folders are `<plan>/preflights/`
+  and `<plan>/guardrails/`, **siblings of `tasks/`, `guardrails.json`, and `state/` at the plan root** —
+  NOT inside `tasks/`. Rationale: plan-level checks bracket the WHOLE plan, so their logical home is the
+  plan root, alongside the run config — not nested among the per-task folders (which would imply they
+  are tasks). This also keeps `tasks/` a pure list of tasks and avoids a name collision with a task
+  literally named `preflights`/`guardrails`. (This was the last open question; the owner considered
+  placing them at the `tasks/` level but settled on plan root. §1 layout in the SSOT edit set is
+  written accordingly.)
+
+### CLOSED by the hardening pass
 
 - **CLOSED — `integrationGate` replacement (B3).** REPLACE the terminal-gate *task* + retire GR2017;
   **PRESERVE GR2018's content requirement** re-homed onto the folder ("≥1 deterministic check that
@@ -770,22 +790,9 @@ the resolution) and what remains open for the owner.
   folder checks; a required test asserts *edit `<plan>/guardrails/` check → `graph --check` reports
   stale*. (§"Mermaid implementation implication".)
 
-### STILL OPEN — for the owner
+### MINOR / OWNER-OPTIONAL — not blocking the build
 
-1. **Exact on-disk placement of the plan-level folders — THE ONE STILL OPEN.** The owner pointed at the
-   `…/texttools/tasks` level. Two options:
-   - **(A) Plan-root siblings of `tasks/`** — `<plan>/preflights/` and `<plan>/guardrails/` sit
-     alongside `guardrails.json`, `state/`, `tasks/`. **RECOMMENDED:** the model's whole point is that
-     these are **plan-level**, not task-level; placing them at the plan root makes the scope visible on
-     disk (plan-level folders at the plan root; task-level folders under each task). It also keeps the
-     `tasks/` directory a pure list of tasks, and avoids a collision with a task literally named
-     `preflights`/`guardrails`.
-   - **(B) Inside `tasks/`** — e.g. `tasks/preflights/`, `tasks/guardrails/`. Closer to where the owner
-     pointed, but it mixes a plan-level concern into the per-task directory and risks the name
-     collision above.
-   - **Recommendation: (A) plan-root. FLAGGED OPEN for the owner** — the owner explicitly pointed at
-     the `tasks/` level, so this needs an explicit owner call before the SSOT §1 layout is written.
-2. **(Minor, owner-optional) May an author POINT the terminal `<plan>/guardrails/` folder at the tagged
+1. **(Minor, owner-optional) May an author POINT the terminal `<plan>/guardrails/` folder at the tagged
    `scope:"integration"` set** to avoid re-declaring the same build/suite in two places? The **default
    is they are authored independently** (B3); a "reference the tagged set" convenience is a possible
    later affordance, not required for v1. Recorded, not blocking.
@@ -813,8 +820,8 @@ my responses:
   renderer rewrite — which the owner is asking for independently because the current diagram is
   unreadable. So the net new *capability* surface is modest; the visible *clutter* removed is large.
   Still, the counter is right that this is no longer "doctrine, no contract" — it is a real first-class
-  build, deferred, which is why the SSOT edits are forward-only and gated on owner sign-off of the open
-  questions.
+  build, now PLANNED; the owner accepted that cost in exchange for the model, and per invariant 4 the
+  SSOT edits still land WITH the implementing change, not in this plan doc.
 
 - **Counter: "Reinstating a plan-level pre-DAG phase resurrects exactly what was *withdrawn*. The
   PARTITION withdrew the global pre-DAG phase for stated reasons; you are walking it back."** *Response:*
@@ -869,18 +876,34 @@ my responses:
 
 ---
 
+## Implementation approach — dogfooded via Guardrails
+
+The feature is built the way the product tells everyone else to build: **Guardrails builds Guardrails.**
+This PLANNED design is itself a reviewed markdown plan, so the next step is to run it through
+Guardrails' own `/plan-breakdown` — turning this design into a **task DAG** (a dependency graph of
+tasks, each with an action and deterministic-first guardrails), which the `guardrails` CLI then runs to
+produce the feature. The task DAG mirrors the handoff sequencing below: the unconditional-`IReVerifier`
+prerequisite first, then the loader/validator for the four folders, then the pre-DAG / terminal /
+task-level phases, then the §10 renderer, then the skill migration and the re-authored example. The
+actual breakdown (authoring `guardrails.json` + `tasks/`) is the **lead's next step**; this section
+records only that the build is dogfooded, not a solo hand-implementation. (Dogfooding safety rules —
+Release self-lock, git-hook isolation — are the lead's operational concern, per `guardrails-dev-knowledge`.)
+
+---
+
 ## Implementation handoff (agent + filesTouched + sequencing)
 
-**This plan authorizes NO implementation.** The handoff is the **trigger-time plan** — executed if and
-only if the owner approves the model and resolves the **one remaining open question (#1 placement)**.
-The B1/B2/B3, serial-mode, journal-shape, outcome-split, terminology, and `integrationGate`-migration
-questions are **closed by this pass** (§"Open questions"). Sequencing is gated on the design-of-record
-draft-PR review (#106): this doc lands as a draft PR for inline human review **before** any milestone
-starts.
+**This plan is PLANNED and authorizes implementation.** The owner has greenlit the build (trigger fired
+2026-07-01) and the **placement question is resolved (plan root)**; the B1/B2/B3, serial-mode,
+journal-shape, outcome-split, terminology, and `integrationGate`-migration questions are all
+**closed** (§"Open questions"). The build is **dogfooded** (§"Implementation approach"): Guardrails'
+own `/plan-breakdown` breaks this design into the task DAG below, which Guardrails runs to build the
+feature. Sequencing is gated on the design-of-record draft-PR review (#106): this doc lands as a draft
+PR for inline human review **before** any milestone starts.
 
-1. **Architect (this agent)** — once the placement question is resolved, deliver the active design + the
-   verbatim SSOT edit set as a **draft PR for inline review** (#106). `filesTouched`:
-   `docs/plans/09-preflight-first-class.md` (promote DEFERRED → active) +
+1. **Architect (this agent)** — deliver the active design + the verbatim SSOT edit set as a **draft PR
+   for inline review** (#106). `filesTouched`:
+   `docs/plans/09-preflight-first-class.md` (this doc, now PLANNED) +
    `docs/plans/02-schemas-and-contracts.md` (the edit set: §1 layout, §3.3 migration incl. GR2018
    re-homing + GR2017 retirement, §7 the three new outcomes + `planPreflights`/`planGuardrails`
    sections + resume rules, §7.1 `plan:guardrails` revalidate id + exit-2, §10 renderer + anchor nodes +
@@ -948,7 +971,7 @@ folders.
 settles). Specced precisely so the later step is mechanical:
 
 **The `example/` re-author (skill-author, after design sign-off):**
-- **Add `<plan>/preflights/`** (plan-root, per open-question #1's recommendation) with **two checks**:
+- **Add `<plan>/preflights/`** (plan-root — the settled placement) with **two checks**:
   one **positive** baseline (e.g. `01-all-repo-tests-green` — the existing suite passes on the starting
   repo) and one **negative** assert-absent baseline (e.g. `02-correlation-id-absent` — the artifact the
   plan introduces is not present yet), each a deterministic byte/exit check following the advisory
@@ -1007,7 +1030,7 @@ are **proposed, not yet applied** (the lead approves, then applies):
 
 1. **`docs/plans/02-schemas-and-contracts.md`** — **NO edit now.** The forward edit set lands here
    **only** in the change that implements the model (invariant 4), pre-scoped as:
-   - **§1 layout** — `<plan>/preflights/` + `<plan>/guardrails/` (plan-root, pending open-question #1) +
+   - **§1 layout** — `<plan>/preflights/` + `<plan>/guardrails/` (plan-root — settled) +
      `tasks/<id>/preflights/`.
    - **§3.3 `integrationGate` migration** — RETIRE GR2017 + the `integrationGate` task kind; **RE-HOME
      GR2018** as "a multi-leaf/fan-in plan MUST have a `<plan>/guardrails/` carrying ≥1 deterministic
@@ -1024,19 +1047,21 @@ are **proposed, not yet applied** (the lead approves, then applies):
      `source-sha256` **folds the plan-level folder checks** (not just `tasks{}`); remove fan-out +
      `done_`.
    Recorded here so the future change is pre-scoped.
-2. **`docs/plans/03-roadmap.md`** — optionally add a one-line "deferred designs" pointer: *"Preflights
-   & guardrails first-class at two scopes — DEFERRED design of record in `09-preflight-first-class.md`
-   (#183). Run-level checks become first-class `<plan>/preflights/` ('Full Flight Checks') +
-   `<plan>/guardrails/` (terminal gate) folders bracketing the DAG (replacing the no-op root/end task
-   mechanism); per-task `tasks/<id>/preflights/` carries the JIT dependency-delivery check; the diagram
-   renders task containers with nested preflight/guardrail sections and container→container edges."*
-   (Proposed.)
-3. **`docs/plans/README.md`** (the plan index) — keep the `09-preflight-first-class.md` entry as a
-   **DEFERRED design**, with the updated one-line summary (two-scope model). (Proposed.)
+2. **`docs/plans/03-roadmap.md`** — optionally add a one-line pointer: *"Preflights & guardrails
+   first-class at two scopes — PLANNED plan of record in `09-preflight-first-class.md` (#183),
+   in implementation. Run-level checks become first-class `<plan>/preflights/` ('Full Flight Checks') +
+   `<plan>/guardrails/` (terminal gate) folders at the plan root bracketing the DAG (replacing the
+   no-op root/end task mechanism); per-task `tasks/<id>/preflights/` carries the JIT dependency-delivery
+   check; the diagram renders task containers with nested preflight/guardrail sections and
+   container→container edges."* (Proposed.)
+3. **`docs/plans/README.md`** (the plan index) — update the `09-preflight-first-class.md` entry to
+   **PLANNED (in implementation)**, with the updated one-line summary (two-scope model, plan-root
+   folders). (Proposed.)
 4. **`docs/plans/09-preflight-first-class/example/`** — re-authored to the two-scope model in a
    **separate reviewed step** (NOT this pass), per §"What the example re-author needs". (Pointer only;
    the example itself is unchanged by this pass.)
 
-No skill or SSOT edit is made by this document — it records the target two-scope model, the re-homed
-partition, the diagram-rendering change, the harness phases/outcomes, and the open questions held for
-the team and owner.
+No skill or SSOT edit is made by this document (invariant 4) — it is the PLANNED plan of record for the
+two-scope model, the re-homed partition, the diagram-rendering change, and the harness phases/outcomes;
+the SSOT/harness/skill edits are the implementation work (next), landed WITH the implementing change and
+dogfooded via Guardrails' own `/plan-breakdown`.
