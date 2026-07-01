@@ -597,7 +597,8 @@ optional:
   - **One baseline per AREA, deduped** — one per distinct touched test project, each scoped to gate only
     that area's subtree, NOT a single global root that serializes the whole DAG.
   - **The worth-it gate (a check with teeth) — emit ONLY when ALL hold:** the target pre-exists; the task
-    MODIFIES not creates it; the check is deterministic + cheap (NO process start, bounded command);
+    MODIFIES not creates it; the check is deterministic + cheap (a bounded, filtered command — a
+    filtered `dotnet test` is fine; no live-service boot or network poll, which flakes);
     strictly narrower than the terminal gate; ≥2 work tasks build on the area; deduped per area.
     **Under-fire when unsure** — a missed baseline is just the status quo, a false baseline halts a
     correct plan.
@@ -624,8 +625,8 @@ upstream task that creates it:
   unchanged. Insert **`00-baseline-<area>-tests-green`** (fit the existing naming/numbering convention —
   the `00-` prefix sorts it first; use the real area name, e.g. `00-baseline-inventory-tests-green`):
   - **First, run the worth-it gate (a check with teeth) — emit ONLY when ALL hold:** the target
-    pre-exists; the task MODIFIES not creates it; the check is deterministic + cheap (NO process start,
-    bounded command); strictly narrower than the terminal gate; ≥2 work tasks build on the area; deduped
+    pre-exists; the task MODIFIES not creates it; the check is deterministic + cheap (a bounded,
+    filtered command — a filtered `dotnet test` is fine; no live-service boot or network poll); strictly narrower than the terminal gate; ≥2 work tasks build on the area; deduped
     per area. **Under-fire when unsure** — a missed baseline is just the status quo (work tasks attribute
     their own failures the slow way); a false baseline halts a correct plan at the root. If the gate
     fails, SKIP and say why in the report.

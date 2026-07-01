@@ -97,8 +97,9 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
     subtree, NOT one global whole-repo root serializing the DAG.
   - **(e) Distinct from the terminal full-suite gate** (green START at the root vs green END at the sink
     — a plan needs both).
-  - **(f) The worth-it gate held** — target pre-exists, MODIFIES-not-creates, deterministic + cheap (NO
-    process start), strictly narrower than the terminal gate, ≥2 work tasks build on the area.
+  - **(f) The worth-it gate held** — target pre-exists, MODIFIES-not-creates, deterministic + cheap (a
+    bounded, filtered command — a filtered `dotnet test` is fine; no live-service boot/poll), strictly
+    narrower than the terminal gate, ≥2 work tasks build on the area.
   The inverse error: a **vacuous baseline on a GREENFIELD plan** (a `dotnet test` over a project with zero
   tests, which trivially passes) — it certifies nothing while looking like a gate; greenfield must have NO
   baseline. Composes with #174/#182 (a RED baseline = a no-op whose guardrail fails → the no-op-deadlock
