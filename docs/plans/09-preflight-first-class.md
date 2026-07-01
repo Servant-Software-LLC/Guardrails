@@ -24,10 +24,10 @@ a broken start fails fast (no token burn on a doomed attempt) and a later failur
 the work, not to a pre-existing defect. The owner's model says: **both** of these are first-class,
 and **both** exist at **two scopes** that mirror the plan folder:
 
-| Scope | Preflight folder | Guardrail folder | Runs | Against |
-|---|---|---|---|---|
-| **PLAN-LEVEL** (run-level, once) | `<plan>/preflights/` — the **"Full Flight Checks"** | `<plan>/guardrails/` — the **terminal / integration gate** | **once**: preflights BEFORE the DAG, guardrails AT THE END | the starting repo (preflights) / the merged result (guardrails) |
-| **TASK-LEVEL** (per task) | `tasks/<id>/preflights/` — JIT dependency-delivery | `tasks/<id>/guardrails/` — postconditions | **per task**, bracketing the action | the task's segment worktree at `taskBase` |
+| Scope | Preflight folder | Guardrail folder | Runs | Against | Probe guidance (§"Live-probe guidance", ADVISORY) |
+|---|---|---|---|---|---|
+| **PLAN-LEVEL** (run-level, once) | `<plan>/preflights/` — the **"Full Flight Checks"** | `<plan>/guardrails/` — the **terminal / integration gate** | **once**: preflights BEFORE the DAG, guardrails AT THE END | the starting repo (preflights) / the merged result (guardrails) | deterministic **single-shot process-start is fine** (a full `dotnet test` / build is the canonical case); the skill **steers away from** network / poll / daemon / live-service probes (review WARNs) |
+| **TASK-LEVEL** (per task) | `tasks/<id>/preflights/` — JIT dependency-delivery | `tasks/<id>/guardrails/` — postconditions | **per task**, bracketing the action | the task's segment worktree at `taskBase` | **prefers byte/exit checks**; the skill **steers away from** network / poll / live-service probes (review WARNs) — a cheap dependency-delivery check, not a suite run |
 
 This is a **structural evolution** of the prior design, not a tweak. The prior PARTITION design
 modelled run-level checks as **no-op tasks**: a no-op ROOT "baseline" task every first-level task
@@ -99,12 +99,12 @@ resolved (§"Open questions").
 
 | Concern | Scope | Placement |
 |---|---|---|
-| **`<plan>/preflights/`** — "Full Flight Checks": a first-class run-level preflight folder, evaluated once before the DAG against the starting repo; failure halts the run before it starts | **plan-level** | **harness + schema** — a new pre-DAG phase + a new outcome/exit branch; lands in the SSOT only when implemented (invariant 4) |
-| **`<plan>/guardrails/`** — the terminal/integration gate: a first-class run-level guardrail folder, evaluated once at the end on the merged HEAD | **plan-level** | **harness + schema** — the terminal phase + the migration from the `integrationGate` *task kind* (§3.3); SSOT change at implementation time |
+| **`<plan>/preflights/`** — "Full Flight Checks": a first-class run-level preflight folder, evaluated once before the DAG against the starting repo; failure halts the run before it starts (`plan-preflight-failed`); a `planHash`-keyed `planPreflights` marker makes it **resume-safe / evaluated-once** (§B1) | **plan-level** | **harness + schema** — a new pre-DAG phase + the marker + a new outcome/exit branch + a resume SKIP rule; lands in the SSOT only when implemented (invariant 4) |
+| **`<plan>/guardrails/`** — the terminal/integration gate: a first-class run-level guardrail folder, evaluated once at the end on the merged HEAD (`plan-guardrail-failed`); `--revalidate-task plan:guardrails` + terminal-only resume are its human-fix path (§B2) | **plan-level** | **harness + schema** — the terminal phase + the migration from the `integrationGate` *task kind* (§3.3, GR2017 retired / GR2018 re-homed); SSOT change at implementation time |
 | **`tasks/<id>/preflights/`** — per-task JIT dependency-delivery check at `taskBase` before the attempt loop (the PARTITION's Bucket C) | **task-level** | **harness + schema** — `TaskExecutor.ExecuteAsync` pre-attempt-loop slot reusing `IReVerifier`; SSOT change at implementation time |
 | **`tasks/<id>/guardrails/`** — existing per-task postconditions | **task-level** | **already shipped** — no change |
 | The **diagram-rendering change** (container-per-task; plan-level top/bottom containers; remove fan-out + `done_` nodes) | both | **harness (renderer §10)** — `guardrails graph` Mermaid emitter + the `source-sha256` semantic content; SSOT §10 change at implementation time |
-| Authoring the checks (which preflight/guardrail goes in which folder, the polarity rules, the volume-control gate) | both | **skill** — `plan-breakdown` catalogue + `guardrails-review` probes |
+| Authoring the checks (which preflight/guardrail goes in which folder, the polarity rules, the volume-control gate, the **advisory** live-probe guidance) | both | **skill** — `plan-breakdown` catalogue steers + `guardrails-review` WARNs (the live-probe guidance is advisory, NOT harness-enforced) |
 | The harness **auto-deriving** pre-applicability ("this task modifies, inject a baseline") | — | **out of scope, permanently** — undecidable; false-fails every TDD-red gate |
 
 Everything below the diagram line is **DEFERRED design** — recorded so the future change is
@@ -118,11 +118,17 @@ Named, with how the two-scope model bears on each:
 
 1. **Deterministic guardrails over prompt-judges; judges never alone.** *Respected and reinforced.*
    A preflight at either scope is a *deterministic gate run earlier* — the most deterministic possible
-   use of a guardrail (no action, no model, just "does the existing thing verify"). The plan-level
-   `preflights/` keeps the **live-probe ban**: deterministic, cheap, single-shot byte checks only — NO
-   network, NO process start, NO poll (a full-flight-check that halts the whole run must not be a flake
-   vector). The REJECTED auto-derivation reading would have introduced a *harness-side judgment*
-   ("does this task modify?") that is not deterministic at all — the strongest reason to reject it.
+   use of a guardrail (no action, no model, just "does the existing thing verify"). Both scopes carry
+   **advisory live-probe guidance**, which is **NARROW, not a blanket "no process start"** (§"Live-probe
+   guidance" states it as advice, not a harness rule): the thing the guidance steers away from is a
+   **live-service / network / poll / daemon** probe — anything whose outcome depends on the state of a
+   thing *outside* the committed bytes at this instant. A plan-level preflight running a full
+   `dotnet test` / build (the owner's canonical "all repo unit tests pass") is **fine** — process-start
+   is not the concern; it is deterministic and single-shot. A task-level preflight **prefers** a
+   byte/exit check (it runs per task, before the attempt loop) and the guidance also steers away from
+   network/poll. The REJECTED auto-derivation reading
+   would have introduced a *harness-side judgment* ("does this task modify?") that is not deterministic
+   at all — the strongest reason to reject it.
 
 2. **Harness is the single writer of merged state; children get snapshots, write fragments.**
    *Respected at both scopes.* A plan-level preflight runs **before** any task, against the
@@ -140,10 +146,11 @@ Named, with how the two-scope model bears on each:
 4. **`02-schemas-and-contracts.md` is the schema SSOT — a contract change lands there in the SAME
    change that motivates it.** *This is why the design is DEFERRED and its SSOT edits are NOT yet
    applied — and this rewrite makes NO SSOT change.* The new folders (`<plan>/preflights/`,
-   `<plan>/guardrails/`, `tasks/<id>/preflights/`), the new outcomes (`preflight-failed`,
-   `integration-gate-failed`), the new pre-DAG/terminal phases, the §10 renderer change, and the
-   `integrationGate`-task-kind migration are all **forward design**; each lands in the SSOT **only**
-   in the change that implements it.
+   `<plan>/guardrails/`, `tasks/<id>/preflights/`), the new outcomes (`plan-preflight-failed`,
+   `task-preflight-failed`, `plan-guardrail-failed`), the new top-level journal sections
+   (`planPreflights`, `planGuardrails`) + their resume rules, the new pre-DAG/terminal phases, the §10
+   renderer change, and the `integrationGate`-task-kind migration (GR2017 retired, GR2018 re-homed) are
+   all **forward design**; each lands in the SSOT **only** in the change that implements it.
 
 5. **Honest halts — nothing marked done unverified; needs-human is a feature.** *Respected and
    extended.* A red plan-level preflight is the most honest halt there is: "your starting point is
@@ -152,13 +159,14 @@ Named, with how the two-scope model bears on each:
    plan branch — the work is durable, the human finishes the merge.
 
 6. **Plain files, light setup — no databases, daemons, or SaaS in v1.** *Respected.* Every scope is
-   plain files in the plan folder; the live-probe ban keeps even the plan-level preflight to
-   deterministic byte checks (no daemon, no network). The harness reuses the existing integration
+   plain files in the plan folder; the advisory live-probe guidance keeps even the plan-level preflight
+   to deterministic byte checks (no daemon, no network). The harness reuses the existing integration
    worktree, segment worktrees, and the `IReVerifier` seam — no new infrastructure.
 
 **The decisive invariant pairing is 1 + 5.** The plan-level preflight phase exists *to make the
-honest halt cheap* (invariant 5) while staying deterministic and flake-free (invariant 1, via the
-live-probe ban). The reason a plan-level preflight is a **folder, not a no-op task**, is the same
+honest halt cheap* (invariant 5) while staying deterministic and flake-free (invariant 1, which the
+advisory live-probe guidance steers authors toward — the harness does not enforce it). The reason a
+plan-level preflight is a **folder, not a no-op task**, is the same
 pairing read structurally: a no-op task carries a fake action through the attempt lifecycle, the
 retry budget, the merge machinery, and the diagram — ceremony that buys nothing and clutters every
 view; a folder evaluated in a dedicated phase is the KISS expression of "run these checks once,
@@ -183,15 +191,23 @@ the plan branch at the user's HEAD, before any segment worktree exists.
     is then provably the run's own doing. Run **once, at the start** — which is the only point a
     negative claim is true (see §"Why the negative baseline is plan-level only").
 - **When.** Once, before scheduling. **On failure → the run halts before it starts** — a distinct
-  outcome (`preflight-failed`) and exit branch (§"Harness phases"); **no task runs, no token is
-  spent.** This is the honest, zero-burn halt.
+  outcome (`plan-preflight-failed`, the F9 split) and exit branch (§"Harness phases"); **no task runs,
+  no token is spent.** This is the honest, zero-burn halt. On PASS the harness records the
+  `planHash`-keyed `planPreflights` marker so resume never re-evaluates it (§B1).
 - **Where.** The integration worktree at user HEAD. Read-only — no fragment, no commit.
-- **Hard constraint — the live-probe ban.** Deterministic, cheap, single-shot byte checks ONLY: NO
-  network, NO process start, NO poll. A plan-level preflight halts the **whole run**, so a flaky probe
-  there is the maximal-blast-radius SPOF the ban exists to forbid. "Is my endpoint up?" must be
-  expressed as a byte-check on the wired source (`Select-String 'MapGet("/health")'`), never a live
-  HTTP call. (A genuinely live check belongs in a task's own guardrail, where a flake costs one task's
-  retry budget — not the whole run.)
+- **Advisory guidance — the NARROW live-probe guidance (process-start is fine here).** Deterministic and
+  single-shot — and **process-start is fine at plan-level**: a full `dotnet test` / `dotnet build`
+  is the canonical Full Flight Check ("all repo unit tests pass"). What the guidance steers away from is
+  a **live-service / network / poll / daemon** probe: no network call, no polling loop, no "is the daemon
+  up?" — anything whose result depends on the state of a thing *outside the committed bytes at this
+  instant*. This is **authoring advice**, not a harness rule: `plan-breakdown` steers away from it and
+  `guardrails-review` **WARNs** if it sees one; the harness runs whatever was authored. The reason the
+  guidance is narrow-not-blanket: a plan-level preflight halts the **whole run**, so a *flaky* probe
+  there is the maximal-blast-radius SPOF — and flakiness comes from **liveness/network**, not from
+  running a deterministic test suite over the committed source. "Is my endpoint up?" is best expressed
+  as a byte-check on the wired source (`Select-String 'MapGet("/health")'`) rather than a live HTTP call.
+  (A genuinely live check belongs in a task's own guardrail, where a flake costs one task's retry budget
+  — not the whole run.) See §"Live-probe guidance" for the advisory statement.
 
 This folder **REPLACES the no-op ROOT baseline task** mechanism. The behavior the no-op root bought
 (area-start-from-green, evaluated once, every modifier "depends on" it) is exactly what a plan-level
@@ -206,14 +222,17 @@ soundness boundary.
 - **What it asserts.** Whole-result postconditions: the merged repo builds, the full suite passes,
   the union invariants hold (every colliding sibling's contribution survived the merge — §4.3).
 - **When.** Once, at run end, on the merged HEAD, via the existing attempt-decoupled `IReVerifier`
-  seam. **On failure → a terminal halt** (`integration-gate-failed` → exit 2): the work is durable on
-  the plan branch, the human finishes.
-- **Relationship to today's `integrationGate` task kind.** This folder **largely subsumes** the §3.3
+  seam. **On failure → a terminal halt** (`plan-guardrail-failed`, the F9 split → exit 2): the work is
+  durable on the plan branch, the human finishes (via `--revalidate-task plan:guardrails` or a plain
+  resume that fires terminal-only — §B2).
+- **Relationship to today's `integrationGate` task kind.** This folder **REPLACES** the §3.3
   `integrationGate: true` *task*. Today the terminal gate is modelled as a task whose guardrails are
   the `scope:"integration"` set; the owner's model makes it a first-class **folder** instead, removing
-  the no-op END task from the DAG and the diagram. **The migration is specced below** (§"Harness
-  phases" → "Terminal phase") and flagged as an open question (does the folder fully replace the task
-  kind, or coexist for a deprecation window?).
+  the no-op END task from the DAG and the diagram. **The migration is RESOLVED below** (§"Harness
+  phases" → "Terminal phase", B3): GR2017 + the task kind retire; **GR2018's content requirement is
+  re-homed onto the folder** (≥1 real integration-set re-run, not merely "non-empty"); the
+  `scope:"integration"` tag survives for the per-union set. The folder is **terminal-only**; it is not
+  the same object as the per-union set (which runs more often).
 
 ### Task-level preflights — `tasks/<id>/preflights/` (JIT dependency-delivery — the PARTITION's Bucket C)
 
@@ -231,15 +250,95 @@ task's own segment worktree at `taskBase`, before the task's attempt loop.**
 - **Where.** The consuming task's segment worktree at `taskBase` — the per-consumer intermediate state
   no plan-level phase can see (a plan-level preflight runs before any producer has run).
 - **Constraints.** Positive / monotone-safe under merges (a "the type IS present" check only becomes
-  *more* true as merges land — it never union-inverts the way a negative check does); the live-probe
-  ban applies here too (deterministic byte check, NO process/poll/network); keyed to a `dependsOn`
-  edge the author already drew. **The harness never derives it** — the skill authors it against the
+  *more* true as merges land — it never union-inverts the way a negative check does); the advisory
+  live-probe guidance applies here too (prefer a deterministic byte check; steer away from
+  process/poll/network — the skill steers, review WARNs, the harness enforces nothing); keyed to a
+  `dependsOn` edge the author already drew. **The harness never derives it** — the skill authors it against the
   edge, the human reviews it.
 
 ### Task-level guardrails — `tasks/<id>/guardrails/` (existing postconditions)
 
 Unchanged. The per-task acceptance checks run after the action, in filename sort order, all must
 pass. This document changes nothing here; it is named only to complete the 2×2.
+
+---
+
+## Live-probe guidance (ADVISORY — applied by plan-breakdown & guardrails-review, NOT harness-enforced)
+
+This is **authoring guidance, not a harness-enforced rule.** The provenance matters: the old "no
+process start / no live-probe" wording was **agent-authored skill doctrine** (a `plan-breakdown`
+catalogue heuristic first added in commit fa8ffa6 / "M6"), never a GitHub issue or an SSOT contract —
+and it was self-contradictory ("NO process start" while `dotnet test`, a process start, is the
+canonical example). So it was never a real harness constraint, and it is kept here only as **advice**.
+The `plan-breakdown` catalogue **STEERS** check authoring away from flaky live things; `guardrails-review`
+**WARNs (does NOT block)** if a check does a network / poll / daemon / live-service probe; the
+**HARNESS does not enforce any of this** — it just runs whatever checks were authored.
+
+The substance the guidance carries is unchanged: the intent is **FLAKE-FREEDOM, not process-count**. A
+full `dotnet test` / build over the committed bytes is deterministic (same bytes → same result) and is
+**fine at plan level** — process-start is not the concern. A genuinely *live* network probe (whose
+outcome depends on the state of a thing *outside* the committed bytes at this instant) is what the
+guidance steers away from, because at plan level a flake in it halts the whole run; such a live probe
+belongs in a **task's own guardrail**, where a flake costs one cone's retry budget, not the run. The
+guidance is stated per scope (as advice, not a rule):
+
+| Scope | Process-start (e.g. `dotnet test` / build) | Network / poll / daemon / live-service probe | Determinism goal |
+|---|---|---|---|
+| **Plan-level** (`<plan>/preflights/`, `<plan>/guardrails/`) | **fine** — single-shot; the canonical case is a full suite / build over the committed bytes | **steer away (review WARNs)** — no HTTP call, no polling loop, no "is X up?" | aim for deterministic + single-shot; a re-run on identical bytes yields the identical verdict |
+| **Task-level** (`tasks/<id>/preflights/`) | **prefer a byte/exit check** — it runs *per task* before the attempt loop, so a suite run here is usually the wrong tool | **steer away (review WARNs)** — same as plan-level | aim for deterministic + single-shot; positive/monotone-safe under merges |
+
+**The property the guidance actually protects is FLAKE-FREEDOM, not process-count.** A `dotnet test` over
+committed source is deterministic (same bytes → same result); a network/liveness probe is not (it
+depends on a thing outside the bytes). The guidance steers away from the *non-deterministic* category, at
+whatever process cost, and is indifferent to the *deterministic* category, at whatever process cost. This
+is the KISS reading of invariant 1 (deterministic gates) crossed with invariant 5 (honest, non-flaky
+halts): a plan-level halt on a genuinely-red suite is honest; a plan-level halt on a network hiccup is a
+flake with maximal blast radius — so the guidance advises against only the latter. Because it is advice,
+the enforcement is soft: the skill steers, review WARNs, the harness stays silent.
+
+---
+
+## B1 — Durable, resume-aware record for the plan-level phases (the load-bearing fix)
+
+**The hole.** The prior design's no-op ROOT/END tasks got resume/skip **for free** from the journal:
+a `succeeded` task is skipped on resume (§7 SSOT). The plan-level **folders** are not tasks, so they
+inherit no such record. Without one, a crash **mid-DAG** followed by `guardrails run` (resume) would
+**re-run the pre-DAG `<plan>/preflights/` phase against a now-partially-merged repo** — and a
+**NEGATIVE baseline** ("`RequestId` absent") that was true at the run's start is now **FALSE** (an
+earlier task already introduced `RequestId` onto the plan branch). The re-run would **false-halt the
+resume** — the exact union-inversion the two-scope model claims to have dissolved. "Dissolved by
+construction" was too strong: it is dissolved **only if the negative baseline is evaluated exactly
+once across the whole run lifecycle, resume included.** A marker is what guarantees "exactly once."
+
+**The mechanism — a `planHash`-keyed "plan-preflights passed" marker (mirrors §13's
+`guardrails-review.json` shape and the §5.3 resume pre-pass that reads durable trailers).**
+
+- **Shape.** When the pre-DAG phase **passes**, the harness records a marker in the run journal —
+  a new top-level `planPreflights` section in `state/run.json` (journaled OUTSIDE the `tasks{}` map,
+  because these are not tasks — see B1/F9 journal shape below), carrying `{ "status": "passed",
+  "planHash": "sha256:…", "evaluatedAt": "…", "checks": [ … ] }`. The `planHash` is the **same
+  `PlanHash`** the journal and the §13 review marker already use (`guardrails.json` + every
+  `task.json`, newline-normalized, task-id-ordered).
+- **Resume pre-pass reads it and SKIPS the pre-DAG phase.** On `guardrails run` over an existing
+  journal, the resume pre-pass (the same pass that reads the plan-branch commit trailers to know which
+  tasks already `succeeded`, §5.3/§7) reads `planPreflights`: if `status == "passed"` **and** its
+  `planHash` matches the current `PlanHash`, the pre-DAG phase is **SKIPPED** — the plan-level
+  preflights are **not re-run**. The negative baseline is therefore **evaluated exactly once** across
+  the entire run lifecycle, resume included.
+- **Re-run only on `--fresh`.** `--fresh` clears the run journal (§6.1), so `planPreflights` is
+  cleared with it; a fresh run re-evaluates the pre-DAG phase against the (re-set) starting bytes —
+  which is correct, because `--fresh` re-establishes the starting point. A `planHash` **mismatch**
+  (the plan changed since the marker was written) also forces re-evaluation (the baseline may no longer
+  be meaningful), exactly as a stale §13 review marker re-flags — self-invalidation by the same key.
+- **Why this dissolves union-inversion HONESTLY (not "by construction").** The negative baseline is
+  a claim true at exactly one point in time — the run's start. The marker is the *record that the run
+  already stood at that point and passed*. Because resume reads the marker and does **not** re-evaluate,
+  the negative check is never run against merged bytes — not "because negatives can't invert" (they
+  can), but **because the marker guarantees the check fires once**. This replaces the earlier
+  "DISSOLVED by construction" claim with "dissolved because the marker guarantees once."
+
+*(The harness-developer review independently confirmed this hole and recommended exactly this: record
+the pre-DAG pass, skip on resume, re-run on `--fresh`.)*
 
 ---
 
@@ -271,18 +370,25 @@ Two earlier-design positions this model **SUPERSEDES**, stated plainly so the re
 
 The PARTITION recorded two concerns against a plan-level phase. Both are addressed:
 
-- **Union-inversion (a negative check re-run post-merge false-halts) → DISSOLVED by construction.**
-  Negative baselines (Bucket B) are **plan-level one-shots**: they run **once, at the run's start**,
-  against the starting repo — never per-task, never at a union, never on merged bytes. A negative
-  check evaluated only at the one point in time it is true cannot invert. This is *why* the negative
-  baseline is plan-level-only and not a task-level preflight (a task-level negative check at a
-  downstream `taskBase` would see earlier merges and false-halt — forbidden).
+- **Union-inversion (a negative check re-run post-merge false-halts) → DISSOLVED, but by the B1
+  marker, not "by construction."** Negative baselines (Bucket B) are **plan-level one-shots**: they run
+  **once, at the run's start**, against the starting repo — never per-task, never at a union. But
+  "once" is only true if **resume does not re-run them** — and a mid-DAG crash + `guardrails run`
+  would, absent a durable record, re-fire the pre-DAG phase against partially-merged bytes and
+  false-halt (see §B1). The dissolution is therefore load-bearing on the **`planHash`-keyed
+  `planPreflights` marker** (§B1): the resume pre-pass reads it and SKIPS the pre-DAG phase, so the
+  negative check is **evaluated exactly once across the whole run lifecycle, resume included.** This is
+  *why* the negative baseline is plan-level-only and not a task-level preflight (a task-level negative
+  check at a downstream `taskBase` would see earlier merges and false-halt — forbidden), **and** why
+  the marker is not optional polish but the mechanism that makes the claim true.
 - **Flaky-SPOF (a plan-level preflight halts the whole run) → now ACCEPTED as correct.** For a
   *full-flight-check*, halting the whole run on failure is the **intended** behavior — the plane does
   not leave the runway on a failed pre-flight. The mitigation is **not** to narrow the blast radius
-  (that would defeat the purpose) but to **forbid the flake**: the **live-probe ban** (deterministic /
-  cheap / single-shot; no network / process-start / poll) keeps a plan-level preflight from ever being
-  a *flaky* SPOF. A deterministic check that genuinely fails *should* halt the run.
+  (that would defeat the purpose) but to **keep the check flake-free**: the **advisory live-probe
+  guidance** (aim for deterministic / cheap / single-shot; process-start such as a suite run is fine;
+  steer away from network / poll) keeps a plan-level preflight from ever being a *flaky* SPOF — the
+  skill steers authors toward it and review WARNs, but the harness does not enforce it. A deterministic
+  check that genuinely fails *should* halt the run.
 
 ### Why the negative baseline is plan-level only (the kept argument, restated)
 
@@ -370,23 +476,48 @@ The current flat-node + `done_` renderer **must change**:
   (`subgraph <id>_preflights["Preflights"]`, `subgraph <id>_guardrails["Guardrails"]`), each
   containing the individual check nodes. The plan-level containers are two more top-level subgraphs
   (`subgraph plan_preflights["Full Flight Checks"]`, `subgraph plan_guardrails["Terminal Gate"]`).
-- **Edges go container→container**, drawn between subgraphs (Mermaid draws a subgraph-to-subgraph edge
-  by linking the subgraph ids). For each task B that `dependsOn` A: `task_A --> task_B`. The plan
-  preflights subgraph links into every first-level (root) task; every leaf task links into the plan
-  guardrails subgraph.
+- **Edges go container→container** — but with a **rendering-reality caveat (invisible anchor nodes).**
+  Mermaid does **NOT** faithfully render a `subgraph --> subgraph` (container→container) edge: pointing
+  an edge at a subgraph id is unreliable across versions and often draws to an arbitrary interior node
+  or not at all. The faithful technique is an **invisible anchor node** inside each container
+  (`<id>_anchor[" "]:::invisible`, zero-content, `classDef invisible` with no fill/stroke) and drawing
+  the DAG edges **anchor→anchor** (`task_A_anchor --> task_B_anchor`). This **partly reintroduces a
+  node family** — so the "no nodes, pure containers" promise in the owner's sketch is **not literally
+  achievable**; it becomes "no *visible* free nodes; one invisible anchor per container carries the
+  edge." This caveat must be stated in the doc and the SSOT §10 change, and **the renderer must be
+  prototyped against the bundled Mermaid version BEFORE building** (the anchor technique is
+  version-sensitive; a golden that passes on one Mermaid version can regress on another).
+- **Does a task-level preflight render its gated `dependsOn` edge?** Decided explicitly (it was
+  ambiguous): **YES — the container→container `dependsOn` edge is still drawn.** A `tasks/<id>/preflights/`
+  check gates a `dependsOn` edge (the consumer verifies the producer delivered); collapsing the
+  producer into a container must NOT erase that edge, or the diagram loses the dependency the preflight
+  exists to guard. The preflight renders as a check node *inside* the consumer's Preflights subgraph
+  **and** the `task_producer_anchor --> task_consumer_anchor` edge remains. (Rejected alternative:
+  re-route the edge to originate from the preflight node — that reintroduces a free-node edge family
+  and couples edge routing to preflight presence.)
 - The fan-out edges (`task --> guardrail`) and the `done_<id>` nodes are **deleted**. Guardrails (and
   preflights) are no longer free nodes with their own dependency edges; they are **contents of the
-  task's subgraph**, not participants in the DAG.
+  task's subgraph**, not participants in the DAG. (The invisible anchors are the *only* free-node
+  family that survives, and they carry edges, not labels.)
 - **`classDef`s** color the four kinds (task container, preflight check, guardrail check, plan-level
-  container) distinctly; retry/feedback edges remain out of scope.
+  container) distinctly, plus one `classDef invisible` for the anchors; retry/feedback edges remain out
+  of scope.
 - **`source-sha256`** (the staleness key) must fold the new structure into its semantic content
   (container membership + nested check labels + container→container edges), so a freshness check still
   fires when any of them changes — and stays stable across irrelevant reorderings (subgraphs and their
-  contents sorted ordinal).
+  contents sorted ordinal). **CRITICAL — it MUST fold the PLAN-LEVEL folder checks too.** The
+  `<plan>/preflights/` and `<plan>/guardrails/` checks are **not in `tasks{}`**; if the hash is computed
+  only from task structure (as today's §10 hash effectively is), then **editing a terminal-gate check
+  leaves the diagram falsely fresh** — `graph --check` reports "up to date" while the drawn Terminal
+  Gate container no longer matches the folder. The hash's semantic content must therefore include the
+  plan-level containers' labels + nested check labels. **Required test (added to the handoff):** *edit a
+  `<plan>/guardrails/` check → `graph --check` reports stale (exit 2).*
 
 This is a **non-trivial renderer rewrite** — the node/edge model changes from "tasks + guardrails +
-done-nodes, all free nodes" to "containers with nested checks, edges between containers." Specced
-here as a deferred SSOT §10 change; the implementation handoff names it.
+done-nodes, all free nodes" to "containers with nested checks, invisible anchors carrying
+container→container edges." The anchor-node reality and the version-sensitivity mean the renderer must
+be **prototyped against the bundled Mermaid version before the build commits to the container model.**
+Specced here as a deferred SSOT §10 change; the implementation handoff names it.
 
 ---
 
@@ -400,15 +531,16 @@ design, not yet in the SSOT or the code.**
 - **When.** After load/validate, **before the Scheduler builds waves** — the first thing a `run`
   does after it has a valid plan.
 - **Where.** The integration worktree on the plan branch at the user's HEAD (the starting bytes),
-  read-only. (Open question: interaction with `maxParallelism`/worktree mode — the plan-level phase is
-  inherently serial and single-shot, so it likely runs once on the integration worktree regardless of
-  `maxParallelism`; recorded as an open question.)
-- **Failure → halt before scheduling.** A new outcome `preflight-failed`; **no task runs.** Exit
-  code: a plan-level preflight failure is an **actionable, work-not-started** halt → **exit 2** (the
-  same class as needs-human: "actionable condition found; nothing was spent / started"). The journal
-  records a plan-level `preflights` result distinct from any task. (Open question: whether to mint a
-  *new* exit code or reuse exit 2 — recommended: reuse 2, no new code, consistent with the existing
-  "actionable condition" semantics.)
+  read-only. **Mode interaction — RESOLVED:** the plan-level phase is inherently **serial and
+  single-shot**, so it runs **once on the integration worktree regardless of `maxParallelism`**, never
+  sharded across segment worktrees; serial-mode (`maxParallelism: 1`) behavior is identical. This
+  requires the `IReVerifier` to be wired unconditionally (§"Serial-mode reality").
+- **Failure → halt before scheduling.** A distinct outcome **`plan-preflight-failed`** (the F9 split —
+  see below); **no task runs.** Exit code: a plan-level preflight failure is an **actionable,
+  work-not-started** halt → **exit 2** (the same class as needs-human: "actionable condition found;
+  nothing was spent / started"). The journal records the result in the top-level `planPreflights`
+  section (§B1), distinct from any task. Exit 2 is **reused**, not a new code (recommended and now
+  settled — consistent with the existing "actionable condition" semantics).
 - **Auto-derivation rejection holds.** The harness runs the authored `<plan>/preflights/` checks; it
   never infers which checks should be preflights.
 
@@ -418,26 +550,91 @@ design, not yet in the SSOT or the code.**
   terminal `integrationGate` *task* run.
 - **Where.** The integration worktree, via the existing attempt-decoupled `IReVerifier` seam (the same
   seam today's terminal gate and union re-verify use). **No new guardrail-runner machinery.**
-- **Migration from the `integrationGate` task kind (§3.3).** Today GR2017 requires a multi-leaf/fan-in
-  plan to declare exactly one `integrationGate: true` sink, and GR2018 requires that sink to carry ≥1
-  `scope:"integration"` guardrail. Under the model, the terminal checks move into `<plan>/guardrails/`.
-  Two migration shapes, flagged as an open question:
-  - **(i) Full replacement.** `<plan>/guardrails/` *is* the terminal gate; the `integrationGate` task
-    kind and GR2017/GR2018 retire (replaced by "a multi-leaf/fan-in plan MUST have a non-empty
-    `<plan>/guardrails/`"). Cleanest; removes the no-op END task entirely.
-  - **(ii) Coexistence / deprecation window.** Both are accepted for a release; `plan-breakdown` emits
-    the folder, the task kind is deprecated. Safer migration, more surface for a window.
-  - **Recommended: (i) full replacement**, because the no-op END task is exactly the clutter the owner
-    is removing — but this is a contract retirement (GR2017/GR2018), so it is an OPEN question for the
-    owner, not resolved here.
-- **Failure → terminal halt** (`integration-gate-failed` → exit 2). The work is durable on the plan
+- **Migration from the `integrationGate` task kind (§3.3) — B3: keep the CONTENT teeth.** Today GR2017
+  requires a multi-leaf/fan-in plan to declare exactly one `integrationGate: true` sink, and **GR2018
+  requires that sink to carry ≥1 `scope:"integration"` guardrail** ("a gate with none verifies
+  nothing"). Under the model the terminal checks move into `<plan>/guardrails/`. **The migration is now
+  RESOLVED normatively (was an open question), and B3 is the reason it can't be a soft resolution:**
+  - **REPLACE the terminal-gate TASK with `<plan>/guardrails/`.** The `integrationGate: true` task
+    kind and **GR2017** (the "declare exactly one sink" rule) retire — the no-op END task is exactly
+    the clutter the owner is removing.
+  - **PRESERVE GR2018's content requirement — do NOT weaken it to "non-empty folder."** A "the folder
+    isn't empty" rule lets a tautological `exit 0` file pass the terminal gate and **certify nothing** —
+    the precise failure GR2018 exists to prevent. The replacement rule keeps the teeth: **"a
+    multi-leaf/fan-in plan MUST have a `<plan>/guardrails/` carrying ≥1 deterministic check that
+    actually re-runs the integration set"** (the whole-repo build / full suite / a union invariant) —
+    not merely a present file. GR2018 is **re-homed onto the folder**, not retired: same content
+    obligation, new carrier. (An implementation detail for the SSOT change: the check may reuse the
+    §4.3 `scope:"integration"` tag as the "counts toward the terminal gate" marker on the folder's
+    files, or introduce a folder-scoped equivalent; either way the *content* obligation — ≥1 real
+    integration-set re-run — survives.)
+  - **KEEP `scope:"integration"` as the per-union set.** GR2018 (the *sink-task* rule) retires, but the
+    `scope:"integration"` **tag survives for unions**: the §4.3 per-union re-verify (at intermediate
+    fan-in / non-FF integration points, `SettleAsync`) still runs the integration-scoped guardrail set,
+    unchanged. The tag is not coupled to the terminal task kind; only the *terminal-sink* obligation
+    moved to the folder.
+  - **Terminal folder vs per-union set — stated plainly (harness-dev's steer).** `<plan>/guardrails/`
+    is **TERMINAL-ONLY** — the final whole-HEAD gate, evaluated once at run end. It is **NOT** the same
+    object as the per-union `scope:"integration"` set: the per-union set is run **more often**
+    (at every union, during the run) and keeps using the `scope:"integration"` tag; the terminal
+    folder is run **once, last**. Recommended relationship: the terminal folder's checks are typically
+    a **superset-or-equal** of the integration set (build + full suite + any whole-result invariant),
+    but they are declared **in the folder**, and the per-union set is declared **by the tag** — two
+    declarations, one shared spirit, no forced identity. (See open question on whether an author may
+    point the terminal folder AT the tagged set to avoid duplication — kept open, but the *default* is
+    they are authored independently.)
+- **Failure → terminal halt** (`plan-guardrail-failed` → exit 2). The work is durable on the plan
   branch; the merge-collision attribution (#175) carries over (it is a property of the gate failure,
   not of where the gate lives).
 - **Relationship to per-union re-verify.** The §4.3 per-union integration-set re-verify is unchanged —
-  it runs at every fan-in / non-FF integration *during* the run. `<plan>/guardrails/` is the **final**
-  whole-HEAD gate. (Open question: is `<plan>/guardrails/` the same set as the `scope:"integration"`
-  union set, or a superset? Likely: the union set is a subset run more often; the plan-level guardrail
-  folder is the terminal whole-repo gate. Recorded.)
+  it runs at every fan-in / non-FF integration *during* the run, keyed by the `scope:"integration"`
+  tag. `<plan>/guardrails/` is the **final, terminal-only** whole-HEAD gate (see B3 above for the
+  normative terminal-vs-per-union statement).
+
+### B2 — The terminal gate's human-fix / revalidate path + the DAG-green/terminal-red resume rule
+
+A `<plan>/guardrails/` folder **has no task id**, so two mechanisms that today rely on a task id have
+nothing to target. Both are designed here (they were the second load-bearing hole):
+
+**(a) Revalidate after a hand-fix — a synthetic stable id, NOT a new verb.** Today `--revalidate-task
+<id>` (§7.1) re-confirms a hand-fixed `needs-human` task WITHOUT re-running the DAG or spawning an
+agent. When the *terminal gate* fails, a human fixes the merged HEAD by hand and wants the same
+"confirm the gate now passes, don't re-run everything" affordance — but there is no task id to pass.
+
+**Decision: mint a synthetic stable id for the plan-level guardrail folder and let the EXISTING
+`--revalidate-task` accept it** — rather than a dedicated `--revalidate-terminal` verb.
+- The reserved id is **`plan:guardrails`** (the `:` is already disallowed in a real `stableId`/folder
+  id by the §3 `^[a-z0-9][a-z0-9._-]*$` rule and reserved for synthetic identities — §11's merge uses
+  the same `folder:<name>` convention, so `plan:guardrails` can never collide with a real task).
+- `guardrails run --revalidate-task plan:guardrails` runs **only the `<plan>/guardrails/` checks**
+  against the current merged HEAD (worktree-mode caveat identical to §7.1: an in-place fix is only
+  visible where the checks run — for the terminal gate that is the **integration worktree**, which the
+  harness owns, so this verb points the `IReVerifier` at the integration worktree, not the user's
+  checkout). Pass ⇒ the terminal phase settles green, run exits 0; fail ⇒ still `plan-guardrail-failed`,
+  exit 2 — the same settle contract §7.1 gives a task.
+- **Why reuse over a new verb:** `--revalidate-task` already means "re-run one gate's checks, no
+  action, journal a synthetic settle, no DAG re-run" — which is exactly the terminal-gate need. A new
+  verb would duplicate that semantics for one more id shape. The synthetic id is the smaller contract
+  (KISS): one reserved constant, zero new CLI surface, and it composes with the eligibility/exit-code
+  rules §7.1 already specs. (The corresponding plan-level *preflight* re-check reuses the same idea
+  with the reserved id **`plan:preflights`**, should a human want to re-confirm a hand-fixed starting
+  state without a full `--fresh`.)
+
+**(b) Resume rule for "DAG all-green but terminal folder red."** Today resume (§7) has a rule for each
+*task* status, but no rule for the state *"every task `succeeded`, yet the terminal `<plan>/guardrails/`
+gate is red."* Named explicitly:
+- The terminal-phase result is journaled in a new top-level `planGuardrails` section of `run.json`
+  (outside `tasks{}`, mirroring `planPreflights` — see B1/F9 journal shape). On a red terminal gate it
+  records `{ "status": "failed", "planHash": "…", "failedChecks": [ … ] }`.
+- **On `guardrails run` (resume):** every task is `succeeded` ⇒ **all tasks skip** via the existing
+  resume rule (no task re-runs, no attempt burned); the resume pre-pass then reads `planGuardrails` and,
+  seeing `status == "failed"` (and a matching `planHash`), **RE-FIRES ONLY the terminal phase** on the
+  current merged HEAD. Name for this transition: **terminal-only resume** (the DAG is settled; only the
+  whole-HEAD gate re-runs). A `planHash` mismatch (the plan changed) instead falls back to a normal
+  resume that may re-schedule affected tasks.
+- This is the resume-side complement of (a): `--revalidate-task plan:guardrails` is the *explicit*
+  single-shot re-check; **terminal-only resume** is what a plain `guardrails run` does automatically
+  when the DAG is green and only the terminal gate is red.
 
 ### Task-level preflight slot — `tasks/<id>/preflights/` (the PARTITION's harness-feasibility note, carried forward)
 
@@ -447,56 +644,151 @@ design, not yet in the SSOT or the code.**
   `GUARDRAILS_ACTION_*` vars) — here pointed at the consumer's `taskBase`. **No new machinery.**
 - **Failure.** Short-circuits to `needs-human` **without consuming a retry attempt** (no-burn), in
   **both** serial and worktree mode (the fail-fast is structural, not budget-dependent). Outcome
-  `preflight-failed` (shared with the plan-level phase, distinguished by scope in the journal). Blocks
-  only the task + its transitive dependents via the existing scheduler closure; independent branches
-  keep running.
+  **`task-preflight-failed`** (the F9 split — a *distinct* outcome from the plan-level
+  `plan-preflight-failed`, because the consumer-side blast radius differs: a plan-level preflight halts
+  the WHOLE run with zero tasks; a task-level preflight blocks only ONE cone). It is a **`TaskOutcome`
+  inside `tasks{}`** (it *is* a per-task result), unlike the plan-level outcomes which live outside
+  `tasks{}`. Blocks only the task + its transitive dependents via the existing scheduler closure;
+  independent branches keep running.
+- **Serial-mode wiring is a first-class REQUIREMENT here, not an afterthought** — see §"Serial-mode
+  reality" below; the runner this slot reuses (`IReVerifier`) is **NULL in serial mode today**.
 - **Effort: S–M** for the task-level slot; **M** for the plan-level phases + the §10 renderer rewrite.
 
-### New outcomes / exit codes / journal entries (summary)
+### New outcomes / exit codes / journal entries (summary — F9 split + journal shape RESOLVED)
 
-- **`preflight-failed`** — a plan-level OR task-level preflight failed. Plan-level → halt before
-  scheduling; task-level → `needs-human` for that task's cone, no attempt burned. → **exit 2**.
-- **`integration-gate-failed`** (or reuse `guardrail-failed` at terminal scope — open question) — the
-  plan-level `<plan>/guardrails/` terminal gate failed on the merged HEAD → terminal halt, work durable
-  on the plan branch → **exit 2**.
-- **Journal.** Plan-level preflight and plan-level guardrail results are recorded **outside the
-  per-task `tasks{}` map** (they are not tasks) — a new `preflights` / `guardrails` section in
-  `run.json`. (Open question: exact journal shape; recorded.)
-- **No new exit code recommended** — both new halts are the existing exit-2 "actionable condition;
-  work durable/unstarted" class. Confirm at implementation time.
+The prior draft overloaded a single `preflight-failed` for both scopes. **That is split (F9):** a
+plan-level preflight halts the WHOLE run (zero tasks ran); a task-level preflight blocks only ONE cone.
+A consumer that cannot tell them apart cannot render the right halt. Three distinct outcomes:
+
+- **`plan-preflight-failed`** — the pre-DAG `<plan>/preflights/` phase failed → halt **before
+  scheduling**, no task runs, zero tokens spent → **exit 2**. Journaled in the top-level
+  **`planPreflights`** section (outside `tasks{}`).
+- **`task-preflight-failed`** — a `tasks/<id>/preflights/` slot failed → **`needs-human`** for that
+  task's cone, **no attempt burned**; independent branches keep running → **exit 2**. Journaled as a
+  **`TaskOutcome` inside `tasks{}`** (it is a per-task result).
+- **`plan-guardrail-failed`** — the terminal `<plan>/guardrails/` gate failed on the merged HEAD →
+  terminal halt, work durable on the plan branch → **exit 2**. Journaled in the top-level
+  **`planGuardrails`** section (outside `tasks{}`).
+
+**Decision — distinct outcome names, not a shared name + a `scope` field.** A shared `preflight-failed`
++ a mandatory `scope: "plan" | "task"` consumers must branch on was considered. Rejected: distinct
+names are the smaller cognitive contract (a reader sees `plan-preflight-failed` and immediately knows
+the whole run halted), match how §7 already names outcomes by their *situation* (`output-cap`,
+`max-turns`, `rate-limited`) rather than by a discriminator field, and remove the failure mode where a
+consumer forgets to branch on `scope` and renders a plan-level halt as a task-level one. The plan-level
+scope is *also* encoded structurally (the result lives outside `tasks{}`), so no field is needed.
+
+**Journal shape (round-trips losslessly — the additive top-level sections):**
+
+```jsonc
+{
+  "version": 1,
+  "runId": "…", "planHash": "sha256:…", "nextMergeSequence": 3,
+  "planPreflights": {                      // NEW, top-level, OUTSIDE tasks{} — B1/F9
+    "status": "passed",                    // passed | failed  (absent ⇒ not yet evaluated)
+    "planHash": "sha256:…",                // the marker key — SKIP-on-resume iff it matches (§B1)
+    "evaluatedAt": "…",
+    "checks": [ { "name": "01-all-repo-tests-green", "pass": true } ]
+  },
+  "planGuardrails": {                      // NEW, top-level, OUTSIDE tasks{} — B2/F9
+    "status": "failed",                    // passed | failed  (absent ⇒ not yet reached)
+    "planHash": "sha256:…",
+    "failedChecks": [ { "name": "02-full-suite", "reason": "3 tests red" } ]
+  },
+  "tasks": {
+    "07-consume-widget": {
+      "status": "needs-human",
+      "attempts": [ { "attempt": 1, "outcome": "task-preflight-failed", /* … */ } ]
+    }
+    // … other tasks …
+  }
+}
+```
+
+- **Additive & lossless.** `planPreflights` / `planGuardrails` are new top-level keys; an older reader
+  ignores them, a plan without the feature omits them — the existing `tasks{}` shape is untouched, so
+  the journal round-trips losslessly with or without the sections.
+- **`task-preflight-failed` stays a `TaskOutcome`** in the §7 attempt-outcome enum, alongside
+  `guardrail-failed` / `action-failed` / `output-cap` / `max-turns` / `rate-limited`.
+- **Exit code — reuse 2, no new code.** All three halts are the existing exit-2 "actionable condition;
+  work durable/unstarted" class (§7.1). Settled, not "confirm later."
+
+### Serial-mode reality — the `IReVerifier` runner must be wired UNCONDITIONALLY (design requirement)
+
+**The trap.** The attempt-decoupled `IReVerifier` seam — which the pre-DAG phase, the terminal phase,
+and the task-level preflight slot all reuse — is **NULL in serial mode today**: it is only constructed
+when `maxParallelism > 1 && git` (worktree mode), because its only current caller (the §4.3 per-union
+re-verify) never fires in serial mode (serial mode forms no unions). If the plan-level and task-level
+preflight phases reuse a runner that is null at `maxParallelism: 1`, they would **silently no-op in
+serial mode** — and a silent no-op on a *preflight* is exactly a hidden false-halt-avoidance: the
+honest halt the phase exists to produce never fires. **Design requirement, recorded as first-class (not
+an afterthought):** the `SchedulerFactory` composition root MUST wire the `IReVerifier` (or an
+equivalent attempt-decoupled guardrail runner) **unconditionally** — in serial mode too — so the three
+preflight/terminal phases run in **both** modes. The harness-developer handoff lists this as a
+prerequisite sequenced BEFORE the phases that depend on it. This is where a false-green could hide, so
+the test matrix (handoff step 4) exercises every phase in **serial AND worktree mode**.
 
 ---
 
-## Open questions (flagged for the team + owner — NOT resolved here)
+## Open questions
 
-1. **Exact on-disk placement of the plan-level folders.** The owner pointed at the `…/texttools/tasks`
-   level. Two options:
+This hardening pass **CLOSED** the load-bearing ones. The record below states what is now closed (with
+the resolution) and what remains open for the owner.
+
+### CLOSED by this pass
+
+- **CLOSED — `integrationGate` replacement (B3).** REPLACE the terminal-gate *task* + retire GR2017;
+  **PRESERVE GR2018's content requirement** re-homed onto the folder ("≥1 deterministic check that
+  actually re-runs the integration set" — NOT "non-empty folder"); **KEEP `scope:"integration"` as the
+  per-union set**. `<plan>/guardrails/` is **terminal-only**; the per-union re-verify keeps using the
+  tag. (§B3 / terminal phase.) *No coexistence window — full replacement of the task kind, content
+  teeth kept.*
+- **CLOSED — serial-mode wiring.** The `IReVerifier` runner is wired **UNCONDITIONALLY** in
+  `SchedulerFactory` (serial mode too), sequenced before the phases that reuse it; every phase tested
+  in serial AND worktree mode. (§"Serial-mode reality".)
+- **CLOSED — terminology.** "**Full Flight Checks**" is KEPT as the user-facing / diagram label for
+  plan-level preflights; the on-disk folder is `preflights/`. "Terminal Gate" is the label for
+  `<plan>/guardrails/`.
+- **CLOSED — journal shape + outcome split (B1 / F9).** Plan-level results live in **additive
+  top-level `planPreflights` / `planGuardrails`** sections (outside `tasks{}`, round-trip lossless);
+  task-level stays a `TaskOutcome` inside `tasks{}`. Outcomes split into **`plan-preflight-failed` /
+  `task-preflight-failed` / `plan-guardrail-failed`** (distinct names, not a shared name + `scope`
+  field), all reuse **exit 2**. (§"New outcomes … F9 split".)
+- **CLOSED — negative-baseline safety (B1).** A **`planHash`-keyed `planPreflights` marker** records
+  the pre-DAG pass; the resume pre-pass reads it and **SKIPS the pre-DAG phase on resume**; re-run only
+  on `--fresh` or a `planHash` mismatch. The negative baseline is **evaluated exactly once across the
+  whole run lifecycle** — union-inversion dissolved *because the marker guarantees once*, not "by
+  construction." (§B1.)
+- **CLOSED — terminal human-fix / revalidate + resume (B2).** Synthetic id **`plan:guardrails`**
+  accepted by the existing `--revalidate-task` (no new verb); plus **terminal-only resume** — DAG all
+  `succeeded` ⇒ all tasks skip, only the terminal phase re-fires. (§B2.)
+- **CLOSED — Mermaid container edges.** Container→container edges require **invisible anchor nodes**
+  (the "no nodes" promise is softened to "no *visible* free nodes"); the renderer must be **prototyped
+  against the bundled Mermaid version before building**; a task-level preflight **still renders its
+  gated `dependsOn` edge**. (§"Mermaid implementation implication".)
+- **CLOSED — `source-sha256` folds plan-level checks.** The staleness hash includes the plan-level
+  folder checks; a required test asserts *edit `<plan>/guardrails/` check → `graph --check` reports
+  stale*. (§"Mermaid implementation implication".)
+
+### STILL OPEN — for the owner
+
+1. **Exact on-disk placement of the plan-level folders — THE ONE STILL OPEN.** The owner pointed at the
+   `…/texttools/tasks` level. Two options:
    - **(A) Plan-root siblings of `tasks/`** — `<plan>/preflights/` and `<plan>/guardrails/` sit
      alongside `guardrails.json`, `state/`, `tasks/`. **RECOMMENDED:** the model's whole point is that
      these are **plan-level**, not task-level; placing them at the plan root makes the scope visible on
      disk (plan-level folders at the plan root; task-level folders under each task). It also keeps the
-     `tasks/` directory a pure list of tasks.
+     `tasks/` directory a pure list of tasks, and avoids a collision with a task literally named
+     `preflights`/`guardrails`.
    - **(B) Inside `tasks/`** — e.g. `tasks/preflights/`, `tasks/guardrails/`. Closer to where the owner
-     pointed, but it mixes a plan-level concern into the per-task directory and risks colliding with a
-     task whose folder is literally named `preflights`/`guardrails`.
-   - **Recommendation: (A) plan-root.** Marked **OPEN** for the owner.
-2. **Does `<plan>/guardrails/` fully REPLACE the `integrationGate` task kind, or coexist?** Full
-   replacement (retire GR2017/GR2018, replace with a "non-empty `<plan>/guardrails/`" rule) is
-   recommended and cleanest; coexistence is a safer migration window. **OPEN** (a contract retirement —
-   owner sign-off).
-3. **Terminology — keep "Full Flight Checks"** (the owner's term) as the user-facing name for
-   plan-level preflights? The on-disk folder is `preflights/`; "Full Flight Checks" is the diagram /
-   UI label. Recommend keeping the owner's term as the display name. **OPEN.**
-4. **Interaction with `maxParallelism` / worktree mode for the plan-level phases.** The plan-level
-   pre-DAG and terminal phases are inherently **serial, single-shot** (one evaluation on the
-   integration worktree). Recommend they run once regardless of `maxParallelism`, on the integration
-   worktree, never sharded across segment worktrees. Confirm the serial-mode (`maxParallelism: 1`)
-   behavior is identical. **OPEN.**
-5. **Is `<plan>/guardrails/` the same set as the `scope:"integration"` union set, or a superset?**
-   (How the terminal folder relates to the per-union re-verify — §4.3.) **OPEN.**
-6. **Journal shape for plan-level results** (the new `preflights`/`guardrails` sections in `run.json`)
-   and whether `integration-gate-failed` is a distinct outcome or a terminal-scoped `guardrail-failed`.
-   **OPEN.**
+     pointed, but it mixes a plan-level concern into the per-task directory and risks the name
+     collision above.
+   - **Recommendation: (A) plan-root. FLAGGED OPEN for the owner** — the owner explicitly pointed at
+     the `tasks/` level, so this needs an explicit owner call before the SSOT §1 layout is written.
+2. **(Minor, owner-optional) May an author POINT the terminal `<plan>/guardrails/` folder at the tagged
+   `scope:"integration"` set** to avoid re-declaring the same build/suite in two places? The **default
+   is they are authored independently** (B3); a "reference the tagged set" convenience is a possible
+   later affordance, not required for v1. Recorded, not blocking.
 
 ---
 
@@ -532,16 +824,39 @@ my responses:
   carries **only A and B** (the run-global slices it *can* express), and C lives at **task scope**.
   The two concerns that drove the withdrawal are re-resolved, not ignored: union-inversion is dissolved
   (negative baselines are one-shot at the start), and flaky-SPOF is accepted-as-correct-for-a-full-
-  flight-check + forbidden-from-flaking by the live-probe ban. So this is a *scoped* reinstatement with
-  the failure modes addressed, not an unconditioned walk-back.
+  flight-check + kept-flake-free by the advisory live-probe guidance. So this is a *scoped* reinstatement
+  with the failure modes addressed, not an unconditioned walk-back.
 
-- **Counter: "The live-probe ban guts the most compelling preflight — 'is my dependency's endpoint
-  *up*?' — the literal 'plane on the runway' intuition #183 opens with."** *Response:* Correct, and an
-  honest tension. But a live endpoint probe in a *plan-level* preflight is the maximal-blast-radius
-  flake — it halts the whole run on a network hiccup. The intuition is preserved as a **byte-check on
-  the wired source** (the route is `MapGet`-registered in the committed file), which is deterministic,
-  single-shot, and fully expressible. A genuinely *live* check belongs in a task's own guardrail, where
-  a flake costs one task's retry budget, not the run. The ban is a conservative default, not a new veto.
+- **Counter: "The live-probe guidance steers away from the most compelling preflight — 'is my
+  dependency's endpoint *up*?' — the literal 'plane on the runway' intuition #183 opens with."**
+  *Response:* Correct for the *live* reading, and an honest tension — but the guidance is now **narrow**:
+  it steers away only from the network/poll/daemon/live-service category, and treats process-start as
+  **fine** (a full `dotnet test` / build is the canonical Full Flight Check). So the guidance does not
+  discourage the deterministic heavy checks; it discourages only the *flaky* ones. A live endpoint probe
+  in a *plan-level* preflight is the maximal-blast-radius flake — it halts the whole run on a network
+  hiccup — so the guidance steers away from it (review WARNs, the harness does not block); the intuition
+  is preserved as a **byte-check on the wired source** (the route is `MapGet`-registered in the committed
+  file), deterministic and single-shot. A genuinely *live* check belongs in a task's own guardrail, where
+  a flake costs one task's retry budget, not the run. (§"Live-probe guidance" states this as advice, not
+  a harness rule.)
+
+- **Counter (F8 — the cheaper alternative, RECORDED AS CONSIDERED-AND-REJECTED): "You don't need the
+  four-folder model at all. Keep the no-op tasks; only rewrite the RENDERER to collapse each task + its
+  guardrails into a container. You get the diagram declutter — the owner's visible pain — at near-zero
+  risk, with zero new contract, zero new phases, zero new outcomes, and no B1/B2/B3 holes to design
+  around."** *Response:* This is the strongest cheap alternative and it is **weighed, not ignored** — it
+  genuinely buys the *rendering* win at a fraction of the cost, and if declutter were the only goal it
+  would win. It is **rejected** for one decisive reason the skill-author's evidence supplies: the no-op
+  task is **awkward to AUTHOR, not merely to render.** A no-op ROOT/END task carries **four artifacts**
+  (a `task.json`, a no-op `action.*`, a `guardrails/` folder, and the `dependsOn` fan-out every
+  first-level task must draw to it), plus the **fragile no-op-ness** the #174/#182 short-circuit exists
+  to paper over (a no-op action that must reliably change nothing so the short-circuit can fire). The
+  renderer-only fix leaves **all** of that authoring burden in place — it hides the clutter in the
+  diagram while the skill still has to emit and maintain the fake tasks, and `guardrails-review` still
+  has to reason about them. The owner asked to **eliminate** the no-op tasks, not just to stop drawing
+  them. So: **considered and rejected — the authoring win (fewer artifacts, no fan-out, no fragile
+  no-op) justifies the full model; the renderer-only fix addresses a symptom, not the cause.** (This is
+  recorded so a future reader sees the cheaper path was on the table and why it lost.)
 
 - **Counter: "Removing the `done_<task>` reconvergence node loses information — the diagram no longer
   shows *when a task is finished* before its dependent starts."** *Response:* The `done_` node never
@@ -557,40 +872,73 @@ my responses:
 ## Implementation handoff (agent + filesTouched + sequencing)
 
 **This plan authorizes NO implementation.** The handoff is the **trigger-time plan** — executed if and
-only if the owner approves the model and resolves the open questions (especially #1 placement and #2
-`integrationGate` migration). Sequencing is gated on the design-of-record draft-PR review (#106): this
-doc lands as a draft PR for inline human review **before** any milestone starts.
+only if the owner approves the model and resolves the **one remaining open question (#1 placement)**.
+The B1/B2/B3, serial-mode, journal-shape, outcome-split, terminology, and `integrationGate`-migration
+questions are **closed by this pass** (§"Open questions"). Sequencing is gated on the design-of-record
+draft-PR review (#106): this doc lands as a draft PR for inline human review **before** any milestone
+starts.
 
-1. **Architect (this agent)** — once the open questions are resolved, deliver the active design + the
+1. **Architect (this agent)** — once the placement question is resolved, deliver the active design + the
    verbatim SSOT edit set as a **draft PR for inline review** (#106). `filesTouched`:
    `docs/plans/09-preflight-first-class.md` (promote DEFERRED → active) +
-   `docs/plans/02-schemas-and-contracts.md` (the edit set: §1 layout, §3.3 migration, §7 outcomes,
-   §7.1 exit, §10 renderer).
-2. **`guardrails-harness-developer`** — the three phases + the §10 renderer. Sequencing: SSOT edit +
-   folder parsing/validation first; then the pre-DAG phase (`<plan>/preflights/` evaluation +
-   `preflight-failed` + exit-2 branch); then the terminal phase (`<plan>/guardrails/` on merged HEAD,
-   `IReVerifier` reuse, `integrationGate`-task migration); then the task-level preflight slot
-   (`TaskExecutor.ExecuteAsync` pre-loop, `IReVerifier` at `taskBase`); then the §10 renderer rewrite
-   (container subgraphs, container→container edges, remove fan-out + `done_`, fold structure into
-   `source-sha256`). `filesTouched`: `src/Guardrails.Core/Loading/**`, `src/Guardrails.Core/Execution/**`,
+   `docs/plans/02-schemas-and-contracts.md` (the edit set: §1 layout, §3.3 migration incl. GR2018
+   re-homing + GR2017 retirement, §7 the three new outcomes + `planPreflights`/`planGuardrails`
+   sections + resume rules, §7.1 `plan:guardrails` revalidate id + exit-2, §10 renderer + anchor nodes +
+   plan-level-checks-fold-into-`source-sha256`).
+2. **`guardrails-harness-developer`** — the three phases + the §10 renderer. Sequencing:
+   **(0) PREREQUISITE — wire `IReVerifier` UNCONDITIONALLY in `SchedulerFactory`** (serial mode too;
+   §"Serial-mode reality") — every later phase depends on it. Then SSOT edit + folder
+   parsing/validation; then the pre-DAG phase (`<plan>/preflights/` evaluation + the `planPreflights`
+   marker + `plan-preflight-failed` + exit-2 branch + the **resume SKIP-on-marker** rule); then the
+   terminal phase (`<plan>/guardrails/` on merged HEAD, `IReVerifier` reuse, GR2017 retirement +
+   **GR2018 re-homed as the "≥1 real integration-set re-run" folder rule**, `plan-guardrail-failed`,
+   the `plan:guardrails` revalidate id, the **terminal-only resume** rule); then the task-level
+   preflight slot (`TaskExecutor.ExecuteAsync` pre-loop, `IReVerifier` at `taskBase`,
+   `task-preflight-failed` as a `TaskOutcome`); then the §10 renderer rewrite (container subgraphs,
+   **invisible anchor nodes**, anchor→anchor edges, remove fan-out + `done_`, **fold BOTH task and
+   plan-level checks into `source-sha256`**) — **prototype against the bundled Mermaid version first.**
+   `filesTouched`: `src/Guardrails.Core/Loading/**`, `src/Guardrails.Core/Execution/**`,
    `src/Guardrails.Core/Model/**`, the graph renderer under `src/Guardrails.Core/**`,
    `src/Guardrails.Cli/**`, `docs/plans/02-schemas-and-contracts.md` (same change), `tests/**`.
 3. **`guardrails-skill-author`** — teach `plan-breakdown` to emit the four folders (plan-level
    preflights/guardrails; task-level preflights for the dependency-delivery case keyed to a `dependsOn`
    edge), the polarity rules (positive/negative at plan-level; positive-monotone at task-level), the
-   live-probe ban, and the volume-control gate; teach `guardrails-review` to probe them. Re-author the
-   worked example to the model (§"What the example re-author needs"). `filesTouched`:
-   `.claude/skills/plan-breakdown/**`, `.claude/skills/guardrails-review/**`,
+   **advisory** live-probe guidance (process-start fine at plan-level; steer away from
+   network/poll/daemon at both — the catalogue steers, it does NOT emit a harness-enforced rule),
+   and the volume-control gate; teach `guardrails-review` to **WARN** (not block) on a live-probe check.
+   **This migration is SSOT-first
+   and GATED ON THE HARNESS BUILD:** the golden round-trip stays **RED until the loader understands the
+   four folders**, so step 3 lands *after* (or interleaved-behind) step 2's loader/validator, not
+   before. **#181 is REFRAMED, not replaced:** the brownfield green-test baseline becomes a
+   `<plan>/preflights/` **positive** check (the general positive-baseline/preflight archetype #181 named)
+   — the intent survives, the carrier moves from a no-op-root preflight to the plan-level folder.
+   **The #174/#182 no-op-deadlock short-circuit doctrine is REMOVED from this feature's baseline
+   context:** with the no-op ROOT/END tasks eliminated, there is no no-op task left to short-circuit, so
+   the short-circuit has no action to fire against in the plan-level phases (it remains a general §7
+   harness rule for any *real* task that no-ops, untouched — it simply no longer participates in the
+   preflight story). Re-author the worked example to the model (§"What the example re-author needs").
+   `filesTouched`: `.claude/skills/plan-breakdown/**`, `.claude/skills/guardrails-review/**`,
    `docs/plans/09-preflight-first-class/example/**`.
-4. **`guardrails-test-author`** — phase tests: plan-level preflight red → halt before any task runs,
-   exit 2, zero tokens; plan-level guardrail red → terminal halt, work durable, exit 2; task-level
-   preflight red → `needs-human` for the cone with **no attempt burned**, independent branches keep
-   running, in BOTH modes; the live-probe-ban rejection test; the §10 renderer golden (container
-   structure, no `done_` node, container→container edges, `source-sha256` stability). `filesTouched`:
-   `tests/**`.
+4. **`guardrails-test-author`** — phase tests, **each run in serial AND worktree mode**: plan-level
+   preflight red → halt before any task runs, exit 2, zero tokens; **plan-level preflight passes, then a
+   mid-DAG crash + resume → the pre-DAG phase is SKIPPED (the negative baseline is NOT re-evaluated,
+   no false-halt)** (B1); plan-level guardrail red → terminal halt, work durable, exit 2; **DAG all-green
+   + terminal red + resume → terminal-only resume re-fires only the terminal phase** (B2);
+   **`--revalidate-task plan:guardrails` after a hand-fix → green settle, exit 0** (B2); a plan with a
+   `<plan>/guardrails/` carrying only a tautological `exit 0` file → **validation FAILS (GR2018
+   re-homed)** (B3); task-level preflight red → `task-preflight-failed`/`needs-human` for the cone with
+   **no attempt burned**, independent branches keep running; the advisory live-probe-guidance test
+   (a plan-level `dotnet test` draws NO warning; a network probe makes `guardrails-review` emit a
+   **WARN, not a BLOCKER** — and the harness `validate`/`run` neither warns nor blocks either way,
+   because the guidance is advisory, not harness-enforced); the §10 renderer golden
+   (container structure, invisible anchors, no `done_` node, anchor→anchor edges, `source-sha256`
+   stability) **plus the required staleness test — edit a `<plan>/guardrails/` check → `graph --check`
+   reports stale (exit 2)**. `filesTouched`: `tests/**`.
 
-Sequencing rule: the architect's draft-PR review (step 1, including open-question resolution) completes
-before any harness work (step 2) starts (#106).
+Sequencing rule: the architect's draft-PR review (step 1, including the **placement** resolution)
+completes before any harness work (step 2) starts (#106); the harness loader (step 2) precedes the
+skill migration (step 3), because the golden round-trip stays red until the loader understands the four
+folders.
 
 ---
 
@@ -603,14 +951,21 @@ settles). Specced precisely so the later step is mechanical:
 - **Add `<plan>/preflights/`** (plan-root, per open-question #1's recommendation) with **two checks**:
   one **positive** baseline (e.g. `01-all-repo-tests-green` — the existing suite passes on the starting
   repo) and one **negative** assert-absent baseline (e.g. `02-correlation-id-absent` — the artifact the
-  plan introduces is not present yet), each a deterministic byte/exit check honoring the live-probe ban.
+  plan introduces is not present yet), each a deterministic byte/exit check following the advisory
+  live-probe guidance.
 - **Add `<plan>/guardrails/`** (plan-root) holding the terminal whole-repo checks (build + full suite +
   any union invariant), replacing the example's former `integrationGate: true` task. **Remove that
-  no-op END task** from `tasks/`.
-- **Recast the former three "preflight" tasks**: the global pre-DAG positive baseline → a
+  no-op END task** from `tasks/`. The folder MUST carry **≥1 check that actually re-runs the
+  integration set** (the re-homed GR2018 content teeth — a tautological `exit 0` file would fail
+  validation).
+- **Recast the former three "preflight" tasks**: the global pre-DAG positive baseline (the **#181
+  brownfield green-test baseline, REFRAMED** as the general positive-preflight archetype) → a
   `<plan>/preflights/` positive check; the assert-absent → a `<plan>/preflights/` negative check; the
   single per-task dependency-delivery illustration → one consuming task's `tasks/<id>/preflights/`
   folder, keyed to a `dependsOn` edge.
+- **Do NOT reintroduce a no-op ROOT/END task or its #174/#182 short-circuit scaffolding** — the
+  eliminated no-op tasks are exactly what the model removes; there is no no-op action left in the
+  example for the short-circuit to fire against.
 - **Remove every simulated `scope:"precondition"` marker** — no third scope value exists under this
   model (the partition's BLOCKER (f) collision is dissolved: plan-level checks are folders, not a scope
   value).
@@ -621,16 +976,27 @@ settles). Specced precisely so the later step is mechanical:
   pointer describing the example as pending re-author).
 
 **The diagram renderer (harness-developer, SSOT §10 rewrite):**
+- **Prototype against the bundled Mermaid version FIRST** — the container→container edge needs
+  invisible anchor nodes and the technique is version-sensitive (below).
 - Replace the flat-node + fan-out + `done_<task>` model with **container subgraphs**: one
   `subgraph task_<id>` per task holding nested `Preflights`/`Guardrails` subgraphs of check nodes; two
   plan-level subgraphs (`Full Flight Checks` top, `Terminal Gate` bottom).
-- **Edges container→container only** (`task_A --> task_B` for each `dependsOn`; plan-preflights → roots;
-  leaves → plan-guardrails). Delete `task --> guardrail` fan-out edges and all `done_<id>` nodes.
-- **Four `classDef`s** (task container / preflight check / guardrail check / plan-level container).
+- **Edges carried by invisible anchor nodes** — one `<id>_anchor[" "]:::invisible` per container;
+  edges drawn **anchor→anchor** (`task_A_anchor --> task_B_anchor` for each `dependsOn`; plan-preflights
+  anchor → root-task anchors; leaf-task anchors → plan-guardrails anchor). A `subgraph --> subgraph`
+  edge does **not** render faithfully; the anchor is the reliable technique (softens the "no nodes"
+  promise to "no *visible* free nodes"). A **task-level preflight still renders its gated `dependsOn`
+  edge** (do not erase it). Delete `task --> guardrail` fan-out edges and all `done_<id>` nodes.
+- **Five `classDef`s** (task container / preflight check / guardrail check / plan-level container /
+  `invisible` anchor).
 - **Fold the new structure into `source-sha256`** (container membership + nested check labels +
-  container→container edges; stable across ordinal reorderings) so `--check` staleness still fires.
-- **Golden test**: assert no `done_` node, container subgraphs present, container→container edges,
-  byte-identical re-render on unchanged input.
+  container→container edges; stable across ordinal reorderings) — **INCLUDING the plan-level folder
+  checks**, which are not in `tasks{}`; else editing a terminal-gate check leaves the diagram falsely
+  fresh. So `--check` staleness still fires.
+- **Golden test**: assert no `done_` node, container subgraphs present, invisible anchors present,
+  anchor→anchor edges, byte-identical re-render on unchanged input.
+- **Required staleness test**: edit a `<plan>/guardrails/` check → `graph --check` reports **stale
+  (exit 2)**.
 
 ---
 
@@ -639,11 +1005,25 @@ settles). Specced precisely so the later step is mechanical:
 This document is itself the plan-of-record (`docs/plans/09-preflight-first-class.md`). Companion edits
 are **proposed, not yet applied** (the lead approves, then applies):
 
-1. **`docs/plans/02-schemas-and-contracts.md`** — **NO edit now.** The forward edit set (§1 layout for
-   `<plan>/preflights/` + `<plan>/guardrails/` + `tasks/<id>/preflights/`; §3.3 `integrationGate`
-   migration; §7 `preflight-failed` / `integration-gate-failed` outcomes; §7.1 exit-2 narrative; §10
-   container-renderer rewrite + `source-sha256` semantics) lands here **only** in the change that
-   implements the model (invariant 4). Recorded here so the future change is pre-scoped.
+1. **`docs/plans/02-schemas-and-contracts.md`** — **NO edit now.** The forward edit set lands here
+   **only** in the change that implements the model (invariant 4), pre-scoped as:
+   - **§1 layout** — `<plan>/preflights/` + `<plan>/guardrails/` (plan-root, pending open-question #1) +
+     `tasks/<id>/preflights/`.
+   - **§3.3 `integrationGate` migration** — RETIRE GR2017 + the `integrationGate` task kind; **RE-HOME
+     GR2018** as "a multi-leaf/fan-in plan MUST have a `<plan>/guardrails/` carrying ≥1 deterministic
+     check that actually re-runs the integration set" (NOT "non-empty folder"); **KEEP
+     `scope:"integration"`** as the per-union tag (§4.3 unchanged).
+   - **§7 journal** — the three new outcomes (`plan-preflight-failed` / `task-preflight-failed` /
+     `plan-guardrail-failed`); the additive top-level `planPreflights` + `planGuardrails` sections
+     (with `planHash` marker keys); the two new resume rules (**SKIP pre-DAG on a matching
+     `planPreflights` marker**; **terminal-only resume** when the DAG is green and the terminal gate is
+     red).
+   - **§7.1** — `--revalidate-task plan:guardrails` (the synthetic reserved id) + the exit-2 narrative
+     for all three halts.
+   - **§10 renderer** — container subgraphs + **invisible anchor nodes** carrying anchor→anchor edges;
+     `source-sha256` **folds the plan-level folder checks** (not just `tasks{}`); remove fan-out +
+     `done_`.
+   Recorded here so the future change is pre-scoped.
 2. **`docs/plans/03-roadmap.md`** — optionally add a one-line "deferred designs" pointer: *"Preflights
    & guardrails first-class at two scopes — DEFERRED design of record in `09-preflight-first-class.md`
    (#183). Run-level checks become first-class `<plan>/preflights/` ('Full Flight Checks') +
