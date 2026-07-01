@@ -65,6 +65,10 @@ plan-09 "Implementation handoff"):
   come **after** the loader (2) — their golden round-trip stays RED until the loader understands the four
   folders. Deliverable 11 (tests) is authored test-first alongside each deliverable it covers, and its
   integration goldens land after 9/10.
+- **Wave 3.5 (migration — review-added):** Deliverable 12 migrates the retired-`integrationGate` consumers
+  (behavior-pinning tests, regression fixtures, and the `parallel-hello` / `08-parallel-execution` example
+  plans) so the suite goes green under the new loader. It `dependsOn` the loader (2); **the terminal gate
+  `dependsOn` 12**. This plan's OWN terminal gate stays `integrationGate: true` (bootstrap exemption).
 
 **Test-first where it fits:** the skill defaults to TDD, so most code deliverables split into an
 author-tests task (red) then an implement task (green). Deliverable 11 enumerates the specific
@@ -79,7 +83,14 @@ Wave 2:  [3] pre-DAG phase      [4] terminal phase      [5] task-preflight slot 
               └──────────────── all depend on 1+2+8 ────────────────┘        [7] diagram renderer (parallel; needs 2)
               │
 Wave 3:  [9] skill migration ── [10] example re-author ── [11] tests (test-first per deliverable; goldens after 9/10)
+              │
+Wave 3.5:[12] migrate retired-integrationGate consumers (tests + example plans; needs 2) ── heals the suite
+              │                    the terminal gate depends on [12]; this plan's OWN gate is a bootstrap exemption
 ```
+
+> **From /guardrails-review (folded in below):** deliverable **12** (migrate the retired-`integrationGate`
+> consumers) is a review-added wave; the **Guardrail-strength requirements** section lists the per-deliverable
+> guardrail hardening the regenerated DAG must carry.
 
 ---
 
@@ -140,7 +151,9 @@ in the SSOT (deliverable 8).
 
 Under the model the terminal checks move into `<plan>/guardrails/`. So:
 - **Retire GR2017 and the `integrationGate: true` task kind entirely** — no coexistence window. A plan
-  no longer declares a terminal sink task.
+  no longer declares a terminal sink task. A plan that STILL declares `integrationGate: true` gets a
+  **hard validation error** (a new GR2027+ unsupported-key code) — RESOLVED (note 3), honest-over-silent.
+  Every existing committed consumer of the retired behavior is migrated by **deliverable 12**.
 - **Re-home GR2018's CONTENT teeth onto the folder — do NOT weaken it to "non-empty folder."** The
   replacement rule (a **new GR code**, allocated in the GR2027+ block): *a multi-leaf or fan-in plan MUST
   have a non-empty `<plan>/guardrails/` folder carrying **≥1 deterministic check that actually re-runs the
@@ -161,11 +174,14 @@ Under the model the terminal checks move into `<plan>/guardrails/`. So:
   re-homed GR2018 rule).
 - A multi-leaf/fan-in fixture whose `<plan>/guardrails/` folder contains **only a tautological `exit 0`
   file** FAILS validation (content teeth preserved, not "non-empty").
-- A plan still declaring the old `integrationGate: true` task kind is handled per the migration decision
-  (retired — a validation error or explicit unsupported-key diagnostic; decide and document in SSOT).
+- A plan still declaring the old `integrationGate: true` task kind → a **hard validation error** (a new
+  GR2027+ code), no coexistence window (RESOLVED — note 3). The existing committed consumers are migrated
+  by **deliverable 12**.
 - The existing `scope: "integration"` per-union tag still parses and drives the §4.3 set (no regression
   in a union-forming fixture).
-- Build + suite green.
+- Build + the FourFolder tests green. **NOT the whole suite** — retiring GR2017/GR2018 deliberately reddens
+  the existing gate tests (`ParallelValidationGateTests` etc.); **deliverable 12 heals them**, and the
+  terminal gate (which `dependsOn` deliverable 12) is the whole-suite check.
 
 **Files:** `src/Guardrails.Core/Loading/**`, `src/Guardrails.Core/Model/**`, `tests/**`, and — in the
 SAME change — `docs/plans/02-schemas-and-contracts.md` (deliverable 8).
@@ -516,6 +532,127 @@ it gates). **Every phase test runs in serial AND worktree mode** — the serial-
 
 ---
 
+## Wave 3.5 — Migrate the retired-`integrationGate` consumers (from /guardrails-review BLOCKER 1)
+
+### 12. Migrate every committed consumer of the retired GR2017 / `integrationGate` / GR2018 behavior
+
+**What.** The hard-retire in deliverable 2 (GR2017 gone, `integrationGate: true` → hard validation error,
+GR2018 re-homed) breaks every existing committed consumer of the OLD behavior. This deliverable migrates
+them so the suite stays green under the new loader and no committed artifact is left invalid. Consumers
+(from a repo audit — keep the list current at breakdown time):
+- **Behavior-pinning tests** (assert the OLD gate rules as *fired* behavior; the new loader breaks them):
+  `tests/Guardrails.Core.Tests/ParallelValidationGateTests.cs` — its GR2017 (`no-gate → error`) and GR2018
+  (`empty-gate → error`) `[Fact]`s must be **rewritten** to the re-homed folder rule + the new legacy-key
+  hard-error diagnostic. (`PlanValidatorTests.cs` / `StagingOutputsValidatorTests.cs` reference GR2017/GR2018
+  only as "does NOT fire" — a retired code never fires, so they SURVIVE; confirm, do not rewrite.)
+- **Integration regression fixtures** that build a plan with `integrationGate: true`:
+  `tests/Guardrails.Integration.Tests/{WiringDefectRegressionTests, NoOpDeadlockShortCircuitTests,
+  OverlappingWriteScopeAttributionTests}.cs` — replace each fixture's `integrationGate: true` sink with a
+  `<plan>/guardrails/` folder carrying the same terminal check.
+- **Committed example/plan folders** (NOT suite-loaded — they don't redden a test, but the new loader
+  rejects them, leaving broken committed artifacts): `examples/parallel-hello/**` and
+  `docs/plans/08-parallel-execution/**` — migrate the `integrationGate: true` sink task to a
+  `<plan>/guardrails/` folder. (`examples/hello-guardrails` is a linear no-gate chain — UNAFFECTED.)
+
+**Bootstrap exemption (name it).** THIS plan's OWN terminal gate — the `integrationGate: true` sink the
+current (pre-migration) `plan-breakdown` generates for `preflights-impl` — is **NOT migrated**. It MUST
+stay `integrationGate: true` because the harness EXECUTING this dogfood is the shipped tool (preview.34),
+which predates the new loader; the `<plan>/guardrails/` folder is inert under it. So this plan builds a
+loader that would reject its own terminal gate — unavoidable for a bootstrap dogfood. Deliverable 12's
+writeScope therefore **EXCLUDES `docs/plans/preflights-impl/**`**; no test loads this plan's own folder, so
+nothing needs to catch the exemption during the run.
+
+**Ordering.** `dependsOn` the loader (deliverable 2) — it needs the retire to have landed. The terminal
+gate (this plan's own sink) MUST `dependsOn` deliverable 12, so the whole suite runs only AFTER the
+migrated tests are green. Between deliverable 2 (which reddens `ParallelValidationGateTests`) and
+deliverable 12, no guardrail runs the affected tests (deliverable 2's own test guardrail is `--filter`-scoped
+to the FourFolder tests), so the transient red is invisible and healed before the terminal gate.
+
+**May split (size, #111).** This bundles two surfaces (test migration + example-plan migration); if it
+trips the plan-breakdown Step 2 split-trigger, split into **12a** (behavior-pinning + regression tests) and
+**12b** (example plans). Both `dependsOn` deliverable 2; the terminal gate `dependsOn` both.
+
+**Acceptance criteria (deterministic):**
+- The full existing suite passes under the new loader (`dotnet test Guardrails.sln`), including the
+  rewritten `ParallelValidationGateTests` and the 3 migrated regression fixtures.
+- `guardrails validate examples/parallel-hello/parallel-hello` and `guardrails validate
+  docs/plans/08-parallel-execution` each exit **0** under the new loader (migrated to the folder model).
+- **No `integrationGate: true` remains** in any migrated consumer (a negative grep over `tests/**`,
+  `examples/parallel-hello/**`, `docs/plans/08-parallel-execution/**` — but NOT `docs/plans/preflights-impl/**`,
+  the exemption).
+- The rewritten validator-gate tests assert the NEW rules: an empty/tautological `<plan>/guardrails/` on a
+  multi-leaf plan FAILS; a legacy `integrationGate: true` yields the new hard-error diagnostic.
+
+**Files:** `tests/Guardrails.Core.Tests/ParallelValidationGateTests.cs`,
+`tests/Guardrails.Integration.Tests/{WiringDefectRegression,NoOpDeadlockShortCircuit,OverlappingWriteScopeAttribution}Tests.cs`,
+`examples/parallel-hello/**`, `docs/plans/08-parallel-execution/**`. **Explicitly NOT**
+`docs/plans/preflights-impl/**` (bootstrap exemption).
+
+---
+
+## Guardrail-strength requirements (from /guardrails-review — the breakdown MUST honor these)
+
+A `/guardrails-review` adversarial pass (3 devil's-advocate agents + lead verification) on the first
+generated DAG surfaced the findings below. Each is folded in as an ADDITIONAL acceptance criterion on the
+named deliverable — the regenerated guardrails MUST satisfy them (they are the difference between the first
+DAG and this one):
+
+- **D6 (outcomes+journal) — the §7 SSOT edit MUST be GATED (was ungated — BLOCKER 2).** The implement task
+  landing the three outcomes MUST carry a deterministic SSOT-contains guardrail asserting all three outcome
+  names (`plan-preflight-failed`, `task-preflight-failed`, `plan-guardrail-failed`) appear in
+  `02-schemas-and-contracts.md` §7 — mirroring the SSOT guardrails on D2/D3/D4. Without it an impl lands the
+  enum + journal with zero contract prose, green.
+- **D2 (loader) — the brownfield green-baseline is PER-PROJECT, not whole-solution (WEAK).** This plan
+  touches TWO test projects: `Guardrails.Core.Tests` (loader/model/journal/renderer) and
+  `Guardrails.Integration.Tests` (phases/wiring). Emit the #181 positive baseline as TWO roots —
+  `dotnet test tests/Guardrails.Core.Tests --filter "Category!=Preflights"` and the same for
+  `Guardrails.Integration.Tests` — each gating its own subtree, NOT one whole-solution
+  `dotnet test Guardrails.sln` root (which serializes the DAG and blurs attribution).
+- **D2 (loader) — GR-code allocation via the committed `DiagnosticCodes.cs` stub, NOT run state (WEAK).**
+  The author-tests task writes the contiguous GR2027+ `const` codes into `DiagnosticCodes.cs`; the implement
+  task reads them from there. Do NOT emit a `grCodes` state fragment — nothing gates or consumes it (theater).
+- **D2 (loader) — the author-tests `covers-key-behaviors` MUST carry a token for the TAUTOLOGICAL-terminal
+  scenario (WEAK — this is the B3 content teeth).** The most gameable acceptance criterion (`<plan>/guardrails/`
+  with only an `exit 0` file must FAIL) needs its own distinctive token, else an author drops that scenario
+  while the empty-folder scenario satisfies the grep.
+- **D8/D2 (SSOT guardrail) — assert the §3.3 FACTS, not just the folder token (WEAK).** The SSOT-updated
+  guardrail must assert `integrationGate` (the retirement) AND `GR2018` (the re-home) are documented — not
+  merely that `preflights/` + `GR2027` appear (a two-token presence grep an impl satisfies without landing
+  the §3.3 prose).
+- **D5 (task-preflight) — the author-tests `covers-key-behaviors` MUST require the NO-BURN assertion shape
+  (WEAK).** The whole feature rests on "preflight fails WITHOUT burning an attempt" — the covers check must
+  require the test asserts zero attempt-count increment (e.g. match `attempt.*(0|zero|not.*increment|Empty)`),
+  not just that the word "attempt" appears.
+- **D7 (renderer) — the §10 SSOT guardrail MUST carry a NEGATIVE assertion that the OLD model is REMOVED
+  (WEAK).** A presence-only `-match anchor` passes a half-migrated §10 that still describes `done_`/fan-out.
+  Add a fail-on-present check for the retired `done_<id>` / `task --> guardrail` description, scoped to §10.
+- **D7 (renderer) — the renderer-tests guardrail MUST assert the container goldens were actually SELECTED
+  (WEAK).** A `FullyQualifiedName~Diagram` filter matching ZERO tests (e.g. after a class rename) passes green
+  on an old-model renderer. Add a floor asserting the container-goldens class actually ran.
+- **D10 (example) — the meta-test MUST actually assert NO no-op ROOT/END task AND that the terminal folder
+  has TEETH (WEAK×2).** The `legacy-absent` check must genuinely assert no no-op ROOT/END task exists (not
+  merely claim it in a comment); and the example's `<plan>/guardrails/` must be asserted to carry ≥1 REAL
+  integration-set re-run (a build/suite/union command), not just a non-empty folder — else the worked example
+  is itself the tautology the feature exists to eliminate.
+- **D9 (skills) — the skill-doc guardrails scope to `SKILL.md` (the procedure), not "anywhere under the
+  skill dir" (WEAK).** A token-presence check over `**/*.md` is satisfiable by a stub in `references/`; require
+  the four-folder tokens + the BLOCKER-probe language appear in `SKILL.md` itself.
+- **Terminal gate — the `scope:"integration"` union invariant MUST assert CONTRIBUTION-PRESENCE + a
+  DUPLICATE-DEFINITION count on the shared multi-writer files (WEAK).** `02-schemas-and-contracts.md` is
+  edited by ≥5 tasks across waves (the genuine parallel multi-writer). Conflict-marker-free + non-empty is not
+  enough: add union-safe (present-gated) checks that each distinctive contribution survived the union, and a
+  `[regex]::Matches(...).Count -gt 1` duplicate-definition check on shared CODE files (`Scheduler.cs`) — a
+  3-way merge keeps two copies with no conflict marker (CS0101).
+- **Terminal gate — the full-suite guardrail SHOULD assert a STRICTLY-POSITIVE test count (NIT).** Guard
+  against a discovery drop silently passing zero tests.
+- **D5 (task-preflight) — insert the preflight gate BEFORE `journal.MarkRunning` (NIT).** Avoid a transient
+  `Running → needs-human` with zero attempts in `run.json`.
+- **D4 (terminal phase) — the `--revalidate-task plan:guardrails` red test drives the EXISTING string CLI
+  arg, not a new symbol (NIT).** So the author-tests red compiles before deliverable 4 adds the reserved-id
+  handling.
+
+---
+
 ## Notes / implementation calls flagged for the lead
 
 Places where plan-09 leaves an implementation choice open (called out per the brief so the lead can
@@ -535,12 +672,13 @@ confirm during breakdown/review — none block the WHAT):
    the OBLIGATION (≥1 real re-run), not the mechanism. **Implementation call:** tag-reuse vs
    folder-scoped-marker deferred.
 
-3. **How the retired `integrationGate: true` key is handled on an old plan** — a hard validation error, a
-   soft "unsupported key" diagnostic, or silent ignore. plan-09 says "retire the task kind" and "no
-   coexistence window" but does not spell the exact validator behavior for a plan that still declares it. I
-   wrote the acceptance criterion as "handled per the migration decision (retired)" and flagged it.
-   **Implementation call:** exact validator behavior for a legacy `integrationGate` key deferred (I lean
-   toward an explicit diagnostic over silent ignore, for honesty — but did not fix it).
+3. **How the retired `integrationGate: true` key is handled on an old plan** — **RESOLVED (lead decision,
+   post-review): a HARD validation error** (a new GR2027+ unsupported-key diagnostic), no coexistence
+   window. Because that hard-retire breaks every existing committed consumer of the old behavior,
+   **deliverable 12** migrates them (behavior-pinning tests + regression fixtures + the `parallel-hello` /
+   `08-parallel-execution` example plans), and **this plan's own terminal gate is a named bootstrap
+   exemption** (it must stay `integrationGate: true` to run under the shipped preview.34 harness — see
+   deliverable 12).
 
 4. **`plan:preflights` scope in v1.** plan-09 mints `plan:preflights` (the preflight analogue of
    `plan:guardrails`) as a "should a human want to re-confirm a hand-fixed starting state" affordance, but
