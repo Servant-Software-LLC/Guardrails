@@ -1,0 +1,6 @@
+{
+  "description": "Rewrite the guardrails graph Mermaid emitter to the container model (task-container subgraphs with nested Preflights/Guardrails, two plan-level subgraphs, invisible anchors + anchor->anchor edges, no done_/fan-out; source-sha256 folds plan-level checks); prototype the anchor technique first; update ALL existing golden diagram.* fixtures + their tests; land SSOT §10 in the same change. Broad-surface renderer rewrite (writeScope omitted deliberately)",
+  "stableId": "d2rr13",
+  "dependsOn": ["12-author-tests-diagram-renderer"],
+  "action": { "maxTurns": 75 }
+}

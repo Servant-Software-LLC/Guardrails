@@ -1,0 +1,12 @@
+{
+  "description": "Add the three new outcomes (plan-preflight-failed / task-preflight-failed / plan-guardrail-failed, all exit 2) and the two additive top-level journal sections (planPreflights / planGuardrails); round-trips losslessly with and without them; land SSOT §7 in the same change. Data model - collapsed (no behavioral stub possible)",
+  "stableId": "j1nl05",
+  "dependsOn": ["00-baseline-existing-tests-green"],
+  "writeScope": [
+    "src/Guardrails.Core/Journal/",
+    "src/Guardrails.Core/Execution/TaskOutcome.cs",
+    "tests/Guardrails.Core.Tests/JournalOutcomesRoundTripTests.cs",
+    "docs/plans/02-schemas-and-contracts.md"
+  ],
+  "action": { "maxTurns": 75 }
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Wire IReVerifier (GuardrailReVerifier) unconditionally in SchedulerFactory so it is non-null in BOTH serial and worktree mode; make the ReVerifierWiring tests pass without touching them",
+  "stableId": "r2wq3b",
+  "dependsOn": ["01-author-tests-reverifier-wiring"],
+  "writeScope": ["src/Guardrails.Core/Execution/SchedulerFactory.cs"],
+  "action": { "maxTurns": 75 }
+}

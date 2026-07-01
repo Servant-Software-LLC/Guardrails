@@ -1,0 +1,7 @@
+{
+  "description": "Teach the guardrails-review skill to probe the four folders as BLOCKERs where a required folder/check is missing (re-homed GR2018: empty/tautological terminal folder), and to emit the live-probe guidance as an ADVISORY WARN (not a BLOCK): plan-level process-start FINE, network/poll WARN; task-level prefer byte/exit, network/poll WARN",
+  "stableId": "s2gr15",
+  "dependsOn": ["04-implement-four-folder-loader"],
+  "writeScope": [".claude/skills/guardrails-review/"],
+  "action": { "maxTurns": 50 }
+}

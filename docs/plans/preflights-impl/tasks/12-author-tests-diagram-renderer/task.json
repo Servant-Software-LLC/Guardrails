@@ -1,0 +1,7 @@
+{
+  "description": "Author renderer goldens for the container model: task-container subgraphs with nested Preflights/Guardrails, two plan-level subgraphs, invisible anchors + anchor->anchor edges, NO done_ node, NO task->guardrail fan-out edge, byte-identical re-render, and edit-a-plan-guardrail-check -> graph --check stale (source-sha256 folds plan-level checks). Red against the current renderer",
+  "stableId": "d1rr12",
+  "dependsOn": ["04-implement-four-folder-loader"],
+  "writeScope": ["tests/Guardrails.Core.Tests/ContainerDiagramTests.cs"],
+  "action": { "maxTurns": 75 }
+}

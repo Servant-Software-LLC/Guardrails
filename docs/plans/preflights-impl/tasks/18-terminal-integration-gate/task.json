@@ -1,0 +1,13 @@
+{
+  "description": "Terminal whole-repo integration gate: the merged HEAD builds and the full test suite passes, and the shared multi-writer files integrated cleanly (union invariant)",
+  "stableId": "z9gate1",
+  "dependsOn": [
+    "09-implement-terminal-phase",
+    "11-implement-task-preflight-slot",
+    "14-update-plan-breakdown-skill",
+    "15-update-guardrails-review-skill",
+    "16-update-domain-knowledge-skill",
+    "17-author-four-folder-example"
+  ],
+  "integrationGate": true
+}

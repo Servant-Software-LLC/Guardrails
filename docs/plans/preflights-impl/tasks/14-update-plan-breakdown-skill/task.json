@@ -1,0 +1,7 @@
+{
+  "description": "Teach the plan-breakdown skill (+ its references incl. example-breakdown, catalogue, schemas, dotnet stack) to author the four-folder model: emit plan-level preflights/ (positive AND negative baselines) + guardrails/ (terminal checks) + task-level tasks/<id>/preflights/; catalogue polarity idioms; #181 reframed; remove the no-op ROOT/END + scope:precondition scaffolding; re-homed GR2018 authoring rule",
+  "stableId": "s1pb14",
+  "dependsOn": ["04-implement-four-folder-loader"],
+  "writeScope": [".claude/skills/plan-breakdown/"],
+  "action": { "maxTurns": 75 }
+}
