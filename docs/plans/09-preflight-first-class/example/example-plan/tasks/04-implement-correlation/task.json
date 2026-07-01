@@ -1,0 +1,6 @@
+{
+  "description": "Implement RequestId threading through Acme.Payments.Core's charge pipeline so the new tests go green AND the pre-existing tests stay green. May not edit the tests.",
+  "stableId": "work-impl",
+  "dependsOn": ["03-author-correlation-tests"],
+  "writeScope": ["Acme.Payments.Core/"]
+}

@@ -1,0 +1,35 @@
+{
+  // ============================================================================================
+  // MOSTLY REAL — this folder illustrates the preflight PARTITION from
+  // ../../09-preflight-first-class.md (#183). Buckets A and B are REAL DOCTRINE and VALIDATE
+  // today: tasks 00 + 01 (Bucket A — shared positive baseline) and 02 (Bucket B — negative /
+  // assert-absent, one-shot) are ordinary no-op-root tasks with normal `scope:"local"`
+  // guardrails. `guardrails validate` on THIS folder PASSES. There is NO `scope:"precondition"`
+  // value, NO pre-DAG phase, NO validating twin — those were WITHDRAWN.
+  //
+  // The ONLY simulated thing is Bucket C: task 05's `preflights/` folder (a sibling of
+  // `guardrails/`), the deferred per-task JIT dependency-delivery precondition (#183, still
+  // DEFERRED). The loader IGNORES that folder (it only enumerates `guardrails/`), so it does
+  // NOT affect validation — it exists purely to SHOW the Bucket-C shape. See ./README.md.
+  // ============================================================================================
+  "version": 1,
+  "maxParallelism": 4,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  "workspace": "..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
+      "maxTurns": 50,
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 20
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "description": "Bucket A (positive NON-TEST baseline): Acme.Payments.Api's GET /health route is already wired NOW. A deterministic byte-check on the wired source (NOT a live probe). A no-op-root doctrine task with a scope:\"local\" guardrail — ships and validates today.",
+  "scope": "local"
+}

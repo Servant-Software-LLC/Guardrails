@@ -1,0 +1,3 @@
+{
+  "description": "Bucket C (SIMULATED — DEFERRED #183): per-task JIT dependency-delivery precondition. Verifies that task 04 actually threaded RequestId into the inherited Acme.Payments.Core source at 05's taskBase, BEFORE 05's action runs. A deterministic byte-check (no live probe). NOT a guardrail; NEVER joins the integration set."
+}

@@ -1,0 +1,4 @@
+{
+  "description": "Bucket B (negative/assert-absent baseline): the RequestId field is ABSENT from the charge result now. Inverted polarity — FAILS if it is already present. ONE-SHOT at run start; scope:\"local\" so it is NEVER re-run at a union/terminal gate. A cross-reference to, not a fork of, tests-fail-on-current-code.",
+  "scope": "local"
+}
