@@ -5,32 +5,22 @@ using Guardrails.Core.Model;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// RED goldens for preflights-impl deliverable 7 — the container-model diagram rewrite (SSOT §10,
-/// design-of-record 09-preflight-first-class). Every test drives the REAL
+/// Goldens for the container-model diagram (SSOT §10, design-of-record 09-preflight-first-class),
+/// including the issue #210 fix (edges clip to container borders). Every test drives the REAL
 /// <see cref="MermaidRenderer.Render"/> / <see cref="GraphSourceHash.Compute"/> over a plan the
-/// four-folder loader (deliverable 6) understands: an on-disk fixture with plan-level
+/// four-folder loader understands: an on-disk fixture with plan-level
 /// <c>&lt;plan&gt;/preflights/</c> (Full Flight Checks) + <c>&lt;plan&gt;/guardrails/</c> (Terminal Gate)
 /// AND a task-level <c>tasks/&lt;id&gt;/preflights/</c>. The container model is:
 ///   • one <c>subgraph task_&lt;id&gt;</c> per task, holding nested <c>Preflights</c> / <c>Guardrails</c>
 ///     subgraphs with the individual check nodes INSIDE the container (no bare check nodes outside);
 ///   • two plan-level subgraphs — <c>plan_preflights</c> ("Full Flight Checks") at the TOP and
 ///     <c>plan_guardrails</c> ("Terminal Gate") at the BOTTOM;
-///   • one invisible ANCHOR node per container (<c>&lt;container&gt;_anchor[" "]:::invisible</c>, a
-///     <c>classDef invisible</c>), with the DAG drawn anchor→anchor
-///     (<c>task_A_anchor --&gt; task_B_anchor</c> per <c>dependsOn</c>; plan-preflights anchor → root-task
-///     anchors; leaf-task anchors → plan-guardrails anchor);
+///   • the DAG drawn <c>subgraph --&gt; subgraph</c> (container→container) so each edge clips to the
+///     container's OUTER BORDER (<c>task_A --&gt; task_B</c> per <c>dependsOn</c>; plan_preflights →
+///     root-task containers; leaf-task containers → plan_guardrails) — NO interior anchor nodes;
 ///   • NO <c>done_</c> reconvergence node and NO <c>task --&gt; guardrail</c> fan-out edge;
 ///   • a <c>source-sha256</c> that folds the PLAN-LEVEL folder checks, not just <c>tasks{}</c>.
-///
-/// These COMPILE against the current renderer + <see cref="GraphSourceHash"/> but FAIL because the
-/// current renderer still emits the OLD model (per-task fan-out to <c>gr_</c> nodes merging into a
-/// <c>done_</c> node, dependency edges <c>done_A --&gt; task_B</c>, and a semantic-content hash over
-/// <c>tasks{}</c> only). Failing is intentional (TDD red); the implement task turns them green.
-///
-/// Tagged Category=Preflights (class-level, inherited) so the deliverable's green baseline can exclude
-/// these deliberately-red tests via <c>--filter "Category!=Preflights"</c>.
 /// </summary>
-[Trait("Category", "Preflights")]
 public sealed class ContainerDiagramTests : IDisposable
 {
     private readonly string _tempRoot;
@@ -104,53 +94,59 @@ public sealed class ContainerDiagramTests : IDisposable
     }
 
     // =====================================================================================
-    // Behavior 2 — invisible anchors + anchor→anchor edges.
+    // Behavior 2 — no interior anchors; container→container edges clipping to the border (#210).
     // =====================================================================================
 
     [Fact]
-    public void Render_EmitsOneInvisibleAnchorPerContainer_WithInvisibleClassDef()
+    public void Render_EmitsNoInvisibleAnchors_AndStylesEachContainerById()
     {
         IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
 
-        Assert.Contains(lines, l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
-        // One invisible anchor NODE per task container (the node declaration, not an edge line).
-        Assert.Contains(lines, l => IsAnchorNode(l, "task_01_root_anchor"));
-        Assert.Contains(lines, l => IsAnchorNode(l, "task_02_leaf_anchor"));
+        // Issue #210: the interior invisible anchors and their classDef are gone entirely.
+        Assert.DoesNotContain(lines, l => l.Contains("_anchor", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.Contains(":::invisible", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
+
+        // Each container is coloured by a `style <id> …` statement (a `class` assignment does not
+        // reach an edge-endpoint subgraph in the bundled Mermaid).
+        Assert.Contains(lines, l => l.StartsWith("style task_01_root fill:", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("style task_02_leaf fill:", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("style plan_preflights fill:", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("style plan_guardrails fill:", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void Render_DrawsDependencyEdgesAnchorToAnchor_NotDoneToTask()
+    public void Render_DrawsDependencyEdgesContainerToContainer_NotDoneToTask()
     {
         IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
 
-        // 02-leaf dependsOn 01-root → the DAG edge is drawn anchor→anchor between the two containers.
-        Assert.Contains("task_01_root_anchor --> task_02_leaf_anchor", lines);
+        // 02-leaf dependsOn 01-root → the DAG edge is drawn container→container between the two
+        // containers (clipping to their borders), not anchor→anchor.
+        Assert.Contains("task_01_root --> task_02_leaf", lines);
         // and the retired old-model dependency edge (done_A --> task_B) must be gone.
         Assert.DoesNotContain(lines, l => l.StartsWith("done_", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void Render_PlanPreflightsAnchor_FeedsRootTaskAnchors_AndLeafAnchorsFeedPlanGuardrails()
+    public void Render_PlanPreflightsFeedsRootTaskContainers_AndLeafContainersFeedPlanGuardrails()
     {
         IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
 
-        // Full Flight Checks sit at the TOP: the plan-preflights anchor points into the root task's anchor.
-        Assert.Contains(lines, l => l.StartsWith("plan_preflights", StringComparison.Ordinal)
-                                    && l.Contains("--> task_01_root_anchor", StringComparison.Ordinal));
-        // Terminal Gate sits at the BOTTOM: the leaf task's anchor points into the plan-guardrails anchor.
-        Assert.Contains(lines, l => l.StartsWith("task_02_leaf_anchor", StringComparison.Ordinal)
-                                    && l.Contains("--> plan_guardrails", StringComparison.Ordinal));
+        // Full Flight Checks sit at the TOP: the plan_preflights container points into the root task container.
+        Assert.Contains("plan_preflights --> task_01_root", lines);
+        // Terminal Gate sits at the BOTTOM: the leaf task container points into the plan_guardrails container.
+        Assert.Contains("task_02_leaf --> plan_guardrails", lines);
     }
 
     [Fact]
     public void Render_TaskLevelPreflight_KeepsGatedDependsOnEdge_AndDrawsPreflightCheckInsideConsumer()
     {
         // 02-leaf dependsOn 01-root AND declares a task-level preflight. The gated dependency edge is STILL
-        // drawn container→container (anchor→anchor), NOT re-routed to originate from the preflight node; and
-        // the preflight renders as a check node inside 02-leaf's Preflights subgraph.
+        // drawn container→container, NOT re-routed to originate from the preflight node; and the preflight
+        // renders as a check node inside 02-leaf's Preflights subgraph.
         IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
 
-        Assert.Contains("task_01_root_anchor --> task_02_leaf_anchor", lines);
+        Assert.Contains("task_01_root --> task_02_leaf", lines);
 
         IReadOnlyList<string> leaf = ContainerBlock(lines, l => IsTaskContainerHeader(l, "02_leaf"));
         Assert.Contains(leaf, l => IsSubgraphLabelled(l, "Preflights"));
@@ -374,14 +370,6 @@ public sealed class ContainerDiagramTests : IDisposable
     /// <summary>True when <paramref name="line"/> is a subgraph header whose label contains <paramref name="label"/>.</summary>
     private static bool IsSubgraphLabelled(string line, string label) =>
         line.StartsWith("subgraph", StringComparison.Ordinal) && line.Contains(label, StringComparison.Ordinal);
-
-    /// <summary>
-    /// True when <paramref name="line"/> is the invisible anchor NODE declaration for
-    /// <paramref name="anchorId"/> (the <c>:::invisible</c> node line, not an anchor→anchor EDGE line).
-    /// </summary>
-    private static bool IsAnchorNode(string line, string anchorId) =>
-        line.StartsWith(anchorId, StringComparison.Ordinal)
-        && line.Contains(":::invisible", StringComparison.Ordinal);
 
     /// <summary>
     /// The lines of the first subgraph whose header satisfies <paramref name="headerMatch"/>, inclusive of

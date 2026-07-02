@@ -5,19 +5,15 @@ using static Guardrails.Core.Tests.PlanFixtures;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="MermaidRenderer.Render"/> under the deliverable-7 CONTAINER model (SSOT §10).
+/// Unit tests for <see cref="MermaidRenderer.Render"/> under the CONTAINER model (SSOT §10).
 /// Pure string mapping — no disk, no processes; in-memory <see cref="PlanFixtures"/>. Each task is a
 /// <c>subgraph task_&lt;id&gt;</c> holding its checks in nested <c>Preflights</c>/<c>Guardrails</c> subgraphs;
-/// the DAG is drawn anchor→anchor between invisible per-container anchor nodes; there is NO <c>done_</c>
-/// reconvergence node and NO <c>task --&gt; guardrail</c> fan-out edge.
-///
-/// The SHAPE tests here FAIL against the current (old-model) renderer — which still emits bare
-/// <c>task_&lt;id&gt;</c> nodes fanning out to <c>gr_</c> nodes that merge into <c>done_</c> nodes — and go
-/// green once the renderer is rewritten. The label-safety tests (escaping, newline collapse, description-vs-name)
-/// are model-neutral contracts that hold in both models. Tagged Category=Preflights (class-level) so the
-/// deliberately-red shape tests are excluded from the green baseline (<c>--filter "Category!=Preflights"</c>).
+/// the DAG is drawn <c>subgraph --&gt; subgraph</c> (container→container) so each edge clips to a container's
+/// OUTER BORDER (issue #210) — there are NO interior invisible anchor nodes, NO <c>done_</c> reconvergence
+/// node, and NO <c>task --&gt; guardrail</c> fan-out edge. Container fills are applied per-container via a
+/// <c>style &lt;id&gt; …</c> statement (a <c>class</c> assignment does not reach an edge-endpoint subgraph in
+/// the bundled Mermaid).
 /// </summary>
-[Trait("Category", "Preflights")]
 public sealed class MermaidRendererTests
 {
     // --- small helpers to build tasks with explicit guardrails -------------------------
@@ -81,25 +77,34 @@ public sealed class MermaidRendererTests
     }
 
     [Fact]
-    public void Render_DependencyEdge_IsDrawnAnchorToAnchor()
+    public void Render_DependencyEdge_IsDrawnContainerToContainer()
     {
-        // 02-b dependsOn 01-a → edge task_01_a_anchor --> task_02_b_anchor, NOT done_01_a --> task_02_b.
+        // 02-b dependsOn 01-a → edge task_01_a --> task_02_b (subgraph→subgraph, clipping to the
+        // container border), NOT an anchor→anchor edge and NOT done_01_a --> task_02_b.
         IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
             TaskWith("01-a", [Guardrail("01-check")]),
             TaskWith("02-b", [Guardrail("01-check")], "01-a"))));
 
-        Assert.Contains("task_01_a_anchor --> task_02_b_anchor", lines);
+        Assert.Contains("task_01_a --> task_02_b", lines);
+        Assert.DoesNotContain(lines, l => l.Contains("_anchor", StringComparison.Ordinal));
         Assert.DoesNotContain("done_01_a --> task_02_b", lines);
     }
 
     [Fact]
-    public void Render_EmitsInvisibleAnchorNodesAndInvisibleClassDef()
+    public void Render_EmitsNoInvisibleAnchorsAndStylesContainersById()
     {
+        // Issue #210: the interior invisible anchors are gone (no anchor node, no classDef
+        // invisible), and each container carries a `style <id> …` fill statement instead of a
+        // `class <id> <className>;` assignment.
         IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(TaskWith("01-a", [Guardrail("01-check")]))));
 
-        Assert.Contains(lines, l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
-        Assert.Contains(lines, l => l.StartsWith("task_01_a_anchor", StringComparison.Ordinal)
-                                    && l.Contains(":::invisible", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.Contains("_anchor", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.Contains(":::invisible", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.StartsWith("class ", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("style task_01_a fill:", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("style plan_preflights fill:", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("style plan_guardrails fill:", StringComparison.Ordinal));
     }
 
     [Fact]

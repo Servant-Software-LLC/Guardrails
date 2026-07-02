@@ -19,27 +19,27 @@ namespace Guardrails.Core.Graph;
 /// folder is empty, because they are structural brackets, not conditional content.
 /// </para>
 /// <para>
-/// Mermaid does not faithfully render a <c>subgraph --&gt; subgraph</c> edge (unreliable across
-/// versions — it may draw to an arbitrary interior point or not at all), so every container gets
-/// exactly one invisible ANCHOR node (<c>&lt;container&gt;_anchor[" "]:::invisible</c>) and the
-/// DAG is drawn anchor→anchor. The anchor is declared with its full node shape as the FIRST line
-/// inside its owning subgraph block, before any edge references it — this is the safe, version-
-/// stable form of the technique: Mermaid resolves a node's subgraph membership from its first
-/// textual mention, and an explicit in-block declaration removes any ambiguity an edge-only
-/// reference could introduce. Container "kind" styling (task / plan-level) is applied via a
-/// separate <c>class &lt;id&gt; &lt;className&gt;;</c> statement rather than an inline
-/// <c>subgraph id[…]:::className</c> shorthand — the separate-statement form is supported by
-/// every Mermaid release in the flowchart diagram's history, whereas the inline shorthand on a
-/// SUBGRAPH header (as opposed to a plain node) is a newer, version-sensitive addition; picking
-/// the older, universally-supported form is the deliberate outcome of prototyping this technique
-/// against the bundled Mermaid version (CDN-pinned in <see cref="HtmlDiagramRenderer"/>) before
-/// committing to the rewrite.
+/// The DAG is drawn <c>subgraph --&gt; subgraph</c>: each edge references a container's subgraph
+/// id directly (<c>task_A --&gt; task_B</c>, <c>plan_preflights --&gt; task_root</c>, …), so Mermaid
+/// clips the arrow to the container's OUTER BORDER like any ordinary box-to-box flowchart edge —
+/// no interior anchor, no line piercing the box (issue #210). The bundled Mermaid version
+/// (<c>mermaid@11.4.1</c>, CDN-pinned in <see cref="HtmlDiagramRenderer"/>) renders these
+/// boundary-clipped subgraph edges faithfully; this was verified by rendering both the anchor
+/// form and the direct form headless against 11.4.1 and measuring the edge endpoints (the anchor
+/// form terminated ~65px INSIDE each box; the direct form lands ON the border). Container "kind"
+/// styling (task / plan-level) is applied via a per-container <c>style &lt;id&gt; fill:…;</c>
+/// statement rather than a <c>class &lt;id&gt; &lt;className&gt;;</c> assignment — in 11.4.1 a
+/// <c>class</c> assignment does not reach a subgraph that is itself an edge endpoint (and every
+/// container is one under the subgraph→subgraph model), whereas <c>style &lt;id&gt;</c> colours it
+/// and also colours an EMPTY plan-level bracket (which Mermaid renders as a plain node, not a
+/// cluster). Only the LEAF check nodes keep <c>classDef</c>-based colouring (<c>:::preflight</c> /
+/// <c>:::guardrail</c>).
 /// </para>
 /// <para>
 /// A task-level preflight still gates its producer's <c>dependsOn</c> edge: the edge remains
-/// drawn container→container (anchor→anchor) exactly as any other dependency edge, and the
-/// preflight renders as an ordinary check node inside the consumer's own Preflights subgraph — it
-/// is never re-routed to originate from the preflight node itself.
+/// drawn container→container exactly as any other dependency edge, and the preflight renders as an
+/// ordinary check node inside the consumer's own Preflights subgraph — it is never re-routed to
+/// originate from the preflight node itself.
 /// </para>
 /// <para>
 /// Line breaks are emitted as an explicit <c>\n</c> (never
@@ -53,6 +53,17 @@ public static class MermaidRenderer
 {
     private const string PlanPreflightsId = "plan_preflights";
     private const string PlanGuardrailsId = "plan_guardrails";
+
+    // Container fills applied per-container via a `style <id> …` statement (NOT a
+    // `class <id> <className>;` statement). In Mermaid 11.4.1 a `class` assignment does NOT reach
+    // a subgraph that is itself an edge endpoint — and every container is an edge endpoint under
+    // the subgraph→subgraph edge model (issue #210) — whereas a `style <id>` DOES colour it. A
+    // `style <id>` also colours an EMPTY plan-level bracket, which Mermaid renders as a plain node
+    // rather than a cluster; that keeps the Full Flight Checks / Terminal Gate brackets on-brand
+    // even when their folder is empty. Values mirror the retired `classDef task`/`classDef
+    // planLevel` fills exactly, so the rendered colours are unchanged.
+    private const string TaskStyle = "fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;";
+    private const string PlanLevelStyle = "fill:#d4edda,stroke:#2e7d32,color:#10341a;";
 
     /// <summary>Render the plan as a Mermaid <c>flowchart TD</c> string (no trailing I/O).</summary>
     public static string Render(PlanDefinition plan)
@@ -92,23 +103,23 @@ public static class MermaidRenderer
     }
 
     /// <summary>
-    /// The five cosmetic <c>classDef</c> lines (colors) — task container, preflight check,
-    /// guardrail check, plan-level container, and the invisible anchor. Shared by
-    /// <see cref="Render"/> and <see cref="RenderInteractive"/>; deliberately EXCLUDED from the
-    /// staleness key (see <see cref="SemanticContent"/>), which is why <see cref="SemanticContent"/>
-    /// does not call it.
+    /// The two cosmetic <c>classDef</c> lines (colors) for the LEAF check nodes — preflight check
+    /// and guardrail check — which reference them inline via <c>:::preflight</c>/<c>:::guardrail</c>.
+    /// The task-container and plan-level-container fills are applied per-container by a
+    /// <c>style &lt;id&gt; …</c> statement instead (see <see cref="TaskStyle"/> /
+    /// <see cref="PlanLevelStyle"/>), because a <c>class</c> assignment does not reach a subgraph
+    /// that is an edge endpoint in the bundled Mermaid. Shared by <see cref="Render"/> and
+    /// <see cref="RenderInteractive"/>; deliberately EXCLUDED from the staleness key (see
+    /// <see cref="SemanticContent"/>), which is why <see cref="SemanticContent"/> does not call it.
     /// </summary>
     private static void AppendClassDefs(StringBuilder sb)
     {
-        AppendLf(sb, "  classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;");
         AppendLf(sb, "  classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;");
         AppendLf(sb, "  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;");
-        AppendLf(sb, "  classDef planLevel fill:#d4edda,stroke:#2e7d32,color:#10341a;");
-        AppendLf(sb, "  classDef invisible fill:none,stroke:none;");
     }
 
     /// <summary>
-    /// The SEMANTIC content of the diagram: ONLY the containers + nested checks + anchor edges
+    /// The SEMANTIC content of the diagram: ONLY the containers + nested checks + container edges
     /// (with their drawn labels), with NO <c>flowchart TD</c> header and NO cosmetic
     /// <c>classDef</c> color definitions. This is what <see cref="GraphSourceHash"/> hashes, so
     /// the staleness key tracks exactly what the diagram DRAWS (container membership, nested
@@ -129,18 +140,17 @@ public static class MermaidRenderer
     /// <summary>
     /// Append the container model (the semantic content) for the plan: the plan-level Full Flight
     /// Checks container, one container per task in ordinal order, the plan-level Terminal Gate
-    /// container, and finally every anchor→anchor edge. The single shared emitter behind
+    /// container, and finally every container→container edge. The single shared emitter behind
     /// <see cref="Render"/>, <see cref="SemanticContent"/>, and <see cref="RenderInteractive"/>.
     /// Returns the task-id → node-id-base map so the caller can emit click directives against the
     /// SAME node ids (the emitted bytes are unchanged whether or not the caller uses the return
     /// value).
     /// </summary>
     /// <remarks>
-    /// ORDER MATTERS: every container (and the anchor node declared inside it) is emitted BEFORE
-    /// any anchor→anchor edge line. Mermaid assigns a node to whichever subgraph it is first
-    /// mentioned in; emitting all containers first means every anchor's only prior mention is its
-    /// own explicit in-block declaration, so the later edge-only references can never pull it into
-    /// the wrong (or no) subgraph.
+    /// ORDER MATTERS: every container is emitted (fully, including its <c>end</c>) BEFORE any
+    /// container→container edge line. A <c>subgraph A --&gt; subgraph B</c> edge references the two
+    /// container ids, so both subgraph blocks must already be declared; emitting all containers
+    /// first keeps every edge's endpoints resolvable and the output deterministic.
     /// </remarks>
     private static IReadOnlyDictionary<string, string> AppendNodesAndEdges(PlanDefinition plan, StringBuilder sb)
     {
@@ -167,18 +177,18 @@ public static class MermaidRenderer
         // --- plan-level "Terminal Gate" container (bottom, ALWAYS emitted) --------------
         AppendPlanLevelContainer(sb, PlanGuardrailsId, "Terminal Gate", plan.PlanGuardrails, "guardrail");
 
-        // --- anchor→anchor edges (every container above is already fully declared) -----
-        AppendAnchorEdges(graph, tasks, nodeIdBase, sb);
+        // --- container→container edges (every container above is already fully declared) -----
+        AppendContainerEdges(graph, tasks, nodeIdBase, sb);
 
         return nodeIdBase;
     }
 
     /// <summary>
     /// Append a plan-level bracket container (<c>plan_preflights</c> or <c>plan_guardrails</c>):
-    /// its invisible anchor node, then its checks (sorted ordinal by name) as small boxes inside,
-    /// styled with <paramref name="checkClass"/>. ALWAYS emitted, even when
-    /// <paramref name="checks"/> is empty — the two plan-level containers are structural brackets
-    /// on the whole DAG, not conditional content.
+    /// its checks (sorted ordinal by name) as small boxes inside, styled with
+    /// <paramref name="checkClass"/>. ALWAYS emitted, even when <paramref name="checks"/> is empty
+    /// — the two plan-level containers are structural brackets on the whole DAG, not conditional
+    /// content. The DAG edge attaches to this container's own subgraph id (no interior anchor).
     /// </summary>
     private static void AppendPlanLevelContainer(
         StringBuilder sb,
@@ -188,25 +198,24 @@ public static class MermaidRenderer
         string checkClass)
     {
         AppendLf(sb, $"  subgraph {containerId}[{Quote(label)}]");
-        AppendLf(sb, $"    {containerId}_anchor[\" \"]:::invisible");
         AppendCheckNodes(sb, "    ", $"{containerId}", checks, checkClass);
         AppendLf(sb, "  end");
-        AppendLf(sb, $"  class {containerId} planLevel;");
+        AppendLf(sb, $"  style {containerId} {PlanLevelStyle}");
     }
 
     /// <summary>
-    /// Append one task container: its invisible anchor, a nested <c>Preflights</c> subgraph ONLY
-    /// when the task declares task-level preflights (the common case has none, and an always-empty
-    /// box would just be clutter — mirrors the owner's ASCII mock, which omits the Preflights
-    /// section for a task with none), and a nested <c>Guardrails</c> subgraph (always present —
-    /// every task carries at least one guardrail, enforced at load time).
+    /// Append one task container: a nested <c>Preflights</c> subgraph ONLY when the task declares
+    /// task-level preflights (the common case has none, and an always-empty box would just be
+    /// clutter — mirrors the owner's ASCII mock, which omits the Preflights section for a task with
+    /// none), a nested <c>Guardrails</c> subgraph (always present — every task carries at least one
+    /// guardrail, enforced at load time), then the container's <c>style</c> fill. The DAG edge
+    /// attaches to this container's own subgraph id (no interior anchor).
     /// </summary>
     private static void AppendTaskContainer(StringBuilder sb, TaskNode task, string @base)
     {
         string containerId = $"task_{@base}";
 
         AppendLf(sb, $"  subgraph {containerId}[{Quote(task.Id)}]");
-        AppendLf(sb, $"    {containerId}_anchor[\" \"]:::invisible");
 
         if (task.Preflights.Count > 0)
         {
@@ -216,7 +225,7 @@ public static class MermaidRenderer
         AppendNestedCheckSubgraph(sb, $"{containerId}_guardrails", "Guardrails", $"{containerId}_gr", task.Guardrails, "guardrail");
 
         AppendLf(sb, "  end");
-        AppendLf(sb, $"  class {containerId} task;");
+        AppendLf(sb, $"  style {containerId} {TaskStyle}");
     }
 
     /// <summary>Append one nested (Preflights/Guardrails) subgraph and its check nodes.</summary>
@@ -255,14 +264,16 @@ public static class MermaidRenderer
     }
 
     /// <summary>
-    /// Append every anchor→anchor edge: the plan-preflights anchor into each DAG ROOT task's
-    /// anchor (a task with no <c>dependsOn</c>), one edge per <c>dependsOn</c> relationship
-    /// between two task anchors, and each DAG LEAF task's anchor (a task nothing depends on) into
-    /// the plan-guardrails anchor. A task-level preflight does not change this — the gated
-    /// dependency edge is drawn exactly like any other; the preflight is only ever a check node
-    /// inside the consumer's own Preflights subgraph.
+    /// Append every container→container edge: the plan-preflights container into each DAG ROOT
+    /// task's container (a task with no <c>dependsOn</c>), one edge per <c>dependsOn</c>
+    /// relationship between two task containers, and each DAG LEAF task's container (a task nothing
+    /// depends on) into the plan-guardrails container. The edge references the container's own
+    /// subgraph id, so Mermaid clips the arrow to the container's OUTER BORDER (issue #210). A
+    /// task-level preflight does not change this — the gated dependency edge is drawn exactly like
+    /// any other; the preflight is only ever a check node inside the consumer's own Preflights
+    /// subgraph.
     /// </summary>
-    private static void AppendAnchorEdges(
+    private static void AppendContainerEdges(
         DependencyGraph graph,
         IReadOnlyList<TaskNode> tasks,
         IReadOnlyDictionary<string, string> nodeIdBase,
@@ -270,7 +281,7 @@ public static class MermaidRenderer
     {
         foreach (TaskNode root in tasks.Where(t => t.DependsOn.Count == 0))
         {
-            AppendLf(sb, $"  {PlanPreflightsId}_anchor --> task_{nodeIdBase[root.Id]}_anchor");
+            AppendLf(sb, $"  {PlanPreflightsId} --> task_{nodeIdBase[root.Id]}");
         }
 
         foreach (TaskNode dependency in tasks)
@@ -278,13 +289,13 @@ public static class MermaidRenderer
             foreach (string dependentId in graph.DependentsOf(dependency.Id)
                          .OrderBy(id => id, StringComparer.Ordinal))
             {
-                AppendLf(sb, $"  task_{nodeIdBase[dependency.Id]}_anchor --> task_{nodeIdBase[dependentId]}_anchor");
+                AppendLf(sb, $"  task_{nodeIdBase[dependency.Id]} --> task_{nodeIdBase[dependentId]}");
             }
         }
 
         foreach (TaskNode leaf in tasks.Where(t => graph.DependentsOf(t.Id).Count == 0))
         {
-            AppendLf(sb, $"  task_{nodeIdBase[leaf.Id]}_anchor --> {PlanGuardrailsId}_anchor");
+            AppendLf(sb, $"  task_{nodeIdBase[leaf.Id]} --> {PlanGuardrailsId}");
         }
     }
 

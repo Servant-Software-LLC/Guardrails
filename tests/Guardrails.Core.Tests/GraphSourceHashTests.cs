@@ -207,19 +207,19 @@ public sealed class GraphSourceHashTests
     /// test fails on whichever OS recomputes a different value.
     /// </summary>
     /// <remarks>
-    /// Re-baselined for the container-model rewrite (SSOT §10, design-of-record
-    /// 09-preflight-first-class): the container model changes the diagram's semantic content for
-    /// every plan — including this golden, which gets task-container subgraphs plus the two
-    /// mandatory plan-level brackets even though it declares no <c>preflights/</c>/
-    /// <c>guardrails/</c> folder checks of its own — so the OLD flat-model pinned literal was
-    /// guaranteed to break. The new value below was computed from the real rewritten renderer's
-    /// output (via <c>guardrails graph</c> against this golden), not guessed.
+    /// Re-baselined for the container-edge fix (issue #210): the DAG is now drawn
+    /// <c>subgraph --&gt; subgraph</c> (each edge attaches to a container's outer border) instead of
+    /// through interior invisible anchor nodes, and container fills moved from
+    /// <c>class &lt;id&gt; &lt;className&gt;;</c> to <c>style &lt;id&gt; …</c> statements. Both are in
+    /// the renderer's semantic content, so the golden's <c>source-sha256</c> shifted from the
+    /// previous anchor-model value. The value below was computed from the real renderer's output
+    /// (via <c>guardrails graph</c> against this golden), not guessed.
     /// </remarks>
     [Fact]
     public void Compute_GoldenExample_MatchesPinnedCrossPlatformHash()
     {
         const string expected =
-            "26606566be4ca9e6ad2932bb2a5db5ae6793ea248c7f60eed6c3384e9f24dab8";
+            "fee2a34bd43a3577dfc2aab73460dcd6b5be6cf6e0530d546ae26a91f64194c0";
 
         PlanLoadResult result = new PlanLoader().Load(GoldenExamplePath);
         Assert.False(result.HasErrors);
