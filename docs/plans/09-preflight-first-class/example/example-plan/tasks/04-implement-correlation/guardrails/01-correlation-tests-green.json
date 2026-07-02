@@ -1,4 +1,4 @@
 {
-  "description": "The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the 02 Bucket-B negative baseline makes attributable to this task). scope:local.",
+  "description": "The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the plan-level negative preflight makes attributable to this task). scope:local.",
   "scope": "local"
 }

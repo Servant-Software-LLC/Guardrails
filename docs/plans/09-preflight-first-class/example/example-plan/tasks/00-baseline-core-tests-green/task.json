@@ -1,5 +1,0 @@
-{
-  "description": "Bucket A (shared positive baseline): the existing Acme.Payments.Core.Tests are already green before any work runs. A no-op-root doctrine task — the guardrail IS the work; every Core modifier dependsOn it (deduped one-per-area).",
-  "stableId": "pf-core",
-  "dependsOn": []
-}

@@ -1,4 +1,0 @@
-{
-  "description": "Whole-repo integration gate: the merged plan branch builds and the touched-area suite is green. Re-run at every union and on the terminal merged HEAD.",
-  "scope": "integration"
-}

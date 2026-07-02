@@ -17,9 +17,10 @@ Add tests asserting that the charge pipeline threads a `RequestId`:
 ## TDD-red requirement
 
 These tests MUST FAIL against the current code, because `ChargeResult.RequestId` does not exist
-yet. That red state is the point — it is what the `02-baseline-correlation-absent` Bucket-B
-baseline already proved, and what this task's `tests-fail-on-current-code` guardrail re-asserts.
-The later green (after `04-implement-correlation`) then PROVES the implementation did the work.
+yet. That red state is the point — it is what the plan-level negative preflight
+(`<plan>/preflights/02-correlation-id-absent.ps1`) already proved, and what this task's
+`tests-fail-on-current-code` guardrail re-asserts. The later green (after
+`04-implement-correlation`) then PROVES the implementation did the work.
 
 ## Output
 

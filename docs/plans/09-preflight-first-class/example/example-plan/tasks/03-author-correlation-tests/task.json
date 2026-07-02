@@ -1,6 +1,6 @@
 {
   "description": "Author the request-id correlation unit tests in Acme.Payments.Core.Tests. They MUST be red against the current code (the RequestId field does not exist yet) — TDD red.",
   "stableId": "work-tests",
-  "dependsOn": ["00-baseline-core-tests-green", "02-baseline-correlation-absent"],
+  "dependsOn": [],
   "writeScope": ["Acme.Payments.Core.Tests/"]
 }
