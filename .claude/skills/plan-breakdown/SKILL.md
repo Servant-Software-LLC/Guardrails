@@ -57,18 +57,18 @@ and only then does `guardrails run` execute it.
    Step 5, **not** a licence to pick one silently.
 
    **Also decide brownfield vs greenfield FOR THE TOUCHED AREA — it gates the Step 5
-   positive-baseline (preflight) root (#181).** Beyond "is there a test framework at all", record whether
+   positive-baseline `<plan>/preflights/` check (#181).** Beyond "is there a test framework at all", record whether
    the projects/modules the plan will MODIFY already have existing tests covering them:
    - **Brownfield** = the plan modifies project(s)/module(s) that ALREADY have existing tests
      in the touched area. Set `$baselineArea` to the existing test project(s), each scoped by a
      **`--filter`** that selects the CURRENTLY-GREEN existing tests of that area (e.g.
      `tests/Inventory.Tests` filtered to the pre-existing tests — `--filter "Category!=Stats"` if a
      later `author-tests` task will add a `Stats` category to that project). **Never a whole-project
-     `dotnet test`** at the root — that hits the #165/#176 compile-coupling trap (Step 5). Record ONE
+     `dotnet test`** in the preflight — that hits the #165/#176 compile-coupling trap (Step 5). Record ONE
      entry per distinct touched test project (the baseline is deduped one-per-area in Step 5). This is
-     the trigger to INSERT the baseline ROOT(s) in Step 5 — subject to the worth-it gate there.
+     the trigger to EMIT the baseline `<plan>/preflights/` check(s) in Step 5 — subject to the worth-it gate there.
    - **Greenfield** = a new project, or no existing tests in the touched area. Set
-     `$baselineArea = none`. Step 5 SKIPS the baseline root (nothing to baseline) and the
+     `$baselineArea = none`. Step 5 SKIPS the baseline preflight (nothing to baseline) and the
      Step 7 report states the reason. Do NOT emit a vacuous baseline that runs zero tests or
      asserts "0 failed" over an empty set.
    A plan can be brownfield in one area and greenfield in another (it extends an existing
@@ -338,12 +338,12 @@ optional:
   → "Failure detail must reach the retry tail"; .NET regex in `stacks/dotnet.md §4.2`). The
   INVERSE TDD-red checks (`tests-fail-on-stubs`, where a non-zero exit is success) do NOT
   re-emit. This is in addition to — not a replacement for — the single actionable reason line.
-- "All tests pass" appears ONLY on a terminal integration task.
-- **A full build / whole-suite test guardrail on the terminal gate is a terminal
-  postcondition → keep it LOCAL (#165).** Do NOT mark `01-solution-builds` /
+- "All tests pass" appears ONLY in the terminal `<plan>/guardrails/` folder (the terminal gate).
+- **A full build / whole-suite test guardrail in the terminal `<plan>/guardrails/` folder is a
+  terminal postcondition → keep it LOCAL (#165).** Do NOT mark `01-solution-builds` /
   `02-all-tests-pass` (the whole-repo build and full test suite) `scope: "integration"`.
-  Omit the `scope` key (default `"local"`) so they run ONLY at the terminal gate — in the
-  gate task's own attempt, on its segment worktree, AFTER every upstream task has merged.
+  Omit the `scope` key (default `"local"`) so they run ONLY at the terminal gate — once, on the
+  merged plan-branch HEAD, AFTER every upstream task has merged.
   That is the correct and ONLY moment a full build / full suite should run. A `scope:
   "integration"` guardrail re-runs at **every** union point (every fan-in / non-FF
   integration), on partial merges where downstream tasks have NOT run yet. In a TDD plan a
@@ -354,9 +354,10 @@ optional:
   pass on a partial merge with a downstream task unsettled?"* — a full build/suite would
   NOT). Marking it integration-scoped red-halts a correct run. (Catalogue → "A
   `scope:"integration"` guardrail MUST be UNION-SAFE".)
-- **The terminal gate MUST still carry ≥1 `scope: "integration"` UNION-SAFE invariant
-  guardrail (GR2018).** GR2018 requires the gate sink to carry at least one
-  `scope: "integration"` guardrail — but that guardrail is the **conditional union invariant**,
+- **The terminal `<plan>/guardrails/` folder MUST still carry ≥1 `scope: "integration"` UNION-SAFE
+  invariant guardrail (GR2028, the re-homed GR2018 content teeth).** GR2028 requires the terminal
+  folder to carry at least one real integration-set re-run; when that re-run is a union invariant it is
+  the **conditional union invariant**,
   NOT the build/suite. It asserts something true of any valid intermediate union — "every
   produced file present is non-empty and conflict-marker-free", "every contribution PRESENT
   in the union is intact" — so it passes trivially BEFORE a contributing task has run. Its
@@ -383,7 +384,7 @@ optional:
   only as comment — construct missing" } }` — so it false-passes (correctly) before the
   contributing task has run, and tightens once that task's hunk lands. The
   overlapping-writeScope union-guardrail (next bullet, #132) IS this integration-scoped
-  guardrail — make THAT, not the build/suite, the one that satisfies GR2018.
+  guardrail — make THAT, not the build/suite, the terminal folder's union invariant satisfying GR2028.
 - **Overlapping writeScopes → author a `scope:"integration"` union-guardrail on the shared file
   (#132).** When ≥2 tasks have OVERLAPPING `writeScope`s on a shared file (colliding siblings the
   AI-merge unions), emit one `scope:"integration"` guardrail on the integration / fan-in task
@@ -624,110 +625,113 @@ optional:
   seam or rely on its `needsHuman` escape hatch. Distinct from the compile-coupled-DTO case (where the
   missing symbol is a type the *test* constructs) and from composition-root wiring #120 (which injects
   the *real* impl in production); the seam only opens the injection point so tests can supply a double.
-- **Positive baseline (preflight) — a BROWNFIELD plan needs a green START before any work runs (#181).**
-  This is the general **positive-baseline / preflight** archetype: a DAG-root no-op gated by one cheap
-  deterministic guardrail asserting a positive precondition that ALREADY holds on the starting state
-  ("never build on red"). The **existing-area-tests-green** baseline is the canonical worked instance and
-  the ONLY one the skill emits today; the same shape extends to other positive baselines (build-green,
-  endpoint-up) by the same no-op-root pattern, none emitted yet. Is this a brownfield plan (Step 0 set
-  `$baselineArea` ≠ none — it modifies project(s) that already have existing tests)? Before any inserted
-  `author-tests` task adds its intentionally-FAILING new tests, and before any implementation task runs,
-  the EXISTING unit tests in the touched area must pass on the CURRENT code. Without a green start, a work
-  task's `tests-pass` guardrail can fail from PRE-EXISTING breakage (misattributed to the task → wasted
-  retries → late `needsHuman`), and a new test's "red" is ambiguous (red-because-missing vs
-  red-because-already-broken). When it fires (brownfield AND the worth-it gate passes), insert the
-  **baseline ROOT task** in Step 5 (`00-baseline-<area>-tests-green`), one per touched area.
+- **Positive baseline (preflight) — a BROWNFIELD plan needs a green START before the DAG runs (#181).**
+  This is the general **positive-baseline / preflight** archetype: a plan-level Full Flight Check that
+  asserts a positive precondition ALREADY holding on the starting state ("never build on red"). Under the
+  four-folder model it is a **positive check FILE in the plan-root `<plan>/preflights/` folder** (a
+  sibling of `tasks/`, evaluated ONCE before the DAG against the starting repo) — NOT a no-op ROOT task.
+  The **existing-area-tests-green** baseline is the canonical worked instance and the ONLY one the skill
+  emits today; the same shape extends to other positive baselines (build-green, endpoint-up) by the same
+  preflight-file pattern, none emitted yet. Is this a brownfield plan (Step 0 set `$baselineArea` ≠ none —
+  it modifies project(s) that already have existing tests)? Before any inserted `author-tests` task adds
+  its intentionally-FAILING new tests, and before any implementation task runs, the EXISTING unit tests in
+  the touched area must pass on the CURRENT code. Without a green start, a work task's `tests-pass`
+  guardrail can fail from PRE-EXISTING breakage (misattributed to the task → wasted retries → late
+  `needsHuman`), and a new test's "red" is ambiguous (red-because-missing vs red-because-already-broken).
+  When it fires (brownfield AND the worth-it gate passes), emit the **positive preflight check** in Step 5
+  (`<plan>/preflights/01-baseline-<area>-tests-green.ps1`), one per touched area.
   - **Scope via `--filter` to the CURRENTLY-GREEN existing tests of the touched area — NEVER the whole
-    suite/project.** Load-bearing: a whole-project `dotnet test` at the root hits the **#165/#176
+    suite/project.** Load-bearing: a whole-project `dotnet test` in the preflight hits the **#165/#176
     compile-coupling trap** (a mid-TDD project does not compile — its test project references types
     later implementation tasks have not produced yet), manufacturing a FALSE RED no work task can fix.
     The rule: the baseline targets the existing, currently-passing tests of the touched area ONLY.
-  - **One baseline per AREA, deduped** — one per distinct touched test project, each scoped to gate only
-    that area's subtree, NOT a single global root that serializes the whole DAG.
-  - **The worth-it gate (a check with teeth) — emit ONLY when ALL hold:** the target pre-exists; the task
-    MODIFIES not creates it; the check is deterministic + cheap (NO process start, bounded command);
-    strictly narrower than the terminal gate; ≥2 work tasks build on the area; deduped per area.
-    **Under-fire when unsure** — a missed baseline is just the status quo, a false baseline halts a
-    correct plan.
+  - **One baseline per AREA, deduped** — one preflight file per distinct touched test project, each scoped
+    to its area, NOT a single global whole-suite preflight.
+  - **The worth-it gate (a check with teeth) — emit ONLY when ALL hold:** the target pre-exists; the plan
+    MODIFIES not creates it; the check is deterministic + cheap (NO process start beyond the scoped test,
+    bounded command); strictly narrower than the terminal `<plan>/guardrails/` gate; ≥2 work tasks build
+    on the area; deduped per area. **Under-fire when unsure** — a missed baseline is just the status quo,
+    a false baseline halts a correct plan before the DAG.
   - **Greenfield (`$baselineArea = none`) or worth-it gate fails → SKIP it and state why in the report**
-    (nothing to baseline). Distinct from the terminal full-suite gate: the baseline is a green START on
-    EXISTING tests at the DAG ROOT; the terminal `integrationGate` is a green END on EVERYTHING at the
-    sink — complementary, state both. Composes with #174/#182 (a RED baseline short-circuits to fast
-    `needsHuman` in BOTH serial and worktree now) and #179 (re-emit form). The negative "not yet present"
-    baseline is NOT a new archetype — it already IS `tests-fail-on-current-code`/`tests-fail-on-stubs`
-    (cross-reference, don't fork). (Catalogue → "Baseline-green / start-from-green (preflight)"; the .NET
-    realization is `stacks/dotnet.md §21`.)
+    (nothing to baseline). Distinct from the terminal gate: the baseline preflight is a green START on
+    EXISTING tests, evaluated once BEFORE the DAG; the terminal `<plan>/guardrails/` folder is a green END
+    on the merged HEAD — complementary, state both. A RED baseline preflight halts the run before the DAG
+    (the general Full-Flight-Check semantics), and #179 (re-emit form) makes its WHY reach the feedback.
+    The negative "not yet present" baseline is NOT a new archetype — it already IS
+    `tests-fail-on-current-code`/`tests-fail-on-stubs` (cross-reference, don't fork), and when emitted at
+    plan level it is likewise a `<plan>/preflights/` check (assert-absent, plan-level-only). (Catalogue →
+    "Baseline-green / start-from-green (preflight)"; the .NET realization is `stacks/dotnet.md §21`.)
 
 ## Step 5 — Insert guardrail-enabling tasks (the generative step)
 
 For every selected guardrail whose precondition doesn't exist yet, generate the
 upstream task that creates it:
 
-- **Brownfield plan (Step 0 set `$baselineArea` ≠ none) → insert a positive-baseline (preflight) ROOT
-  per touched area, EVERY work task in that area transitively depending on it (#181).** "Never build on
-  red": establish that the EXISTING tests in the touched area pass on the CURRENT code BEFORE any work
-  task runs. This is the general positive-baseline/preflight shape (DAG-root no-op + one cheap
-  deterministic positive-precondition guardrail); the existing-area-tests-green instance below is the
-  ONLY one emitted today, but the shape extends to other positive baselines (build-green, endpoint-up)
-  unchanged. Insert **`00-baseline-<area>-tests-green`** (fit the existing naming/numbering convention —
-  the `00-` prefix sorts it first; use the real area name, e.g. `00-baseline-inventory-tests-green`):
+- **Brownfield plan (Step 0 set `$baselineArea` ≠ none) → emit a positive-baseline (preflight) CHECK
+  in `<plan>/preflights/` per touched area (#181).** "Never build on red": establish that the EXISTING
+  tests in the touched area pass on the CURRENT code BEFORE the DAG runs. This is the general
+  positive-baseline/preflight shape (a plan-level Full Flight Check evaluated once, before the DAG,
+  against the starting repo — one cheap deterministic positive-precondition guardrail); the
+  existing-area-tests-green instance below is the ONLY one emitted today, but the shape extends to other
+  positive baselines (build-green, endpoint-up) unchanged. Emit
+  **`<plan>/preflights/01-baseline-<area>-tests-green.ps1`** (use the real area name, e.g.
+  `01-baseline-inventory-tests-green`; the plan-level `<plan>/preflights/` folder is a sibling of
+  `tasks/`). This REPLACES the retired no-op ROOT task model — do NOT emit a `00-baseline-*` task with
+  a `dependsOn: []` no-op action; the preflight folder runs before the DAG with no task, no edges:
   - **First, run the worth-it gate (a check with teeth) — emit ONLY when ALL hold:** the target
-    pre-exists; the task MODIFIES not creates it; the check is deterministic + cheap (NO process start,
-    bounded command); strictly narrower than the terminal gate; ≥2 work tasks build on the area; deduped
-    per area. **Under-fire when unsure** — a missed baseline is just the status quo (work tasks attribute
-    their own failures the slow way); a false baseline halts a correct plan at the root. If the gate
-    fails, SKIP and say why in the report.
-  - **TRUE no-op action** — a `script` action that is just `exit 0` (`action.ps1` / `action.sh`) and
-    does NOTHING else: it writes no file, no state fragment. **The verification is the GUARDRAIL, not
-    the action** — the task does no work; it gates the DAG on the area being green. (Same shape as the
-    terminal gate's `action.ps1 → exit 0` in the worked example.) **The genuine-no-op property is
-    load-bearing:** it is exactly what arms the #174/#182 short-circuit (below) so a RED baseline halts
-    fast. A baseline whose action touches a file or writes a fragment DEFEATS the short-circuit — a bug.
-  - **One guardrail: the EXISTING area tests PASS on the current code, scoped via `--filter`.** Run the
+    pre-exists; the plan MODIFIES not creates it; the check is deterministic + cheap (NO process start
+    beyond the scoped test, bounded command); strictly narrower than the terminal `<plan>/guardrails/`
+    gate; ≥2 work tasks build on the area; deduped per area. **Under-fire when unsure** — a missed
+    baseline is just the status quo (work tasks attribute their own failures the slow way); a false
+    baseline halts a correct plan before the DAG. If the gate fails, SKIP and say why in the report.
+  - **It is a guardrail-shaped preflight FILE, not a task** — a `.ps1`/`.sh`/`.py` file in
+    `<plan>/preflights/` (same parser as `tasks/<id>/guardrails/`), opening with `# catches:`, that runs
+    the check and exits 0/non-zero. **There is no action to make a no-op of** — the preflight folder is
+    evaluated by the pre-DAG phase directly, so the retired "TRUE no-op `exit 0` action" scaffolding and
+    its #174/#182 short-circuit dependence are GONE from the baseline story (a RED preflight simply halts
+    the run before scheduling any task). The file IS the verification.
+  - **The check: the EXISTING area tests PASS on the current code, scoped via `--filter`.** Run the
     EXISTING unit test project(s) covering the projects the plan modifies — `$baselineArea` from Step 0
     — and assert they ALL PASS (exit 0). **Scope to the CURRENTLY-GREEN existing tests of the touched
     area via `--filter` — NEVER the whole suite/project.** This is load-bearing: a whole-project
-    `dotnet test` at the root hits the **#165/#176 compile-coupling trap** — a mid-TDD project does not
-    compile (its test project references types later implementation tasks have not produced yet), so a
-    whole-project test at the root manufactures a FALSE RED no work task can fix, dead-ending the run.
-    The rule: target the existing, currently-passing tests of the touched area ONLY. Keep it bounded —
-    a too-wide scope also re-imports unrelated flakiness into the root and serializes the run on it.
-  - **One baseline per AREA, deduped.** Emit one baseline per distinct touched test project, each scoped
-    to gate only that area's subtree — NOT a single global root over the whole repo that serializes the
-    entire DAG behind one node. Two independent touched test projects → two area baselines; one area →
-    one. Never collapse N areas into one whole-suite root, never two baselines for the same area.
-  - **It is the DAG ROOT: `dependsOn: []`, and EVERY work task in that area transitively `dependsOn` it.**
-    Make the area's roots (the test-author tasks, any seam tasks, the first implementation tasks) depend
-    on the baseline task — every other task already reaches it transitively through them, so nothing in
-    that area runs against a red base. Verify (Step 3 acyclicity still holds — the baseline has no
-    incoming edges).
-  - **Scope = EXISTING tests ONLY, ordered BEFORE the TDD-red tasks (the load-bearing edge).** The
-    baseline asserts the PRE-PLAN tests pass. It runs at the root, on the STARTING workspace state,
-    BEFORE any inserted `author-tests` task adds its intentionally-FAILING new tests. So its guardrail
-    must target the **existing** test project(s)/area and must NOT accidentally run (and fail on) the
-    about-to-be-authored red tests. In worktree mode the root task's tree IS the starting state (no new
-    tests yet), which makes this natural; if `$baselineArea` is a whole test project that a later
-    `author-tests` task will ALSO add failing tests into, prefer a `--filter` (or category) that selects
-    only the pre-existing tests, so the baseline can never go red on tests that don't exist yet.
-  - **The PASS guardrail is a tests-pass archetype → it MUST use the #179 failure-detail-re-emit
+    `dotnet test` in the preflight hits the **#165/#176 compile-coupling trap** — a mid-TDD project does
+    not compile (its test project references types later implementation tasks have not produced yet), so
+    a whole-project test manufactures a FALSE RED no work task can fix, dead-ending the run. The rule:
+    target the existing, currently-passing tests of the touched area ONLY. Keep it bounded — a too-wide
+    scope also re-imports unrelated flakiness into the pre-DAG phase.
+  - **One baseline per AREA, deduped.** Emit one preflight file per distinct touched test project, each
+    scoped to its area — NOT a single global whole-repo preflight. Two independent touched test projects
+    → two area preflight files; one area → one. Never collapse N areas into one whole-suite preflight,
+    never two for the same area.
+  - **It runs BEFORE the DAG — no `dependsOn`, no edges.** The preflight folder is evaluated once against
+    the starting repo before the Scheduler builds any wave, so every task in the plan is implicitly gated
+    on it — you do NOT wire work tasks to it (the retired model made every area work task
+    `dependsOn` a no-op root; that scaffolding is gone). Acyclicity (Step 3) is unaffected — a preflight
+    file is not a DAG node.
+  - **Scope = EXISTING tests ONLY (the load-bearing constraint).** The preflight asserts the PRE-PLAN
+    tests pass. It runs on the STARTING workspace state, BEFORE any inserted `author-tests` task adds its
+    intentionally-FAILING new tests. So it must target the **existing** test project(s)/area and must NOT
+    accidentally run (and fail on) the about-to-be-authored red tests. The pre-DAG phase evaluates it
+    against the starting bytes (no new tests yet), which makes this natural; if `$baselineArea` is a whole
+    test project that a later `author-tests` task will ALSO add failing tests into, prefer a `--filter`
+    (or category) that selects only the pre-existing tests, so the baseline can never go red on tests that
+    don't exist yet.
+  - **The PASS check is a tests-pass archetype → it MUST use the #179 failure-detail-re-emit
     pattern** (capture → emit full log → re-emit failure-signal lines at the END), so a RED baseline's
-    WHY (the failing assertion/exception) reaches the retry-feedback tail, not just `[FAIL] <name>`. The
+    WHY (the failing assertion/exception) reaches the halt feedback, not just `[FAIL] <name>`. The
     .NET realization is `stacks/dotnet.md §21` (it reuses §4.2's re-emit form).
-  - **Composes with #174/#182 (the no-op-deadlock short-circuit) — in BOTH serial and worktree now.**
-    Because the action is a TRUE no-op (`exit 0`, writes nothing), a RED baseline = a no-op whose
-    guardrail fails identically each attempt → the harness short-circuits to `needsHuman` on the 2nd
-    attempt instead of burning the retry budget. Per #182 this fires in BOTH serial and worktree mode
-    (SSOT §7 now describes the mode-specific "no observable change" signal — earlier it said "never in
-    serial mode"; cite §7, do not re-fork it). Make the guardrail's final actionable line say so plainly,
-    e.g. *"the area's existing tests are already failing on the starting code — fix the pre-existing
-    breakage before this plan builds on it"* — the no-op can't fix what it didn't cause, so the fast,
-    actionable escalation IS the correct outcome.
+  - **A RED baseline preflight halts the run BEFORE the DAG.** A failing pre-DAG preflight stops the run
+    before any task is scheduled (the general Full-Flight-Check semantics) — no retry budget is burned on
+    a no-op, because there is no task. Make the check's final actionable line say so plainly, e.g. *"the
+    area's existing tests are already failing on the starting code — fix the pre-existing breakage before
+    this plan builds on it"* — that fast, actionable halt IS the correct outcome.
   - **The negative "not yet present" baseline is NOT a new archetype — cross-reference, don't fork.** The
     mirror ("a precondition that should be ABSENT is genuinely absent at the start") already IS
     `tests-fail-on-current-code`/`tests-fail-on-stubs` (and the #120 wired/not-wired contrast); reach for
-    those, do not author a parallel "negative preflight" task.
-  - **Greenfield → DO NOT insert it.** When `$baselineArea = none` (a new project / no existing tests in
-    the touched area) there is nothing to baseline. SKIP the task and state the reason in the Step 7
+    those. When emitted at plan level it is likewise a `<plan>/preflights/` check (an assert-absent,
+    plan-level-only one-shot) — do not author a parallel "negative preflight" task.
+  - **Greenfield → DO NOT emit it.** When `$baselineArea = none` (a new project / no existing tests in
+    the touched area) there is nothing to baseline. SKIP the preflight and state the reason in the Step 7
     report. A vacuous baseline (running zero tests, or `dotnet test` over a project with no tests, which
     trivially "passes") is worse than none — it certifies nothing while looking like a gate.
 - Code task and tests do not yet exist → insert `NN-author-tests-<feature>` BEFORE the
@@ -1030,11 +1034,14 @@ Per `references/schemas.md`, exactly:
   task you can confidently scope. **Absent ⇒ no check** — OMIT it for a genuinely repo-wide task;
   **never** emit a vacuous `**` or bare top-level dir (escapes the workspace ⇒ **GR2019** error;
   vacuous/over-broad ⇒ **GR2020** warning).
-- **`integrationGate` (optional, default `false`, SSOT §3.3)** — set `true` on the **terminal
-  whole-repo integration gate**, the final soundness boundary run once on the fully merged
-  plan-branch HEAD. A plan with ≥2 leaf tasks or any fan-in must declare **exactly one**
-  `integrationGate: true` sink (**GR2017**), and that sink must carry **at least one**
-  `scope: "integration"` guardrail (**GR2018**). A single linear chain with no fan-in may omit it.
+- **`integrationGate` — RETIRED (SSOT §3.3; see the four-folder doctrine bullet above).** There is
+  **NO terminal-sink task** and no `integrationGate` field. Do NOT add this key to any `task.json`:
+  a plan still declaring `integrationGate: true` is a **hard validation error — GR2029** (no
+  coexistence window). The terminal whole-repo integration gate now lives in the plan-root
+  **`<plan>/guardrails/`** folder (the "Terminal Gate", run once on the merged plan-branch HEAD); a
+  multi-leaf/fan-in plan carries ≥1 real integration-set re-run there (enforced as **GR2028**, the
+  re-homed content teeth of the old GR2018). A single linear chain (one leaf, no fan-in) needs no
+  terminal folder.
 - Every **prompt action** opens with the harness-contract header block, verbatim:
 
   ```markdown
@@ -1178,24 +1185,23 @@ Per `references/schemas.md`, exactly:
    coverage: "every numbered design deliverable maps to a task; no body/`§`-deliverable was dropped for
    lacking a milestone." The UI-exit-criterion case (7.0) remains the most expensive instance; this is
    the general rule it specializes.
-0c. **Positive-baseline self-review — a BROWNFIELD plan must have a baseline ROOT per area every work
-   task reaches (#181).** If Step 0 set `$baselineArea` ≠ none (the plan modifies project(s) with
-   existing tests in the touched area) AND the worth-it gate passed, confirm the breakdown inserted one
-   `00-baseline-<area>-tests-green` root per touched area: a **TRUE no-op** (`exit 0`, writes nothing)
-   action + a single guardrail that runs the EXISTING area tests **via `--filter`** (NEVER the whole
+0c. **Positive-baseline self-review — a BROWNFIELD plan must have a baseline preflight per touched area
+   (#181).** If Step 0 set `$baselineArea` ≠ none (the plan modifies project(s) with existing tests in the
+   touched area) AND the worth-it gate passed, confirm the breakdown emitted one
+   `<plan>/preflights/01-baseline-<area>-tests-green` check per touched area: a guardrail-shaped preflight
+   FILE (no task, no `dependsOn`) that runs the EXISTING area tests **via `--filter`** (NEVER the whole
    suite/project — that hits the #165/#176 compile-coupling trap) and asserts they PASS (using the #179
-   re-emit form), with `dependsOn: []`, and **every** other task in that area transitively depending on
-   it. Cross-check four things: (a) the guardrail targets only the PRE-EXISTING tests via `--filter` —
-   NOT the about-to-be-authored red tests (it runs at the root on the starting state, before any
-   `author-tests` task adds its failing tests); (b) the action is a genuine no-op (a baseline action that
-   touches a file/fragment DEFEATS the #174/#182 short-circuit — a finding); (c) it is deduped one-per-area
-   (no single whole-repo root serializing the DAG); (d) the worth-it gate genuinely held (≥2 work tasks
-   build on the area). If the plan is **greenfield** (`$baselineArea = none`) or the worth-it gate failed,
-   confirm NO baseline task was emitted and the report will STATE that (nothing to baseline). A brownfield
-   plan missing the baseline root, a greenfield plan carrying a vacuous baseline, a whole-suite-scoped
-   baseline, or a non-no-op baseline action is a self-review finding — loop back to Step 5. Surface a
-   **`guardrails-review` probe** in the report: "brownfield plan has a TRUE-no-op, `--filter`-scoped,
-   deduped baseline root per area every work task reaches; greenfield states why none."
+   re-emit form). It runs before the DAG against the starting repo, so every task is implicitly gated on
+   it. Cross-check three things: (a) the check targets only the PRE-EXISTING tests via `--filter` — NOT the
+   about-to-be-authored red tests (it runs on the starting state, before any `author-tests` task adds its
+   failing tests); (b) it is deduped one-per-area (no single whole-repo preflight); (c) the worth-it gate
+   genuinely held (≥2 work tasks build on the area). If the plan is **greenfield** (`$baselineArea = none`)
+   or the worth-it gate failed, confirm NO baseline preflight was emitted and the report will STATE that
+   (nothing to baseline). A brownfield plan missing the baseline preflight, a greenfield plan carrying a
+   vacuous baseline, a whole-suite-scoped baseline, or a lingering no-op ROOT baseline TASK (the retired
+   model) is a self-review finding — loop back to Step 5. Surface a **`guardrails-review` probe** in the
+   report: "brownfield plan has a `--filter`-scoped, deduped baseline preflight per area; greenfield states
+   why none."
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
@@ -1516,7 +1522,9 @@ tasks.** When a milestone spans N skill directories:
    example folder) is disjoint from the skill directories, and it can only run once the skill edits
    it depends on are committed.
 3. **Make round-trip verification its own terminal task** — the `guardrails validate` / golden
-   round-trip check (often the `integrationGate` sink), depending on the regeneration task.
+   round-trip check, depending on the regeneration task. On a parallel plan its whole-repo re-run
+   belongs in the plan-root `<plan>/guardrails/` terminal folder (NOT a retired `integrationGate` sink
+   task).
 
 *Worked split (the #87 motivating case).* A task scoped to update
 `.claude/skills/plan-breakdown/`, `.claude/skills/guardrails-review/`, and
@@ -1529,7 +1537,7 @@ NNa-update-plan-breakdown-skill        writeScope: .claude/skills/plan-breakdown
 NNb-update-guardrails-review-skill     writeScope: .claude/skills/guardrails-review/
 NNc-update-domain-knowledge-skill      writeScope: .claude/skills/guardrails-domain-knowledge/
 NNd-regenerate-golden-example          writeScope: examples/hello-guardrails/   dependsOn: NNa,NNb,NNc
-NNe-roundtrip-validate                 (integrationGate)                        dependsOn: NNd
+NNe-roundtrip-validate                 (terminal gate → <plan>/guardrails/)     dependsOn: NNd
 ```
 
 **Self-review (folds into Step 7.0a).** When sweeping emitted tasks back through the split-trigger,
@@ -1695,7 +1703,7 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 - [ ] A test-author behavior that needs a production injection seam (a fake/double injected into a type with no injection point) → an upstream `add-<component>-<seam>-seam` task (pure structural production change, build + a structural seam-exists check, TDD-exempt) the test-author task `dependsOn`; the seam was NOT left to the test task to invent or to its `needsHuman` escape (#84).
 - [ ] A task that fans out over an external/unknown-size set (crawl, recursive glob, API listing) → modeled as a scripted-ETL `script` action (volume off the turn budget), NOT an agent-per-item loop; discover-size-first probe added where the count is unknown; bulk-capture split from bounded per-item curation (#100).
 - [ ] Step 7.0b deliverable-coverage self-review ran: every numbered design deliverable (placement-table row, top-level `§`-section, "what's-asked" item) maps to ≥1 task; any body/`§`-deliverable lacking a milestone home was flagged, not silently dropped; uncovered deliverables are blocking decisions in the report; a `guardrails-review` coverage probe is surfaced (#110).
-- [ ] A parallel plan (`maxParallelism` > 1) declares exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail, and that integration-scoped guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if contribution X present, verify it's real"), NOT the full build or whole suite. The full build (`01-solution-builds`) and whole-suite test (`02-all-tests-pass`) on the terminal gate are **LOCAL** (no `scope` key) — marking them `scope: "integration"` is the #125 anti-pattern: they red-halt correct intermediate unions where downstream TDD tasks have not run yet (#165).
+- [ ] A parallel plan (≥2 leaf tasks or any fan-in) carries a non-empty **`<plan>/guardrails/`** folder (the Terminal Gate) with **≥1 REAL integration-set re-run** — a whole-repo build / full suite / union-safe conditional invariant — NOT a tautological `exit 0` (`validate` enforces this content bar as **GR2028**). There is **NO terminal `integrationGate: true` sink task**; a lingering `integrationGate: true` in any `task.json` is the BLOCKER (a **GR2029** hard error), NOT its absence. The folder's `scope: "integration"` union-guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if contribution X present, verify it's real"), NOT the full build or whole suite: a full build (`01-solution-builds`) / whole-suite test (`02-all-tests-pass`) placed in the terminal folder stays **LOCAL** (no `scope` key) — marking it `scope: "integration"` is the #125 anti-pattern (it red-halts correct intermediate unions where downstream TDD tasks have not run yet, #165). (`scope: "integration"` itself is unchanged — the per-union re-verify tag, SSOT §4.3.)
 - [ ] Every `dependsOn` edge has a stated justification; no prose-order-only edges.
 - [ ] All prompt actions contain the harness-contract block.
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
