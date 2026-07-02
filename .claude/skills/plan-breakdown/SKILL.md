@@ -421,12 +421,60 @@ optional:
     fan-in task (make the dependency the guardrail relies on explicit), or **(b)** remove the now-stale
     contribution check for A's token from the union guardrail. This is the authoring-side complement to
     the `guardrails-review` "Union guardrail ancestor staleness" probe (#159).
-- A terminal integration task must declare `integrationGate: true` in its `task.json` — it
-  marks the terminal whole-repo integration gate, the final soundness boundary run once on
-  the fully merged plan-branch HEAD (SSOT §3.3). Validation enforces this: a plan with ≥2
-  leaf tasks or any fan-in must declare **exactly one** `integrationGate: true` sink
-  (**GR2017**), and that sink must carry **at least one** `scope: "integration"` guardrail
-  (**GR2018**) — an empty gate verifies nothing.
+- **Two-scope preflights/guardrails — the four-folder model REPLACES the `integrationGate: true`
+  task + no-op ROOT/END scaffolding (deliverable 9, SSOT §1/§3.3).** On a harness version whose
+  loader understands the four folders, do NOT emit an `integrationGate: true` sink task — a plan
+  still declaring one gets a **hard validation error (GR2029)**, no coexistence window. Emit these
+  four first-class folders instead:
+  - **`<plan>/preflights/`** — the plan-root "Full Flight Checks", a sibling of `tasks/`,
+    `guardrails.json`, `state/`. Evaluated ONCE, BEFORE the Scheduler builds waves, against the
+    starting repo. This is where the **#181 positive baseline (REFRAMED, not replaced)** now
+    lives: instead of a no-op ROOT task + `--filter`-scoped guardrail, emit a **positive check
+    file** in this folder (e.g. `01-all-repo-tests-green`) asserting the currently-green
+    precondition. Also the home for a **negative** assert-absent baseline (a one-shot,
+    plan-level-only check that a not-yet-introduced artifact is genuinely absent at the start) —
+    this cross-references the existing `tests-fail-on-current-code`/`tests-fail-on-stubs`
+    anti-tautology archetype rather than forking a new one. **Remove the no-op ROOT/END task
+    scaffolding and its #174/#182 short-circuit dependence from the baseline story** (the
+    short-circuit remains a general §7 rule for any REAL task that no-ops elsewhere, untouched —
+    it simply no longer participates in the baseline/preflight story), and **remove any simulated
+    "precondition" scope value** (no third scope value exists under this model — only `"local"`
+    (default) and `"integration"`).
+  - **`<plan>/guardrails/`** — the plan-root "Terminal Gate", also a plan-root sibling. Evaluated
+    ONCE, at run end, on the merged plan-branch HEAD. **The re-homed GR2018 authoring rule:** a
+    multi-leaf/fan-in plan's `<plan>/guardrails/` folder MUST carry **≥1 real integration-set
+    re-run** — a genuine whole-repo build/test/suite invocation, or a union invariant — NOT a
+    tautological `exit 0` file; **content teeth survive the move from task to folder**
+    (`validate` enforces this as **GR2028** on a multi-leaf/fan-in plan). `scope: "integration"`
+    itself is **unchanged** — it remains the per-union tag driving the §4.3 per-union re-verify;
+    only the terminal-sink TASK kind was retired.
+  - **`tasks/<id>/preflights/`** — task-level, a sibling of the existing `tasks/<id>/guardrails/`.
+    JIT dependency-delivery: evaluated in the consumer's own segment worktree at `taskBase`,
+    BEFORE its attempt loop. Emit one whenever a `dependsOn` edge delivers a type/route/symbol/
+    artifact a downstream task needs inside its own segment — confirming the producer's
+    contribution actually landed before the attempt loop spends a turn building against
+    possibly-absent bytes. Polarity here is **positive-monotone-safe** (never negative — a
+    task-level check runs per-attempt against a segment that only grows, so a negative
+    "not yet present" assertion would flip false as soon as an unrelated file lands).
+  - `tasks/<id>/guardrails/` — the existing per-task postcondition folder, unchanged.
+
+  All four folders share **one** guardrail-file parser/grammar with the existing
+  `tasks/<id>/guardrails/` shape (`NN-name.ps1`/`.sh`/`.py` + optional `.json` sidecar, or
+  `NN-name.prompt.md`; `catches:` comment required; ordinal sort) — they differ only in WHERE
+  they live and WHEN they run.
+
+  > **Superseded — the rule below describes the RETIRED `integrationGate: true` task mechanism**
+  > (now a hard validation error, GR2029). It applies only when authoring for a harness version
+  > that predates the four-folder loader, or a plan's own named, documented bootstrap exemption —
+  > never silently. For a plan targeting a current harness, use the `<plan>/guardrails/` folder
+  > above instead.
+  >
+  > A terminal integration task must declare `integrationGate: true` in its `task.json` — it
+  > marks the terminal whole-repo integration gate, the final soundness boundary run once on
+  > the fully merged plan-branch HEAD (SSOT §3.3, pre-four-folder). Validation enforced this: a
+  > plan with ≥2 leaf tasks or any fan-in had to declare **exactly one** `integrationGate: true`
+  > sink (**GR2017**, retired), and that sink had to carry **at least one** `scope: "integration"`
+  > guardrail (**GR2018**, re-homed onto the folder above) — an empty gate verified nothing.
 
 **Route through these doctrine checks every task (the decision tree's newer leaves):**
 - **State output** — does this task's action write a state key (to `GUARDRAILS_STATE_OUT`)
