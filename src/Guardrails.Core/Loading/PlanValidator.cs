@@ -37,8 +37,8 @@ public sealed class PlanValidator
         ValidateCrossTaskStateReferences(plan, diagnostics);
         ValidateStaleCoverageTokens(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
-        ValidateIntegrationGatePresent(plan, diagnostics);
-        ValidateIntegrationGateNonEmpty(plan, diagnostics);
+        ValidateNoLegacyIntegrationGate(plan, diagnostics);
+        ValidatePlanGuardrailsIntegrationReRun(plan, diagnostics);
         ValidateGuardrailScopeValues(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
@@ -69,7 +69,10 @@ public sealed class PlanValidator
     private static bool HasAnyPrompt(PlanDefinition plan) =>
         plan.Tasks.Any(t =>
             t.Action.Kind == ActionKind.Prompt ||
-            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt));
+            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt) ||
+            t.Preflights.Any(g => g.Kind == ActionKind.Prompt)) ||
+        plan.PlanPreflights.Any(g => g.Kind == ActionKind.Prompt) ||
+        plan.PlanGuardrails.Any(g => g.Kind == ActionKind.Prompt);
 
     private static void ValidateNoCycles(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
@@ -270,24 +273,54 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// A plan with a parallel topology — ≥2 leaf tasks (tasks with no dependents) or any fan-in
-    /// task (a task with ≥2 upstreams) — must declare exactly one <c>integrationGate:true</c> sink
-    /// (plan 08 M2, SSOT §3.3) — but ONLY in worktree mode (<c>maxParallelism &gt; 1</c>), per the
-    /// PO decision. The terminal gate verifies the merged union of *parallel* branches; a SERIAL
-    /// run (<c>maxParallelism == 1</c>) uses the shared workspace and has no parallel branches to
-    /// merge, so the hard requirement does not apply and GR2017 is not emitted. In worktree mode,
-    /// omitting the gate leaves parallel branches unverified at the integration level → GR2017 ERROR.
+    /// The <c>integrationGate: true</c> task kind is RETIRED (SSOT §3.3, design-of-record
+    /// 09-preflight-first-class) with NO coexistence window: the terminal whole-repo checks now live in
+    /// the first-class plan-level <c>&lt;plan&gt;/guardrails/</c> folder
+    /// (<see cref="ValidatePlanGuardrailsIntegrationReRun"/>), not on a no-op sink task. A plan that
+    /// STILL declares the legacy key gets a HARD validation ERROR (GR2029) — honest-over-silent, so the
+    /// stale declaration is caught at validate time rather than silently ignored. The
+    /// <see cref="TaskNode.IntegrationGate"/> model property is kept solely to DETECT the legacy
+    /// declaration here (and is still read by the scheduler's terminal-gate run until that path is
+    /// replaced by the terminal phase in a later deliverable).
     /// </summary>
-    private static void ValidateIntegrationGatePresent(PlanDefinition plan, List<Diagnostic> diagnostics)
+    private static void ValidateNoLegacyIntegrationGate(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
-        // Gate required only in worktree mode (maxParallelism>1), PO decision; a serial run uses the
-        // shared workspace and merges no parallel branches, so there is nothing for the gate to verify.
-        if (plan.Config.MaxParallelism <= 1)
+        foreach (TaskNode task in plan.Tasks)
         {
-            return;
+            if (task.IntegrationGate)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.RetiredIntegrationGateKey, task.Directory,
+                    $"Task '{task.Id}' declares the retired 'integrationGate: true' task kind. The terminal " +
+                    "integration gate is no longer a task kind: its whole-repo checks now live in the " +
+                    "plan-level '<plan>/guardrails/' folder (SSOT §3.3). Remove 'integrationGate' from " +
+                    "task.json and place the terminal checks — each re-running the integration set — in " +
+                    "'<plan>/guardrails/'."));
+            }
         }
+    }
 
-        if (plan.Tasks.Any(t => t.IntegrationGate))
+    /// <summary>
+    /// The re-homed GR2018 content-teeth rule (SSOT §3.3, design-of-record 09-preflight-first-class,
+    /// B3). A plan with a parallel topology — ≥2 leaf tasks (no dependents) or any fan-in task (≥2
+    /// upstreams) — MUST carry, in its terminal <c>&lt;plan&gt;/guardrails/</c> folder, at least one
+    /// deterministic check that ACTUALLY re-runs the integration set (a whole-repo build / full suite /
+    /// a union invariant). This preserves GR2018's teeth: it is NOT weakened to "the folder is
+    /// non-empty" — an empty folder fails, and so does a folder holding only a tautological
+    /// <c>exit 0</c> file that certifies nothing (the precise failure GR2018 exists to prevent). The
+    /// "counts toward the terminal gate" marker is folder membership (a folder-scoped equivalent of the
+    /// §4.3 <c>scope:"integration"</c> tag, which is unchanged and still drives the per-union re-verify);
+    /// the surviving obligation — ≥1 real integration-set re-run — is checked by content inspection
+    /// (<see cref="ReRunsIntegrationSet"/>). A single linear chain (one leaf, no fan-in) forms no union
+    /// and is exempt, and — matching the retired GR2017/GR2018's exact firing conditions — the rule
+    /// applies ONLY in worktree mode (<c>maxParallelism &gt; 1</c>): a serial run uses the shared
+    /// workspace and merges no parallel branches, so there is no merged-HEAD union for a terminal gate
+    /// to certify. GR2028 ERROR.
+    /// </summary>
+    private static void ValidatePlanGuardrailsIntegrationReRun(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        // Terminal-gate obligation required only in worktree mode (maxParallelism>1) — the exact
+        // condition the retired GR2017/GR2018 fired under; a serial run merges no parallel branches.
+        if (plan.Config.MaxParallelism <= 1)
         {
             return;
         }
@@ -297,53 +330,68 @@ public sealed class PlanValidator
         bool hasMultipleLeaves = leafCount >= 2;
         bool hasFanIn = plan.Tasks.Any(t => t.DependsOn.Count >= 2);
 
-        if (hasMultipleLeaves || hasFanIn)
+        if (!hasMultipleLeaves && !hasFanIn)
         {
-            diagnostics.Add(Error(DiagnosticCodes.MissingIntegrationGate, plan.PlanDirectory,
-                "Plan has a parallel topology (≥2 leaf tasks or a fan-in task) but no " +
-                "integrationGate:true sink. The terminal gate is the whole-repo soundness boundary " +
-                "for parallel execution; add a final task with integrationGate:true and at least one " +
-                "guardrail declaring scope:\"integration\" (SSOT §3.3, plan 08 §3)."));
+            return; // a single linear chain forms no union — no terminal-gate obligation
+        }
+
+        if (!plan.PlanGuardrails.Any(ReRunsIntegrationSet))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, plan.PlanDirectory,
+                "Plan has a parallel topology (≥2 leaf tasks or a fan-in task) but its terminal " +
+                "'<plan>/guardrails/' folder carries no deterministic check that re-runs the integration " +
+                "set. The terminal gate is the whole-repo soundness boundary; an empty folder — or one " +
+                "holding only a tautological 'exit 0' file — verifies nothing. Add a '<plan>/guardrails/' " +
+                "check that re-runs the whole-repo build / full suite / a union invariant (SSOT §3.3)."));
         }
     }
 
     /// <summary>
-    /// Every <c>integrationGate:true</c> sink must carry at least one guardrail with
-    /// <c>scope:"integration"</c> (plan 08 M2, SSOT §3.3/§4.3) — but ONLY in worktree mode
-    /// (<c>maxParallelism &gt; 1</c>), per the PO decision. The integration gate verifies the
-    /// merged union of *parallel* branches; a SERIAL run (<c>maxParallelism == 1</c>) uses the
-    /// shared workspace and merges no parallel branches, so the requirement does not apply and
-    /// GR2018 is not emitted. In worktree mode, an empty integration-guardrail set provides no
-    /// whole-repo soundness check — a gate that verifies nothing → GR2018 ERROR.
+    /// Content-teeth test for the re-homed terminal gate (GR2028). A <c>&lt;plan&gt;/guardrails/</c>
+    /// file "re-runs the integration set" only when it is a deterministic (script) check whose effective
+    /// body — comment and blank lines stripped, so a comment that merely NAMES a build command cannot
+    /// count — invokes a recognised whole-repo build/test/suite command
+    /// (<see cref="IntegrationReRunCommand"/>). A tautological <c>exit 0</c> file, a bare <c>echo</c>, or
+    /// a prompt guardrail does NOT qualify: the rule certifies a real re-run, not a present file.
+    /// Unreadable files do not qualify (other checks surface the IO problem).
     /// </summary>
-    private static void ValidateIntegrationGateNonEmpty(PlanDefinition plan, List<Diagnostic> diagnostics)
+    private static bool ReRunsIntegrationSet(GuardrailDefinition guardrail)
     {
-        // Gate verification required only in worktree mode (maxParallelism>1), PO decision; a serial
-        // run merges no parallel branches, so there is nothing for the gate to verify.
-        if (plan.Config.MaxParallelism <= 1)
+        if (guardrail.Kind != ActionKind.Script)
         {
-            return;
+            return false;
         }
 
-        foreach (TaskNode task in plan.Tasks)
-        {
-            if (!task.IntegrationGate)
-            {
-                continue;
-            }
+        string? body = TryReadAllText(guardrail.Path);
+        return body is not null && IntegrationReRunCommand.IsMatch(StripCommentLines(body));
+    }
 
-            bool hasIntegrationGuardrail = task.Guardrails.Any(g =>
-                string.Equals(g.Scope, "integration", StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// Recognised whole-repo build / test / suite invocations that constitute a real integration-set
+    /// re-run (the GR2028 content teeth). Deliberately broad across ecosystems (.NET, node, python,
+    /// rust, go, java/kotlin, C/C++, ruby, php) so a genuine full-suite/build check is credited while a
+    /// tautological <c>exit 0</c> or bare no-op is not. Case-insensitive.
+    /// </summary>
+    private static readonly Regex IntegrationReRunCommand = new(
+        @"\b(?:dotnet\s+(?:test|build|msbuild|vstest|run)|msbuild|nuke|cake|npm\s+(?:test|run|ci)|yarn|pnpm|pytest|python\d?\s+-m\s+(?:pytest|unittest)|tox|cargo\s+(?:test|build|check)|go\s+(?:test|build|vet)|mvn|gradle|ctest|cmake\s+--build|bazel\s+(?:test|build)|swift\s+(?:test|build)|make|rspec|jest|vitest|mocha|phpunit)\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
-            if (!hasIntegrationGuardrail)
-            {
-                diagnostics.Add(Error(DiagnosticCodes.IntegrationGateEmpty, task.Directory,
-                    $"Task '{task.Id}' is an integrationGate:true sink but has no guardrail with " +
-                    "scope:\"integration\". The terminal gate must carry at least one integration-scoped " +
-                    "guardrail to be a sound soundness boundary. Add a guardrail sidecar declaring " +
-                    "scope:\"integration\" (SSOT §3.3/§4.3, plan 08 §3)."));
-            }
-        }
+    /// <summary>
+    /// Drop whole-line comments (leading <c>#</c>, <c>//</c>, <c>REM</c>, <c>::</c>) so a comment that
+    /// merely NAMES a build/test command (e.g. a <c>catches:</c> line) cannot be mistaken for the check
+    /// actually invoking one.
+    /// </summary>
+    private static string StripCommentLines(string body) =>
+        string.Join('\n', body.Split('\n').Where(line => !IsCommentLine(line)));
+
+    private static bool IsCommentLine(string line)
+    {
+        string trimmed = line.TrimStart();
+        return trimmed.StartsWith('#')
+            || trimmed.StartsWith("//", StringComparison.Ordinal)
+            || trimmed.StartsWith("::", StringComparison.Ordinal)
+            || (trimmed.StartsWith("REM", StringComparison.OrdinalIgnoreCase) &&
+                (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3])));
     }
 
     /// <summary>
@@ -505,21 +553,33 @@ public sealed class PlanValidator
     /// </summary>
     private static void ValidateGuardrailScopeValues(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
+        // Scope is a guardrail-shaped-file concept, so it is validated across ALL FOUR folders (SSOT §4)
+        // — a typo in a preflight or a plan-level folder degrades the same way as one in a task guardrail.
         foreach (TaskNode task in plan.Tasks)
         {
-            foreach (GuardrailDefinition guardrail in task.Guardrails)
-            {
-                if (guardrail.Scope is null)
-                    continue;
+            CheckGuardrailScopes(task.Guardrails, $"task '{task.Id}'", diagnostics);
+            CheckGuardrailScopes(task.Preflights, $"task '{task.Id}' preflights", diagnostics);
+        }
 
-                if (guardrail.Scope != "integration" && guardrail.Scope != "local")
-                {
-                    diagnostics.Add(Error(DiagnosticCodes.InvalidGuardrailScopeValue, guardrail.Path,
-                        $"Guardrail '{guardrail.Name}' in task '{task.Id}' has unrecognised scope value " +
-                        $"'{guardrail.Scope}'. The only recognised values are 'integration' and 'local'. " +
-                        "An unrecognised value silently degrades to 'local' at runtime, dropping the " +
-                        "guardrail from the integration union re-verify set (SSOT §4.3, plan 08 §3)."));
-                }
+        CheckGuardrailScopes(plan.PlanPreflights, "<plan>/preflights/", diagnostics);
+        CheckGuardrailScopes(plan.PlanGuardrails, "<plan>/guardrails/", diagnostics);
+    }
+
+    private static void CheckGuardrailScopes(
+        IReadOnlyList<GuardrailDefinition> guardrails, string context, List<Diagnostic> diagnostics)
+    {
+        foreach (GuardrailDefinition guardrail in guardrails)
+        {
+            if (guardrail.Scope is null)
+                continue;
+
+            if (guardrail.Scope != "integration" && guardrail.Scope != "local")
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidGuardrailScopeValue, guardrail.Path,
+                    $"Guardrail '{guardrail.Name}' ({context}) has unrecognised scope value " +
+                    $"'{guardrail.Scope}'. The only recognised values are 'integration' and 'local'. " +
+                    "An unrecognised value silently degrades to 'local' at runtime, dropping the " +
+                    "guardrail from the integration union re-verify set (SSOT §4.3, plan 08 §3)."));
             }
         }
     }
@@ -825,7 +885,10 @@ public sealed class PlanValidator
         // promptRunners.default, falling back to the sole declared runner if exactly one.
         bool anyReliesOnDefault = plan.Tasks.Any(t =>
             (t.Action.Kind == ActionKind.Prompt && t.Action.Runner is null) ||
-            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt));
+            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt) ||
+            t.Preflights.Any(g => g.Kind == ActionKind.Prompt)) ||
+            plan.PlanPreflights.Any(g => g.Kind == ActionKind.Prompt) ||
+            plan.PlanGuardrails.Any(g => g.Kind == ActionKind.Prompt);
 
         if (anyReliesOnDefault && ResolveDefaultRunner(plan.Config) is null)
         {
@@ -915,15 +978,31 @@ public sealed class PlanValidator
                 yield return task.Action.Path;
             }
 
-            foreach (GuardrailDefinition guardrail in task.Guardrails)
+            foreach (string path in ScriptGuardrailPaths(task.Guardrails))
             {
-                if (guardrail.Kind == ActionKind.Script)
-                {
-                    yield return guardrail.Path;
-                }
+                yield return path;
+            }
+
+            foreach (string path in ScriptGuardrailPaths(task.Preflights))
+            {
+                yield return path;
             }
         }
+
+        // The plan-level folders' scripts need a resolvable interpreter too (SSOT §4/§5.2).
+        foreach (string path in ScriptGuardrailPaths(plan.PlanPreflights))
+        {
+            yield return path;
+        }
+
+        foreach (string path in ScriptGuardrailPaths(plan.PlanGuardrails))
+        {
+            yield return path;
+        }
     }
+
+    private static IEnumerable<string> ScriptGuardrailPaths(IReadOnlyList<GuardrailDefinition> guardrails) =>
+        guardrails.Where(g => g.Kind == ActionKind.Script).Select(g => g.Path);
 
     private static Diagnostic Error(string code, string path, string message) => new()
     {
