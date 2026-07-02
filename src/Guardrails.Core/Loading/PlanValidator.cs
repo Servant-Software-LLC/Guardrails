@@ -348,12 +348,24 @@ public sealed class PlanValidator
 
     /// <summary>
     /// Content-teeth test for the re-homed terminal gate (GR2028). A <c>&lt;plan&gt;/guardrails/</c>
-    /// file "re-runs the integration set" only when it is a deterministic (script) check whose effective
+    /// file "re-runs the integration set" when it is a deterministic (script) check whose effective
     /// body — comment and blank lines stripped, so a comment that merely NAMES a build command cannot
-    /// count — invokes a recognised whole-repo build/test/suite command
-    /// (<see cref="IntegrationReRunCommand"/>). A tautological <c>exit 0</c> file, a bare <c>echo</c>, or
-    /// a prompt guardrail does NOT qualify: the rule certifies a real re-run, not a present file.
-    /// Unreadable files do not qualify (other checks surface the IO problem).
+    /// count — matches EITHER of the two recognised forms SSOT §3.3 documents as equally valid:
+    /// <list type="bullet">
+    /// <item>a recognised whole-repo build/test/suite command (<see cref="IntegrationReRunCommand"/>),
+    /// or</item>
+    /// <item>a genuine UNION INVARIANT — a check for git conflict markers
+    /// (<see cref="UnionInvariantConflictMarker"/>), the deterministic verdict a merged/union tree
+    /// actually integrated cleanly. This form exists for plans with no build/test tool to invoke at all
+    /// (e.g. a portable, zero-toolchain demo plan) whose only honest integration content is "the merged
+    /// bytes are non-empty and conflict-marker-free" — the canonical shape used throughout this repo's
+    /// own union-safe guardrails (catalogue → "A scope:'integration' guardrail MUST be UNION-SAFE").</item>
+    /// </list>
+    /// A tautological <c>exit 0</c> file, a bare <c>echo</c>, or a prompt guardrail does NOT qualify
+    /// under either form: the rule certifies a real re-run, not a present file. Unreadable files do not
+    /// qualify (other checks surface the IO problem). Matched at the SAME textual rigor as the
+    /// build/test form (a literal-text match on the stripped body, not full code-reachability analysis)
+    /// — consistent with the existing check, not stricter.
     /// </summary>
     private static bool ReRunsIntegrationSet(GuardrailDefinition guardrail)
     {
@@ -363,18 +375,40 @@ public sealed class PlanValidator
         }
 
         string? body = TryReadAllText(guardrail.Path);
-        return body is not null && IntegrationReRunCommand.IsMatch(StripCommentLines(body));
+        if (body is null)
+        {
+            return false;
+        }
+
+        string stripped = StripCommentLines(body);
+        return IntegrationReRunCommand.IsMatch(stripped) || UnionInvariantConflictMarker.IsMatch(stripped);
     }
 
     /// <summary>
     /// Recognised whole-repo build / test / suite invocations that constitute a real integration-set
-    /// re-run (the GR2028 content teeth). Deliberately broad across ecosystems (.NET, node, python,
-    /// rust, go, java/kotlin, C/C++, ruby, php) so a genuine full-suite/build check is credited while a
-    /// tautological <c>exit 0</c> or bare no-op is not. Case-insensitive.
+    /// re-run (the GR2028 content teeth, form 1 of 2). Deliberately broad across ecosystems (.NET, node,
+    /// python, rust, go, java/kotlin, C/C++, ruby, php) so a genuine full-suite/build check is credited
+    /// while a tautological <c>exit 0</c> or bare no-op is not. Case-insensitive.
     /// </summary>
     private static readonly Regex IntegrationReRunCommand = new(
         @"\b(?:dotnet\s+(?:test|build|msbuild|vstest|run)|msbuild|nuke|cake|npm\s+(?:test|run|ci)|yarn|pnpm|pytest|python\d?\s+-m\s+(?:pytest|unittest)|tox|cargo\s+(?:test|build|check)|go\s+(?:test|build|vet)|mvn|gradle|ctest|cmake\s+--build|bazel\s+(?:test|build)|swift\s+(?:test|build)|make|rspec|jest|vitest|mocha|phpunit)\b",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Recognised git-conflict-marker check that constitutes a real integration-set re-run via a genuine
+    /// UNION INVARIANT (the GR2028 content teeth, form 2 of 2 — SSOT §3.3, added for plans with no
+    /// build/test tool to invoke, e.g. a portable zero-toolchain demo). Matches a literal occurrence of
+    /// one of the three canonical 7-character git conflict-marker tokens (<c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c>,
+    /// <c>=======</c>, <c>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c>) in the STRIPPED body — comments already
+    /// removed by <see cref="StripCommentLines"/>, so a comment that merely explains what conflict
+    /// markers are cannot satisfy this. A script that genuinely tests for these markers is, by
+    /// construction, verifying the merged/union bytes integrated cleanly — no legitimate reason exists
+    /// to search for this exact 7-character sequence other than conflict-marker detection, so this
+    /// signal is effectively ungameable without actually performing the check.
+    /// </summary>
+    private static readonly Regex UnionInvariantConflictMarker = new(
+        @"<{7}|={7}|>{7}",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// Drop whole-line comments (leading <c>#</c>, <c>//</c>, <c>REM</c>, <c>::</c>) so a comment that

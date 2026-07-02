@@ -228,6 +228,73 @@ public sealed class FourFolderLoaderTests : IDisposable
     }
 
     // =========================================================================
+    // Scenario 4b — a multi-leaf/fan-in plan whose <plan>/guardrails/ folder carries ONLY a
+    // genuine UNION-INVARIANT check (a git conflict-marker scan, no build/test tool token)
+    // validates CLEAN — GR2028's second acceptance form (SSOT §3.3): "a whole-repo build /
+    // full suite / a union invariant" are three equally valid forms, but only the first two
+    // were implemented until now. Plans with no build/test tool to invoke at all (e.g. a
+    // portable, zero-toolchain demo) rely on this form as their only honest integration check.
+    // =========================================================================
+
+    [Fact]
+    public void MultiLeafPlan_UnionInvariantTerminalFolder_ValidatesClean()
+    {
+        string planDir = NewPlan("union-invariant-terminal", maxParallelism: 3);
+        WriteTask(planDir, "01-root");
+        WriteTask(planDir, "02-leaf-a", "01-root");
+        WriteTask(planDir, "03-leaf-b", "01-root");
+
+        // The canonical union-invariant shape (matches examples/parallel-hello's reference
+        // fixture): no build/test tool anywhere, only a conflict-marker scan over merged output.
+        WriteGuardrail(Path.Combine(planDir, "guardrails"), "01-union-clean",
+            """
+            $out = "out"
+            if (-not (Test-Path $out)) { exit 0 }
+            foreach ($f in Get-ChildItem -Path $out -Filter *.txt -File) {
+                $content = Get-Content -Raw -Path $f.FullName
+                if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+                    Write-Output ($f.Name + " contains git conflict markers")
+                    exit 1
+                }
+            }
+            exit 0
+            """,
+            includeCatches: true, scope: "integration");
+
+        IReadOnlyList<Diagnostic> diagnostics = Diagnostics(planDir);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun);
+    }
+
+    // =========================================================================
+    // Scenario 4c — a terminal folder that only NAMES conflict markers in a COMMENT (never a
+    // real check) still FAILS validation — comment-stripping discipline applies to the
+    // union-invariant form exactly as it already does to the build/test-command form.
+    // =========================================================================
+
+    [Fact]
+    public void MultiLeafPlan_ConflictMarkerOnlyInComment_StillFailsValidation()
+    {
+        string planDir = NewPlan("conflict-marker-comment-only", maxParallelism: 3);
+        WriteTask(planDir, "01-root");
+        WriteTask(planDir, "02-leaf-a", "01-root");
+        WriteTask(planDir, "03-leaf-b", "01-root");
+
+        WriteGuardrail(Path.Combine(planDir, "guardrails"), "01-fake-union-gate",
+            """
+            # This guardrail is meant to check for <<<<<<< conflict markers but doesn't yet.
+            exit 0
+            """,
+            includeCatches: true, scope: "integration");
+
+        IReadOnlyList<Diagnostic> diagnostics = Diagnostics(planDir);
+
+        Assert.Contains(diagnostics,
+            d => d.Code == DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun
+                 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    // =========================================================================
     // Scenario 5 — a plan STILL declaring the old integrationGate:true task kind yields
     // a HARD validation error (the retired-key GR2027+ code).
     // =========================================================================

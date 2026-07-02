@@ -300,6 +300,16 @@ exempt, and — matching the retired GR2017/GR2018's exact firing conditions —
 merged-HEAD union for a terminal gate to certify. The "counts toward the terminal gate" marker is **folder
 membership** (a folder-scoped equivalent of the §4.3 tag); the surviving obligation is the ≥1-real-re-run.
 
+**Both forms of "a real integration-set re-run" are recognized, not just build/test.** GR2028's content
+check (`PlanValidator.ReRunsIntegrationSet`) accepts a `<plan>/guardrails/` script matching EITHER: (1) a
+recognized whole-repo build/test/suite command across common ecosystems (`dotnet test`, `npm test`,
+`pytest`, `make`, …), OR (2) a genuine **union invariant** — a check for git conflict markers
+(`<<<<<<<`/`=======`/`>>>>>>>`) in the merged bytes, the deterministic verdict that a union integrated
+cleanly. Form (2) exists for plans with no build/test tool to invoke at all (e.g. a portable, zero-toolchain
+demo like `examples/parallel-hello`) whose only honest integration content is exactly this shape. Both forms
+are matched at the same textual rigor (a literal match on the comment-stripped body, per `StripCommentLines`
+— a comment that merely names a marker or a build command does not count).
+
 **`scope: "integration"` — KEPT as the §4.3 per-union tag (unchanged).** Only the terminal-SINK obligation
 moved to the folder. The `scope: "integration"` tag still exists and still drives the **per-union re-verify**
 (§4.3) at every intermediate fan-in / non-FF integration point during the run — that mechanism is unchanged.
