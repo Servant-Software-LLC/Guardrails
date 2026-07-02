@@ -67,11 +67,22 @@ public static class PlanGuardrailPhase
             .Select(f => new FailedGuardrail { Name = f.Name, Reason = f.Reason ?? "failed" })
             .ToList();
 
+        // #175 merge-collision attribution (SSOT §3.3, issue #205): a terminal-gate failure on the merged
+        // HEAD is frequently a merge collision — two tasks with OVERLAPPING writeScope on a shared file
+        // both wrote there and an AI/3-way merge kept both (a semantic duplicate, no conflict marker). Name
+        // the offending task pair(s) + shared path so a human sees "this looks like a merge collision"
+        // instead of a bare build error. Ported from the legacy Scheduler.WithTerminalGateFailure path onto
+        // this four-folder terminal phase via the shared WriteScope.OverlappingWriteScopeHint helper —
+        // identical attribution whichever gate fires. Advisory + additive: computed ONLY on failure, and
+        // null (omitted) when no two writeScopes overlap.
+        string? collisionHint = result.Passed ? null : WriteScope.OverlappingWriteScopeHint(plan);
+
         var section = new PlanGuardrailsSection
         {
             Status = result.Passed ? PlanPhaseStatus.Passed : PlanPhaseStatus.PlanGuardrailFailed,
             PlanHash = currentHash,
-            FailedChecks = failedChecks
+            FailedChecks = failedChecks,
+            CollisionHint = collisionHint
         };
 
         WriteMarker(plan.PlanDirectory, section);

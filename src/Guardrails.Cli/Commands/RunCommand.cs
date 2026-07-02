@@ -322,8 +322,10 @@ public static class RunCommand
     /// the user to open the journal. Mirrors the shape of the NEEDS HUMAN block. Best-effort: a journal
     /// read hiccup falls back to the generic pointer rather than throwing (the exit code is unaffected).
     /// <para>
-    /// This surfaces the failed checks that ARE recorded; it does NOT restore the #175 merge-collision
-    /// hint (deferred as #205).
+    /// It ALSO surfaces the #175 merge-collision hint (SSOT §3.3, issue #205) that
+    /// <see cref="PlanGuardrailPhase"/> journals into <c>planGuardrails.collisionHint</c> when ≥2 tasks
+    /// have overlapping <c>writeScope</c> on a shared file — the same attribution the legacy per-task gate
+    /// carried in its summary, ported onto the terminal phase.
     /// </para>
     /// </summary>
     private static void PrintTerminalGateFailure(string planDirectory, IConsoleIo io)
@@ -334,7 +336,8 @@ public static class RunCommand
         output.WriteLine();
         output.WriteLine("Plan guardrail gate FAILED on the merged HEAD — terminal halt (SSOT §7 planGuardrails).");
 
-        IReadOnlyList<FailedGuardrail> failedChecks = TryReadPlanGuardrailFailures(journalPath);
+        PlanGuardrailsSection? section = TryReadPlanGuardrailSection(journalPath);
+        IReadOnlyList<FailedGuardrail> failedChecks = section?.FailedChecks ?? [];
         if (failedChecks.Count > 0)
         {
             foreach (FailedGuardrail check in failedChecks)
@@ -348,36 +351,42 @@ public static class RunCommand
             // No structured checks readable (older/absent section, or a read hiccup): the prior pointer.
             output.WriteLine($"  See {journalPath} (\"planGuardrails\") for the failed check(s).");
         }
+
+        // #175/#205 merge-collision attribution — advisory, only present when writeScopes overlap.
+        if (section?.CollisionHint is { Length: > 0 } collisionHint)
+        {
+            output.WriteLine($"  {collisionHint}");
+        }
     }
 
     /// <summary>
-    /// Read the terminal gate's <c>planGuardrails.failedChecks</c> (name + reason) from the persisted
-    /// journal. Returns an empty list when the section is absent/passed or the journal cannot be read —
-    /// the caller then falls back to the generic pointer.
+    /// Read the terminal gate's <c>planGuardrails</c> section (failed checks + the #175 collision hint)
+    /// from the persisted journal. Returns null when the section is absent/passed or the journal cannot be
+    /// read — the caller then falls back to the generic pointer.
     /// </summary>
-    private static IReadOnlyList<FailedGuardrail> TryReadPlanGuardrailFailures(string journalPath)
+    private static PlanGuardrailsSection? TryReadPlanGuardrailSection(string journalPath)
     {
         try
         {
             if (!File.Exists(journalPath))
             {
-                return [];
+                return null;
             }
 
             JournalDocument document = JournalReader.Read(journalPath);
-            return document.PlanGuardrails?.FailedChecks ?? [];
+            return document.PlanGuardrails;
         }
         catch (IOException)
         {
-            return [];
+            return null;
         }
         catch (UnauthorizedAccessException)
         {
-            return [];
+            return null;
         }
         catch (JsonException)
         {
-            return [];
+            return null;
         }
     }
 

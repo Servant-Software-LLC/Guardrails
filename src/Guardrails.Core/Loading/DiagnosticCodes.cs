@@ -107,18 +107,22 @@ public static class DiagnosticCodes
     /// </summary>
     public const string MaxPathRisk = "GR2016";
 
-    /// <summary>
-    /// A multi-leaf or fan-in plan has no <c>integrationGate:true</c> sink (plan 08 M2, SSOT §3.3).
-    /// The terminal gate is the whole-repo soundness boundary for parallel execution; omitting it
-    /// leaves parallel branches unverified at the integration level — an ERROR.
-    /// </summary>
+    // ─── RETIRED CODES — GR2017 / GR2018 (do NOT re-wire) ────────────────────────────────────────
+    // These two constants are EMITTED NOWHERE. Their rules were retired/re-homed by the four-folder
+    // preflights/guardrails model (design-of-record 09-preflight-first-class, SSOT §3.3):
+    //   • GR2017 (MissingIntegrationGate)   — the "a multi-leaf/fan-in plan must declare exactly one
+    //       integrationGate:true sink" rule is RETIRED. The terminal gate is now the <plan>/guardrails/
+    //       FOLDER; a plan that still declares the legacy key is rejected by GR2029 instead.
+    //   • GR2018 (IntegrationGateEmpty)     — the "that sink must carry ≥1 scope:'integration'
+    //       guardrail" content teeth were RE-HOMED onto the folder as GR2028 (see below), not deleted.
+    // They are kept here (not deleted) ONLY so their code numbers stay reserved and are never
+    // re-allocated to a new rule. Do NOT wire either back up — the migration that retired them is
+    // complete and every consumer moved to GR2028/GR2029.
+
+    /// <summary>RETIRED (see the block above): the old GR2017 "missing integrationGate sink" rule — superseded by GR2029.</summary>
     public const string MissingIntegrationGate = "GR2017";
 
-    /// <summary>
-    /// An <c>integrationGate:true</c> sink carries no guardrail with <c>scope:"integration"</c>
-    /// (plan 08 M2, SSOT §3.3/§4.3). A terminal gate with an empty integration-guardrail set
-    /// verifies nothing — an ERROR; the gate task must have at least one integration-scoped guardrail.
-    /// </summary>
+    /// <summary>RETIRED (see the block above): the old GR2018 "empty integration gate" content rule — re-homed onto the folder as GR2028.</summary>
     public const string IntegrationGateEmpty = "GR2018";
 
     /// <summary>

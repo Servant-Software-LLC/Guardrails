@@ -967,7 +967,7 @@ public sealed class Scheduler
         string failed = string.Join(", ", gate.FailedGuardrails.Select(g => g.Name));
         string summary = $"terminal integration gate failed on final HEAD: {failed}";
 
-        string? collisionHint = OverlappingWriteScopeHint(plan);
+        string? collisionHint = WriteScope.OverlappingWriteScopeHint(plan);
         if (collisionHint is not null)
         {
             summary += $". {collisionHint}";
@@ -983,44 +983,6 @@ public sealed class Scheduler
             : t).ToList();
 
         return report with { Tasks = rewritten };
-    }
-
-    /// <summary>
-    /// Build the #175 merge-collision advisory: scan the plan for every pair of tasks whose
-    /// <c>writeScope</c>s OVERLAP on a shared path, and describe each pair + its shared file(s). Returns
-    /// null when no two writeScopes overlap (no collision is possible, so the hint would be noise). The
-    /// hint is attribution only — it does NOT assert a collision OCCURRED, only that these tasks COULD
-    /// have collided on the shared file, which is exactly the structural signal a human needs to triage
-    /// a duplicate-definition build break a textual merge could not catch.
-    /// </summary>
-    private static string? OverlappingWriteScopeHint(PlanDefinition plan)
-    {
-        IReadOnlyList<TaskNode> scoped = plan.Tasks
-            .Where(t => t.WriteScope is { Count: > 0 })
-            .ToList();
-
-        var pairs = new List<string>();
-        for (int i = 0; i < scoped.Count; i++)
-        {
-            for (int j = i + 1; j < scoped.Count; j++)
-            {
-                IReadOnlyList<string> shared = WriteScope.OverlappingEntries(
-                    scoped[i].WriteScope!, scoped[j].WriteScope!);
-                if (shared.Count > 0)
-                {
-                    pairs.Add($"'{scoped[i].Id}' & '{scoped[j].Id}' (shared: {string.Join(", ", shared)})");
-                }
-            }
-        }
-
-        if (pairs.Count == 0)
-        {
-            return null;
-        }
-
-        return "This may be a merge collision: the following task pairs have OVERLAPPING writeScopes on a " +
-               "shared file, so an AI/3-way merge could have combined both contributions into a semantic " +
-               $"duplicate (e.g. a duplicate class/member) that only the build/test gate catches — {string.Join("; ", pairs)}";
     }
 
     private static RunReport BuildReport(

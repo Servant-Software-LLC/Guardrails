@@ -92,6 +92,17 @@ public sealed record PlanGuardrailsSection
 
     /// <summary>The guardrail checks that failed (name + reason); empty unless <see cref="Status"/> is plan-guardrail-failed.</summary>
     public IReadOnlyList<FailedGuardrail> FailedChecks { get; init; } = [];
+
+    /// <summary>
+    /// The #175 merge-collision advisory (SSOT §3.3, issue #205): when the terminal gate fails and ≥2
+    /// tasks have OVERLAPPING <c>writeScope</c> on a shared file, this names the offending task pair(s) +
+    /// the shared path(s) so a human sees <i>"this looks like a merge collision between task A and task B
+    /// on &lt;file&gt;"</i> rather than a bare build error. Structural + advisory (derived purely from the
+    /// writeScope-overlap topology, never the compiler error text). OPTIONAL and additive — omitted (not
+    /// null noise) when the gate passed or no two writeScopes overlap.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CollisionHint { get; init; }
 }
 
 /// <summary>One task's journal record (SSOT §7 <c>tasks.&lt;id&gt;</c>).</summary>

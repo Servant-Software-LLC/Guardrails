@@ -194,6 +194,67 @@ public sealed class ParallelValidationGateTests : IDisposable
     }
 
     [Fact]
+    public void MultiLeafPlan_WorktreeMode_EchoStringMentioningBuildCommand_ProducesGr2028_Error()
+    {
+        // Issue #207 — the invocation-shape teeth. A terminal check that only `exit 0`s but carries a
+        // NON-comment line merely MENTIONING a build command inside a string —
+        // `echo "reminder: dotnet test should pass"` — invokes NOTHING, yet the pre-#207 bare-keyword
+        // match credited it (the keyword survived comment-stripping because it was not a comment). The
+        // tightened rule requires a real invocation shape (a command at a statement position, not an
+        // echo/quoted-string argument), so this now correctly FAILS GR2028.
+        string planDir = Path.Combine(_tempRoot, "gr2028-echo-string-bypass");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-fake.sh",
+                    "# catches: nothing real — a gameable placeholder that only MENTIONS a build command\n" +
+                    "echo \"reminder: dotnet test should pass\"\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.Contains(diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void MultiLeafPlan_WorktreeMode_PipedBuildInvocation_ProducesNoGr2028()
+    {
+        // Issue #207 companion: a REAL invocation that is not at column-0 line-start — piped/chained —
+        // still counts. `dotnet build && dotnet test 2>&1 | tee log` runs the command at a statement
+        // position within the pipeline, so the tightened rule credits it (no GR2028). This pins that
+        // the #207 hardening rejects the echo-mention bypass WITHOUT rejecting legitimate shell shapes.
+        string planDir = Path.Combine(_tempRoot, "gr2028-piped-invocation");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-build.sh", "# catches: the merged HEAD fails to build/test\ndotnet build && dotnet test 2>&1 | tee build.log\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
+    }
+
+    [Fact]
     public void MultiLeafPlan_SerialMode_NoGuardrailsFolder_ProducesNoGr2028()
     {
         // PO decision: a SERIAL run (maxParallelism == 1) merges no parallel branches, so the

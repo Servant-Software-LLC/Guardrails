@@ -307,13 +307,26 @@ membership** (a folder-scoped equivalent of the §4.3 tag); the surviving obliga
 
 **Both forms of "a real integration-set re-run" are recognized, not just build/test.** GR2028's content
 check (`PlanValidator.ReRunsIntegrationSet`) accepts a `<plan>/guardrails/` script matching EITHER: (1) a
-recognized whole-repo build/test/suite command across common ecosystems (`dotnet test`, `npm test`,
-`pytest`, `make`, …), OR (2) a genuine **union invariant** — a check for git conflict markers
-(`<<<<<<<`/`=======`/`>>>>>>>`) in the merged bytes, the deterministic verdict that a union integrated
-cleanly. Form (2) exists for plans with no build/test tool to invoke at all (e.g. a portable, zero-toolchain
-demo like `examples/parallel-hello`) whose only honest integration content is exactly this shape. Both forms
-are matched at the same textual rigor (a literal match on the comment-stripped body, per `StripCommentLines`
-— a comment that merely names a marker or a build command does not count).
+recognized whole-repo build/test/suite command across common ecosystems (`dotnet test`/`dotnet build`,
+`npm test`, `pytest`, `make`, `git diff --check`, …) actually **invoked**, OR (2) a genuine **union
+invariant** — a check for git conflict markers (`<<<<<<<`/`=======`/`>>>>>>>`) in the merged bytes, the
+deterministic verdict that a union integrated cleanly. Form (2) exists for plans with no build/test tool to
+invoke at all (e.g. a portable, zero-toolchain demo like `examples/parallel-hello`) whose only honest
+integration content is exactly this shape.
+
+The two forms are matched at **different rigor by design (issue #207)**. A comment that merely names a marker
+or a build command never counts under either — whole-line comments are stripped first (`StripCommentLines`).
+Beyond that:
+- **Form (1) requires an INVOCATION shape, not a bare keyword anywhere on a non-comment line.** A line that
+  only *mentions* a build command inside a string — `echo "reminder: dotnet test should pass"` — invokes
+  nothing and is **rejected**. The command must be the **leading command word of a pipeline/statement
+  segment** (a real invocation at a statement position) and must **not** be the argument of an output builtin
+  (`echo`/`printf`/`print`/`Write-Output`/…). Quoted-string literals are stripped per line first, so a keyword
+  inside a quote never counts. A piped/chained real invocation (`dotnet build && dotnet test 2>&1 | tee log`)
+  still counts — the command sits at a statement position within the pipeline.
+- **Form (2) stays a literal token match on the comment-stripped (not quote-stripped) body** — a genuine
+  conflict-marker check often carries the 7-char token in a quoted string (`grep -q '<<<<<<<'`), and no
+  legitimate reason exists to write that exact sequence other than detecting it, so it remains ungameable.
 
 **`scope: "integration"` — KEPT as the §4.3 per-union tag (unchanged).** Only the terminal-SINK obligation
 moved to the folder. The `scope: "integration"` tag still exists and still drives the **per-union re-verify**
@@ -327,21 +340,24 @@ one object; the terminal folder's checks are typically a superset-or-equal of th
 with a `catches:` declaration (§4). A file that does not is a hard load error, **GR2027** — the canonical
 per-folder malformed-declaration diagnostic for the four-folder model.
 
-**Merge-collision attribution on gate failure (issue #175).** When the terminal gate fails on the
-final merged HEAD, the failure is attributed to the terminal `<plan>/guardrails/` gate and surfaced as
-`needs-human` (the attribution is a property of the gate failure, not of where the gate lives, so it
-carries over unchanged from the retired sink-task modelling). A
-gate failure (typically the whole-repo build/test) is frequently a **merge collision**: two tasks
-with **overlapping `writeScope`** on a shared file both wrote new content there, and an AI/3-way merge
-silently kept both — a semantic duplicate (e.g. a duplicate class/member) with **no textual conflict
-marker**, catchable only at the build gate. The harness does NOT (and cannot generically) detect the
-semantic duplicate — that is the build guardrail's job, and the union-guardrail prevention is
-authoring-side (§4.3 "Accepted residual"). What the harness DOES is **attribution**: the gate-failure
-diagnosis enumerates every task pair whose `writeScope`s overlap and names the shared path(s), so a
-human immediately sees *"this looks like a merge collision between task A and task B on `<file>`"*
-rather than a bare build error. The hint is advisory and structural — derived PURELY from the
-`writeScope`-overlap topology (never the compiler error text / a CS-code), and **added only when two
-or more `writeScope`s overlap** (nothing is appended for a plan with disjoint scopes).
+**Merge-collision attribution on gate failure (issue #175, ported to the terminal phase by #205).** When the
+terminal gate fails on the final merged HEAD, the failure is surfaced as a terminal halt (exit 2,
+`planGuardrails.status = plan-guardrail-failed`). The attribution is a property of the gate failure, not of
+where the gate lives, so it applies identically whichever terminal path fires — the legacy per-task
+`integrationGate` sink (`Scheduler.WithTerminalGateFailure`) and the four-folder terminal phase
+(`PlanGuardrailPhase`) both call the **shared `WriteScope.OverlappingWriteScopeHint` helper**. A gate failure
+(typically the whole-repo build/test) is frequently a **merge collision**: two tasks with **overlapping
+`writeScope`** on a shared file both wrote new content there, and an AI/3-way merge silently kept both — a
+semantic duplicate (e.g. a duplicate class/member) with **no textual conflict marker**, catchable only at the
+build gate. The harness does NOT (and cannot generically) detect the semantic duplicate — that is the build
+guardrail's job, and the union-guardrail prevention is authoring-side (§4.3 "Accepted residual"). What the
+harness DOES is **attribution**: the gate-failure diagnosis enumerates every task pair whose `writeScope`s
+overlap and names the shared path(s), so a human immediately sees *"this looks like a merge collision between
+task A and task B on `<file>`"* rather than a bare build error. In the terminal phase the hint is journaled to
+the OPTIONAL `planGuardrails.collisionHint` field (§7) and echoed in the `run` command's terminal-halt block.
+The hint is advisory and structural — derived PURELY from the `writeScope`-overlap topology (never the
+compiler error text / a CS-code), and **added only when two or more `writeScope`s overlap** (nothing is
+appended for a plan with disjoint scopes).
 
 ### 3.4 Write-scope check (`writeScope`)
 
@@ -922,7 +938,11 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   "planGuardrails": {                    // the TERMINAL <plan>/guardrails/ gate on the merged HEAD (OUTSIDE tasks{})
     "status": "plan-guardrail-failed",  // passed | plan-guardrail-failed
     "planHash": "sha256:…",
-    "failedChecks": [ { "name": "whole-repo-build", "reason": "CS0111 duplicate member from a merge collision" } ]
+    "failedChecks": [ { "name": "whole-repo-build", "reason": "CS0111 duplicate member from a merge collision" } ],
+    // OPTIONAL #175/#205 merge-collision advisory — present only on failure when ≥2 tasks have
+    // OVERLAPPING writeScope on a shared file; names the offending task pair(s) + shared path(s). ABSENT
+    // (never null noise) when the gate passed or no two writeScopes overlap.
+    "collisionHint": "This may be a merge collision: … '07-…' & '09-…' (shared: Launcher.cs)"
   }
 }
 ```

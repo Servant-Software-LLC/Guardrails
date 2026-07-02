@@ -352,7 +352,7 @@ public sealed class PlanValidator
     /// body — comment and blank lines stripped, so a comment that merely NAMES a build command cannot
     /// count — matches EITHER of the two recognised forms SSOT §3.3 documents as equally valid:
     /// <list type="bullet">
-    /// <item>a recognised whole-repo build/test/suite command (<see cref="IntegrationReRunCommand"/>),
+    /// <item>a recognised whole-repo build/test/suite command actually INVOKED (<see cref="InvokesIntegrationCommand"/>),
     /// or</item>
     /// <item>a genuine UNION INVARIANT — a check for git conflict markers
     /// (<see cref="UnionInvariantConflictMarker"/>), the deterministic verdict a merged/union tree
@@ -363,9 +363,19 @@ public sealed class PlanValidator
     /// </list>
     /// A tautological <c>exit 0</c> file, a bare <c>echo</c>, or a prompt guardrail does NOT qualify
     /// under either form: the rule certifies a real re-run, not a present file. Unreadable files do not
-    /// qualify (other checks surface the IO problem). Matched at the SAME textual rigor as the
-    /// build/test form (a literal-text match on the stripped body, not full code-reachability analysis)
-    /// — consistent with the existing check, not stricter.
+    /// qualify (other checks surface the IO problem).
+    /// <para>
+    /// <b>Invocation-shape teeth (issue #207).</b> The build/test form is NOT a bare keyword match anywhere
+    /// on a non-comment line — that was gameable by a line that merely MENTIONS a build command inside a
+    /// string, e.g. <c>echo "reminder: dotnet test should pass"</c> (a non-comment line, yet nothing is
+    /// invoked). It now requires a real INVOCATION shape: the command must appear at a <b>statement
+    /// position</b> — the leading command word of a pipeline/statement segment — and NOT be the argument of
+    /// an output builtin (<c>echo</c>/<c>printf</c>/<c>Write-Output</c>/…). Quoted-string literals are
+    /// stripped first so a keyword inside a quote never counts. The conflict-marker form deliberately keeps
+    /// operating on the comment-stripped (NOT quote-stripped) body: a genuine marker check often carries the
+    /// 7-char token in a quoted string (<c>grep -q '&lt;&lt;&lt;&lt;&lt;&lt;&lt;'</c>), and there is no
+    /// legitimate reason to write that exact sequence other than detecting it, so it stays ungameable.
+    /// </para>
     /// </summary>
     private static bool ReRunsIntegrationSet(GuardrailDefinition guardrail)
     {
@@ -381,17 +391,97 @@ public sealed class PlanValidator
         }
 
         string stripped = StripCommentLines(body);
-        return IntegrationReRunCommand.IsMatch(stripped) || UnionInvariantConflictMarker.IsMatch(stripped);
+        return InvokesIntegrationCommand(stripped) || UnionInvariantConflictMarker.IsMatch(stripped);
     }
+
+    /// <summary>
+    /// The GR2028 build/test content teeth (form 1 of 2) with issue-#207 invocation-shape rigor. Returns
+    /// true only when a recognised whole-repo build/test/suite command is actually INVOKED — the leading
+    /// command word of some pipeline/statement segment of a non-comment line — not merely mentioned. Each
+    /// line has its quoted-string literals stripped (so a keyword inside a quote never counts), is split
+    /// into statement/pipeline segments on shell/PowerShell boundaries (<c>|</c>, <c>;</c>, <c>&amp;&amp;</c>,
+    /// <c>||</c>, <c>(</c>, <c>{</c>, <c>$(</c>, backtick, <c>then</c>/<c>do</c>/<c>else</c>), and each
+    /// segment whose leading command word is an OUTPUT builtin (<see cref="OutputBuiltin"/>) is discarded —
+    /// its arguments are just text, not a build invocation. Only then is the segment tested against
+    /// <see cref="IntegrationReRunCommand"/> anchored at the segment's start.
+    /// </summary>
+    private static bool InvokesIntegrationCommand(string strippedBody)
+    {
+        foreach (string line in strippedBody.Split('\n'))
+        {
+            string cleaned = StripQuotedLiterals(line);
+            foreach (string segment in SplitIntoStatementSegments(cleaned))
+            {
+                string trimmed = segment.TrimStart();
+                if (trimmed.Length == 0)
+                {
+                    continue;
+                }
+
+                // Discard a segment led by an output builtin — echo/printf/Write-Output "…dotnet test…"
+                // MENTIONS a command, it does not invoke one.
+                if (OutputBuiltin.IsMatch(trimmed))
+                {
+                    continue;
+                }
+
+                // The command must be at the statement's START (its leading command word), not buried as
+                // an argument mid-segment — a real invocation shape, not a keyword anywhere on the line.
+                if (IntegrationReRunCommand.IsMatch(trimmed))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Remove single- and double-quoted string literals from a single line so a build/test keyword INSIDE
+    /// a quoted string (the issue-#207 <c>echo "… dotnet test …"</c> bypass) is not mistaken for an
+    /// invocation. Best-effort textual strip (not a full shell tokenizer): each run between matching quotes
+    /// is dropped. An unbalanced trailing quote drops the remainder of the line, which is the conservative
+    /// direction (a mentioned keyword must not survive).
+    /// </summary>
+    private static string StripQuotedLiterals(string line) =>
+        QuotedLiteral.Replace(line, " ");
+
+    private static readonly Regex QuotedLiteral = new(
+        "\"[^\"]*\"?|'[^']*'?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Split a (quote-stripped) line into pipeline/statement segments on the shell + PowerShell boundaries
+    /// that begin a fresh command word: <c>|</c>, <c>;</c>, <c>&amp;</c>, <c>&amp;&amp;</c>, <c>||</c>,
+    /// <c>(</c>, <c>)</c>, <c>{</c>, <c>}</c>, <c>$(</c>, and backtick. The boundary keywords
+    /// <c>then</c>/<c>do</c>/<c>else</c> are not split here (they are handled by the leading-word test
+    /// after their own line/segment); this keeps the split purely on punctuation.
+    /// </summary>
+    private static IEnumerable<string> SplitIntoStatementSegments(string line) =>
+        line.Split(StatementBoundaries, StringSplitOptions.RemoveEmptyEntries);
+
+    private static readonly char[] StatementBoundaries = ['|', ';', '&', '(', ')', '{', '}', '`', '$'];
+
+    /// <summary>
+    /// An output builtin that PRINTS its arguments (they are text, never an invocation): <c>echo</c>,
+    /// <c>printf</c>, <c>print</c>, and the PowerShell <c>Write-*</c> family. Anchored at the segment start.
+    /// </summary>
+    private static readonly Regex OutputBuiltin = new(
+        @"^(?:echo|printf|print|write-output|write-host|write-error|write-warning|write-information|write-verbose|write-debug)\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     /// <summary>
     /// Recognised whole-repo build / test / suite invocations that constitute a real integration-set
     /// re-run (the GR2028 content teeth, form 1 of 2). Deliberately broad across ecosystems (.NET, node,
     /// python, rust, go, java/kotlin, C/C++, ruby, php) so a genuine full-suite/build check is credited
-    /// while a tautological <c>exit 0</c> or bare no-op is not. Case-insensitive.
+    /// while a tautological <c>exit 0</c> or bare no-op is not. Case-insensitive. ANCHORED at the start of
+    /// a statement segment (issue #207) so it matches a command actually being run, not a keyword buried
+    /// mid-line; an optional <c>&amp;</c> (PowerShell call operator) or <c>sudo</c>/<c>exec</c> prefix is
+    /// allowed before the command word.
     /// </summary>
     private static readonly Regex IntegrationReRunCommand = new(
-        @"\b(?:dotnet\s+(?:test|build|msbuild|vstest|run)|msbuild|nuke|cake|npm\s+(?:test|run|ci)|yarn|pnpm|pytest|python\d?\s+-m\s+(?:pytest|unittest)|tox|cargo\s+(?:test|build|check)|go\s+(?:test|build|vet)|mvn|gradle|ctest|cmake\s+--build|bazel\s+(?:test|build)|swift\s+(?:test|build)|make|rspec|jest|vitest|mocha|phpunit)\b",
+        @"^(?:&\s*|sudo\s+|exec\s+)?(?:dotnet\s+(?:test|build|msbuild|vstest|run)|msbuild|nuke|cake|npm\s+(?:test|run|ci)|yarn|pnpm|pytest|python\d?\s+-m\s+(?:pytest|unittest)|tox|cargo\s+(?:test|build|check)|go\s+(?:test|build|vet)|mvn|gradle|ctest|cmake\s+--build|bazel\s+(?:test|build)|swift\s+(?:test|build)|make|rspec|jest|vitest|mocha|phpunit|git\s+diff\s+--check)\b",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     /// <summary>
