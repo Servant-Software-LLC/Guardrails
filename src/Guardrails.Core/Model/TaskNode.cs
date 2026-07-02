@@ -37,6 +37,17 @@ public sealed record TaskNode
     public required IReadOnlyList<GuardrailDefinition> Guardrails { get; init; }
 
     /// <summary>
+    /// Task-level JIT dependency-delivery preflights parsed from <c>tasks/&lt;id&gt;/preflights/</c>
+    /// (design-of-record 09-preflight-first-class, SSOT §1/§4) — the sibling of the postcondition
+    /// <see cref="Guardrails"/> folder, evaluated in the task's own segment worktree at <c>taskBase</c>
+    /// BEFORE the attempt loop, to verify a producer actually delivered in the bytes this consumer
+    /// inherited. Guardrail-shaped files (same shape and parser as <see cref="Guardrails"/>, opening with
+    /// a <c>catches:</c> declaration). Empty when the folder is absent (the common case). The per-task
+    /// preflight slot that runs these lands in a later deliverable.
+    /// </summary>
+    public IReadOnlyList<GuardrailDefinition> Preflights { get; init; } = [];
+
+    /// <summary>
     /// When true, this task is the terminal integration gate for the plan (plan 08 M2, SSOT §3.3).
     /// A multi-leaf or fan-in plan must have exactly one such sink, which must carry at least one
     /// guardrail with <c>scope:"integration"</c>. Default false (no gate role).

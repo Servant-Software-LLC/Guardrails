@@ -21,6 +21,11 @@ plan-name/
 ├── guardrails.baseline          # OPTIONAL committed breakdown manifest (§11)
 ├── diagram.md                   # OPTIONAL generated DAG diagram — non-authored (§10)
 ├── diagram.html                 # OPTIONAL interactive local viewer — non-authored (§10)
+├── preflights/                  # OPTIONAL plan-level "Full Flight Checks" — run ONCE before the DAG (§4)
+│   ├── 01-baseline-green.ps1     #   guardrail-shaped files (same parser as tasks/<id>/guardrails/)
+│   └── 01-baseline-green.json    #   optional metadata sidecar (§4.1)
+├── guardrails/                  # OPTIONAL plan-level terminal / integration gate — run ONCE at run end (§3.3/§4)
+│   └── 01-full-suite.ps1         #   ≥1 real integration-set re-run for a multi-leaf/fan-in plan (GR2028)
 ├── state/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
@@ -35,6 +40,8 @@ plan-name/
     └── <NN-verb-object>/        # task id = folder name, kebab-case, NN = topological hint
         ├── task.json            # task manifest (§3)
         ├── action.prompt.md     # or action.ps1 / action.sh / action.py / action.cmd / …
+        ├── preflights/          # OPTIONAL task-level JIT dependency-delivery checks — run at taskBase before the action (§4)
+        │   └── 01-dep-delivered.ps1  #   guardrail-shaped files (same parser as guardrails/)
         └── guardrails/
             ├── 01-build-passes.ps1        # deterministic guardrail (§4)
             ├── 01-build-passes.json       # optional metadata sidecar (§4.1)
@@ -43,6 +50,16 @@ plan-name/
 
 Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 `dependsOn` is the truth for ordering.
+
+**Two scopes, four folders (design-of-record 09-preflight-first-class).** `preflights/` and `guardrails/`
+are first-class folders at TWO scopes. **Plan-level** `<plan>/preflights/` (the "Full Flight Checks") runs
+ONCE before the DAG against the starting repo; `<plan>/guardrails/` (the terminal / integration gate) runs
+ONCE at run end on the merged HEAD (§3.3). **Task-level** `tasks/<id>/preflights/` is a per-task JIT
+dependency-delivery check run in the task's segment worktree before its action, the sibling of the
+postcondition `tasks/<id>/guardrails/`. All four folders share **one** guardrail-file parser (§4) — they
+differ only in WHERE they live and WHEN they run; every file opens with a `catches:` declaration, and a
+malformed one (no `catches:`) is a hard load error (**GR2027**). The harness phases that RUN the three new
+folders land in later deliverables; this change adds the loader/validator that parses and validates them.
 
 **Workspace must be a git repository top-level.** Parallel execution never writes the user's
 checkout. At run start the harness creates a **plan branch** `guardrails/<plan-name>` off the
@@ -177,7 +194,8 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
   "stableId": "k3f9a1",        // optional; stable task identity for the regeneration merge (§11)
                                //   format ^[a-z0-9][a-z0-9._-]*$ (GR2011); unique (GR2010)
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
-  "integrationGate": false,    // optional, default false; marks a terminal whole-repo integration gate (§3.3)
+  // NOTE: "integrationGate": true is RETIRED — the terminal gate is now the <plan>/guardrails/ folder (§3.3).
+  //       Still declaring it is a hard validation error (GR2029). Do NOT add this key to new task.json.
   "writeScope": ["src/Foo/"],  // optional; the deterministic write-scope check (§3.4). Absent ⇒ NO check.
                                //   every path the action's post-action diff (staged worktree vs <taskBase>)
                                //   adds/modifies/deletes/renames must be IN scope, or the task fails and
@@ -249,26 +267,55 @@ then prunes the registrations; a **non-green** (needs-human/failed/blocked) task
 place as the fix/resume inspection surface, and the integration worktree is never swept. A cancelled
 run skips the sweep entirely (its in-flight worktrees are reclaimed by the next run's resume prune).
 
-### 3.3 Terminal integration gate (`integrationGate`)
+### 3.3 Terminal integration gate — the `<plan>/guardrails/` folder (was the `integrationGate` task kind)
 
-`integrationGate: true` marks a task as the terminal whole-repo integration gate — the final
-soundness boundary run once on the fully merged plan-branch HEAD after all other tasks succeed. The
-gate task's guardrails are exactly the run's **integration-guardrail set** (§4.3): all guardrails
-declared `scope: "integration"` across the plan, typically the whole-repo build and the full test
-suite.
+The terminal whole-repo integration gate is the final soundness boundary, run once on the fully merged
+plan-branch HEAD after all other tasks succeed. It re-runs the run's **integration set** (§4.3) — typically
+the whole-repo build and the full test suite — as the whole-repo soundness boundary for FF chains and
+AI-resolved unions.
 
-**Hard validation requirements** (both are errors, not warnings, because the terminal gate is the
-sole whole-repo soundness boundary for FF chains and AI-resolved unions):
+**The gate is now a first-class FOLDER, `<plan>/guardrails/`, NOT a task (design-of-record
+09-preflight-first-class).** The terminal checks live in the plan-level `<plan>/guardrails/` folder (§1),
+evaluated once at run end by the terminal phase. The old modelling — a no-op END task carrying
+`integrationGate: true` whose guardrails were the integration set — is **retired**.
 
-- **GR2017** (error): a plan with ≥2 leaf tasks, or any fan-in task, MUST declare **exactly one**
-  `integrationGate: true` sink. A plan with a single linear chain and no fan-in may omit it. Missing
-  gate on a multi-leaf/fan-in plan → `validate` error naming the missing sink.
-- **GR2018** (error): the `integrationGate` sink MUST carry **at least one** `scope: "integration"`
-  guardrail (§4.3). An integration gate with no integration-scoped guardrail would verify nothing —
-  the gate is the terminal soundness boundary and must not be empty.
+**`integrationGate` task kind + GR2017 — RETIRED (no coexistence window).** The `integrationGate: true`
+task kind and **GR2017** (the old "a multi-leaf/fan-in plan must declare exactly one `integrationGate: true`
+sink" rule) are gone. There is no migration window: a plan that STILL declares `integrationGate: true` is a
+**hard validation error — GR2029** (honest-over-silent: the stale key is caught at validate time, never
+silently ignored). The harness keeps a `TaskNode.IntegrationGate` model field only so the validator can
+DETECT and reject the legacy key (and the scheduler still reads it for the terminal-gate run until the
+terminal phase replaces that path in a later deliverable).
+
+**GR2018's content teeth — RE-HOMED onto the folder as GR2028, NOT retired, NOT weakened.** The old GR2018
+required the `integrationGate` sink to carry ≥1 `scope: "integration"` guardrail ("a gate that verifies
+nothing"). That **content obligation moves to the folder**, with its teeth intact: **GR2028** (error) — a
+multi-leaf or fan-in plan MUST have a `<plan>/guardrails/` folder carrying **≥1 deterministic check that
+ACTUALLY re-runs the integration set** (a whole-repo build / full suite / a union invariant). It is
+deliberately NOT weakened to "the folder is non-empty": an empty folder fails, and so does a folder holding
+only a tautological `exit 0` file that certifies nothing — the exact failure GR2018 exists to prevent. The
+check is by **content**, not presence. A single linear chain (one leaf, no fan-in) forms no union and is
+exempt, and — matching the retired GR2017/GR2018's exact firing conditions — the rule applies only in
+**worktree mode** (`maxParallelism > 1`); a serial run merges no parallel branches, so there is no
+merged-HEAD union for a terminal gate to certify. The "counts toward the terminal gate" marker is **folder
+membership** (a folder-scoped equivalent of the §4.3 tag); the surviving obligation is the ≥1-real-re-run.
+
+**`scope: "integration"` — KEPT as the §4.3 per-union tag (unchanged).** Only the terminal-SINK obligation
+moved to the folder. The `scope: "integration"` tag still exists and still drives the **per-union re-verify**
+(§4.3) at every intermediate fan-in / non-FF integration point during the run — that mechanism is unchanged.
+The terminal `<plan>/guardrails/` folder (run once, last, declared by folder membership) and the per-union
+integration set (run at every union, declared by the tag) are two declarations with one shared spirit, not
+one object; the terminal folder's checks are typically a superset-or-equal of the per-union set.
+
+**Malformed declaration in any of the four folders — GR2027.** Every guardrail-shaped file in
+`<plan>/preflights/`, `<plan>/guardrails/`, `tasks/<id>/preflights/`, and `tasks/<id>/guardrails/` must open
+with a `catches:` declaration (§4). A file that does not is a hard load error, **GR2027** — the canonical
+per-folder malformed-declaration diagnostic for the four-folder model.
 
 **Merge-collision attribution on gate failure (issue #175).** When the terminal gate fails on the
-final merged HEAD, the failure is attributed to the gate sink task and surfaced as `needs-human`. A
+final merged HEAD, the failure is attributed to the terminal `<plan>/guardrails/` gate and surfaced as
+`needs-human` (the attribution is a property of the gate failure, not of where the gate lives, so it
+carries over unchanged from the retired sink-task modelling). A
 gate failure (typically the whole-repo build/test) is frequently a **merge collision**: two tasks
 with **overlapping `writeScope`** on a shared file both wrote new content there, and an AI/3-way merge
 silently kept both — a semantic duplicate (e.g. a duplicate class/member) with **no textual conflict
@@ -432,7 +479,7 @@ whole test suite). At **every union point** (a fan-in or a non-FF plan-branch in
 the merged bytes, BEFORE the merge commit and BEFORE any downstream action, the harness re-runs **the
 run's integration-guardrail set** (via the attempt-decoupled re-verify seam). This is the **complete
 v1 union re-verify contract**: one set, run uniformly at every union and again on the final merged
-HEAD by the terminal `integrationGate` sink (§3.3). The terminal gate and the per-union re-verify are
+HEAD by the terminal `<plan>/guardrails/` folder (§3.3). The terminal gate and the per-union re-verify are
 one mechanism running the **same** set at two scopes. There is no per-task or per-colliding-sibling
 guardrail selection at a union in v1 — the integration set is the whole re-verify.
 
@@ -461,7 +508,7 @@ deferred, not adopted.
 > - **RESIDUAL.** A hunk an AI-merge silently drops on a **shared file** (overlapping `writeScope`s of
 >   colliding siblings) is re-verified at the union ONLY by an integration-scoped guardrail. A drop
 >   catchable **solely** by a sibling's `local` guardrail is NOT re-verified at the union (it surfaces
->   at the terminal `integrationGate`, or not at all).
+>   at the terminal `<plan>/guardrails/` gate, or not at all).
 > - **MITIGATION (authoring, not runtime).** The well-authored plan covers the residual with a
 >   `scope:"integration"` guardrail on the integration / fan-in task asserting the shared file's
 >   **union invariant** (every colliding sibling's contribution survives the merge — union-safe per
@@ -921,8 +968,8 @@ them; they are absent, never `null` noise), and the existing `tasks{}` shape is 
 settles `needs-human` IMMEDIATELY — instead of exhausting the remaining retry budget — when **both**
 hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
 guardrail failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op
-action cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op
-against a merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a
+action cannot fix a guardrail failure it did not cause (e.g. the terminal `<plan>/guardrails/` gate
+re-verify against a merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a
 further attempt has zero probability of differing. This fires on the **2nd** such attempt (the earliest
 point both conditions can be observed).
 
