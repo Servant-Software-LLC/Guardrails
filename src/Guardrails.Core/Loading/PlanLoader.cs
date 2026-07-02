@@ -131,7 +131,7 @@ public sealed class PlanLoader
             DefaultRetries = raw.DefaultRetries ?? 2,
             MaxCostUsd = raw.MaxCostUsd,
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
-            TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 1800,
+            TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 14400,
             GuardrailMode = mode,
             Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,
             WorktreeRoot = string.IsNullOrWhiteSpace(raw.WorktreeRoot) ? null : raw.WorktreeRoot.Trim(),

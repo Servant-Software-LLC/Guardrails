@@ -133,6 +133,47 @@ public sealed record AttemptRecord
 
     /// <summary>Path to this attempt's log dir, relative to the plan dir (SSOT §7/§8).</summary>
     public required string LogDir { get; init; }
+
+    /// <summary>
+    /// Per-attempt provenance the harness knows when it launches the attempt (issue #198): the resolved
+    /// model the agent ran on, the segment worktree it wrote in, and the base commit it forked from.
+    /// OPTIONAL and additive — a script attempt, a serial-mode attempt, or an older journal simply
+    /// OMITS this section (serialized only when present via <see cref="JsonIgnoreAttribute"/>), so it is
+    /// backward-compatible and never adds <c>null</c> noise to <c>run.json</c>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AttemptProvenance? Provenance { get; init; }
+}
+
+/// <summary>
+/// Per-attempt provenance recorded in <c>run.json</c> and mirrored to
+/// <c>&lt;attempt&gt;/attempt-provenance.json</c> (SSOT §7/§8, issue #198): the facts the harness already
+/// knows at attempt launch. Every field is optional so a script attempt (no model, serial mode with no
+/// segment) records only what applies. It records WHAT ran WHERE without re-deriving it from logs.
+/// </summary>
+public sealed record AttemptProvenance
+{
+    /// <summary>
+    /// The model the agent ran on — the resolved <c>--model</c> from the prompt-runner config, or
+    /// <c>"(cli default)"</c> when the runner left it unset. Null for a script attempt (no model).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Model { get; init; }
+
+    /// <summary>
+    /// The segment worktree's git branch name (e.g. <c>guardrails/&lt;runId&gt;/&lt;task&gt;/attempt-1</c>).
+    /// Null in serial mode (no per-task segment).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SegmentBranch { get; init; }
+
+    /// <summary>The absolute segment worktree path this attempt wrote in. Null in serial mode.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorktreePath { get; init; }
+
+    /// <summary>The base commit sha the segment forked from (<c>taskBase</c>). Null in serial mode.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BaseCommit { get; init; }
 }
 
 /// <summary>A guardrail that failed, with its one-line reason (SSOT §7 <c>failedGuardrails</c>).</summary>

@@ -235,6 +235,43 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Record the successful settle of a worktree task (issue #196): append <paramref name="attempt"/>
+    /// to the task's attempt list AND set Status + MergeSequence atomically. The worktree success path
+    /// defers the attempt record to this settle (serial mode records inline via
+    /// <see cref="RecordAttempt"/>), so a succeeded worktree task journals the SAME populated
+    /// <c>attempts[]</c> shape a succeeded serial task does (SSOT §7). Called by the Scheduler under the
+    /// integration lock (B1 step 3), replacing the attempt-less <see cref="RecordSettle"/> on the
+    /// success branches.
+    /// </summary>
+    public void RecordSettleWithAttempt(
+        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null)
+    {
+        lock (_gate)
+        {
+            TaskJournalEntry entry = GetOrCreate(taskId);
+            var attempts = new List<AttemptRecord>(entry.Attempts) { attempt };
+
+            TaskJournalEntry updated = entry with
+            {
+                Status = status,
+                Attempts = attempts,
+                MergeSequence = mergeSequence ?? entry.MergeSequence
+            };
+            UpdateTask(taskId, updated);
+
+            if (mergeSequence is not null)
+            {
+                _document = _document with
+                {
+                    NextMergeSequence = Math.Max(_document.NextMergeSequence, mergeSequence.Value + 1)
+                };
+            }
+
+            Persist();
+        }
+    }
+
     /// <summary>Force a task back to <see cref="TaskStatus.Pending"/> (keeping attempt history) and persist.</summary>
     public void ResetTask(string taskId)
     {

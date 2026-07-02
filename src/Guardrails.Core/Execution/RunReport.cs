@@ -47,6 +47,18 @@ public sealed record TaskResult
     /// </summary>
     public bool DeferredSettle { get; init; }
 
+    /// <summary>
+    /// In worktree mode, the not-yet-journaled attempt data the Scheduler's B1 settle records (issue
+    /// #196): a succeeded worktree task must journal a real <see cref="Journal.AttemptRecord"/> — with
+    /// the same shape serial mode records — TOGETHER with the reserved <c>mergeSequence</c>, so
+    /// <c>journal.Tasks[id].Attempts</c> is non-empty for a succeeded task in BOTH modes (SSOT §7).
+    /// The executor computes this per-attempt data (attempt number, timing, cost, relative log dir,
+    /// and the #198 provenance) but cannot record it, because the settle (and thus the outcome +
+    /// mergeSequence) is deferred to the Scheduler under the integration lock. Null in serial mode
+    /// (AttemptJournaler already recorded the attempt) and for non-deferred results.
+    /// </summary>
+    public PendingAttempt? PendingAttempt { get; init; }
+
     /// <summary>True only for a genuine success this run (not a resume skip).</summary>
     public bool Succeeded => Outcome == TaskOutcome.Succeeded;
 
@@ -55,6 +67,40 @@ public sealed record TaskResult
     /// or was skipped because the journal already recorded it as succeeded (resume).
     /// </summary>
     public bool IsGreen => Outcome is TaskOutcome.Succeeded or TaskOutcome.Skipped;
+}
+
+/// <summary>
+/// The per-attempt data a worktree-mode success carries to the Scheduler's B1 settle so it can journal
+/// a real <see cref="Journal.AttemptRecord"/> alongside the reserved <c>mergeSequence</c> (issue #196).
+/// The executor computes all of it during the attempt but defers the actual record because the outcome
+/// (succeeded vs a non-FF-union rollback to needs-human) and the mergeSequence are only known after the
+/// integration commit, under the integration lock. The settle path builds the AttemptRecord from these
+/// fields — the SAME shape serial mode's <see cref="AttemptJournaler.CompleteSucceededOrInvalidFragment"/>
+/// records — so a succeeded task has a populated <c>Attempts</c> list in BOTH modes.
+/// </summary>
+public sealed record PendingAttempt
+{
+    /// <summary>1-based attempt number (already reserved by the journal for this attempt's log dir).</summary>
+    public required int Attempt { get; init; }
+
+    /// <summary>UTC attempt start time.</summary>
+    public required DateTimeOffset StartedAt { get; init; }
+
+    /// <summary>The action's exit code (0 on the success path).</summary>
+    public int? ActionExitCode { get; init; }
+
+    /// <summary>The prompt attempt's total cost in USD (null for a script or an unreported prompt cost).</summary>
+    public decimal? CostUsd { get; init; }
+
+    /// <summary>This attempt's log dir, relative to the plan dir (SSOT §7/§8).</summary>
+    public required string LogDir { get; init; }
+
+    /// <summary>
+    /// The #198 provenance the harness knew at attempt launch (resolved model, segment worktree,
+    /// base commit). Never null in worktree mode (the segment always exists); the model is null for
+    /// a script task.
+    /// </summary>
+    public Journal.AttemptProvenance? Provenance { get; init; }
 }
 
 /// <summary>The aggregate result of an entire run.</summary>

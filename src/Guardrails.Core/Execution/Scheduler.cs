@@ -694,7 +694,7 @@ public sealed class Scheduler
         {
             // FF is free — no re-verify needed. Consume one merge sequence.
             long seq = _journal.ReserveMergeSequence();
-            _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, seq);
+            RecordSucceededSettle(task, result, seq);
             return result;
         }
 
@@ -746,11 +746,14 @@ public sealed class Scheduler
                 // B2: commit the AI-resolved staged merge with the task trailer BEFORE journaling.
                 provider.CommitStagedMerge(integ, task.Id, ct);
                 long seq = _journal.ReserveMergeSequence();
-                _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, seq);
+                RecordSucceededSettle(task, result, seq);
                 return result;
             }
 
             // Re-verify failed after AI merge: B1 four-effect rollback.
+            // #188: persist the failing integration guardrails' output + a feedback.md to the task log
+            // dir BEFORE the rollback discards the merged bytes, so a human has the WHY on disk.
+            string aiFeedbackPath = PersistUnionReVerifyFailure(task, result, integ, aiReVerify, aiMerge: true);
             AtomicFile.WriteAllText(statePath, preMergeState);
             provider.RollbackMerge(integ, ct);
             _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
@@ -760,7 +763,8 @@ public sealed class Scheduler
                 Outcome = TaskOutcome.NeedsHuman,
                 ActionExitCode = result.ActionExitCode,
                 Guardrails = result.Guardrails,
-                Summary = "AI-merge resolution failed integration re-verify; needs human"
+                Summary = "AI-merge resolution failed integration re-verify; needs human " +
+                          $"(see {aiFeedbackPath})"
             };
         }
 
@@ -779,9 +783,14 @@ public sealed class Scheduler
             // implicitly via the FF move; the non-FF path must commit the staged merge explicitly).
             provider.CommitStagedMerge(integ, task.Id, ct);
             long seq = _journal.ReserveMergeSequence();
-            _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, seq);
+            RecordSucceededSettle(task, result, seq);
             return result;
         }
+
+        // #188: persist the failing integration guardrails' output + a feedback.md to the task log dir
+        // BEFORE the four-effect rollback discards the merged bytes — otherwise the needs-human summary
+        // points at a feedback.md that was never written and the failing guardrail output is lost.
+        string feedbackPath = PersistUnionReVerifyFailure(task, result, integ, reVerify, aiMerge: false);
 
         // B1 four-effect rollback:
         // 1. Restore state.json (undo fragment merge).
@@ -797,8 +806,120 @@ public sealed class Scheduler
             Outcome = TaskOutcome.NeedsHuman,
             ActionExitCode = result.ActionExitCode,
             Guardrails = result.Guardrails,
-            Summary = "non-FF union re-verify failed; rolled back (B1 four-effect)"
+            Summary = $"non-FF union re-verify failed; rolled back (B1 four-effect) (see {feedbackPath})"
         };
+    }
+
+    /// <summary>
+    /// Persist a failed union re-verify's evidence to the task log dir (issue #188): one
+    /// <c>union-reverify-&lt;guardrail&gt;.stdout.log</c> per failing integration guardrail carrying its
+    /// captured output, plus the <c>feedback.md</c> the needs-human summary points at (which the B1
+    /// rollback path previously PROMISED but never wrote). Called BEFORE the rollback resets the
+    /// integration worktree, so the merged-bytes evidence survives the discard. Returns the absolute
+    /// <c>feedback.md</c> path for the summary. Best-effort: an IO failure here must never mask the
+    /// underlying re-verify failure, so it degrades to returning the intended path.
+    /// </summary>
+    private string PersistUnionReVerifyFailure(
+        TaskNode task, TaskResult result, IntegrationHandle integ, ReVerifyResult reVerify, bool aiMerge)
+    {
+        // The task log dir is the PARENT of this attempt's log dir. Derive it from the attempt's own
+        // relative logDir (logs/<runId>/<taskId>/attempt-N) — which uses the JOURNAL's runId, the same
+        // runId the executor writes attempt artifacts under — so the evidence lands beside them. Fall
+        // back to integ.RunId only if no attempt data threaded through (defensive).
+        string taskLogDir = result.PendingAttempt?.LogDir is { Length: > 0 } relLogDir
+            ? Path.GetDirectoryName(Path.Combine(
+                _plan.PlanDirectory, relLogDir.Replace('/', Path.DirectorySeparatorChar)))!
+            : Path.Combine(_plan.PlanDirectory, "logs", integ.RunId, task.Id);
+        string feedbackPath = Path.Combine(taskLogDir, "feedback.md");
+
+        try
+        {
+            Directory.CreateDirectory(taskLogDir);
+
+            var failingNames = new List<string>();
+            foreach (GuardrailResult failed in reVerify.FailedGuardrails)
+            {
+                failingNames.Add(failed.Name);
+                string safe = SanitizeGuardrailName(failed.Name);
+                // GuardrailResult.Output is the full captured output on failure (stdout, or stderr when
+                // stdout was empty); Reason is its first line. Persist both so the evidence is complete.
+                string body = failed.Output ?? failed.Reason ?? "(no output captured)";
+                AtomicFile.WriteAllText(
+                    Path.Combine(taskLogDir, $"union-reverify-{safe}.stdout.log"), body);
+            }
+
+            string mergeKind = aiMerge ? "AI-merge resolution" : "non-FF union merge";
+            string detail = reVerify.FailedGuardrails.Count == 0
+                ? "The integration re-verify failed but reported no per-guardrail detail."
+                : string.Join("\n\n", reVerify.FailedGuardrails.Select(g =>
+                    $"## {g.Name}\n\n{g.Reason ?? "(no reason)"}\n\n" +
+                    $"Full output persisted to `union-reverify-{SanitizeGuardrailName(g.Name)}.stdout.log`."));
+
+            string feedback =
+                $"# Task '{task.Id}' — union re-verify failed\n\n" +
+                $"Task: {task.Description}\n\n" +
+                $"The {mergeKind} produced bytes that FAILED the integration-guardrail re-verify, so the " +
+                "harness rolled the merge back (state.json restored, integration worktree reset) and settled " +
+                "this task `needs-human`. The merged bytes were discarded, but each failing integration " +
+                "guardrail's output was persisted next to this file:\n\n" +
+                $"{detail}\n\n" +
+                "This is typically a MERGE COLLISION (two colliding contributions combined into something " +
+                "that no longer builds/passes) — inspect the persisted output, fix the offending task(s), " +
+                "and re-run.\n";
+            AtomicFile.WriteAllText(feedbackPath, feedback);
+        }
+        catch
+        {
+            // Best-effort — never let a logging IO failure mask the re-verify failure itself.
+        }
+
+        return feedbackPath;
+    }
+
+    /// <summary>Filename-safe form of a guardrail name for the #188 union-reverify log artifacts.</summary>
+    private static string SanitizeGuardrailName(string name)
+    {
+        Span<char> buffer = stackalloc char[name.Length];
+        for (int i = 0; i < name.Length; i++)
+        {
+            char c = name[i];
+            buffer[i] = char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '_';
+        }
+
+        return new string(buffer);
+    }
+
+    /// <summary>
+    /// Record a worktree-mode SUCCESS settle (issue #196): journal a real
+    /// <see cref="Journal.AttemptRecord"/> for the just-completed attempt TOGETHER with the reserved
+    /// <paramref name="mergeSequence"/>, so a succeeded worktree task has a populated <c>Attempts</c>
+    /// list exactly like a succeeded serial task (SSOT §7). The attempt data was computed by the
+    /// executor and threaded here on <see cref="TaskResult.PendingAttempt"/>; its stamped
+    /// <see cref="AttemptOutcome.Succeeded"/> outcome carries the #198 provenance (model + segment
+    /// worktree + base commit). A result missing its <see cref="TaskResult.PendingAttempt"/> (a
+    /// fake-provider path that never went through <c>ValidateFragmentForSettle</c>) falls back to the
+    /// attempt-less <see cref="ISchedulerJournal.RecordSettle"/>, so no path regresses.
+    /// </summary>
+    private void RecordSucceededSettle(TaskNode task, TaskResult result, long mergeSequence)
+    {
+        if (result.PendingAttempt is not { } pending)
+        {
+            _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, mergeSequence);
+            return;
+        }
+
+        var record = new Journal.AttemptRecord
+        {
+            Attempt = pending.Attempt,
+            StartedAt = pending.StartedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = pending.ActionExitCode,
+            Outcome = Journal.AttemptOutcome.Succeeded,
+            CostUsd = pending.CostUsd,
+            LogDir = pending.LogDir,
+            Provenance = pending.Provenance
+        };
+        _journal.RecordSettleWithAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence);
     }
 
     /// <summary>

@@ -35,7 +35,8 @@ internal sealed class AttemptJournaler
         string fragmentOutPath,
         ActionRun action,
         GuardrailRunResult guardrails,
-        bool isFinal)
+        bool isFinal,
+        AttemptProvenance? provenance = null)
     {
         long? mergeSequence = null;
 
@@ -78,7 +79,8 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.Succeeded,
             CostUsd = action.CostUsd,
-            LogDir = relativeLogDir
+            LogDir = relativeLogDir,
+            Provenance = provenance
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence);
 
@@ -120,7 +122,8 @@ internal sealed class AttemptJournaler
         string fragmentOutPath,
         ActionRun action,
         GuardrailRunResult guardrails,
-        bool isFinal)
+        bool isFinal,
+        AttemptProvenance? provenance = null)
     {
         string? validatedFragmentPath = null;
 
@@ -190,6 +193,22 @@ internal sealed class AttemptJournaler
             ? "; no LLM used (script)"
             : action.CostUsd is { } cost ? $"; cost ${cost:0.0000}" : "; cost not reported";
 
+        // #196: carry the not-yet-journaled attempt data to the Scheduler's B1 settle. The settle
+        // records a real AttemptRecord (built from these fields — the SAME shape the serial success
+        // path records above) TOGETHER with the reserved mergeSequence, so a succeeded worktree task's
+        // Attempts list is non-empty (SSOT §7), matching serial mode. The record is deferred (not
+        // written here) because the outcome and the mergeSequence are only known after the integration
+        // commit, under the integration lock.
+        var pendingAttempt = new PendingAttempt
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            ActionExitCode = action.ExitCode,
+            CostUsd = action.CostUsd,
+            LogDir = relativeLogDir,
+            Provenance = provenance
+        };
+
         return new AttemptResult(new TaskResult
         {
             TaskId = task.Id,
@@ -198,6 +217,7 @@ internal sealed class AttemptJournaler
             Guardrails = guardrails.Results,
             FragmentPath = validatedFragmentPath,
             DeferredSettle = true,
+            PendingAttempt = pendingAttempt,
             Summary = $"action ok; {guardrails.Results.Count} guardrail(s) passed{costSegment}"
         }, FeedbackPath: null);
     }

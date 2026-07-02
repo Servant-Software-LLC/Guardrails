@@ -117,12 +117,12 @@ public sealed class PlanPreflightPhaseTests
         Assert.Equal(ComputePlanHash(planDir), journal.PlanPreflights.PlanHash);
         Assert.Equal(journal.PlanHash, journal.PlanPreflights.PlanHash);
 
-        // The DAG then ran and the single task went green (this test's actual concern).
+        // The DAG then ran: the single task went green with a real attempt.
         Assert.Equal(JournalTaskStatus.Succeeded, journal.Tasks["01-only"].Status);
-        // NOTE: an Attempts-non-empty assertion was removed here — worktree-mode success journals
-        // no AttemptRecord (pre-existing gap vs SSOT §7, tracked as #196), so it fails only the
-        // maxParallelism>1 row for a reason unrelated to the pre-DAG phase. Status==Succeeded above
-        // already proves the DAG scheduled and the task ran green, which is what this test verifies.
+        // #196: a succeeded task journals a real AttemptRecord in BOTH serial AND worktree mode — the
+        // worktree success path now records the deferred attempt at B1 settle, so this holds for the
+        // maxParallelism>1 row too (previously relaxed in 96aa543 because worktree success journaled none).
+        Assert.NotEmpty(journal.Tasks["01-only"].Attempts);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

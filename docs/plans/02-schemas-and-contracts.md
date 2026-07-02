@@ -94,7 +94,7 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
   "maxParallelism": 3,                // default 3 in worktree mode (chain-reuse keeps a linear chain to ONE tree)
   "defaultRetries": 2,                // retries AFTER the first attempt; default 2
   "defaultTimeoutSeconds": 1800,      // per-attempt ceiling when nothing narrower applies
-  "transientPauseBudgetSeconds": 1800,// cumulative wall-clock a task may spend PAUSED on transient infra limits (#115); 0 disables pausing
+  "transientPauseBudgetSeconds": 14400,// cumulative wall-clock a task may spend PAUSED on transient infra limits (#115); default 14400 (4h); 0 disables pausing
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
@@ -161,7 +161,9 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
-- `transientPauseBudgetSeconds` (default `1800`) is the cumulative wall-clock a single task may spend
+- `transientPauseBudgetSeconds` (default `14400`, i.e. 4h — a long unattended/overnight run must ride
+  out a multi-hour outage or usage-limit window without settling `needs-human`, issue #189) is the
+  cumulative wall-clock a single task may spend
   **paused** on transient, retryable infrastructure conditions (HTTP 429/503/529, "overloaded", a
   usage/session/rate limit from the runner — issue #115). A transient signal does **NOT** consume the
   retry budget: the harness backs off (bounded exponential, 2s→…→60s cap, honoring a parsed reset hint
@@ -894,7 +896,16 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied | task-preflight-failed
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
-          "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1"
+          "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1",
+          // OPTIONAL per-attempt provenance the harness knew at launch (#198). Additive — a script /
+          // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
+          // Also mirrored to <attempt>/attempt-provenance.json (§8).
+          "provenance": {
+            "model": "claude-…",    // resolved --model from the runner, or "(cli default)"; ABSENT for a script task
+            "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
+            "worktreePath": "/…/guardrails-worktrees/…",
+            "baseCommit": "sha…"    // the commit the segment forked from (taskBase); ABSENT in serial mode
+          }
         }
       ]
     }
@@ -959,6 +970,15 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   second attempt) and no transient `running` status is ever written. Distinct from the two whole-plan
   phase halts (`plan-preflight-failed`/`plan-guardrail-failed`), which live OUTSIDE `tasks{}` in the
   top-level sections below.
+
+**A succeeded task records a real attempt in BOTH modes (#196).** A task that settles `succeeded` journals
+a `succeeded` attempt record in `attempts[]` — in **serial** mode inline as the attempt completes, and in
+**worktree** mode at the deferred B1 settle (the executor computes the attempt data and threads it to the
+scheduler, which records it TOGETHER with the reserved `mergeSequence` under the integration lock). Both
+paths write the identical attempt shape, so a succeeded task's `attempts[]` is non-empty regardless of
+mode. Each attempt also carries the OPTIONAL `provenance` block (#198) — the model + segment worktree +
+base commit the harness knew at launch (see the wire example above); it is mirrored to
+`<attempt>/attempt-provenance.json` (§8).
 
 **Top-level plan-phase sections (two-scope preflights, F9 split)**
 
@@ -1118,6 +1138,7 @@ argument is passed through unchanged, so a genuinely bad path still produces the
 ```
 logs/<runId>/<task-id>/attempt-N/
 ├── state-in.json            # the snapshot given to this attempt
+├── attempt-provenance.json  # #198: model + segment worktree (branch + path) + base commit known at launch; absent for a serial script attempt
 ├── action-stdout.log / action-stderr.log
 ├── action-result.json
 ├── action-out-fragment.json # the LIVE GUARDRAILS_STATE_OUT target the action writes
@@ -1140,6 +1161,13 @@ Prompt **actions** write `composed-prompt.md` / `claude-stream.jsonl` / `transcr
 `guardrail-<name>.verdict.json` verdict file. Script guardrails write
 `guardrail-<name>.stdout.log` / `.stderr.log`. The `<name>` is sanitized for the filesystem (any
 character other than a letter, digit, `-`, `_`, or `.` becomes `_`).
+
+At the **task** level (`logs/<runId>/<task-id>/`, the parent of the `attempt-N/` dirs), a failed **union
+re-verify** (a non-FF or AI-merge integration whose merged bytes fail the integration-guardrail set, §4.3)
+persists its evidence BEFORE the B1 rollback discards the merged bytes (#188): one
+`union-reverify-<guardrail>.stdout.log` per failing integration guardrail (its captured output) plus a
+`feedback.md` describing the collision — the same `feedback.md` the task's needs-human summary points at
+(previously that summary promised a `feedback.md` this path never wrote).
 
 `transcript.md` (and each `guardrail-<name>.transcript.md`) is a PURE, DETERMINISTIC projection of
 its `*.jsonl` stream (no model in the loop): assistant prose + `● Tool(args)` + truncated `⎿`

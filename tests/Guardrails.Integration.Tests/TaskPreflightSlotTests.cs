@@ -383,14 +383,21 @@ public sealed class TaskPreflightSlotTests
 
         // The green preflight does not block: the consumer proceeds into the attempt loop and SUCCEEDS.
         // The success itself is the proof the loop was entered — a red preflight would instead
-        // short-circuit the consumer to needs-human with zero attempts. (Attempt COUNT is not asserted
-        // here: a worktree-mode success settles via the deferred B1 path, which journals no attempt
-        // record, so a succeeded task's Attempts list is empty in worktree mode but not in serial mode.)
+        // short-circuit the consumer to needs-human.
         TaskResult consumer = report.Tasks.Single(t => t.TaskId == "02-consumer");
         Assert.Equal(TaskOutcome.Succeeded, consumer.Outcome);
 
         JournalDocument journal = plan.Journal();
         Assert.Equal(JournalTaskStatus.Succeeded, journal.Tasks["02-consumer"].Status);
+
+        // #196: a succeeded task journals exactly ONE (green-first-attempt) AttemptRecord in BOTH serial
+        // and worktree mode — the worktree success path now records the deferred attempt at B1 settle, so
+        // the Attempts list is populated identically in both modes (the assertion dropped when worktree
+        // success journaled no attempt record). One attempt: a green preflight lets the loop proceed and
+        // the action succeeds on the first try (no retry burned).
+        AttemptRecord consumerAttempt = Assert.Single(journal.Tasks["02-consumer"].Attempts);
+        Assert.Equal(1, consumerAttempt.Attempt);
+        Assert.Equal(AttemptOutcome.Succeeded, consumerAttempt.Outcome);
 
         Assert.True(report.AllSucceeded);
         Assert.Equal(ExitCodes.Success, ExitCodeFor(report));

@@ -516,6 +516,12 @@ public sealed class TaskExecutor : ITaskExecutor
         Directory.CreateDirectory(logDir);
         string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
 
+        // #198: the provenance the harness knows BEFORE the attempt runs — model + segment worktree +
+        // base commit. Written to the attempt log dir as a machine-readable header artifact regardless
+        // of outcome, and carried onto the journal AttemptRecord on the success paths below.
+        Journal.AttemptProvenance? provenance = BuildProvenance(task, worktree);
+        AttemptArtifacts.WriteProvenance(logDir, provenance);
+
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
 
@@ -767,11 +773,11 @@ public sealed class TaskExecutor : ITaskExecutor
         if (!string.IsNullOrEmpty(worktree.WorktreePath) && Directory.Exists(worktree.WorktreePath))
         {
             return _journaler.ValidateFragmentForSettle(
-                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
+                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
         }
 
         return _journaler.CompleteSucceededOrInvalidFragment(
-            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
+            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
     }
 
     /// <summary>
@@ -870,6 +876,60 @@ public sealed class TaskExecutor : ITaskExecutor
         && Directory.Exists(worktree.WorktreePath)
         && !string.IsNullOrEmpty(worktree.TaskBase)
         && !worktree.TaskBase.All(c => c == '0');
+
+    /// <summary>
+    /// Build the #198 per-attempt provenance the harness knows at launch: the resolved model, the
+    /// segment worktree (branch + path), and the base commit. Returns null in serial mode (no segment)
+    /// UNLESS a model is resolvable — a serial prompt task still records its model so <c>run.json</c>
+    /// discloses which model ran even without a worktree. In worktree mode the segment fields are
+    /// always populated; the model is null for a script task (no model runs).
+    /// </summary>
+    private Journal.AttemptProvenance? BuildProvenance(TaskNode task, WorktreeHandle worktree)
+    {
+        string? model = ResolveModel(task);
+        bool realSegment = IsRealGitSegment(worktree);
+
+        if (model is null && !realSegment)
+        {
+            return null;
+        }
+
+        return new Journal.AttemptProvenance
+        {
+            Model = model,
+            SegmentBranch = realSegment ? NullIfEmpty(worktree.SegmentBranchName) : null,
+            WorktreePath = realSegment ? NullIfEmpty(worktree.WorktreePath) : null,
+            BaseCommit = realSegment ? NullIfEmpty(worktree.TaskBase) : null
+        };
+    }
+
+    /// <summary>
+    /// The model an agent attempt of <paramref name="task"/> runs on (issue #198): the resolved
+    /// <c>--model</c> from the task's prompt-runner config, or the sentinel <c>"(cli default)"</c> when
+    /// the runner leaves it unset (so the provenance is never a silent gap for a prompt task). Null for
+    /// a script task — no model runs — and null when the task's runner cannot be resolved (a malformed
+    /// plan that validation would already reject).
+    /// </summary>
+    private string? ResolveModel(TaskNode task)
+    {
+        if (task.Action.Kind != ActionKind.Prompt)
+        {
+            return null;
+        }
+
+        string? runnerName = task.Action.Runner ?? _plan.Config.DefaultPromptRunner;
+        if (runnerName is not null
+            && _plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config))
+        {
+            return config.Settings.Model ?? "(cli default)";
+        }
+
+        // A prompt task whose runner is unresolvable (validation would reject this) still records that
+        // a model — the CLI default — ran, rather than a misleading absence.
+        return "(cli default)";
+    }
+
+    private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
     // --- log paths -----------------------------------------------------------------------
 
