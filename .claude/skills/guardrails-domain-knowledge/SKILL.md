@@ -38,6 +38,25 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `logs/<runId>/<task-id>/attempt-N/` (per-attempt artifacts, sibling of `state/`,
   divided by `runId` so re-runs never interleave) +
   `tasks/<NN-verb-object>/` (one folder per task) + optional `diagram.md`/`diagram.html`.
+- **Two-scope preflights/guardrails -- four folders** (design-of-record
+  `docs/plans/09-preflight-first-class.md`, build brief `docs/plans/preflights-impl.md`; SSOT section
+  1/3.3): `preflights/` and `guardrails/` are first-class folders at TWO scopes:
+  - **Plan-level** `<plan>/preflights/` -- the **"Full Flight Checks"** -- siblings of `tasks/`/
+    `guardrails.json`/`state/` at the **plan root**; evaluated ONCE, BEFORE the Scheduler builds waves,
+    against the starting repo.
+  - **Plan-level** `<plan>/guardrails/` -- the **"Terminal Gate"** -- also at the plan root; evaluated
+    ONCE, at run end, on the merged plan-branch HEAD. Replaces the old no-op-END `integrationGate: true`
+    sink-task modelling (see the Task bullet below).
+  - **Task-level** `tasks/<id>/preflights/` -- a JIT dependency-delivery check, sibling of the existing
+    `tasks/<id>/guardrails/`; evaluated in the task's segment worktree at `taskBase`, BEFORE its action.
+  - **Task-level** `tasks/<id>/guardrails/` -- the existing per-task postcondition folder, unchanged.
+  All four folders share **one** guardrail-file parser/grammar (SSOT section 4) -- they differ only in
+  WHERE they live and WHEN they run; every file opens with a `catches:` declaration and a malformed one
+  (no `catches:`) is a hard load error, **GR2027**. **Landed vs pending -- see Status:** the
+  loader/validator for all four folders is implemented; the three harness phases that RUN the
+  plan-level folders (pre-DAG, terminal, task-preflight slot -- see Execution semantics) are landing
+  incrementally, so do not assume a phase fires without checking current `Scheduler`/`TaskExecutor`
+  wiring.
 - **Diagram** -- two companion files written by `guardrails graph` at the plan-folder root,
   both generated, non-authored, and excluded from `guardrails.baseline`:
   - `diagram.md`: Mermaid `flowchart TD` (GitHub render artifact). First line is a
