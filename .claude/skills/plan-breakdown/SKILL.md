@@ -371,13 +371,17 @@ optional:
   if (-not (Test-Path $outDir)) { exit 0 }   # nothing produced at this union yet — fine
   foreach ($f in Get-ChildItem -Path $outDir -Filter '*.txt' -File) {
       $content = Get-Content -Raw -Path $f.FullName
-      if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+      if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {   # line-anchored ours/theirs — false-positive-free (#187)
           Write-Output ("out/" + $f.Name + " contains git conflict markers — the union did not cleanly integrate")
           exit 1
       }
   }
   exit 0
   ```
+
+  **Line-anchor the marker regex (#187).** Match `(?m)^<<<<<<<` / `(?m)^>>>>>>>` — a real conflict
+  writes both at column 0 — and DROP a bare `=======` check: the unanchored form false-fires on a
+  `====` banner / Markdown setext underline / ASCII table rule and red-halts a correct run.
 
   A contribution-present check uses the same conditional shape — `if ($content -match
   "<token>") { if ($content -notmatch '<real-construct>') { $failures += "<token> present
@@ -608,6 +612,26 @@ optional:
   guardrail's keyword — correctly, post-#177: GR2026 flags only POSITIVE require-present coverage tokens
   (SSOT §4.4), so a fail-on-present keyword intentionally absent from the prompt is NOT a stale-coverage
   warning. Do not omit or weaken the negative assertion to silence a (now non-existent) GR2026 warning.
+- **A cross-cutting-output task OWNS the re-baseline of every golden it feeds (#193)** — the runtime
+  mirror of the transitive-compilation edge (Step 3d, #176). When a task changes a **cross-cutting
+  output shape** — a renderer, a hash, a serializer, a formatter, a message/wire schema, any code
+  whose bytes flow into a **pinned literal / golden file / snapshot / approved output** that an
+  EXISTING test asserts against — that task's `tests-pass` guardrail must not be allowed to sweep in a
+  pre-existing golden the task cannot own. Two coupled authoring moves:
+  1. **Scope the `tests-pass` `--filter` to THIS task's own tests** (a class-name / trait filter, not
+     a broad `FullyQualifiedName~<substring>` that also matches pre-existing golden/snapshot tests) —
+     the same "filter to THIS task's tests" rule as archetype #4, sharpened: a broad substring filter
+     that pulls in a pre-existing golden test whose fixture this task's change invalidates traps the
+     task on a test it can't edit (its `writeScope` excludes the fixture → write-scope check red-halts
+     the fix → `needsHuman` loop).
+  2. **If the change genuinely re-bakes a shared golden, OWN the re-baseline.** Widen this task's
+     `writeScope` to include the affected golden fixture(s) + their pinned test, so regenerating them
+     is in-scope; OR, when the re-baseline is large / distinct enough to be its own deliverable (Step
+     2 over-size trigger — a 100+-golden re-bake), **insert a dedicated re-baseline task** (an ancestor
+     this task `dependsOn`) that owns and regenerates every golden the cross-cutting change feeds. Do
+     NOT leave a golden orphaned — owned by no task's `writeScope` yet asserted by a test the change
+     breaks. (The `guardrails-review` "Orphaned golden swept in by a broad `tests-pass` `--filter`"
+     probe, §2, flags the case you miss; catalogue → orphaned-golden / broad-filter trap.)
 - **Structural impl / keyword match** — any "implements/extends/declares" check uses the
   stack file's declaration regex (`stacks/dotnet.md §3`), never a bare type-name grep. A
   property-declaration check must be **accessor-order-insensitive** (#112) — key on the

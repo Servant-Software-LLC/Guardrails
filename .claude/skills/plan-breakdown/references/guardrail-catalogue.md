@@ -1091,6 +1091,15 @@ the SUCCESS: there is no failure to feed back, and re-emitting would surface the
 it were a problem. Match the construct's polarity: re-emit failure detail only on the checks whose
 pass is exit 0.
 
+**Toolchain gotcha — `--nologo` is NOT a `dotnet run` flag (#194).** A dogfood/self-hosting plan
+often validates a task folder against the freshly-built loader with
+`dotnet run --project src/Guardrails.Cli -- validate <folder>`. `--nologo` is valid for `dotnet
+build` and `dotnet test` but **not** for `dotnet run`: placed before the `--` it falls through to
+`dotnet run`'s parser (or the app's), failing the guardrail before `validate` ever runs; placed after
+the `--` it becomes a bogus CLI arg the app rejects. To quiet build chatter use **`-v quiet` before
+the `--`**: `dotnet run --project <proj> -v quiet -- validate <folder>`. (Stack specifics live in
+`references/stacks/dotnet.md`.)
+
 ## A `scope:"integration"` guardrail MUST be UNION-SAFE (#125)
 
 This is an authoring constraint on **which assertion** a `scope: "integration"` guardrail may make.
@@ -1168,12 +1177,23 @@ if ($content -match 'ImportMode') {              # the dispatch contribution has
         $failures += "ImportMode present only as comment — dispatch construct missing"
     }
 }
-if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
     $failures += "conflict markers remain — the union did not cleanly integrate"
 }
 if ($failures.Count -gt 0) { Write-Output ($failures -join "; "); exit 1 }
 exit 0
 ```
+
+**Anchor the conflict-marker regex — and drop the bare `=======` (#187).** A real git conflict
+writes its markers at **column 0** and always writes BOTH `<<<<<<<` (ours) and `>>>>>>>` (theirs).
+Match them **line-anchored** (`(?m)^<<<<<<<` / `(?m)^>>>>>>>`) so only a real conflict trips the
+check. The unanchored form (`-match '<<<<<<<'`) matches the char run **anywhere** on a line, and the
+bare `=======` middle marker collides with legitimate content — a `======` banner, a Markdown setext
+`===` header underline, an ASCII-art table rule — so an unanchored `=======` check red-halts a
+**correct** parallel run over innocent content. Line-anchored `<<<<<<<`/`>>>>>>>` (git's labelled
+ours/theirs markers) are false-positive-free; the `=======` separator is redundant given both are
+required, so drop it entirely (even line-anchored it still collides with a column-0 setext underline).
+Gold standard when the file is under git: `git diff --check` reports conflict markers directly.
 
 The **unconditional** form (`if ($content -notmatch "test-commander-rest") { exit 1 }`) is the bug: it
 fails at the intermediate union BEFORE the REST task has run, red-halting a healthy partial merge. The

@@ -509,6 +509,36 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   coverage tokens, SSOT §4.4) — a GR2026 warning on a negative assertion would be the #177 false positive,
   not a signal to remove the guardrail. (plan-breakdown Step 4 adds the matching authoring rule.)
 <!-- END ADDED PROBES #176 -->
+<!-- BEGIN ADDED PROBE #193 — orphaned pre-existing golden swept in by a broad tests-pass filter -->
+- **Orphaned golden swept in by a broad `tests-pass` `--filter` (#193)**: the **runtime** analogue of
+  the #176 transitive-compilation probe. There the trap is compile-time (a test compiles a type a
+  non-ancestor produces); here it is a **runtime assertion** — a code-change task's `tests-pass`
+  guardrail uses a broad **name-substring** `--filter` (`--filter "FullyQualifiedName~Renderer"`,
+  `~Serializer`, `~Golden`, `~Snapshot`, a bare namespace substring) that, beyond the task's own
+  new tests, **also matches PRE-EXISTING tests** the task did not author. For **each** code-change
+  task whose `tests-pass` guardrail carries such a broad `--filter`, enumerate the pre-existing tests
+  the substring matches that are **NOT** authored by an ancestor test-author task (grep the repo's
+  existing test tree for the filter substring; the matches that already exist at plan start are the
+  orphans). For each orphan, ask: *does this task's change plausibly alter a **pinned literal /
+  golden file / snapshot / approved output** that orphan test asserts against?* (a task that touches a
+  renderer, a hash/serializer, a formatter, a message schema, any cross-cutting OUTPUT shape is the
+  high-risk case — it shifts bytes every golden downstream of it pins). If **yes** AND that test +
+  its golden fixture are **outside the task's `writeScope`** AND **no other task owns** re-baselining
+  them → **BLOCKER**: the task is required to make a pre-existing test pass whose pinned golden its
+  own change invalidates, and it **cannot edit** the golden (write-scope check red-halts the fix) —
+  every attempt fails on an orphan it can't own and dead-ends at `needsHuman`. This is the runtime
+  sibling of #176's "can't fix a compile error outside its writeScope" trap (there the agent
+  redefines the type and collides; here it simply cannot converge). Fix, in order of preference:
+  (a) **narrow the `--filter`** to the task's own tests (a class-name / trait filter, not a broad
+  substring) so the orphan is never swept in; or (b) **widen the task's `writeScope`** to OWN the
+  golden fixture + its pinned test, so the re-baseline is in-scope; or (c) add a **dedicated
+  re-baseline task** (ancestor of this one) that owns and regenerates the affected golden, with this
+  task depending on it. Severity: **BLOCKER** when the change certainly shifts the pinned output;
+  **WEAK** when the collision is plausible but not certain (the filter is broad and an orphan pins a
+  literal the change *might* touch). (Catalogue → orphaned-golden / broad-filter trap; relates to
+  #176 transitive-compilation and the write-scope test-protection gate. plan-breakdown Step 4 adds
+  the matching cross-cutting-output re-baseline authoring rule.)
+<!-- END ADDED PROBE #193 -->
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -607,6 +637,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.
 - [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
+- [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.
 - [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
 - [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).

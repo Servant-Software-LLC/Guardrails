@@ -28,7 +28,9 @@ foreach ($file in Get-ChildItem -Path $outDir -Filter '*.txt' -File) {
         Write-Output ("out/" + $file.Name + " is empty on the merged bytes")
         exit 1
     }
-    if ($content -match '<<<<<<<' -or $content -match '>>>>>>>' -or $content -match '=======') {
+    # Line-anchored ours/theirs markers only (a real conflict writes both at column 0); no bare
+    # '=======' — unanchored it false-fires on a '====' banner / setext header / ASCII table (#187).
+    if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
         Write-Output ("out/" + $file.Name + " contains git conflict markers — the union did not cleanly integrate")
         exit 1
     }

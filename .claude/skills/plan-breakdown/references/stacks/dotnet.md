@@ -231,7 +231,7 @@ not the token" rule.
   $path = Join-Path $ws 'PoC/ConformedSources/Importers/CommanderLauncher.cs'
   if (-not (Test-Path $path)) { exit 0 }          # not produced at this union yet — nothing to verify
   $content = Get-Content -Raw -Path $path
-  if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+  if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {   # line-anchored ours/theirs — no bare '=======' (#187)
       Write-Output "CommanderLauncher.cs contains git conflict markers — the union did not cleanly integrate"
       exit 1
   }
@@ -250,6 +250,15 @@ not the token" rule.
 - Always pass `--nologo` (and `-v q` on builds) so the one actionable failure line isn't
   buried in banner noise. Declare no interpreter for `dotnet` — it's a build tool the
   guardrail invokes, not a script interpreter (those go in `guardrails.json: interpreters`).
+- **Never `--nologo` on `dotnet run` (#194).** `--nologo` is a `dotnet build` / `dotnet test`
+  flag — it is **not** a `dotnet run` flag. On a `dotnet run --project <proj> -- <args>` line,
+  anything before the `--` is parsed by `dotnet run`, and a placed-there `--nologo` **falls through
+  to the app's own arg parser** (or errors), failing the guardrail before the app runs. To quiet the
+  build chatter `dotnet run` prints, use **`-v quiet` before the `--`**:
+  `dotnet run --project src/Guardrails.Cli -v quiet -- validate <folder>`. This bites the
+  self-hosting dogfood case (a guardrail that validates a task folder against the freshly-built
+  loader, `dotnet run … -- validate <folder>`) — model-generated versions habitually tack on
+  `--nologo` after the `--` or before it and self-fail before validate ever runs.
 - **Remember the solution-build blind spot (pattern 1):** the terminal `dotnet build
   <solution>` does NOT catch an unregistered project — that's why pattern 1's solution-file
   `file-contains` guardrail exists. Don't let the terminal build stand in for it.
