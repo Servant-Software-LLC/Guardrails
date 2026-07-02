@@ -5,10 +5,19 @@ using static Guardrails.Core.Tests.PlanFixtures;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="MermaidRenderer.Render"/> (SSOT §10). Pure string mapping — no
-/// disk, no processes. The renderer fans each task out to its guardrail nodes, merges those
-/// into a per-task "Finished" node, and renders dependency edges as <c>done_A --> task_B</c>.
+/// Unit tests for <see cref="MermaidRenderer.Render"/> under the deliverable-7 CONTAINER model (SSOT §10).
+/// Pure string mapping — no disk, no processes; in-memory <see cref="PlanFixtures"/>. Each task is a
+/// <c>subgraph task_&lt;id&gt;</c> holding its checks in nested <c>Preflights</c>/<c>Guardrails</c> subgraphs;
+/// the DAG is drawn anchor→anchor between invisible per-container anchor nodes; there is NO <c>done_</c>
+/// reconvergence node and NO <c>task --&gt; guardrail</c> fan-out edge.
+///
+/// The SHAPE tests here FAIL against the current (old-model) renderer — which still emits bare
+/// <c>task_&lt;id&gt;</c> nodes fanning out to <c>gr_</c> nodes that merge into <c>done_</c> nodes — and go
+/// green once the renderer is rewritten. The label-safety tests (escaping, newline collapse, description-vs-name)
+/// are model-neutral contracts that hold in both models. Tagged Category=Preflights (class-level) so the
+/// deliberately-red shape tests are excluded from the green baseline (<c>--filter "Category!=Preflights"</c>).
 /// </summary>
+[Trait("Category", "Preflights")]
 public sealed class MermaidRendererTests
 {
     // --- small helpers to build tasks with explicit guardrails -------------------------
@@ -36,217 +45,140 @@ public sealed class MermaidRendererTests
     private static IReadOnlyList<string> Lines(string mermaid) =>
         mermaid.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
 
+    // === structure (container model) — RED against the current renderer ===============
+
     [Fact]
     public void Render_StartsWithFlowchartTd()
     {
-        string mermaid = MermaidRenderer.Render(Plan(Task("01-a")));
+        string mermaid = MermaidRenderer.Render(Plan(TaskWith("01-a", [Guardrail("01-check")])));
         Assert.Equal("flowchart TD", Lines(mermaid)[0]);
     }
 
     [Fact]
-    public void Render_FansTaskOutToEachGuardrailThenMergesToDone()
+    public void Render_EmitsATaskContainerSubgraphPerTask()
     {
-        // 01-a has two guardrails; assert the fan-out (task --> gr) and merge (gr --> done).
-        TaskNode task = TaskWith("01-a", [Guardrail("01-build"), Guardrail("02-test")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
-
-        // Fan-out: the task node points at both guardrail nodes.
-        Assert.Contains("task_01_a --> gr_01_a_0", lines);
-        Assert.Contains("task_01_a --> gr_01_a_1", lines);
-
-        // Merge: every guardrail node points at the single done node.
-        Assert.Contains("gr_01_a_0 --> done_01_a", lines);
-        Assert.Contains("gr_01_a_1 --> done_01_a", lines);
-    }
-
-    [Fact]
-    public void Render_EmitsFinishedNodeOncePerTask()
-    {
-        TaskNode task = TaskWith("01-a", [Guardrail("01-build"), Guardrail("02-test")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
-
-        int finishedNodeCount = lines.Count(l =>
-            l.StartsWith("done_01_a[", StringComparison.Ordinal) && l.Contains("✓ Finished", StringComparison.Ordinal));
-
-        Assert.Equal(1, finishedNodeCount);
-        Assert.Contains("done_01_a[\"01-a ✓ Finished\"]:::done", lines);
-    }
-
-    [Fact]
-    public void Render_DependencyEdge_GoesFromDoneOfDependencyToDependentTask()
-    {
-        // 02-b dependsOn 01-a → edge done_01-a --> task_02-b, and NOT task_01-a --> task_02-b.
         IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
-            Task("01-a"),
-            Task("02-b", "01-a"))));
+            TaskWith("01-a", [Guardrail("01-check")]),
+            TaskWith("02-b", [Guardrail("01-check")], "01-a"))));
 
-        Assert.Contains("done_01_a --> task_02_b", lines);
-        Assert.DoesNotContain("task_01_a --> task_02_b", lines);
+        // Container model: `subgraph task_<id>`, not a bare `task_<id>[...]` node.
+        Assert.Contains(lines, l => l.StartsWith("subgraph task_01_a", StringComparison.Ordinal)
+                                    && !l.StartsWith("subgraph task_01_a_", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("subgraph task_02_b", StringComparison.Ordinal)
+                                    && !l.StartsWith("subgraph task_02_b_", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void Render_EmitsTheThreeClassDefs()
+    public void Render_DrawsGuardrailCheckInsideANestedGuardrailsSubgraph()
     {
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(Task("01-a"))));
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]))));
 
-        Assert.Contains(lines, l => l.StartsWith("classDef task ", StringComparison.Ordinal));
-        Assert.Contains(lines, l => l.StartsWith("classDef guardrail ", StringComparison.Ordinal));
-        Assert.Contains(lines, l => l.StartsWith("classDef done ", StringComparison.Ordinal));
+        // A nested Guardrails subgraph exists (container model) and the check's drawn label appears in it.
+        Assert.Contains(lines, l => l.StartsWith("subgraph", StringComparison.Ordinal)
+                                    && l.Contains("Guardrails", StringComparison.Ordinal));
+        Assert.Contains("Solution builds clean", string.Join("\n", lines));
     }
 
     [Fact]
-    public void Render_SanitizesAwkwardIds_IntoSafeNodeIds()
+    public void Render_DependencyEdge_IsDrawnAnchorToAnchor()
     {
-        // An id with dots, slashes, spaces, and a quote — every non-alphanumeric → '_'.
-        TaskNode task = TaskWith("a.b/c d\"e", [Guardrail("01-x")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
+        // 02-b dependsOn 01-a → edge task_01_a_anchor --> task_02_b_anchor, NOT done_01_a --> task_02_b.
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("01-a", [Guardrail("01-check")]),
+            TaskWith("02-b", [Guardrail("01-check")], "01-a"))));
 
-        // Node ids use the sanitized form (one '_' per awkward char); no raw punctuation leaks
-        // into an identifier position.
-        Assert.Contains("task_a_b_c_d_e[", string.Join("\n", lines));
-        Assert.Contains("done_a_b_c_d_e[", string.Join("\n", lines));
-        Assert.Contains("task_a_b_c_d_e --> gr_a_b_c_d_e_0", lines);
-        Assert.Contains("gr_a_b_c_d_e_0 --> done_a_b_c_d_e", lines);
-
-        // The literal id still appears as a *quoted label*, with its embedded quote escaped.
-        Assert.Contains(lines, l => l.Contains("\"a.b/c d&quot;e ✓ Finished\"", StringComparison.Ordinal));
+        Assert.Contains("task_01_a_anchor --> task_02_b_anchor", lines);
+        Assert.DoesNotContain("done_01_a --> task_02_b", lines);
     }
 
     [Fact]
-    public void Render_GuardrailWithDescription_UsesDescriptionAsLabel()
+    public void Render_EmitsInvisibleAnchorNodesAndInvisibleClassDef()
     {
-        TaskNode task = TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(TaskWith("01-a", [Guardrail("01-check")]))));
 
-        Assert.Contains("gr_01_a_0[\"Solution builds clean\"]:::guardrail", lines);
-        // The bare Name is NOT used when a description is present.
+        Assert.Contains(lines, l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("task_01_a_anchor", StringComparison.Ordinal)
+                                    && l.Contains(":::invisible", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Render_ContainsNoDoneNode()
+    {
+        string render = MermaidRenderer.Render(Plan(
+            TaskWith("01-a", [Guardrail("01-check")]),
+            TaskWith("02-b", [Guardrail("01-check")], "01-a")));
+
+        Assert.DoesNotContain("done_", render);
+    }
+
+    [Fact]
+    public void Render_ContainsNoTaskToGuardrailFanOutEdge()
+    {
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("01-a", [Guardrail("01-build"), Guardrail("02-test")]))));
+
+        // The old fan-out (task_<id> --> gr_<id>_<n>) is retired; checks live inside the container.
+        Assert.DoesNotContain(lines, l => l.StartsWith("task_", StringComparison.Ordinal)
+                                          && l.Contains(" --> gr_", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Render_SanitizesAwkwardTaskId_IntoASafeContainerId()
+    {
+        // An id with dots, slashes, spaces, and a quote — every non-alphanumeric → '_' in the node id,
+        // while the literal id survives as a quoted, HTML-escaped label.
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(TaskWith("a.b/c d\"e", [Guardrail("01-x")]))));
+
+        Assert.Contains(lines, l => l.StartsWith("subgraph task_a_b_c_d_e", StringComparison.Ordinal));
+        Assert.Contains("a.b/c d&quot;e", string.Join("\n", lines));
+    }
+
+    // === label safety (model-neutral) — green in both models ===========================
+
+    [Fact]
+    public void Render_GuardrailWithDescription_UsesDescriptionAsDrawnLabel()
+    {
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]))));
+
+        Assert.Contains("Solution builds clean", string.Join("\n", lines));
+        // The bare Name is NOT used as a drawn label when a description is present.
         Assert.DoesNotContain(lines, l => l.Contains("[\"01-build\"]", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void Render_GuardrailWithoutDescription_UsesNameAsLabel()
+    public void Render_GuardrailWithoutDescription_UsesNameAsDrawnLabel()
     {
-        TaskNode task = TaskWith("01-a", [Guardrail("01-build", description: null)]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("01-a", [Guardrail("01-build", description: null)]))));
 
-        Assert.Contains("gr_01_a_0[\"01-build\"]:::guardrail", lines);
-    }
-
-    [Fact]
-    public void Render_WhitespaceDescription_FallsBackToName()
-    {
-        // Description present but blank → renderer treats it as absent and uses the Name.
-        TaskNode task = TaskWith("01-a", [Guardrail("01-build", description: "   ")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
-
-        Assert.Contains("gr_01_a_0[\"01-build\"]:::guardrail", lines);
-    }
-
-    /// <summary>
-    /// Golden-shape lock for a tiny 2-task fixture (01-a, and 02-b dependsOn 01-a, one
-    /// guardrail each). Locks the EXACT emitted line set so a future renderer drift is caught.
-    /// </summary>
-    [Fact]
-    public void Render_TwoTaskFixture_MatchesGoldenLineSet()
-    {
-        IReadOnlyList<string> actual = Lines(MermaidRenderer.Render(Plan(
-            TaskWith("01-a", [Guardrail("01-check")]),
-            TaskWith("02-b", [Guardrail("01-check")], "01-a"))));
-
-        string[] expected =
-        [
-            "flowchart TD",
-            // task 01-a
-            "task_01_a[\"01-a\"]:::task",
-            "gr_01_a_0[\"01-check\"]:::guardrail",
-            "task_01_a --> gr_01_a_0",
-            "gr_01_a_0 --> done_01_a",
-            "done_01_a[\"01-a ✓ Finished\"]:::done",
-            // task 02-b
-            "task_02_b[\"02-b\"]:::task",
-            "gr_02_b_0[\"01-check\"]:::guardrail",
-            "task_02_b --> gr_02_b_0",
-            "gr_02_b_0 --> done_02_b",
-            "done_02_b[\"02-b ✓ Finished\"]:::done",
-            // dependency edge: 02-b dependsOn 01-a
-            "done_01_a --> task_02_b",
-            // class defs
-            "classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;",
-            "classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;",
-            "classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;",
-        ];
-
-        Assert.Equal(expected, actual);
-    }
-
-    [Fact]
-    public void Render_GuardrailDescriptionWithNewlines_CollapsesToSingleSafeLine()
-    {
-        // Free-text descriptions can carry line breaks; a raw newline in a Mermaid label would
-        // break the WHOLE diagram. The renderer collapses \r\n / \r / \n to single spaces.
-        TaskNode task = TaskWith("01-a",
-            [Guardrail("01-build", description: "line one\r\nline two\rline three\nline four")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
-
-        Assert.Contains("gr_01_a_0[\"line one line two line three line four\"]:::guardrail", lines);
-
-        // The collapsed label occupies exactly one rendered line — no guardrail label spills.
-        Assert.Single(lines, l => l.StartsWith("gr_01_a_0[", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.Contains("[\"01-build\"]", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Render_GuardrailDescriptionWithHtmlChars_IsHtmlEscaped()
     {
-        // Mermaid renders labels as HTML: < / > would silently drop text as stray tags, & must
-        // be escaped first (no double-escaping), and # can trigger entity parsing.
-        TaskNode task = TaskWith("01-a",
-            [Guardrail("01-build", description: "a < b && c > d #1")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
-
-        string guardrailLine = lines.Single(l => l.StartsWith("gr_01_a_0[", StringComparison.Ordinal));
-
-        Assert.Equal("gr_01_a_0[\"a &lt; b &amp;&amp; c &gt; d &#35;1\"]:::guardrail", guardrailLine);
-
-        // No raw <, >, or # survive inside the drawn label text.
-        Assert.DoesNotContain('<', guardrailLine[(guardrailLine.IndexOf('[', StringComparison.Ordinal))..]);
-        Assert.DoesNotContain('>', guardrailLine[(guardrailLine.IndexOf('[', StringComparison.Ordinal))..]);
-    }
-
-    [Fact]
-    public void Render_AmpersandEscapedOnce_NotDoubleEscaped()
-    {
-        // & is escaped first so a literal "&lt;" in the source becomes "&amp;lt;" (the source
-        // text preserved), never "&lt;" (which would render as a real "<").
-        TaskNode task = TaskWith("01-a", [Guardrail("01-build", description: "&lt; literal")]);
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(task)));
-
-        Assert.Contains("gr_01_a_0[\"&amp;lt; literal\"]:::guardrail", lines);
-    }
-
-    [Fact]
-    public void Render_CollidingSanitizedTaskIds_GetDistinctNodeIdsAndCorrectEdges()
-    {
-        // "a.b" and "a_b" both Sanitize to "a_b" → without de-duplication their nodes collide
-        // and edges cross-wire. Ordinal order puts "a.b" first (it keeps "a_b"); "a_b" gets
-        // the deterministic "_2" suffix. "a_b" dependsOn "a.b".
+        // Mermaid renders labels as HTML: < / > would silently drop text as stray tags, & must be escaped
+        // first (no double-escaping), and # can trigger entity parsing.
         IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
-            TaskWith("a.b", [Guardrail("01-check")]),
-            TaskWith("a_b", [Guardrail("01-check")], "a.b"))));
+            TaskWith("01-a", [Guardrail("01-build", description: "a < b && c > d #1")]))));
 
-        // Distinct task node ids, each labelled with its own literal id.
-        Assert.Contains("task_a_b[\"a.b\"]:::task", lines);
-        Assert.Contains("task_a_b_2[\"a_b\"]:::task", lines);
-
-        // Distinct guardrail and done nodes, correctly wired within each task.
-        Assert.Contains("task_a_b --> gr_a_b_0", lines);
-        Assert.Contains("gr_a_b_0 --> done_a_b", lines);
-        Assert.Contains("task_a_b_2 --> gr_a_b_2_0", lines);
-        Assert.Contains("gr_a_b_2_0 --> done_a_b_2", lines);
-
-        // The dependency edge wires a.b's done node to a_b's task node (not cross-wired).
-        Assert.Contains("done_a_b --> task_a_b_2", lines);
-        Assert.DoesNotContain("done_a_b --> task_a_b", lines);
+        Assert.Contains("a &lt; b &amp;&amp; c &gt; d &#35;1", string.Join("\n", lines));
     }
+
+    [Fact]
+    public void Render_GuardrailDescriptionWithNewlines_CollapsesToSingleSafeLine()
+    {
+        // A raw newline in a Mermaid label would break the WHOLE diagram; the renderer collapses
+        // \r\n / \r / \n to single spaces.
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("01-a", [Guardrail("01-build", description: "line one\r\nline two\rline three\nline four")]))));
+
+        Assert.Contains("line one line two line three line four", string.Join("\n", lines));
+    }
+
+    // === contracts that must survive the rewrite (model-neutral) =======================
 
     [Fact]
     public void Render_NullPlan_Throws()
@@ -255,12 +187,9 @@ public sealed class MermaidRendererTests
     }
 
     /// <summary>
-    /// The renderer must emit LF-only line breaks on EVERY OS (issue #3). The original code
-    /// used <c>StringBuilder.AppendLine</c>, which writes <c>Environment.NewLine</c> (CRLF on
-    /// Windows) — that made the rendered diagram, its source hash, and the committed few-shot
-    /// reference platform-dependent. Both the styled <see cref="MermaidRenderer.Render"/>
-    /// output and the hashed <see cref="MermaidRenderer.SemanticContent"/> must be free of
-    /// any <c>'\r'</c>.
+    /// The renderer must emit LF-only line breaks on EVERY OS (issue #3): both the styled
+    /// <see cref="MermaidRenderer.Render"/> output and the hashed <see cref="MermaidRenderer.SemanticContent"/>
+    /// must be free of any <c>'\r'</c>.
     /// </summary>
     [Fact]
     public void RenderAndSemanticContent_ContainNoCarriageReturn()
