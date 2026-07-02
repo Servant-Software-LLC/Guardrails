@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using Guardrails.Cli;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
@@ -189,10 +190,12 @@ public sealed class WiringDefectRegressionTests
     }
 
     /// <summary>
-    /// Linear plan A → B where B has <c>integrationGate:true</c> and an
-    /// <c>integration</c>-scoped guardrail (for C1 terminal-gate test).
+    /// Linear plan A → B, plus a plan-level <c>&lt;plan&gt;/guardrails/</c> folder carrying one
+    /// integration-set re-run check (for the C1 terminal-gate test, migrated onto the deliverable-4
+    /// <see cref="Guardrails.Cli.PlanGuardrailPhase"/> mechanism that replaced the retired
+    /// <c>integrationGate:true</c> task kind).
     /// </summary>
-    private static string CreateLinearPlanWithIntegrationGate(string repoPath)
+    private static string CreateLinearPlanWithPlanGuardrails(string repoPath)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(planDir);
@@ -211,7 +214,7 @@ public sealed class WiringDefectRegressionTests
 
         Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
         WriteTaskInRepo(planDir, "01-task-a", []);
-        WriteIntegrationGateTaskInRepo(planDir, "02-gate", ["01-task-a"]);
+        WritePlanGuardrailsFolder(planDir);
         return planDir;
     }
 
@@ -264,58 +267,33 @@ public sealed class WiringDefectRegressionTests
         }
     }
 
-    private static void WriteIntegrationGateTaskInRepo(string planDir, string taskId, string[] dependsOn)
+    /// <summary>
+    /// Write the plan-level <c>&lt;plan&gt;/guardrails/</c> folder (a sibling of <c>tasks/</c>) carrying
+    /// ONE deterministic terminal check — the SAME "exit 0" check the retired
+    /// <c>integrationGate:true</c> sink used to carry, now evaluated by
+    /// <see cref="Guardrails.Cli.PlanGuardrailPhase"/> instead of the Scheduler's legacy per-task
+    /// terminal-gate run. The four-folder model enforces a leading <c>catches:</c> comment (GR2027) on
+    /// every file here, unlike the pre-existing <c>tasks/&lt;id&gt;/guardrails/</c>.
+    /// </summary>
+    private static void WritePlanGuardrailsFolder(string planDir)
     {
-        string taskDir = Path.Combine(planDir, "tasks", taskId);
-        Directory.CreateDirectory(taskDir);
-        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+        string guardrailsDir = Path.Combine(planDir, "guardrails");
+        Directory.CreateDirectory(guardrailsDir);
 
-        string dependsJson = dependsOn.Length == 0
-            ? "[]"
-            : "[" + string.Join(", ", dependsOn.Select(d => $"\"{d}\"")) + "]";
-
-        File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            $$"""
-            {
-              "description": "integration gate {{taskId}}",
-              "dependsOn": {{dependsJson}},
-              "integrationGate": true
-            }
-            """);
-
-        string fragmentJson = "{\"" + taskId + "\": {\"done\": true}}";
         if (OperatingSystem.IsWindows())
         {
-            File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
-                $"Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value '{fragmentJson}'\nexit 0\n");
-
-            // Integration-scoped guardrail — the terminal gate must re-run this via IReVerifier
-            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-integration-check.ps1"),
-                "exit 0\n");
-            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-integration-check.json"),
-                """{"scope": "integration", "description": "whole-repo integration check"}""");
+            File.WriteAllText(Path.Combine(guardrailsDir, "01-integration-check.ps1"),
+                "# catches: a regression that only surfaces once branches are merged\nexit 0\n");
         }
         else
         {
-            string actionPath = Path.Combine(taskDir, "action.ps1");
-            // Use ps1 extension as a fallback – won't be found unless interpreter override added.
-            // On non-Windows, write .sh instead.
-            string ext = ".sh";
-            string actionSh = Path.Combine(taskDir, "action" + ext);
-            File.WriteAllText(actionSh,
+            string checkPath = Path.Combine(guardrailsDir, "01-integration-check.sh");
+            File.WriteAllText(checkPath,
                 "#!/usr/bin/env bash\n" +
-                $"printf '%s' '{fragmentJson}' > \"$GUARDRAILS_STATE_OUT\"\nexit 0\n");
-            File.SetUnixFileMode(actionSh,
+                "# catches: a regression that only surfaces once branches are merged\nexit 0\n");
+            File.SetUnixFileMode(checkPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
                 UnixFileMode.GroupRead | UnixFileMode.OtherRead);
-
-            string guardrailSh = Path.Combine(taskDir, "guardrails", "01-integration-check.sh");
-            File.WriteAllText(guardrailSh, "#!/usr/bin/env bash\nexit 0\n");
-            File.SetUnixFileMode(guardrailSh,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
-            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-integration-check.json"),
-                """{"scope": "integration", "description": "whole-repo integration check"}""");
         }
     }
 
@@ -401,17 +379,18 @@ public sealed class WiringDefectRegressionTests
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Plan 08 defect C1: after all tasks succeed, the Scheduler has no terminal gate logic
-    /// that calls <see cref="IReVerifier.ReVerifyAsync"/> on the final plan-branch HEAD.
-    /// The SpyReVerifier records every call. For a plan with an integration-scoped guardrail
-    /// at the sink task, the terminal gate must call the reVerifier at least once.
-    /// RED until the Scheduler adds the post-run terminal gate call.
+    /// Plan 08 defect C1 (migrated): the terminal integration gate must run against the run's final
+    /// bytes after every task succeeds. That role now belongs to
+    /// <see cref="Guardrails.Cli.PlanGuardrailPhase.EvaluateAsync"/> (deliverable 4), which evaluates the
+    /// plan-level <c>&lt;plan&gt;/guardrails/</c> folder ONCE after the DAG drains green — REPLACING the
+    /// retired per-task <c>integrationGate:true</c> sink and the Scheduler's own legacy terminal-gate
+    /// run, which now skips itself whenever <see cref="PlanDefinition.PlanGuardrails"/> is non-empty.
     /// </summary>
     [Fact]
     public async Task C1_TerminalGate_RunsOnFinalHead()
     {
         using var repo = new TempGitRepo();
-        string planDir = CreateLinearPlanWithIntegrationGate(repo.RepoPath);
+        string planDir = CreateLinearPlanWithPlanGuardrails(repo.RepoPath);
         var spyRv = new SpyReVerifier { AlwaysPass = true };
         var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
 
@@ -421,12 +400,20 @@ public sealed class WiringDefectRegressionTests
         Assert.True(report.AllSucceeded,
             "Plan must succeed before we can inspect terminal-gate calls.");
 
-        // The terminal gate (after all tasks settle) must call the reVerifier with the
-        // integration guardrails on the final plan-branch HEAD.
-        // Currently Scheduler.RunAsync has no such call → SpyReVerifier.CallCount = 0 → RED.
-        Assert.True(spyRv.CallCount > 0,
-            "IReVerifier must be called at least once as the terminal integration gate " +
-            "after all tasks succeed (defect C1: no terminal gate logic exists yet).");
+        // The terminal phase evaluates the plan-level <plan>/guardrails/ folder against the final
+        // merged plan-branch HEAD (worktree mode) after the DAG is wholly green.
+        PlanDefinition reloadedPlan = new PlanLoader().Load(planDir).Plan!;
+        bool planGuardrailsPassed = await PlanGuardrailPhase.EvaluateAsync(
+            reloadedPlan, new ProcessRunner(), TestContext.Current.CancellationToken);
+
+        Assert.True(planGuardrailsPassed,
+            "PlanGuardrailPhase.EvaluateAsync must pass the terminal '<plan>/guardrails/' check on the " +
+            "final merged HEAD (defect C1's re-homed successor: the terminal gate must run and certify " +
+            "the run's final bytes).");
+
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.NotNull(doc.PlanGuardrails);
+        Assert.Equal(PlanPhaseStatus.Passed, doc.PlanGuardrails!.Status);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

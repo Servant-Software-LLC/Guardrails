@@ -10,16 +10,18 @@ namespace Guardrails.Core.Tests;
 /// Encoded gates (SSOT §1/§2/§3.3/§4.3, plan 08 §1/§3):
 ///   GR2015 — workspace is NOT a git repository top-level (error)
 ///   GR2016 — deep worktreeRoot + deep source tree on Windows risks MAX_PATH (warning)
-///   GR2017 — multi-leaf or fan-in plan with no integrationGate sink (error)
-///   GR2018 — integrationGate sink has no scope:"integration" guardrail (error, empty set)
+///   GR2028 — multi-leaf or fan-in plan whose &lt;plan&gt;/guardrails/ folder is empty or holds only
+///            a tautological check that does not re-run the integration set (error; re-homed GR2018,
+///            SSOT §3.3, design-of-record 09-preflight-first-class)
+///   GR2029 — a task still declares the retired integrationGate: true task kind (error, unconditional)
 /// </summary>
 public sealed class ParallelValidationGateTests : IDisposable
 {
     // Diagnostic codes allocated for plan 08 M2 (not yet in DiagnosticCodes.cs).
     private const string Gr2015 = "GR2015"; // workspace not a git repository top-level (error)
     private const string Gr2016 = "GR2016"; // deep worktreeRoot + source risks MAX_PATH, Windows (warning)
-    private const string Gr2017 = "GR2017"; // multi-leaf / fan-in plan missing integrationGate sink (error)
-    private const string Gr2018 = "GR2018"; // integrationGate sink has no scope:"integration" guardrail (error)
+    private const string Gr2028 = "GR2028"; // <plan>/guardrails/ folder empty/tautological on parallel topology (error)
+    private const string Gr2029 = "GR2029"; // task declares the retired integrationGate: true key (error)
 
     // Freshly created temp directory — exists on disk but has no .git inside it.
     // Used as a non-git workspace (GR2015) and as the root for disk-based plan fixtures.
@@ -105,108 +107,125 @@ public sealed class ParallelValidationGateTests : IDisposable
     }
 
     // =========================================================================
-    // GR2017 — multi-leaf or fan-in plan missing the integrationGate sink
+    // GR2028 — re-homed terminal-gate content rule: a multi-leaf/fan-in plan's
+    // <plan>/guardrails/ folder must carry a real integration-set re-run
     // =========================================================================
 
     [Fact]
-    public void MultiLeafPlan_WorktreeMode_WithoutIntegrationGateSink_ProducesGr2017_Error()
+    public void MultiLeafPlan_WorktreeMode_NoGuardrailsFolder_ProducesGr2028_Error()
     {
-        // SSOT §3.3, plan 08 §3, PO decision: the integration-gate requirement fires ONLY in
-        // worktree mode (maxParallelism > 1). The terminal gate verifies the merged union of the
-        // parallel branches; a multi-leaf plan run in parallel with no integrationGate:true sink
-        // leaves those branches unverified at the integration level → GR2017 error.
+        // SSOT §3.3, design-of-record 09-preflight-first-class, PO decision: the terminal-gate
+        // obligation re-homed off the retired integrationGate task onto the plan-level
+        // <plan>/guardrails/ folder, but the CONTENT teeth survive — a missing/empty folder still
+        // fails. Fires ONLY in worktree mode (maxParallelism > 1), matching the retired
+        // GR2017/GR2018's exact firing conditions.
         //
         // DAG:  01-root → 02-leaf-a  (leaf — no task depends on it)
         //               → 03-leaf-b  (leaf — no task depends on it)
-        // Two leaves, no integrationGate task, maxParallelism>1 → GR2017.
-        PlanDefinition plan = InMemoryPlan(
-            "/fake/workspace",
-            maxParallelism: 3,
-            ScriptTask("01-root"),
-            ScriptTask("02-leaf-a", "01-root"),
-            ScriptTask("03-leaf-b", "01-root"));
+        // Two leaves, no <plan>/guardrails/ folder at all, maxParallelism>1 → GR2028.
+        string planDir = Path.Combine(_tempRoot, "gr2028-no-folder");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ]);
 
+        PlanDefinition plan = LoadPlan(planDir);
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        Assert.Contains(diagnostics, d => d.Code == Gr2017 && d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
     }
 
     [Fact]
-    public void MultiLeafPlan_SerialMode_WithoutIntegrationGateSink_ProducesNoGr2017()
+    public void MultiLeafPlan_WorktreeMode_TautologicalGuardrailsFolder_ProducesGr2028_Error()
     {
-        // PO decision: a SERIAL run (maxParallelism == 1) uses the shared-workspace model — there
-        // are no parallel branches to merge, so the integration gate has nothing to verify and the
-        // hard requirement does not apply. The same multi-leaf no-gate plan that fails in worktree
-        // mode must produce NO GR2017 here.
-        PlanDefinition plan = InMemoryPlan(
-            "/fake/workspace",
-            maxParallelism: 1,
-            ScriptTask("01-root"),
-            ScriptTask("02-leaf-a", "01-root"),
-            ScriptTask("03-leaf-b", "01-root"));
+        // A present <plan>/guardrails/ folder holding only a tautological "exit 0" check still fails
+        // — GR2028 tests CONTENT, not mere folder non-emptiness (the precise gap GR2018 existed to
+        // close before the re-home).
+        string planDir = Path.Combine(_tempRoot, "gr2028-tautological-folder");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-noop.sh", "# catches: nothing — a tautological placeholder that verifies nothing\nexit 0\n")
+            ]);
 
+        PlanDefinition plan = LoadPlan(planDir);
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2017);
+        Assert.Contains(diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
     }
 
     [Fact]
-    public void FanInPlan_WorktreeMode_WithoutIntegrationGateSink_ProducesGr2017_Error()
+    public void MultiLeafPlan_WorktreeMode_WithRealIntegrationReRun_ProducesNoGr2028()
     {
-        // SSOT §3.3, plan 08 §3, PO decision: in worktree mode (maxParallelism > 1) a plan with any
-        // fan-in task (≥2 upstreams → a real union merge + re-verify path) MUST have an
-        // integrationGate:true sink. The fan-in's per-union re-verify is not the whole-repo check;
-        // the terminal gate must additionally exist.
+        // A <plan>/guardrails/ folder carrying a real whole-repo re-run (here: "dotnet test")
+        // satisfies the content teeth — no GR2028.
+        string planDir = Path.Combine(_tempRoot, "gr2028-real-check");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-build.sh", "# catches: the merged HEAD fails to build/test\ndotnet test\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
+    }
+
+    [Fact]
+    public void MultiLeafPlan_SerialMode_NoGuardrailsFolder_ProducesNoGr2028()
+    {
+        // PO decision: a SERIAL run (maxParallelism == 1) merges no parallel branches, so the
+        // terminal gate has nothing to verify and the content-teeth requirement does not apply. The
+        // same no-folder multi-leaf plan that fails in worktree mode must produce NO GR2028 here.
+        string planDir = Path.Combine(_tempRoot, "gr2028-serial-no-folder");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 1 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
+    }
+
+    [Fact]
+    public void FanInPlan_WorktreeMode_NoGuardrailsFolder_ProducesGr2028_Error()
+    {
+        // SSOT §3.3, PO decision: a fan-in task (≥2 upstreams → a real union merge) also carries the
+        // terminal-gate obligation, matching the retired GR2017's fan-in firing condition.
         //
         // DAG:  01-a → 03-fanin  (2 upstreams → fan-in)
         //       02-b ↗
-        // One leaf but it IS the fan-in; no integrationGate task, maxParallelism>1 → GR2017.
-        PlanDefinition plan = InMemoryPlan(
-            "/fake/workspace",
-            maxParallelism: 3,
-            ScriptTask("01-a"),
-            ScriptTask("02-b"),
-            ScriptTask("03-fanin", "01-a", "02-b"));
-
-        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
-
-        Assert.Contains(diagnostics, d => d.Code == Gr2017 && d.Severity == DiagnosticSeverity.Error);
-    }
-
-    [Fact]
-    public void FanInPlan_SerialMode_WithoutIntegrationGateSink_ProducesNoGr2017()
-    {
-        // PO decision: a SERIAL run (maxParallelism == 1) never executes branches in parallel, so
-        // even a fan-in topology merges no concurrent worktrees — the integration gate has nothing
-        // to verify. The same fan-in no-gate plan that fails in worktree mode produces NO GR2017 here.
-        PlanDefinition plan = InMemoryPlan(
-            "/fake/workspace",
-            maxParallelism: 1,
-            ScriptTask("01-a"),
-            ScriptTask("02-b"),
-            ScriptTask("03-fanin", "01-a", "02-b"));
-
-        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
-
-        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2017);
-    }
-
-    // =========================================================================
-    // GR2018 — integrationGate sink carries no scope:"integration" guardrail
-    // =========================================================================
-
-    [Fact]
-    public void IntegrationGateSink_WorktreeMode_WithoutScopeIntegrationGuardrail_ProducesGr2018_Error()
-    {
-        // SSOT §3.3/§4.3, plan 08 §3, PO decision: in worktree mode (maxParallelism > 1) the
-        // integrationGate:true sink MUST carry at least one guardrail declared scope:"integration".
-        // Without it the terminal gate verifies nothing — an empty integration-guardrail set is not
-        // a sound soundness boundary → GR2018.
-        //
-        // Uses disk loading because task.json carries the integrationGate:true field. The gate
-        // task's guardrail has no scope:"integration" sidecar. guardrails.json declares
-        // maxParallelism>1 to put the plan in worktree mode where the gate requirement applies.
-        string planDir = Path.Combine(_tempRoot, "gr2018-no-scope");
+        // One leaf but it IS the fan-in; no <plan>/guardrails/ folder, maxParallelism>1 → GR2028.
+        string planDir = Path.Combine(_tempRoot, "gr2028-fanin-no-folder");
         WriteDiskPlan(
             planDir,
             guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
@@ -214,29 +233,52 @@ public sealed class ParallelValidationGateTests : IDisposable
             [
                 ("01-a", "{ \"description\": \"task a\", \"dependsOn\": [] }"),
                 ("02-b", "{ \"description\": \"task b\", \"dependsOn\": [] }"),
-                // integrationGate:true; the guardrail written by WriteDiskPlan has no
-                // scope:"integration" in any sidecar.
-                ("03-gate",
-                    "{ \"description\": \"integration gate\", \"dependsOn\": [\"01-a\", \"02-b\"], \"integrationGate\": true }")
+                ("03-fanin", "{ \"description\": \"fan-in\", \"dependsOn\": [\"01-a\", \"02-b\"] }")
             ]);
 
         PlanDefinition plan = LoadPlan(planDir);
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        Assert.Contains(diagnostics, d => d.Code == Gr2018 && d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
     }
 
     [Fact]
-    public void IntegrationGateSink_SerialMode_WithoutScopeIntegrationGuardrail_ProducesNoGr2018()
+    public void FanInPlan_SerialMode_NoGuardrailsFolder_ProducesNoGr2028()
     {
-        // PO decision: a SERIAL run (maxParallelism == 1) merges no parallel branches, so the
-        // integration gate has nothing to verify and the scope:"integration" requirement does not
-        // apply. The same integrationGate:true sink with no integration-scoped guardrail that fails
-        // in worktree mode must produce NO GR2018 here.
-        string planDir = Path.Combine(_tempRoot, "gr2018-serial-no-scope");
+        // PO decision: a SERIAL run never executes branches in parallel, so even a fan-in topology
+        // merges no concurrent worktrees. The same fan-in no-folder plan that fails in worktree mode
+        // must produce NO GR2028 here.
+        string planDir = Path.Combine(_tempRoot, "gr2028-fanin-serial-no-folder");
         WriteDiskPlan(
             planDir,
             guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 1 }",
+            tasks:
+            [
+                ("01-a", "{ \"description\": \"task a\", \"dependsOn\": [] }"),
+                ("02-b", "{ \"description\": \"task b\", \"dependsOn\": [] }"),
+                ("03-fanin", "{ \"description\": \"fan-in\", \"dependsOn\": [\"01-a\", \"02-b\"] }")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
+    }
+
+    // =========================================================================
+    // GR2029 — a task still declares the retired integrationGate: true key
+    // =========================================================================
+
+    [Fact]
+    public void LegacyIntegrationGateKey_WorktreeMode_ProducesGr2029_Error()
+    {
+        // SSOT §3.3, design-of-record 09-preflight-first-class: integrationGate:true is RETIRED with
+        // no coexistence window. A plan that still declares it gets a HARD validation error — honest
+        // over silent — even though the plan also has a valid multi-leaf topology.
+        string planDir = Path.Combine(_tempRoot, "gr2029-legacy-key-worktree");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
             tasks:
             [
                 ("01-a", "{ \"description\": \"task a\", \"dependsOn\": [] }"),
@@ -248,7 +290,30 @@ public sealed class ParallelValidationGateTests : IDisposable
         PlanDefinition plan = LoadPlan(planDir);
         IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
 
-        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2018);
+        Assert.Contains(diagnostics, d => d.Code == Gr2029 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void LegacyIntegrationGateKey_SerialMode_ProducesGr2029_Error()
+    {
+        // Unlike the retired worktree-only GR2017/GR2018 rules it replaces, GR2029 fires
+        // UNCONDITIONALLY — the retired key is a hard error regardless of maxParallelism, because the
+        // key itself (not its runtime effect) is what's retired.
+        string planDir = Path.Combine(_tempRoot, "gr2029-legacy-key-serial");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 1 }",
+            tasks:
+            [
+                ("01-a", "{ \"description\": \"task a\", \"dependsOn\": [] }"),
+                ("02-gate",
+                    "{ \"description\": \"integration gate\", \"dependsOn\": [\"01-a\"], \"integrationGate\": true }")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.Contains(diagnostics, d => d.Code == Gr2029 && d.Severity == DiagnosticSeverity.Error);
     }
 
     // =========================================================================
@@ -311,11 +376,16 @@ public sealed class ParallelValidationGateTests : IDisposable
     /// <c>taskJson</c> is written verbatim so callers can include future fields such as
     /// <c>integrationGate</c> that the current loader silently ignores.
     /// Each task gets one script action file and one script guardrail file (no sidecar).
+    /// <paramref name="planGuardrailFiles"/>, when non-null, materialises the plan-level
+    /// <c>&lt;plan&gt;/guardrails/</c> folder (siblings of <c>tasks/</c>) with the given
+    /// <c>(fileName, content)</c> entries — pass <c>[]</c> for an explicitly empty folder, or
+    /// omit/pass <c>null</c> to leave the folder absent entirely.
     /// </summary>
     private static void WriteDiskPlan(
         string dir,
         string guardrailsJson,
-        (string id, string taskJson)[] tasks)
+        (string id, string taskJson)[] tasks,
+        (string fileName, string content)[]? planGuardrailFiles = null)
     {
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "guardrails.json"), guardrailsJson);
@@ -327,6 +397,16 @@ public sealed class ParallelValidationGateTests : IDisposable
             File.WriteAllText(Path.Combine(taskDir, "task.json"), taskJson);
             File.WriteAllText(Path.Combine(taskDir, "action.sh"), "#!/usr/bin/env bash\nexit 0");
             File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-build.sh"), "exit 0");
+        }
+
+        if (planGuardrailFiles is not null)
+        {
+            string planGuardrailsDir = Path.Combine(dir, "guardrails");
+            Directory.CreateDirectory(planGuardrailsDir);
+            foreach ((string fileName, string content) in planGuardrailFiles)
+            {
+                File.WriteAllText(Path.Combine(planGuardrailsDir, fileName), content);
+            }
         }
     }
 
