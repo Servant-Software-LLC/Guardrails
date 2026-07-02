@@ -97,14 +97,29 @@ public sealed class TaskExecutor : ITaskExecutor
 
             if (!preflightResult.Passed)
             {
-                string reasons = string.Join(", ", preflightResult.FailedGuardrails.Select(g => g.Name));
-                _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman);
-                return new TaskResult
-                {
-                    TaskId = task.Id,
-                    Outcome = TaskOutcome.NeedsHuman,
-                    Summary = $"task-preflight failed: {reasons}"
-                };
+                // D6: journal a real AttemptRecord carrying Outcome = TaskPreflightFailed and the failed
+                // preflight check names + reasons, so run.json shows WHAT gate failed and WHY (SSOT §7 —
+                // "a per-attempt outcome inside tasks{}"). This does NOT burn a retry: the action never
+                // runs and the retry budget is never consulted (we return BEFORE the attempt loop AND
+                // before MarkRunning), so the no-burn property is preserved STRUCTURALLY — the recorded
+                // attempt simply is not counted against a budget nothing reads here.
+                int preflightAttempt = _journal.NextAttemptNumber(task.Id);
+                IReadOnlyList<FailedGuardrail> failedChecks = preflightResult.FailedGuardrails
+                    .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "preflight check failed" })
+                    .ToList();
+
+                AttemptResult preflightSettle = _journaler.TaskPreflightFailed(
+                    task,
+                    preflightAttempt,
+                    taskStartedAt,
+                    RelativeLogDir(task.Id, preflightAttempt),
+                    AttemptLogDir(task.Id, preflightAttempt),
+                    failedChecks);
+
+                // TaskFinished is fired by the Scheduler's OnSettledAsync for every settled result (as it
+                // is for the other ExecuteAsync early-returns — needs-human / permission-wall), so it is
+                // deliberately NOT called here to avoid a duplicate observer notification.
+                return preflightSettle.Result;
             }
         }
 

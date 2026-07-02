@@ -58,6 +58,15 @@ public sealed class PlanGuardrailPhaseTests
         return await root.Parse(args).InvokeAsync();
     }
 
+    /// <summary>As <see cref="RunCliAsync"/> but also returns the captured console stdout (D4).</summary>
+    private static async Task<(int Exit, string Out)> RunCliCapturedAsync(params string[] args)
+    {
+        var io = new StringConsoleIo();
+        var root = CommandFactory.BuildRootCommand(io);
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
+    }
+
     private static JournalDocument ReadJournal(string planDir) =>
         JournalReader.Read(RunJournal.PathFor(planDir));
 
@@ -119,6 +128,28 @@ public sealed class PlanGuardrailPhaseTests
         string tree = plan.Git("ls-tree", "-r", "--name-only", plan.PlanBranch);
         Assert.Contains("src/01-a.cs", tree, StringComparison.Ordinal);
         Assert.Contains("src/02-b.cs", tree, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// D4: on a terminal <c>plan-guardrail-failed</c> halt, <c>RunCommand</c> must surface each failed
+    /// check's name + reason INLINE in the console (read from the journaled
+    /// <c>planGuardrails.failedChecks</c>), not just a bare "see planGuardrails in run.json" pointer — so
+    /// a terminal halt is as legible as the legacy per-task gate. The fixture's terminal check echoes
+    /// "plan-guardrail terminal gate RED (deliberate)", which becomes the failed check's reason.
+    /// </summary>
+    [Fact]
+    public async Task PlanGuardrailRed_SurfacesFailedCheckNameAndReasonInConsole()
+    {
+        using var plan = new PlanGuardrailPlan(worktree: false);
+
+        (int exit, string output) = await RunCliCapturedAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.TaskFailed, exit);
+
+        // The failed check's NAME (the terminal guardrail's filename stem) is surfaced inline...
+        Assert.Contains("01-terminal", output);
+        // ...and its actionable REASON (the check's stdout) is surfaced inline, not hidden in run.json.
+        Assert.Contains("plan-guardrail terminal gate RED (deliberate)", output);
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════

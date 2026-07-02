@@ -274,15 +274,51 @@ public sealed class TaskPreflightSlotTests
         TaskJournalEntry consumerEntry = journal.Tasks["02-consumer"];
         Assert.Equal(JournalTaskStatus.NeedsHuman, consumerEntry.Status);
 
+        // ── THE JOURNALED OUTCOME (D6) ────────────────────────────────────────────────────────────
+        // A red task-preflight settles to needs-human and RECORDS a single attempt carrying the
+        // task-preflight-failed outcome (SSOT §7: "a per-attempt outcome inside tasks{}") plus the
+        // failed check's name AND reason — so run.json shows WHAT failed and WHY, not a bare
+        // {status: needs-human, attempts: []}. (The pre-D6 bug journaled RecordSettle only, emitting
+        // no AttemptRecord and discarding the outcome token + reason.)
+        AttemptRecord preflightAttempt = Assert.Single(consumerEntry.Attempts);
+        Assert.Equal(AttemptOutcome.TaskPreflightFailed, preflightAttempt.Outcome);
+        FailedGuardrail failed = Assert.Single(preflightAttempt.FailedGuardrails);
+        Assert.Equal("01-producer-delivered", failed.Name);
+        Assert.False(string.IsNullOrWhiteSpace(failed.Reason),
+            "the journaled preflight failure must carry an actionable reason, not an empty string");
+        Assert.Contains("producer contribution absent", failed.Reason);
+
         // ── THE NO-BURN PROPERTY (the whole feature) ──────────────────────────────────────────────
-        // A red task-preflight short-circuits to needs-human WITHOUT entering the attempt loop, so the
-        // consumer's Attempts list is EMPTY (attempt count == 0). The settle outcome is deliverable 4's
-        // AttemptOutcome.TaskPreflightFailed (serialized "task-preflight-failed").
-        Assert.Empty(consumerEntry.Attempts);
-        Assert.True(consumerEntry.Attempts.Count == 0,
-            $"NO-BURN violated: a red task-preflight must settle the consumer to needs-human with the " +
-            $"{nameof(AttemptOutcome.TaskPreflightFailed)} outcome ('task-preflight-failed') WITHOUT " +
-            $"entering the attempt loop, but {consumerEntry.Attempts.Count} attempt(s) were burned.");
+        // No-burn is now proven by the ATTEMPT NUMBER, not by list-emptiness: the short-circuit records
+        // its single attempt as attempt #1 (the FIRST attempt number), which is only reachable when the
+        // retry loop never ran — a burned retry would have produced attempt #2+. The recorded attempt
+        // therefore does NOT count against the retry budget: the action never ran and the budget is never
+        // consulted (the short-circuit returns before the attempt loop AND before MarkRunning).
+        Assert.Equal(1, preflightAttempt.Attempt);
+        Assert.All(consumerEntry.Attempts, a => Assert.Equal(AttemptOutcome.TaskPreflightFailed, a.Outcome));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+    // D6 — a REAL run produces the "task-preflight-failed" WIRE TOKEN in the serialized run.json. The
+    // JournalOutcomesRoundTripTests unit test only proves the enum serializes to that token; before D6,
+    // NO real run ever EMITTED it (the red-preflight path journaled RecordSettle only, writing no
+    // AttemptRecord). This reads the on-disk journal bytes to prove the token now reaches run.json.
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData(1)] // serial     — MaxParallelism = 1
+    [InlineData(2)] // worktree   — MaxParallelism > 1
+    [Trait("Category", "Preflights")]
+    public async Task RedTaskPreflight_EmitsTaskPreflightFailedTokenInRunJson(int maxParallelism)
+    {
+        using var plan = new PreflightPlan(maxParallelism, defaultRetries: 2)
+            .AddTask("01-producer")
+            .AddTask("02-consumer", Preflight.Red, dependsOn: "01-producer");
+
+        await plan.RunAsync();
+
+        string runJson = File.ReadAllText(RunJournal.PathFor(plan.PlanDir));
+        Assert.Contains("\"task-preflight-failed\"", runJson);
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -307,10 +343,13 @@ public sealed class TaskPreflightSlotTests
         RunReport report = await plan.RunAsync();
         JournalDocument journal = plan.Journal();
 
-        // The consumer short-circuits to needs-human (with no attempt burned).
+        // The consumer short-circuits to needs-human, journaling ONE task-preflight-failed attempt
+        // (recorded as attempt #1 — proof no retry was burned; a burned retry would be attempt #2+).
         Assert.Equal(TaskOutcome.NeedsHuman, report.Tasks.Single(t => t.TaskId == "02-consumer").Outcome);
         Assert.Equal(JournalTaskStatus.NeedsHuman, journal.Tasks["02-consumer"].Status);
-        Assert.Empty(journal.Tasks["02-consumer"].Attempts);
+        AttemptRecord consumerAttempt = Assert.Single(journal.Tasks["02-consumer"].Attempts);
+        Assert.Equal(AttemptOutcome.TaskPreflightFailed, consumerAttempt.Outcome);
+        Assert.Equal(1, consumerAttempt.Attempt);
 
         // Cone isolation: the consumer's transitive dependent is BLOCKED and never runs.
         Assert.Equal(TaskOutcome.Blocked, report.Tasks.Single(t => t.TaskId == "03-dependent").Outcome);

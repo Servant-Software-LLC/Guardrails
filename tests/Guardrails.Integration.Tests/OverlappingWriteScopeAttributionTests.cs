@@ -8,16 +8,32 @@ using Guardrails.Core.State;
 namespace Guardrails.Integration.Tests;
 
 /// <summary>
-/// Issue #175 — merge-collision ATTRIBUTION. When the terminal integration gate fails on the final
-/// merged HEAD and two tasks have OVERLAPPING <c>writeScope</c> on a shared file, the harness enriches
-/// the gate-failure diagnosis to name those task pairs + the shared path — so a human immediately sees
-/// "this looks like a merge collision on <c>Launcher.cs</c>" instead of a bare build error (the real
-/// plan-0009 CS0101 duplicate-class break a 3-way merge could not catch). The harness does NOT detect
-/// the semantic duplicate itself (that is the build guardrail's job); it surfaces the structural suspects.
+/// Issue #175 — merge-collision ATTRIBUTION on the LEGACY <c>integrationGate</c> path. When the terminal
+/// integration gate fails on the final merged HEAD and two tasks have OVERLAPPING <c>writeScope</c> on a
+/// shared file, the harness enriches the gate-failure diagnosis to name those task pairs + the shared path
+/// — so a human immediately sees "this looks like a merge collision on <c>Launcher.cs</c>" instead of a
+/// bare build error (the real plan-0009 CS0101 duplicate-class break a 3-way merge could not catch). The
+/// harness does NOT detect the semantic duplicate itself (that is the build guardrail's job); it surfaces
+/// the structural suspects.
 ///
-/// Driven through a real git repo + a forced terminal-gate failure (<see cref="SpyReVerifier"/> with
-/// <c>AlwaysPass=false</c>), exercising the production <see cref="Scheduler.WithTerminalGateFailure"/>
-/// path. The linear chain FF-settles (no union re-verify), so the spy fires ONLY at the terminal C1 gate.
+/// <para>
+/// <b>⚠ DELIBERATE LEGACY-PATH REGRESSION PIN — this is NOT a validation contract.</b> The fixture
+/// intentionally builds a plan with a terminal <c>integrationGate: true</c> sink task and loads it via
+/// <see cref="PlanLoader"/> ONLY, deliberately BYPASSING <see cref="PlanValidator"/> — so
+/// <c>GR2029</c> (<see cref="DiagnosticCodes.RetiredIntegrationGateKey"/>, the four-folder loader's hard
+/// rejection of the retired <c>integrationGate</c> key) never fires. This pins the #175 attribution logic
+/// on the LEGACY per-task <c>integrationGate</c> / <c>Scheduler.WithTerminalGateFailure</c> C1 path, which
+/// is still live for plans on the retired sink-task modelling. Do NOT read this as "<c>integrationGate:
+/// true</c> still validates" — it does not (a real <c>run</c>/<c>validate</c> rejects it via GR2029). The
+/// #175 attribution has NOT yet been ported to the new plan-level <c>&lt;plan&gt;/guardrails/</c> terminal
+/// gate; that port is tracked as <b>#205</b>, at which point this fixture should migrate to the four-folder
+/// shape and validate. Until then this test MUST keep bypassing validate — do not "fix" it to validate,
+/// and do not migrate it (that work is blocked on #205).
+/// </para>
+///
+/// Driven through a real git repo + a forced terminal-gate failure (<see cref="FailingReVerifier"/>),
+/// exercising the production <c>Scheduler.WithTerminalGateFailure</c> path. The linear chain FF-settles
+/// (no union re-verify), so the re-verifier fires ONLY at the terminal C1 gate.
 /// </summary>
 public sealed class OverlappingWriteScopeAttributionTests
 {

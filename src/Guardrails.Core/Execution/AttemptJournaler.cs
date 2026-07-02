@@ -378,6 +378,65 @@ internal sealed class AttemptJournaler
         }, FeedbackPath: null, Outcome: AttemptOutcome.PermissionDenied);
     }
 
+    /// <summary>
+    /// The task-level preflight short-circuit (two-scope preflights F9, SSOT §7): a RED
+    /// <c>tasks/&lt;id&gt;/preflights/</c> slot fired BEFORE the attempt loop. Record ONE attempt with the
+    /// distinct <see cref="AttemptOutcome.TaskPreflightFailed"/> outcome carrying the failed preflight
+    /// checks (name + actionable reason), write a task-level <c>feedback.md</c> naming what was missing,
+    /// and settle the task <c>needs-human</c> — so <c>run.json</c> shows WHAT preflight failed and WHY
+    /// (not a bare <c>{status: needs-human, attempts: []}</c>).
+    /// <para>
+    /// This attempt does NOT burn a retry: the action never ran and the retry budget is never consulted
+    /// (the short-circuit returns before the attempt loop AND before <see cref="RunJournal.MarkRunning"/>).
+    /// The no-burn property is STRUCTURAL — a preflight-fail record is present but the budget is untouched,
+    /// exactly as the SSOT §7 wire example shows (<c>attempts: [ { attempt: 1, outcome: "task-preflight-failed" } ]</c>).
+    /// Returns a non-green result so the scheduler blocks the transitive cone.
+    /// </para>
+    /// </summary>
+    public AttemptResult TaskPreflightFailed(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        IReadOnlyList<FailedGuardrail> failedChecks)
+    {
+        Directory.CreateDirectory(logDir);
+
+        string checkList = string.Join(", ", failedChecks.Select(c => c.Name));
+        string detail = string.Join(
+            "\n", failedChecks.Select(c => $"- **{c.Name}** — {c.Reason}"));
+        string feedback =
+            $"# Task '{task.Id}' failed its task-level preflight\n\n" +
+            $"Task: {task.Description}\n\n" +
+            "A `tasks/<id>/preflights/` check gates this task on a producer having actually delivered in " +
+            "the bytes this task inherited. The following preflight check(s) failed, so the task did NOT " +
+            "run its action (no retry attempt was burned):\n\n" +
+            $"{detail}\n\n" +
+            "This is a dependency-delivery gate, not a task defect: fix the upstream producer (or the " +
+            "inherited bytes) so the preflight passes, then re-run.\n";
+        AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = null,
+            Outcome = AttemptOutcome.TaskPreflightFailed,
+            FailedGuardrails = failedChecks,
+            LogDir = relativeLogDir
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            Summary = $"task-preflight failed: {checkList}"
+        }, FeedbackPath: null, Outcome: AttemptOutcome.TaskPreflightFailed);
+    }
+
     public AttemptResult Cancelled(
         TaskNode task,
         int attemptNumber,

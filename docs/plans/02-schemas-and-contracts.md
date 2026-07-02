@@ -951,9 +951,14 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   split). The task-scoped preflight gate did not pass, so the harness settles the task `needs-human` and
   its transitive cone `blocked` (exit 2) WITHOUT running the action. A per-attempt `outcome` inside
   `tasks{}`, distinct from `action-failed`/`guardrail-failed` so a human (and §9 triage) sees a preflight
-  gate failure — not a generic action failure. Distinct from the two whole-plan phase halts
-  (`plan-preflight-failed`/`plan-guardrail-failed`), which live OUTSIDE `tasks{}` in the top-level sections
-  below.
+  gate failure — not a generic action failure. Recorded as a real attempt record (`attempt: 1`) carrying
+  this `outcome` plus the failed preflight check(s) in `failedGuardrails` (`{ "name", "reason" }`), so
+  `run.json` shows WHAT gate failed and WHY. **No-burn is STRUCTURAL, not signalled by attempt-list
+  emptiness:** the short-circuit records exactly ONE attempt and fires BEFORE the attempt loop and before
+  the task is marked `running`, so the retry budget is never consumed (a burned retry would produce a
+  second attempt) and no transient `running` status is ever written. Distinct from the two whole-plan
+  phase halts (`plan-preflight-failed`/`plan-guardrail-failed`), which live OUTSIDE `tasks{}` in the
+  top-level sections below.
 
 **Top-level plan-phase sections (two-scope preflights, F9 split)**
 

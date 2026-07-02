@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
@@ -227,9 +228,7 @@ public static class RunCommand
             int exitCode = Finish(report, probe.Plan, runId, io);
             if (report.AllSucceeded && !planGuardrailsPassed)
             {
-                io.Out.WriteLine();
-                io.Out.WriteLine("Plan guardrail gate FAILED on the merged HEAD — terminal halt (SSOT §7 planGuardrails).");
-                io.Out.WriteLine($"  See {RunJournal.PathFor(probe.Plan.PlanDirectory)} (\"planGuardrails\") for the failed check(s).");
+                PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
                 return ExitCodes.TaskFailed;
             }
 
@@ -313,6 +312,73 @@ public static class RunCommand
         }
 
         return report.AllSucceeded ? ExitCodes.Success : ExitCodes.TaskFailed;
+    }
+
+    /// <summary>
+    /// Print the terminal plan-guardrail gate failure (D4). Read the failed checks (name + reason) that
+    /// <see cref="PlanGuardrailPhase"/> journaled into <c>planGuardrails.failedChecks</c> and surface each
+    /// one INLINE — so a terminal halt is as legible as the legacy per-task gate (which listed its failed
+    /// guardrails in the summary), instead of a bare "see planGuardrails in run.json" pointer that forces
+    /// the user to open the journal. Mirrors the shape of the NEEDS HUMAN block. Best-effort: a journal
+    /// read hiccup falls back to the generic pointer rather than throwing (the exit code is unaffected).
+    /// <para>
+    /// This surfaces the failed checks that ARE recorded; it does NOT restore the #175 merge-collision
+    /// hint (deferred as #205).
+    /// </para>
+    /// </summary>
+    private static void PrintTerminalGateFailure(string planDirectory, IConsoleIo io)
+    {
+        TextWriter output = io.Out;
+        string journalPath = RunJournal.PathFor(planDirectory);
+
+        output.WriteLine();
+        output.WriteLine("Plan guardrail gate FAILED on the merged HEAD — terminal halt (SSOT §7 planGuardrails).");
+
+        IReadOnlyList<FailedGuardrail> failedChecks = TryReadPlanGuardrailFailures(journalPath);
+        if (failedChecks.Count > 0)
+        {
+            foreach (FailedGuardrail check in failedChecks)
+            {
+                output.WriteLine($"  FAILED: {check.Name} — {check.Reason}");
+            }
+            output.WriteLine($"  (full detail in {journalPath} under \"planGuardrails\")");
+        }
+        else
+        {
+            // No structured checks readable (older/absent section, or a read hiccup): the prior pointer.
+            output.WriteLine($"  See {journalPath} (\"planGuardrails\") for the failed check(s).");
+        }
+    }
+
+    /// <summary>
+    /// Read the terminal gate's <c>planGuardrails.failedChecks</c> (name + reason) from the persisted
+    /// journal. Returns an empty list when the section is absent/passed or the journal cannot be read —
+    /// the caller then falls back to the generic pointer.
+    /// </summary>
+    private static IReadOnlyList<FailedGuardrail> TryReadPlanGuardrailFailures(string journalPath)
+    {
+        try
+        {
+            if (!File.Exists(journalPath))
+            {
+                return [];
+            }
+
+            JournalDocument document = JournalReader.Read(journalPath);
+            return document.PlanGuardrails?.FailedChecks ?? [];
+        }
+        catch (IOException)
+        {
+            return [];
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     /// <summary>
