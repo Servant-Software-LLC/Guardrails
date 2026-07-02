@@ -1,5 +1,5 @@
 {
-  "description": "Whole-solution Release build: the entire Guardrails.sln builds in Release in solution context after all harness milestones (M1-M5) land - catching a project that builds alone but breaks the solution. A plain build task that the terminal integration-gate sink (task 31) depends on - NOT itself an integrationGate sink (plan §3.3 requires exactly one integrationGate sink, which is task 31).",
+  "description": "Whole-solution Release build: the entire Guardrails.sln builds in Release in solution context after all harness milestones (M1-M5) land - catching a project that builds alone but breaks the solution. A plain build task; the terminal integration gate is the plan-root guardrails/ folder (§3.3), not a task.",
   "stableId": "p08g30",
   "dependsOn": ["26-implement-ai-merge-worker", "33-implement-needs-human-triage"]
 }
