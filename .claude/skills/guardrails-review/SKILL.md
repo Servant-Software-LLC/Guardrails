@@ -319,6 +319,72 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   an implementation editing the tests) goes uncaught. Omission is correct ONLY for a genuinely
   repo-wide task (a terminal whole-suite gate, a sweeping cross-cutting change); flag a
   confidently-scopable task with no `writeScope` as WEAK and name the surface it should declare.
+- **Four-folder gap — missing/empty/tautological plan-level or task-level folder (deliverable 9)**:
+  the terminal integration-gate TASK (`integrationGate: true`) is **RETIRED** — a plan still
+  declaring it gets a **hard validation error (GR2029)**, no coexistence window. The replacement
+  is four first-class folders at fixed locations (SSOT §1/§3.3): plan-level `<plan>/preflights/`
+  ("Full Flight Checks", evaluated once BEFORE the DAG against the starting repo) and
+  `<plan>/guardrails/` ("Terminal Gate", evaluated once on the merged HEAD AFTER the DAG drains
+  green) — both siblings of `tasks/`, `guardrails.json`, `state/` at the **plan root** — plus
+  task-level `tasks/<id>/preflights/` (JIT dependency-delivery, a sibling of the existing
+  `tasks/<id>/guardrails/`, evaluated per task BEFORE its attempt loop). Probe each folder the
+  plan's shape requires and treat a required-but-missing folder/check as a **BLOCKER**:
+  - **Missing or empty terminal folder on a multi-leaf/fan-in plan** — `<plan>/guardrails/`
+    absent, or present with zero guardrail files, on a plan with ≥2 leaf tasks or any fan-in task
+    → **BLOCKER**. `validate` already enforces this in worktree mode (GR2028); call it out with
+    the concrete leaf/fan-in shape that triggers the obligation.
+  - **Tautological terminal folder (the re-homed GR2018 obligation)** — `<plan>/guardrails/`
+    present and non-empty but every file is a no-op (`exit 0`, a bare `echo`, a comment that only
+    NAMES a build command, a prompt-judge with nothing to verify) rather than **≥1 real
+    integration-set re-run** — a genuine whole-repo build/test/suite invocation (`dotnet test`,
+    `dotnet build`, `npm test`, `pytest`, `cargo test`, …) or a union invariant → **BLOCKER**. A
+    folder that merely EXISTS or merely contains a file certifies nothing; GR2018's content teeth
+    survive the move from task to folder — "non-empty" is not the bar, "re-runs the integration
+    set" is.
+  - **A lingering `integrationGate: true` task** — flag it and point the author at the
+    `<plan>/guardrails/` folder replacement; do not accept a plan whose terminal check still
+    depends on the retired sink kind. (The one narrow exception: a plan's own committed,
+    documented bootstrap exemption for a harness version that predates the loader — name it
+    explicitly if the plan claims one, don't accept it silently.)
+  - **Missing plan-level preflight on a brownfield plan** — the existing-tests-green positive
+    baseline now lives as a `<plan>/preflights/` **positive** check (not a no-op ROOT task); its
+    absence on a brownfield plan is the same WEAK→BLOCKER call as the baseline probe above (§2),
+    just relocated to the folder.
+  - **Missing task-level preflight where a `dependsOn` edge delivers a JIT dependency** — a
+    consumer task that depends on a producer for a type/route/symbol/artifact it needs inside its
+    OWN segment worktree at `taskBase`, with no `tasks/<id>/preflights/` check confirming the
+    producer's contribution actually landed before the attempt loop spends a turn building against
+    possibly-absent bytes → **WEAK** (flag **BLOCKER** when the delivery is genuinely uncertain —
+    e.g. the producer is a same-wave sibling rather than a settled ancestor).
+  - `scope: "integration"` itself is **UNCHANGED** — it remains the per-union tag driving the
+    §4.3 per-union re-verify; only the *terminal-sink task* is retired. Do not flag a
+    `scope: "integration"` guardrail elsewhere in the DAG as if it were the retired mechanism.
+- **Live-probe used where a flake-free check would do — ADVISORY WARN, never a BLOCK (deliverable
+  9)**: a check placed in ANY of the four folders that reaches outside the committed bytes under
+  review — a network call, a polling loop, a spawned daemon/live service, anything whose outcome
+  depends on more than the repo's own build/test tooling — trades determinism for **flake risk**.
+  This is **authoring guidance the review emits as a WARN, never a BLOCKER**; the harness itself
+  enforces NOTHING here — `guardrails validate`/`run` neither warns nor blocks on a live probe —
+  so do not escalate this past a WARN no matter how bad the probe looks.
+  - **Plan-level (`<plan>/preflights/` / `<plan>/guardrails/`)**: a full `dotnet test` /
+    `dotnet build` over the committed bytes (the starting repo for preflights, the merged HEAD for
+    guardrails) is **FINE** — that IS the canonical Full Flight Check / Terminal Gate shape, not a
+    live probe. WARN only on a network/poll/daemon/live-service call there — a flake halts the
+    **entire run** (plan-level has the maximal blast radius).
+  - **Task-level (`tasks/<id>/preflights/`, and `tasks/<id>/guardrails/` by the same logic)**:
+    **prefer** a byte/exit check (file exists, grep, a build/test scoped to the task's segment);
+    WARN on a network/poll probe here too — smaller blast radius than plan-level (blocks one cone,
+    not the whole run) but still a flake risk this early in the attempt loop.
+  - The property under review is **FLAKE-FREEDOM, not process-count** — a `dotnet test` is a
+    process start and stays fine; the WARN targets non-repeatable outcomes (network, timing,
+    external services), not process spawning itself.
+
+> **The three probes immediately below are SUPERSEDED by the four-folder model above** — they
+> describe the RETIRED `integrationGate: true` task mechanism (now a hard validation error,
+> GR2029) and apply only when reviewing a pre-migration plan or a named bootstrap exemption. For a
+> plan authored under the four-folder model, use the terminal-folder probe above instead of the
+> "exactly one `integrationGate: true` task" framing below. `scope: "integration"` itself did NOT
+> change — only the terminal-sink TASK kind was retired.
 - **Integration gate missing or empty**: in a plan with ≥2 leaf tasks or any fan-in, confirm
   **exactly one** task declares `integrationGate: true` (the terminal whole-repo sink, SSOT
   §3.3) and that sink carries **at least one** `scope: "integration"` guardrail — an empty gate
