@@ -831,13 +831,27 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "attempt": 1,
           "startedAt": "…", "endedAt": "…",
           "actionExitCode": 0,
-          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied
+          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied | task-preflight-failed
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
           "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1"
         }
       ]
     }
+  },
+
+  // OPTIONAL top-level sections — two-scope preflights (F9 split). Additive: a plan WITHOUT the
+  // feature OMITS both (an older reader ignores them; absent, never null noise). Each is planHash-keyed.
+  "planPreflights": {                   // the PRE-DAG preflight phase result (OUTSIDE tasks{})
+    "status": "plan-preflight-failed",  // passed | plan-preflight-failed
+    "planHash": "sha256:…",
+    "evaluatedAt": "2026-06-10T16-22-30Z",
+    "checks": [ { "name": "git-top-level", "passed": false, "reason": "workspace is not a git top-level" } ]
+  },
+  "planGuardrails": {                    // the TERMINAL <plan>/guardrails/ gate on the merged HEAD (OUTSIDE tasks{})
+    "status": "plan-guardrail-failed",  // passed | plan-guardrail-failed
+    "planHash": "sha256:…",
+    "failedChecks": [ { "name": "whole-repo-build", "reason": "CS0111 duplicate member from a merge collision" } ]
   }
 }
 ```
@@ -873,6 +887,28 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   path refused across two or more attempts — instead of burning the remaining retry budget on the
   identical wall. The attempt carries this DISTINCT outcome so a human (and §9.2 triage) sees a
   permission/config issue, not a generic `action-failed`.
+- `task-preflight-failed` — a per-task `tasks/<id>/preflights/` slot failed (the two-scope preflights F9
+  split). The task-scoped preflight gate did not pass, so the harness settles the task `needs-human` and
+  its transitive cone `blocked` (exit 2) WITHOUT running the action. A per-attempt `outcome` inside
+  `tasks{}`, distinct from `action-failed`/`guardrail-failed` so a human (and §9 triage) sees a preflight
+  gate failure — not a generic action failure. Distinct from the two whole-plan phase halts
+  (`plan-preflight-failed`/`plan-guardrail-failed`), which live OUTSIDE `tasks{}` in the top-level sections
+  below.
+
+**Top-level plan-phase sections (two-scope preflights, F9 split)**
+
+Two OPTIONAL top-level journal keys record the two whole-plan phases that run OUTSIDE `tasks{}`. Both are
+**additive and backward-compatible**: a plan WITHOUT the feature **omits** them (an older reader ignores
+them; they are absent, never `null` noise), and the existing `tasks{}` shape is untouched. Each is
+**`planHash`-keyed** — it records the plan hash it evaluated against.
+- `planPreflights` = `{ "status", "planHash", "evaluatedAt", "checks": [...] }` — the **pre-DAG** preflight
+  phase result. `status` is `passed` or **`plan-preflight-failed`** (the pre-DAG phase failed → halt BEFORE
+  scheduling any task → exit 2). `checks[]` are the individual preflight results
+  (`{ "name", "passed", "reason"? }`).
+- `planGuardrails` = `{ "status", "planHash", "failedChecks": [...] }` — the **terminal**
+  `<plan>/guardrails/` gate evaluated on the merged plan-branch HEAD. `status` is `passed` or
+  **`plan-guardrail-failed`** (the terminal gate failed → exit 2). `failedChecks[]` are the failed
+  guardrails (`{ "name", "reason" }`, the same shape as a task attempt's `failedGuardrails`).
 
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the

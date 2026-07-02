@@ -24,6 +24,74 @@ public sealed record JournalDocument
     /// <summary>Per-task records, keyed by task id.</summary>
     public IReadOnlyDictionary<string, TaskJournalEntry> Tasks { get; init; } =
         new Dictionary<string, TaskJournalEntry>();
+
+    /// <summary>
+    /// OPTIONAL top-level pre-DAG preflight phase result (SSOT §7, the two-scope preflights F9 split). The
+    /// pre-DAG phase runs BEFORE any task is scheduled; a failure halts the run (exit 2). Additive and
+    /// backward-compatible: a plan WITHOUT the feature OMITS this section (an older reader ignores it), so
+    /// it is written only when present — never serialized as <c>null</c> noise (see the
+    /// <see cref="JsonIgnoreAttribute"/>). The existing <see cref="Tasks"/> shape is untouched.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PlanPreflightsSection? PlanPreflights { get; init; }
+
+    /// <summary>
+    /// OPTIONAL top-level terminal plan-guardrail gate result (SSOT §7, F9): the terminal
+    /// <c>&lt;plan&gt;/guardrails/</c> gate evaluated on the merged plan-branch HEAD; a failure halts the
+    /// run (exit 2). Additive and backward-compatible on the same terms as <see cref="PlanPreflights"/> —
+    /// absent (not null) on a plan without the feature.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PlanGuardrailsSection? PlanGuardrails { get; init; }
+}
+
+/// <summary>
+/// The pre-DAG preflight phase result (SSOT §7 top-level <c>planPreflights</c>, two-scope preflights F9
+/// split). <c>planHash</c>-keyed so it self-scopes to the plan it evaluated.
+/// </summary>
+public sealed record PlanPreflightsSection
+{
+    /// <summary>The phase status (<c>passed</c> or <c>plan-preflight-failed</c>).</summary>
+    public required PlanPhaseStatus Status { get; init; }
+
+    /// <summary>The plan hash the preflight phase evaluated against (SSOT §7; mirrors <see cref="JournalDocument.PlanHash"/>).</summary>
+    public required string PlanHash { get; init; }
+
+    /// <summary>UTC time the preflight phase was evaluated (ISO-8601).</summary>
+    public required DateTimeOffset EvaluatedAt { get; init; }
+
+    /// <summary>The individual preflight checks that ran (name + pass/fail + optional reason).</summary>
+    public IReadOnlyList<PlanPreflightCheck> Checks { get; init; } = [];
+}
+
+/// <summary>One pre-DAG preflight check result (SSOT §7 <c>planPreflights.checks[]</c>).</summary>
+public sealed record PlanPreflightCheck
+{
+    /// <summary>The check's name.</summary>
+    public required string Name { get; init; }
+
+    /// <summary>Whether the check passed.</summary>
+    public required bool Passed { get; init; }
+
+    /// <summary>The actionable failure reason; omitted when the check passed.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; init; }
+}
+
+/// <summary>
+/// The terminal plan-guardrail gate result on the merged plan-branch HEAD (SSOT §7 top-level
+/// <c>planGuardrails</c>, two-scope preflights F9 split). <c>planHash</c>-keyed.
+/// </summary>
+public sealed record PlanGuardrailsSection
+{
+    /// <summary>The gate status (<c>passed</c> or <c>plan-guardrail-failed</c>).</summary>
+    public required PlanPhaseStatus Status { get; init; }
+
+    /// <summary>The plan hash the terminal gate evaluated against (SSOT §7).</summary>
+    public required string PlanHash { get; init; }
+
+    /// <summary>The guardrail checks that failed (name + reason); empty unless <see cref="Status"/> is plan-guardrail-failed.</summary>
+    public IReadOnlyList<FailedGuardrail> FailedChecks { get; init; } = [];
 }
 
 /// <summary>One task's journal record (SSOT §7 <c>tasks.&lt;id&gt;</c>).</summary>
