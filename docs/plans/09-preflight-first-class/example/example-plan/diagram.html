@@ -1,14 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=8e2475198db3d9137657d38d3f4641e101b2387c8329ac6ace432bb730e36d5a -->
-<!-- REAL render, minimally hand-enhanced. The DAG shape + all node labels (everything the
-     source-sha256 above covers) are the byte-for-byte output of the real `guardrails graph` on
-     this partition-validating folder — there is NO validating twin and NO PREFLIGHT subgraph.
-     Two HONEST, cosmetic additions were made by hand AFTER the render:
-       (1) the three Bucket-A/B baseline TASK nodes (00, 01, 02) carry a subtle :::baseline tag —
-           they are ORDINARY first-wave nodes, NOT a separate phase or lane;
-       (2) exactly ONE simulated node (precond_05_requestid_delivered) was added to represent
-           05's Bucket-C `preflights/` check, gating ONLY 05 (and thus only 05's cone), styled
-           dashed-violet :::precond. This node is the only hand-added DAG element; it is NOT part
-           of the real render and NOT covered by the source-sha256. See ../README.md. -->
+<!-- guardrails:graph v1 source-sha256=963cbfdd0b9433fe56fbd7060483286224cfe6cee5a2796edd37154ba3bdaae8 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -37,88 +27,74 @@
 </div>
 <div id="stage"></div>
 <div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
-  Nodes 00/01/02 are ordinary first-wave <b style="color:#9ec5ff">Bucket-A/B baseline</b> tasks
-  (subtle dashed outline) &mdash; not a separate phase. The lone
-  <b style="color:#cdb8ff">dashed-violet Bucket-C node</b> is the SIMULATED (#183) per-task JIT
-  dependency-delivery precondition; it gates only 05's cone, not the whole plan.
   Node clicks open source files &mdash; serve via a local HTTP server (e.g.
   <code>python -m http.server</code>) for clicks to work; browsers block
   <code>file://&rarr;file://</code> navigation by default.
   On GitHub, diagram.md renders instead.</div>
 
 <script type="text/plain" id="graph-source">flowchart TD
-  task_00_baseline_core_tests_green["00-baseline-core-tests-green"]:::baseline
-  gr_00_baseline_core_tests_green_0["Bucket A (positive baseline): Acme.Payments.Core.Tests are already green NOW (fail fast on a broken start). A no-op-root doctrine task with a scope:&quot;local&quot; guardrail — ships and validates today."]:::guardrail
-  task_00_baseline_core_tests_green --> gr_00_baseline_core_tests_green_0
-  gr_00_baseline_core_tests_green_0 --> done_00_baseline_core_tests_green
-  done_00_baseline_core_tests_green["00-baseline-core-tests-green ✓ Finished"]:::done
-  task_01_baseline_api_endpoint_up["01-baseline-api-endpoint-up"]:::baseline
-  gr_01_baseline_api_endpoint_up_0["Bucket A (positive NON-TEST baseline): Acme.Payments.Api's GET /health route is already wired NOW. A deterministic byte-check on the wired source (NOT a live probe). A no-op-root doctrine task with a scope:&quot;local&quot; guardrail — ships and validates today."]:::guardrail
-  task_01_baseline_api_endpoint_up --> gr_01_baseline_api_endpoint_up_0
-  gr_01_baseline_api_endpoint_up_0 --> done_01_baseline_api_endpoint_up
-  done_01_baseline_api_endpoint_up["01-baseline-api-endpoint-up ✓ Finished"]:::done
-  task_02_baseline_correlation_absent["02-baseline-correlation-absent"]:::baseline
-  gr_02_baseline_correlation_absent_0["Bucket B (negative/assert-absent baseline): the RequestId field is ABSENT from the charge result now. Inverted polarity — FAILS if it is already present. ONE-SHOT at run start; scope:&quot;local&quot; so it is NEVER re-run at a union/terminal gate. A cross-reference to, not a fork of, tests-fail-on-current-code."]:::guardrail
-  task_02_baseline_correlation_absent --> gr_02_baseline_correlation_absent_0
-  gr_02_baseline_correlation_absent_0 --> done_02_baseline_correlation_absent
-  done_02_baseline_correlation_absent["02-baseline-correlation-absent ✓ Finished"]:::done
-  task_03_author_correlation_tests["03-author-correlation-tests"]:::task
-  gr_03_author_correlation_tests_0["01-new-tests-exist"]:::guardrail
-  task_03_author_correlation_tests --> gr_03_author_correlation_tests_0
-  gr_03_author_correlation_tests_0 --> done_03_author_correlation_tests
-  gr_03_author_correlation_tests_1["Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the 02 Bucket-B negative baseline generalizes). scope:local — never re-run at a union."]:::guardrail
-  task_03_author_correlation_tests --> gr_03_author_correlation_tests_1
-  gr_03_author_correlation_tests_1 --> done_03_author_correlation_tests
-  done_03_author_correlation_tests["03-author-correlation-tests ✓ Finished"]:::done
-  task_04_implement_correlation["04-implement-correlation"]:::task
-  gr_04_implement_correlation_0["The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the 02 Bucket-B negative baseline makes attributable to this task). scope:local."]:::guardrail
-  task_04_implement_correlation --> gr_04_implement_correlation_0
-  gr_04_implement_correlation_0 --> done_04_implement_correlation
-  done_04_implement_correlation["04-implement-correlation ✓ Finished"]:::done
-  task_05_wire_api_correlation_middleware["05-wire-api-correlation-middleware"]:::task
-  gr_05_wire_api_correlation_middleware_0["01-health-still-200"]:::guardrail
-  task_05_wire_api_correlation_middleware --> gr_05_wire_api_correlation_middleware_0
-  gr_05_wire_api_correlation_middleware_0 --> done_05_wire_api_correlation_middleware
-  gr_05_wire_api_correlation_middleware_1["02-request-id-flows"]:::guardrail
-  task_05_wire_api_correlation_middleware --> gr_05_wire_api_correlation_middleware_1
-  gr_05_wire_api_correlation_middleware_1 --> done_05_wire_api_correlation_middleware
-  done_05_wire_api_correlation_middleware["05-wire-api-correlation-middleware ✓ Finished"]:::done
-  precond_05_requestid_delivered["Bucket C (SIMULATED #183) — dependency-delivery precondition at taskBase: did 04 thread RequestId into Acme.Payments.Core? Gates ONLY 05 (no burn on fail)."]:::precond
-  precond_05_requestid_delivered -.-> task_05_wire_api_correlation_middleware
-  task_06_integration_gate["06-integration-gate"]:::task
-  gr_06_integration_gate_0["Whole-repo integration gate: the merged plan branch builds and the touched-area suite is green. Re-run at every union and on the terminal merged HEAD."]:::guardrail
-  task_06_integration_gate --> gr_06_integration_gate_0
-  gr_06_integration_gate_0 --> done_06_integration_gate
-  done_06_integration_gate["06-integration-gate ✓ Finished"]:::done
-  done_00_baseline_core_tests_green --> task_03_author_correlation_tests
-  done_01_baseline_api_endpoint_up --> task_05_wire_api_correlation_middleware
-  done_02_baseline_correlation_absent --> task_03_author_correlation_tests
-  done_03_author_correlation_tests --> task_04_implement_correlation
-  done_04_implement_correlation --> task_05_wire_api_correlation_middleware
-  done_04_implement_correlation --> task_06_integration_gate
-  done_05_wire_api_correlation_middleware --> task_06_integration_gate
+  subgraph plan_preflights["Full Flight Checks"]
+    plan_preflights_anchor[" "]:::invisible
+    plan_preflights_0["Plan-level Full Flight Check (POSITIVE baseline): the touched areas (Acme.Payments.Core.Tests, Acme.Payments.Api build) are already green before this plan's first task runs."]:::preflight
+    plan_preflights_1["Plan-level Full Flight Check (NEGATIVE / assert-absent baseline): ChargeResult.RequestId does not exist yet, so a later 'present' gate is provably this plan's doing."]:::preflight
+  end
+  class plan_preflights planLevel;
+  subgraph task_03_author_correlation_tests["03-author-correlation-tests"]
+    task_03_author_correlation_tests_anchor[" "]:::invisible
+    subgraph task_03_author_correlation_tests_guardrails["Guardrails"]
+      task_03_author_correlation_tests_gr_0["01-new-tests-exist"]:::guardrail
+      task_03_author_correlation_tests_gr_1["Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the plan-level negative preflight generalizes). scope:local — never re-run at a union."]:::guardrail
+    end
+  end
+  class task_03_author_correlation_tests task;
+  subgraph task_04_implement_correlation["04-implement-correlation"]
+    task_04_implement_correlation_anchor[" "]:::invisible
+    subgraph task_04_implement_correlation_guardrails["Guardrails"]
+      task_04_implement_correlation_gr_0["The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the plan-level negative preflight makes attributable to this task). scope:local."]:::guardrail
+    end
+  end
+  class task_04_implement_correlation task;
+  subgraph task_05_wire_api_correlation_middleware["05-wire-api-correlation-middleware"]
+    task_05_wire_api_correlation_middleware_anchor[" "]:::invisible
+    subgraph task_05_wire_api_correlation_middleware_preflights["Preflights"]
+      task_05_wire_api_correlation_middleware_pf_0["Task-level JIT dependency-delivery precondition, keyed to the 04 -&gt; 05 dependsOn edge. Verifies that task 04 actually threaded RequestId into the inherited Acme.Payments.Core source at 05's taskBase, BEFORE 05's action runs. A deterministic byte-check (no live probe). NOT a guardrail; NEVER joins the integration set."]:::preflight
+    end
+    subgraph task_05_wire_api_correlation_middleware_guardrails["Guardrails"]
+      task_05_wire_api_correlation_middleware_gr_0["01-health-still-200"]:::guardrail
+      task_05_wire_api_correlation_middleware_gr_1["02-request-id-flows"]:::guardrail
+    end
+  end
+  class task_05_wire_api_correlation_middleware task;
+  subgraph plan_guardrails["Terminal Gate"]
+    plan_guardrails_anchor[" "]:::invisible
+    plan_guardrails_0["Terminal Gate: the whole repo builds on the merged plan-branch HEAD (the re-homed GR2018 whole-repo re-run, form 1)."]:::guardrail
+    plan_guardrails_1["Terminal Gate: the full touched-area test suite passes on the merged plan-branch HEAD (the re-homed GR2018 whole-repo re-run, form 1)."]:::guardrail
+    plan_guardrails_2["Terminal Gate: a genuine union invariant — the merged plan-branch HEAD's out/ tree carries no unresolved git conflict markers (the re-homed GR2018 whole-repo re-run, form 2)."]:::guardrail
+  end
+  class plan_guardrails planLevel;
+  plan_preflights_anchor --> task_03_author_correlation_tests_anchor
+  task_03_author_correlation_tests_anchor --> task_04_implement_correlation_anchor
+  task_04_implement_correlation_anchor --> task_05_wire_api_correlation_middleware_anchor
+  task_05_wire_api_correlation_middleware_anchor --> plan_guardrails_anchor
   classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
-  classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  classDef baseline fill:#cfe8ff,stroke:#1b6ec2,stroke-width:2px,stroke-dasharray:2 2,color:#0b2545;
-  classDef precond fill:#1a1230,stroke:#8a63d2,stroke-width:2px,stroke-dasharray:5 3,color:#cdb8ff;
-  click task_00_baseline_core_tests_green href "tasks/00-baseline-core-tests-green/" "00-baseline-core-tests-green" _blank
-  click gr_00_baseline_core_tests_green_0 href "tasks/00-baseline-core-tests-green/guardrails/01-core-tests-already-green.ps1" "01-core-tests-already-green" _blank
-  click task_01_baseline_api_endpoint_up href "tasks/01-baseline-api-endpoint-up/" "01-baseline-api-endpoint-up" _blank
-  click gr_01_baseline_api_endpoint_up_0 href "tasks/01-baseline-api-endpoint-up/guardrails/01-health-endpoint-already-up.ps1" "01-health-endpoint-already-up" _blank
-  click task_02_baseline_correlation_absent href "tasks/02-baseline-correlation-absent/" "02-baseline-correlation-absent" _blank
-  click gr_02_baseline_correlation_absent_0 href "tasks/02-baseline-correlation-absent/guardrails/01-request-id-not-yet-present.ps1" "01-request-id-not-yet-present" _blank
+  classDef planLevel fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  classDef invisible fill:none,stroke:none;
+  click plan_preflights_0 href "preflights/01-all-repo-tests-green.ps1" "01-all-repo-tests-green" _blank
+  click plan_preflights_1 href "preflights/02-correlation-id-absent.ps1" "02-correlation-id-absent" _blank
   click task_03_author_correlation_tests href "tasks/03-author-correlation-tests/" "03-author-correlation-tests" _blank
-  click gr_03_author_correlation_tests_0 href "tasks/03-author-correlation-tests/guardrails/01-new-tests-exist.ps1" "01-new-tests-exist" _blank
-  click gr_03_author_correlation_tests_1 href "tasks/03-author-correlation-tests/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
+  click task_03_author_correlation_tests_gr_0 href "tasks/03-author-correlation-tests/guardrails/01-new-tests-exist.ps1" "01-new-tests-exist" _blank
+  click task_03_author_correlation_tests_gr_1 href "tasks/03-author-correlation-tests/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
   click task_04_implement_correlation href "tasks/04-implement-correlation/" "04-implement-correlation" _blank
-  click gr_04_implement_correlation_0 href "tasks/04-implement-correlation/guardrails/01-correlation-tests-green.ps1" "01-correlation-tests-green" _blank
+  click task_04_implement_correlation_gr_0 href "tasks/04-implement-correlation/guardrails/01-correlation-tests-green.ps1" "01-correlation-tests-green" _blank
   click task_05_wire_api_correlation_middleware href "tasks/05-wire-api-correlation-middleware/" "05-wire-api-correlation-middleware" _blank
-  click gr_05_wire_api_correlation_middleware_0 href "tasks/05-wire-api-correlation-middleware/guardrails/01-health-still-200.ps1" "01-health-still-200" _blank
-  click gr_05_wire_api_correlation_middleware_1 href "tasks/05-wire-api-correlation-middleware/guardrails/02-request-id-flows.ps1" "02-request-id-flows" _blank
-  click precond_05_requestid_delivered href "tasks/05-wire-api-correlation-middleware/preflights/01-requestid-delivered-by-04.ps1" "Bucket C (SIMULATED #183) — 01-requestid-delivered-by-04" _blank
-  click task_06_integration_gate href "tasks/06-integration-gate/" "06-integration-gate" _blank
-  click gr_06_integration_gate_0 href "tasks/06-integration-gate/guardrails/01-whole-repo-green.ps1" "01-whole-repo-green" _blank</script>
+  click task_05_wire_api_correlation_middleware_pf_0 href "tasks/05-wire-api-correlation-middleware/preflights/01-requestid-delivered-by-04.ps1" "01-requestid-delivered-by-04" _blank
+  click task_05_wire_api_correlation_middleware_gr_0 href "tasks/05-wire-api-correlation-middleware/guardrails/01-health-still-200.ps1" "01-health-still-200" _blank
+  click task_05_wire_api_correlation_middleware_gr_1 href "tasks/05-wire-api-correlation-middleware/guardrails/02-request-id-flows.ps1" "02-request-id-flows" _blank
+  click plan_guardrails_0 href "guardrails/01-whole-repo-builds.ps1" "01-whole-repo-builds" _blank
+  click plan_guardrails_1 href "guardrails/02-full-suite-passes.ps1" "02-full-suite-passes" _blank
+  click plan_guardrails_2 href "guardrails/03-union-invariant-no-conflict-markers.ps1" "03-union-invariant-no-conflict-markers" _blank</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';

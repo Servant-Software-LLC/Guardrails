@@ -1,0 +1,3 @@
+{
+  "description": "Plan-level Full Flight Check (NEGATIVE / assert-absent baseline): ChargeResult.RequestId does not exist yet, so a later 'present' gate is provably this plan's doing."
+}

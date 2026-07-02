@@ -1,4 +1,4 @@
 {
-  "description": "Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the 02 Bucket-B negative baseline generalizes). scope:local — never re-run at a union.",
+  "description": "Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the plan-level negative preflight generalizes). scope:local — never re-run at a union.",
   "scope": "local"
 }

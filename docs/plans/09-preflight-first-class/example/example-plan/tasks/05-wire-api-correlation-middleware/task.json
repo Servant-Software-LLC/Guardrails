@@ -1,6 +1,6 @@
 {
   "description": "Wire correlation middleware in Acme.Payments.Api: read/generate X-Request-Id, pass it into the charge call, and keep GET /health returning 200.",
   "stableId": "work-wire",
-  "dependsOn": ["04-implement-correlation", "01-baseline-api-endpoint-up"],
+  "dependsOn": ["04-implement-correlation"],
   "writeScope": ["Acme.Payments.Api/"]
 }

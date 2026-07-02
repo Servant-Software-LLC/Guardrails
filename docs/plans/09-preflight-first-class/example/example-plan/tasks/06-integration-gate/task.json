@@ -1,6 +1,0 @@
-{
-  "description": "Terminal whole-repo integration gate: the fully merged plan branch builds and the whole touched-area suite is green. Run once on the merged HEAD.",
-  "stableId": "gate",
-  "dependsOn": ["04-implement-correlation", "05-wire-api-correlation-middleware"],
-  "integrationGate": true
-}

@@ -1,10 +1,11 @@
 # Plan: correlate payments requests with a request-id (BROWNFIELD)
 
 > **This is an ILLUSTRATIVE sample plan.** It shows what a breakdown looks like under the
-> preflight **partition** (`../09-preflight-first-class.md`, #183): Buckets A + B ship as
-> doctrine (and validate today), and a single Bucket-C slice is the deferred per-task JIT
-> precondition. It is *not* wired to a real repo and is *not* an input to `/plan-breakdown`.
-> See `./README.md` for what is real and what is simulated.
+> **four-folder model** (`../../09-preflight-first-class.md`): a plan-level `preflights/`
+> (Full Flight Checks) and `guardrails/` (Terminal Gate), plus a task-level `preflights/` (JIT
+> dependency-delivery precondition) alongside the ordinary task-level `guardrails/`. It is *not*
+> wired to a real repo and is *not* an input to `/plan-breakdown`. See `./README.md` for what is
+> real and what is simulated.
 
 ## Context
 
@@ -26,32 +27,27 @@ Every charge processed by `Acme.Payments` carries a `RequestId` that is:
 1. generated (or read from the inbound `X-Request-Id` header) by API middleware, and
 2. threaded through `Acme.Payments.Core`'s charge pipeline so it appears in the charge result.
 
-## Why this plan exercises the partition beyond unit tests
+## Why this plan exercises all four folder kinds
 
-This is the case the design is *about* — it exercises all three buckets, and only one of them is
-a unit-test baseline:
+This is the case the design is *about* — both baseline polarities, at both scopes:
 
-- **Bucket A — a positive unit-test baseline** on `Acme.Payments.Core` (task `00`): the touched
-  library's existing tests are **already green**. If they are red *before* we start, the run
-  halts with "your starting point is broken" rather than letting the implementation task burn its
-  whole retry budget trying to make a gate green that was never green to begin with. This is
-  real doctrine — a no-op-root task with a `scope:"local"` guardrail.
-- **Bucket A — a non-test, positive "endpoint-up" baseline** on `Acme.Payments.Api` (task `01`):
-  `GET /health` already returns `200`. This is the generalization the design formalizes — a
-  baseline that is *not* a unit-test run (an endpoint already responding). In the sample folder
-  it is mocked as a **deterministic byte-check** that the route is wired (the volume-control gate
-  forbids a *real* live endpoint hit in a baseline — BLOCKER (e)).
-- **Bucket B — a negative baseline** for attribution (task `02`): the new `RequestId` field is
-  **absent** from the charge result today. Proving its absence *now* means a later "it's present"
-  gate is provably *this plan's* doing, not pre-existing. It runs **one-shot at run start** and is
-  `scope:"local"` so it is never re-run at a union/terminal gate (#165/#132 union-inversion). It
-  cross-references the existing `tests-fail-on-current-code` anti-tautology archetype rather than
-  forking it.
-- **Bucket C — a per-task JIT dependency-delivery precondition** (carried by task `05`): the one
-  genuinely first-class slice, **still DEFERRED/SIMULATED**. It verifies that the producer (`04`)
-  actually delivered the `RequestId` threading `05` builds against, in `05`'s own worktree at
-  `taskBase`, before `05`'s action. It lives in `05`'s `preflights/` folder, which the loader
-  ignores — so it does not affect validation.
+- **A positive Full Flight Check** on the touched areas (`preflights/01-all-repo-tests-green.ps1`):
+  `Acme.Payments.Core.Tests` and the `Acme.Payments.Api` build are **already green**. If they were
+  red *before* we start, the run halts with "your starting point is broken" rather than letting
+  the implementation task burn its whole retry budget trying to make a gate green that was never
+  green to begin with. A deterministic build/test re-run — never a live network probe.
+- **A negative Full Flight Check** for attribution (`preflights/02-correlation-id-absent.ps1`):
+  the new `RequestId` field is **absent** from the charge result today. Proving its absence *now*
+  means a later "it's present" gate is provably *this plan's* doing, not pre-existing. It runs
+  **one-shot before the first task's wave** and is never re-run at a union/terminal gate. It
+  cross-references the existing `tests-fail-on-current-code` anti-tautology archetype on task `03`
+  rather than forking it.
+- **A task-level JIT dependency-delivery precondition** (carried by task `05`'s
+  `preflights/` folder): verifies that the producer (`04`) actually delivered the `RequestId`
+  threading `05` builds against, in `05`'s own worktree at `taskBase`, before `05`'s action —
+  keyed to the `04 -> 05` `dependsOn` edge.
+- **The Terminal Gate** (`guardrails/`): a real whole-repo build + full-suite re-run plus a
+  genuine union-invariant check, re-run on the final merged HEAD.
 
 ## Work (the real tasks)
 
