@@ -59,7 +59,7 @@ public static class PlanPreflightPhase
             return true;
         }
 
-        string evalWorkspace = ResolveEvalWorkspace(plan, cancellationToken);
+        string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken);
 
         var interpreterMap = InterpreterMap.CreateDefault(plan.Config);
         IReVerifier reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
@@ -93,32 +93,6 @@ public static class PlanPreflightPhase
         WriteMarker(plan.PlanDirectory, section);
 
         return result.Passed;
-    }
-
-    /// <summary>
-    /// The workspace the phase evaluates against: the integration worktree on the plan branch (forked
-    /// from the user's current HEAD) in worktree mode, or the plan workspace directly in serial mode —
-    /// mirroring exactly the condition <see cref="SchedulerFactory.Create"/> wires a
-    /// <see cref="GitWorktreeProvider"/> on. Creating the integration worktree here, ahead of the
-    /// Scheduler's own run, is safe: <see cref="GitWorktreeProvider.CreateIntegration"/> is idempotent —
-    /// it reuses a worktree already checked out on the plan branch — so the Scheduler's later call
-    /// reuses this SAME worktree rather than creating a second one.
-    /// </summary>
-    private static string ResolveEvalWorkspace(PlanDefinition plan, CancellationToken cancellationToken)
-    {
-        if (!SchedulerFactory.WouldUseWorktreeMode(plan))
-        {
-            return plan.Workspace;
-        }
-
-        var worktreeProvider = new GitWorktreeProvider(plan.Workspace, SchedulerFactory.WorktreeRootFor(plan));
-        string runId = Guid.NewGuid().ToString("N")[..8];
-        IntegrationHandle integ = worktreeProvider.CreateIntegration(
-            planName: Path.GetFileName(plan.PlanDirectory),
-            runId: runId,
-            cancellationToken);
-
-        return integ.IntegrationWorktreePath;
     }
 
     /// <summary>

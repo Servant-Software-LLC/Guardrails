@@ -212,7 +212,28 @@ public static class RunCommand
                 report = await ExecuteAsync(probe.Plan, siteObserver, cancellationToken).ConfigureAwait(false);
             }
 
-            return Finish(report, probe.Plan, runId, io);
+            // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
+            // ONCE, AFTER the DAG drains wholly green, against the merged plan-branch HEAD — replacing
+            // the retired integrationGate task-kind's terminal role (Scheduler.cs skips that legacy path
+            // whenever the plan declares this folder, SSOT §3.3). No-op (true) when the DAG did not
+            // fully succeed this run/resume, or the plan has no <plan>/guardrails/ folder at all.
+            // B2(b) terminal-only resume falls out for free: a resume where every task is already
+            // succeeded drains the DAG with nothing left to do (report.AllSucceeded stays true, no
+            // attempt burned), so this phase unconditionally re-fires against the current HEAD.
+            bool planGuardrailsPassed = !report.AllSucceeded
+                || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), cancellationToken)
+                    .ConfigureAwait(false);
+
+            int exitCode = Finish(report, probe.Plan, runId, io);
+            if (report.AllSucceeded && !planGuardrailsPassed)
+            {
+                io.Out.WriteLine();
+                io.Out.WriteLine("Plan guardrail gate FAILED on the merged HEAD — terminal halt (SSOT §7 planGuardrails).");
+                io.Out.WriteLine($"  See {RunJournal.PathFor(probe.Plan.PlanDirectory)} (\"planGuardrails\") for the failed check(s).");
+                return ExitCodes.TaskFailed;
+            }
+
+            return exitCode;
         }
         finally
         {

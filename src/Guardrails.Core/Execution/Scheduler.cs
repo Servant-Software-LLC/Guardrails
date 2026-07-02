@@ -234,7 +234,14 @@ public sealed class Scheduler
         // soundness boundary that backstops the per-hop FF-integrations a linear chain skipped.
         // A failing gate flips the run off-green (the sink task, or first task, to needs-human)
         // so mergeOnSuccess is refused and the report is not certified.
-        if (report.AllSucceeded && _reVerifier != null && integ != null)
+        //
+        // preflights-impl deliverable 4: REPLACED by the terminal PlanGuardrailPhase (Guardrails.Cli,
+        // SSOT §3.3/§7.1) for any plan that declares a plan-level <plan>/guardrails/ folder — that
+        // phase runs AFTER this method returns, against the SAME merged HEAD, via the same IReVerifier
+        // seam. This legacy per-task integrationGate/scope:"integration" sink-task run is SUPERSEDED
+        // (never both) whenever plan.PlanGuardrails is non-empty; it stays live, unchanged, only for a
+        // plan still on the retired sink-task modelling.
+        if (report.AllSucceeded && _reVerifier != null && integ != null && plan.PlanGuardrails.Count == 0)
         {
             IReadOnlyList<GuardrailDefinition> integrationSet =
                 GuardrailScopeFilter.IntegrationSet(plan.Tasks.SelectMany(t => t.Guardrails));
