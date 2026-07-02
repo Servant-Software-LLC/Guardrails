@@ -206,11 +206,20 @@ public sealed class GraphSourceHashTests
     /// hash ever drifts by platform again, <c>graph --check</c> would flap on CI and this
     /// test fails on whichever OS recomputes a different value.
     /// </summary>
+    /// <remarks>
+    /// Re-baselined for the container-model rewrite (SSOT §10, design-of-record
+    /// 09-preflight-first-class): the container model changes the diagram's semantic content for
+    /// every plan — including this golden, which gets task-container subgraphs plus the two
+    /// mandatory plan-level brackets even though it declares no <c>preflights/</c>/
+    /// <c>guardrails/</c> folder checks of its own — so the OLD flat-model pinned literal was
+    /// guaranteed to break. The new value below was computed from the real rewritten renderer's
+    /// output (via <c>guardrails graph</c> against this golden), not guessed.
+    /// </remarks>
     [Fact]
     public void Compute_GoldenExample_MatchesPinnedCrossPlatformHash()
     {
         const string expected =
-            "56459e16d4eb626893edf0bb21262d8cf1eba3deb414f3f6f6027d7e5bb7e938";
+            "26606566be4ca9e6ad2932bb2a5db5ae6793ea248c7f60eed6c3384e9f24dab8";
 
         PlanLoadResult result = new PlanLoader().Load(GoldenExamplePath);
         Assert.False(result.HasErrors);

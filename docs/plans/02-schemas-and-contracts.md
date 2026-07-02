@@ -1333,12 +1333,13 @@ tracked separately.
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
 `guardrails graph [folder]` renders the plan's task/guardrail DAG as a Mermaid
-`flowchart TD` and writes two companion files:
+`flowchart TD`, using the **container model** (design-of-record 09-preflight-first-class),
+and writes two companion files:
 
 - **`diagram.md`** — the GitHub render artifact: a provenance comment + fenced Mermaid
   block + structure-only caption. GitHub renders it inline.
 - **`diagram.html`** — the local-navigation companion: a self-contained pan/zoom/fullscreen
-  HTML viewer whose task/guardrail nodes carry `click href` directives pointing to their
+  HTML viewer whose task/check nodes carry `click href` directives pointing to their
   source under the plan folder. Use `--no-html` to suppress it; a missing HTML file is **not
   treated as stale** by `--check`. Node clicks require serving the file via a local HTTP
   server (`python -m http.server`) — browsers block `file://→file://` navigation by default.
@@ -1350,12 +1351,48 @@ Both files are **generated, non-authored artifacts**: NOT part of the plan contr
 delete and regenerate, and excluded from `guardrails.baseline`. Nothing is added to
 `guardrails.json` or its model — the staleness key lives in the diagram files instead.
 
-**Shape.** Per task NN: the task node fans out one edge to each of its guardrail nodes; all
-of that task's guardrail nodes merge into a single per-task "Finished" node
-(`<id> ✓ Finished`). Dependency edges run FROM a dependency's Finished node TO the
-dependent task node — for each task B that `dependsOn` A, the diagram emits
-`done_A --> task_B` (A is done, now B may start). Three `classDef`s color tasks, guardrails,
-and Finished nodes distinctly. Retry / feedback (cyclic) edges are out of scope for v1.
+**Shape — the container model.** Each task is a self-contained `subgraph task_<id>["<id>"]`
+container holding two nested subgraphs, `<id>_preflights["Preflights"]` and
+`<id>_guardrails["Guardrails"]`, whose individual check nodes are small boxes drawn **inside**
+the container — there are no bare check nodes outside a container. The `Preflights` subgraph
+is emitted only when the task declares `tasks/<id>/preflights/` checks (the common case has
+none); the `Guardrails` subgraph is always present (every task carries at least one
+guardrail). Two more subgraphs bracket the **whole DAG** and are **always emitted**, even when
+their folder is empty, because they are structural brackets, not conditional content:
+`plan_preflights["Full Flight Checks"]` at the TOP (the plan-level `<plan>/preflights/`
+folder) and `plan_guardrails["Terminal Gate"]` at the BOTTOM (the plan-level
+`<plan>/guardrails/` folder). Retry / feedback (cyclic) edges remain out of scope for v1.
+
+**Edges via invisible anchor nodes.** Mermaid does not faithfully render a
+`subgraph --> subgraph` edge — pointing an edge at a subgraph id is unreliable across
+versions and often draws to an arbitrary interior node or not at all — so every container
+(each task container and the two plan-level containers) carries exactly one invisible
+**anchor** node, `<container>_anchor[" "]:::invisible`, declared with its full node shape as
+the first line inside its own container (a `classDef invisible` with no fill/stroke). The DAG
+is drawn **anchor → anchor**: `task_A_anchor --> task_B_anchor` for each task B that
+`dependsOn` task A; the plan-preflights anchor points into every DAG-root task's anchor (a
+task with no `dependsOn`); every DAG-leaf task's anchor (a task nothing depends on) points
+into the plan-guardrails anchor. Declaring each anchor's full shape inside its own container
+before any edge references it is deliberate: Mermaid resolves a node's subgraph membership
+from its first textual mention, so an edge-only reference could otherwise pull an anchor into
+the wrong container (or none) depending on emission order. This anchor technique is
+version-sensitive — the renderer was prototyped against the bundled Mermaid version (the
+CDN-pinned build `diagram.html` loads) before the container-model rewrite was committed, and
+container "kind" styling (task vs. plan-level) is applied via a separate
+`class <id> <className>;` statement rather than an inline `subgraph id[…]:::className`
+shorthand, since the separate-statement form is the one supported by every Mermaid release in
+the flowchart diagram's history.
+
+**A task-level preflight still gates its `dependsOn` edge.** A `tasks/<id>/preflights/` check
+verifies a producer actually delivered what a consumer depends on; collapsing both into
+containers does not erase that relationship. The `task_producer_anchor --> task_consumer_anchor`
+edge remains drawn exactly like any other dependency edge, and the preflight renders as an
+ordinary check node inside the **consumer's own** `Preflights` subgraph — it is never
+re-routed to originate from the preflight node itself.
+
+**Five `classDef`s** color the diagram's five node/container kinds distinctly: task container,
+preflight check, guardrail check, plan-level container, and the invisible anchor (no
+fill/stroke, so it never renders as a visible box).
 
 **Provenance comment.** The first line of `diagram.md` is, verbatim:
 
@@ -1381,13 +1418,17 @@ inside the ```` ```mermaid ```` block and NOT in the renderer's `source-sha256` 
 content — so it does not affect the hash, leaves two regens byte-identical, and is absent from
 `--stdout` (which prints the raw diagram, not the document).
 
-**`source-sha256`.** A SHA-256 (lowercase hex) over the diagram's **semantic content** (node
-labels + DAG shape) as emitted by the renderer, excluding cosmetic `classDef` styling. It
-changes whenever the DRAWN diagram changes — a task, a dependency, or a guardrail (DAG
-shape), or a node label (a guardrail `description`, which the renderer draws as the guardrail
-label). It is stable across irrelevant input reorderings (the renderer sorts tasks,
-guardrails, and dependents ordinal) and is unaffected by action kind (not drawn) or by
-styling.
+**`source-sha256`.** A SHA-256 (lowercase hex) over the diagram's **semantic content**
+(container membership, nested check labels, and the anchor-edge DAG shape) as emitted by the
+renderer, excluding cosmetic `classDef` color definitions. It changes whenever the DRAWN
+diagram changes — a task, a dependency, or a check (container/DAG shape), or a node label (a
+check's `description`, which the renderer draws as its label). **Critically, it folds the
+PLAN-LEVEL `<plan>/preflights/` and `<plan>/guardrails/` folder checks too, not just the
+per-task `tasks{}` structure** — those checks are not reachable through any task, so a hash
+computed from task structure alone would leave the diagram falsely "fresh" after someone edits
+a Terminal Gate check's label or adds/removes a Full Flight Check. It is stable across
+irrelevant input reorderings (the renderer sorts tasks, checks, and dependents ordinal) and is
+unaffected by action kind (not drawn) or by styling.
 
 **Command contract.**
 
@@ -1397,13 +1438,13 @@ styling.
 - `--no-html` — write only `diagram.md`; skip `diagram.html`. Has no effect with `--stdout`.
 - `--stdout` — print the diagram to stdout; write nothing to disk (neither `diagram.md` nor
   `diagram.html`); exit `0`.
-- `--check` — write nothing. Recompute `source-sha256`, read the value embedded in an
-  existing `diagram.md`, and exit `0` when present and equal (fresh). When `diagram.md` is
-  **stale or missing**, print one actionable line and exit `2` — the "regenerate" signal.
-  When `diagram.html` is **present but carries a different hash**, print one actionable line
-  and exit `2` (a **missing** `diagram.html` is NOT stale — the caller may have used
-  `--no-html`). A **load/validate error** front-doors first and exits `1`, never reaching the
-  freshness check.
+- `--check` — write nothing. Recompute `source-sha256` (including the plan-level folder
+  checks — see above), read the value embedded in an existing `diagram.md`, and exit `0` when
+  present and equal (fresh). When `diagram.md` is **stale or missing**, print one actionable
+  line and exit `2` — the "regenerate" signal. When `diagram.html` is **present but carries a
+  different hash**, print one actionable line and exit `2` (a **missing** `diagram.html` is
+  NOT stale — the caller may have used `--no-html`). A **load/validate error** front-doors
+  first and exits `1`, never reaching the freshness check.
 - `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
   formats).
 
