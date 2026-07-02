@@ -283,9 +283,12 @@ evaluated once at run end by the terminal phase. The old modelling — a no-op E
 task kind and **GR2017** (the old "a multi-leaf/fan-in plan must declare exactly one `integrationGate: true`
 sink" rule) are gone. There is no migration window: a plan that STILL declares `integrationGate: true` is a
 **hard validation error — GR2029** (honest-over-silent: the stale key is caught at validate time, never
-silently ignored). The harness keeps a `TaskNode.IntegrationGate` model field only so the validator can
-DETECT and reject the legacy key (and the scheduler still reads it for the terminal-gate run until the
-terminal phase replaces that path in a later deliverable).
+silently ignored, UNCONDITIONALLY — a plan can therefore never carry the legacy key AND a
+`<plan>/guardrails/` folder at once). The harness keeps a `TaskNode.IntegrationGate` model field only so
+the validator can DETECT and reject the legacy key. The Scheduler's own legacy terminal-gate run (the
+pre-deliverable-4 per-task `scope: "integration"` sink-task path) still exists and still reads it, but now
+SUPERSEDED (never both) by the terminal phase (deliverable 4, §7.1) whenever a plan declares a
+`<plan>/guardrails/` folder.
 
 **GR2018's content teeth — RE-HOMED onto the folder as GR2028, NOT retired, NOT weakened.** The old GR2018
 required the `integrationGate` sink to carry ≥1 `scope: "integration"` guardrail ("a gate that verifies
@@ -1052,16 +1055,45 @@ overwrite the fix. It is a single-task verification, **not** a run — the rest 
   failing guardrails are reported, the task settles `needs-human` (still a non-green halt the human must
   keep working); exit `2`. No agent is spawned in either case.
 
+**Reserved synthetic ids — `plan:guardrails` / `plan:preflights` (deliverable 4).** Two reserved
+task-id-shaped strings are accepted by the SAME `--revalidate-task <id>` flag above (no new verb, no new
+C# symbol on the CLI surface) to re-validate a WHOLE-PLAN phase instead of a task. The `:` character is
+already disallowed in a real task id (§3 `^[a-z0-9][a-z0-9._-]*$`), so neither can ever collide with an
+authored task.
+- **`--revalidate-task plan:guardrails`** re-runs ONLY the terminal `<plan>/guardrails/` checks (§3.3)
+  against the CURRENT merged HEAD. UNLIKE a per-task revalidate, **worktree mode IS supported**: the
+  gate's subject is the merged HEAD itself (the integration worktree the harness owns), never an
+  in-place fix in the user's own checkout, so the worktree-mode refusal above does not apply here. All
+  checks pass ⇒ `planGuardrails` is journaled `passed`, exit `0`. Any check still fails ⇒ journaled
+  `plan-guardrail-failed`, exit `2` — the same terminal-halt outcome an ordinary `run` would have
+  produced. A plan with no `<plan>/guardrails/` folder has nothing to revalidate: exit `1`.
+- **`--revalidate-task plan:preflights`** is the symmetric analogue for the pre-DAG
+  `<plan>/preflights/` phase (§7 above) — re-confirming a hand-fixed starting state without burning an
+  agent attempt. Journals `planPreflights`; same pass/fail/no-folder exit-code shape.
+
+**Terminal-only resume (B2(b)).** After a terminal halt (`planGuardrails.status ==
+"plan-guardrail-failed"`), a plain `guardrails run` (no `--revalidate-task`) is an ordinary resume:
+every already-`succeeded` task SKIPS via the existing resume rule above (no attempt burned), the DAG
+drains with nothing left to run, and — because the terminal phase carries no passed-marker skip (unlike
+the pre-DAG phase's B1 rule: the terminal phase always evaluates the CURRENT merged HEAD, so there is no
+negative-baseline concern to guard against) — it unconditionally re-fires `<plan>/guardrails/` against
+that same HEAD. Still red ⇒ `plan-guardrail-failed` again, exit `2`; hand-fixed to green ⇒ `passed`,
+exit `0`. A `planHash` mismatch (the plan changed since the failed marker was written) needs no special
+case: it simply falls through to this same normal resume.
+
 **Harness exit codes**: `0` all succeeded · `1` harness/validation error — including a run **aborted**
 by an unexpected infrastructure fault (#150: an honest halt rendered from the aborted `RunReport`, full
 fault in `logs/<runId>/abort.log`, never a raw stack trace) · `2` the operation completed but an
-actionable condition was found — for `run`: a task is needs-human/blocked, OR every task passed but the
-opt-in end-of-run delivery to the user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or
-`HookRejected` `MergeOnSuccessResult` — the work is durable on the plan branch, the user must finish the
-merge); for `graph --check`: the diagram is stale or missing (the "regenerate"
-signal); for `lock --check`: the folder has drifted from the baseline or the baseline is missing
-(the "re-baseline" signal); for `merge`: there are unresolved conflicts to resolve, or the BASE
-baseline is missing and must be established first (§11.5) · `3` cancelled.
+actionable condition was found — for `run`: a task is needs-human/blocked, OR the pre-DAG
+`planPreflights` phase failed (§7, exit **before** any task is scheduled), OR the terminal `planGuardrails`
+gate failed on the merged HEAD (§3.3/§7.1 above — durable on the plan branch; re-fires on resume or via
+`--revalidate-task plan:guardrails`), OR every task passed but the opt-in end-of-run delivery to the
+user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or `HookRejected` `MergeOnSuccessResult`
+— the work is durable on the plan branch, the user must finish the merge); for `graph --check`: the
+diagram is stale or missing (the "regenerate" signal); for `lock --check`: the folder has drifted from
+the baseline or the baseline is missing (the "re-baseline" signal); for `merge`: there are unresolved
+conflicts to resolve, or the BASE baseline is missing and must be established first (§11.5) · `3`
+cancelled.
 
 **Plan-file → task-folder argument fixup** (all commands taking a plan folder as their first
 positional: `run`, `validate`, `plan`, `graph`, `lock`, `merge`, `logs`). Before the folder's existence
