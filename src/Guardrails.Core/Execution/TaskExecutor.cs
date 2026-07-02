@@ -31,6 +31,7 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly IRunObserver _observer;
     private readonly ActionRunner _actionRunner;
     private readonly GuardrailRunner _guardrailRunner;
+    private readonly IReVerifier _reVerifier;
     private readonly AttemptJournaler _journaler;
     private readonly DependencyGraph _graph;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
@@ -66,6 +67,11 @@ public sealed class TaskExecutor : ITaskExecutor
 
         _actionRunner = new ActionRunner(plan, scriptRunner, promptSupport, dependencyContext, ResolveTimeout);
         _guardrailRunner = new GuardrailRunner(plan, observer, scriptRunner, promptSupport, ResolveTimeout);
+        // The task-preflight slot (design-of-record 09-preflight-first-class, deliverable 5) reuses the
+        // same attempt-decoupled re-verify seam SchedulerFactory wires into the Scheduler for the
+        // per-union re-verify — built here from the same processRunner/interpreterMap so it is wired
+        // unconditionally in BOTH serial and worktree mode (TaskExecutor is constructed once per run).
+        _reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
         _journaler = new AttemptJournaler(stateManager, journal);
     }
 
@@ -74,6 +80,34 @@ public sealed class TaskExecutor : ITaskExecutor
     {
         var taskStartedAt = DateTimeOffset.UtcNow;
         _observer.TaskStarting(task);
+
+        // Task-level preflight slot (design-of-record 09-preflight-first-class, deliverable 5): a JIT
+        // dependency-delivery gate — tasks/<id>/preflights/, when present, is evaluated in the
+        // CONSUMER's own effective workspace (the segment worktree at taskBase in worktree mode, the
+        // plan workspace in serial mode) BEFORE the attempt loop AND before MarkRunning, so a RED
+        // preflight settles straight from `pending` to `needs-human` without ever recording a
+        // transient `running` status or burning a retry attempt (the no-burn property, both modes).
+        // A GREEN preflight (or no preflights/ folder at all) falls through to the unchanged attempt
+        // loop below.
+        if (task.Preflights.Count > 0)
+        {
+            ReVerifyResult preflightResult = await _reVerifier
+                .ReVerifyAsync(EffectiveWorkspace(worktree), task.Preflights, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!preflightResult.Passed)
+            {
+                string reasons = string.Join(", ", preflightResult.FailedGuardrails.Select(g => g.Name));
+                _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman);
+                return new TaskResult
+                {
+                    TaskId = task.Id,
+                    Outcome = TaskOutcome.NeedsHuman,
+                    Summary = $"task-preflight failed: {reasons}"
+                };
+            }
+        }
+
         _journal.MarkRunning(task.Id);
 
         int budget = 1 + (task.Retries ?? _plan.Config.DefaultRetries);
