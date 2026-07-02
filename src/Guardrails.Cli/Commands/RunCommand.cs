@@ -144,7 +144,24 @@ public static class RunCommand
         // correct logs/<runId>/ tree (SSOT §8/§12). LoadOrCreate is idempotent: it creates run.json
         // here (or reads it on resume), and the Scheduler's own LoadOrCreate then reads the SAME
         // run.json — so this runId matches the one the executor writes attempt logs under.
-        string runId = RunJournal.LoadOrCreate(probe.Plan).Document.RunId;
+        RunJournal journal = RunJournal.LoadOrCreate(probe.Plan);
+        string runId = journal.Document.RunId;
+
+        // Pre-DAG plan-preflight phase (SSOT §7, deliverable 3): evaluate <plan>/preflights/ ONCE,
+        // BEFORE the Scheduler builds any wave, against the run's starting bytes. A red preflight halts
+        // HERE — no task runs, zero tokens spent — journaled as planPreflights.status =
+        // plan-preflight-failed (a top-level section OUTSIDE tasks{}). A passed marker whose planHash
+        // still matches the current plan is SKIPPED on resume rather than re-evaluated (the B1 fix).
+        bool preflightsPassed = await PlanPreflightPhase
+            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), cancellationToken)
+            .ConfigureAwait(false);
+        if (!preflightsPassed)
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine("Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).");
+            io.Out.WriteLine($"  See {RunJournal.PathFor(probe.Plan.PlanDirectory)} (\"planPreflights\") for the failed check(s).");
+            return ExitCodes.TaskFailed;
+        }
 
         // The log server is a companion to the live table: start it only in the interactive path
         // (nobody clicks links in CI / redirected output), and never let a binding failure abort

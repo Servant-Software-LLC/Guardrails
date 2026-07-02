@@ -967,6 +967,22 @@ them; they are absent, never `null` noise), and the existing `tasks{}` shape is 
   **`plan-guardrail-failed`** (the terminal gate failed → exit 2). `failedChecks[]` are the failed
   guardrails (`{ "name", "reason" }`, the same shape as a task attempt's `failedGuardrails`).
 
+**Pre-DAG resume SKIP rule (the B1 fix).** The pre-DAG `planPreflights` phase runs BEFORE the Scheduler
+builds any wave, evaluating `<plan>/preflights/` against the run's STARTING bytes (the integration
+worktree on the plan branch at the user's HEAD in worktree mode; the plan workspace directly in serial
+mode) — once, via the unconditional `IReVerifier` seam (§4.3). On a plain resume (no `--fresh`), the
+harness reads the existing `planPreflights` marker FIRST: when `status == "passed"` AND its `planHash`
+matches the CURRENT plan hash, the phase is **SKIPPED** — the marker (`evaluatedAt` and `planHash`) is
+left byte-for-byte untouched, and scheduling proceeds straight to the DAG. The phase re-evaluates (and
+overwrites the marker) only when the marker is absent, its `status` is `plan-preflight-failed`, its
+`planHash` is stale (the plan changed since the marker was written), or `--fresh` deleted `run.json` (§6.1)
+before this phase runs. This is load-bearing, not an optimization: many plan-level preflights are
+**negative-baseline** checks — true only at the very start of a plan's lifecycle (e.g. "artifact X does
+not yet exist"), because a task later in the DAG legitimately introduces the condition the check forbids.
+Re-running the check on every resume would evaluate it against **partially-merged mid-DAG bytes** and
+false-halt a run that is actually fine; evaluating it exactly ONCE per `planHash` — at the true start,
+before any task has touched the workspace — is the only reading that makes the check meaningful.
+
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
   explicit way to force a re-run.
