@@ -236,32 +236,50 @@ public static class LogSiteRenderer
     // --- per-task page (inlined attempts + source) ------------------------------------------
 
     /// <summary>
-    /// One task's static page: every attempt on disk, each carrying a file <c>&lt;select&gt;</c> combobox
-    /// that toggles between that attempt's files, all inlined as hidden <c>&lt;pre class="filebody"&gt;</c>
-    /// blocks (the PREFERRED file — transcript, else raw stream, else action stdout — shown first). A
-    /// <c>file://</c> page can't fetch siblings, so every file's content is baked in and shown/hidden by a
-    /// tiny vanilla-JS DOM toggle (NO fetch — works offline on <c>file://</c>); zero-byte files render
-    /// "no output captured" and get an <c>empty</c>-marked option with a " (empty)" suffix (#141 item 4).
-    /// A Source section (action file + guardrail scripts from <c>&lt;task.Directory&gt;</c>, #141 item 3)
-    /// and the "← all tasks" back-link follow, unchanged.
+    /// One task's static page: every attempt on disk is rendered into its own <c>&lt;section
+    /// data-attempt="N"&gt;</c> (issue #206), each carrying a file <c>&lt;select&gt;</c> combobox that
+    /// toggles between that attempt's files, all inlined as hidden <c>&lt;pre class="filebody"&gt;</c>
+    /// blocks (the PREFERRED file — transcript, else raw stream, else action stdout — shown first). When
+    /// there is more than one attempt, an attempt <c>&lt;select id="attemptselect"&gt;</c> — mirroring the
+    /// live viewer's attempt dropdown (<see cref="LogServer"/>) — lets the user pick which attempt's
+    /// section is visible; every attempt's markup stays inlined in the one exported file (a <c>file://</c>
+    /// page can't fetch siblings), the dropdown only shows/hides <c>&lt;section&gt;</c>s. Default selection
+    /// is the LATEST attempt, matching the live viewer's default. A single-attempt task renders no
+    /// attempt dropdown at all — its one section is simply always visible. The existing per-attempt file
+    /// combobox is untouched: it stays nested inside its attempt's <c>&lt;section&gt;</c> and is shown/hidden
+    /// as part of it. A Source section (action file + guardrail scripts from <c>&lt;task.Directory&gt;</c>,
+    /// #141 item 3) and the "← all tasks" back-link follow, unchanged.
     ///
-    /// <para>Trade-off (#145 Feature 2): inlining every file bloats the page by the full size of each raw
-    /// stream. Accepted for the audit/demo use — the page already inlined the preferred file in full, and
-    /// a <c>file://</c> page has no other way to show siblings — so it is deliberately uncapped.</para>
+    /// <para>Trade-off (#145 Feature 2, extended by #206): inlining every attempt's every file bloats the
+    /// page by the full size of each raw stream. Accepted for the audit/demo use — a <c>file://</c> page
+    /// has no other way to show siblings — so it is deliberately uncapped.</para>
     /// </summary>
     private static string TaskPage(string logsRoot, TaskNode task)
     {
         IReadOnlyList<int> attempts = AttemptNumbers(logsRoot, task.Id);
         var sections = new StringBuilder();
 
+        // The latest attempt (highest number) is the default-visible one, matching the live viewer's
+        // "follow latest" default (LogServer's TaskTemplate: `asel.value = ... d.attempt`).
+        int latest = attempts.Count > 0 ? attempts[^1] : 0;
+
+        if (attempts.Count > 1)
+        {
+            AppendAttemptSelect(sections, attempts, latest);
+        }
+
         foreach (int n in attempts)
         {
             string attemptDir = Path.Combine(logsRoot, task.Id, $"attempt-{n}");
             IReadOnlyList<string> files = AttemptFiles(attemptDir);
             string? preferred = PreferenceOrder.FirstOrDefault(files.Contains) ?? files.FirstOrDefault();
+            bool visible = n == latest;
 
+            sections.Append("<section class=\"attempt\" data-attempt=\"").Append(n).Append('"')
+                .Append(visible ? string.Empty : " hidden").Append('>');
             sections.Append("<h2>attempt ").Append(n).Append("</h2>");
             AppendAttemptFiles(sections, attemptDir, n, files, preferred);
+            sections.Append("</section>");
         }
 
         if (attempts.Count == 0)
@@ -290,6 +308,25 @@ public static class LogSiteRenderer
 </body>
 </html>
 """;
+    }
+
+    /// <summary>
+    /// Render the attempt-level <c>&lt;select id="attemptselect"&gt;</c> (issue #206): one option per
+    /// attempt (oldest first, matching the on-page section order), the <paramref name="latest"/> attempt
+    /// pre-selected — mirroring the live viewer's "default to latest" behaviour. Only emitted when a task
+    /// has more than one attempt; a single-attempt task has nothing to pick between.
+    /// </summary>
+    private static void AppendAttemptSelect(StringBuilder sections, IReadOnlyList<int> attempts, int latest)
+    {
+        sections.Append("<div class=\"bar\">attempt <select id=\"attemptselect\" class=\"attemptselect\">");
+        foreach (int n in attempts)
+        {
+            string sel = n == latest ? " selected" : string.Empty;
+            sections.Append("<option value=\"").Append(n).Append('"').Append(sel).Append('>')
+                .Append("attempt ").Append(n).Append("</option>");
+        }
+
+        sections.Append("</select></div>");
     }
 
     /// <summary>
@@ -345,10 +382,15 @@ public static class LogSiteRenderer
     }
 
     /// <summary>
-    /// The vanilla-JS toggle that wires every per-attempt file <c>&lt;select&gt;</c>: on change it hides
-    /// every <c>.filebody</c> for that attempt and unhides the one whose <c>data-file</c> matches the
-    /// selected option, scoped by <c>data-attempt</c> so attempts don't collide. Pure DOM — NO fetch —
-    /// because this is a static <c>file://</c> page (a fetch of a sibling file is blocked offline).
+    /// The vanilla-JS toggle that wires every per-attempt file <c>&lt;select&gt;</c> AND (#206) the
+    /// attempt-level <c>&lt;select id="attemptselect"&gt;</c>, reusing the SAME show/hide mechanism for
+    /// both — no second pattern invented: on change, hide every element for that scope and unhide the one
+    /// whose data attribute matches the selected option. The file toggle hides <c>.filebody</c> elements
+    /// scoped by <c>data-attempt</c> so attempts don't collide; the attempt toggle hides
+    /// <c>section.attempt</c> elements scoped by <c>data-attempt</c> (the nested file combobox travels
+    /// with its parent section — switching attempts shows/hides it along with everything else in the
+    /// section, untouched). Pure DOM — NO fetch — because this is a static <c>file://</c> page (a fetch of
+    /// a sibling file is blocked offline).
     /// </summary>
     private const string FileToggleScript = """
 <script>
@@ -362,6 +404,16 @@ public static class LogSiteRenderer
       });
     });
   });
+
+  var attemptSel = document.getElementById('attemptselect');
+  if (attemptSel) {
+    attemptSel.addEventListener('change', function () {
+      var attempt = attemptSel.options[attemptSel.selectedIndex].value;
+      document.querySelectorAll('section.attempt').forEach(function (section) {
+        section.hidden = section.getAttribute('data-attempt') !== attempt;
+      });
+    });
+  }
 })();
 </script>
 """;

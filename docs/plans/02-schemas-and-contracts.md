@@ -2154,13 +2154,22 @@ the journal-selected run's logs and exits `0` without starting the server or blo
 site is written **next to the artifacts it renders**, under the `logs/` audit tree (never `state/`,
 which holds mutable run state):
 - `logs/<runId>/<task-id>/index.html` — one page per task that has attempts on disk, inlining that
-  task's per-attempt artifacts (§8): each attempt carries a file `<select>` **combobox** that toggles
-  between that attempt's files, **all inlined** as hidden `<pre>` blocks (the preferred file —
-  `transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log` — shown first). A `file://`
-  page can't fetch siblings, so every file's content is baked in and shown/hidden by a tiny vanilla-JS
-  DOM toggle (**no fetch** — works offline on `file://`), replacing the old `·`-separated link row
-  (#145 Feature 2). A zero-byte file renders "no output captured" and its option is greyed + "(empty)"
-  (#141 item 4). Inlining every file bloats the page by the full raw-stream size — accepted (uncapped)
+  task's per-attempt artifacts (§8). **When a task has more than one attempt** (#206), an attempt
+  `<select>` — mirroring the live viewer's attempt selector (§12.1) — sits above the attempts and
+  shows/hides each attempt's `<section data-attempt="N">`, defaulting to the **latest** attempt (the
+  live viewer's default); every attempt's markup stays inlined in the one exported file (single-file
+  portability — a `file://` page can't route by `?attempt=N` the way the live server does), the
+  dropdown only toggles which `<section>` is visible. A task with a **single** attempt renders **no**
+  attempt dropdown — its one section is simply always visible (the common case; nothing to pick
+  between). Nested inside each attempt's section, unchanged, is that attempt's file `<select>`
+  **combobox** that toggles between that attempt's files, **all inlined** as hidden `<pre>` blocks (the
+  preferred file — `transcript.md`, else `claude-stream.jsonl`, else `action-stdout.log` — shown
+  first). A `file://` page can't fetch siblings, so every file's content is baked in and shown/hidden
+  by a tiny vanilla-JS DOM toggle (**no fetch** — works offline on `file://`), replacing the old
+  `·`-separated link row (#145 Feature 2); the attempt-level toggle (#206) reuses this SAME
+  querySelectorAll/`hidden`-flag mechanism, scoped by `data-attempt`, rather than a second pattern. A
+  zero-byte file renders "no output captured" and its option is greyed + "(empty)" (#141 item 4).
+  Inlining every attempt's every file bloats the page by the full raw-stream size — accepted (uncapped)
   for the audit/demo use, since `file://` has no other way to show siblings. A **Source** section
   follows the attempts: relative `file://` links back to the action file and every `guardrails/*`
   script + `.json` sidecar (#141 item 3), the static twin of the live page's Source list.
