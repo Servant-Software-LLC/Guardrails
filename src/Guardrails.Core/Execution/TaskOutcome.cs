@@ -21,6 +21,19 @@ public enum TaskOutcome
     /// </summary>
     NeedsHuman,
 
+    /// <summary>
+    /// A transient infrastructure limit (429/503/529, "overloaded", a usage/session/rate limit) did
+    /// not clear within the pause budget (issue #115/#190): the harness settles the task straight to
+    /// this DISTINCT outcome rather than the generic <see cref="NeedsHuman"/> — "re-run later", not a
+    /// task defect to debug. Unlike <see cref="TransientPause"/> (below), this value IS journaled
+    /// (as <c>JournalTaskStatus.NeedsHuman</c> — see the note on <see cref="AttemptJournaler.RateLimitExhausted"/>
+    /// for why the JOURNAL status stays <c>needs-human</c> while only this in-memory/per-run
+    /// <see cref="TaskOutcome"/> distinguishes the reason) and IS reported to the observer's
+    /// <c>TaskFinished</c> and to <see cref="RunReport"/> — it is the per-run/UI-facing rendering of a
+    /// rate-limit halt, not an ephemeral pause signal.
+    /// </summary>
+    RateLimited,
+
     /// <summary>A dependency did not succeed, so this task never ran.</summary>
     Blocked,
 

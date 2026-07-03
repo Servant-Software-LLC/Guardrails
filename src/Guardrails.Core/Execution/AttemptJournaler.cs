@@ -265,6 +265,23 @@ internal sealed class AttemptJournaler
     /// rate-limit signal and settle the task <c>needs-human</c> — but with a DISTINCT, actionable
     /// reason ("re-run later") so the operator waits rather than debugging a healthy task. Distinct
     /// from a generic budget-exhaustion needs-human.
+    /// <para>
+    /// <b>Journal vs in-memory outcome (issue #190 part 1).</b> The JOURNAL's <c>status</c> string
+    /// stays <c>needs-human</c> (<see cref="JournalTaskStatus.NeedsHuman"/>) — deliberately NOT a new
+    /// journal-level status. A rate-limited task IS, durably, halted pending a human/time-based
+    /// re-run — exactly what <c>needs-human</c> means for resume purposes (§7: any non-succeeded
+    /// status resumes to <c>pending</c> with a fresh budget; a distinct journal status would need its
+    /// own <c>ResumeStatus</c> entry that behaves IDENTICALLY, pure churn with no behavioral payoff).
+    /// The attempt-level <c>outcome</c> already carries the distinct <c>rate-limited</c> string (SSOT
+    /// §7), which is sufficient to reconstruct "why" from the journal on disk. What was missing was the
+    /// PER-RUN/UI-facing signal: the live table and the run summary rendered every non-green,
+    /// non-blocked outcome as a generic "needs human", indistinguishable from a genuine stuck task. The
+    /// fix is therefore <see cref="TaskOutcome"/>-only: <see cref="TaskOutcome.RateLimited"/> is a new
+    /// terminal value the CLI's observers/renderers switch on, while the returned <see cref="TaskResult"/>
+    /// still reports as non-green (<see cref="TaskResult.IsGreen"/> already excludes anything but
+    /// <see cref="TaskOutcome.Succeeded"/>/<see cref="TaskOutcome.Skipped"/>) so scheduling/exit-code
+    /// behavior is UNCHANGED.
+    /// </para>
     /// </summary>
     public AttemptResult RateLimitExhausted(
         TaskNode task,
@@ -304,7 +321,7 @@ internal sealed class AttemptJournaler
         return new AttemptResult(new TaskResult
         {
             TaskId = task.Id,
-            Outcome = TaskOutcome.NeedsHuman,
+            Outcome = TaskOutcome.RateLimited,
             Summary = summary
         }, FeedbackPath: null, Outcome: AttemptOutcome.RateLimited);
     }

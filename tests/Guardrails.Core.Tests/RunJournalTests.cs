@@ -39,6 +39,34 @@ public sealed class RunJournalTests : IDisposable
         Assert.Equal(expected, resumed.StatusOf("01-task"));
     }
 
+    // --- issue #190 part 2: resume is OUTCOME-AGNOSTIC (documented, deliberately not tightened) -----
+
+    [Theory]
+    [InlineData(AttemptOutcome.RateLimited)]        // self-resolving — SHOULD auto-retry
+    [InlineData(AttemptOutcome.NeedsHuman)]          // the needsHuman prompt short-circuit — a human decision
+    [InlineData(AttemptOutcome.PermissionDenied)]    // a permission wall — needs a config/grant fix first
+    [InlineData(AttemptOutcome.TaskPreflightFailed)] // a dependency-delivery gate — needs an upstream fix
+    [InlineData(AttemptOutcome.GuardrailFailed)]     // a genuinely exhausted retry budget
+    public void Resume_NeedsHuman_ResetsToPending_RegardlessOfLastAttemptOutcome(AttemptOutcome lastOutcome)
+    {
+        // SSOT section 7 / issue #190 part 2: RunJournal.ResumeStatus is a pure function of the
+        // journal STATUS string alone — it never inspects the last recorded AttemptRecord.Outcome. A
+        // task halted for a self-resolving reason (rate-limited) and a task halted because a human
+        // must actually act (needsHuman / permission-denied / task-preflight-failed / an exhausted
+        // guardrail-failure budget) are ALL reset to `pending` with a FRESH retry budget on a plain
+        // resume — proving the documented "resume does not distinguish WHY" reality, not just
+        // asserting it in prose. A future tightening would make this theory's cases diverge.
+        PlanDefinition plan = BuildPlan(out string currentHash);
+        WriteJournalOnDisk(currentHash, ("01-task", JournalTaskStatus.NeedsHuman, Attempts: 1, lastOutcome));
+
+        RunJournal resumed = RunJournal.LoadOrCreate(plan);
+
+        Assert.Equal(JournalTaskStatus.Pending, resumed.StatusOf("01-task"));
+        // Attempt history (including the reason it halted) is preserved, not erased.
+        AttemptRecord preserved = Assert.Single(resumed.Document.Tasks["01-task"].Attempts);
+        Assert.Equal(lastOutcome, preserved.Outcome);
+    }
+
     [Fact]
     public void Resume_CrashedRunning_ContinuesAttemptNumbering()
     {
@@ -186,15 +214,26 @@ public sealed class RunJournalTests : IDisposable
     }
 
     /// <summary>Write a run.json directly to disk (bypassing RunJournal) to set up resume scenarios.</summary>
-    private void WriteJournalOnDisk(string planHash, params (string Id, JournalTaskStatus Status, int Attempts)[] tasks)
+    private void WriteJournalOnDisk(string planHash, params (string Id, JournalTaskStatus Status, int Attempts)[] tasks) =>
+        WriteJournalOnDisk(planHash, tasks.Select(t => (t.Id, t.Status, t.Attempts, AttemptOutcome.GuardrailFailed)).ToArray());
+
+    /// <summary>
+    /// As above, but the LAST recorded attempt carries <paramref name="lastOutcome"/> (issue #190 part
+    /// 2) instead of the fixed <see cref="AttemptOutcome.GuardrailFailed"/> — lets a test set up a
+    /// resume scenario where the halt reason varies (rate-limited vs a genuine needs-human) while the
+    /// journal STATUS stays the same string either way.
+    /// </summary>
+    private void WriteJournalOnDisk(
+        string planHash,
+        params (string Id, JournalTaskStatus Status, int Attempts, AttemptOutcome LastOutcome)[] tasks)
     {
         var taskMap = new Dictionary<string, TaskJournalEntry>();
-        foreach ((string id, JournalTaskStatus status, int attempts) in tasks)
+        foreach ((string id, JournalTaskStatus status, int attempts, AttemptOutcome lastOutcome) in tasks)
         {
             var records = new List<AttemptRecord>();
             for (int i = 1; i <= attempts; i++)
             {
-                records.Add(Attempt(i, AttemptOutcome.GuardrailFailed));
+                records.Add(Attempt(i, i == attempts ? lastOutcome : AttemptOutcome.GuardrailFailed));
             }
 
             taskMap[id] = new TaskJournalEntry { Status = status, Attempts = records };

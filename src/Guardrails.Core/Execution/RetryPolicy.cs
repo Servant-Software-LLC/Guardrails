@@ -325,6 +325,49 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Compose feedback for a <c>needsHarnessWrite</c> request REJECTED by prospective validation
+    /// (issue #191, SSOT §9) — the requested path escaped the task's effective workspace, or fell
+    /// outside its declared <c>writeScope</c>. Names the offending path so the agent either requests a
+    /// path actually within scope, or asks a human if the deliverable genuinely needs a broader scope.
+    /// Mirrors <see cref="ForWriteScopeViolation"/>'s phrasing/actionability for the prospective case.
+    /// </summary>
+    public static string ForHarnessWriteOutOfScope(TaskNode task, int attempt, string requestedPath, string reason)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## needsHarnessWrite rejected");
+        text.AppendLine();
+        text.AppendLine($"Your `needsHarnessWrite` request for `{requestedPath}` was REJECTED before any write happened:");
+        text.AppendLine();
+        text.AppendLine($"> {reason}");
+        text.AppendLine();
+        text.AppendLine("Request a path that is genuinely within this task's declared `writeScope` (SSOT §3.4), or,");
+        text.AppendLine("if the deliverable truly needs a broader scope, write `{\"needsHuman\": \"<why>\"}` to");
+        text.AppendLine("GUARDRAILS_STATE_OUT instead so a human can widen the scope.");
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// Compose feedback for a <c>needsHarnessWrite</c> request that PASSED validation but whose actual
+    /// write failed (disk full, a genuinely unwritable location even for the harness process, etc.) —
+    /// treated as an action failure: guardrails are skipped and the retry gets an actionable reason.
+    /// </summary>
+    public static string ForHarnessWriteFailed(TaskNode task, int attempt, string requestedPath, string reason)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt);
+        text.AppendLine("## needsHarnessWrite failed");
+        text.AppendLine();
+        text.AppendLine($"The harness attempted to write `{requestedPath}` on your behalf but the write itself failed:");
+        text.AppendLine();
+        text.AppendLine($"> {reason}");
+        text.AppendLine();
+        text.AppendLine("This is not a scope problem — the path was in bounds. Retry, or write");
+        text.AppendLine("`{\"needsHuman\": \"<why>\"}` to GUARDRAILS_STATE_OUT if the write is likely to keep failing.");
+        return text.ToString();
+    }
+
+    /// <summary>
     /// Compose feedback for an attempt whose STAGING MOVE failed (SSOT §3.5, issue #130): the action
     /// succeeded but the declared <c>stagingOutputs</c> deliverable was not produced under the staging
     /// dir (an empty source), or the move hit an IO error. The retry must CHANGE BEHAVIOR — write the

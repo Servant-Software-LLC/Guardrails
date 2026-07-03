@@ -61,7 +61,7 @@ internal sealed class ActionRunner
                 task.Action.Path, task.Action.Args, workspace, env,
                 Extend(_resolveTimeout(task, task.Action.TimeoutSeconds), timeoutMultiplier),
                 cancellationToken).ConfigureAwait(false);
-            return ActionRun.FromScript(script, NeedsHumanFrom(fragmentOutPath));
+            return ActionRun.FromScript(script, NeedsHumanFrom(fragmentOutPath), HarnessWrite.RequestFrom(fragmentOutPath));
         }
 
         return await RunPromptActionAsync(
@@ -146,10 +146,12 @@ internal sealed class ActionRunner
         PromptResult result = await registry.Resolve(task.Action.Runner ?? promptFile.Frontmatter.Runner)
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
 
-        // A prompt action's fragment may carry the needsHuman escape (SSOT §9).
+        // A prompt action's fragment may carry the needsHuman escape (SSOT §9) or a needsHarnessWrite
+        // request (SSOT §9, issue #191) — both read from the same already-written fragment file.
         string? needsHuman = NeedsHumanFrom(fragmentOutPath);
+        HarnessWriteRequest? harnessWrite = HarnessWrite.RequestFrom(fragmentOutPath);
 
-        return ActionRun.FromPrompt(result, needsHuman);
+        return ActionRun.FromPrompt(result, needsHuman, harnessWrite);
     }
 
     /// <summary>
@@ -197,6 +199,14 @@ internal sealed record ActionRun
     public required bool TimedOut { get; init; }
     public decimal? CostUsd { get; init; }
     public string? NeedsHumanQuestion { get; init; }
+
+    /// <summary>
+    /// A <c>needsHarnessWrite</c> request parsed from the action's fragment (issue #191, SSOT §9), or
+    /// null when none was present. Non-null on EITHER a script or a prompt action — the fragment file
+    /// is read the same way regardless of action kind, mirroring <see cref="NeedsHumanQuestion"/>.
+    /// </summary>
+    public HarnessWriteRequest? HarnessWriteRequest { get; init; }
+
     public string? FailureFeedback { get; init; }
     public string FailureSummary { get; init; } = "action failed";
 
@@ -237,7 +247,7 @@ internal sealed record ActionRun
         Duration = TimeSpan.Zero
     };
 
-    public static ActionRun FromScript(ProcessResult result, string? needsHuman) => new()
+    public static ActionRun FromScript(ProcessResult result, string? needsHuman, HarnessWriteRequest? harnessWrite = null) => new()
     {
         Succeeded = result.Succeeded,
         ExitCode = result.ExitCode,
@@ -245,6 +255,7 @@ internal sealed record ActionRun
         StandardOutput = result.StandardOutput,
         StandardError = result.StandardError,
         NeedsHumanQuestion = needsHuman,
+        HarnessWriteRequest = harnessWrite,
         // A script timeout is classified Timeout so it shares the timeout-specific retry handling
         // (issue #119); any other non-zero exit is a generic action failure (no Claude signals apply).
         FailureKind = result.TimedOut ? PromptFailureKind.Timeout
@@ -253,7 +264,7 @@ internal sealed record ActionRun
         FailureSummary = result.TimedOut ? "action timed out" : $"action exited {result.ExitCode}"
     };
 
-    public static ActionRun FromPrompt(PromptResult result, string? needsHuman)
+    public static ActionRun FromPrompt(PromptResult result, string? needsHuman, HarnessWriteRequest? harnessWrite = null)
     {
         bool succeeded = result.Completed && !result.IsError;
         string? feedback = succeeded ? null : BuildPromptFeedback(result);
@@ -265,6 +276,7 @@ internal sealed record ActionRun
             TimedOut = result.FailureKind == PromptFailureKind.Timeout,
             CostUsd = result.CostUsd,
             NeedsHumanQuestion = needsHuman,
+            HarnessWriteRequest = harnessWrite,
             FailureFeedback = feedback,
             FailureKind = succeeded ? PromptFailureKind.None : result.FailureKind,
             ResetHint = result.ResetHint,
