@@ -138,6 +138,7 @@ public sealed class PlanLoader
             RunOnCurrentBranch = raw.RunOnCurrentBranch ?? false,
             MergeOnSuccess = raw.MergeOnSuccess ?? false,
             TriageAutoFile = raw.TriageAutoFile ?? false,
+            PreserveAttemptsForSalvage = raw.PreserveAttemptsForSalvage ?? true,
             Interpreters = interpreters,
             PromptRunnerNames = runners.Names,
             DefaultPromptRunner = runners.Default,

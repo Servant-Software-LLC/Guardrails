@@ -487,6 +487,18 @@ public sealed class Scheduler
                 // Non-deferred: executor already handled journal; just integrate the segment.
                 provider.Integrate(handle, integ, CancellationToken.None);
             }
+
+            // #195 retry-salvage pruning (deliverable 6): once a task's FINAL settle (after the
+            // deferred B1 settle above, which can still turn a green-looking result into NeedsHuman on
+            // a failed union re-verify) is truly Succeeded, its salvage refs — its own prior
+            // rolled-back partial attempts — have served their purpose and are pruned so they never
+            // accumulate across a long-lived repo. Checked on result.Outcome (the POST-settle value),
+            // never result.IsGreen (which is true before SettleAsync can still flip it to NeedsHuman).
+            if (result.Outcome == TaskOutcome.Succeeded)
+            {
+                try { provider.PruneSalvageRefs(task.Id); }
+                catch (Exception ex) { _observer.CleanupFailed(task.Id, ex); }
+            }
         }
 
         var newlyReady = new List<TaskEnvelope>();

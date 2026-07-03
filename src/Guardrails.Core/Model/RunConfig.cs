@@ -91,6 +91,22 @@ public sealed record RunConfig
     public string? DefaultPromptRunner { get; init; }
 
     /// <summary>
+    /// When true (the default), a worktree-mode retry rollback for a NON-LOGIC outcome — <c>max-turns</c>
+    /// or <c>output-cap</c> — preserves the attempt's full working-tree state (including uncommitted
+    /// writes) to an inspectable git ref (<c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c>) BEFORE the
+    /// existing <c>git reset --hard &lt;taskBase&gt; + git clean -fd</c> rollback runs (issue #195). The
+    /// next attempt still starts from the clean <c>taskBase</c> — this does NOT change — but its retry
+    /// feedback names every salvageable prior ref plus a <c>git diff --stat</c> summary of what it
+    /// changed, so the agent can <c>git checkout &lt;ref&gt; -- &lt;path&gt;</c> the good parts instead of
+    /// re-deriving everything from scratch. Deliberately scoped to non-logic outcomes: a
+    /// <c>guardrail-failed</c> rollback is NOT preserved by default (the code may be genuinely wrong, and
+    /// silently carrying it forward is the wrong default) — set this false to disable salvage entirely,
+    /// e.g. if a plan's timeout/max-turns retries are observed to regress from stale salvage refs.
+    /// No-op in serial mode (no segment worktree to preserve).
+    /// </summary>
+    public bool PreserveAttemptsForSalvage { get; init; } = true;
+
+    /// <summary>
     /// The full prompt-runner configurations (SSOT §2/§9), keyed by runner name. Empty for a
     /// script-only plan; a plan with prompt tasks but an empty map is a validation error
     /// (GR2008). The key set equals <see cref="PromptRunnerNames"/>.

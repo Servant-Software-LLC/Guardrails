@@ -299,4 +299,60 @@ public sealed class RetryPolicyTests
         Assert.DoesNotContain("File writes were also rolled back", maxTurns);
         Assert.Contains("CONTINUE from the partial work already on disk", maxTurns);
     }
+
+    // ── #195 retry salvage ──────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void MaxTurns_Feedback_WithSalvageRef_NamesRefAndDiffStat_AndSoftensPreservedClaim()
+    {
+        var salvage = new SalvageRef(
+            "refs/guardrails/12-implement/attempt-2", " src/Foo.cs | 40 ++++++++++\n 1 file changed", Attempt: 2);
+
+        string feedback = RetryPolicy.ForMaxTurnsExceeded(
+            Task("12-implement"), attempt: 3, fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("refs/guardrails/12-implement/attempt-2", feedback);
+        Assert.Contains("git checkout refs/guardrails/12-implement/attempt-2 -- <path>", feedback);
+        Assert.Contains("src/Foo.cs | 40", feedback);
+        Assert.Contains("writeScope", feedback);
+        // The rollback disclosure still fires (files WERE rolled back from the working tree) but the
+        // "do NOT continue from on-disk files" advice is softened to point at the salvage ref instead
+        // of a flat "re-explore/re-derive from scratch" instruction.
+        Assert.Contains("## File writes were also rolled back", feedback);
+        Assert.Contains("NOT discarded", feedback);
+    }
+
+    [Fact]
+    public void OutputCap_Feedback_WithSalvageRef_NamesRefAndDiffStat()
+    {
+        var salvage = new SalvageRef("refs/guardrails/07-write/attempt-1", " a.txt | 2 ++", Attempt: 1);
+
+        string feedback = RetryPolicy.ForOutputCapExceeded(Task("07-write"), attempt: 2, salvageRef: salvage);
+
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("refs/guardrails/07-write/attempt-1", feedback);
+        Assert.Contains("a.txt | 2", feedback);
+    }
+
+    [Fact]
+    public void MaxTurns_Feedback_WithoutSalvageRef_OmitsSalvageSection()
+    {
+        string feedback = RetryPolicy.ForMaxTurnsExceeded(Task("12-implement"), attempt: 2, fileWritesRolledBack: true);
+
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+        Assert.DoesNotContain("git checkout", feedback);
+    }
+
+    [Fact]
+    public void MaxTurns_Feedback_WithSalvageRef_ButEmptyDiffStat_OmitsDiffBlock_KeepsAdoptionSection()
+    {
+        var salvage = new SalvageRef("refs/guardrails/12-implement/attempt-2", "", Attempt: 2);
+
+        string feedback = RetryPolicy.ForMaxTurnsExceeded(
+            Task("12-implement"), attempt: 3, fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.DoesNotContain("```", feedback); // no diff-stat code block when the stat is empty
+    }
 }

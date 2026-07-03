@@ -35,7 +35,12 @@ public static class RetryPolicy
     /// keep reasoning terse. Distinct from a generic action failure so a human (and §9 triage) sees a
     /// tool/budget issue, not "the agent failed".
     /// </summary>
-    public static string ForOutputCapExceeded(TaskNode task, int attempt)
+    /// <param name="salvageRef">
+    /// Retry salvage (issue #195): when non-null, the attempt's rolled-back working tree was preserved
+    /// to this git ref before the F2 reset — appends the salvage-adoption section naming it. Null when
+    /// salvage is off, not in worktree mode, or the preserve itself failed (best-effort).
+    /// </param>
+    public static string ForOutputCapExceeded(TaskNode task, int attempt, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
         AppendHeader(text, task, attempt);
@@ -52,6 +57,7 @@ public static class RetryPolicy
         text.AppendLine("  the most important part first, then continue in subsequent turns.");
         text.AppendLine("- If the deliverable is inherently too large to produce within the cap, STOP and write");
         text.AppendLine("  {\"needsHuman\": \"<why this task is too large for the output cap>\"} to GUARDRAILS_STATE_OUT.");
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
@@ -70,7 +76,14 @@ public static class RetryPolicy
     /// files. False in serial mode (file writes persist) and on the final attempt (never reset), where
     /// the existing "continue from preserved partial work" guidance is kept.
     /// </param>
-    public static string ForMaxTurnsExceeded(TaskNode task, int attempt, bool fileWritesRolledBack = false)
+    /// <param name="salvageRef">
+    /// Retry salvage (issue #195): when non-null, the attempt's rolled-back working tree was preserved
+    /// to this git ref before the F2 reset — appends a section naming the ref and the diff-stat so the
+    /// agent can selectively adopt the good parts instead of re-deriving everything. Null when salvage
+    /// is off, not in worktree mode, or the preserve itself failed (best-effort).
+    /// </param>
+    public static string ForMaxTurnsExceeded(
+        TaskNode task, int attempt, bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
         AppendHeader(text, task, attempt);
@@ -80,15 +93,24 @@ public static class RetryPolicy
         // #167: only the "PARTIAL WORK is preserved" claim is mode-dependent. In worktree mode the
         // attempt's writes are reverted (rollback note below), so that claim is false — drop it; the
         // raised-turn-budget advice is valid in BOTH modes and is kept. Serial mode is byte-for-byte
-        // unchanged.
+        // unchanged. #195: when a salvage ref exists, the "do NOT continue from on-disk files" guidance
+        // is softened — the work is not lost, just relocated to a ref the agent can pull good parts from.
         if (fileWritesRolledBack)
         {
             text.AppendLine("BUDGET exhaustion, NOT a logic error. The harness has RAISED the turn budget for this");
             text.AppendLine("attempt, but do not waste the headroom:");
             text.AppendLine();
-            text.AppendLine("- Do NOT continue from on-disk files: the partial work was reverted (see the rollback");
-            text.AppendLine("  note below). You need NOT re-explore from scratch either — carry forward what you");
-            text.AppendLine("  LEARNED and go straight to producing the deliverable.");
+            if (salvageRef is null)
+            {
+                text.AppendLine("- Do NOT continue from on-disk files: the partial work was reverted (see the rollback");
+                text.AppendLine("  note below). You need NOT re-explore from scratch either — carry forward what you");
+                text.AppendLine("  LEARNED and go straight to producing the deliverable.");
+            }
+            else
+            {
+                text.AppendLine("- The partial work was reverted from your WORKING TREE, but it was NOT discarded — see");
+                text.AppendLine("  '## Prior attempt work is salvageable' below for how to selectively recover it.");
+            }
         }
         else
         {
@@ -107,6 +129,7 @@ public static class RetryPolicy
         text.AppendLine("  STOP and write {\"needsHuman\": \"<this task is under-budgeted for turns; suggest a split or a");
         text.AppendLine("  higher maxTurns>\"} to GUARDRAILS_STATE_OUT rather than burning more attempts.");
         AppendRollbackDisclosure(text, fileWritesRolledBack);
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
@@ -298,6 +321,49 @@ public static class RetryPolicy
         text.AppendLine("Because the state fragment was rejected, all file writes from this attempt were");
         text.AppendLine("reverted. On your next attempt, re-author ALL files from scratch — do not assume");
         text.AppendLine("any file you wrote in a previous attempt is still present on disk.");
+    }
+
+    /// <summary>
+    /// Append the retry-salvage adoption section (issue #195) when a prior attempt's rolled-back
+    /// working tree was preserved to a git ref before the F2 reset discarded it: names the ref, its
+    /// <c>git diff --stat</c> summary, and instructs the agent to selectively adopt the good parts
+    /// (<c>git checkout &lt;ref&gt; -- &lt;path&gt;</c>) rather than re-deriving everything from scratch — the
+    /// core "salvage, don't restart clean" behavior the issue is built on. No-op when
+    /// <paramref name="salvageRef"/> is null (salvage off, serial mode, or the preserve itself failed).
+    /// </summary>
+    private static void AppendSalvageSection(StringBuilder text, SalvageRef? salvageRef)
+    {
+        if (salvageRef is null)
+        {
+            return;
+        }
+
+        text.AppendLine();
+        text.AppendLine("## Prior attempt work is salvageable");
+        text.AppendLine();
+        text.AppendLine($"Attempt {salvageRef.Attempt}'s FULL working tree — before the reset above — was preserved");
+        text.AppendLine($"to the git ref `{salvageRef.RefName}`. That attempt was likely making REAL progress (it ran");
+        text.AppendLine("out of budget, not out of correctness), so REVIEW it and selectively adopt what's good instead");
+        text.AppendLine("of re-deriving everything from scratch:");
+        text.AppendLine();
+        text.AppendLine($"- Inspect what changed: `git show --stat {salvageRef.RefName}` or `git diff <taskBase> {salvageRef.RefName}`.");
+        text.AppendLine($"- Pull in a file that is CORRECT as-is: `git checkout {salvageRef.RefName} -- <path>`.");
+        text.AppendLine("- Redo, from scratch, only what is INCOMPLETE or wrong — do not blindly restore every file;");
+        text.AppendLine("  judge each one.");
+
+        if (!string.IsNullOrWhiteSpace(salvageRef.DiffStat))
+        {
+            text.AppendLine();
+            text.AppendLine("What that attempt changed (`git diff --stat` vs. this task's base commit):");
+            text.AppendLine("```");
+            text.AppendLine(salvageRef.DiffStat.TrimEnd('\r', '\n'));
+            text.AppendLine("```");
+        }
+
+        text.AppendLine();
+        text.AppendLine("Salvaged files remain subject to this task's declared writeScope, exactly like any other");
+        text.AppendLine("write this attempt makes — the write-scope check runs on your FINAL state regardless of how");
+        text.AppendLine("it got there.");
     }
 
     /// <summary>
