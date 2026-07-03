@@ -238,6 +238,58 @@ public sealed class PromptComposerTests : IDisposable
         Assert.StartsWith("FIRST LINE OF BODY", composed);
     }
 
+    // --- worktree safety (issue #192) ---------------------------------------------------------
+
+    [Fact]
+    public void Action_SerialMode_OmitsWorktreeSafetySection()
+    {
+        string stateIn = WriteState("{}");
+        string composed = PromptComposer.ComposeAction(
+            "body", stateIn, Path.Combine(_dir, "o.json"), feedbackPath: null, isWorktreeMode: false);
+
+        Assert.DoesNotContain("## Worktree safety", composed);
+        Assert.DoesNotContain("git stash", composed);
+    }
+
+    [Fact]
+    public void Action_WorktreeMode_IncludesStashWarning_AndSafeAlternative()
+    {
+        string stateIn = WriteState("{}");
+        string composed = PromptComposer.ComposeAction(
+            "body", stateIn, Path.Combine(_dir, "o.json"), feedbackPath: null, isWorktreeMode: true);
+
+        Assert.Contains("## Worktree safety", composed);
+        Assert.Contains("git stash", composed);
+        Assert.Contains("NOT safe", composed);
+        Assert.Contains("repo-wide", composed);
+        // The safe, stash-free alternative (diff → checkout baseline → re-apply) must be present.
+        Assert.Contains("git diff", composed);
+        Assert.Contains("git checkout --", composed);
+        Assert.Contains("git apply", composed);
+    }
+
+    [Fact]
+    public void Guardrail_WorktreeMode_IncludesStashWarning()
+    {
+        string stateIn = WriteState("{}");
+        string composed = PromptComposer.ComposeGuardrail(
+            "Judge the tone.", stateIn, Path.Combine(_dir, "v.json"), Path.Combine(_dir, "out.log"), isWorktreeMode: true);
+
+        Assert.Contains("## Verdict contract", composed);
+        Assert.Contains("## Worktree safety", composed);
+        Assert.Contains("git stash", composed);
+    }
+
+    [Fact]
+    public void Guardrail_SerialMode_OmitsWorktreeSafetySection()
+    {
+        string stateIn = WriteState("{}");
+        string composed = PromptComposer.ComposeGuardrail(
+            "Judge the tone.", stateIn, Path.Combine(_dir, "v.json"), Path.Combine(_dir, "out.log"), isWorktreeMode: false);
+
+        Assert.DoesNotContain("## Worktree safety", composed);
+    }
+
     public void Dispose()
     {
         try

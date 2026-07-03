@@ -18,6 +18,9 @@ namespace Guardrails.Core.Prompts;
 /// <item>(actions, attempt ≥ 2) <c>## Previous attempt failed</c> — the latest feedback.md verbatim,
 ///   plus pointers to ALL prior attempts' transcript/feedback (issue #26 Gaps 2 &amp; 3).</item>
 /// <item>(guardrails) <c>## Verdict contract</c> — verifier instructions + the verdict file path.</item>
+/// <item>(worktree mode only) <c>## Worktree safety</c> — a warning that <c>git stash</c> is NOT
+///   safe here (issue #192: <c>refs/stash</c> is repo-wide, not worktree-scoped, so a concurrent
+///   task's stash can silently cross-contaminate this one) plus the local, stash-free alternative.</item>
 /// </list>
 /// </summary>
 public static class PromptComposer
@@ -34,7 +37,8 @@ public static class PromptComposer
         IReadOnlyList<DependencyContextRef>? dependencies = null,
         IReadOnlyList<PriorAttemptRef>? priorAttempts = null,
         string? stagingDir = null,
-        IReadOnlyList<StagingOutput>? stagingOutputs = null)
+        IReadOnlyList<StagingOutput>? stagingOutputs = null,
+        bool isWorktreeMode = false)
     {
         var text = new StringBuilder();
         AppendBody(text, body);
@@ -43,6 +47,7 @@ public static class PromptComposer
         AppendOutputContract(text, stateOutPath);
         AppendStagingOutputs(text, stagingDir, stagingOutputs);
         AppendPreviousAttempt(text, feedbackPath, priorAttempts);
+        AppendWorktreeSafety(text, isWorktreeMode);
         return text.ToString();
     }
 
@@ -51,12 +56,14 @@ public static class PromptComposer
         string body,
         string stateInPath,
         string verdictOutPath,
-        string actionStdoutPath)
+        string actionStdoutPath,
+        bool isWorktreeMode = false)
     {
         var text = new StringBuilder();
         AppendBody(text, body);
         AppendSharedState(text, stateInPath);
         AppendVerdictContract(text, verdictOutPath, actionStdoutPath);
+        AppendWorktreeSafety(text, isWorktreeMode);
         return text.ToString();
     }
 
@@ -240,5 +247,37 @@ public static class PromptComposer
         text.Append("The reason is shown to a human and (on failure) fed back to the author, so make it ");
         text.Append("specific and actionable. If you cannot determine a verdict, write `pass: false` with ");
         text.Append("a reason explaining why it is undeterminable.\n");
+    }
+
+    /// <summary>
+    /// The worktree-safety warning (issue #192), emitted ONLY in worktree mode: <c>git stash</c>'s
+    /// stack (<c>refs/stash</c>) is repo-wide, not per-worktree, so a concurrent task's (or a human
+    /// operator's own diagnostic worktree's) <c>stash</c>/<c>stash pop</c> around the same time can
+    /// grab the WRONG entry — silently applying one worktree's uncommitted changes into a different
+    /// one. A <see cref="WorktreeContainmentHook"/> PreToolUse hook also BLOCKS the stash family at
+    /// the tool-call layer (defense in depth); this section is the advisory complement so the agent
+    /// understands WHY before it ever tries, and knows the safe alternative instead of guessing one.
+    /// </summary>
+    private static void AppendWorktreeSafety(StringBuilder text, bool isWorktreeMode)
+    {
+        if (!isWorktreeMode)
+        {
+            return;
+        }
+
+        text.Append("\n## Worktree safety\n\n");
+        text.Append("You are running in an isolated git worktree dedicated to this task. `git stash` is ");
+        text.Append("**NOT safe** to use here: the stash stack (`refs/stash`) is repo-wide, not scoped to ");
+        text.Append("this worktree — a concurrent task (or a human's own diagnostic worktree) doing its own ");
+        text.Append("`git stash` around the same time can silently overwrite or steal yours, and a later ");
+        text.Append("`git stash pop` can apply the WRONG entry into this tree. Attempting to use `git stash` ");
+        text.Append("here will be blocked.\n\n");
+        text.Append("If you need to test against a clean baseline and restore your changes afterward, use ");
+        text.Append("this stash-free, entirely LOCAL alternative instead:\n\n");
+        text.Append("```\n");
+        text.Append("git diff > /tmp/mine.patch\n");
+        text.Append("git checkout -- <files>      # test the baseline\n");
+        text.Append("git apply /tmp/mine.patch    # restore your changes\n");
+        text.Append("```\n");
     }
 }

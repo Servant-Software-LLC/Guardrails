@@ -558,9 +558,14 @@ public sealed class TaskExecutor : ITaskExecutor
         // larger turn budget — a same-budget retry just re-exhausts at the same cap. Same growth shape
         // and cap as the timeout clock; applied only to prompt actions (scripts have no turn budget).
         double maxTurnsMultiplier = MaxTurnsMultiplierFor(maxTurnsRetries);
+        // Worktree containment hook (issue #199/#192): non-null ONLY for a real segment worktree — a
+        // prompt action/guardrail then gets a generated PreToolUse hook hard-enforcing the OUTER
+        // containment boundary (WorktreeContainmentHook), on top of the write-scope CHECK's post-hoc
+        // diff (the INNER boundary, unaffected). Null in serial mode: no isolated tree to contain to.
+        string? worktreeRootForHook = IsRealGitSegment(worktree) ? worktree.WorktreePath : null;
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
@@ -726,7 +731,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
-            task, workspace, guardrailEnv, snapshotPath, logDir, cancellationToken).ConfigureAwait(false);
+            task, workspace, guardrailEnv, snapshotPath, logDir, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
 
         if (cancellationToken.IsCancellationRequested)
         {
