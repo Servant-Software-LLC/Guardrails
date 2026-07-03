@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=fee2a34bd43a3577dfc2aab73460dcd6b5be6cf6e0530d546ae26a91f64194c0 -->
+<!-- guardrails:graph v1 source-sha256=fbe54bc3976bf97fdf904de27bf0090fab43aadaa9e66c88364977268a8c9a5c -->
 
 ```mermaid
 flowchart TD
@@ -6,24 +6,18 @@ flowchart TD
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph task_01_write_greeting_script["01-write-greeting-script"]
-    subgraph task_01_write_greeting_script_guardrails["Guardrails"]
-      task_01_write_greeting_script_gr_0["01-script-exists"]:::guardrail
-      task_01_write_greeting_script_gr_1["02-script-runs-clean"]:::guardrail
-    end
+    task_01_write_greeting_script_gr_0["01-script-exists"]:::guardrail
+    task_01_write_greeting_script_gr_1["02-script-runs-clean"]:::guardrail
   end
   style task_01_write_greeting_script fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_02_generate_greeting["02-generate-greeting"]
-    subgraph task_02_generate_greeting_guardrails["Guardrails"]
-      task_02_generate_greeting_gr_0["01-greeting-exists"]:::guardrail
-      task_02_generate_greeting_gr_1["02-greeting-contains"]:::guardrail
-    end
+    task_02_generate_greeting_gr_0["01-greeting-exists"]:::guardrail
+    task_02_generate_greeting_gr_1["02-greeting-contains"]:::guardrail
   end
   style task_02_generate_greeting fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_quality_check["03-quality-check"]
-    subgraph task_03_quality_check_guardrails["Guardrails"]
-      task_03_quality_check_gr_0["01-report-exists"]:::guardrail
-      task_03_quality_check_gr_1["02-tone-is-friendly"]:::guardrail
-    end
+    task_03_quality_check_gr_0["01-report-exists"]:::guardrail
+    task_03_quality_check_gr_1["02-tone-is-friendly"]:::guardrail
   end
   style task_03_quality_check fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
@@ -38,3 +32,9 @@ flowchart TD
 ```
 
 _Structure only — retry, feedback, and needs-human edges are omitted._
+
+**Legend**
+
+- 🟣 **Preflight** — verified BEFORE the task's attempt loop; gates entry (dependency-delivery precondition)
+- 🟡 **Guardrail** — verified AFTER the task's action; must pass for the task to finish
+- 🟢 Plan-level containers ("Full Flight Checks" top, "Terminal Gate" bottom) run the same two checks once for the whole plan, at the very start and very end.

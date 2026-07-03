@@ -1453,16 +1453,61 @@ delete and regenerate, and excluded from `guardrails.baseline`. Nothing is added
 `guardrails.json` or its model — the staleness key lives in the diagram files instead.
 
 **Shape — the container model.** Each task is a self-contained `subgraph task_<id>["<id>"]`
-container holding two nested subgraphs, `<id>_preflights["Preflights"]` and
-`<id>_guardrails["Guardrails"]`, whose individual check nodes are small boxes drawn **inside**
-the container — there are no bare check nodes outside a container. The `Preflights` subgraph
-is emitted only when the task declares `tasks/<id>/preflights/` checks (the common case has
-none); the `Guardrails` subgraph is always present (every task carries at least one
-guardrail). Two more subgraphs bracket the **whole DAG** and are **always emitted**, even when
+container holding its preflight and guardrail check nodes as small boxes drawn **directly
+inside** the container — there are no bare check nodes outside a container, and (as of the
+nested-box removal simplification below) no nested `Preflights`/`Guardrails` wrapper subgraph
+either. Two more subgraphs bracket the **whole DAG** and are **always emitted**, even when
 their folder is empty, because they are structural brackets, not conditional content:
 `plan_preflights["Full Flight Checks"]` at the TOP (the plan-level `<plan>/preflights/`
 folder) and `plan_guardrails["Terminal Gate"]` at the BOTTOM (the plan-level
-`<plan>/guardrails/` folder). Retry / feedback (cyclic) edges remain out of scope for v1.
+`<plan>/guardrails/` folder) — these two are **unaffected** by the nested-box removal: they are
+one-off heterogeneous brackets on the whole DAG, not a per-task repeated pattern. Retry /
+feedback (cyclic) edges remain out of scope for v1.
+
+**Nested boxes dropped (simplification).** A task container previously nested a "Guardrails"
+sub-container (and, when present, a "Preflights" sub-container) around its leaf check nodes.
+This nesting-within-nesting made a real generated diagram look busy for no semantic gain: the
+wrapper subgraph id was never referenced by edge emission, container styling, or
+`source-sha256` — purely cosmetic. Leaf check nodes are now emitted as direct children of the
+task container; the existing `:::preflight`/`:::guardrail` `classDef` fill remains the only
+visual category distinction. **Emission-order contract (load-bearing, tested):** because the
+nested boxes used to convey "preflights run before, guardrails run after" visually, that
+temporal fact is now preserved by a GUARANTEED emission order — a task's preflight check
+node(s), if any, are always emitted BEFORE its guardrail check node(s) within the container.
+This is a stable, tested convention, not a rendering accident, and callers may rely on it.
+
+**Preflight labels are truncated, with the full text reachable via click.** A task-level
+preflight's descriptive text can run to many words (it documents a specific dependency-delivery
+precondition); drawing it in full would dwarf the rest of the diagram. The drawn label is
+instead a short, truncated form (a word-boundary cut around 40 characters, with a trailing
+ellipsis when truncated); the FULL `description` is never lost — it remains reachable via the
+SAME `click` directive mechanism `diagram.html` already uses for every node (source-file
+click-through, issue #33): the tooltip argument of a task-level preflight's `click` directive
+carries the full description instead of the bare check name. Guardrail check nodes and
+plan-level check nodes are unaffected — only a task-level preflight's drawn label is truncated.
+
+**Legend — static content OUTSIDE the Mermaid graph.** A Mermaid-native legend (a disconnected
+subgraph of dummy colour-swatch nodes) was prototyped and rendered BROKEN headless against the
+bundled `mermaid@11.4.1`: dagre lays out a disconnected subgraph as a phantom extra "task"
+overlapping the real DAG. The only approach that renders correctly is content entirely outside
+the Mermaid source: `diagram.md` carries a plain Markdown legend block placed immediately after
+the structure-only caption (itself after the closing ` ```mermaid ` fence) — GitHub's Mermaid
+sandbox has no overlay-content option, so a plain Markdown block is the only placement that
+reads correctly there; `diagram.html` carries a corner-anchored HTML overlay `<div id="legend">`
+(`position: fixed`), mirroring the existing `#bar`/`#hint` overlay divs. Both state the SAME
+wording: the colour mapping AND the before/after timing/consequence — a bare category name
+would not preserve the ordering semantic the removed nested boxes used to convey visually:
+
+- 🟣 **Preflight** — verified BEFORE the task's attempt loop; gates entry (dependency-delivery
+  precondition)
+- 🟡 **Guardrail** — verified AFTER the task's action; must pass for the task to finish
+- 🟢 Plan-level containers ("Full Flight Checks" top, "Terminal Gate" bottom) run the same two
+  checks once for the whole plan, at the very start and very end.
+
+**The legend is excluded from `source-sha256`** — same treatment as the existing cosmetic
+`classDef` color lines (append-only in `Render`/`RenderInteractive`'s callers, never inside
+`SemanticContent`). Getting this wrong would make `graph --check` report every plan as
+spuriously stale on a legend WORDING edit alone.
 
 **Edges clip to the container border (`subgraph --> subgraph`).** The DAG is drawn directly
 between container ids — `task_A --> task_B` for each task B that `dependsOn` task A; the
@@ -1486,8 +1531,9 @@ Checks / Terminal Gate brackets keep their colour even when their folder is empt
 verifies a producer actually delivered what a consumer depends on; collapsing both into
 containers does not erase that relationship. The `task_producer --> task_consumer` edge remains
 drawn exactly like any other dependency edge, and the preflight renders as an ordinary check node
-inside the **consumer's own** `Preflights` subgraph — it is never re-routed to originate from the
-preflight node itself.
+directly inside the **consumer's own** container (before the container's guardrail check nodes,
+per the emission-order contract above) — it is never re-routed to originate from the preflight
+node itself.
 
 **Colouring.** Two `classDef`s colour the leaf check nodes — `preflight` and `guardrail` —
 referenced inline (`:::preflight` / `:::guardrail`). The two container kinds (task container,
@@ -1516,19 +1562,22 @@ needs-human edges are out of scope for v1); the caption tells a reader so the di
 mistaken for a one-pass pipeline. The caption lives in the markdown wrapper **only** — NOT
 inside the ```` ```mermaid ```` block and NOT in the renderer's `source-sha256` semantic
 content — so it does not affect the hash, leaves two regens byte-identical, and is absent from
-`--stdout` (which prints the raw diagram, not the document).
+`--stdout` (which prints the raw diagram, not the document). The legend block (see above)
+immediately follows the caption, also outside the hashed content.
 
 **`source-sha256`.** A SHA-256 (lowercase hex) over the diagram's **semantic content**
-(container membership, nested check labels, and the container→container DAG shape) as emitted by
-the renderer, excluding the cosmetic leaf-node `classDef` color definitions. It changes whenever the DRAWN
-diagram changes — a task, a dependency, or a check (container/DAG shape), or a node label (a
-check's `description`, which the renderer draws as its label). **Critically, it folds the
-PLAN-LEVEL `<plan>/preflights/` and `<plan>/guardrails/` folder checks too, not just the
-per-task `tasks{}` structure** — those checks are not reachable through any task, so a hash
-computed from task structure alone would leave the diagram falsely "fresh" after someone edits
-a Terminal Gate check's label or adds/removes a Full Flight Check. It is stable across
-irrelevant input reorderings (the renderer sorts tasks, checks, and dependents ordinal) and is
-unaffected by action kind (not drawn) or by styling.
+(container membership, check node labels, and the container→container DAG shape) as emitted by
+the renderer, excluding the cosmetic leaf-node `classDef` color definitions and the legend. It
+changes whenever the DRAWN diagram changes — a task, a dependency, or a check (container/DAG
+shape), or a node label (a check's `description`, which the renderer draws as its label —
+truncated for a task-level preflight, but the truncated form is still part of what's drawn, so it
+still moves the hash). **Critically, it folds the PLAN-LEVEL `<plan>/preflights/` and
+`<plan>/guardrails/` folder checks too, not just the per-task `tasks{}` structure** — those
+checks are not reachable through any task, so a hash computed from task structure alone would
+leave the diagram falsely "fresh" after someone edits a Terminal Gate check's label or
+adds/removes a Full Flight Check. It is stable across irrelevant input reorderings (the renderer
+sorts tasks, checks, and dependents ordinal) and is unaffected by action kind (not drawn), by
+styling, or by the legend's wording.
 
 **Command contract.**
 

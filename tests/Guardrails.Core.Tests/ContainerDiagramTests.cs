@@ -6,15 +6,21 @@ namespace Guardrails.Core.Tests;
 
 /// <summary>
 /// Goldens for the container-model diagram (SSOT §10, design-of-record 09-preflight-first-class),
-/// including the issue #210 fix (edges clip to container borders). Every test drives the REAL
-/// <see cref="MermaidRenderer.Render"/> / <see cref="GraphSourceHash.Compute"/> over a plan the
-/// four-folder loader understands: an on-disk fixture with plan-level
-/// <c>&lt;plan&gt;/preflights/</c> (Full Flight Checks) + <c>&lt;plan&gt;/guardrails/</c> (Terminal Gate)
-/// AND a task-level <c>tasks/&lt;id&gt;/preflights/</c>. The container model is:
-///   • one <c>subgraph task_&lt;id&gt;</c> per task, holding nested <c>Preflights</c> / <c>Guardrails</c>
-///     subgraphs with the individual check nodes INSIDE the container (no bare check nodes outside);
+/// including the issue #210 fix (edges clip to container borders) and the nested-box removal
+/// simplification. Every test drives the REAL <see cref="MermaidRenderer.Render"/> /
+/// <see cref="GraphSourceHash.Compute"/> over a plan the four-folder loader understands: an
+/// on-disk fixture with plan-level <c>&lt;plan&gt;/preflights/</c> (Full Flight Checks) +
+/// <c>&lt;plan&gt;/guardrails/</c> (Terminal Gate) AND a task-level <c>tasks/&lt;id&gt;/preflights/</c>.
+/// The container model is:
+///   • one <c>subgraph task_&lt;id&gt;</c> per task, holding its preflight/guardrail check nodes
+///     DIRECTLY inside the container — NO nested <c>Preflights</c>/<c>Guardrails</c> wrapper
+///     subgraph (dropped: purely cosmetic, never referenced by edge emission, styling, or hashing) —
+///     with preflight node(s), if any, ALWAYS emitted before guardrail node(s) (the emission-order
+///     contract that now carries the "preflights run before, guardrails run after" temporal
+///     semantic the removed boxes used to convey visually);
 ///   • two plan-level subgraphs — <c>plan_preflights</c> ("Full Flight Checks") at the TOP and
-///     <c>plan_guardrails</c> ("Terminal Gate") at the BOTTOM;
+///     <c>plan_guardrails</c> ("Terminal Gate") at the BOTTOM — UNCHANGED by the nested-box removal
+///     (one-off heterogeneous brackets, not a per-task repeated pattern);
 ///   • the DAG drawn <c>subgraph --&gt; subgraph</c> (container→container) so each edge clips to the
 ///     container's OUTER BORDER (<c>task_A --&gt; task_B</c> per <c>dependsOn</c>; plan_preflights →
 ///     root-task containers; leaf-task containers → plan_guardrails) — NO interior anchor nodes;
@@ -53,19 +59,38 @@ public sealed class ContainerDiagramTests : IDisposable
     }
 
     [Fact]
-    public void Render_TaskContainer_HoldsNestedPreflightsAndGuardrailsSubgraphsWithChecksInside()
+    public void Render_TaskContainer_HoldsPreflightAndGuardrailChecksDirectlyInside_NoNestedWrapperSubgraphs()
     {
         IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
 
-        // 02-leaf has BOTH a task-level preflight and a guardrail; both nested subgraphs live inside
-        // its container, and the individual check nodes are drawn INSIDE (their labels appear in the block).
+        // 02-leaf has BOTH a task-level preflight and a guardrail; both check nodes are drawn
+        // DIRECTLY inside its container (their labels appear in the block) — there is NO nested
+        // "Preflights"/"Guardrails" wrapper subgraph (dropped as a simplification: the wrapper was
+        // purely cosmetic, never referenced by edge emission, container styling, or the source hash).
         IReadOnlyList<string> leaf = ContainerBlock(lines, l => IsTaskContainerHeader(l, "02_leaf"));
         Assert.NotEmpty(leaf); // the container itself must exist
 
-        Assert.Contains(leaf, l => IsSubgraphLabelled(l, "Preflights"));
-        Assert.Contains(leaf, l => IsSubgraphLabelled(l, "Guardrails"));
+        Assert.DoesNotContain(leaf, l => IsSubgraphLabelled(l, "Preflights"));
+        Assert.DoesNotContain(leaf, l => IsSubgraphLabelled(l, "Guardrails"));
         Assert.Contains(leaf, l => l.Contains("LEAF PREFLIGHT DEP", StringComparison.Ordinal));
         Assert.Contains(leaf, l => l.Contains("LEAF GUARDRAIL", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Render_TaskContainer_EmitsPreflightCheckNodeBeforeGuardrailCheckNode()
+    {
+        // The emission-order contract (SSOT §10): with the nested boxes gone, source order is the
+        // only surviving signal that preflights run BEFORE the task's attempt loop and guardrails
+        // run AFTER it.
+        IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
+        IReadOnlyList<string> leaf = ContainerBlock(lines, l => IsTaskContainerHeader(l, "02_leaf"));
+
+        int preflightIndex = IndexOfLineContaining(leaf, "LEAF PREFLIGHT DEP");
+        int guardrailIndex = IndexOfLineContaining(leaf, "LEAF GUARDRAIL");
+
+        Assert.True(preflightIndex >= 0 && guardrailIndex >= 0);
+        Assert.True(preflightIndex < guardrailIndex,
+            "the preflight check node must be emitted before the guardrail check node within the same task container");
     }
 
     [Fact]
@@ -143,13 +168,13 @@ public sealed class ContainerDiagramTests : IDisposable
     {
         // 02-leaf dependsOn 01-root AND declares a task-level preflight. The gated dependency edge is STILL
         // drawn container→container, NOT re-routed to originate from the preflight node; and the preflight
-        // renders as a check node inside 02-leaf's Preflights subgraph.
+        // renders as a check node directly inside 02-leaf's container (no nested Preflights subgraph).
         IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
 
         Assert.Contains("task_01_root --> task_02_leaf", lines);
 
         IReadOnlyList<string> leaf = ContainerBlock(lines, l => IsTaskContainerHeader(l, "02_leaf"));
-        Assert.Contains(leaf, l => IsSubgraphLabelled(l, "Preflights"));
+        Assert.DoesNotContain(leaf, l => IsSubgraphLabelled(l, "Preflights"));
         Assert.Contains(leaf, l => l.Contains("LEAF PREFLIGHT DEP", StringComparison.Ordinal));
     }
 
@@ -370,6 +395,21 @@ public sealed class ContainerDiagramTests : IDisposable
     /// <summary>True when <paramref name="line"/> is a subgraph header whose label contains <paramref name="label"/>.</summary>
     private static bool IsSubgraphLabelled(string line, string label) =>
         line.StartsWith("subgraph", StringComparison.Ordinal) && line.Contains(label, StringComparison.Ordinal);
+
+    /// <summary>Index of the first line containing <paramref name="text"/>, or -1 if none does. Used for
+    /// the emission-order assertion (preflight node line index &lt; guardrail node line index).</summary>
+    private static int IndexOfLineContaining(IReadOnlyList<string> lines, string text)
+    {
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (lines[i].Contains(text, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
 
     /// <summary>
     /// The lines of the first subgraph whose header satisfies <paramref name="headerMatch"/>, inclusive of

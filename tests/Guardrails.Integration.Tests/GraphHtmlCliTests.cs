@@ -161,6 +161,24 @@ public sealed class GraphHtmlCliTests
     }
 
     [Fact]
+    public async Task DiagramHtml_IncludesLegendOverlay_StatingColorAndTiming()
+    {
+        // SSOT §10: diagram.html carries an HTML overlay legend (mirroring #bar/#hint) stating
+        // both the colour mapping and the before/after timing — the only approach that renders
+        // correctly (a Mermaid-native legend was prototyped and rendered broken).
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        string html = await File.ReadAllTextAsync(HtmlPath(plan.PlanDir), TestContext.Current.CancellationToken);
+
+        Assert.Contains("id=\"legend\"", html, StringComparison.Ordinal);
+        Assert.Contains("Preflight", html, StringComparison.Ordinal);
+        Assert.Contains("Guardrail", html, StringComparison.Ordinal);
+        Assert.Contains("BEFORE", html, StringComparison.Ordinal);
+        Assert.Contains("AFTER", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task DiagramHtml_RegenIsByteIdentical()
     {
         using var plan = new ScriptPlanBuilder().AddTask("01-first");

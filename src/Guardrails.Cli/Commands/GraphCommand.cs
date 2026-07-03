@@ -179,17 +179,23 @@ public static partial class GraphCommand
 
     /// <summary>
     /// Compose the persisted artifact: a single-line provenance comment (SSOT §10), a fenced
-    /// <c>mermaid</c> block holding the rendered diagram, and a one-line italic caption after the
-    /// fence (<see cref="DiagramCaption"/>). The comment carries only the <c>source-sha256</c>
-    /// identity — no timestamp — and the caption is outside the hashed content, so re-running
-    /// <c>graph</c> on an unchanged plan yields a byte-identical file (a deterministic projection,
-    /// no git churn).
+    /// <c>mermaid</c> block holding the rendered diagram, a one-line italic caption after the
+    /// fence (<see cref="DiagramCaption"/>), and the shared <see cref="MermaidRenderer.LegendMarkdown"/>
+    /// block. GitHub's Mermaid sandbox has no overlay-content option, so the legend cannot live
+    /// inside the fenced block (a Mermaid-native legend subgraph was prototyped and rendered
+    /// broken — see <see cref="MermaidRenderer"/> remarks); a plain Markdown block after the fence
+    /// is the only placement that reads correctly on GitHub. The comment carries only the
+    /// <c>source-sha256</c> identity — no timestamp — and both the caption and the legend are
+    /// outside the hashed content, so re-running <c>graph</c> on an unchanged plan yields a
+    /// byte-identical file (a deterministic projection, no git churn) and legend wording changes
+    /// never move <c>source-sha256</c>.
     /// </summary>
     private static string ComposeDocument(string diagram, string sourceHash)
     {
         string provenance = $"<!-- guardrails:graph v1 source-sha256={sourceHash} -->";
 
-        return provenance + "\n\n```mermaid\n" + diagram.TrimEnd('\n') + "\n```\n\n" + DiagramCaption + "\n";
+        return provenance + "\n\n```mermaid\n" + diagram.TrimEnd('\n') + "\n```\n\n" + DiagramCaption + "\n\n"
+            + MermaidRenderer.LegendMarkdown;
     }
 
     /// <summary>
