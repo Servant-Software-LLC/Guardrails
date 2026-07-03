@@ -173,6 +173,19 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   -> all pass: merge fragment + `succeeded` -> else compose `feedback.md` and retry.
 - **Failed-attempt retry**: `git reset --hard <taskBase> + git clean -fd` in the segment worktree
   (preserving every upstream/sibling commit; `taskBase` != `preHead`).
+- **Retry salvage (#195)**: for the two NON-LOGIC budget-exhaustion outcomes -- `max-turns` /
+  `output-cap` -- the harness preserves a non-final worktree-mode rollback instead of pure discard.
+  Immediately BEFORE the F2 reset above, the attempt's full working tree (including uncommitted
+  writes) is committed to `refs/guardrails/<taskId>/attempt-<N>` (a throwaway-index side-channel
+  snapshot, never a real commit on the segment branch). The next attempt still starts from the clean
+  `taskBase` -- unchanged, deterministic -- but its `feedback.md` names the ref + a `git diff --stat
+  <taskBase> <ref>` summary and instructs `git checkout <ref> -- <path>` to selectively adopt the good
+  parts rather than re-deriving everything. Gated by `preserveAttemptsForSalvage` (`RunConfig`, default
+  `true`). **Scope guard**: a `guardrail-failed` rollback is NEVER preserved by this mechanism (the code
+  may be genuinely wrong); `timeout` is also out of scope (a generic budget signal, not a "real progress,
+  just out of budget" one). Salvaged files remain subject to the task's `writeScope` -- the check is
+  retrospective on the FINAL state regardless of how it got there. Pruned on task settle-`succeeded` and
+  on a full `--fresh` reset (a task parked at `needs-human` keeps its refs for human inspection).
 - Retry budget exhausted -> `needs-human`; transitive dependents -> `blocked`;
   **independent branches keep running**.
 - **No-op-deadlock short-circuit (#174 / #182)**: a guardrail-failed attempt escalates to `needs-human`
@@ -406,3 +419,11 @@ BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
   `mergeOnSuccess`/`--merge-on-success` (AI-merge withheld at user-branch boundary);
   `maxParallelism: 3` default, `worktreeRoot`/`runOnCurrentBranch` config fields (GR2015/2016);
   triad (`captureHashes`/`restoreOnRetry`/`exclusive`, `WorkspaceLock`) REMOVED.
+- **Retry salvage** (#195): a worktree-mode `max-turns`/`output-cap` rollback preserves the attempt's
+  full working tree to `refs/guardrails/<taskId>/attempt-<N>` before the existing F2 reset discards
+  it; the next attempt's `feedback.md` names the ref + a `git diff --stat` summary and instructs
+  selective `git checkout <ref> -- <path>` adoption instead of a from-scratch redo. New `RunConfig`
+  field `preserveAttemptsForSalvage` (default `true`). Scoped to non-logic outcomes only --
+  `guardrail-failed` and `timeout` are never preserved by this mechanism. Salvaged files stay subject
+  to `writeScope` (the check is retrospective on final state). Pruned on task settle-`succeeded` and
+  on `--fresh`.

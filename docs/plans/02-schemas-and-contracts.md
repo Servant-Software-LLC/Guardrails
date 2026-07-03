@@ -102,6 +102,7 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": false,            // OPTIONAL; if true AND the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here)
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
+  "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issue #195). Default true. Preserves a rolled-back max-turns/output-cap attempt to a git ref instead of pure discard; set false to disable
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
     ".ps1": ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{script}", "{args}"]
   },
@@ -187,6 +188,18 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
   It overlays the harness `GUARDRAILS_*` env; a user-set key **wins last** (it is authoritative, and
   may even override the translated `maxOutputTokens` cap). `guardrailOverrides` may narrow both
   `maxOutputTokens` and `env` for the verifier profile.
+- `preserveAttemptsForSalvage` (default `true`) — **retry salvage** (issue #195, worktree mode only; a
+  no-op in serial mode, which has no segment to preserve). See §3.2 for the full mechanism; in brief:
+  a **non-final** attempt that ends `max-turns` or `output-cap` — the two NON-LOGIC budget-exhaustion
+  outcomes — has its full working tree (including uncommitted writes) committed to
+  `refs/guardrails/<taskId>/attempt-<N>` immediately BEFORE the existing F2 `git reset --hard
+  <taskBase> + git clean -fd` rollback discards it. The next attempt still starts from the clean
+  `taskBase` (unchanged, deterministic) — only the RETRY FEEDBACK changes: it names the ref, a `git
+  diff --stat <taskBase> <ref>` summary of what that attempt changed, and instructs the agent to
+  `git checkout <ref> -- <path>` the good parts rather than re-deriving everything from scratch.
+  Deliberately scoped to non-logic outcomes: a `guardrail-failed` rollback is **never** preserved by
+  this flag (the code may be genuinely wrong, so silently carrying it forward is the wrong default).
+  Set `false` to disable salvage entirely for a plan.
 
 ## 3. `tasks/<id>/task.json`
 
@@ -279,6 +292,51 @@ work is durable on the plan branch, so the directory is pure waste — the direc
 then prunes the registrations; a **non-green** (needs-human/failed/blocked) task's worktree is left in
 place as the fix/resume inspection surface, and the integration worktree is never swept. A cancelled
 run skips the sweep entirely (its in-flight worktrees are reclaimed by the next run's resume prune).
+
+**Retry salvage (issue #195) — preserve, don't just discard, a non-final rollback for NON-LOGIC
+outcomes.** The F2 rollback above (`git reset --hard <taskBase> + git clean -fd`) is unconditional —
+EVERY non-final worktree attempt resets, regardless of failure kind (§7's `WorktreeWillReset`
+predicate). For the two **non-logic budget-exhaustion** outcomes — `max-turns` and `output-cap` — a
+`max-turns`/`output-cap` termination is NOT a logic failure: the attempt's partial work is usually
+CORRECT-BUT-INCOMPLETE (the agent was making real progress and simply ran out of budget), not wrong.
+Discarding it outright and starting the next attempt from scratch is expensive and slow, especially
+across several rolled-back attempts. When `preserveAttemptsForSalvage` (§2, default `true`) is on and
+the task runs in worktree mode, the harness — immediately BEFORE the F2 reset — commits the attempt's
+**current full working-tree state** (including uncommitted writes) to a per-attempt ref:
+
+```
+refs/guardrails/<taskId>/attempt-<N>
+```
+
+using a throwaway index (`GIT_INDEX_FILE`) so the segment's real staged/unstaged state is never
+disturbed — this is a side-channel snapshot, never a real commit on the segment branch/HEAD. **The
+next attempt still starts from the clean `taskBase`** — deterministic, no half-broken state as the
+base; this does NOT change. What changes is the **retry feedback**: `feedback.md` (§8) gains a
+"Prior attempt work is salvageable" section naming the ref, a `git diff --stat <taskBase> <ref>`
+summary of exactly what that attempt changed, and an explicit instruction to `git checkout <ref> --
+<path>` the files that are correct and re-author only what is incomplete or wrong — reviewing and
+selectively adopting, not blindly restoring every file. **Salvaged files remain subject to the task's
+declared `writeScope`** (§3.4) exactly like any other write: the write-scope check runs a retrospective
+`git diff` on the FINAL state regardless of how it got there (fresh authorship or a `git checkout <ref>
+--`), so an out-of-scope file pulled in from a salvage ref is caught and scoped-reverted identically to
+a freshly-written out-of-scope file.
+
+**Scope guard — restricted to non-logic outcomes by default.** A `guardrail-failed` attempt's code may
+be genuinely WRONG, so it is **never** preserved by this mechanism regardless of the config flag — only
+`max-turns` and `output-cap` participate. `timeout` also does **not** participate (a generic budget
+signal the issue did not scope salvage to); its existing mode-aware rollback disclosure (§7, issue
+#167) is unchanged. Preservation is additionally best-effort: a git failure while preserving degrades
+to no salvage (the feedback falls back to its pre-#195 wording) rather than failing the attempt or
+altering the unconditional F2 reset.
+
+**Pruning.** A task's salvage refs are bookkeeping for THAT task's own retry loop, not a permanent
+record, so they are pruned in the two places other per-task/per-run git cleanup already happens: (1)
+the moment a task's FINAL settle is `succeeded` (alongside the Scheduler's existing green-worktree
+sweep) — its prior rolled-back attempts have served their purpose; (2) a full `--fresh` reset (alongside
+the existing stale segment/fork branch prune in `RunReset.Fresh`), which sweeps every salvage ref in the
+repo regardless of task, since a fresh run's tasks get fresh attempt numbers and any survivor would be
+orphaned bookkeeping. A task that never succeeds (exhausts to `needs-human`) keeps its salvage refs
+until the next `--fresh` — they remain available for a human to inspect during triage.
 
 ### 3.3 Terminal integration gate — the `<plan>/guardrails/` folder (was the `integrationGate` task kind)
 
@@ -970,7 +1028,10 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   path, §6.2) — never the false "your partial work is preserved on disk" claim.
 - `output-cap` — a prompt action's response exceeded the runner's output-token cap (issue #114). A
   budget-exhaustion failure distinct from `action-failed` so a human (and §9 triage) sees the agent
-  ran out of OUTPUT budget; the retry carries "write incrementally / split" feedback.
+  ran out of OUTPUT budget; the retry carries "write incrementally / split" feedback. **Retry salvage
+  (issue #195, §3.2):** in worktree mode, when `preserveAttemptsForSalvage` is on (default), a non-final
+  attempt's full working tree is preserved to `refs/guardrails/<taskId>/attempt-<N>` immediately before
+  the F2 reset discards it, and the feedback names the ref + a `git diff --stat` summary.
 - `max-turns` — a prompt action exhausted its TURN budget mid-progress (issue #129 / #94; Claude
   `error_max_turns`). A budget-exhaustion failure distinct from `action-failed` so a human (and §9
   triage) sees the agent ran out of TURNS — not a logic failure. The retry carries "work directly toward
@@ -978,7 +1039,11 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   a same-budget retry just re-exhausts at the same cap. Like the timeout feedback, this is **mode-aware**
   (issue #167): serial mode says "continue from the preserved partial work"; worktree mode discloses the
   segment reset / file-write rollback and instructs re-authoring (the raised-turn-budget advice survives
-  in both modes).
+  in both modes). **Retry salvage (issue #195, §3.2):** identically to `output-cap` above, a worktree-mode
+  non-final rollback is preserved to a salvage ref by default — this is WHY the worktree-mode feedback's
+  "your prior writes are gone" disclosure is softened to "reverted from your working tree, but not
+  discarded — see the ref" whenever a salvage ref was actually created. `timeout` does NOT get this
+  treatment (out of scope for #195 — see §3.2's scope guard); its rollback disclosure is unchanged.
 - `rate-limited` — a transient infrastructure limit did not clear within
   `transientPauseBudgetSeconds` (issue #115). The harness paused+re-ran WITHOUT consuming the retry
   budget; only on budget exhaustion did it settle `needs-human` with this outcome ("re-run later"). A

@@ -631,10 +631,23 @@ public sealed class TaskExecutor : ITaskExecutor
             // Same signal #162 uses, computed here because this feedback is composed in BOTH modes
             // (unlike the state-rejection path, which only runs in worktree mode).
             bool fileWritesRolledBack = WorktreeWillReset(worktree, isFinal);
+
+            // #195 retry salvage: for the two NON-LOGIC budget-exhaustion outcomes — max-turns and
+            // output-cap — preserve this about-to-be-rolled-back attempt's full working-tree state to an
+            // inspectable git ref BEFORE the F2 reset discards it, then tell the NEXT attempt's feedback
+            // where to find it. Deliberately excludes timeout (a generic budget signal, not scoped by the
+            // issue) and NEVER runs on the separate guardrail-failure branch below (its own feedback is
+            // ForGuardrailFailures, which this method never calls) — the scope guard is structural: a
+            // guardrail-class failure simply never reaches this call site. No-op (returns null) unless
+            // ALL of: worktree mode, config opt-in, non-final, and a real rollback is about to happen.
+            SalvageRef? salvageRef = fileWritesRolledBack
+                ? TryPreserveForSalvage(task, worktree, attemptNumber, action.FailureKind)
+                : null;
+
             string feedback = action.FailureKind switch
             {
-                PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber),
-                PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber, fileWritesRolledBack),
+                PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber, salvageRef),
+                PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber, fileWritesRolledBack, salvageRef),
                 PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber, fileWritesRolledBack),
                 _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult())
             };
@@ -837,6 +850,46 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     internal static bool WorktreeWillReset(WorktreeHandle worktree, bool isFinal) =>
         !isFinal && IsRealGitSegment(worktree);
+
+    /// <summary>
+    /// Retry salvage (issue #195): commit the about-to-be-rolled-back attempt's working tree to
+    /// <c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c> and compute a <c>git diff --stat</c> summary
+    /// against <c>taskBase</c>, so the NEXT attempt's feedback can name it. Scoped to the two NON-LOGIC
+    /// budget-exhaustion outcomes (<see cref="PromptFailureKind.MaxTurns"/> / <see cref="PromptFailureKind.OutputCap"/>)
+    /// — the issue's own scope guard: a <c>guardrail-failed</c> attempt's code may be genuinely WRONG, so
+    /// it is never silently preserved by this path (guardrail failures compose their own feedback
+    /// elsewhere and do not call this method at all). Returns null (no salvage) when
+    /// <see cref="RunConfig.PreserveAttemptsForSalvage"/> is off, the failure kind is not one of the two
+    /// above, or the git operations fail for any reason — salvage is a best-effort convenience, never a
+    /// reason to fail the attempt or change the rollback that already happens unconditionally.
+    /// </summary>
+    private SalvageRef? TryPreserveForSalvage(
+        TaskNode task, WorktreeHandle worktree, int attemptNumber, PromptFailureKind failureKind)
+    {
+        if (!_plan.Config.PreserveAttemptsForSalvage)
+        {
+            return null;
+        }
+
+        if (failureKind is not (PromptFailureKind.MaxTurns or PromptFailureKind.OutputCap))
+        {
+            return null;
+        }
+
+        string refName = $"refs/guardrails/{task.Id}/attempt-{attemptNumber}";
+        try
+        {
+            GitWorktreeProvider.PreserveAttemptToRef(worktree.WorktreePath, refName);
+            string diffStat = GitWorktreeProvider.DiffStatAgainstBase(worktree.WorktreePath, worktree.TaskBase, refName);
+            return new SalvageRef(refName, diffStat, attemptNumber);
+        }
+        catch (InvalidOperationException)
+        {
+            // Best-effort: a preservation failure must never fail the attempt or block the existing
+            // rollback — the retry proceeds exactly as it would have before #195.
+            return null;
+        }
+    }
 
     /// <summary>
     /// True when this attempt's action made NO change the harness can observe (issues #174 / #182): it

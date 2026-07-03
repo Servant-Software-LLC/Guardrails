@@ -97,6 +97,12 @@ public static class RunReset
 
             GitWorktreeProvider.PruneStaleSegmentBranches(
                 plan.Workspace, SchedulerFactory.WorktreeRootFor(plan));
+
+            // #195 retry-salvage pruning (deliverable 6): a --fresh reset also clears every preserved
+            // salvage ref across the whole repo, alongside the existing stale segment/fork branch
+            // prune — a fresh run's tasks get fresh attempt numbers, so any surviving salvage ref would
+            // be orphaned bookkeeping with no corresponding attempt to reference it.
+            GitWorktreeProvider.PruneAllSalvageRefs(plan.Workspace);
         }
         catch
         {

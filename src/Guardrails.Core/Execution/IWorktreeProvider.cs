@@ -98,4 +98,13 @@ public interface IWorktreeProvider
     /// HEAD sha. Default is a no-op (empty) for fake providers that never produce a non-FF merge.
     /// </summary>
     string CommitStagedMerge(IntegrationHandle integ, string taskId, CancellationToken ct) => "";
+
+    /// <summary>
+    /// Retry-salvage pruning (issue #195, deliverable 6): delete every preserved salvage ref for
+    /// <paramref name="taskId"/> (<c>refs/guardrails/&lt;taskId&gt;/attempt-*</c>) — called once a task
+    /// settles <c>succeeded</c>, so a green task's salvage refs (its own rolled-back partial attempts)
+    /// do not linger forever in a long-lived repo. Default no-op for fake providers that keep no
+    /// durable refs.
+    /// </summary>
+    void PruneSalvageRefs(string taskId) { }
 }

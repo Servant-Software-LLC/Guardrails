@@ -232,6 +232,9 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <inheritdoc />
+    public void PruneSalvageRefs(string taskId) => PruneSalvageRefs(_repoPath, taskId);
+
+    /// <inheritdoc />
     public string? LastMergeOnSuccessDetail { get; private set; }
 
     /// <inheritdoc />
@@ -475,6 +478,127 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
+    /// Retry-salvage (issue #195): commit the segment's CURRENT working-tree state — including
+    /// uncommitted writes — to <paramref name="refName"/> (e.g. <c>refs/guardrails/&lt;taskId&gt;/attempt-N</c>),
+    /// WITHOUT touching the segment branch/HEAD, so the attempt's work survives the F2 rollback
+    /// (<see cref="ResetSegment"/>) that runs immediately after for a <c>max-turns</c>/<c>output-cap</c>
+    /// retry. Uses a throwaway index (<c>GIT_INDEX_FILE</c>) so the segment's real staged/unstaged state
+    /// is never disturbed — this is purely a side-channel snapshot, not a real commit on the branch.
+    /// <c>commit-tree</c> (unlike <c>git commit</c>) always succeeds even when the resulting tree is
+    /// byte-identical to the parent's, so the ref always exists once called — "does a salvage ref exist
+    /// for this attempt" is a simple ref lookup, never a conditional-commit gotcha. Static, mirroring
+    /// <see cref="ResetSegment"/>, so the attempt loop can call it without a provider reference.
+    /// </summary>
+    public static void PreserveAttemptToRef(string worktreePath, string refName)
+    {
+        string tempIndex = Path.Combine(Path.GetTempPath(), $"gr-salvage-index-{Guid.NewGuid():N}");
+        try
+        {
+            var env = new Dictionary<string, string> { ["GIT_INDEX_FILE"] = tempIndex };
+            GitInWithEnv(worktreePath, env, "add", "-A");
+            string treeSha = GitInWithEnv(worktreePath, env, "write-tree").Trim();
+            string parentSha = GitIn(worktreePath, "rev-parse", "HEAD").Trim();
+            string commitSha = GitIn(
+                worktreePath, "commit-tree", treeSha, "-p", parentSha, "-m",
+                $"guardrails: salvage snapshot ({refName})").Trim();
+            GitIn(worktreePath, "update-ref", refName, commitSha);
+        }
+        finally
+        {
+            if (File.Exists(tempIndex))
+            {
+                try { File.Delete(tempIndex); } catch (IOException) { /* best-effort */ }
+            }
+        }
+    }
+
+    /// <summary>
+    /// A <c>git diff --stat</c> summary of <paramref name="refName"/> against <paramref name="taskBase"/>
+    /// (issue #195) — what a salvaged attempt actually changed, for the next attempt's retry feedback.
+    /// Returns an empty string (never throws) when the ref is missing or the diff otherwise fails, so a
+    /// best-effort feedback composer degrades gracefully rather than crashing the retry loop.
+    /// </summary>
+    public static string DiffStatAgainstBase(string worktreePath, string taskBase, string refName)
+    {
+        try
+        {
+            return GitIn(worktreePath, "diff", "--stat", taskBase, refName).Trim();
+        }
+        catch (InvalidOperationException)
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Retry-salvage pruning (issue #195, deliverable 6): delete every preserved salvage ref for
+    /// <paramref name="taskId"/> (<c>refs/guardrails/&lt;taskId&gt;/attempt-*</c>) — called on task
+    /// settle-succeeded and on a full <c>--fresh</c> reset, alongside the existing stale-branch pruning,
+    /// so salvage refs never accumulate unbounded in a long-lived repo. Best-effort: an individual
+    /// failed delete never aborts the sweep.
+    /// </summary>
+    public static void PruneSalvageRefs(string repoPath, string taskId)
+    {
+        // NOTE: `git for-each-ref <pattern>` only matches a pattern that is EITHER a full ref name OR
+        // ends at a '/' boundary (a directory prefix) OR carries an explicit '*' glob — a bare
+        // "…/attempt-" prefix (no trailing '/' or '*') matches NOTHING, even though
+        // "refs/guardrails/<taskId>/attempt-1" is textually prefixed by it. Passing the DIRECTORY
+        // prefix "refs/guardrails/<taskId>" (no trailing dash/glob) matches every ref nested under it —
+        // exactly the attempt-N refs this task ever preserved — without any glob-escaping concerns for
+        // a taskId containing characters git would otherwise wildmatch specially.
+        string prefix = $"refs/guardrails/{taskId}";
+        string[] refs;
+        try
+        {
+            refs = GitIn(repoPath, "for-each-ref", "--format=%(refname)", prefix)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .ToArray();
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+
+        foreach (string r in refs)
+        {
+            try { GitIn(repoPath, "update-ref", "-d", r); }
+            catch (InvalidOperationException) { /* best-effort */ }
+        }
+    }
+
+    /// <summary>
+    /// Retry-salvage pruning (issue #195): delete EVERY preserved salvage ref in the repo
+    /// (<c>refs/guardrails/*/attempt-*</c>, at least 3 path components after <c>refs/guardrails/</c>) —
+    /// used by a full <c>--fresh</c> reset, which has no single task in scope. Best-effort, mirroring
+    /// <see cref="PruneStaleSegmentBranches"/>'s swallow-everything discipline so a partial repo never
+    /// aborts the reset.
+    /// </summary>
+    public static void PruneAllSalvageRefs(string repoPath)
+    {
+        string[] refs;
+        try
+        {
+            refs = GitIn(repoPath, "for-each-ref", "--format=%(refname)", "refs/guardrails")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .Where(r => r.StartsWith("refs/guardrails/", StringComparison.Ordinal)
+                            && r.Contains("/attempt-", StringComparison.Ordinal))
+                .ToArray();
+        }
+        catch (InvalidOperationException)
+        {
+            return;
+        }
+
+        foreach (string r in refs)
+        {
+            try { GitIn(repoPath, "update-ref", "-d", r); }
+            catch (InvalidOperationException) { /* best-effort */ }
+        }
+    }
+
+    /// <summary>
     /// True when the user's checkout (<c>_repoPath</c>) has uncommitted changes to TRACKED files
     /// — staged or unstaged (<c>git status --porcelain --untracked-files=no</c> non-empty). F4 /
     /// run-start pre-flight. Untracked files are EXCLUDED: the harness writes its own runtime state
@@ -529,7 +653,17 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
     private string Git(params string[] args) => GitIn(_repoPath, args);
 
-    private static string GitIn(string workingDir, params string[] args)
+    private static string GitIn(string workingDir, params string[] args) =>
+        GitInWithEnv(workingDir, null, args);
+
+    /// <summary>
+    /// Like <see cref="GitIn"/> but overlays <paramref name="extraEnv"/> onto the child process's
+    /// environment (issue #195: <c>PreserveAttemptToRef</c> needs <c>GIT_INDEX_FILE</c> to stage into a
+    /// throwaway index without disturbing the segment's real index). Null/empty behaves identically to
+    /// the plain <see cref="GitIn"/>.
+    /// </summary>
+    private static string GitInWithEnv(
+        string workingDir, IReadOnlyDictionary<string, string>? extraEnv, params string[] args)
     {
         var psi = new ProcessStartInfo("git")
         {
@@ -539,6 +673,14 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             UseShellExecute = false
         };
         foreach (var arg in args) psi.ArgumentList.Add(arg);
+        if (extraEnv is not null)
+        {
+            foreach (KeyValuePair<string, string> kv in extraEnv)
+            {
+                psi.Environment[kv.Key] = kv.Value;
+            }
+        }
+
         using var proc = Process.Start(psi)!;
         string stdout = proc.StandardOutput.ReadToEnd();
         string stderr = proc.StandardError.ReadToEnd();
