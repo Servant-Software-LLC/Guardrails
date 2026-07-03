@@ -95,9 +95,9 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
     area, NOT one global whole-repo preflight.
   - **(d) Distinct from the terminal gate** (green START before the DAG via `<plan>/preflights/` vs green
     END on the merged HEAD via `<plan>/guardrails/` — a plan needs both).
-  - **(e) The worth-it gate held** — target pre-exists, MODIFIES-not-creates, deterministic + cheap (no
-    process start beyond the scoped test), strictly narrower than the terminal gate, ≥2 work tasks build on
-    the area.
+  - **(e) The worth-it gate held** — target pre-exists, MODIFIES-not-creates, deterministic + cheap (a
+    bounded, filtered command — a filtered `dotnet test` is fine; no live-service boot/poll), strictly
+    narrower than the terminal gate, ≥2 work tasks build on the area.
   The inverse error: a **vacuous baseline on a GREENFIELD plan** (a `dotnet test` over a project with zero
   tests, which trivially passes) — it certifies nothing while looking like a gate; greenfield must have NO
   baseline preflight. A RED baseline preflight halts the run before the DAG (the general Full-Flight-Check

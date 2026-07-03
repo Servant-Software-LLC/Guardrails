@@ -672,10 +672,11 @@ optional:
   - **One baseline per AREA, deduped** — one preflight file per distinct touched test project, each scoped
     to its area, NOT a single global whole-suite preflight.
   - **The worth-it gate (a check with teeth) — emit ONLY when ALL hold:** the target pre-exists; the plan
-    MODIFIES not creates it; the check is deterministic + cheap (NO process start beyond the scoped test,
-    bounded command); strictly narrower than the terminal `<plan>/guardrails/` gate; ≥2 work tasks build
-    on the area; deduped per area. **Under-fire when unsure** — a missed baseline is just the status quo,
-    a false baseline halts a correct plan before the DAG.
+    MODIFIES not creates it; the check is deterministic + cheap (a bounded, filtered command — a
+    filtered `dotnet test` is fine; no live-service boot or network poll, which flakes); strictly narrower
+    than the terminal `<plan>/guardrails/` gate; ≥2 work tasks build on the area; deduped per area.
+    **Under-fire when unsure** — a missed baseline is just the status quo, a false baseline halts a
+    correct plan before the DAG.
   - **Greenfield (`$baselineArea = none`) or worth-it gate fails → SKIP it and state why in the report**
     (nothing to baseline). Distinct from the terminal gate: the baseline preflight is a green START on
     EXISTING tests, evaluated once BEFORE the DAG; the terminal `<plan>/guardrails/` folder is a green END
@@ -703,11 +704,12 @@ upstream task that creates it:
   `tasks/`). This REPLACES the retired no-op ROOT task model — do NOT emit a `00-baseline-*` task with
   a `dependsOn: []` no-op action; the preflight folder runs before the DAG with no task, no edges:
   - **First, run the worth-it gate (a check with teeth) — emit ONLY when ALL hold:** the target
-    pre-exists; the plan MODIFIES not creates it; the check is deterministic + cheap (NO process start
-    beyond the scoped test, bounded command); strictly narrower than the terminal `<plan>/guardrails/`
-    gate; ≥2 work tasks build on the area; deduped per area. **Under-fire when unsure** — a missed
-    baseline is just the status quo (work tasks attribute their own failures the slow way); a false
-    baseline halts a correct plan before the DAG. If the gate fails, SKIP and say why in the report.
+    pre-exists; the plan MODIFIES not creates it; the check is deterministic + cheap (a bounded,
+    filtered command — a filtered `dotnet test` is fine; no live-service boot or network poll); strictly
+    narrower than the terminal `<plan>/guardrails/` gate; ≥2 work tasks build on the area; deduped per
+    area. **Under-fire when unsure** — a missed baseline is just the status quo (work tasks attribute
+    their own failures the slow way); a false baseline halts a correct plan before the DAG. If the gate
+    fails, SKIP and say why in the report.
   - **It is a guardrail-shaped preflight FILE, not a task** — a `.ps1`/`.sh`/`.py` file in
     `<plan>/preflights/` (same parser as `tasks/<id>/guardrails/`), opening with `# catches:`, that runs
     the check and exits 0/non-zero. **There is no action to make a no-op of** — the preflight folder is

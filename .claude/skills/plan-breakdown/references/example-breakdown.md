@@ -24,7 +24,7 @@ each because a guardrail or doctrine needed it.
 The plan modifies `src/Inventory.Cli`, an EXISTING CLI with an existing `tests/Inventory.Tests`
 project. That makes this a **brownfield** plan (`$baselineArea = tests/Inventory.Tests`, ONE touched
 test project). The **worth-it gate passes**: the test project pre-exists, the plan MODIFIES it (not
-creates), the check is cheap/deterministic (a filtered `dotnet test`, no process start), it is strictly
+creates), the check is cheap/deterministic (a filtered `dotnet test` — a bounded run, not a live-service boot/poll), it is strictly
 narrower than the terminal full-suite gate, and ≥2 work tasks (`01-author-stats-tests`,
 `02-implement-stats-flag`) build on the area. So Step 5 inserts ONE **positive-baseline (preflight)
 ROOT** so the existing tests are confirmed green BEFORE any work runs ("never build on red", #181). (A

@@ -527,8 +527,9 @@ Emit a positive baseline ONLY when **ALL** of these hold. If any fails, do NOT e
 - **Pre-exists.** The target already exists on the starting state (the area's tests are already there).
 - **Modifies, not creates.** The plan MODIFIES the target, it does not CREATE it (a brand-new project
   has no pre-plan green to pin → greenfield → skip).
-- **Deterministic + cheap.** The check is deterministic and bounded — **NO process start, a bounded
-  command** (a filtered `dotnet test`, not "boot the app and poll"). A baseline that starts a server or
+- **Deterministic + cheap.** The check is deterministic and bounded — **a bounded, filtered
+  command** (a filtered `dotnet test`, not "boot the app and poll"): no live-service boot or network
+  poll (that flakes), and not the whole unfiltered suite. A baseline that stands up a server or
   runs the whole suite is neither cheap nor union-safe and re-creates the compile-coupling trap.
 - **Strictly narrower than the terminal gate.** The baseline is area-scoped at the ROOT; the terminal
   `integrationGate` is whole-repo at the SINK. If your "baseline" is the same scope as the terminal gate,
