@@ -1148,6 +1148,44 @@ Per `references/schemas.md`, exactly:
   > No test project exists and no framework was specified. Do NOT assume one. Write
   > `{"needsHuman": "No test framework found — which should <TestProject> use: xUnit,
   > NUnit, or MSTest?"}` to the state-out path and stop.
+- **Durable markers over line numbers; caveat any "here's how it currently works" claim about a
+  not-yet-run sibling (#203).** This fires whenever a **later-wave task's** prompt references code
+  an **earlier-wave task in the same plan** will create or modify before the later task actually
+  executes. The authoring-time snapshot and the run-time reality are two different moments — by
+  construction, the earlier task WILL touch that file before the later task runs, so anything the
+  prompt says about "where" or "how" that code looks is a claim about a state that has not happened
+  yet. Two coupled rules:
+  1. **Never cite a line number for code an earlier-wave sibling will touch first.** A line number is
+     a snapshot that shifts the instant the earlier task edits the file — the later task's prompt was
+     necessarily authored before that edit landed, so the pointer is stale on arrival by construction,
+     not by bad luck. Cite a **durable, structure-stable marker** instead: a distinctive comment string
+     already in the code (or one the earlier task's own prompt is instructed to leave behind), a
+     method/class/type name, or a symbol the agent can `grep` for regardless of how the surrounding
+     lines drift. *Worked example (the motivating incident, issue #202):* a later task's prompt said
+     "this REPLACES the terminal integration gate run (`Scheduler.cs` ~231-253)" — by the time it ran,
+     an earlier-wave task had already landed and shifted every line number in the file. The fix is not
+     a fresher line number (it will just go stale again on the NEXT earlier-wave edit) — cite the
+     block's own marker instead: "the block marked `// --- C1 terminal whole-repo integration gate ---`
+     in `Scheduler.cs` (grep for it; do not rely on a line number, which will have moved)."
+  2. **Caveat any architectural claim about a sibling's not-yet-run implementation as authoring-time
+     state, not settled fact.** Phrase "here's how deliverable N currently works" as a checkable
+     hypothesis, never as a given the later task should build on unchecked: *"this reflects the
+     plan-authoring-time state, before deliverable N had actually run — verify it's still accurate
+     before assuming the same shape applies here."* The same incident is the worked example: task 08
+     was described as "extending the same `Scheduler.cs` path," but it actually built a brand-new
+     standalone class (`PlanPreflightPhase.cs`) invoked from `RunCommand.cs` — an unhedged claim would
+     have sent the later task confidently re-discovering a `Scheduler.cs` extension that was never
+     built.
+
+  **These two rules are companions, not independent bullets — apply both together whenever the
+  trigger fires.** A prompt that hedges the architecture claim but still cites a raw line number (or
+  vice versa) only half-fixes the failure: the durable marker survives the line drift, but an
+  unhedged claim can still send the agent confidently down the wrong structural path even once it
+  finds the right code. When this trigger fires, it also usually earns the task a `maxTurns: 75`
+  bump — see Step 4a's fourth archetype, "integrates with a sibling's not-yet-landed implementation."
+  Author the prompt text AND set the budget together; they are the two halves of the same fix for the
+  same underlying situation (Step 4a says more on when the pairing is required vs. one without the
+  other).
 - `state/seed.json` only if the plan implies initial shared state (input paths,
   names, configuration the tasks read).
 - Scripts: prefer the workspace's native platform; note any interpreter requirement
@@ -1372,6 +1410,18 @@ config. Script tasks have no `maxTurns` — skip them.
   third-party SDK/protocol library no ancestor task has already established a working call against.
 - **Terminal aggregation / wiring tasks** that connect several pieces (the composition-root wiring
   task §120, the entry-point-wiring task §64) — they touch multiple unfamiliar seams at once.
+- **Integrates with, extends, or describes a sibling task's not-yet-landed implementation (#203/#204)**
+  — the task's action prompt must integrate with, extend, or describe an **earlier-wave deliverable in
+  the same multi-wave plan** that did not exist yet at plan-authoring time. The root cause differs from
+  the other three archetypes above — this is **temporal ordering within the plan**, not external
+  unfamiliarity or aggregation complexity — but the re-discovery cost is the same shape: the agent must
+  locate and understand code that may not match what the prompt described, because the prompt was
+  necessarily written before that code existed. The tell: the prompt says "this extends/replaces
+  deliverable N's implementation" or otherwise describes a same-plan sibling's code the DAG places in
+  an earlier wave. **This is the companion trigger to the durable-marker/architecture-caveat authoring
+  rule (SKILL.md Step 6, #203)** — when a task needs one, it usually needs the other: hedge the prompt
+  text (durable markers, caveated architecture claims) AND bump `maxTurns` together, since both exist to
+  absorb the SAME underlying re-discovery risk. Don't apply one without checking the other.
 
 **Why a FIXED bump, not a guessed exact budget.** `/plan-breakdown` cannot guess an exact per-task
 turn count — actuals are unguessable (54 and 32 in the motivating run, vs. a hand-guess of 120/100).
@@ -1739,7 +1789,7 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.
 <!-- BEGIN ADDED QUALITY-BAR ITEMS (auto-merge friendly) -->
-- [ ] (#94) Every turn-expensive prompt task (integration/smoke/e2e + in-process harness, unfamiliar-SDK discovery, terminal aggregation/wiring) carries a per-task `maxTurns: 75` override (`task.json action.maxTurns` or prompt frontmatter); other prompt tasks left at the default; a shared-harness task inserted when ≥2 tasks need the same unfamiliar-SDK setup; the bumps + insertion reported (Step 4a).
+- [ ] (#94/#204) Every turn-expensive prompt task (integration/smoke/e2e + in-process harness, unfamiliar-SDK discovery, terminal aggregation/wiring, OR integrates with/extends/describes a same-plan sibling's not-yet-landed implementation) carries a per-task `maxTurns: 75` override (`task.json action.maxTurns` or prompt frontmatter); other prompt tasks left at the default; a shared-harness task inserted when ≥2 tasks need the same unfamiliar-SDK setup; the bumps + insertion reported (Step 4a). (#203) A task referencing an earlier-wave sibling's code also gets durable-marker + architecture-caveat prompt text (Step 6) — the two are companion fixes for the same situation, not independent bullets.
 - [ ] (#116) Every author-tests task that builds a real git repo reuses a Windows-safe shared `TempGitRepo` fixture (strips read-only before delete, recreates `git rm`/`git mv`-pruned dirs, rolls back via `git reset --hard`, normalizes `core.autocrlf`) OR carries the Windows-Git portability directive; the fixture is authored once and reused, not re-discovered per task (Step 5a; `stacks/dotnet.md §11`).
 - [ ] (#101) Every task whose primary deliverable is a file in a NEW `.claude/` subdirectory has a directory-seed task (writes a `.gitkeep`) or a `## Pre-conditions` note before it, plus a `01-dir-seeded.ps1` guardrail asserting the subdir exists; the seed and affected path reported (Step 5b).
 - [ ] (#87) No emitted task updates ≥2 `.claude/skills/<X>/` directories — multi-skill milestones split into one `NN-update-<skill>-skill` task per directory (each with a directory-narrowed `writeScope`), with golden-example regeneration and round-trip verification as their own downstream tasks `dependsOn` the skill updates (Step 2c).
