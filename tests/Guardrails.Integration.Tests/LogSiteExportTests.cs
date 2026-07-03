@@ -306,6 +306,169 @@ public sealed class LogSiteExportTests
         }
     }
 
+    [Fact]
+    public void TaskPage_MultipleAttempts_RendersAttemptDropdown_DefaultingToLatest_OthersHidden()
+    {
+        // #206: a task with 2+ attempts on disk gets an attempt-level <select> (mirroring the live
+        // viewer's attempt dropdown) with one <option> per attempt, and only the LATEST attempt's
+        // <section> is visible on load — the rest are present (single-file portability) but `hidden`.
+        string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            string attempt1 = Path.Combine(logsRoot, "01-task", "attempt-1");
+            string attempt2 = Path.Combine(logsRoot, "01-task", "attempt-2");
+            string attempt3 = Path.Combine(logsRoot, "01-task", "attempt-3");
+            Directory.CreateDirectory(attempt1);
+            Directory.CreateDirectory(attempt2);
+            Directory.CreateDirectory(attempt3);
+            File.WriteAllText(Path.Combine(attempt1, "action-stdout.log"), "attempt one output");
+            File.WriteAllText(Path.Combine(attempt2, "action-stdout.log"), "attempt two output");
+            File.WriteAllText(Path.Combine(attempt3, "action-stdout.log"), "attempt three output — latest");
+
+            var tasks = new[] { FakeTask("01-task", "Many attempts") };
+            var journal = new JournalDocument
+            {
+                RunId = "run-attempts",
+                PlanHash = "sha256:deadbeef",
+                Tasks = new Dictionary<string, TaskJournalEntry>
+                {
+                    ["01-task"] = new() { Status = Core.Journal.TaskStatus.NeedsHuman },
+                },
+            };
+
+            LogSiteRenderer.ExportSite(logsRoot, tasks, journal);
+
+            string page = File.ReadAllText(Path.Combine(logsRoot, "01-task", "index.html"));
+
+            // The attempt <select> exists with one <option> per attempt, oldest first, latest selected.
+            Assert.Contains("<select id=\"attemptselect\" class=\"attemptselect\">", page);
+            Assert.Contains("<option value=\"1\">attempt 1</option>", page);
+            Assert.Contains("<option value=\"2\">attempt 2</option>", page);
+            Assert.Contains("<option value=\"3\" selected>attempt 3</option>", page);
+
+            // Every attempt's section is inlined in the SAME file (single-file portability) …
+            Assert.Contains("<section class=\"attempt\" data-attempt=\"1\" hidden>", page);
+            Assert.Contains("<section class=\"attempt\" data-attempt=\"2\" hidden>", page);
+            Assert.Contains("<section class=\"attempt\" data-attempt=\"3\">", page);
+            Assert.Contains("attempt one output", page);
+            Assert.Contains("attempt two output", page);
+            Assert.Contains("attempt three output — latest", page);
+
+            // … but only the latest attempt's section (3) is NOT hidden on load.
+            Assert.DoesNotContain("<section class=\"attempt\" data-attempt=\"3\" hidden>", page);
+
+            // The attempt-select toggle script is present, scoped by data-attempt, and still no fetch.
+            Assert.Contains("attemptselect", page);
+            Assert.Contains("section.attempt", page);
+            Assert.DoesNotContain("fetch(", page);
+        }
+        finally
+        {
+            try { Directory.Delete(logsRoot, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void TaskPage_MultipleAttempts_EachAttemptsFileComboboxStaysNestedAndIndependent()
+    {
+        // #206: the pre-existing per-attempt file combobox must survive INSIDE whichever attempt
+        // <section> it belongs to, unaffected other than being shown/hidden with its parent section.
+        // Each attempt keeps its own independent file selector + inlined bodies.
+        string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            string attempt1 = Path.Combine(logsRoot, "01-task", "attempt-1");
+            string attempt2 = Path.Combine(logsRoot, "01-task", "attempt-2");
+            Directory.CreateDirectory(attempt1);
+            Directory.CreateDirectory(attempt2);
+            File.WriteAllText(Path.Combine(attempt1, "transcript.md"), "first attempt transcript");
+            File.WriteAllText(Path.Combine(attempt1, "action-stdout.log"), "first attempt stdout");
+            File.WriteAllText(Path.Combine(attempt2, "transcript.md"), "second attempt transcript");
+
+            var tasks = new[] { FakeTask("01-task", "Nested combobox") };
+            var journal = new JournalDocument
+            {
+                RunId = "run-nested",
+                PlanHash = "sha256:deadbeef",
+                Tasks = new Dictionary<string, TaskJournalEntry>
+                {
+                    ["01-task"] = new() { Status = Core.Journal.TaskStatus.Succeeded },
+                },
+            };
+
+            LogSiteRenderer.ExportSite(logsRoot, tasks, journal);
+
+            string page = File.ReadAllText(Path.Combine(logsRoot, "01-task", "index.html"));
+
+            // Each attempt keeps its OWN file <select>, scoped by data-attempt, as before #206.
+            Assert.Contains("<select class=\"fileselect\" data-attempt=\"1\">", page);
+            Assert.Contains("<select class=\"fileselect\" data-attempt=\"2\">", page);
+
+            // Attempt 1's file select is nested inside attempt 1's <section>, likewise attempt 2.
+            int section1Start = page.IndexOf("<section class=\"attempt\" data-attempt=\"1\"", StringComparison.Ordinal);
+            int section1End = page.IndexOf("</section>", section1Start, StringComparison.Ordinal);
+            int fileSelect1 = page.IndexOf("data-attempt=\"1\">", StringComparison.Ordinal);
+            Assert.InRange(fileSelect1, section1Start, section1End);
+
+            int section2Start = page.IndexOf("<section class=\"attempt\" data-attempt=\"2\"", StringComparison.Ordinal);
+            int section2End = page.IndexOf("</section>", section2Start, StringComparison.Ordinal);
+            int fileSelect2 = page.IndexOf("<select class=\"fileselect\" data-attempt=\"2\">", StringComparison.Ordinal);
+            Assert.InRange(fileSelect2, section2Start, section2End);
+        }
+        finally
+        {
+            try { Directory.Delete(logsRoot, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void TaskPage_SingleAttempt_NoAttemptDropdown_SectionAlwaysVisible_DoesNotRegress()
+    {
+        // #206: the single-attempt case is BY FAR the most common in practice and must not regress. No
+        // attempt-level <select> is rendered (nothing to pick between); the one attempt still renders its
+        // file combobox exactly as before, and its content is visible (not hidden).
+        string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            string attemptDir = Path.Combine(logsRoot, "01-task", "attempt-1");
+            Directory.CreateDirectory(attemptDir);
+            File.WriteAllText(Path.Combine(attemptDir, "action-stdout.log"), "the only attempt");
+
+            var tasks = new[] { FakeTask("01-task", "Single attempt") };
+            var journal = new JournalDocument
+            {
+                RunId = "run-single",
+                PlanHash = "sha256:deadbeef",
+                Tasks = new Dictionary<string, TaskJournalEntry>
+                {
+                    ["01-task"] = new() { Status = Core.Journal.TaskStatus.Succeeded },
+                },
+            };
+
+            LogSiteRenderer.ExportSite(logsRoot, tasks, journal);
+
+            string page = File.ReadAllText(Path.Combine(logsRoot, "01-task", "index.html"));
+
+            // No attempt dropdown — nothing to pick between with only one attempt.
+            Assert.DoesNotContain("id=\"attemptselect\"", page);
+
+            // The one attempt's section is present and NOT hidden.
+            Assert.Contains("<section class=\"attempt\" data-attempt=\"1\">", page);
+            Assert.DoesNotContain("<section class=\"attempt\" data-attempt=\"1\" hidden>", page);
+            Assert.Contains("the only attempt", page);
+
+            // Its file combobox is untouched.
+            Assert.Contains("<select class=\"fileselect\" data-attempt=\"1\">", page);
+        }
+        finally
+        {
+            try { Directory.Delete(logsRoot, recursive: true); } catch (IOException) { }
+        }
+    }
+
     private static Core.Model.TaskNode FakeTask(string id, string description) => new()
     {
         Id = id,
