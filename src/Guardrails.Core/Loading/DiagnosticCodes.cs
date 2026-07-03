@@ -107,18 +107,22 @@ public static class DiagnosticCodes
     /// </summary>
     public const string MaxPathRisk = "GR2016";
 
-    /// <summary>
-    /// A multi-leaf or fan-in plan has no <c>integrationGate:true</c> sink (plan 08 M2, SSOT §3.3).
-    /// The terminal gate is the whole-repo soundness boundary for parallel execution; omitting it
-    /// leaves parallel branches unverified at the integration level — an ERROR.
-    /// </summary>
+    // ─── RETIRED CODES — GR2017 / GR2018 (do NOT re-wire) ────────────────────────────────────────
+    // These two constants are EMITTED NOWHERE. Their rules were retired/re-homed by the four-folder
+    // preflights/guardrails model (design-of-record 09-preflight-first-class, SSOT §3.3):
+    //   • GR2017 (MissingIntegrationGate)   — the "a multi-leaf/fan-in plan must declare exactly one
+    //       integrationGate:true sink" rule is RETIRED. The terminal gate is now the <plan>/guardrails/
+    //       FOLDER; a plan that still declares the legacy key is rejected by GR2029 instead.
+    //   • GR2018 (IntegrationGateEmpty)     — the "that sink must carry ≥1 scope:'integration'
+    //       guardrail" content teeth were RE-HOMED onto the folder as GR2028 (see below), not deleted.
+    // They are kept here (not deleted) ONLY so their code numbers stay reserved and are never
+    // re-allocated to a new rule. Do NOT wire either back up — the migration that retired them is
+    // complete and every consumer moved to GR2028/GR2029.
+
+    /// <summary>RETIRED (see the block above): the old GR2017 "missing integrationGate sink" rule — superseded by GR2029.</summary>
     public const string MissingIntegrationGate = "GR2017";
 
-    /// <summary>
-    /// An <c>integrationGate:true</c> sink carries no guardrail with <c>scope:"integration"</c>
-    /// (plan 08 M2, SSOT §3.3/§4.3). A terminal gate with an empty integration-guardrail set
-    /// verifies nothing — an ERROR; the gate task must have at least one integration-scoped guardrail.
-    /// </summary>
+    /// <summary>RETIRED (see the block above): the old GR2018 "empty integration gate" content rule — re-homed onto the folder as GR2028.</summary>
     public const string IntegrationGateEmpty = "GR2018";
 
     /// <summary>
@@ -197,4 +201,46 @@ public static class DiagnosticCodes
     /// warning).
     /// </summary>
     public const string StaleCoverageToken = "GR2026";
+
+    // --- Four-folder preflights/guardrails model (preflights-impl deliverable 2) -------
+    // Next-free allocation confirmed at authoring time: GR2026 (StaleCoverageToken) is the last
+    // taken; GR2013/GR2014 are historical gaps but GR2015–GR2026 are contiguous above them, so
+    // GR2027 is the next free code. The three codes below are a CONTIGUOUS block (GR2027–GR2029)
+    // for the two-scope preflights/guardrails feature (design-of-record 09-preflight-first-class,
+    // SSOT §1/§3.3/§4). Deliverable 2 (the loader/validator) READS these constants from this file —
+    // it is the source-of-truth allocation, so do not renumber.
+
+    /// <summary>
+    /// A guardrail file in one of the four folders (<c>&lt;plan&gt;/preflights/</c>,
+    /// <c>&lt;plan&gt;/guardrails/</c>, <c>tasks/&lt;id&gt;/preflights/</c>, or
+    /// <c>tasks/&lt;id&gt;/guardrails/</c>) does not open with the required <c>catches:</c> comment
+    /// (script) or frontmatter field (prompt) — SSOT §4. A guardrail whose author cannot state what
+    /// wrong implementation it catches is decorative; the loader rejects the malformed declaration
+    /// rather than run a check nobody can justify. The canonical per-folder "malformed declaration"
+    /// diagnostic for the four-folder model.
+    /// </summary>
+    public const string GuardrailMissingCatches = "GR2027";
+
+    /// <summary>
+    /// A multi-leaf or fan-in plan's terminal <c>&lt;plan&gt;/guardrails/</c> folder does not carry
+    /// at least one deterministic check that actually RE-RUNS the integration set (the whole-repo
+    /// build / full suite / a union invariant) — SSOT §3.3. This is the RE-HOMED GR2018 rule: the
+    /// terminal-sink obligation moved off the retired <c>integrationGate</c> task and onto the folder,
+    /// with its CONTENT teeth preserved. An empty terminal folder fails; so does a folder carrying only
+    /// a tautological <c>exit 0</c> file (a present-but-verifies-nothing gate) — the check is content,
+    /// not mere non-emptiness. An ERROR: a parallel plan whose terminal gate verifies nothing is not a
+    /// sound whole-repo soundness boundary. (The §4.3 <c>scope:"integration"</c> per-union tag is
+    /// unchanged and independent — only the terminal-sink obligation re-homed here.)
+    /// </summary>
+    public const string PlanGuardrailsMissingIntegrationReRun = "GR2028";
+
+    /// <summary>
+    /// A task still declares the retired <c>integrationGate: true</c> task kind (SSOT §3.3). Under the
+    /// four-folder model the terminal checks live in <c>&lt;plan&gt;/guardrails/</c>; the
+    /// <c>integrationGate</c> task kind and its GR2017 presence rule are RETIRED with no coexistence
+    /// window. A plan that still carries the key gets a HARD validation ERROR (honest-over-silent,
+    /// lead decision) so the stale declaration is caught at validate time instead of silently
+    /// ignored — every committed consumer of the old behavior is migrated in the same feature.
+    /// </summary>
+    public const string RetiredIntegrationGateKey = "GR2029";
 }

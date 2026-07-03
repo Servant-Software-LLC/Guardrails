@@ -1,0 +1,7 @@
+{
+  "description": "Author integration tests for the task-level preflight slot: RED tasks/<id>/preflights/ → consumer settles needs-human with task-preflight-failed, NO attempt burned; transitive dependents blocked; an independent branch runs to completion (cone isolation); exit 2. Serial AND worktree. Red against current code",
+  "stableId": "k1tp10",
+  "dependsOn": ["04-implement-four-folder-loader", "05-outcomes-and-journal"],
+  "writeScope": ["tests/Guardrails.Integration.Tests/TaskPreflightSlotTests.cs"],
+  "action": { "maxTurns": 75 }
+}

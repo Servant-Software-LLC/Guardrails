@@ -71,5 +71,17 @@ public enum AttemptOutcome
     /// generic <see cref="ActionFailed"/> so a human sees a permission/config issue, not "the agent
     /// failed".
     /// </summary>
-    PermissionDenied
+    PermissionDenied,
+
+    /// <summary>
+    /// A per-task <c>tasks/&lt;id&gt;/preflights/</c> slot failed (the two-scope preflights F9 split): the
+    /// task-scoped preflight gate did not pass, so the harness settles the task <c>needs-human</c> and its
+    /// transitive cone <c>blocked</c> (exit 2) instead of running the action. Journaled inside <c>tasks{}</c>
+    /// as the attempt <c>outcome</c>, alongside <see cref="GuardrailFailed"/> / <see cref="ActionFailed"/> /
+    /// <see cref="OutputCap"/> / <see cref="MaxTurns"/> / <see cref="RateLimited"/> — a DISTINCT outcome so a
+    /// human (and §9 triage) sees a preflight gate failure, not a generic action failure. Distinct from the
+    /// two whole-plan phase halts (<c>plan-preflight-failed</c> / <c>plan-guardrail-failed</c>), which live
+    /// OUTSIDE <c>tasks{}</c> in the top-level journal sections (SSOT §7).
+    /// </summary>
+    TaskPreflightFailed
 }

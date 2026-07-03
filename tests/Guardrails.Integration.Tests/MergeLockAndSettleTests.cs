@@ -289,6 +289,33 @@ public sealed class MergeLockAndSettleTests
         return planDir;
     }
 
+    /// <summary>
+    /// Creates a single-task worktree-mode plan inside <paramref name="repoPath"/> (issue #196/#198): one
+    /// task, no dependsOn, producing a state fragment and a source file, so it settles via a clean FF.
+    /// <c>maxParallelism: 2</c> enables worktree mode.
+    /// </summary>
+    private static string CreateSingleTaskPlan(string repoPath)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(planDir);
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 2
+            }
+            """);
+
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+        WriteTaskInRepo(planDir, "01-only", []);
+        return planDir;
+    }
+
     /// <summary>Creates a linear chain A → B inside <paramref name="repoPath"/>.</summary>
     private static string CreateLinearPlan(string repoPath)
     {
@@ -1040,6 +1067,125 @@ public sealed class MergeLockAndSettleTests
         JournalDocument doc = JournalReader.Read(RunJournal.PathFor(plan.PlanDir));
         Assert.Equal(JournalTaskStatus.Succeeded, doc.Tasks["01-producer"].Status);
         Assert.NotNull(doc.Tasks["01-producer"].MergeSequence);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 5 — #196: a worktree-mode SUCCESS journals a real AttemptRecord (+ #198 provenance)
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #196: a succeeded task in WORKTREE mode must journal a real
+    /// <see cref="AttemptRecord"/> — the SAME shape serial mode records — so
+    /// <c>journal.Tasks[id].Attempts</c> is non-empty (SSOT §7 shows a succeeded task with a populated
+    /// <c>attempts[]</c>). Before the fix the three worktree success branches called only
+    /// <c>RecordSettle</c> (status + mergeSequence, NO attempt), so a succeeded worktree task's
+    /// <c>Attempts</c> list was empty — contradicting the SSOT and diverging from serial mode.
+    /// <para>
+    /// Also pins the #198 provenance the settle now carries: a real git segment's attempt records the
+    /// segment worktree (branch + path) and the base commit it forked from. The task is a SCRIPT, so
+    /// <c>Model</c> is null (no model runs) — the worktree fields are the load-bearing #198 assertion here.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task WorktreeSuccess_JournalsRealAttemptRecord_WithProvenance()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateSingleTaskPlan(repo.RepoPath);
+
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        var (report, _) = await RunWithProviderAsync(
+            planDir, provider, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "single worktree task must succeed; " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        // Read the ON-DISK journal bytes (not an in-memory shortcut) so this proves run.json itself.
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(planDir));
+
+        // ── #196: the succeeded worktree task journals exactly ONE real attempt (attempt 1, succeeded).
+        AttemptRecord attempt = Assert.Single(doc.Tasks["01-only"].Attempts);
+        Assert.Equal(1, attempt.Attempt);
+        Assert.Equal(AttemptOutcome.Succeeded, attempt.Outcome);
+        Assert.Equal(0, attempt.ActionExitCode);
+        Assert.False(string.IsNullOrEmpty(attempt.LogDir), "the attempt must carry its relative logDir.");
+        // The settle consumed a mergeSequence (recorded together with the attempt, atomically).
+        Assert.NotNull(doc.Tasks["01-only"].MergeSequence);
+
+        // ── #198: the attempt carries the segment-worktree provenance the harness knew at launch.
+        AttemptProvenance prov = Assert.IsType<AttemptProvenance>(attempt.Provenance);
+        Assert.False(string.IsNullOrEmpty(prov.SegmentBranch), "provenance must record the segment branch.");
+        Assert.False(string.IsNullOrEmpty(prov.WorktreePath), "provenance must record the segment worktree path.");
+        Assert.False(string.IsNullOrEmpty(prov.BaseCommit), "provenance must record the base commit forked from.");
+        // A script task runs no model, so Model is null here (the prompt-task model path is covered elsewhere).
+        Assert.Null(prov.Model);
+
+        // ── #198: the provenance is ALSO mirrored to the attempt log dir as a machine-readable header.
+        string provenanceFile = Path.Combine(
+            planDir, attempt.LogDir.Replace('/', Path.DirectorySeparatorChar), "attempt-provenance.json");
+        Assert.True(File.Exists(provenanceFile),
+            $"#198: attempt-provenance.json must be written to the attempt log dir ({provenanceFile}).");
+        string provJson = File.ReadAllText(provenanceFile);
+        Assert.Contains("segmentBranch", provJson, StringComparison.Ordinal);
+        Assert.Contains("baseCommit", provJson, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 6 — #188: a failed non-FF union re-verify leaves the failing guardrail output on disk
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #188: when a non-FF union re-verify FAILS and the harness does the B1 four-effect rollback,
+    /// the failing integration guardrail's output must be persisted to the task log dir (a
+    /// <c>union-reverify-&lt;guardrail&gt;.stdout.log</c>) AND the promised <c>feedback.md</c> must actually
+    /// be written — before the fix the needs-human summary pointed at a <c>feedback.md</c> that this path
+    /// never wrote, and the failing guardrail's output was discarded with the rolled-back merged bytes.
+    /// <para>
+    /// Reuses the sibling-race shape of <see cref="NonFF_Union_ReVerifies_B1_FourEffect"/>: the second
+    /// sibling settles non-FF and its merged bytes fail the (spy) integration re-verify. This asserts the
+    /// EVIDENCE now survives on disk in the failing task's log dir.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task FailedUnionReVerify_PersistsFailingGuardrailOutput_AndWritesFeedback()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateSiblingPlan(repo.RepoPath);
+
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = false };
+
+        var (report, _) = await RunWithProviderAsync(
+            planDir, provider, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        // One sibling FF's green; the other's non-FF union re-verify fails → needs-human (B1 rollback).
+        TaskResult nhTask = Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.NeedsHuman);
+        string nhId = nhTask.TaskId;
+
+        JournalDocument doc = JournalReader.Read(RunJournal.PathFor(planDir));
+        string runId = doc.RunId;
+        string taskLogDir = Path.Combine(planDir, "logs", runId, nhId);
+
+        // ── #188 (a): the failing integration guardrail's output is persisted next to the task log dir.
+        // The spy fails a guardrail named "spy-re-verify" → union-reverify-spy-re-verify.stdout.log.
+        string persistedOutput = Path.Combine(taskLogDir, "union-reverify-spy-re-verify.stdout.log");
+        Assert.True(File.Exists(persistedOutput),
+            $"#188: the failing union guardrail's output must be persisted ({persistedOutput}).");
+        Assert.Contains("forced failure", File.ReadAllText(persistedOutput), StringComparison.Ordinal);
+
+        // ── #188 (b): the promised feedback.md is actually written for this path (not a dangling pointer).
+        string feedbackPath = Path.Combine(taskLogDir, "feedback.md");
+        Assert.True(File.Exists(feedbackPath),
+            $"#188: the union-reverify rollback must write the promised feedback.md ({feedbackPath}).");
+        string feedback = File.ReadAllText(feedbackPath);
+        Assert.Contains("union re-verify failed", feedback, StringComparison.Ordinal);
+
+        // ── The needs-human summary points at the feedback.md that now EXISTS.
+        Assert.Contains("feedback.md", nhTask.Summary, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

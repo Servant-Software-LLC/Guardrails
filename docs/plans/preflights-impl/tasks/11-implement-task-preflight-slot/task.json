@@ -1,0 +1,7 @@
+{
+  "description": "Implement the task-level preflight slot in TaskExecutor.ExecuteAsync (BEFORE the attempt loop, evaluate tasks/<id>/preflights/ via IReVerifier at the consumer's segment worktree; on fail short-circuit to needs-human with task-preflight-failed WITHOUT burning a retry, in serial AND worktree mode; block only the cone) so the tests pass",
+  "stableId": "k2tp11",
+  "dependsOn": ["10-author-tests-task-preflight-slot", "02-implement-reverifier-wiring"],
+  "writeScope": ["src/Guardrails.Core/Execution/"],
+  "action": { "maxTurns": 75 }
+}

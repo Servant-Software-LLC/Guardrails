@@ -1,0 +1,40 @@
+{
+  // ============================================================================================
+  // MOSTLY REAL — this folder illustrates the FOUR-FOLDER model from
+  // ../../../09-preflight-first-class.md. Preflights and guardrails are first-class at TWO scopes,
+  // mirrored by four folders on disk:
+  //   PLAN-LEVEL:  preflights/ (Full Flight Checks — a positive + a negative baseline) and
+  //                guardrails/ (the Terminal Gate — a real whole-repo integration-set re-run)
+  //   TASK-LEVEL:  tasks/<id>/preflights/ (JIT dependency-delivery precondition, on task 05)
+  //                and tasks/<id>/guardrails/ (ordinary postconditions, unchanged)
+  // `guardrails validate` on THIS folder PASSES under the four-folder loader. There is no
+  // no-op ROOT/END task and no `integrationGate: true` task — the terminal checks live in the
+  // plan-level guardrails/ folder. The guardrail `scope` field still recognises exactly two
+  // values, `local` and `integration`; no third value exists.
+  //
+  // Every guardrail-shaped file across all four folders opens with a `catches:` declaration.
+  // Bodies are SIMULATED (fixed-pass `exit 0`, each with a comment showing the real command it
+  // stands in for) except the terminal union-invariant check (03-union-invariant-...), which is
+  // genuinely executable. See ../README.md.
+  // ============================================================================================
+  "version": 1,
+  "maxParallelism": 4,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  "workspace": "..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
+      "maxTurns": 50,
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Write"],
+        "maxTurns": 20
+      }
+    }
+  }
+}

@@ -31,7 +31,21 @@ public static class JournalJson
         AttemptOutcome.InvalidFragment => "invalid-fragment",
         AttemptOutcome.NeedsHuman => "needs-human",
         AttemptOutcome.PermissionDenied => "permission-denied",
+        AttemptOutcome.TaskPreflightFailed => "task-preflight-failed",
         _ => throw new JsonException($"Unhandled attempt outcome '{outcome}'.")
+    };
+
+    /// <summary>
+    /// The SSOT §7 status token for a <see cref="PlanPhaseStatus"/> (e.g. <c>plan-preflight-failed</c>).
+    /// The single source of truth for the kebab spelling of the top-level plan-phase sections, reused by
+    /// the JSON converter (two-scope preflights F9 split).
+    /// </summary>
+    public static string PlanPhaseToken(PlanPhaseStatus status) => status switch
+    {
+        PlanPhaseStatus.Passed => "passed",
+        PlanPhaseStatus.PlanPreflightFailed => "plan-preflight-failed",
+        PlanPhaseStatus.PlanGuardrailFailed => "plan-guardrail-failed",
+        _ => throw new JsonException($"Unhandled plan phase status '{status}'.")
     };
 
     private static JsonSerializerOptions Build()
@@ -47,6 +61,7 @@ public static class JournalJson
         };
         options.Converters.Add(new TaskStatusConverter());
         options.Converters.Add(new AttemptOutcomeConverter());
+        options.Converters.Add(new PlanPhaseStatusConverter());
         return options;
     }
 
@@ -100,11 +115,31 @@ public static class JournalJson
                 "invalid-fragment" => AttemptOutcome.InvalidFragment,
                 "needs-human" => AttemptOutcome.NeedsHuman,
                 "permission-denied" => AttemptOutcome.PermissionDenied,
+                "task-preflight-failed" => AttemptOutcome.TaskPreflightFailed,
                 _ => throw new JsonException($"Unknown attempt outcome '{value}'.")
             };
         }
 
         public override void Write(Utf8JsonWriter writer, AttemptOutcome value, JsonSerializerOptions options) =>
             writer.WriteStringValue(OutcomeToken(value));
+    }
+
+    /// <summary>Maps <see cref="PlanPhaseStatus"/> to/from the SSOT §7 plan-phase status strings.</summary>
+    private sealed class PlanPhaseStatusConverter : JsonConverter<PlanPhaseStatus>
+    {
+        public override PlanPhaseStatus Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            string? value = reader.GetString();
+            return value switch
+            {
+                "passed" => PlanPhaseStatus.Passed,
+                "plan-preflight-failed" => PlanPhaseStatus.PlanPreflightFailed,
+                "plan-guardrail-failed" => PlanPhaseStatus.PlanGuardrailFailed,
+                _ => throw new JsonException($"Unknown plan phase status '{value}'.")
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, PlanPhaseStatus value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(PlanPhaseToken(value));
     }
 }

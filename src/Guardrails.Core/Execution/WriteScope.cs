@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Execution;
 
@@ -10,6 +11,51 @@ namespace Guardrails.Core.Execution;
 public static class WriteScope
 {
     private const StringComparison Cmp = StringComparison.OrdinalIgnoreCase;
+
+    /// <summary>
+    /// The #175 merge-collision advisory (SSOT §3.3): scan <paramref name="plan"/> for every pair of
+    /// tasks whose <c>writeScope</c>s OVERLAP on a shared path, and describe each pair + its shared
+    /// file(s). Returns null when no two writeScopes overlap (no collision is possible, so the hint would
+    /// be noise). The hint is attribution ONLY — it does NOT assert a collision OCCURRED, only that these
+    /// tasks COULD have collided on the shared file, which is exactly the structural signal a human needs
+    /// to triage a duplicate-definition build break a textual merge could not catch. Derived PURELY from
+    /// the writeScope-overlap topology (never the compiler error text / a CS-code).
+    /// <para>
+    /// Shared by BOTH terminal-gate paths so the attribution is identical whichever fires: the legacy
+    /// per-task <c>integrationGate</c> sink (<c>Scheduler.WithTerminalGateFailure</c>) and the four-folder
+    /// terminal phase (<c>PlanGuardrailPhase</c>, issue #205). Task pairs are emitted in ordinal task
+    /// order (outer then inner), so the message is deterministic across platforms.
+    /// </para>
+    /// </summary>
+    public static string? OverlappingWriteScopeHint(PlanDefinition plan)
+    {
+        IReadOnlyList<TaskNode> scoped = plan.Tasks
+            .Where(t => t.WriteScope is { Count: > 0 })
+            .ToList();
+
+        var pairs = new List<string>();
+        for (int i = 0; i < scoped.Count; i++)
+        {
+            for (int j = i + 1; j < scoped.Count; j++)
+            {
+                IReadOnlyList<string> shared = OverlappingEntries(
+                    scoped[i].WriteScope!, scoped[j].WriteScope!);
+                if (shared.Count > 0)
+                {
+                    pairs.Add($"'{scoped[i].Id}' & '{scoped[j].Id}' (shared: {string.Join(", ", shared)})");
+                }
+            }
+        }
+
+        if (pairs.Count == 0)
+        {
+            return null;
+        }
+
+        return "This may be a merge collision: the following task pairs have OVERLAPPING writeScopes on a " +
+               "shared file, so an AI/3-way merge could have combined both contributions into a semantic " +
+               $"duplicate (e.g. a duplicate class/member) that only the build/test gate catches — {string.Join("; ", pairs)}";
+    }
 
     /// <summary>Returns true if <paramref name="path"/> is claimed by at least one glob in <paramref name="scope"/>.</summary>
     public static bool IsInScope(string path, IReadOnlyList<string> scope)

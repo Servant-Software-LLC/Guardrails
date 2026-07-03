@@ -71,46 +71,44 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
 - **Judge-where-deterministic-possible**: for every `.prompt.md` guardrail, name the
   deterministic archetype that could replace it, or confirm none can (the 4-question
   demotion gate).
-- **Over-broad**: "all tests pass" anywhere except a terminal integration task.
-- **Missing / malformed positive-baseline (preflight) root on a brownfield plan (#181)**: does the plan
+- **Over-broad**: "all tests pass" anywhere except the terminal `<plan>/guardrails/` folder.
+- **Missing / malformed positive-baseline (preflight) on a brownfield plan (#181)**: does the plan
   build onto **existing code that already has tests in the touched area** (a brownfield plan — it modifies
-  project(s) with existing test coverage), yet carry **no `00-baseline-<area>-tests-green` root**? Without
-  it, a work task's `tests-pass` guardrail can fail from PRE-EXISTING breakage (misattributed → wasted
-  retries → late `needsHuman`), and a new test's "red" is ambiguous (missing-behavior vs already-broken).
-  The baseline root is a **TRUE no-op `exit 0` action** (writes nothing) + ONE guardrail running the
-  EXISTING area tests **via `--filter`** and asserting they PASS on the current code (area-scoped,
-  deduped one-per-area, using the #179 re-emit form), with `dependsOn: []` and **every** work task in that
-  area transitively depending on it ("never build on red"). Check, if a baseline IS present:
+  project(s) with existing test coverage), yet carry **no `<plan>/preflights/01-baseline-<area>-tests-green`
+  check**? Without it, a work task's `tests-pass` guardrail can fail from PRE-EXISTING breakage
+  (misattributed → wasted retries → late `needsHuman`), and a new test's "red" is ambiguous
+  (missing-behavior vs already-broken). Under the four-folder model the baseline is a **positive check FILE
+  in the plan-root `<plan>/preflights/` folder** (a Full Flight Check evaluated once, before the DAG,
+  against the starting repo) — NOT a no-op ROOT task. It runs the EXISTING area tests **via `--filter`**
+  and asserts they PASS on the current code (area-scoped, deduped one-per-area, using the #179 re-emit
+  form); it needs no `dependsOn` and no wired-in work-task edges (the preflight phase implicitly gates the
+  whole DAG — "never build on red"). Check, if a baseline preflight IS present:
   - **(a) Targets only the PRE-EXISTING tests via `--filter`** — NOT the about-to-be-authored red tests
-    (it runs at the root on the starting state — a baseline that would run a sibling `author-tests` task's
-    failing tests is mis-scoped), and **NOT the whole suite/project**. A whole-project `dotnet test` at
-    the root hits the #165/#176 compile-coupling trap (a mid-TDD project does not compile → false red no
-    work task can fix). A whole-suite-scoped baseline is a **BLOCKER**.
-  - **(b) The action is a GENUINE no-op** (`exit 0`, writes no file, no state fragment). A baseline whose
-    "action" actually does work — touches a file, writes a fragment, runs a fix-up — **DEFEATS** the
-    #174/#182 no-op-deadlock short-circuit, so a RED start burns the full retry budget the slow way
-    instead of halting fast. A **non-no-op baseline action is a BLOCKER** (it silently removes the
-    fast-red-halt the archetype exists to provide).
-  - **(c) It is genuinely the ROOT** (`dependsOn: []`) and all work tasks in the area reach it
-    transitively (a baseline no task depends on does nothing).
-  - **(d) Deduped one-per-area** — one baseline per distinct touched test project, each gating only its
-    subtree, NOT one global whole-repo root serializing the DAG.
-  - **(e) Distinct from the terminal full-suite gate** (green START at the root vs green END at the sink
-    — a plan needs both).
-  - **(f) The worth-it gate held** — target pre-exists, MODIFIES-not-creates, deterministic + cheap (a
+    (it runs before the DAG on the starting state — a baseline that would run a sibling `author-tests`
+    task's failing tests is mis-scoped), and **NOT the whole suite/project**. A whole-project `dotnet test`
+    in the preflight hits the #165/#176 compile-coupling trap (a mid-TDD project does not compile → false
+    red no work task can fix). A whole-suite-scoped baseline is a **BLOCKER**.
+  - **(b) It is a `<plan>/preflights/` FILE, not a task** — a lingering no-op ROOT baseline TASK (the
+    retired `00-baseline-*` `exit 0`-action + `dependsOn:[]` model) is a finding: re-home it to the
+    preflight folder. There is no action to no-op — the preflight file IS the verification.
+  - **(c) Deduped one-per-area** — one preflight file per distinct touched test project, each scoped to its
+    area, NOT one global whole-repo preflight.
+  - **(d) Distinct from the terminal gate** (green START before the DAG via `<plan>/preflights/` vs green
+    END on the merged HEAD via `<plan>/guardrails/` — a plan needs both).
+  - **(e) The worth-it gate held** — target pre-exists, MODIFIES-not-creates, deterministic + cheap (a
     bounded, filtered command — a filtered `dotnet test` is fine; no live-service boot/poll), strictly
     narrower than the terminal gate, ≥2 work tasks build on the area.
   The inverse error: a **vacuous baseline on a GREENFIELD plan** (a `dotnet test` over a project with zero
   tests, which trivially passes) — it certifies nothing while looking like a gate; greenfield must have NO
-  baseline. Composes with #174/#182 (a RED baseline = a no-op whose guardrail fails → the no-op-deadlock
-  short-circuit escalates fast to an actionable `needsHuman` in BOTH serial and worktree now). The
-  negative "not yet present" baseline is NOT a separate archetype — it already IS
-  `tests-fail-on-current-code`/`tests-fail-on-stubs` (do not expect, or flag the absence of, a parallel
-  "negative preflight"). **WEAK** when the area is plausibly green at the start and only the baseline is
-  missing; **BLOCKER** when there is concrete reason the area's existing tests are already red (every work
-  task then mis-fails), or when a present baseline is whole-suite-scoped or has a non-no-op action.
-  (Catalogue → "Baseline-green / start-from-green (preflight)"; `stacks/dotnet.md §21`. plan-breakdown
-  Step 5 adds the matching insertion rule.)
+  baseline preflight. A RED baseline preflight halts the run before the DAG (the general Full-Flight-Check
+  semantics), and #179 (re-emit form) makes its WHY reach the halt feedback. The negative "not yet present"
+  baseline is NOT a separate archetype — it already IS `tests-fail-on-current-code`/`tests-fail-on-stubs`
+  (do not expect, or flag the absence of, a parallel "negative preflight" archetype; when emitted at plan
+  level it is likewise a `<plan>/preflights/` assert-absent check). **WEAK** when the area is plausibly
+  green at the start and only the baseline is missing; **BLOCKER** when there is concrete reason the area's
+  existing tests are already red (every work task then mis-fails), or when a present baseline is
+  whole-suite-scoped or is a lingering no-op ROOT task. (Catalogue → "Baseline-green / start-from-green
+  (preflight)"; `stacks/dotnet.md §21`. plan-breakdown Step 5 adds the matching insertion rule.)
 - **Coverage gap**: the action's stated completion criteria exceed what guardrails
   verify — name the unverified criterion. (E.g. action says "sorted by category";
   no guardrail checks sorting.)
@@ -320,6 +318,72 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   an implementation editing the tests) goes uncaught. Omission is correct ONLY for a genuinely
   repo-wide task (a terminal whole-suite gate, a sweeping cross-cutting change); flag a
   confidently-scopable task with no `writeScope` as WEAK and name the surface it should declare.
+- **Four-folder gap — missing/empty/tautological plan-level or task-level folder (deliverable 9)**:
+  the terminal integration-gate TASK (`integrationGate: true`) is **RETIRED** — a plan still
+  declaring it gets a **hard validation error (GR2029)**, no coexistence window. The replacement
+  is four first-class folders at fixed locations (SSOT §1/§3.3): plan-level `<plan>/preflights/`
+  ("Full Flight Checks", evaluated once BEFORE the DAG against the starting repo) and
+  `<plan>/guardrails/` ("Terminal Gate", evaluated once on the merged HEAD AFTER the DAG drains
+  green) — both siblings of `tasks/`, `guardrails.json`, `state/` at the **plan root** — plus
+  task-level `tasks/<id>/preflights/` (JIT dependency-delivery, a sibling of the existing
+  `tasks/<id>/guardrails/`, evaluated per task BEFORE its attempt loop). Probe each folder the
+  plan's shape requires and treat a required-but-missing folder/check as a **BLOCKER**:
+  - **Missing or empty terminal folder on a multi-leaf/fan-in plan** — `<plan>/guardrails/`
+    absent, or present with zero guardrail files, on a plan with ≥2 leaf tasks or any fan-in task
+    → **BLOCKER**. `validate` already enforces this in worktree mode (GR2028); call it out with
+    the concrete leaf/fan-in shape that triggers the obligation.
+  - **Tautological terminal folder (the re-homed GR2018 obligation)** — `<plan>/guardrails/`
+    present and non-empty but every file is a no-op (`exit 0`, a bare `echo`, a comment that only
+    NAMES a build command, a prompt-judge with nothing to verify) rather than **≥1 real
+    integration-set re-run** — a genuine whole-repo build/test/suite invocation (`dotnet test`,
+    `dotnet build`, `npm test`, `pytest`, `cargo test`, …) or a union invariant → **BLOCKER**. A
+    folder that merely EXISTS or merely contains a file certifies nothing; GR2018's content teeth
+    survive the move from task to folder — "non-empty" is not the bar, "re-runs the integration
+    set" is.
+  - **A lingering `integrationGate: true` task** — flag it and point the author at the
+    `<plan>/guardrails/` folder replacement; do not accept a plan whose terminal check still
+    depends on the retired sink kind. (The one narrow exception: a plan's own committed,
+    documented bootstrap exemption for a harness version that predates the loader — name it
+    explicitly if the plan claims one, don't accept it silently.)
+  - **Missing plan-level preflight on a brownfield plan** — the existing-tests-green positive
+    baseline now lives as a `<plan>/preflights/` **positive** check (not a no-op ROOT task); its
+    absence on a brownfield plan is the same WEAK→BLOCKER call as the baseline probe above (§2),
+    just relocated to the folder.
+  - **Missing task-level preflight where a `dependsOn` edge delivers a JIT dependency** — a
+    consumer task that depends on a producer for a type/route/symbol/artifact it needs inside its
+    OWN segment worktree at `taskBase`, with no `tasks/<id>/preflights/` check confirming the
+    producer's contribution actually landed before the attempt loop spends a turn building against
+    possibly-absent bytes → **WEAK** (flag **BLOCKER** when the delivery is genuinely uncertain —
+    e.g. the producer is a same-wave sibling rather than a settled ancestor).
+  - `scope: "integration"` itself is **UNCHANGED** — it remains the per-union tag driving the
+    §4.3 per-union re-verify; only the *terminal-sink task* is retired. Do not flag a
+    `scope: "integration"` guardrail elsewhere in the DAG as if it were the retired mechanism.
+- **Live-probe used where a flake-free check would do — ADVISORY WARN, never a BLOCK (deliverable
+  9)**: a check placed in ANY of the four folders that reaches outside the committed bytes under
+  review — a network call, a polling loop, a spawned daemon/live service, anything whose outcome
+  depends on more than the repo's own build/test tooling — trades determinism for **flake risk**.
+  This is **authoring guidance the review emits as a WARN, never a BLOCKER**; the harness itself
+  enforces NOTHING here — `guardrails validate`/`run` neither warns nor blocks on a live probe —
+  so do not escalate this past a WARN no matter how bad the probe looks.
+  - **Plan-level (`<plan>/preflights/` / `<plan>/guardrails/`)**: a full `dotnet test` /
+    `dotnet build` over the committed bytes (the starting repo for preflights, the merged HEAD for
+    guardrails) is **FINE** — that IS the canonical Full Flight Check / Terminal Gate shape, not a
+    live probe. WARN only on a network/poll/daemon/live-service call there — a flake halts the
+    **entire run** (plan-level has the maximal blast radius).
+  - **Task-level (`tasks/<id>/preflights/`, and `tasks/<id>/guardrails/` by the same logic)**:
+    **prefer** a byte/exit check (file exists, grep, a build/test scoped to the task's segment);
+    WARN on a network/poll probe here too — smaller blast radius than plan-level (blocks one cone,
+    not the whole run) but still a flake risk this early in the attempt loop.
+  - The property under review is **FLAKE-FREEDOM, not process-count** — a `dotnet test` is a
+    process start and stays fine; the WARN targets non-repeatable outcomes (network, timing,
+    external services), not process spawning itself.
+
+> **The three probes immediately below are SUPERSEDED by the four-folder model above** — they
+> describe the RETIRED `integrationGate: true` task mechanism (now a hard validation error,
+> GR2029) and apply only when reviewing a pre-migration plan or a named bootstrap exemption. For a
+> plan authored under the four-folder model, use the terminal-folder probe above instead of the
+> "exactly one `integrationGate: true` task" framing below. `scope: "integration"` itself did NOT
+> change — only the terminal-sink TASK kind was retired.
 - **Integration gate missing or empty**: in a plan with ≥2 leaf tasks or any fan-in, confirm
   **exactly one** task declares `integrationGate: true` (the terminal whole-repo sink, SSOT
   §3.3) and that sink carries **at least one** `scope: "integration"` guardrail — an empty gate
@@ -445,6 +509,36 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   coverage tokens, SSOT §4.4) — a GR2026 warning on a negative assertion would be the #177 false positive,
   not a signal to remove the guardrail. (plan-breakdown Step 4 adds the matching authoring rule.)
 <!-- END ADDED PROBES #176 -->
+<!-- BEGIN ADDED PROBE #193 — orphaned pre-existing golden swept in by a broad tests-pass filter -->
+- **Orphaned golden swept in by a broad `tests-pass` `--filter` (#193)**: the **runtime** analogue of
+  the #176 transitive-compilation probe. There the trap is compile-time (a test compiles a type a
+  non-ancestor produces); here it is a **runtime assertion** — a code-change task's `tests-pass`
+  guardrail uses a broad **name-substring** `--filter` (`--filter "FullyQualifiedName~Renderer"`,
+  `~Serializer`, `~Golden`, `~Snapshot`, a bare namespace substring) that, beyond the task's own
+  new tests, **also matches PRE-EXISTING tests** the task did not author. For **each** code-change
+  task whose `tests-pass` guardrail carries such a broad `--filter`, enumerate the pre-existing tests
+  the substring matches that are **NOT** authored by an ancestor test-author task (grep the repo's
+  existing test tree for the filter substring; the matches that already exist at plan start are the
+  orphans). For each orphan, ask: *does this task's change plausibly alter a **pinned literal /
+  golden file / snapshot / approved output** that orphan test asserts against?* (a task that touches a
+  renderer, a hash/serializer, a formatter, a message schema, any cross-cutting OUTPUT shape is the
+  high-risk case — it shifts bytes every golden downstream of it pins). If **yes** AND that test +
+  its golden fixture are **outside the task's `writeScope`** AND **no other task owns** re-baselining
+  them → **BLOCKER**: the task is required to make a pre-existing test pass whose pinned golden its
+  own change invalidates, and it **cannot edit** the golden (write-scope check red-halts the fix) —
+  every attempt fails on an orphan it can't own and dead-ends at `needsHuman`. This is the runtime
+  sibling of #176's "can't fix a compile error outside its writeScope" trap (there the agent
+  redefines the type and collides; here it simply cannot converge). Fix, in order of preference:
+  (a) **narrow the `--filter`** to the task's own tests (a class-name / trait filter, not a broad
+  substring) so the orphan is never swept in; or (b) **widen the task's `writeScope`** to OWN the
+  golden fixture + its pinned test, so the re-baseline is in-scope; or (c) add a **dedicated
+  re-baseline task** (ancestor of this one) that owns and regenerates the affected golden, with this
+  task depending on it. Severity: **BLOCKER** when the change certainly shifts the pinned output;
+  **WEAK** when the collision is plausible but not certain (the filter is broad and an orphan pins a
+  literal the change *might* touch). (Catalogue → orphaned-golden / broad-filter trap; relates to
+  #176 transitive-compilation and the write-scope test-protection gate. plan-breakdown Step 4 adds
+  the matching cross-cutting-output re-baseline authoring rule.)
+<!-- END ADDED PROBE #193 -->
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -455,12 +549,12 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   "Transitive compilation dependency" probe in §2.
 - **False edges** serializing genuinely parallel work.
 - A terminal task aggregates (suite green / e2e) so the run has a meaningful end.
-- **Exactly one integration-gate sink on a parallel plan.** A plan with ≥2 leaf tasks or
-  any fan-in (the shape a parallel run produces) MUST declare **exactly one**
-  `integrationGate: true` sink — the terminal whole-repo gate run on the fully merged
-  plan-branch HEAD (SSOT §3.3). Confirm the gate is the genuine sink the leaves fan into,
-  not a mislabeled mid-DAG task, and that no second `integrationGate: true` exists. A
-  single linear chain with no fan-in may omit it.
+- **Terminal `<plan>/guardrails/` folder on a parallel plan (NOT an `integrationGate` sink).** A plan
+  with ≥2 leaf tasks or any fan-in (the shape a parallel run produces) MUST carry a non-empty plan-root
+  **`<plan>/guardrails/`** folder (the terminal gate run once on the merged plan-branch HEAD, SSOT §3.3)
+  with ≥1 real integration-set re-run — see the four-folder gap probe in §2 for the content bar
+  (GR2028). The retired `integrationGate: true` sink TASK is a **GR2029 hard error**: a lingering one is
+  the BLOCKER, not its absence. A single linear chain with no fan-in needs no terminal folder.
 
 ### 4. Missing-insertion check
 Re-apply plan-breakdown Step 5: any guardrail referencing an artifact no ancestor
@@ -534,8 +628,8 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
 - [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
 - [ ] Every state-writing prompt's fragment example/key is the task's FOLDER NAME (never the `stableId` or a foreign/shared key), and the producer's state-output guardrail indexes that same folder name — a `stableId`-shaped or otherwise-unowned key is a BLOCKER (harness rejects it every attempt → `needsHuman` loop, #164).
-- [ ] A **brownfield** plan (modifies project(s) with existing tests in the touched area, worth-it gate passing) has a `00-baseline-<area>-tests-green` ROOT per touched area — a **TRUE no-op** `exit 0` action (writes nothing) + a guardrail running the EXISTING area tests **via `--filter`** asserting they pass (area-scoped, deduped one-per-area, #179-re-emit form), `dependsOn: []`, with every work task in that area transitively depending on it ("never build on red"); its guardrail targets the PRE-EXISTING tests via `--filter`, NOT the about-to-be-authored red tests and NOT the whole suite (whole-suite scope hits the #165/#176 compile-coupling trap → BLOCKER); the action is a genuine no-op (a non-no-op action defeats the #174/#182 short-circuit → BLOCKER); it is DISTINCT from the terminal full-suite gate (green START at the root vs green END at the sink). A **greenfield** plan (or one failing the worth-it gate) has NO baseline (a vacuous `dotnet test` over a zero-test project is itself a finding). Missing baseline on brownfield is WEAK (BLOCKER when the area's existing tests are in fact red at start). Composes with #174/#182 (RED baseline → fast `needsHuman` in BOTH serial and worktree) (#181).
-- [ ] A parallel plan (≥2 leaf tasks or any fan-in) has exactly one `integrationGate: true` sink carrying ≥1 `scope: "integration"` guardrail, and that guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if X present, verify it"), NOT the full build or whole suite. A full-build or whole-suite guardrail marked `scope: "integration"` on the terminal gate is the #125 terminal-postcondition anti-pattern → **BLOCKER** (it red-halts correct intermediate unions where downstream TDD tasks have not run yet); the full build/suite must be **LOCAL** (#165).
+- [ ] A **brownfield** plan (modifies project(s) with existing tests in the touched area, worth-it gate passing) carries the #181 positive baseline as a **`<plan>/preflights/` POSITIVE check** (the general positive-baseline archetype — e.g. `01-baseline-<area>-tests-green`), NOT a no-op ROOT task: a plan-level Full Flight Check evaluated ONCE before the DAG against the starting repo, running the EXISTING area tests **via `--filter`** and asserting they pass (area-scoped, deduped one-per-area, #179-re-emit form); it targets the PRE-EXISTING tests via `--filter`, NOT the about-to-be-authored red tests and NOT the whole suite (whole-suite scope hits the #165/#176 compile-coupling trap → BLOCKER); it is DISTINCT from the terminal `<plan>/guardrails/` gate (green START before the DAG vs green END on the merged HEAD). A **greenfield** plan (or one failing the worth-it gate) has NO baseline preflight (a vacuous `dotnet test` over a zero-test project is itself a finding). Missing baseline preflight on brownfield is WEAK (BLOCKER when the area's existing tests are in fact red at start). A RED baseline preflight halts the run before the DAG (the general Full-Flight-Check semantics) (#181).
+- [ ] A parallel plan (≥2 leaf tasks or any fan-in) has NO `integrationGate: true` sink task — a lingering `integrationGate: true` in any `task.json` is the BLOCKER (a **GR2029** hard error), not its absence — and instead carries a non-empty **`<plan>/guardrails/`** folder (the Terminal Gate) with **≥1 real integration-set re-run** (a whole-repo build / full suite / union invariant, `validate` enforces this as **GR2028**; a folder that merely exists or holds only a tautological `exit 0` certifies nothing → BLOCKER). Its `scope: "integration"` union-guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if X present, verify it"), NOT the full build or whole suite: a full-build or whole-suite guardrail marked `scope: "integration"` in the terminal folder is the #125 terminal-postcondition anti-pattern → **BLOCKER** (it red-halts correct intermediate unions where downstream TDD tasks have not run yet); the full build/suite must be **LOCAL** (#165). (`scope: "integration"` itself is unchanged — the per-union re-verify tag, SSOT §4.3.)
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
@@ -543,6 +637,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.
 - [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
+- [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.
 - [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
 - [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).

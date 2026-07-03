@@ -15,13 +15,20 @@ namespace Guardrails.Core.Execution;
 /// <see cref="Scheduler"/>.
 /// </summary>
 /// <remarks>
+/// The <see cref="GuardrailReVerifier"/> (the attempt-decoupled guardrail runner) is constructed
+/// UNCONDITIONALLY and injected into the <see cref="Scheduler"/> in BOTH serial and worktree mode.
+/// Its only caller today (the per-union re-verify) fires only in worktree mode, but the pre-DAG,
+/// terminal, and task-level preflight phases (later deliverables) reuse this same seam in serial
+/// mode too, so it must always exist.
+/// <para>
 /// Worktree mode (plan 08 §1) is CONDITIONAL on <c>maxParallelism &gt; 1</c> AND the workspace
-/// being a real git repository. When both hold, the factory wires a <see cref="GitWorktreeProvider"/>
-/// + <see cref="GuardrailReVerifier"/> into the <see cref="Scheduler"/> so tasks run in isolated
-/// segment worktrees and integrate onto a <c>guardrails/&lt;plan&gt;</c> branch. Otherwise it wires
-/// neither (serial shared-workspace, the pre-plan-08 model); the Scheduler's F7 guard additionally
-/// clamps a parallel request with no provider down to serial so a non-git parallel run can never
-/// race.
+/// being a real git repository. When both hold, the factory ALSO wires a
+/// <see cref="GitWorktreeProvider"/> (and, when a prompt runner exists, an <see cref="AiMergeWorker"/>)
+/// into the <see cref="Scheduler"/> so tasks run in isolated segment worktrees and integrate onto a
+/// <c>guardrails/&lt;plan&gt;</c> branch. Otherwise it wires no provider (serial shared-workspace, the
+/// pre-plan-08 model); the Scheduler's F7 guard additionally clamps a parallel request with no
+/// provider down to serial so a non-git parallel run can never race.
+/// </para>
 /// </remarks>
 public static class SchedulerFactory
 {
@@ -76,9 +83,19 @@ public static class SchedulerFactory
     {
         (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer);
 
-        // Plan 08 §1 wiring policy, by (parallelism, git):
-        //   • parallel + git repo  → WORKTREE mode: real GitWorktreeProvider + GuardrailReVerifier
-        //       (plan branch, segment worktrees, per-union re-verify §3/§4, terminal gate §3.3).
+        // The re-verifier (attempt-decoupled guardrail runner) is wired UNCONDITIONALLY — non-null in
+        // BOTH serial and worktree mode. Its only caller today (the per-union re-verify) fires only in
+        // worktree mode, but the pre-DAG, terminal, and task-level preflight phases (later deliverables)
+        // reuse this same seam in serial mode too, so the Scheduler must always receive one. It needs
+        // the interpreter map, rebuilt from the same inputs CreateExecutor used (a cheap, pure
+        // construction).
+        var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
+        IReVerifier reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
+
+        // Plan 08 §1 wiring policy for the WORKTREE-ONLY collaborators, by (parallelism, git):
+        //   • parallel + git repo  → WORKTREE mode: real GitWorktreeProvider (+ AiMergeWorker when a
+        //       prompt runner exists) — plan branch, segment worktrees, per-union re-verify §3/§4,
+        //       terminal gate §3.3.
         //   • serial (==1)         → shared-workspace, NO provider (the pre-plan-08 path).
         //   • parallel + NON-git   → NO provider. Production blocks this at validation (GR2015 —
         //       "workspace must be a git top-level for maxParallelism>1"); a caller that bypassed
@@ -87,18 +104,15 @@ public static class SchedulerFactory
         //       the exact unisolated race worktrees exist to prevent. There is NO silent
         //       shared-workspace-parallel fallback.
         IWorktreeProvider? worktreeProvider = null;
-        IReVerifier? reVerifier = null;
         IAiMergeWorker? aiMergeWorker = null;
         if (plan.Config.MaxParallelism > 1 && IsGitRepository(plan.Workspace))
         {
-            // The interpreter map + prompt-runner registry the worktree collaborators need are
-            // rebuilt from the same inputs CreateExecutor used (cheap, pure constructions) — kept
-            // local to this branch so the serial path constructs neither.
-            var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
+            // The prompt-runner registry the worktree collaborators need is rebuilt from the same
+            // inputs CreateExecutor used (a cheap, pure construction) — kept local to this branch so
+            // the serial path does not construct it.
             PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
 
             worktreeProvider = new GitWorktreeProvider(plan.Workspace, WorktreeRootFor(plan));
-            reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
 
             // Plan 08 §9.1 / defect #120-followup: the AI-merge worker is the conflict-resolution
             // path for a non-FF union. Without it the Scheduler's `_aiMergeWorker != null && …`

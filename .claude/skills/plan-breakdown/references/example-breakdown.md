@@ -370,7 +370,7 @@ foreach ($rel in @('src/Inventory.Cli/StatsCommand.cs', 'README.md')) {
         Write-Output "$rel is empty on the merged bytes"
         exit 1
     }
-    if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+    if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {   # line-anchored, no bare '=======' — false-positive-free (#187)
         Write-Output "$rel contains git conflict markers — the union did not cleanly integrate"
         exit 1
     }

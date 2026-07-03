@@ -36,4 +36,17 @@ public interface ISchedulerJournal
     /// Default is a no-op for fakes. <see cref="Journal.RunJournal"/> provides the real impl.
     /// </summary>
     void RecordSettle(string taskId, Journal.TaskStatus status, long? mergeSequence = null) { }
+
+    /// <summary>
+    /// Record the SUCCESSFUL settle of a worktree task (issue #196): append <paramref name="attempt"/>
+    /// to the task's attempt list AND set Status + MergeSequence atomically. The worktree success path
+    /// defers the attempt record to the settle (unlike serial mode, which records it inline), so
+    /// without this the task would settle succeeded with an EMPTY <c>Attempts</c> list — contradicting
+    /// SSOT §7, which shows a succeeded task with a populated <c>attempts[]</c>. Default delegates to
+    /// <see cref="RecordSettle"/> for fakes that do not model attempts; <see cref="Journal.RunJournal"/>
+    /// provides the real impl that also appends the attempt.
+    /// </summary>
+    void RecordSettleWithAttempt(
+        string taskId, Journal.AttemptRecord attempt, Journal.TaskStatus status, long? mergeSequence = null) =>
+        RecordSettle(taskId, status, mergeSequence);
 }

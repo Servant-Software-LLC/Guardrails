@@ -1,0 +1,7 @@
+{
+  "description": "Author a composition-root test that drives the REAL SchedulerFactory.Create and asserts IReVerifier is wired at maxParallelism 1 AND >1 (red on current serial-null wiring)",
+  "stableId": "r1wq3a",
+  "dependsOn": ["00-baseline-existing-tests-green"],
+  "writeScope": ["tests/Guardrails.Integration.Tests/ReVerifierWiringTests.cs"],
+  "action": { "maxTurns": 75 }
+}

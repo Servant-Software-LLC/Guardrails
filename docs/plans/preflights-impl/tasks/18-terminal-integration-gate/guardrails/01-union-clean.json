@@ -1,0 +1,4 @@
+{
+  "description": "Union invariant on the shared multi-writer files (SSOT doc, Scheduler/TaskExecutor/Factory, DiagnosticCodes): non-empty and conflict-marker-free",
+  "scope": "integration"
+}

@@ -38,8 +38,10 @@ public sealed record RunConfig
     /// limit fails to clear within this whole-task budget does the task settle <c>needs-human</c>
     /// with a distinct rate-limit reason ("re-run later"). Default 1800s (30 min). A non-positive
     /// value disables pausing (a transient signal is then treated as a normal action failure).
+    /// Default 14400s (4h) — a long unattended/overnight run must ride out a provider outage or a
+    /// multi-hour usage-limit window without settling <c>needs-human</c> (issue #189).
     /// </summary>
-    public int TransientPauseBudgetSeconds { get; init; } = 1800;
+    public int TransientPauseBudgetSeconds { get; init; } = 14400;
 
     /// <summary>How guardrail failures are handled within an attempt. Default <see cref="GuardrailMode.FailFast"/>.</summary>
     public GuardrailMode GuardrailMode { get; init; } = GuardrailMode.FailFast;

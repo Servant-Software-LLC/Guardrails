@@ -23,6 +23,12 @@ namespace Guardrails.Cli.Commands;
 /// </summary>
 public static class Revalidate
 {
+    /// <summary>B2(a) reserved synthetic id (SSOT §7.1): revalidate ONLY the terminal <c>&lt;plan&gt;/guardrails/</c> phase.</summary>
+    private const string PlanGuardrailsSyntheticId = "plan:guardrails";
+
+    /// <summary>B2(a) reserved synthetic id (SSOT §7.1): revalidate ONLY the pre-DAG <c>&lt;plan&gt;/preflights/</c> phase.</summary>
+    private const string PlanPreflightsSyntheticId = "plan:preflights";
+
     public static async Task<int> ExecuteAsync(
         string folder, string taskId, IConsoleIo io, CancellationToken cancellationToken)
     {
@@ -37,6 +43,20 @@ public static class Revalidate
         }
 
         PlanDefinition plan = probe.Plan;
+
+        // B2(a) — reserved synthetic ids (SSOT §7.1): re-run ONLY the named whole-plan phase against
+        // the CURRENT merged HEAD, bypassing the per-task machinery (and its worktree-mode refusal)
+        // entirely — driven purely as the value of the EXISTING --revalidate-task string option, no new
+        // verb. The ':' is already disallowed in a real task id (§3 `^[a-z0-9][a-z0-9._-]*$`), so these
+        // can never collide with an authored task.
+        if (string.Equals(taskId, PlanGuardrailsSyntheticId, StringComparison.Ordinal))
+        {
+            return await RevalidatePlanGuardrailsAsync(plan, io, cancellationToken).ConfigureAwait(false);
+        }
+        if (string.Equals(taskId, PlanPreflightsSyntheticId, StringComparison.Ordinal))
+        {
+            return await RevalidatePlanPreflightsAsync(plan, io, cancellationToken).ConfigureAwait(false);
+        }
 
         TaskNode? task = plan.Tasks.FirstOrDefault(t => string.Equals(t.Id, taskId, StringComparison.Ordinal));
         if (task is null)
@@ -117,6 +137,69 @@ public static class Revalidate
             output.WriteLine($"  - {g.Name}: {g.Reason ?? "failed"}");
         }
 
+        return ExitCodes.TaskFailed;
+    }
+
+    /// <summary>
+    /// B2(a): re-run ONLY the terminal <c>&lt;plan&gt;/guardrails/</c> checks (SSOT §3.3) against the
+    /// CURRENT merged HEAD. UNLIKE a per-task revalidate, worktree mode is fully SUPPORTED here: the
+    /// terminal gate's subject IS the merged HEAD itself (the integration worktree the harness owns),
+    /// not an in-place fix in the user's own checkout that a fresh segment worktree would not contain.
+    /// </summary>
+    private static async Task<int> RevalidatePlanGuardrailsAsync(
+        PlanDefinition plan, IConsoleIo io, CancellationToken cancellationToken)
+    {
+        TextWriter output = io.Out;
+
+        if (plan.PlanGuardrails.Count == 0)
+        {
+            output.WriteLine("Plan has no <plan>/guardrails/ terminal checks declared — nothing to revalidate.");
+            return ExitCodes.HarnessError;
+        }
+
+        output.WriteLine(
+            "Revalidating 'plan:guardrails' — running the terminal <plan>/guardrails/ checks against the current merged HEAD (no agent attempt).\n");
+
+        bool passed = await PlanGuardrailPhase.EvaluateAsync(plan, new ProcessRunner(), cancellationToken).ConfigureAwait(false);
+
+        if (passed)
+        {
+            output.WriteLine("Guardrails pass. Terminal plan-guardrail phase settles green.");
+            return ExitCodes.Success;
+        }
+
+        output.WriteLine("Guardrails still failing — see \"planGuardrails\" in state/run.json for the failed check(s).");
+        return ExitCodes.TaskFailed;
+    }
+
+    /// <summary>
+    /// B2(a) symmetric analogue: re-run ONLY the pre-DAG <c>&lt;plan&gt;/preflights/</c> checks (SSOT
+    /// §7 B1) — re-confirming a hand-fixed starting state without burning an agent attempt.
+    /// </summary>
+    private static async Task<int> RevalidatePlanPreflightsAsync(
+        PlanDefinition plan, IConsoleIo io, CancellationToken cancellationToken)
+    {
+        TextWriter output = io.Out;
+
+        if (plan.PlanPreflights.Count == 0)
+        {
+            output.WriteLine("Plan has no <plan>/preflights/ checks declared — nothing to revalidate.");
+            return ExitCodes.HarnessError;
+        }
+
+        output.WriteLine(
+            "Revalidating 'plan:preflights' — running the pre-DAG <plan>/preflights/ checks (no agent attempt).\n");
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        bool passed = await PlanPreflightPhase.EvaluateAsync(plan, journal, new ProcessRunner(), cancellationToken).ConfigureAwait(false);
+
+        if (passed)
+        {
+            output.WriteLine("Guardrails pass. Pre-DAG plan-preflight phase settles green.");
+            return ExitCodes.Success;
+        }
+
+        output.WriteLine("Guardrails still failing — see \"planPreflights\" in state/run.json for the failed check(s).");
         return ExitCodes.TaskFailed;
     }
 

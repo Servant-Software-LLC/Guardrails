@@ -1,36 +1,40 @@
-<!-- guardrails:graph v1 source-sha256=56459e16d4eb626893edf0bb21262d8cf1eba3deb414f3f6f6027d7e5bb7e938 -->
+<!-- guardrails:graph v1 source-sha256=fee2a34bd43a3577dfc2aab73460dcd6b5be6cf6e0530d546ae26a91f64194c0 -->
 
 ```mermaid
 flowchart TD
-  task_01_write_greeting_script["01-write-greeting-script"]:::task
-  gr_01_write_greeting_script_0["01-script-exists"]:::guardrail
-  task_01_write_greeting_script --> gr_01_write_greeting_script_0
-  gr_01_write_greeting_script_0 --> done_01_write_greeting_script
-  gr_01_write_greeting_script_1["02-script-runs-clean"]:::guardrail
-  task_01_write_greeting_script --> gr_01_write_greeting_script_1
-  gr_01_write_greeting_script_1 --> done_01_write_greeting_script
-  done_01_write_greeting_script["01-write-greeting-script ✓ Finished"]:::done
-  task_02_generate_greeting["02-generate-greeting"]:::task
-  gr_02_generate_greeting_0["01-greeting-exists"]:::guardrail
-  task_02_generate_greeting --> gr_02_generate_greeting_0
-  gr_02_generate_greeting_0 --> done_02_generate_greeting
-  gr_02_generate_greeting_1["02-greeting-contains"]:::guardrail
-  task_02_generate_greeting --> gr_02_generate_greeting_1
-  gr_02_generate_greeting_1 --> done_02_generate_greeting
-  done_02_generate_greeting["02-generate-greeting ✓ Finished"]:::done
-  task_03_quality_check["03-quality-check"]:::task
-  gr_03_quality_check_0["01-report-exists"]:::guardrail
-  task_03_quality_check --> gr_03_quality_check_0
-  gr_03_quality_check_0 --> done_03_quality_check
-  gr_03_quality_check_1["02-tone-is-friendly"]:::guardrail
-  task_03_quality_check --> gr_03_quality_check_1
-  gr_03_quality_check_1 --> done_03_quality_check
-  done_03_quality_check["03-quality-check ✓ Finished"]:::done
-  done_01_write_greeting_script --> task_02_generate_greeting
-  done_02_generate_greeting --> task_03_quality_check
-  classDef task fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph plan_preflights["Full Flight Checks"]
+  end
+  style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph task_01_write_greeting_script["01-write-greeting-script"]
+    subgraph task_01_write_greeting_script_guardrails["Guardrails"]
+      task_01_write_greeting_script_gr_0["01-script-exists"]:::guardrail
+      task_01_write_greeting_script_gr_1["02-script-runs-clean"]:::guardrail
+    end
+  end
+  style task_01_write_greeting_script fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_02_generate_greeting["02-generate-greeting"]
+    subgraph task_02_generate_greeting_guardrails["Guardrails"]
+      task_02_generate_greeting_gr_0["01-greeting-exists"]:::guardrail
+      task_02_generate_greeting_gr_1["02-greeting-contains"]:::guardrail
+    end
+  end
+  style task_02_generate_greeting fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_03_quality_check["03-quality-check"]
+    subgraph task_03_quality_check_guardrails["Guardrails"]
+      task_03_quality_check_gr_0["01-report-exists"]:::guardrail
+      task_03_quality_check_gr_1["02-tone-is-friendly"]:::guardrail
+    end
+  end
+  style task_03_quality_check fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph plan_guardrails["Terminal Gate"]
+  end
+  style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  plan_preflights --> task_01_write_greeting_script
+  task_01_write_greeting_script --> task_02_generate_greeting
+  task_02_generate_greeting --> task_03_quality_check
+  task_03_quality_check --> plan_guardrails
+  classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
-  classDef done fill:#d4edda,stroke:#2e7d32,color:#10341a;
 ```
 
 _Structure only — retry, feedback, and needs-human edges are omitted._

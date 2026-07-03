@@ -1,0 +1,7 @@
+{
+  "description": "Author integration tests for the terminal plan-guardrail phase: RED <plan>/guardrails/ on merged HEAD → terminal halt (exit 2, work durable); B2(a) --revalidate-task plan:guardrails after a hand-fix → green/exit 0; B2(b) DAG-all-green+terminal-red plain run → all tasks skip, only terminal re-fires. Serial AND worktree. Red against current code",
+  "stableId": "t1tp08",
+  "dependsOn": ["04-implement-four-folder-loader", "05-outcomes-and-journal"],
+  "writeScope": ["tests/Guardrails.Integration.Tests/PlanGuardrailPhaseTests.cs"],
+  "action": { "maxTurns": 75 }
+}

@@ -206,11 +206,20 @@ public sealed class GraphSourceHashTests
     /// hash ever drifts by platform again, <c>graph --check</c> would flap on CI and this
     /// test fails on whichever OS recomputes a different value.
     /// </summary>
+    /// <remarks>
+    /// Re-baselined for the container-edge fix (issue #210): the DAG is now drawn
+    /// <c>subgraph --&gt; subgraph</c> (each edge attaches to a container's outer border) instead of
+    /// through interior invisible anchor nodes, and container fills moved from
+    /// <c>class &lt;id&gt; &lt;className&gt;;</c> to <c>style &lt;id&gt; …</c> statements. Both are in
+    /// the renderer's semantic content, so the golden's <c>source-sha256</c> shifted from the
+    /// previous anchor-model value. The value below was computed from the real renderer's output
+    /// (via <c>guardrails graph</c> against this golden), not guessed.
+    /// </remarks>
     [Fact]
     public void Compute_GoldenExample_MatchesPinnedCrossPlatformHash()
     {
         const string expected =
-            "56459e16d4eb626893edf0bb21262d8cf1eba3deb414f3f6f6027d7e5bb7e938";
+            "fee2a34bd43a3577dfc2aab73460dcd6b5be6cf6e0530d546ae26a91f64194c0";
 
         PlanLoadResult result = new PlanLoader().Load(GoldenExamplePath);
         Assert.False(result.HasErrors);

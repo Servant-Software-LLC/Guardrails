@@ -16,6 +16,7 @@ public sealed class PlanLoader
     private const string TasksDirName = "tasks";
     private const string TaskManifestName = "task.json";
     private const string GuardrailsDirName = "guardrails";
+    private const string PreflightsDirName = "preflights";
     private const string PromptExtension = ".prompt.md";
     private const string ActionFilePrefix = "action.";
 
@@ -40,6 +41,15 @@ public sealed class PlanLoader
 
         IReadOnlyList<TaskNode> tasks = LoadTasks(planDir, diagnostics);
 
+        // Plan-level preflights/guardrails folders (SSOT §1/§4) sit at the plan ROOT, siblings of
+        // tasks/. They reuse the SAME guardrail-file parser as a task's guardrails/ — they differ only
+        // in WHERE they live and WHEN they run — but the `catches:` declaration is enforced here
+        // (GR2027), the canonical malformed-declaration diagnostic for the four-folder model.
+        IReadOnlyList<GuardrailDefinition> planPreflights =
+            LoadGuardrailsFromFolder(Path.Combine(planDir, PreflightsDirName), diagnostics, enforceCatches: true);
+        IReadOnlyList<GuardrailDefinition> planGuardrails =
+            LoadGuardrailsFromFolder(Path.Combine(planDir, GuardrailsDirName), diagnostics, enforceCatches: true);
+
         string workspace = Path.GetFullPath(Path.Combine(planDir, config.Workspace));
 
         var plan = new PlanDefinition
@@ -47,7 +57,9 @@ public sealed class PlanLoader
             PlanDirectory = planDir,
             Config = config,
             Tasks = tasks,
-            Workspace = workspace
+            Workspace = workspace,
+            PlanPreflights = planPreflights,
+            PlanGuardrails = planGuardrails
         };
 
         return new PlanLoadResult { Plan = plan, Diagnostics = diagnostics };
@@ -119,7 +131,7 @@ public sealed class PlanLoader
             DefaultRetries = raw.DefaultRetries ?? 2,
             MaxCostUsd = raw.MaxCostUsd,
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
-            TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 1800,
+            TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 14400,
             GuardrailMode = mode,
             Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,
             WorktreeRoot = string.IsNullOrWhiteSpace(raw.WorktreeRoot) ? null : raw.WorktreeRoot.Trim(),
@@ -303,7 +315,13 @@ public sealed class PlanLoader
             return null;
         }
 
-        IReadOnlyList<GuardrailDefinition> guardrails = LoadGuardrails(taskFolder, diagnostics);
+        // Postcondition guardrails/ (catches enforcement is NOT retrofitted onto this pre-existing
+        // folder — its behavior is preserved) and the sibling JIT preflights/ folder (a NEW folder, so
+        // its files DO carry the enforced `catches:` declaration, GR2027).
+        IReadOnlyList<GuardrailDefinition> guardrails =
+            LoadGuardrailsFromFolder(Path.Combine(taskFolder, GuardrailsDirName), diagnostics, enforceCatches: false);
+        IReadOnlyList<GuardrailDefinition> preflights =
+            LoadGuardrailsFromFolder(Path.Combine(taskFolder, PreflightsDirName), diagnostics, enforceCatches: true);
 
         return new TaskNode
         {
@@ -318,7 +336,8 @@ public sealed class PlanLoader
             WriteScope = raw.WriteScope is { Count: > 0 } ws ? [.. ws] : null,
             StagingOutputs = BindStagingOutputs(raw.StagingOutputs),
             Action = action,
-            Guardrails = guardrails
+            Guardrails = guardrails,
+            Preflights = preflights
         };
     }
 
@@ -414,15 +433,21 @@ public sealed class PlanLoader
     // --- guardrail discovery (SSOT §4 / §4.1) -----------------------------------------
 
     /// <summary>
-    /// Discover guardrails under <c>guardrails/</c>, ordered by filename ordinal sort.
-    /// A <c>&lt;basename&gt;.json</c> file that sits next to a same-basename script is a
-    /// metadata sidecar (not a guardrail). A bare <c>.json</c> with no sibling script is
-    /// an orphan sidecar — flagged as an error. Sidecar metadata is loaded onto the
-    /// matching deterministic guardrail.
+    /// Discover the guardrail-shaped files in one of the four preflights/guardrails folders
+    /// (<c>&lt;plan&gt;/preflights/</c>, <c>&lt;plan&gt;/guardrails/</c>, <c>tasks/&lt;id&gt;/preflights/</c>,
+    /// <c>tasks/&lt;id&gt;/guardrails/</c>), ordered by filename ordinal sort. The folders share this ONE
+    /// parser — they differ only in WHERE they live and WHEN they run (SSOT §4). A
+    /// <c>&lt;basename&gt;.json</c> next to a same-basename script is a metadata sidecar (not a guardrail);
+    /// a bare <c>.json</c> with no sibling script is an orphan sidecar (error). Sidecar metadata is loaded
+    /// onto the matching deterministic guardrail. When <paramref name="enforceCatches"/> is set, a file
+    /// that does not open with a <c>catches:</c> declaration is a malformed declaration (GR2027) — the
+    /// canonical per-folder diagnostic for the four-folder model. (The pre-existing
+    /// <c>tasks/&lt;id&gt;/guardrails/</c> folder is loaded WITHOUT catches enforcement to preserve its
+    /// behavior; the three new folders enforce it.)
     /// </summary>
-    private IReadOnlyList<GuardrailDefinition> LoadGuardrails(string taskFolder, List<Diagnostic> diagnostics)
+    private IReadOnlyList<GuardrailDefinition> LoadGuardrailsFromFolder(
+        string guardrailsDir, List<Diagnostic> diagnostics, bool enforceCatches)
     {
-        string guardrailsDir = Path.Combine(taskFolder, GuardrailsDirName);
         if (!Directory.Exists(guardrailsDir))
         {
             return [];
@@ -477,10 +502,112 @@ public sealed class PlanLoader
                 guardrail = ApplyPromptFrontmatter(guardrail);
             }
 
+            if (enforceCatches && !HasCatchesDeclaration(guardrail))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.GuardrailMissingCatches, file,
+                    $"Guardrail '{guardrail.Name}' does not open with a 'catches:' " +
+                    (kind == ActionKind.Prompt ? "front-matter field" : "comment") +
+                    " stating what wrong implementation it catches (SSOT §4). A guardrail whose author " +
+                    "cannot state what it catches is decorative — declare it, or remove the file."));
+            }
+
             guardrails.Add(guardrail);
         }
 
         return guardrails;
+    }
+
+    /// <summary>
+    /// True when a guardrail file OPENS with a <c>catches:</c> declaration (SSOT §4): a leading comment
+    /// for a script guardrail, or a <c>catches</c> YAML front-matter field for a prompt guardrail. An
+    /// unreadable file returns true — the GR2027 malformed-declaration diagnostic must not double-report
+    /// a file whose IO error other checks already surface.
+    /// </summary>
+    private static bool HasCatchesDeclaration(GuardrailDefinition guardrail)
+    {
+        string content;
+        try
+        {
+            content = File.ReadAllText(guardrail.Path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
+
+        return guardrail.Kind == ActionKind.Prompt
+            ? FrontmatterDeclaresCatches(content)
+            : LeadingCommentDeclaresCatches(content);
+    }
+
+    /// <summary>
+    /// Scan the leading comment block — the contiguous comment/blank lines at the top — of a script
+    /// guardrail for a <c>catches:</c> declaration. Returns false as soon as the first non-comment,
+    /// non-blank line (real code) is reached without one: the declaration must OPEN the file. Recognises
+    /// <c>#</c> (ps1/sh/py), <c>//</c>, and <c>REM</c>/<c>::</c> (cmd/bat) comment leaders; a shebang or
+    /// other leading comment line before the <c>catches:</c> line is tolerated.
+    /// </summary>
+    private static bool LeadingCommentDeclaresCatches(string content)
+    {
+        foreach (string rawLine in content.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            string? comment = CommentBody(line);
+            if (comment is null)
+            {
+                return false; // reached real code before any `catches:` comment
+            }
+
+            if (comment.StartsWith("catches:", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The text of a comment line after its leader, or null when the line is not a comment.</summary>
+    private static string? CommentBody(string trimmedLine)
+    {
+        if (trimmedLine.StartsWith('#'))
+        {
+            return trimmedLine[1..].TrimStart();
+        }
+        if (trimmedLine.StartsWith("//", StringComparison.Ordinal))
+        {
+            return trimmedLine[2..].TrimStart();
+        }
+        if (trimmedLine.StartsWith("::", StringComparison.Ordinal))
+        {
+            return trimmedLine[2..].TrimStart();
+        }
+        if (trimmedLine.StartsWith("REM", StringComparison.OrdinalIgnoreCase) &&
+            (trimmedLine.Length == 3 || char.IsWhiteSpace(trimmedLine[3])))
+        {
+            return trimmedLine.Length > 3 ? trimmedLine[3..].TrimStart() : string.Empty;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// True when a prompt guardrail's YAML front-matter declares a non-empty <c>catches</c> field
+    /// (SSOT §4/§4.2). Reuses the same front-matter extraction as <see cref="ApplyPromptFrontmatter"/>.
+    /// </summary>
+    private static bool FrontmatterDeclaresCatches(string content)
+    {
+        string? frontmatter = ExtractFrontmatter(content);
+        if (frontmatter is null)
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(ParseFrontmatterScalar(frontmatter, "catches"));
     }
 
     private static GuardrailDefinition ApplySidecar(
@@ -533,24 +660,10 @@ public sealed class PlanLoader
         try { content = File.ReadAllText(guardrail.Path); }
         catch (IOException) { return guardrail; }
 
-        // Front-matter must start with "---" on the very first line.
-        if (!content.StartsWith("---", StringComparison.Ordinal))
+        string? frontmatter = ExtractFrontmatter(content);
+        if (frontmatter is null)
             return guardrail;
 
-        int firstNewline = content.IndexOfAny(['\r', '\n']);
-        if (firstNewline < 0)
-            return guardrail;
-
-        int bodyStart = firstNewline + 1;
-        if (bodyStart < content.Length && content[firstNewline] == '\r' && content[bodyStart] == '\n')
-            bodyStart++;
-
-        // Find the closing "---" line.
-        int closePos = FindFrontmatterClose(content, bodyStart);
-        if (closePos < 0)
-            return guardrail;
-
-        string frontmatter = content[bodyStart..closePos];
         string? scope = ParseFrontmatterScalar(frontmatter, "scope");
         if (scope is null)
             return guardrail;
@@ -559,6 +672,33 @@ public sealed class PlanLoader
         {
             Scope = string.IsNullOrWhiteSpace(scope) ? null : scope.Trim().ToLowerInvariant()
         };
+    }
+
+    /// <summary>
+    /// The YAML front-matter block of a <c>.prompt.md</c> file — the text between the opening
+    /// <c>---</c> on the very first line and the next <c>---</c> line — or null when the file has no
+    /// well-formed front-matter block.
+    /// </summary>
+    private static string? ExtractFrontmatter(string content)
+    {
+        // Front-matter must start with "---" on the very first line.
+        if (!content.StartsWith("---", StringComparison.Ordinal))
+            return null;
+
+        int firstNewline = content.IndexOfAny(['\r', '\n']);
+        if (firstNewline < 0)
+            return null;
+
+        int bodyStart = firstNewline + 1;
+        if (bodyStart < content.Length && content[firstNewline] == '\r' && content[bodyStart] == '\n')
+            bodyStart++;
+
+        // Find the closing "---" line.
+        int closePos = FindFrontmatterClose(content, bodyStart);
+        if (closePos < 0)
+            return null;
+
+        return content[bodyStart..closePos];
     }
 
     private static int FindFrontmatterClose(string content, int startPos)

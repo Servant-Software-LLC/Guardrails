@@ -1,0 +1,7 @@
+{
+  "description": "Author (create-or-recast) the four-folder example at docs/plans/09-preflight-first-class/example/: plan-level preflights/ (a positive baseline + a negative assert-absent baseline) + guardrails/ (terminal whole-repo checks with >=1 real integration-set re-run) + a task-level tasks/<id>/preflights/ keyed to a dependsOn edge; NO integrationGate/no-op ROOT-END task, NO scope:precondition; validates clean and renders the container diagram against the freshly-built CLI",
+  "stableId": "e1ex17",
+  "dependsOn": ["04-implement-four-folder-loader", "13-implement-diagram-renderer"],
+  "writeScope": ["docs/plans/09-preflight-first-class/"],
+  "action": { "maxTurns": 75 }
+}

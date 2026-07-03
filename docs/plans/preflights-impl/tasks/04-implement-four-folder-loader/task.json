@@ -1,0 +1,11 @@
+{
+  "description": "Implement the four-folder loader/validator (parse the 4 folders; emit GR2027+; retire GR2017 + the integrationGate task kind; re-home GR2018 onto <plan>/guardrails/; keep scope:integration) and land the SSOT §1/§3.3/GR-table edits in the same change",
+  "stableId": "l2aa08",
+  "dependsOn": ["03-author-tests-four-folder-loader"],
+  "writeScope": [
+    "src/Guardrails.Core/Loading/",
+    "src/Guardrails.Core/Model/",
+    "docs/plans/02-schemas-and-contracts.md"
+  ],
+  "action": { "maxTurns": 75 }
+}

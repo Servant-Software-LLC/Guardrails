@@ -38,6 +38,24 @@ internal static class AttemptArtifacts
             JsonSerializer.Serialize(summary, ResultOptions));
     }
 
+    /// <summary>
+    /// Write <c>attempt-provenance.json</c> — the #198 machine-readable header the harness knows BEFORE
+    /// the attempt runs: the resolved model, the segment worktree (branch + path), and the base commit.
+    /// A no-op when <paramref name="provenance"/> is null (a serial script attempt has nothing to record).
+    /// </summary>
+    public static void WriteProvenance(string logDir, Journal.AttemptProvenance? provenance)
+    {
+        if (provenance is null)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(logDir);
+        AtomicFile.WriteAllText(
+            Path.Combine(logDir, "attempt-provenance.json"),
+            JsonSerializer.Serialize(provenance, ResultOptions));
+    }
+
     /// <summary>Write <c>guardrail-&lt;name&gt;.stdout.log</c> and <c>.stderr.log</c>.</summary>
     public static void WriteGuardrailLogs(string logDir, string guardrailName, ProcessResult result)
     {

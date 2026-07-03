@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
@@ -144,7 +145,24 @@ public static class RunCommand
         // correct logs/<runId>/ tree (SSOT §8/§12). LoadOrCreate is idempotent: it creates run.json
         // here (or reads it on resume), and the Scheduler's own LoadOrCreate then reads the SAME
         // run.json — so this runId matches the one the executor writes attempt logs under.
-        string runId = RunJournal.LoadOrCreate(probe.Plan).Document.RunId;
+        RunJournal journal = RunJournal.LoadOrCreate(probe.Plan);
+        string runId = journal.Document.RunId;
+
+        // Pre-DAG plan-preflight phase (SSOT §7, deliverable 3): evaluate <plan>/preflights/ ONCE,
+        // BEFORE the Scheduler builds any wave, against the run's starting bytes. A red preflight halts
+        // HERE — no task runs, zero tokens spent — journaled as planPreflights.status =
+        // plan-preflight-failed (a top-level section OUTSIDE tasks{}). A passed marker whose planHash
+        // still matches the current plan is SKIPPED on resume rather than re-evaluated (the B1 fix).
+        bool preflightsPassed = await PlanPreflightPhase
+            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), cancellationToken)
+            .ConfigureAwait(false);
+        if (!preflightsPassed)
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine("Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).");
+            io.Out.WriteLine($"  See {RunJournal.PathFor(probe.Plan.PlanDirectory)} (\"planPreflights\") for the failed check(s).");
+            return ExitCodes.TaskFailed;
+        }
 
         // The log server is a companion to the live table: start it only in the interactive path
         // (nobody clicks links in CI / redirected output), and never let a binding failure abort
@@ -195,7 +213,26 @@ public static class RunCommand
                 report = await ExecuteAsync(probe.Plan, siteObserver, cancellationToken).ConfigureAwait(false);
             }
 
-            return Finish(report, probe.Plan, runId, io);
+            // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
+            // ONCE, AFTER the DAG drains wholly green, against the merged plan-branch HEAD — replacing
+            // the retired integrationGate task-kind's terminal role (Scheduler.cs skips that legacy path
+            // whenever the plan declares this folder, SSOT §3.3). No-op (true) when the DAG did not
+            // fully succeed this run/resume, or the plan has no <plan>/guardrails/ folder at all.
+            // B2(b) terminal-only resume falls out for free: a resume where every task is already
+            // succeeded drains the DAG with nothing left to do (report.AllSucceeded stays true, no
+            // attempt burned), so this phase unconditionally re-fires against the current HEAD.
+            bool planGuardrailsPassed = !report.AllSucceeded
+                || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), cancellationToken)
+                    .ConfigureAwait(false);
+
+            int exitCode = Finish(report, probe.Plan, runId, io);
+            if (report.AllSucceeded && !planGuardrailsPassed)
+            {
+                PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
+                return ExitCodes.TaskFailed;
+            }
+
+            return exitCode;
         }
         finally
         {
@@ -275,6 +312,82 @@ public static class RunCommand
         }
 
         return report.AllSucceeded ? ExitCodes.Success : ExitCodes.TaskFailed;
+    }
+
+    /// <summary>
+    /// Print the terminal plan-guardrail gate failure (D4). Read the failed checks (name + reason) that
+    /// <see cref="PlanGuardrailPhase"/> journaled into <c>planGuardrails.failedChecks</c> and surface each
+    /// one INLINE — so a terminal halt is as legible as the legacy per-task gate (which listed its failed
+    /// guardrails in the summary), instead of a bare "see planGuardrails in run.json" pointer that forces
+    /// the user to open the journal. Mirrors the shape of the NEEDS HUMAN block. Best-effort: a journal
+    /// read hiccup falls back to the generic pointer rather than throwing (the exit code is unaffected).
+    /// <para>
+    /// It ALSO surfaces the #175 merge-collision hint (SSOT §3.3, issue #205) that
+    /// <see cref="PlanGuardrailPhase"/> journals into <c>planGuardrails.collisionHint</c> when ≥2 tasks
+    /// have overlapping <c>writeScope</c> on a shared file — the same attribution the legacy per-task gate
+    /// carried in its summary, ported onto the terminal phase.
+    /// </para>
+    /// </summary>
+    private static void PrintTerminalGateFailure(string planDirectory, IConsoleIo io)
+    {
+        TextWriter output = io.Out;
+        string journalPath = RunJournal.PathFor(planDirectory);
+
+        output.WriteLine();
+        output.WriteLine("Plan guardrail gate FAILED on the merged HEAD — terminal halt (SSOT §7 planGuardrails).");
+
+        PlanGuardrailsSection? section = TryReadPlanGuardrailSection(journalPath);
+        IReadOnlyList<FailedGuardrail> failedChecks = section?.FailedChecks ?? [];
+        if (failedChecks.Count > 0)
+        {
+            foreach (FailedGuardrail check in failedChecks)
+            {
+                output.WriteLine($"  FAILED: {check.Name} — {check.Reason}");
+            }
+            output.WriteLine($"  (full detail in {journalPath} under \"planGuardrails\")");
+        }
+        else
+        {
+            // No structured checks readable (older/absent section, or a read hiccup): the prior pointer.
+            output.WriteLine($"  See {journalPath} (\"planGuardrails\") for the failed check(s).");
+        }
+
+        // #175/#205 merge-collision attribution — advisory, only present when writeScopes overlap.
+        if (section?.CollisionHint is { Length: > 0 } collisionHint)
+        {
+            output.WriteLine($"  {collisionHint}");
+        }
+    }
+
+    /// <summary>
+    /// Read the terminal gate's <c>planGuardrails</c> section (failed checks + the #175 collision hint)
+    /// from the persisted journal. Returns null when the section is absent/passed or the journal cannot be
+    /// read — the caller then falls back to the generic pointer.
+    /// </summary>
+    private static PlanGuardrailsSection? TryReadPlanGuardrailSection(string journalPath)
+    {
+        try
+        {
+            if (!File.Exists(journalPath))
+            {
+                return null;
+            }
+
+            JournalDocument document = JournalReader.Read(journalPath);
+            return document.PlanGuardrails;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

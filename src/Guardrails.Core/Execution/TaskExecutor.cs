@@ -31,6 +31,7 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly IRunObserver _observer;
     private readonly ActionRunner _actionRunner;
     private readonly GuardrailRunner _guardrailRunner;
+    private readonly IReVerifier _reVerifier;
     private readonly AttemptJournaler _journaler;
     private readonly DependencyGraph _graph;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
@@ -66,6 +67,11 @@ public sealed class TaskExecutor : ITaskExecutor
 
         _actionRunner = new ActionRunner(plan, scriptRunner, promptSupport, dependencyContext, ResolveTimeout);
         _guardrailRunner = new GuardrailRunner(plan, observer, scriptRunner, promptSupport, ResolveTimeout);
+        // The task-preflight slot (design-of-record 09-preflight-first-class, deliverable 5) reuses the
+        // same attempt-decoupled re-verify seam SchedulerFactory wires into the Scheduler for the
+        // per-union re-verify — built here from the same processRunner/interpreterMap so it is wired
+        // unconditionally in BOTH serial and worktree mode (TaskExecutor is constructed once per run).
+        _reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
         _journaler = new AttemptJournaler(stateManager, journal);
     }
 
@@ -74,6 +80,49 @@ public sealed class TaskExecutor : ITaskExecutor
     {
         var taskStartedAt = DateTimeOffset.UtcNow;
         _observer.TaskStarting(task);
+
+        // Task-level preflight slot (design-of-record 09-preflight-first-class, deliverable 5): a JIT
+        // dependency-delivery gate — tasks/<id>/preflights/, when present, is evaluated in the
+        // CONSUMER's own effective workspace (the segment worktree at taskBase in worktree mode, the
+        // plan workspace in serial mode) BEFORE the attempt loop AND before MarkRunning, so a RED
+        // preflight settles straight from `pending` to `needs-human` without ever recording a
+        // transient `running` status or burning a retry attempt (the no-burn property, both modes).
+        // A GREEN preflight (or no preflights/ folder at all) falls through to the unchanged attempt
+        // loop below.
+        if (task.Preflights.Count > 0)
+        {
+            ReVerifyResult preflightResult = await _reVerifier
+                .ReVerifyAsync(EffectiveWorkspace(worktree), task.Preflights, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!preflightResult.Passed)
+            {
+                // D6: journal a real AttemptRecord carrying Outcome = TaskPreflightFailed and the failed
+                // preflight check names + reasons, so run.json shows WHAT gate failed and WHY (SSOT §7 —
+                // "a per-attempt outcome inside tasks{}"). This does NOT burn a retry: the action never
+                // runs and the retry budget is never consulted (we return BEFORE the attempt loop AND
+                // before MarkRunning), so the no-burn property is preserved STRUCTURALLY — the recorded
+                // attempt simply is not counted against a budget nothing reads here.
+                int preflightAttempt = _journal.NextAttemptNumber(task.Id);
+                IReadOnlyList<FailedGuardrail> failedChecks = preflightResult.FailedGuardrails
+                    .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "preflight check failed" })
+                    .ToList();
+
+                AttemptResult preflightSettle = _journaler.TaskPreflightFailed(
+                    task,
+                    preflightAttempt,
+                    taskStartedAt,
+                    RelativeLogDir(task.Id, preflightAttempt),
+                    AttemptLogDir(task.Id, preflightAttempt),
+                    failedChecks);
+
+                // TaskFinished is fired by the Scheduler's OnSettledAsync for every settled result (as it
+                // is for the other ExecuteAsync early-returns — needs-human / permission-wall), so it is
+                // deliberately NOT called here to avoid a duplicate observer notification.
+                return preflightSettle.Result;
+            }
+        }
+
         _journal.MarkRunning(task.Id);
 
         int budget = 1 + (task.Retries ?? _plan.Config.DefaultRetries);
@@ -467,6 +516,12 @@ public sealed class TaskExecutor : ITaskExecutor
         Directory.CreateDirectory(logDir);
         string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
 
+        // #198: the provenance the harness knows BEFORE the attempt runs — model + segment worktree +
+        // base commit. Written to the attempt log dir as a machine-readable header artifact regardless
+        // of outcome, and carried onto the journal AttemptRecord on the success paths below.
+        Journal.AttemptProvenance? provenance = BuildProvenance(task, worktree);
+        AttemptArtifacts.WriteProvenance(logDir, provenance);
+
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
 
@@ -718,11 +773,11 @@ public sealed class TaskExecutor : ITaskExecutor
         if (!string.IsNullOrEmpty(worktree.WorktreePath) && Directory.Exists(worktree.WorktreePath))
         {
             return _journaler.ValidateFragmentForSettle(
-                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
+                task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
         }
 
         return _journaler.CompleteSucceededOrInvalidFragment(
-            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal);
+            task, attemptNumber, startedAt, relativeLogDir, logDir, fragmentOutPath, action, guardrails, isFinal, provenance);
     }
 
     /// <summary>
@@ -821,6 +876,60 @@ public sealed class TaskExecutor : ITaskExecutor
         && Directory.Exists(worktree.WorktreePath)
         && !string.IsNullOrEmpty(worktree.TaskBase)
         && !worktree.TaskBase.All(c => c == '0');
+
+    /// <summary>
+    /// Build the #198 per-attempt provenance the harness knows at launch: the resolved model, the
+    /// segment worktree (branch + path), and the base commit. Returns null in serial mode (no segment)
+    /// UNLESS a model is resolvable — a serial prompt task still records its model so <c>run.json</c>
+    /// discloses which model ran even without a worktree. In worktree mode the segment fields are
+    /// always populated; the model is null for a script task (no model runs).
+    /// </summary>
+    private Journal.AttemptProvenance? BuildProvenance(TaskNode task, WorktreeHandle worktree)
+    {
+        string? model = ResolveModel(task);
+        bool realSegment = IsRealGitSegment(worktree);
+
+        if (model is null && !realSegment)
+        {
+            return null;
+        }
+
+        return new Journal.AttemptProvenance
+        {
+            Model = model,
+            SegmentBranch = realSegment ? NullIfEmpty(worktree.SegmentBranchName) : null,
+            WorktreePath = realSegment ? NullIfEmpty(worktree.WorktreePath) : null,
+            BaseCommit = realSegment ? NullIfEmpty(worktree.TaskBase) : null
+        };
+    }
+
+    /// <summary>
+    /// The model an agent attempt of <paramref name="task"/> runs on (issue #198): the resolved
+    /// <c>--model</c> from the task's prompt-runner config, or the sentinel <c>"(cli default)"</c> when
+    /// the runner leaves it unset (so the provenance is never a silent gap for a prompt task). Null for
+    /// a script task — no model runs — and null when the task's runner cannot be resolved (a malformed
+    /// plan that validation would already reject).
+    /// </summary>
+    private string? ResolveModel(TaskNode task)
+    {
+        if (task.Action.Kind != ActionKind.Prompt)
+        {
+            return null;
+        }
+
+        string? runnerName = task.Action.Runner ?? _plan.Config.DefaultPromptRunner;
+        if (runnerName is not null
+            && _plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config))
+        {
+            return config.Settings.Model ?? "(cli default)";
+        }
+
+        // A prompt task whose runner is unresolvable (validation would reject this) still records that
+        // a model — the CLI default — ran, rather than a misleading absence.
+        return "(cli default)";
+    }
+
+    private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
     // --- log paths -----------------------------------------------------------------------
 

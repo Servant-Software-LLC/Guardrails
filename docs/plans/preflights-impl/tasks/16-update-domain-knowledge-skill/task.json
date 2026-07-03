@@ -1,0 +1,7 @@
+{
+  "description": "Update guardrails-domain-knowledge for the moved domain-model/contract facts: the two-scope four-folder model (plan-level preflights/guardrails + task-level preflights), the three new outcomes, the additive planPreflights/planGuardrails journal sections, the plan:guardrails/plan:preflights revalidate ids, and the GR2017/integrationGate retirement + GR2018 re-home (SELF-UPDATING clause)",
+  "stableId": "s3dk16",
+  "dependsOn": ["04-implement-four-folder-loader", "05-outcomes-and-journal"],
+  "writeScope": [".claude/skills/guardrails-domain-knowledge/"],
+  "action": { "maxTurns": 50 }
+}

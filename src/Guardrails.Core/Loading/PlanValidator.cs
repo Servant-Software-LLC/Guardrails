@@ -37,8 +37,8 @@ public sealed class PlanValidator
         ValidateCrossTaskStateReferences(plan, diagnostics);
         ValidateStaleCoverageTokens(plan, diagnostics);
         ValidateGuardrailsPresent(plan, diagnostics);
-        ValidateIntegrationGatePresent(plan, diagnostics);
-        ValidateIntegrationGateNonEmpty(plan, diagnostics);
+        ValidateNoLegacyIntegrationGate(plan, diagnostics);
+        ValidatePlanGuardrailsIntegrationReRun(plan, diagnostics);
         ValidateGuardrailScopeValues(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
@@ -69,7 +69,10 @@ public sealed class PlanValidator
     private static bool HasAnyPrompt(PlanDefinition plan) =>
         plan.Tasks.Any(t =>
             t.Action.Kind == ActionKind.Prompt ||
-            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt));
+            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt) ||
+            t.Preflights.Any(g => g.Kind == ActionKind.Prompt)) ||
+        plan.PlanPreflights.Any(g => g.Kind == ActionKind.Prompt) ||
+        plan.PlanGuardrails.Any(g => g.Kind == ActionKind.Prompt);
 
     private static void ValidateNoCycles(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
@@ -270,24 +273,54 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// A plan with a parallel topology — ≥2 leaf tasks (tasks with no dependents) or any fan-in
-    /// task (a task with ≥2 upstreams) — must declare exactly one <c>integrationGate:true</c> sink
-    /// (plan 08 M2, SSOT §3.3) — but ONLY in worktree mode (<c>maxParallelism &gt; 1</c>), per the
-    /// PO decision. The terminal gate verifies the merged union of *parallel* branches; a SERIAL
-    /// run (<c>maxParallelism == 1</c>) uses the shared workspace and has no parallel branches to
-    /// merge, so the hard requirement does not apply and GR2017 is not emitted. In worktree mode,
-    /// omitting the gate leaves parallel branches unverified at the integration level → GR2017 ERROR.
+    /// The <c>integrationGate: true</c> task kind is RETIRED (SSOT §3.3, design-of-record
+    /// 09-preflight-first-class) with NO coexistence window: the terminal whole-repo checks now live in
+    /// the first-class plan-level <c>&lt;plan&gt;/guardrails/</c> folder
+    /// (<see cref="ValidatePlanGuardrailsIntegrationReRun"/>), not on a no-op sink task. A plan that
+    /// STILL declares the legacy key gets a HARD validation ERROR (GR2029) — honest-over-silent, so the
+    /// stale declaration is caught at validate time rather than silently ignored. The
+    /// <see cref="TaskNode.IntegrationGate"/> model property is kept solely to DETECT the legacy
+    /// declaration here (and is still read by the scheduler's terminal-gate run until that path is
+    /// replaced by the terminal phase in a later deliverable).
     /// </summary>
-    private static void ValidateIntegrationGatePresent(PlanDefinition plan, List<Diagnostic> diagnostics)
+    private static void ValidateNoLegacyIntegrationGate(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
-        // Gate required only in worktree mode (maxParallelism>1), PO decision; a serial run uses the
-        // shared workspace and merges no parallel branches, so there is nothing for the gate to verify.
-        if (plan.Config.MaxParallelism <= 1)
+        foreach (TaskNode task in plan.Tasks)
         {
-            return;
+            if (task.IntegrationGate)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.RetiredIntegrationGateKey, task.Directory,
+                    $"Task '{task.Id}' declares the retired 'integrationGate: true' task kind. The terminal " +
+                    "integration gate is no longer a task kind: its whole-repo checks now live in the " +
+                    "plan-level '<plan>/guardrails/' folder (SSOT §3.3). Remove 'integrationGate' from " +
+                    "task.json and place the terminal checks — each re-running the integration set — in " +
+                    "'<plan>/guardrails/'."));
+            }
         }
+    }
 
-        if (plan.Tasks.Any(t => t.IntegrationGate))
+    /// <summary>
+    /// The re-homed GR2018 content-teeth rule (SSOT §3.3, design-of-record 09-preflight-first-class,
+    /// B3). A plan with a parallel topology — ≥2 leaf tasks (no dependents) or any fan-in task (≥2
+    /// upstreams) — MUST carry, in its terminal <c>&lt;plan&gt;/guardrails/</c> folder, at least one
+    /// deterministic check that ACTUALLY re-runs the integration set (a whole-repo build / full suite /
+    /// a union invariant). This preserves GR2018's teeth: it is NOT weakened to "the folder is
+    /// non-empty" — an empty folder fails, and so does a folder holding only a tautological
+    /// <c>exit 0</c> file that certifies nothing (the precise failure GR2018 exists to prevent). The
+    /// "counts toward the terminal gate" marker is folder membership (a folder-scoped equivalent of the
+    /// §4.3 <c>scope:"integration"</c> tag, which is unchanged and still drives the per-union re-verify);
+    /// the surviving obligation — ≥1 real integration-set re-run — is checked by content inspection
+    /// (<see cref="ReRunsIntegrationSet"/>). A single linear chain (one leaf, no fan-in) forms no union
+    /// and is exempt, and — matching the retired GR2017/GR2018's exact firing conditions — the rule
+    /// applies ONLY in worktree mode (<c>maxParallelism &gt; 1</c>): a serial run uses the shared
+    /// workspace and merges no parallel branches, so there is no merged-HEAD union for a terminal gate
+    /// to certify. GR2028 ERROR.
+    /// </summary>
+    private static void ValidatePlanGuardrailsIntegrationReRun(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        // Terminal-gate obligation required only in worktree mode (maxParallelism>1) — the exact
+        // condition the retired GR2017/GR2018 fired under; a serial run merges no parallel branches.
+        if (plan.Config.MaxParallelism <= 1)
         {
             return;
         }
@@ -297,53 +330,192 @@ public sealed class PlanValidator
         bool hasMultipleLeaves = leafCount >= 2;
         bool hasFanIn = plan.Tasks.Any(t => t.DependsOn.Count >= 2);
 
-        if (hasMultipleLeaves || hasFanIn)
+        if (!hasMultipleLeaves && !hasFanIn)
         {
-            diagnostics.Add(Error(DiagnosticCodes.MissingIntegrationGate, plan.PlanDirectory,
-                "Plan has a parallel topology (≥2 leaf tasks or a fan-in task) but no " +
-                "integrationGate:true sink. The terminal gate is the whole-repo soundness boundary " +
-                "for parallel execution; add a final task with integrationGate:true and at least one " +
-                "guardrail declaring scope:\"integration\" (SSOT §3.3, plan 08 §3)."));
+            return; // a single linear chain forms no union — no terminal-gate obligation
+        }
+
+        if (!plan.PlanGuardrails.Any(ReRunsIntegrationSet))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, plan.PlanDirectory,
+                "Plan has a parallel topology (≥2 leaf tasks or a fan-in task) but its terminal " +
+                "'<plan>/guardrails/' folder carries no deterministic check that re-runs the integration " +
+                "set. The terminal gate is the whole-repo soundness boundary; an empty folder — or one " +
+                "holding only a tautological 'exit 0' file — verifies nothing. Add a '<plan>/guardrails/' " +
+                "check that re-runs the whole-repo build / full suite / a union invariant (SSOT §3.3)."));
         }
     }
 
     /// <summary>
-    /// Every <c>integrationGate:true</c> sink must carry at least one guardrail with
-    /// <c>scope:"integration"</c> (plan 08 M2, SSOT §3.3/§4.3) — but ONLY in worktree mode
-    /// (<c>maxParallelism &gt; 1</c>), per the PO decision. The integration gate verifies the
-    /// merged union of *parallel* branches; a SERIAL run (<c>maxParallelism == 1</c>) uses the
-    /// shared workspace and merges no parallel branches, so the requirement does not apply and
-    /// GR2018 is not emitted. In worktree mode, an empty integration-guardrail set provides no
-    /// whole-repo soundness check — a gate that verifies nothing → GR2018 ERROR.
+    /// Content-teeth test for the re-homed terminal gate (GR2028). A <c>&lt;plan&gt;/guardrails/</c>
+    /// file "re-runs the integration set" when it is a deterministic (script) check whose effective
+    /// body — comment and blank lines stripped, so a comment that merely NAMES a build command cannot
+    /// count — matches EITHER of the two recognised forms SSOT §3.3 documents as equally valid:
+    /// <list type="bullet">
+    /// <item>a recognised whole-repo build/test/suite command actually INVOKED (<see cref="InvokesIntegrationCommand"/>),
+    /// or</item>
+    /// <item>a genuine UNION INVARIANT — a check for git conflict markers
+    /// (<see cref="UnionInvariantConflictMarker"/>), the deterministic verdict a merged/union tree
+    /// actually integrated cleanly. This form exists for plans with no build/test tool to invoke at all
+    /// (e.g. a portable, zero-toolchain demo plan) whose only honest integration content is "the merged
+    /// bytes are non-empty and conflict-marker-free" — the canonical shape used throughout this repo's
+    /// own union-safe guardrails (catalogue → "A scope:'integration' guardrail MUST be UNION-SAFE").</item>
+    /// </list>
+    /// A tautological <c>exit 0</c> file, a bare <c>echo</c>, or a prompt guardrail does NOT qualify
+    /// under either form: the rule certifies a real re-run, not a present file. Unreadable files do not
+    /// qualify (other checks surface the IO problem).
+    /// <para>
+    /// <b>Invocation-shape teeth (issue #207).</b> The build/test form is NOT a bare keyword match anywhere
+    /// on a non-comment line — that was gameable by a line that merely MENTIONS a build command inside a
+    /// string, e.g. <c>echo "reminder: dotnet test should pass"</c> (a non-comment line, yet nothing is
+    /// invoked). It now requires a real INVOCATION shape: the command must appear at a <b>statement
+    /// position</b> — the leading command word of a pipeline/statement segment — and NOT be the argument of
+    /// an output builtin (<c>echo</c>/<c>printf</c>/<c>Write-Output</c>/…). Quoted-string literals are
+    /// stripped first so a keyword inside a quote never counts. The conflict-marker form deliberately keeps
+    /// operating on the comment-stripped (NOT quote-stripped) body: a genuine marker check often carries the
+    /// 7-char token in a quoted string (<c>grep -q '&lt;&lt;&lt;&lt;&lt;&lt;&lt;'</c>), and there is no
+    /// legitimate reason to write that exact sequence other than detecting it, so it stays ungameable.
+    /// </para>
     /// </summary>
-    private static void ValidateIntegrationGateNonEmpty(PlanDefinition plan, List<Diagnostic> diagnostics)
+    private static bool ReRunsIntegrationSet(GuardrailDefinition guardrail)
     {
-        // Gate verification required only in worktree mode (maxParallelism>1), PO decision; a serial
-        // run merges no parallel branches, so there is nothing for the gate to verify.
-        if (plan.Config.MaxParallelism <= 1)
+        if (guardrail.Kind != ActionKind.Script)
         {
-            return;
+            return false;
         }
 
-        foreach (TaskNode task in plan.Tasks)
+        string? body = TryReadAllText(guardrail.Path);
+        if (body is null)
         {
-            if (!task.IntegrationGate)
-            {
-                continue;
-            }
+            return false;
+        }
 
-            bool hasIntegrationGuardrail = task.Guardrails.Any(g =>
-                string.Equals(g.Scope, "integration", StringComparison.OrdinalIgnoreCase));
+        string stripped = StripCommentLines(body);
+        return InvokesIntegrationCommand(stripped) || UnionInvariantConflictMarker.IsMatch(stripped);
+    }
 
-            if (!hasIntegrationGuardrail)
+    /// <summary>
+    /// The GR2028 build/test content teeth (form 1 of 2) with issue-#207 invocation-shape rigor. Returns
+    /// true only when a recognised whole-repo build/test/suite command is actually INVOKED — the leading
+    /// command word of some pipeline/statement segment of a non-comment line — not merely mentioned. Each
+    /// line has its quoted-string literals stripped (so a keyword inside a quote never counts), is split
+    /// into statement/pipeline segments on shell/PowerShell boundaries (<c>|</c>, <c>;</c>, <c>&amp;&amp;</c>,
+    /// <c>||</c>, <c>(</c>, <c>{</c>, <c>$(</c>, backtick, <c>then</c>/<c>do</c>/<c>else</c>), and each
+    /// segment whose leading command word is an OUTPUT builtin (<see cref="OutputBuiltin"/>) is discarded —
+    /// its arguments are just text, not a build invocation. Only then is the segment tested against
+    /// <see cref="IntegrationReRunCommand"/> anchored at the segment's start.
+    /// </summary>
+    private static bool InvokesIntegrationCommand(string strippedBody)
+    {
+        foreach (string line in strippedBody.Split('\n'))
+        {
+            string cleaned = StripQuotedLiterals(line);
+            foreach (string segment in SplitIntoStatementSegments(cleaned))
             {
-                diagnostics.Add(Error(DiagnosticCodes.IntegrationGateEmpty, task.Directory,
-                    $"Task '{task.Id}' is an integrationGate:true sink but has no guardrail with " +
-                    "scope:\"integration\". The terminal gate must carry at least one integration-scoped " +
-                    "guardrail to be a sound soundness boundary. Add a guardrail sidecar declaring " +
-                    "scope:\"integration\" (SSOT §3.3/§4.3, plan 08 §3)."));
+                string trimmed = segment.TrimStart();
+                if (trimmed.Length == 0)
+                {
+                    continue;
+                }
+
+                // Discard a segment led by an output builtin — echo/printf/Write-Output "…dotnet test…"
+                // MENTIONS a command, it does not invoke one.
+                if (OutputBuiltin.IsMatch(trimmed))
+                {
+                    continue;
+                }
+
+                // The command must be at the statement's START (its leading command word), not buried as
+                // an argument mid-segment — a real invocation shape, not a keyword anywhere on the line.
+                if (IntegrationReRunCommand.IsMatch(trimmed))
+                {
+                    return true;
+                }
             }
         }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Remove single- and double-quoted string literals from a single line so a build/test keyword INSIDE
+    /// a quoted string (the issue-#207 <c>echo "… dotnet test …"</c> bypass) is not mistaken for an
+    /// invocation. Best-effort textual strip (not a full shell tokenizer): each run between matching quotes
+    /// is dropped. An unbalanced trailing quote drops the remainder of the line, which is the conservative
+    /// direction (a mentioned keyword must not survive).
+    /// </summary>
+    private static string StripQuotedLiterals(string line) =>
+        QuotedLiteral.Replace(line, " ");
+
+    private static readonly Regex QuotedLiteral = new(
+        "\"[^\"]*\"?|'[^']*'?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Split a (quote-stripped) line into pipeline/statement segments on the shell + PowerShell boundaries
+    /// that begin a fresh command word: <c>|</c>, <c>;</c>, <c>&amp;</c>, <c>&amp;&amp;</c>, <c>||</c>,
+    /// <c>(</c>, <c>)</c>, <c>{</c>, <c>}</c>, <c>$(</c>, and backtick. The boundary keywords
+    /// <c>then</c>/<c>do</c>/<c>else</c> are not split here (they are handled by the leading-word test
+    /// after their own line/segment); this keeps the split purely on punctuation.
+    /// </summary>
+    private static IEnumerable<string> SplitIntoStatementSegments(string line) =>
+        line.Split(StatementBoundaries, StringSplitOptions.RemoveEmptyEntries);
+
+    private static readonly char[] StatementBoundaries = ['|', ';', '&', '(', ')', '{', '}', '`', '$'];
+
+    /// <summary>
+    /// An output builtin that PRINTS its arguments (they are text, never an invocation): <c>echo</c>,
+    /// <c>printf</c>, <c>print</c>, and the PowerShell <c>Write-*</c> family. Anchored at the segment start.
+    /// </summary>
+    private static readonly Regex OutputBuiltin = new(
+        @"^(?:echo|printf|print|write-output|write-host|write-error|write-warning|write-information|write-verbose|write-debug)\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Recognised whole-repo build / test / suite invocations that constitute a real integration-set
+    /// re-run (the GR2028 content teeth, form 1 of 2). Deliberately broad across ecosystems (.NET, node,
+    /// python, rust, go, java/kotlin, C/C++, ruby, php) so a genuine full-suite/build check is credited
+    /// while a tautological <c>exit 0</c> or bare no-op is not. Case-insensitive. ANCHORED at the start of
+    /// a statement segment (issue #207) so it matches a command actually being run, not a keyword buried
+    /// mid-line; an optional <c>&amp;</c> (PowerShell call operator) or <c>sudo</c>/<c>exec</c> prefix is
+    /// allowed before the command word.
+    /// </summary>
+    private static readonly Regex IntegrationReRunCommand = new(
+        @"^(?:&\s*|sudo\s+|exec\s+)?(?:dotnet\s+(?:test|build|msbuild|vstest|run)|msbuild|nuke|cake|npm\s+(?:test|run|ci)|yarn|pnpm|pytest|python\d?\s+-m\s+(?:pytest|unittest)|tox|cargo\s+(?:test|build|check)|go\s+(?:test|build|vet)|mvn|gradle|ctest|cmake\s+--build|bazel\s+(?:test|build)|swift\s+(?:test|build)|make|rspec|jest|vitest|mocha|phpunit|git\s+diff\s+--check)\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Recognised git-conflict-marker check that constitutes a real integration-set re-run via a genuine
+    /// UNION INVARIANT (the GR2028 content teeth, form 2 of 2 — SSOT §3.3, added for plans with no
+    /// build/test tool to invoke, e.g. a portable zero-toolchain demo). Matches a literal occurrence of
+    /// one of the three canonical 7-character git conflict-marker tokens (<c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c>,
+    /// <c>=======</c>, <c>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c>) in the STRIPPED body — comments already
+    /// removed by <see cref="StripCommentLines"/>, so a comment that merely explains what conflict
+    /// markers are cannot satisfy this. A script that genuinely tests for these markers is, by
+    /// construction, verifying the merged/union bytes integrated cleanly — no legitimate reason exists
+    /// to search for this exact 7-character sequence other than conflict-marker detection, so this
+    /// signal is effectively ungameable without actually performing the check.
+    /// </summary>
+    private static readonly Regex UnionInvariantConflictMarker = new(
+        @"<{7}|={7}|>{7}",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Drop whole-line comments (leading <c>#</c>, <c>//</c>, <c>REM</c>, <c>::</c>) so a comment that
+    /// merely NAMES a build/test command (e.g. a <c>catches:</c> line) cannot be mistaken for the check
+    /// actually invoking one.
+    /// </summary>
+    private static string StripCommentLines(string body) =>
+        string.Join('\n', body.Split('\n').Where(line => !IsCommentLine(line)));
+
+    private static bool IsCommentLine(string line)
+    {
+        string trimmed = line.TrimStart();
+        return trimmed.StartsWith('#')
+            || trimmed.StartsWith("//", StringComparison.Ordinal)
+            || trimmed.StartsWith("::", StringComparison.Ordinal)
+            || (trimmed.StartsWith("REM", StringComparison.OrdinalIgnoreCase) &&
+                (trimmed.Length == 3 || char.IsWhiteSpace(trimmed[3])));
     }
 
     /// <summary>
@@ -505,21 +677,33 @@ public sealed class PlanValidator
     /// </summary>
     private static void ValidateGuardrailScopeValues(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
+        // Scope is a guardrail-shaped-file concept, so it is validated across ALL FOUR folders (SSOT §4)
+        // — a typo in a preflight or a plan-level folder degrades the same way as one in a task guardrail.
         foreach (TaskNode task in plan.Tasks)
         {
-            foreach (GuardrailDefinition guardrail in task.Guardrails)
-            {
-                if (guardrail.Scope is null)
-                    continue;
+            CheckGuardrailScopes(task.Guardrails, $"task '{task.Id}'", diagnostics);
+            CheckGuardrailScopes(task.Preflights, $"task '{task.Id}' preflights", diagnostics);
+        }
 
-                if (guardrail.Scope != "integration" && guardrail.Scope != "local")
-                {
-                    diagnostics.Add(Error(DiagnosticCodes.InvalidGuardrailScopeValue, guardrail.Path,
-                        $"Guardrail '{guardrail.Name}' in task '{task.Id}' has unrecognised scope value " +
-                        $"'{guardrail.Scope}'. The only recognised values are 'integration' and 'local'. " +
-                        "An unrecognised value silently degrades to 'local' at runtime, dropping the " +
-                        "guardrail from the integration union re-verify set (SSOT §4.3, plan 08 §3)."));
-                }
+        CheckGuardrailScopes(plan.PlanPreflights, "<plan>/preflights/", diagnostics);
+        CheckGuardrailScopes(plan.PlanGuardrails, "<plan>/guardrails/", diagnostics);
+    }
+
+    private static void CheckGuardrailScopes(
+        IReadOnlyList<GuardrailDefinition> guardrails, string context, List<Diagnostic> diagnostics)
+    {
+        foreach (GuardrailDefinition guardrail in guardrails)
+        {
+            if (guardrail.Scope is null)
+                continue;
+
+            if (guardrail.Scope != "integration" && guardrail.Scope != "local")
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidGuardrailScopeValue, guardrail.Path,
+                    $"Guardrail '{guardrail.Name}' ({context}) has unrecognised scope value " +
+                    $"'{guardrail.Scope}'. The only recognised values are 'integration' and 'local'. " +
+                    "An unrecognised value silently degrades to 'local' at runtime, dropping the " +
+                    "guardrail from the integration union re-verify set (SSOT §4.3, plan 08 §3)."));
             }
         }
     }
@@ -825,7 +1009,10 @@ public sealed class PlanValidator
         // promptRunners.default, falling back to the sole declared runner if exactly one.
         bool anyReliesOnDefault = plan.Tasks.Any(t =>
             (t.Action.Kind == ActionKind.Prompt && t.Action.Runner is null) ||
-            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt));
+            t.Guardrails.Any(g => g.Kind == ActionKind.Prompt) ||
+            t.Preflights.Any(g => g.Kind == ActionKind.Prompt)) ||
+            plan.PlanPreflights.Any(g => g.Kind == ActionKind.Prompt) ||
+            plan.PlanGuardrails.Any(g => g.Kind == ActionKind.Prompt);
 
         if (anyReliesOnDefault && ResolveDefaultRunner(plan.Config) is null)
         {
@@ -915,15 +1102,31 @@ public sealed class PlanValidator
                 yield return task.Action.Path;
             }
 
-            foreach (GuardrailDefinition guardrail in task.Guardrails)
+            foreach (string path in ScriptGuardrailPaths(task.Guardrails))
             {
-                if (guardrail.Kind == ActionKind.Script)
-                {
-                    yield return guardrail.Path;
-                }
+                yield return path;
+            }
+
+            foreach (string path in ScriptGuardrailPaths(task.Preflights))
+            {
+                yield return path;
             }
         }
+
+        // The plan-level folders' scripts need a resolvable interpreter too (SSOT §4/§5.2).
+        foreach (string path in ScriptGuardrailPaths(plan.PlanPreflights))
+        {
+            yield return path;
+        }
+
+        foreach (string path in ScriptGuardrailPaths(plan.PlanGuardrails))
+        {
+            yield return path;
+        }
     }
+
+    private static IEnumerable<string> ScriptGuardrailPaths(IReadOnlyList<GuardrailDefinition> guardrails) =>
+        guardrails.Where(g => g.Kind == ActionKind.Script).Select(g => g.Path);
 
     private static Diagnostic Error(string code, string path, string message) => new()
     {

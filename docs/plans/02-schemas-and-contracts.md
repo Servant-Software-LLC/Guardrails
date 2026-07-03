@@ -21,6 +21,11 @@ plan-name/
 ├── guardrails.baseline          # OPTIONAL committed breakdown manifest (§11)
 ├── diagram.md                   # OPTIONAL generated DAG diagram — non-authored (§10)
 ├── diagram.html                 # OPTIONAL interactive local viewer — non-authored (§10)
+├── preflights/                  # OPTIONAL plan-level "Full Flight Checks" — run ONCE before the DAG (§4)
+│   ├── 01-baseline-green.ps1     #   guardrail-shaped files (same parser as tasks/<id>/guardrails/)
+│   └── 01-baseline-green.json    #   optional metadata sidecar (§4.1)
+├── guardrails/                  # OPTIONAL plan-level terminal / integration gate — run ONCE at run end (§3.3/§4)
+│   └── 01-full-suite.ps1         #   ≥1 real integration-set re-run for a multi-leaf/fan-in plan (GR2028)
 ├── state/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
@@ -35,6 +40,8 @@ plan-name/
     └── <NN-verb-object>/        # task id = folder name, kebab-case, NN = topological hint
         ├── task.json            # task manifest (§3)
         ├── action.prompt.md     # or action.ps1 / action.sh / action.py / action.cmd / …
+        ├── preflights/          # OPTIONAL task-level JIT dependency-delivery checks — run at taskBase before the action (§4)
+        │   └── 01-dep-delivered.ps1  #   guardrail-shaped files (same parser as guardrails/)
         └── guardrails/
             ├── 01-build-passes.ps1        # deterministic guardrail (§4)
             ├── 01-build-passes.json       # optional metadata sidecar (§4.1)
@@ -43,6 +50,16 @@ plan-name/
 
 Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 `dependsOn` is the truth for ordering.
+
+**Two scopes, four folders (design-of-record 09-preflight-first-class).** `preflights/` and `guardrails/`
+are first-class folders at TWO scopes. **Plan-level** `<plan>/preflights/` (the "Full Flight Checks") runs
+ONCE before the DAG against the starting repo; `<plan>/guardrails/` (the terminal / integration gate) runs
+ONCE at run end on the merged HEAD (§3.3). **Task-level** `tasks/<id>/preflights/` is a per-task JIT
+dependency-delivery check run in the task's segment worktree before its action, the sibling of the
+postcondition `tasks/<id>/guardrails/`. All four folders share **one** guardrail-file parser (§4) — they
+differ only in WHERE they live and WHEN they run; every file opens with a `catches:` declaration, and a
+malformed one (no `catches:`) is a hard load error (**GR2027**). The harness phases that RUN the three new
+folders land in later deliverables; this change adds the loader/validator that parses and validates them.
 
 **Workspace must be a git repository top-level.** Parallel execution never writes the user's
 checkout. At run start the harness creates a **plan branch** `guardrails/<plan-name>` off the
@@ -77,7 +94,7 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
   "maxParallelism": 3,                // default 3 in worktree mode (chain-reuse keeps a linear chain to ONE tree)
   "defaultRetries": 2,                // retries AFTER the first attempt; default 2
   "defaultTimeoutSeconds": 1800,      // per-attempt ceiling when nothing narrower applies
-  "transientPauseBudgetSeconds": 1800,// cumulative wall-clock a task may spend PAUSED on transient infra limits (#115); 0 disables pausing
+  "transientPauseBudgetSeconds": 14400,// cumulative wall-clock a task may spend PAUSED on transient infra limits (#115); default 14400 (4h); 0 disables pausing
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
@@ -144,7 +161,9 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
-- `transientPauseBudgetSeconds` (default `1800`) is the cumulative wall-clock a single task may spend
+- `transientPauseBudgetSeconds` (default `14400`, i.e. 4h — a long unattended/overnight run must ride
+  out a multi-hour outage or usage-limit window without settling `needs-human`, issue #189) is the
+  cumulative wall-clock a single task may spend
   **paused** on transient, retryable infrastructure conditions (HTTP 429/503/529, "overloaded", a
   usage/session/rate limit from the runner — issue #115). A transient signal does **NOT** consume the
   retry budget: the harness backs off (bounded exponential, 2s→…→60s cap, honoring a parsed reset hint
@@ -177,7 +196,8 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
   "stableId": "k3f9a1",        // optional; stable task identity for the regeneration merge (§11)
                                //   format ^[a-z0-9][a-z0-9._-]*$ (GR2011); unique (GR2010)
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
-  "integrationGate": false,    // optional, default false; marks a terminal whole-repo integration gate (§3.3)
+  // NOTE: "integrationGate": true is RETIRED — the terminal gate is now the <plan>/guardrails/ folder (§3.3).
+  //       Still declaring it is a hard validation error (GR2029). Do NOT add this key to new task.json.
   "writeScope": ["src/Foo/"],  // optional; the deterministic write-scope check (§3.4). Absent ⇒ NO check.
                                //   every path the action's post-action diff (staged worktree vs <taskBase>)
                                //   adds/modifies/deletes/renames must be IN scope, or the task fails and
@@ -249,37 +269,95 @@ then prunes the registrations; a **non-green** (needs-human/failed/blocked) task
 place as the fix/resume inspection surface, and the integration worktree is never swept. A cancelled
 run skips the sweep entirely (its in-flight worktrees are reclaimed by the next run's resume prune).
 
-### 3.3 Terminal integration gate (`integrationGate`)
+### 3.3 Terminal integration gate — the `<plan>/guardrails/` folder (was the `integrationGate` task kind)
 
-`integrationGate: true` marks a task as the terminal whole-repo integration gate — the final
-soundness boundary run once on the fully merged plan-branch HEAD after all other tasks succeed. The
-gate task's guardrails are exactly the run's **integration-guardrail set** (§4.3): all guardrails
-declared `scope: "integration"` across the plan, typically the whole-repo build and the full test
-suite.
+The terminal whole-repo integration gate is the final soundness boundary, run once on the fully merged
+plan-branch HEAD after all other tasks succeed. It re-runs the run's **integration set** (§4.3) — typically
+the whole-repo build and the full test suite — as the whole-repo soundness boundary for FF chains and
+AI-resolved unions.
 
-**Hard validation requirements** (both are errors, not warnings, because the terminal gate is the
-sole whole-repo soundness boundary for FF chains and AI-resolved unions):
+**The gate is now a first-class FOLDER, `<plan>/guardrails/`, NOT a task (design-of-record
+09-preflight-first-class).** The terminal checks live in the plan-level `<plan>/guardrails/` folder (§1),
+evaluated once at run end by the terminal phase. The old modelling — a no-op END task carrying
+`integrationGate: true` whose guardrails were the integration set — is **retired**.
 
-- **GR2017** (error): a plan with ≥2 leaf tasks, or any fan-in task, MUST declare **exactly one**
-  `integrationGate: true` sink. A plan with a single linear chain and no fan-in may omit it. Missing
-  gate on a multi-leaf/fan-in plan → `validate` error naming the missing sink.
-- **GR2018** (error): the `integrationGate` sink MUST carry **at least one** `scope: "integration"`
-  guardrail (§4.3). An integration gate with no integration-scoped guardrail would verify nothing —
-  the gate is the terminal soundness boundary and must not be empty.
+**`integrationGate` task kind + GR2017 — RETIRED (no coexistence window).** The `integrationGate: true`
+task kind and **GR2017** (the old "a multi-leaf/fan-in plan must declare exactly one `integrationGate: true`
+sink" rule) are gone. There is no migration window: a plan that STILL declares `integrationGate: true` is a
+**hard validation error — GR2029** (honest-over-silent: the stale key is caught at validate time, never
+silently ignored, UNCONDITIONALLY — a plan can therefore never carry the legacy key AND a
+`<plan>/guardrails/` folder at once). The harness keeps a `TaskNode.IntegrationGate` model field only so
+the validator can DETECT and reject the legacy key. The Scheduler's own legacy terminal-gate run (the
+pre-deliverable-4 per-task `scope: "integration"` sink-task path) still exists and still reads it, but now
+SUPERSEDED (never both) by the terminal phase (deliverable 4, §7.1) whenever a plan declares a
+`<plan>/guardrails/` folder.
 
-**Merge-collision attribution on gate failure (issue #175).** When the terminal gate fails on the
-final merged HEAD, the failure is attributed to the gate sink task and surfaced as `needs-human`. A
-gate failure (typically the whole-repo build/test) is frequently a **merge collision**: two tasks
-with **overlapping `writeScope`** on a shared file both wrote new content there, and an AI/3-way merge
-silently kept both — a semantic duplicate (e.g. a duplicate class/member) with **no textual conflict
-marker**, catchable only at the build gate. The harness does NOT (and cannot generically) detect the
-semantic duplicate — that is the build guardrail's job, and the union-guardrail prevention is
-authoring-side (§4.3 "Accepted residual"). What the harness DOES is **attribution**: the gate-failure
-diagnosis enumerates every task pair whose `writeScope`s overlap and names the shared path(s), so a
-human immediately sees *"this looks like a merge collision between task A and task B on `<file>`"*
-rather than a bare build error. The hint is advisory and structural — derived PURELY from the
-`writeScope`-overlap topology (never the compiler error text / a CS-code), and **added only when two
-or more `writeScope`s overlap** (nothing is appended for a plan with disjoint scopes).
+**GR2018's content teeth — RE-HOMED onto the folder as GR2028, NOT retired, NOT weakened.** The old GR2018
+required the `integrationGate` sink to carry ≥1 `scope: "integration"` guardrail ("a gate that verifies
+nothing"). That **content obligation moves to the folder**, with its teeth intact: **GR2028** (error) — a
+multi-leaf or fan-in plan MUST have a `<plan>/guardrails/` folder carrying **≥1 deterministic check that
+ACTUALLY re-runs the integration set** (a whole-repo build / full suite / a union invariant). It is
+deliberately NOT weakened to "the folder is non-empty": an empty folder fails, and so does a folder holding
+only a tautological `exit 0` file that certifies nothing — the exact failure GR2018 exists to prevent. The
+check is by **content**, not presence. A single linear chain (one leaf, no fan-in) forms no union and is
+exempt, and — matching the retired GR2017/GR2018's exact firing conditions — the rule applies only in
+**worktree mode** (`maxParallelism > 1`); a serial run merges no parallel branches, so there is no
+merged-HEAD union for a terminal gate to certify. The "counts toward the terminal gate" marker is **folder
+membership** (a folder-scoped equivalent of the §4.3 tag); the surviving obligation is the ≥1-real-re-run.
+
+**Both forms of "a real integration-set re-run" are recognized, not just build/test.** GR2028's content
+check (`PlanValidator.ReRunsIntegrationSet`) accepts a `<plan>/guardrails/` script matching EITHER: (1) a
+recognized whole-repo build/test/suite command across common ecosystems (`dotnet test`/`dotnet build`,
+`npm test`, `pytest`, `make`, `git diff --check`, …) actually **invoked**, OR (2) a genuine **union
+invariant** — a check for git conflict markers (`<<<<<<<`/`=======`/`>>>>>>>`) in the merged bytes, the
+deterministic verdict that a union integrated cleanly. Form (2) exists for plans with no build/test tool to
+invoke at all (e.g. a portable, zero-toolchain demo like `examples/parallel-hello`) whose only honest
+integration content is exactly this shape.
+
+The two forms are matched at **different rigor by design (issue #207)**. A comment that merely names a marker
+or a build command never counts under either — whole-line comments are stripped first (`StripCommentLines`).
+Beyond that:
+- **Form (1) requires an INVOCATION shape, not a bare keyword anywhere on a non-comment line.** A line that
+  only *mentions* a build command inside a string — `echo "reminder: dotnet test should pass"` — invokes
+  nothing and is **rejected**. The command must be the **leading command word of a pipeline/statement
+  segment** (a real invocation at a statement position) and must **not** be the argument of an output builtin
+  (`echo`/`printf`/`print`/`Write-Output`/…). Quoted-string literals are stripped per line first, so a keyword
+  inside a quote never counts. A piped/chained real invocation (`dotnet build && dotnet test 2>&1 | tee log`)
+  still counts — the command sits at a statement position within the pipeline.
+- **Form (2) stays a literal token match on the comment-stripped (not quote-stripped) body** — a genuine
+  conflict-marker check often carries the 7-char token in a quoted string (`grep -q '<<<<<<<'`), and no
+  legitimate reason exists to write that exact sequence other than detecting it, so it remains ungameable.
+
+**`scope: "integration"` — KEPT as the §4.3 per-union tag (unchanged).** Only the terminal-SINK obligation
+moved to the folder. The `scope: "integration"` tag still exists and still drives the **per-union re-verify**
+(§4.3) at every intermediate fan-in / non-FF integration point during the run — that mechanism is unchanged.
+The terminal `<plan>/guardrails/` folder (run once, last, declared by folder membership) and the per-union
+integration set (run at every union, declared by the tag) are two declarations with one shared spirit, not
+one object; the terminal folder's checks are typically a superset-or-equal of the per-union set.
+
+**Malformed declaration in any of the four folders — GR2027.** Every guardrail-shaped file in
+`<plan>/preflights/`, `<plan>/guardrails/`, `tasks/<id>/preflights/`, and `tasks/<id>/guardrails/` must open
+with a `catches:` declaration (§4). A file that does not is a hard load error, **GR2027** — the canonical
+per-folder malformed-declaration diagnostic for the four-folder model.
+
+**Merge-collision attribution on gate failure (issue #175, ported to the terminal phase by #205).** When the
+terminal gate fails on the final merged HEAD, the failure is surfaced as a terminal halt (exit 2,
+`planGuardrails.status = plan-guardrail-failed`). The attribution is a property of the gate failure, not of
+where the gate lives, so it applies identically whichever terminal path fires — the legacy per-task
+`integrationGate` sink (`Scheduler.WithTerminalGateFailure`) and the four-folder terminal phase
+(`PlanGuardrailPhase`) both call the **shared `WriteScope.OverlappingWriteScopeHint` helper**. A gate failure
+(typically the whole-repo build/test) is frequently a **merge collision**: two tasks with **overlapping
+`writeScope`** on a shared file both wrote new content there, and an AI/3-way merge silently kept both — a
+semantic duplicate (e.g. a duplicate class/member) with **no textual conflict marker**, catchable only at the
+build gate. The harness does NOT (and cannot generically) detect the semantic duplicate — that is the build
+guardrail's job, and the union-guardrail prevention is authoring-side (§4.3 "Accepted residual"). What the
+harness DOES is **attribution**: the gate-failure diagnosis enumerates every task pair whose `writeScope`s
+overlap and names the shared path(s), so a human immediately sees *"this looks like a merge collision between
+task A and task B on `<file>`"* rather than a bare build error. In the terminal phase the hint is journaled to
+the OPTIONAL `planGuardrails.collisionHint` field (§7) and echoed in the `run` command's terminal-halt block.
+The hint is advisory and structural — derived PURELY from the `writeScope`-overlap topology (never the
+compiler error text / a CS-code), and **added only when two or more `writeScope`s overlap** (nothing is
+appended for a plan with disjoint scopes).
 
 ### 3.4 Write-scope check (`writeScope`)
 
@@ -432,7 +510,7 @@ whole test suite). At **every union point** (a fan-in or a non-FF plan-branch in
 the merged bytes, BEFORE the merge commit and BEFORE any downstream action, the harness re-runs **the
 run's integration-guardrail set** (via the attempt-decoupled re-verify seam). This is the **complete
 v1 union re-verify contract**: one set, run uniformly at every union and again on the final merged
-HEAD by the terminal `integrationGate` sink (§3.3). The terminal gate and the per-union re-verify are
+HEAD by the terminal `<plan>/guardrails/` folder (§3.3). The terminal gate and the per-union re-verify are
 one mechanism running the **same** set at two scopes. There is no per-task or per-colliding-sibling
 guardrail selection at a union in v1 — the integration set is the whole re-verify.
 
@@ -461,7 +539,7 @@ deferred, not adopted.
 > - **RESIDUAL.** A hunk an AI-merge silently drops on a **shared file** (overlapping `writeScope`s of
 >   colliding siblings) is re-verified at the union ONLY by an integration-scoped guardrail. A drop
 >   catchable **solely** by a sibling's `local` guardrail is NOT re-verified at the union (it surfaces
->   at the terminal `integrationGate`, or not at all).
+>   at the terminal `<plan>/guardrails/` gate, or not at all).
 > - **MITIGATION (authoring, not runtime).** The well-authored plan covers the residual with a
 >   `scope:"integration"` guardrail on the integration / fan-in task asserting the shared file's
 >   **union invariant** (every colliding sibling's contribution survives the merge — union-safe per
@@ -831,13 +909,40 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "attempt": 1,
           "startedAt": "…", "endedAt": "…",
           "actionExitCode": 0,
-          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied
+          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied | task-preflight-failed
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
-          "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1"
+          "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1",
+          // OPTIONAL per-attempt provenance the harness knew at launch (#198). Additive — a script /
+          // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
+          // Also mirrored to <attempt>/attempt-provenance.json (§8).
+          "provenance": {
+            "model": "claude-…",    // resolved --model from the runner, or "(cli default)"; ABSENT for a script task
+            "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
+            "worktreePath": "/…/guardrails-worktrees/…",
+            "baseCommit": "sha…"    // the commit the segment forked from (taskBase); ABSENT in serial mode
+          }
         }
       ]
     }
+  },
+
+  // OPTIONAL top-level sections — two-scope preflights (F9 split). Additive: a plan WITHOUT the
+  // feature OMITS both (an older reader ignores them; absent, never null noise). Each is planHash-keyed.
+  "planPreflights": {                   // the PRE-DAG preflight phase result (OUTSIDE tasks{})
+    "status": "plan-preflight-failed",  // passed | plan-preflight-failed
+    "planHash": "sha256:…",
+    "evaluatedAt": "2026-06-10T16-22-30Z",
+    "checks": [ { "name": "git-top-level", "passed": false, "reason": "workspace is not a git top-level" } ]
+  },
+  "planGuardrails": {                    // the TERMINAL <plan>/guardrails/ gate on the merged HEAD (OUTSIDE tasks{})
+    "status": "plan-guardrail-failed",  // passed | plan-guardrail-failed
+    "planHash": "sha256:…",
+    "failedChecks": [ { "name": "whole-repo-build", "reason": "CS0111 duplicate member from a merge collision" } ],
+    // OPTIONAL #175/#205 merge-collision advisory — present only on failure when ≥2 tasks have
+    // OVERLAPPING writeScope on a shared file; names the offending task pair(s) + shared path(s). ABSENT
+    // (never null noise) when the gate passed or no two writeScopes overlap.
+    "collisionHint": "This may be a merge collision: … '07-…' & '09-…' (shared: Launcher.cs)"
   }
 }
 ```
@@ -873,6 +978,58 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   path refused across two or more attempts — instead of burning the remaining retry budget on the
   identical wall. The attempt carries this DISTINCT outcome so a human (and §9.2 triage) sees a
   permission/config issue, not a generic `action-failed`.
+- `task-preflight-failed` — a per-task `tasks/<id>/preflights/` slot failed (the two-scope preflights F9
+  split). The task-scoped preflight gate did not pass, so the harness settles the task `needs-human` and
+  its transitive cone `blocked` (exit 2) WITHOUT running the action. A per-attempt `outcome` inside
+  `tasks{}`, distinct from `action-failed`/`guardrail-failed` so a human (and §9 triage) sees a preflight
+  gate failure — not a generic action failure. Recorded as a real attempt record (`attempt: 1`) carrying
+  this `outcome` plus the failed preflight check(s) in `failedGuardrails` (`{ "name", "reason" }`), so
+  `run.json` shows WHAT gate failed and WHY. **No-burn is STRUCTURAL, not signalled by attempt-list
+  emptiness:** the short-circuit records exactly ONE attempt and fires BEFORE the attempt loop and before
+  the task is marked `running`, so the retry budget is never consumed (a burned retry would produce a
+  second attempt) and no transient `running` status is ever written. Distinct from the two whole-plan
+  phase halts (`plan-preflight-failed`/`plan-guardrail-failed`), which live OUTSIDE `tasks{}` in the
+  top-level sections below.
+
+**A succeeded task records a real attempt in BOTH modes (#196).** A task that settles `succeeded` journals
+a `succeeded` attempt record in `attempts[]` — in **serial** mode inline as the attempt completes, and in
+**worktree** mode at the deferred B1 settle (the executor computes the attempt data and threads it to the
+scheduler, which records it TOGETHER with the reserved `mergeSequence` under the integration lock). Both
+paths write the identical attempt shape, so a succeeded task's `attempts[]` is non-empty regardless of
+mode. Each attempt also carries the OPTIONAL `provenance` block (#198) — the model + segment worktree +
+base commit the harness knew at launch (see the wire example above); it is mirrored to
+`<attempt>/attempt-provenance.json` (§8).
+
+**Top-level plan-phase sections (two-scope preflights, F9 split)**
+
+Two OPTIONAL top-level journal keys record the two whole-plan phases that run OUTSIDE `tasks{}`. Both are
+**additive and backward-compatible**: a plan WITHOUT the feature **omits** them (an older reader ignores
+them; they are absent, never `null` noise), and the existing `tasks{}` shape is untouched. Each is
+**`planHash`-keyed** — it records the plan hash it evaluated against.
+- `planPreflights` = `{ "status", "planHash", "evaluatedAt", "checks": [...] }` — the **pre-DAG** preflight
+  phase result. `status` is `passed` or **`plan-preflight-failed`** (the pre-DAG phase failed → halt BEFORE
+  scheduling any task → exit 2). `checks[]` are the individual preflight results
+  (`{ "name", "passed", "reason"? }`).
+- `planGuardrails` = `{ "status", "planHash", "failedChecks": [...] }` — the **terminal**
+  `<plan>/guardrails/` gate evaluated on the merged plan-branch HEAD. `status` is `passed` or
+  **`plan-guardrail-failed`** (the terminal gate failed → exit 2). `failedChecks[]` are the failed
+  guardrails (`{ "name", "reason" }`, the same shape as a task attempt's `failedGuardrails`).
+
+**Pre-DAG resume SKIP rule (the B1 fix).** The pre-DAG `planPreflights` phase runs BEFORE the Scheduler
+builds any wave, evaluating `<plan>/preflights/` against the run's STARTING bytes (the integration
+worktree on the plan branch at the user's HEAD in worktree mode; the plan workspace directly in serial
+mode) — once, via the unconditional `IReVerifier` seam (§4.3). On a plain resume (no `--fresh`), the
+harness reads the existing `planPreflights` marker FIRST: when `status == "passed"` AND its `planHash`
+matches the CURRENT plan hash, the phase is **SKIPPED** — the marker (`evaluatedAt` and `planHash`) is
+left byte-for-byte untouched, and scheduling proceeds straight to the DAG. The phase re-evaluates (and
+overwrites the marker) only when the marker is absent, its `status` is `plan-preflight-failed`, its
+`planHash` is stale (the plan changed since the marker was written), or `--fresh` deleted `run.json` (§6.1)
+before this phase runs. This is load-bearing, not an optimization: many plan-level preflights are
+**negative-baseline** checks — true only at the very start of a plan's lifecycle (e.g. "artifact X does
+not yet exist"), because a task later in the DAG legitimately introduces the condition the check forbids.
+Re-running the check on every resume would evaluate it against **partially-merged mid-DAG bytes** and
+false-halt a run that is actually fine; evaluating it exactly ONCE per `planHash` — at the true start,
+before any task has touched the workspace — is the only reading that makes the check meaningful.
 
 **Status semantics**
 - `succeeded` — terminal. Resume skips it; `guardrails reset <folder> <task>` is the
@@ -885,8 +1042,8 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
 settles `needs-human` IMMEDIATELY — instead of exhausting the remaining retry budget — when **both**
 hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
 guardrail failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op
-action cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op
-against a merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a
+action cannot fix a guardrail failure it did not cause (e.g. the terminal `<plan>/guardrails/` gate
+re-verify against a merge artifact, §3.3 / issue #175), and an unchanged failure proves nothing converged — so a
 further attempt has zero probability of differing. This fires on the **2nd** such attempt (the earliest
 point both conditions can be observed).
 
@@ -943,16 +1100,45 @@ overwrite the fix. It is a single-task verification, **not** a run — the rest 
   failing guardrails are reported, the task settles `needs-human` (still a non-green halt the human must
   keep working); exit `2`. No agent is spawned in either case.
 
+**Reserved synthetic ids — `plan:guardrails` / `plan:preflights` (deliverable 4).** Two reserved
+task-id-shaped strings are accepted by the SAME `--revalidate-task <id>` flag above (no new verb, no new
+C# symbol on the CLI surface) to re-validate a WHOLE-PLAN phase instead of a task. The `:` character is
+already disallowed in a real task id (§3 `^[a-z0-9][a-z0-9._-]*$`), so neither can ever collide with an
+authored task.
+- **`--revalidate-task plan:guardrails`** re-runs ONLY the terminal `<plan>/guardrails/` checks (§3.3)
+  against the CURRENT merged HEAD. UNLIKE a per-task revalidate, **worktree mode IS supported**: the
+  gate's subject is the merged HEAD itself (the integration worktree the harness owns), never an
+  in-place fix in the user's own checkout, so the worktree-mode refusal above does not apply here. All
+  checks pass ⇒ `planGuardrails` is journaled `passed`, exit `0`. Any check still fails ⇒ journaled
+  `plan-guardrail-failed`, exit `2` — the same terminal-halt outcome an ordinary `run` would have
+  produced. A plan with no `<plan>/guardrails/` folder has nothing to revalidate: exit `1`.
+- **`--revalidate-task plan:preflights`** is the symmetric analogue for the pre-DAG
+  `<plan>/preflights/` phase (§7 above) — re-confirming a hand-fixed starting state without burning an
+  agent attempt. Journals `planPreflights`; same pass/fail/no-folder exit-code shape.
+
+**Terminal-only resume (B2(b)).** After a terminal halt (`planGuardrails.status ==
+"plan-guardrail-failed"`), a plain `guardrails run` (no `--revalidate-task`) is an ordinary resume:
+every already-`succeeded` task SKIPS via the existing resume rule above (no attempt burned), the DAG
+drains with nothing left to run, and — because the terminal phase carries no passed-marker skip (unlike
+the pre-DAG phase's B1 rule: the terminal phase always evaluates the CURRENT merged HEAD, so there is no
+negative-baseline concern to guard against) — it unconditionally re-fires `<plan>/guardrails/` against
+that same HEAD. Still red ⇒ `plan-guardrail-failed` again, exit `2`; hand-fixed to green ⇒ `passed`,
+exit `0`. A `planHash` mismatch (the plan changed since the failed marker was written) needs no special
+case: it simply falls through to this same normal resume.
+
 **Harness exit codes**: `0` all succeeded · `1` harness/validation error — including a run **aborted**
 by an unexpected infrastructure fault (#150: an honest halt rendered from the aborted `RunReport`, full
 fault in `logs/<runId>/abort.log`, never a raw stack trace) · `2` the operation completed but an
-actionable condition was found — for `run`: a task is needs-human/blocked, OR every task passed but the
-opt-in end-of-run delivery to the user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or
-`HookRejected` `MergeOnSuccessResult` — the work is durable on the plan branch, the user must finish the
-merge); for `graph --check`: the diagram is stale or missing (the "regenerate"
-signal); for `lock --check`: the folder has drifted from the baseline or the baseline is missing
-(the "re-baseline" signal); for `merge`: there are unresolved conflicts to resolve, or the BASE
-baseline is missing and must be established first (§11.5) · `3` cancelled.
+actionable condition was found — for `run`: a task is needs-human/blocked, OR the pre-DAG
+`planPreflights` phase failed (§7, exit **before** any task is scheduled), OR the terminal `planGuardrails`
+gate failed on the merged HEAD (§3.3/§7.1 above — durable on the plan branch; re-fires on resume or via
+`--revalidate-task plan:guardrails`), OR every task passed but the opt-in end-of-run delivery to the
+user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or `HookRejected` `MergeOnSuccessResult`
+— the work is durable on the plan branch, the user must finish the merge); for `graph --check`: the
+diagram is stale or missing (the "regenerate" signal); for `lock --check`: the folder has drifted from
+the baseline or the baseline is missing (the "re-baseline" signal); for `merge`: there are unresolved
+conflicts to resolve, or the BASE baseline is missing and must be established first (§11.5) · `3`
+cancelled.
 
 **Plan-file → task-folder argument fixup** (all commands taking a plan folder as their first
 positional: `run`, `validate`, `plan`, `graph`, `lock`, `merge`, `logs`). Before the folder's existence
@@ -972,6 +1158,7 @@ argument is passed through unchanged, so a genuinely bad path still produces the
 ```
 logs/<runId>/<task-id>/attempt-N/
 ├── state-in.json            # the snapshot given to this attempt
+├── attempt-provenance.json  # #198: model + segment worktree (branch + path) + base commit known at launch; absent for a serial script attempt
 ├── action-stdout.log / action-stderr.log
 ├── action-result.json
 ├── action-out-fragment.json # the LIVE GUARDRAILS_STATE_OUT target the action writes
@@ -994,6 +1181,13 @@ Prompt **actions** write `composed-prompt.md` / `claude-stream.jsonl` / `transcr
 `guardrail-<name>.verdict.json` verdict file. Script guardrails write
 `guardrail-<name>.stdout.log` / `.stderr.log`. The `<name>` is sanitized for the filesystem (any
 character other than a letter, digit, `-`, `_`, or `.` becomes `_`).
+
+At the **task** level (`logs/<runId>/<task-id>/`, the parent of the `attempt-N/` dirs), a failed **union
+re-verify** (a non-FF or AI-merge integration whose merged bytes fail the integration-guardrail set, §4.3)
+persists its evidence BEFORE the B1 rollback discards the merged bytes (#188): one
+`union-reverify-<guardrail>.stdout.log` per failing integration guardrail (its captured output) plus a
+`feedback.md` describing the collision — the same `feedback.md` the task's needs-human summary points at
+(previously that summary promised a `feedback.md` this path never wrote).
 
 `transcript.md` (and each `guardrail-<name>.transcript.md`) is a PURE, DETERMINISTIC projection of
 its `*.jsonl` stream (no model in the loop): assistant prose + `● Tool(args)` + truncated `⎿`
@@ -1240,12 +1434,13 @@ tracked separately.
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
 `guardrails graph [folder]` renders the plan's task/guardrail DAG as a Mermaid
-`flowchart TD` and writes two companion files:
+`flowchart TD`, using the **container model** (design-of-record 09-preflight-first-class),
+and writes two companion files:
 
 - **`diagram.md`** — the GitHub render artifact: a provenance comment + fenced Mermaid
   block + structure-only caption. GitHub renders it inline.
 - **`diagram.html`** — the local-navigation companion: a self-contained pan/zoom/fullscreen
-  HTML viewer whose task/guardrail nodes carry `click href` directives pointing to their
+  HTML viewer whose task/check nodes carry `click href` directives pointing to their
   source under the plan folder. Use `--no-html` to suppress it; a missing HTML file is **not
   treated as stale** by `--check`. Node clicks require serving the file via a local HTTP
   server (`python -m http.server`) — browsers block `file://→file://` navigation by default.
@@ -1257,12 +1452,47 @@ Both files are **generated, non-authored artifacts**: NOT part of the plan contr
 delete and regenerate, and excluded from `guardrails.baseline`. Nothing is added to
 `guardrails.json` or its model — the staleness key lives in the diagram files instead.
 
-**Shape.** Per task NN: the task node fans out one edge to each of its guardrail nodes; all
-of that task's guardrail nodes merge into a single per-task "Finished" node
-(`<id> ✓ Finished`). Dependency edges run FROM a dependency's Finished node TO the
-dependent task node — for each task B that `dependsOn` A, the diagram emits
-`done_A --> task_B` (A is done, now B may start). Three `classDef`s color tasks, guardrails,
-and Finished nodes distinctly. Retry / feedback (cyclic) edges are out of scope for v1.
+**Shape — the container model.** Each task is a self-contained `subgraph task_<id>["<id>"]`
+container holding two nested subgraphs, `<id>_preflights["Preflights"]` and
+`<id>_guardrails["Guardrails"]`, whose individual check nodes are small boxes drawn **inside**
+the container — there are no bare check nodes outside a container. The `Preflights` subgraph
+is emitted only when the task declares `tasks/<id>/preflights/` checks (the common case has
+none); the `Guardrails` subgraph is always present (every task carries at least one
+guardrail). Two more subgraphs bracket the **whole DAG** and are **always emitted**, even when
+their folder is empty, because they are structural brackets, not conditional content:
+`plan_preflights["Full Flight Checks"]` at the TOP (the plan-level `<plan>/preflights/`
+folder) and `plan_guardrails["Terminal Gate"]` at the BOTTOM (the plan-level
+`<plan>/guardrails/` folder). Retry / feedback (cyclic) edges remain out of scope for v1.
+
+**Edges clip to the container border (`subgraph --> subgraph`).** The DAG is drawn directly
+between container ids — `task_A --> task_B` for each task B that `dependsOn` task A; the
+`plan_preflights` container points into every DAG-root task's container (a task with no
+`dependsOn`); every DAG-leaf task's container (a task nothing depends on) points into the
+`plan_guardrails` container. Because the edge references the container's own subgraph id, the
+bundled Mermaid (`mermaid@11.4.1`, CDN-pinned in `diagram.html`) clips the arrow to the
+container's **outer border**, like an ordinary box-to-box flowchart edge — the line never
+pierces the box (issue #210). This replaced an earlier interior-anchor technique (one invisible
+`<container>_anchor` node per container, edges drawn anchor→anchor) that a prior Mermaid version
+required but which drew every edge to a point ~65px *inside* the box; rendering both forms
+headless against 11.4.1 confirmed the direct form lands on the border while the anchor form
+pierced. Container "kind" fill (task vs. plan-level) is applied per container via a
+`style <id> fill:…,stroke:…,color:…;` statement, **not** a `class <id> <className>;` assignment:
+in 11.4.1 a `class` assignment does not reach a subgraph that is itself an edge endpoint — and
+every container is one — whereas `style <id>` colours it. `style <id>` also colours an **empty**
+plan-level bracket, which Mermaid renders as a plain node (not a cluster) — so the Full Flight
+Checks / Terminal Gate brackets keep their colour even when their folder is empty.
+
+**A task-level preflight still gates its `dependsOn` edge.** A `tasks/<id>/preflights/` check
+verifies a producer actually delivered what a consumer depends on; collapsing both into
+containers does not erase that relationship. The `task_producer --> task_consumer` edge remains
+drawn exactly like any other dependency edge, and the preflight renders as an ordinary check node
+inside the **consumer's own** `Preflights` subgraph — it is never re-routed to originate from the
+preflight node itself.
+
+**Colouring.** Two `classDef`s colour the leaf check nodes — `preflight` and `guardrail` —
+referenced inline (`:::preflight` / `:::guardrail`). The two container kinds (task container,
+plan-level container) are coloured per container by a `style <id> …` statement instead, for the
+edge-endpoint reason above.
 
 **Provenance comment.** The first line of `diagram.md` is, verbatim:
 
@@ -1288,13 +1518,17 @@ inside the ```` ```mermaid ```` block and NOT in the renderer's `source-sha256` 
 content — so it does not affect the hash, leaves two regens byte-identical, and is absent from
 `--stdout` (which prints the raw diagram, not the document).
 
-**`source-sha256`.** A SHA-256 (lowercase hex) over the diagram's **semantic content** (node
-labels + DAG shape) as emitted by the renderer, excluding cosmetic `classDef` styling. It
-changes whenever the DRAWN diagram changes — a task, a dependency, or a guardrail (DAG
-shape), or a node label (a guardrail `description`, which the renderer draws as the guardrail
-label). It is stable across irrelevant input reorderings (the renderer sorts tasks,
-guardrails, and dependents ordinal) and is unaffected by action kind (not drawn) or by
-styling.
+**`source-sha256`.** A SHA-256 (lowercase hex) over the diagram's **semantic content**
+(container membership, nested check labels, and the container→container DAG shape) as emitted by
+the renderer, excluding the cosmetic leaf-node `classDef` color definitions. It changes whenever the DRAWN
+diagram changes — a task, a dependency, or a check (container/DAG shape), or a node label (a
+check's `description`, which the renderer draws as its label). **Critically, it folds the
+PLAN-LEVEL `<plan>/preflights/` and `<plan>/guardrails/` folder checks too, not just the
+per-task `tasks{}` structure** — those checks are not reachable through any task, so a hash
+computed from task structure alone would leave the diagram falsely "fresh" after someone edits
+a Terminal Gate check's label or adds/removes a Full Flight Check. It is stable across
+irrelevant input reorderings (the renderer sorts tasks, checks, and dependents ordinal) and is
+unaffected by action kind (not drawn) or by styling.
 
 **Command contract.**
 
@@ -1304,13 +1538,13 @@ styling.
 - `--no-html` — write only `diagram.md`; skip `diagram.html`. Has no effect with `--stdout`.
 - `--stdout` — print the diagram to stdout; write nothing to disk (neither `diagram.md` nor
   `diagram.html`); exit `0`.
-- `--check` — write nothing. Recompute `source-sha256`, read the value embedded in an
-  existing `diagram.md`, and exit `0` when present and equal (fresh). When `diagram.md` is
-  **stale or missing**, print one actionable line and exit `2` — the "regenerate" signal.
-  When `diagram.html` is **present but carries a different hash**, print one actionable line
-  and exit `2` (a **missing** `diagram.html` is NOT stale — the caller may have used
-  `--no-html`). A **load/validate error** front-doors first and exits `1`, never reaching the
-  freshness check.
+- `--check` — write nothing. Recompute `source-sha256` (including the plan-level folder
+  checks — see above), read the value embedded in an existing `diagram.md`, and exit `0` when
+  present and equal (fresh). When `diagram.md` is **stale or missing**, print one actionable
+  line and exit `2` — the "regenerate" signal. When `diagram.html` is **present but carries a
+  different hash**, print one actionable line and exit `2` (a **missing** `diagram.html` is
+  NOT stale — the caller may have used `--no-html`). A **load/validate error** front-doors
+  first and exits `1`, never reaching the freshness check.
 - `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
   formats).
 

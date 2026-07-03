@@ -1,0 +1,11 @@
+{
+  "description": "Implement the terminal plan-guardrail phase (evaluate <plan>/guardrails/ once on merged HEAD via IReVerifier, replacing the integrationGate task run; plan-guardrail-failed halt exit 2; B2(a) --revalidate-task plan:guardrails; B2(b) terminal-only resume) and land SSOT §7.1 in the same change",
+  "stableId": "t2tp09",
+  "dependsOn": ["08-author-tests-terminal-phase", "02-implement-reverifier-wiring", "07-implement-pre-dag-phase"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/",
+    "src/Guardrails.Cli/",
+    "docs/plans/02-schemas-and-contracts.md"
+  ],
+  "action": { "maxTurns": 75 }
+}

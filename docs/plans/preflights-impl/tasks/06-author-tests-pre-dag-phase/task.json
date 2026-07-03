@@ -1,0 +1,7 @@
+{
+  "description": "Author integration tests for the pre-DAG plan-preflight phase: RED <plan>/preflights/ halts before any task (exit 2, zero attempts); B1 resume SKIP (negative baseline not re-run); --fresh re-runs. Serial AND worktree mode. Red against current code (no phase yet)",
+  "stableId": "p1pd06",
+  "dependsOn": ["04-implement-four-folder-loader", "05-outcomes-and-journal"],
+  "writeScope": ["tests/Guardrails.Integration.Tests/PlanPreflightPhaseTests.cs"],
+  "action": { "maxTurns": 75 }
+}

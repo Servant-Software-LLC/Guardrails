@@ -1,0 +1,135 @@
+<!-- guardrails:graph v1 source-sha256=4d9320ecce259e39d8bc6e325163432fe9f35ae503e27d07894d0c98ddb24b8e -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guardrails — task/guardrail DAG</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f14; color: #d6deeb;
+               font-family: system-ui, sans-serif; overflow: hidden; }
+  #bar { position: fixed; top: 8px; left: 8px; z-index: 10; display: flex; gap: 6px; }
+  #bar button { background: #121a24; color: #d6deeb; border: 1px solid #243343;
+                border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 13px; }
+  #bar button:hover { border-color: #7fdbff; }
+  #stage { width: 100vw; height: 100vh; }
+  #stage svg { width: 100vw; height: 100vh; max-width: none !important; }
+  #hint { position: fixed; bottom: 8px; left: 8px; color: #5b6b7b; font-size: 12px;
+          max-width: 90vw; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="fit">Fit</button>
+  <button id="zin">+</button>
+  <button id="zout">&minus;</button>
+  <button id="fs">Fullscreen</button>
+</div>
+<div id="stage"></div>
+<div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
+  Node clicks open source files &mdash; serve via a local HTTP server (e.g.
+  <code>python -m http.server</code>) for clicks to work; browsers block
+  <code>file://&rarr;file://</code> navigation by default.
+  On GitHub, diagram.md renders instead.</div>
+
+<script type="text/plain" id="graph-source">flowchart TD
+  subgraph plan_preflights["Full Flight Checks"]
+    plan_preflights_0["Plan-level Full Flight Check (POSITIVE baseline): the touched areas (Acme.Payments.Core.Tests, Acme.Payments.Api build) are already green before this plan's first task runs."]:::preflight
+    plan_preflights_1["Plan-level Full Flight Check (NEGATIVE / assert-absent baseline): ChargeResult.RequestId does not exist yet, so a later 'present' gate is provably this plan's doing."]:::preflight
+  end
+  style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph task_03_author_correlation_tests["03-author-correlation-tests"]
+    subgraph task_03_author_correlation_tests_guardrails["Guardrails"]
+      task_03_author_correlation_tests_gr_0["01-new-tests-exist"]:::guardrail
+      task_03_author_correlation_tests_gr_1["Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the plan-level negative preflight generalizes). scope:local — never re-run at a union."]:::guardrail
+    end
+  end
+  style task_03_author_correlation_tests fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_04_implement_correlation["04-implement-correlation"]
+    subgraph task_04_implement_correlation_guardrails["Guardrails"]
+      task_04_implement_correlation_gr_0["The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the plan-level negative preflight makes attributable to this task). scope:local."]:::guardrail
+    end
+  end
+  style task_04_implement_correlation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_05_wire_api_correlation_middleware["05-wire-api-correlation-middleware"]
+    subgraph task_05_wire_api_correlation_middleware_preflights["Preflights"]
+      task_05_wire_api_correlation_middleware_pf_0["Task-level JIT dependency-delivery precondition, keyed to the 04 -&gt; 05 dependsOn edge. Verifies that task 04 actually threaded RequestId into the inherited Acme.Payments.Core source at 05's taskBase, BEFORE 05's action runs. A deterministic byte-check (no live probe). NOT a guardrail; NEVER joins the integration set."]:::preflight
+    end
+    subgraph task_05_wire_api_correlation_middleware_guardrails["Guardrails"]
+      task_05_wire_api_correlation_middleware_gr_0["01-health-still-200"]:::guardrail
+      task_05_wire_api_correlation_middleware_gr_1["02-request-id-flows"]:::guardrail
+    end
+  end
+  style task_05_wire_api_correlation_middleware fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph plan_guardrails["Terminal Gate"]
+    plan_guardrails_0["Terminal Gate: the whole repo builds on the merged plan-branch HEAD (the re-homed GR2018 whole-repo re-run, form 1)."]:::guardrail
+    plan_guardrails_1["Terminal Gate: the full touched-area test suite passes on the merged plan-branch HEAD (the re-homed GR2018 whole-repo re-run, form 1)."]:::guardrail
+    plan_guardrails_2["Terminal Gate: a genuine union invariant — the merged plan-branch HEAD's out/ tree carries no unresolved git conflict markers (the re-homed GR2018 whole-repo re-run, form 2)."]:::guardrail
+  end
+  style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  plan_preflights --> task_03_author_correlation_tests
+  task_03_author_correlation_tests --> task_04_implement_correlation
+  task_04_implement_correlation --> task_05_wire_api_correlation_middleware
+  task_05_wire_api_correlation_middleware --> plan_guardrails
+  classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
+  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
+  click plan_preflights_0 href "preflights/01-all-repo-tests-green.ps1" "01-all-repo-tests-green" _blank
+  click plan_preflights_1 href "preflights/02-correlation-id-absent.ps1" "02-correlation-id-absent" _blank
+  click task_03_author_correlation_tests href "tasks/03-author-correlation-tests/" "03-author-correlation-tests" _blank
+  click task_03_author_correlation_tests_gr_0 href "tasks/03-author-correlation-tests/guardrails/01-new-tests-exist.ps1" "01-new-tests-exist" _blank
+  click task_03_author_correlation_tests_gr_1 href "tasks/03-author-correlation-tests/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
+  click task_04_implement_correlation href "tasks/04-implement-correlation/" "04-implement-correlation" _blank
+  click task_04_implement_correlation_gr_0 href "tasks/04-implement-correlation/guardrails/01-correlation-tests-green.ps1" "01-correlation-tests-green" _blank
+  click task_05_wire_api_correlation_middleware href "tasks/05-wire-api-correlation-middleware/" "05-wire-api-correlation-middleware" _blank
+  click task_05_wire_api_correlation_middleware_pf_0 href "tasks/05-wire-api-correlation-middleware/preflights/01-requestid-delivered-by-04.ps1" "01-requestid-delivered-by-04" _blank
+  click task_05_wire_api_correlation_middleware_gr_0 href "tasks/05-wire-api-correlation-middleware/guardrails/01-health-still-200.ps1" "01-health-still-200" _blank
+  click task_05_wire_api_correlation_middleware_gr_1 href "tasks/05-wire-api-correlation-middleware/guardrails/02-request-id-flows.ps1" "02-request-id-flows" _blank
+  click plan_guardrails_0 href "guardrails/01-whole-repo-builds.ps1" "01-whole-repo-builds" _blank
+  click plan_guardrails_1 href "guardrails/02-full-suite-passes.ps1" "02-full-suite-passes" _blank
+  click plan_guardrails_2 href "guardrails/03-union-invariant-no-conflict-markers.ps1" "03-union-invariant-no-conflict-markers" _blank</script>
+<script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
+
+const graph = document.getElementById('graph-source').textContent;
+// securityLevel 'loose' is required for the `click ... href` directives to open node sources;
+// the content is the user's own local plan, served from file:// — not untrusted input.
+// maxTextSize raises Mermaid's default 50 000-character source ceiling (issue #108): a large
+// plan's DAG source easily exceeds it, and on overflow mermaid.render throws "Maximum text size
+// in diagram exceeded" — landing every big plan in the catch-block "could not render" fallback.
+// 5 000 000 covers DAGs far larger than any hand-reviewed plan while still bounding the parser.
+// maxEdges raises Mermaid's default 500-edge ceiling for the same reason: a many-task plan fans
+// out task→guardrail→done→dependent edges well past 500, and overflow throws "Maximum number of
+// edges exceeded". Both ceilings must be lifted or a big plan still fails to render.
+mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', maxTextSize: 5000000, maxEdges: 100000, flowchart: { useMaxWidth: false } });
+
+let pz = null;
+try {
+  const { svg } = await mermaid.render('dag', graph);
+  document.getElementById('stage').innerHTML = svg;
+  const el = document.querySelector('#stage svg');
+  el.setAttribute('width', '100vw');
+  el.setAttribute('height', '100vh');
+  pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
+                        minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
+  window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
+} catch (e) {
+  // Surface the actual failure (offline CDN, or a Mermaid limit we have not yet lifted) instead of
+  // guessing — a generic "offline?" message sent every big-plan #108 failure down the wrong path.
+  const detail = (e && e.message) ? String(e.message) : String(e);
+  const p = document.createElement('p');
+  p.style.padding = '1rem';
+  p.textContent = 'Could not render the diagram: ' + detail +
+    ' — the DAG source is embedded in this page, and diagram.md renders on GitHub.';
+  const stage = document.getElementById('stage');
+  stage.innerHTML = '';
+  stage.appendChild(p);
+}
+
+document.getElementById('fit').onclick  = () => { if (pz) { pz.fit(); pz.center(); } };
+document.getElementById('zin').onclick  = () => { if (pz) pz.zoomBy(1.3); };
+document.getElementById('zout').onclick = () => { if (pz) pz.zoomBy(0.77); };
+document.getElementById('fs').onclick   = () => document.documentElement.requestFullscreen();
+</script>
+</body>
+</html>

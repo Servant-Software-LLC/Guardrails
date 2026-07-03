@@ -1,0 +1,14 @@
+{
+  "description": "Author tests + minimal model stubs for the four-folder loader/validator: 4-folder plan validates clean, GR2027+ per malformed folder, re-homed GR2018 (empty/tautological terminal folder fails), GR2017+integrationGate retirement, scope:integration still parses",
+  "stableId": "l1aa07",
+  "dependsOn": ["00-baseline-existing-tests-green"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/FourFolderLoaderTests.cs",
+    "tests/Guardrails.Core.Tests/FourFolderValidationTests.cs",
+    "tests/Guardrails.Core.Tests/TestData/",
+    "src/Guardrails.Core/Model/PlanDefinition.cs",
+    "src/Guardrails.Core/Model/TaskNode.cs",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

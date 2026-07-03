@@ -1,0 +1,5 @@
+{
+  "description": "Baseline: the existing Guardrails.Core.Tests + Guardrails.Integration.Tests pass on the starting code before any work runs - never build on red (#181)",
+  "stableId": "b0zqk1",
+  "dependsOn": []
+}
