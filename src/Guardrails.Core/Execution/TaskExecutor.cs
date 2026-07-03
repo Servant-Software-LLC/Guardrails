@@ -951,11 +951,15 @@ public sealed class TaskExecutor : ITaskExecutor
     }
 
     /// <summary>
-    /// The model an agent attempt of <paramref name="task"/> runs on (issue #198): the resolved
-    /// <c>--model</c> from the task's prompt-runner config, or the sentinel <c>"(cli default)"</c> when
-    /// the runner leaves it unset (so the provenance is never a silent gap for a prompt task). Null for
-    /// a script task — no model runs — and null when the task's runner cannot be resolved (a malformed
-    /// plan that validation would already reject).
+    /// The model an agent attempt of <paramref name="task"/> runs on (issue #198, fixed for the #200
+    /// task.json <c>action.model</c> override): resolved via the SAME precedence
+    /// <see cref="ActionRunner"/> applies at invocation time —
+    /// <see cref="PromptExecutionSupport.ResolveModelForDisplay"/> — so provenance can never drift from
+    /// what actually ran: task.json <c>action.model</c> (if set) &gt; the task's prompt-runner config
+    /// <c>model</c> (if set) &gt; the sentinel <c>"(cli default)"</c> when neither is set (so the
+    /// provenance is never a silent gap for a prompt task). Null for a script task — no model runs — and
+    /// the sentinel when the task's runner cannot be resolved (a malformed plan that validation would
+    /// already reject).
     /// </summary>
     private string? ResolveModel(TaskNode task)
     {
@@ -965,15 +969,14 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         string? runnerName = task.Action.Runner ?? _plan.Config.DefaultPromptRunner;
-        if (runnerName is not null
-            && _plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config))
-        {
-            return config.Settings.Model ?? "(cli default)";
-        }
+        string? runnerModel = runnerName is not null
+            && _plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config)
+                ? config.Settings.Model
+                : null;
 
         // A prompt task whose runner is unresolvable (validation would reject this) still records that
-        // a model — the CLI default — ran, rather than a misleading absence.
-        return "(cli default)";
+        // a model ran — the task override if set, else the sentinel — rather than a misleading absence.
+        return PromptExecutionSupport.ResolveModelForDisplay(task.Action.Model, runnerModel);
     }
 
     private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;

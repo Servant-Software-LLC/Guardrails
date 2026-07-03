@@ -97,6 +97,7 @@ internal sealed class RawAction
     public List<string>? Args { get; set; }
     public string? Runner { get; set; }
     public int? MaxTurns { get; set; }
+    public string? Model { get; set; }
     public int? TimeoutSeconds { get; set; }
     public string? WorkingDirectory { get; set; }
     public Dictionary<string, string>? Env { get; set; }

@@ -22,6 +22,9 @@ public sealed record ActionDefinition
     /// <summary>Turn ceiling override for prompt actions; null = inherit from the runner config / frontmatter.</summary>
     public int? MaxTurns { get; init; }
 
+    /// <summary>Model override for prompt actions; null = inherit from the runner config default.</summary>
+    public string? Model { get; init; }
+
     /// <summary>Per-action timeout ceiling in seconds; null = inherit from task/config.</summary>
     public int? TimeoutSeconds { get; init; }
 

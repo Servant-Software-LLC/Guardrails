@@ -395,6 +395,11 @@ public sealed class PlanLoader
             Args = rawAction?.Args ?? [],
             Runner = rawAction?.Runner,
             MaxTurns = rawAction?.MaxTurns,
+            // Bound VERBATIM (no trim/nullify): a present-but-blank value (e.g. "   ") must reach the
+            // validator's GR2030 check faithfully, the same "preserve the malformed signal" doctrine
+            // BindStagingOutputs documents for stagingOutputs — silently normalizing it to null here
+            // would let a malformed override validate clean.
+            Model = rawAction?.Model,
             TimeoutSeconds = rawAction?.TimeoutSeconds,
             WorkingDirectory = rawAction?.WorkingDirectory,
             Env = (IReadOnlyDictionary<string, string>?)rawAction?.Env ?? new Dictionary<string, string>()

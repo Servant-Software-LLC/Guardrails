@@ -216,6 +216,7 @@ append-only audit. `--fresh` clears `logs/` for the abandoned run.
     "args": [],                      // deterministic actions only
     "runner": "claude",              // prompt actions only; default = promptRunners.default
     "maxTurns": 80,                  // prompt actions only
+    "model": null,                   // prompt actions only; null = inherit from the runner's default model
     "timeoutSeconds": 2400,          // narrower than task timeout
     "workingDirectory": null,        // overrides config workspace (rare)
     "env": { "MY_VAR": "value" }     // extra env vars for this action's process
@@ -238,6 +239,16 @@ alphanumerics, optionally with `.` `_` `-`; a `GR2011` error otherwise). The for
 a real id can never collide with the merge's synthetic `folder:<name>` identity (the colon is
 disallowed). `validate` does not *require* one. Absent ⇒ task identity falls back to the folder
 name — see §11.3 for why minting one is still recommended.
+
+`action.model` (issue #200) is an **optional** per-task override of which model runs this task's
+prompt action — mirrors `action.maxTurns` exactly (same shape, same "task.json wins" precedence). The
+full resolution order, evaluated once per attempt: **`task.json action.model`** (if set) **>
+`promptRunners.<name>.model`** (if set) **> the CLI's own default** (no hardcoded fallback — if
+neither is set, the runner is simply never passed a `--model` flag). A present `model` at either site
+must be a real-looking value — non-empty, no leading/trailing/embedded whitespace or control
+characters — or `validate` rejects it (`GR2030`); a `null`/absent value is always fine and means "no
+override here". The resolved value is also what `run.json`'s per-attempt provenance records (§7) —
+provenance never lags behind what actually ran.
 
 *(Former §3.1/§3.1.1 — the `captureHashes`/`restoreOnRetry` triad — are **removed in this change**,
 along with the harness `CapturedFileStore`/`FileHashCapture`/`RestoreAncestorCaptures`/`WorkspaceLock`
@@ -917,7 +928,8 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
           // Also mirrored to <attempt>/attempt-provenance.json (§8).
           "provenance": {
-            "model": "claude-…",    // resolved --model from the runner, or "(cli default)"; ABSENT for a script task
+            "model": "claude-…",    // FULLY RESOLVED --model (#200): task.json action.model if set, else
+                                     //   promptRunners.<name>.model, else "(cli default)"; ABSENT for a script task
             "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
             "worktreePath": "/…/guardrails-worktrees/…",
             "baseCommit": "sha…"    // the commit the segment forked from (taskBase); ABSENT in serial mode
@@ -1258,7 +1270,10 @@ task's prompt links to (§9, #26) — the raw stream stays as the debug artifact
 quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`:
 
 - Invocation: `claude -p --output-format stream-json --verbose --permission-mode <m>
-  --allowedTools <list> --max-turns <n> [--model <m>] [extraArgs…]`
+  --allowedTools <list> --max-turns <n> [--model <m>] [extraArgs…]`. The resolved `<m>` (issue #200)
+  is the task's `task.json action.model` when the task declares one, else the runner's configured
+  `promptRunners.<name>.model`, else `--model` is **omitted entirely** (the CLI's own default) — see
+  §3 for the full precedence.
 - Prompt delivered via **stdin** (no arg-length/quoting issues).
 - cwd = the effective workspace (§5.1: the segment worktree in worktree mode, the plan workspace in
   serial mode — #134); `--add-dir <GUARDRAILS_PLAN_DIR>` grants access to state/verdict paths and

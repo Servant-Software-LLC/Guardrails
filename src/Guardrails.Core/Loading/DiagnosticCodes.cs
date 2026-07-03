@@ -243,4 +243,20 @@ public static class DiagnosticCodes
     /// ignored — every committed consumer of the old behavior is migrated in the same feature.
     /// </summary>
     public const string RetiredIntegrationGateKey = "GR2029";
+
+    // Next-free allocation confirmed at authoring time (issue #200): GR2029 (RetiredIntegrationGateKey)
+    // is the last taken code above, so GR2030 is next free.
+
+    /// <summary>
+    /// A <c>model</c> value (SSOT §2/§3, issue #200) is present but empty, whitespace-only, or contains
+    /// leading/trailing whitespace or a control character — at any of the three sites it can be
+    /// declared: <c>promptRunners.&lt;name&gt;.model</c>, <c>promptRunners.&lt;name&gt;.guardrailOverrides.model</c>,
+    /// or a task's <c>task.json action.model</c>. There is no enumerable list of valid Claude model
+    /// names to check against, but a value that is empty/blank/malformed like this can never be a real
+    /// model identifier — it is always a configuration mistake (an empty string left by templating, a
+    /// stray quoted space) that would otherwise reach the runner's <c>--model</c> flag verbatim and fail
+    /// every attempt. A <c>null</c>/absent <c>model</c> is fine (means "no override") and is not flagged.
+    /// An ERROR: turns a runtime prompt-invocation failure into a load-time catch.
+    /// </summary>
+    public const string ModelInvalid = "GR2030";
 }

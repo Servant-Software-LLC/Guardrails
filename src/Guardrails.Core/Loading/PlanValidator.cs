@@ -45,6 +45,7 @@ public sealed class PlanValidator
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
+        ValidateModelValues(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
         return diagnostics;
@@ -180,6 +181,76 @@ public sealed class PlanValidator
                     "non-positive value, but it must be a positive integer."));
             }
         }
+    }
+
+    /// <summary>
+    /// A present <c>model</c> must be a real-looking value (SSOT §2/§3, issue #200): non-empty,
+    /// non-whitespace, with no leading/trailing whitespace and no embedded whitespace/control
+    /// characters — none of which any real Claude model identifier ever contains. There is no
+    /// enumerable list of valid model names to check against, so this deliberately stays a cheap,
+    /// zero-false-positive shape check rather than an allow-list. Checked at all three sites a
+    /// <c>model</c> can be declared: <c>promptRunners.&lt;name&gt;.model</c>, its
+    /// <c>guardrailOverrides.model</c>, and a task's <c>task.json action.model</c> (GR2030 ERROR). A
+    /// <c>null</c>/absent value at any site is fine (no override) and is not flagged.
+    /// </summary>
+    private static void ValidateModelValues(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values)
+        {
+            if (runner.Settings.Model is { } baseModel && !IsValidModelValue(baseModel))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.ModelInvalid, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.model is empty, whitespace-only, or contains " +
+                    "leading/trailing/embedded whitespace or control characters — it must be a real " +
+                    "model identifier, or omitted entirely to use the CLI default."));
+            }
+
+            if (runner.GuardrailOverrides?.Model is { } overrideModel && !IsValidModelValue(overrideModel))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.ModelInvalid, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.guardrailOverrides.model is empty, whitespace-only, " +
+                    "or contains leading/trailing/embedded whitespace or control characters — it must " +
+                    "be a real model identifier, or omitted entirely to inherit the base model."));
+            }
+        }
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.Action.Kind != ActionKind.Prompt || task.Action.Model is not { } taskModel)
+            {
+                continue; // absent ⇒ no override, no check (script tasks have no model at all).
+            }
+
+            if (!IsValidModelValue(taskModel))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.ModelInvalid, task.Directory,
+                    $"Task '{task.Id}' action.model is empty, whitespace-only, or contains " +
+                    "leading/trailing/embedded whitespace or control characters — it must be a real " +
+                    "model identifier, or omitted entirely to inherit the runner's default model."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="model"/> is a plausible model identifier: non-null, non-empty,
+    /// contains no leading/trailing whitespace (a <c>Trim()</c> round-trips it unchanged), and
+    /// contains no whitespace or control character anywhere (no real Claude model name is ever
+    /// space-separated or carries a stray tab/newline). This is a shape check, not an allow-list —
+    /// there is no enumerable set of valid model names to compare against.
+    /// </summary>
+    private static bool IsValidModelValue(string? model)
+    {
+        if (string.IsNullOrEmpty(model))
+        {
+            return false;
+        }
+
+        if (model.Trim().Length != model.Length)
+        {
+            return false; // leading/trailing whitespace
+        }
+
+        return !model.Any(c => char.IsWhiteSpace(c) || char.IsControl(c));
     }
 
     /// <summary>
