@@ -77,4 +77,46 @@ public sealed class HtmlDiagramRendererTests
     {
         Assert.Throws<ArgumentException>(() => HtmlDiagramRenderer.Render(Source, ""));
     }
+
+    // === legend overlay (outside the Mermaid graph; see MermaidRenderer remarks) =======
+
+    [Fact]
+    public void Render_IncludesALegendOverlayDiv_OutsideTheEmbeddedMermaidSource()
+    {
+        // A Mermaid-native legend was prototyped and rendered broken headless (dagre treats a
+        // disconnected subgraph as a phantom extra "task"); the only working placement is an HTML
+        // overlay div outside the embedded Mermaid <script> source, mirroring #bar/#hint.
+        string html = HtmlDiagramRenderer.Render(Source, Hash);
+
+        Assert.Contains("id=\"legend\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_LegendOverlay_StatesBothAColorAndABeforeAfterTimingWord()
+    {
+        // A bare category name would not preserve the "preflights run before, guardrails run
+        // after" semantic the removed nested boxes used to convey visually — the legend must spell
+        // out both the colour mapping AND the timing/consequence in words.
+        string html = HtmlDiagramRenderer.Render(Source, Hash);
+
+        Assert.Contains("Preflight", html, StringComparison.Ordinal);
+        Assert.Contains("Guardrail", html, StringComparison.Ordinal);
+        Assert.Contains("BEFORE", html, StringComparison.Ordinal);
+        Assert.Contains("AFTER", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_LegendOverlay_IsNotInsideTheEmbeddedGraphSourceScript()
+    {
+        // The legend must live OUTSIDE the raw-text <script id="graph-source"> element — it is
+        // not part of the Mermaid source, so it can never affect anything that parses that source
+        // (rendering) or hashes it (GraphSourceHash, via MermaidRenderer.SemanticContent).
+        string html = HtmlDiagramRenderer.Render(Source, Hash);
+
+        int scriptStart = html.IndexOf("id=\"graph-source\"", StringComparison.Ordinal);
+        int scriptEnd = html.IndexOf("</script>", scriptStart, StringComparison.Ordinal);
+        string scriptContent = html[scriptStart..scriptEnd];
+
+        Assert.DoesNotContain("legend", scriptContent, StringComparison.Ordinal);
+    }
 }

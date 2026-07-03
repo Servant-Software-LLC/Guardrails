@@ -29,6 +29,15 @@ namespace Guardrails.Core.Graph;
 /// LOCAL artifact; <c>diagram.md</c> remains the portal artifact. Fully offline (inlined assets)
 /// is a possible follow-up.
 /// </para>
+/// <para>
+/// <b>Legend overlay.</b> A corner-anchored <c>#legend</c> <c>&lt;div&gt;</c>
+/// (<c>position: fixed</c>), mirroring the existing <c>#bar</c>/<c>#hint</c> overlay divs, renders
+/// <see cref="MermaidRenderer.LegendMarkdown"/>'s content OUTSIDE the Mermaid SVG. A Mermaid-native
+/// legend (a disconnected subgraph of colour-swatch nodes) was prototyped and rendered BROKEN —
+/// dagre lays out a disconnected subgraph as a phantom extra "task" overlapping the real DAG — so
+/// the overlay div is the only approach that renders correctly. Static HTML, not templated from
+/// the Mermaid source, so it carries no bearing on <c>source-sha256</c>.
+/// </para>
 /// </remarks>
 public static class HtmlDiagramRenderer
 {
@@ -78,6 +87,11 @@ public static class HtmlDiagramRenderer
   #stage svg { width: 100vw; height: 100vh; max-width: none !important; }
   #hint { position: fixed; bottom: 8px; left: 8px; color: #5b6b7b; font-size: 12px;
           max-width: 90vw; }
+  #legend { position: fixed; top: 8px; right: 8px; z-index: 10; background: #121a24;
+            border: 1px solid #243343; border-radius: 6px; padding: 8px 12px;
+            font-size: 12px; line-height: 1.5; max-width: 340px; }
+  #legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+                    margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -88,6 +102,16 @@ public static class HtmlDiagramRenderer
   <button id="fs">Fullscreen</button>
 </div>
 <div id="stage"></div>
+<div id="legend">
+  <div><span class="swatch" style="background:#e6d7ff;border:1px solid #6f42c1;"></span>
+    <b>Preflight</b> &mdash; verified BEFORE the task's attempt loop; gates entry
+    (dependency-delivery precondition)</div>
+  <div><span class="swatch" style="background:#fff3cd;border:1px solid #b8860b;"></span>
+    <b>Guardrail</b> &mdash; verified AFTER the task's action; must pass for the task to finish</div>
+  <div><span class="swatch" style="background:#d4edda;border:1px solid #2e7d32;"></span>
+    Plan-level containers ("Full Flight Checks" top, "Terminal Gate" bottom) run the same two
+    checks once for the whole plan, at the very start and very end.</div>
+</div>
 <div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
   Node clicks open source files &mdash; serve via a local HTTP server (e.g.
   <code>python -m http.server</code>) for clicks to work; browsers block

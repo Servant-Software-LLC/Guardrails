@@ -275,6 +275,54 @@ public sealed class GraphCliTests
         Assert.Equal(ExitCodes.Success, exit);
     }
 
+    [Fact]
+    public async Task Graph_Default_WritesLegend_AfterTheCaption_StatingColorAndTiming()
+    {
+        // SSOT §10: a plain Markdown legend block after the fenced mermaid block, stating both the
+        // colour mapping and the before/after timing (not just a bare category name) — the replacement
+        // for the removed nested-box visual cue.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        string content = await File.ReadAllTextAsync(DiagramPath(plan.PlanDir), TestContext.Current.CancellationToken);
+
+        Assert.Contains("Legend", content);
+        Assert.Contains("Preflight", content);
+        Assert.Contains("Guardrail", content);
+        Assert.Contains("BEFORE", content);
+        Assert.Contains("AFTER", content);
+
+        int fenceClose = content.LastIndexOf("```", StringComparison.Ordinal);
+        int legend = content.IndexOf("**Legend**", StringComparison.Ordinal);
+        Assert.True(legend > fenceClose, "the legend must follow the closing mermaid fence");
+    }
+
+    [Fact]
+    public async Task Graph_CheckAfterHandEditingOnlyTheLegendText_StaysFresh_ExitsZero()
+    {
+        // The load-bearing hash-exclusion contract (SSOT §10): the legend lives OUTSIDE the hashed
+        // semantic content — same treatment as the classDef color lines. Hand-editing ONLY the
+        // legend wording (never the mermaid fence) must NOT make `graph --check` report stale;
+        // getting this wrong would make --check flap on every plan whenever legend wording changes.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        string diagramPath = DiagramPath(plan.PlanDir);
+        string content = await File.ReadAllTextAsync(diagramPath, TestContext.Current.CancellationToken);
+        Assert.Contains("**Legend**", content);
+
+        string edited = content.Replace(
+            "**Legend**", "**Legend (hand-edited wording, totally different)**", StringComparison.Ordinal);
+        Assert.NotEqual(content, edited); // sanity: the file DID change
+        await File.WriteAllTextAsync(diagramPath, edited, TestContext.Current.CancellationToken);
+
+        (int exit, _) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
+
+        Assert.Equal(ExitCodes.Success, exit);
+    }
+
     /// <summary>
     /// Add a second guardrail to an existing <see cref="ScriptPlanBuilder"/> task by writing a
     /// sibling guardrail file directly, mirroring the OS-appropriate script the builder emits.

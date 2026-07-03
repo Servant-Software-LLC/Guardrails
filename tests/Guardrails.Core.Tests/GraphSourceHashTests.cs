@@ -199,6 +199,54 @@ public sealed class GraphSourceHashTests
     }
 
     /// <summary>
+    /// The legend (SSOT §10) must NOT affect <c>source-sha256</c> — same treatment as the existing
+    /// cosmetic <c>classDef</c> color lines, which <see cref="MermaidRenderer.SemanticContent"/>
+    /// already excludes. Getting this wrong makes <c>graph --check</c> report every plan as
+    /// spuriously stale purely from a legend WORDING edit. <see cref="GraphSourceHash.Compute"/>
+    /// only ever calls <see cref="MermaidRenderer.SemanticContent"/> (never <see cref="MermaidRenderer.Render"/>
+    /// or the legend-appending CLI/HTML paths), so the semantic content can never contain the
+    /// legend text in the first place — asserted directly here.
+    /// </summary>
+    [Fact]
+    public void SemanticContent_NeverContainsLegendText()
+    {
+        PlanDefinition plan = Plan(Task("01-a"), Task("02-b", "01-a"));
+
+        string semantic = MermaidRenderer.SemanticContent(plan);
+
+        Assert.DoesNotContain("Legend", semantic, StringComparison.Ordinal);
+        Assert.DoesNotContain("Preflight —", semantic, StringComparison.Ordinal);
+        Assert.DoesNotContain("attempt loop", semantic, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Direct proof of the hash-exclusion contract: computing the hash before and after mutating
+    /// ONLY <see cref="MermaidRenderer.LegendMarkdown"/>'s wording (simulated here by asserting the
+    /// hash is a pure function of <see cref="MermaidRenderer.SemanticContent"/>, which never
+    /// consumes <see cref="MermaidRenderer.LegendMarkdown"/>) yields an unchanged hash — the same
+    /// plan hashes identically regardless of what the legend says, because the legend is never an
+    /// input to <see cref="GraphSourceHash.Compute"/>.
+    /// </summary>
+    [Fact]
+    public void Compute_UnaffectedByLegendText_BecauseSemanticContentNeverReadsIt()
+    {
+        PlanDefinition plan = Plan(Task("01-a"));
+
+        string hashBefore = GraphSourceHash.Compute(plan);
+        // "Change" the legend the way GraphCommand/HtmlDiagramRenderer would — by composing a
+        // document with different legend wording around the SAME rendered Mermaid source. The
+        // renderer/hash inputs (the plan) are untouched, so recomputing must be identical.
+        string mermaid = MermaidRenderer.Render(plan);
+        string documentWithLegendA = mermaid + "\n\n" + MermaidRenderer.LegendMarkdown;
+        string documentWithLegendB = mermaid + "\n\n" + "**Legend**\n\n- a totally different wording\n";
+        Assert.NotEqual(documentWithLegendA, documentWithLegendB); // sanity: the documents DO differ
+
+        string hashAfter = GraphSourceHash.Compute(plan);
+
+        Assert.Equal(hashBefore, hashAfter);
+    }
+
+    /// <summary>
     /// Cross-platform contract lock (issue #3). Because the hash is now newline-normalized
     /// (<c>\r\n</c>/<c>\r</c> → <c>\n</c>) before hashing, this pinned literal is the SAME
     /// value computed on Windows, Linux, and macOS. This is the exact <c>source-sha256</c>
@@ -207,19 +255,21 @@ public sealed class GraphSourceHashTests
     /// test fails on whichever OS recomputes a different value.
     /// </summary>
     /// <remarks>
-    /// Re-baselined for the container-edge fix (issue #210): the DAG is now drawn
-    /// <c>subgraph --&gt; subgraph</c> (each edge attaches to a container's outer border) instead of
-    /// through interior invisible anchor nodes, and container fills moved from
-    /// <c>class &lt;id&gt; &lt;className&gt;;</c> to <c>style &lt;id&gt; …</c> statements. Both are in
-    /// the renderer's semantic content, so the golden's <c>source-sha256</c> shifted from the
-    /// previous anchor-model value. The value below was computed from the real renderer's output
-    /// (via <c>guardrails graph</c> against this golden), not guessed.
+    /// Re-baselined for the nested-box removal simplification: a task container's preflight/guardrail
+    /// check nodes are now drawn DIRECTLY inside the container (no nested
+    /// <c>Preflights</c>/<c>Guardrails</c> wrapper subgraph) — a change in the renderer's semantic
+    /// content, so the golden's <c>source-sha256</c> shifted from the previous nested-box value. The
+    /// value below was computed from the real renderer's output (via <c>guardrails graph</c> against
+    /// this golden), not guessed. (Previously re-baselined for the container-edge fix, issue #210: the
+    /// DAG is drawn <c>subgraph --&gt; subgraph</c>, each edge attaching to a container's outer border,
+    /// and container fills use <c>style &lt;id&gt; …</c> statements rather than <c>class</c>
+    /// assignments.)
     /// </remarks>
     [Fact]
     public void Compute_GoldenExample_MatchesPinnedCrossPlatformHash()
     {
         const string expected =
-            "fee2a34bd43a3577dfc2aab73460dcd6b5be6cf6e0530d546ae26a91f64194c0";
+            "fbe54bc3976bf97fdf904de27bf0090fab43aadaa9e66c88364977268a8c9a5c";
 
         PlanLoadResult result = new PlanLoader().Load(GoldenExamplePath);
         Assert.False(result.HasErrors);

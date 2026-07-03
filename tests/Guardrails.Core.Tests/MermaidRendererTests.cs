@@ -7,8 +7,10 @@ namespace Guardrails.Core.Tests;
 /// <summary>
 /// Unit tests for <see cref="MermaidRenderer.Render"/> under the CONTAINER model (SSOT §10).
 /// Pure string mapping — no disk, no processes; in-memory <see cref="PlanFixtures"/>. Each task is a
-/// <c>subgraph task_&lt;id&gt;</c> holding its checks in nested <c>Preflights</c>/<c>Guardrails</c> subgraphs;
-/// the DAG is drawn <c>subgraph --&gt; subgraph</c> (container→container) so each edge clips to a container's
+/// <c>subgraph task_&lt;id&gt;</c> holding its preflight/guardrail check nodes DIRECTLY inside it (no
+/// nested <c>Preflights</c>/<c>Guardrails</c> wrapper subgraph — dropped as a simplification: the
+/// wrapper was purely cosmetic, never referenced by edge emission, styling, or hashing); the DAG is
+/// drawn <c>subgraph --&gt; subgraph</c> (container→container) so each edge clips to a container's
 /// OUTER BORDER (issue #210) — there are NO interior invisible anchor nodes, NO <c>done_</c> reconvergence
 /// node, and NO <c>task --&gt; guardrail</c> fan-out edge. Container fills are applied per-container via a
 /// <c>style &lt;id&gt; …</c> statement (a <c>class</c> assignment does not reach an edge-endpoint subgraph in
@@ -36,6 +38,13 @@ public sealed class MermaidRendererTests
             Action = new ActionDefinition { Path = $"/fake/tasks/{id}/action.sh", Kind = ActionKind.Script },
             Guardrails = guardrails
         };
+
+    private static TaskNode TaskWithPreflights(
+        string id,
+        IReadOnlyList<GuardrailDefinition> preflights,
+        IReadOnlyList<GuardrailDefinition> guardrails,
+        params string[] dependsOn) =>
+        TaskWith(id, guardrails, dependsOn) with { Preflights = preflights };
 
     /// <summary>Split rendered Mermaid into trimmed, non-empty lines for set-based assertions.</summary>
     private static IReadOnlyList<string> Lines(string mermaid) =>
@@ -65,14 +74,18 @@ public sealed class MermaidRendererTests
     }
 
     [Fact]
-    public void Render_DrawsGuardrailCheckInsideANestedGuardrailsSubgraph()
+    public void Render_DrawsGuardrailCheckDirectlyInsideTheTaskContainer_NoNestedGuardrailsSubgraph()
     {
         IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
             TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]))));
 
-        // A nested Guardrails subgraph exists (container model) and the check's drawn label appears in it.
-        Assert.Contains(lines, l => l.StartsWith("subgraph", StringComparison.Ordinal)
+        // No nested "Guardrails" (or "Preflights") wrapper subgraph — leaf check nodes are direct
+        // children of the task container (dropped as a simplification: the wrapper was purely
+        // cosmetic, never referenced by edge emission, container styling, or the source hash).
+        Assert.DoesNotContain(lines, l => l.StartsWith("subgraph", StringComparison.Ordinal)
                                     && l.Contains("Guardrails", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.StartsWith("subgraph", StringComparison.Ordinal)
+                                    && l.Contains("Preflights", StringComparison.Ordinal));
         Assert.Contains("Solution builds clean", string.Join("\n", lines));
     }
 
@@ -181,6 +194,95 @@ public sealed class MermaidRendererTests
             TaskWith("01-a", [Guardrail("01-build", description: "line one\r\nline two\rline three\nline four")]))));
 
         Assert.Contains("line one line two line three line four", string.Join("\n", lines));
+    }
+
+    // === emission-order contract (preflights before guardrails, no nested boxes) =======
+
+    [Fact]
+    public void Render_TaskWithBothPreflightAndGuardrail_EmitsPreflightNodeBeforeGuardrailNode()
+    {
+        // The removed nested boxes used to convey "preflights run before guardrails" visually;
+        // with them gone, source order is the contractual replacement — tested here directly.
+        GuardrailDefinition preflight = Guardrail("01-dep-delivered", description: "dependency delivered");
+        GuardrailDefinition guardrail = Guardrail("01-build", description: "builds clean");
+
+        string render = MermaidRenderer.Render(Plan(
+            TaskWithPreflights("01-a", [preflight], [guardrail])));
+
+        int preflightIndex = render.IndexOf("dependency delivered", StringComparison.Ordinal);
+        int guardrailIndex = render.IndexOf("builds clean", StringComparison.Ordinal);
+
+        Assert.True(preflightIndex >= 0 && guardrailIndex >= 0);
+        Assert.True(preflightIndex < guardrailIndex,
+            "the task-level preflight node must be emitted before the guardrail node within the same container");
+    }
+
+    [Fact]
+    public void Render_TaskLevelPreflight_IsDrawnDirectlyInsideTheTaskContainer_NoWrapperSubgraph()
+    {
+        GuardrailDefinition preflight = Guardrail("01-dep-delivered", description: "dependency delivered");
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWithPreflights("01-a", [preflight], [Guardrail("01-build")]))));
+
+        Assert.DoesNotContain(lines, l => l.StartsWith("subgraph", StringComparison.Ordinal)
+                                          && l.Contains("Preflights", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.Contains(":::preflight", StringComparison.Ordinal));
+    }
+
+    // === preflight label truncation + click-for-detail =================================
+
+    [Fact]
+    public void Render_LongPreflightDescription_IsTruncatedInTheDrawnLabel()
+    {
+        const string longDescription =
+            "Task-level JIT dependency-delivery precondition, keyed to the 04 -> 05 dependsOn edge. "
+            + "Verifies that task 04 actually threaded RequestId into the inherited source at 05's "
+            + "taskBase, BEFORE 05's action runs. A deterministic byte-check (no live probe).";
+        GuardrailDefinition preflight = Guardrail("01-dep-delivered", description: longDescription);
+
+        string render = MermaidRenderer.Render(Plan(
+            TaskWithPreflights("01-a", [preflight], [Guardrail("01-build")])));
+
+        Assert.DoesNotContain(longDescription, render);
+        Assert.DoesNotContain("taskBase", render); // well past the truncation budget
+    }
+
+    [Fact]
+    public void Render_ShortPreflightDescription_IsNotTruncated()
+    {
+        GuardrailDefinition preflight = Guardrail("01-dep-delivered", description: "JIT dependency delivered");
+
+        string render = MermaidRenderer.Render(Plan(
+            TaskWithPreflights("01-a", [preflight], [Guardrail("01-build")])));
+
+        Assert.Contains("JIT dependency delivered", render);
+    }
+
+    [Fact]
+    public void RenderInteractive_LongPreflightDescription_IsRecoverableViaClickTooltip()
+    {
+        // The truncated NODE LABEL must not lose the full text — it must be reachable via the SAME
+        // click mechanism RenderInteractive already uses for every node (issue #33): the node's
+        // `click` directive tooltip carries the full description even though its drawn label doesn't.
+        const string longDescription =
+            "Task-level JIT dependency-delivery precondition, keyed to the 04 -> 05 dependsOn edge. "
+            + "Verifies that task 04 actually threaded RequestId into the inherited source at 05's "
+            + "taskBase, BEFORE 05's action runs. A deterministic byte-check (no live probe).";
+        GuardrailDefinition preflight = Guardrail("01-dep-delivered", description: longDescription);
+
+        string interactive = MermaidRenderer.RenderInteractive(Plan(
+            TaskWithPreflights("01-a", [preflight], [Guardrail("01-build")])));
+
+        IReadOnlyList<string> lines = Lines(interactive);
+        string nodeLabelLine = Assert.Single(lines, l => l.Contains(":::preflight", StringComparison.Ordinal));
+        string clickLine = Assert.Single(lines, l => l.StartsWith("click", StringComparison.Ordinal)
+                                                     && l.Contains("_pf_0", StringComparison.Ordinal));
+
+        // The drawn node label is truncated...
+        Assert.DoesNotContain(longDescription, nodeLabelLine);
+        Assert.DoesNotContain("taskBase", nodeLabelLine);
+        // ...but the SAME node's click tooltip carries the full description.
+        Assert.Contains("taskBase", clickLine);
     }
 
     // === contracts that must survive the rewrite (model-neutral) =======================

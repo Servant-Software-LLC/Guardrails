@@ -10,13 +10,56 @@ namespace Guardrails.Core.Graph;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Shape: each task is a <c>subgraph task_&lt;id&gt;</c> container holding nested
-/// <c>Preflights</c> / <c>Guardrails</c> subgraphs whose individual check nodes live INSIDE the
-/// container — no free guardrail/preflight nodes, no per-task <c>done_&lt;id&gt;</c>
-/// reconvergence node, no <c>task --&gt; guardrail</c> fan-out edge. Two mandatory plan-level
-/// containers bracket the whole DAG: <c>plan_preflights</c> ("Full Flight Checks") at the top,
-/// <c>plan_guardrails</c> ("Terminal Gate") at the bottom — always emitted, even when their
-/// folder is empty, because they are structural brackets, not conditional content.
+/// Shape: each task is a <c>subgraph task_&lt;id&gt;</c> container holding its check nodes
+/// (preflight and guardrail leaves) DIRECTLY inside the container — no nested
+/// <c>Preflights</c>/<c>Guardrails</c> wrapper subgraph, no free guardrail/preflight nodes outside
+/// a container, no per-task <c>done_&lt;id&gt;</c> reconvergence node, no <c>task --&gt; guardrail</c>
+/// fan-out edge. (A per-task nested-subgraph wrapper was tried and dropped — see "Nested boxes
+/// dropped" below.) Two mandatory plan-level containers bracket the whole DAG: <c>plan_preflights</c>
+/// ("Full Flight Checks") at the top, <c>plan_guardrails</c> ("Terminal Gate") at the bottom —
+/// always emitted, even when their folder is empty, because they are structural brackets, not
+/// conditional content. These two stay titled subgraphs (unaffected by the nested-box removal
+/// below): they are one-off heterogeneous brackets on the whole DAG, not a per-task repeated
+/// pattern.
+/// </para>
+/// <para>
+/// <b>Nested boxes dropped (simplification).</b> A task container previously nested a
+/// "Guardrails" sub-container (and, when present, a "Preflights" sub-container) around its leaf
+/// check nodes — nesting-within-nesting that made a real generated diagram look busy for no
+/// semantic gain: the wrapper subgraph id was never referenced by edge emission, container
+/// styling, or <see cref="GraphSourceHash"/> — purely cosmetic. Leaf check nodes are now emitted
+/// as direct children of the task container; the existing <c>:::preflight</c>/<c>:::guardrail</c>
+/// <c>classDef</c> fill remains the only visual category distinction. Removing the boxes also
+/// removes their visual "preflights run before, guardrails run after" cue, so that temporal fact
+/// is now preserved two other ways: (1) a GUARANTEED emission-order contract — a task's preflight
+/// leaf node(s), if any, are always emitted before its guardrail leaf node(s) within the
+/// container (see <see cref="AppendTaskContainer"/>), so position is a stable, tested convention,
+/// not a rendering accident; and (2) the legend (see <see cref="LegendMarkdown"/>) states the
+/// before/after timing in words, not just a bare colour-category name.
+/// </para>
+/// <para>
+/// <b>Legend lives outside the Mermaid graph.</b> A Mermaid-native legend (a disconnected
+/// subgraph of dummy colour-swatch nodes) was prototyped and rendered BROKEN headless against the
+/// exact bundled <c>mermaid@11.4.1</c>: dagre lays out a disconnected subgraph as a phantom extra
+/// "task" overlapping the real DAG. The only approach that renders correctly is content OUTSIDE
+/// the Mermaid source entirely: an HTML overlay `&lt;div&gt;` in <see cref="HtmlDiagramRenderer"/>
+/// for <c>diagram.html</c>, and the shared <see cref="LegendMarkdown"/> block placed by the CLI's
+/// <c>graph</c> command AFTER the fenced <c>```mermaid```</c> block for <c>diagram.md</c> (GitHub's
+/// Mermaid sandbox has no overlay option). Neither destination is part of <see cref="Render"/>'s or
+/// <see cref="RenderInteractive"/>'s returned Mermaid source, and — same treatment as the existing
+/// cosmetic <c>classDef</c> color lines (added by those two methods, never by
+/// <see cref="SemanticContent"/>) — the legend never reaches <see cref="SemanticContent"/> either,
+/// so legend-only wording changes never move <see cref="GraphSourceHash"/> and never make
+/// `graph --check` spuriously report a plan stale.
+/// </para>
+/// <para>
+/// <b>Preflight labels are truncated with click-for-detail.</b> A task-level preflight's full
+/// descriptive text (which can run to many words) is too long to draw as an inline node label
+/// without dwarfing the rest of the diagram, so the drawn label is a short synthesized name (see
+/// <see cref="PreflightShortLabel"/>) while the full <see cref="GuardrailDefinition.Description"/>
+/// remains reachable via the SAME <c>click</c>-directive mechanism <see cref="RenderInteractive"/>
+/// already uses for every other node (source-file click-through, issue #33) — the tooltip
+/// argument of that directive carries the full text, so no new mechanism was introduced.
 /// </para>
 /// <para>
 /// The DAG is drawn <c>subgraph --&gt; subgraph</c>: each edge references a container's subgraph
@@ -38,8 +81,8 @@ namespace Guardrails.Core.Graph;
 /// <para>
 /// A task-level preflight still gates its producer's <c>dependsOn</c> edge: the edge remains
 /// drawn container→container exactly as any other dependency edge, and the preflight renders as an
-/// ordinary check node inside the consumer's own Preflights subgraph — it is never re-routed to
-/// originate from the preflight node itself.
+/// ordinary check node inside the consumer's own container (before its guardrail check nodes) —
+/// it is never re-routed to originate from the preflight node itself.
 /// </para>
 /// <para>
 /// Line breaks are emitted as an explicit <c>\n</c> (never
@@ -53,6 +96,25 @@ public static class MermaidRenderer
 {
     private const string PlanPreflightsId = "plan_preflights";
     private const string PlanGuardrailsId = "plan_guardrails";
+
+    /// <summary>
+    /// The legend text placed OUTSIDE the Mermaid graph (see class remarks, "Legend lives
+    /// outside the Mermaid graph"). States both the colour mapping and the before/after timing —
+    /// a bare category name would not preserve the ordering semantic the removed nested boxes used
+    /// to convey visually. Consumed by <c>GraphCommand</c> (a plain Markdown block placed after the
+    /// fenced <c>```mermaid```</c> block in <c>diagram.md</c>) and by <see cref="HtmlDiagramRenderer"/>
+    /// (rendered into the HTML overlay div for <c>diagram.html</c>). Public because both consumers
+    /// live outside this assembly's <c>InternalsVisibleTo</c> set (the CLI project). Deliberately NOT
+    /// part of <see cref="Render"/>/<see cref="RenderInteractive"/>'s returned Mermaid source or
+    /// <see cref="SemanticContent"/> — see class remarks.
+    /// </summary>
+    public const string LegendMarkdown =
+        "**Legend**\n\n"
+        + "- 🟣 **Preflight** — verified BEFORE the task's attempt loop; gates entry "
+        + "(dependency-delivery precondition)\n"
+        + "- 🟡 **Guardrail** — verified AFTER the task's action; must pass for the task to finish\n"
+        + "- 🟢 Plan-level containers (\"Full Flight Checks\" top, \"Terminal Gate\" bottom) run the "
+        + "same two checks once for the whole plan, at the very start and very end.\n";
 
     // Container fills applied per-container via a `style <id> …` statement (NOT a
     // `class <id> <className>;` statement). In Mermaid 11.4.1 a `class` assignment does NOT reach
@@ -198,69 +260,102 @@ public static class MermaidRenderer
         string checkClass)
     {
         AppendLf(sb, $"  subgraph {containerId}[{Quote(label)}]");
-        AppendCheckNodes(sb, "    ", $"{containerId}", checks, checkClass);
+        AppendCheckNodes(sb, "    ", $"{containerId}", checks, checkClass, truncatePreflightLabel: false);
         AppendLf(sb, "  end");
         AppendLf(sb, $"  style {containerId} {PlanLevelStyle}");
     }
 
     /// <summary>
-    /// Append one task container: a nested <c>Preflights</c> subgraph ONLY when the task declares
-    /// task-level preflights (the common case has none, and an always-empty box would just be
-    /// clutter — mirrors the owner's ASCII mock, which omits the Preflights section for a task with
-    /// none), a nested <c>Guardrails</c> subgraph (always present — every task carries at least one
-    /// guardrail, enforced at load time), then the container's <c>style</c> fill. The DAG edge
-    /// attaches to this container's own subgraph id (no interior anchor).
+    /// Append one task container: its preflight leaf check node(s) (if any), THEN its guardrail
+    /// leaf check node(s) — both DIRECTLY inside the container, with no nested
+    /// <c>Preflights</c>/<c>Guardrails</c> wrapper subgraph (see class remarks, "Nested boxes
+    /// dropped") — then the container's <c>style</c> fill. The DAG edge attaches to this
+    /// container's own subgraph id (no interior anchor).
     /// </summary>
+    /// <remarks>
+    /// <b>Emission-order contract (load-bearing, tested):</b> preflight check nodes are ALWAYS
+    /// emitted before guardrail check nodes within a container. This is not a rendering accident —
+    /// with the nested boxes gone, source order is the only surviving signal that preflights run
+    /// BEFORE the task's attempt loop and guardrails run AFTER it, so callers (and the legend) may
+    /// rely on it as a stable convention.
+    /// </remarks>
     private static void AppendTaskContainer(StringBuilder sb, TaskNode task, string @base)
     {
         string containerId = $"task_{@base}";
 
         AppendLf(sb, $"  subgraph {containerId}[{Quote(task.Id)}]");
 
-        if (task.Preflights.Count > 0)
-        {
-            AppendNestedCheckSubgraph(sb, $"{containerId}_preflights", "Preflights", $"{containerId}_pf", task.Preflights, "preflight");
-        }
-
-        AppendNestedCheckSubgraph(sb, $"{containerId}_guardrails", "Guardrails", $"{containerId}_gr", task.Guardrails, "guardrail");
+        // Preflights BEFORE guardrails — see remarks: this order is the emission-order contract
+        // that now carries the "before the attempt loop" / "after the action" temporal semantic
+        // the removed nested boxes used to convey visually.
+        AppendCheckNodes(sb, "    ", $"{containerId}_pf", task.Preflights, "preflight", truncatePreflightLabel: true);
+        AppendCheckNodes(sb, "    ", $"{containerId}_gr", task.Guardrails, "guardrail", truncatePreflightLabel: false);
 
         AppendLf(sb, "  end");
         AppendLf(sb, $"  style {containerId} {TaskStyle}");
     }
 
-    /// <summary>Append one nested (Preflights/Guardrails) subgraph and its check nodes.</summary>
-    private static void AppendNestedCheckSubgraph(
-        StringBuilder sb,
-        string subgraphId,
-        string label,
-        string nodeIdPrefix,
-        IReadOnlyList<GuardrailDefinition> checks,
-        string checkClass)
-    {
-        AppendLf(sb, $"    subgraph {subgraphId}[{Quote(label)}]");
-        AppendCheckNodes(sb, "      ", nodeIdPrefix, checks, checkClass);
-        AppendLf(sb, "    end");
-    }
-
     /// <summary>
     /// Append <paramref name="checks"/> (sorted ordinal by name, for input-order independence) as
-    /// <c>{nodeIdPrefix}_{ordinal}[label]:::{checkClass}</c> node lines, one per check, drawing
-    /// <c>Description ?? Name</c> exactly as the prior flat-node renderer did.
+    /// <c>{nodeIdPrefix}_{ordinal}[label]:::{checkClass}</c> node lines, one per check. Drawn label
+    /// is <c>Description ?? Name</c>, EXCEPT for a task-level preflight
+    /// (<paramref name="truncatePreflightLabel"/> true) whose long descriptive text is truncated
+    /// to a short synthesized name (see <see cref="PreflightShortLabel"/>) — the full description
+    /// remains reachable via the node's <c>click</c> tooltip in <see cref="RenderInteractive"/>
+    /// (issue #33's existing click mechanism, reused rather than inventing a new one).
     /// </summary>
     private static void AppendCheckNodes(
         StringBuilder sb,
         string indent,
         string nodeIdPrefix,
         IReadOnlyList<GuardrailDefinition> checks,
-        string checkClass)
+        string checkClass,
+        bool truncatePreflightLabel)
     {
         int ordinal = 0;
         foreach (GuardrailDefinition check in checks.OrderBy(c => c.Name, StringComparer.Ordinal))
         {
-            string label = string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!;
+            string full = string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!;
+            string label = truncatePreflightLabel ? PreflightShortLabel(check) : full;
             AppendLf(sb, $"{indent}{nodeIdPrefix}_{ordinal}[{Quote(label)}]:::{checkClass}");
             ordinal++;
         }
+    }
+
+    /// <summary>
+    /// Longest drawn label before <see cref="PreflightShortLabel"/> truncates to an ellipsis. Long
+    /// enough to keep a short synthesized phrase intact, short enough that a task-level preflight
+    /// node no longer dwarfs the rest of the diagram (the owner-reported "busy" symptom).
+    /// </summary>
+    private const int PreflightLabelMaxChars = 40;
+
+    /// <summary>
+    /// A short drawn label for a task-level preflight check node: <c>Description ?? Name</c>,
+    /// truncated to <see cref="PreflightLabelMaxChars"/> characters (word-boundary where
+    /// possible) with a trailing ellipsis when it would otherwise overflow. The FULL text is never
+    /// lost — it remains reachable via the node's <c>click</c> tooltip (see
+    /// <see cref="AppendClickDirectives"/>/<see cref="ClickTooltip"/>), which already carries the
+    /// check's full description for every node kind.
+    /// </summary>
+    private static string PreflightShortLabel(GuardrailDefinition check)
+    {
+        string full = string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!;
+        string collapsed = full
+            .Replace("\r\n", " ", StringComparison.Ordinal)
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+
+        if (collapsed.Length <= PreflightLabelMaxChars)
+        {
+            return collapsed;
+        }
+
+        // Prefer breaking at the last space within budget so the truncation reads as whole words;
+        // fall back to a hard cut when the first "word" alone exceeds the budget.
+        int cut = collapsed.LastIndexOf(' ', Math.Min(PreflightLabelMaxChars, collapsed.Length) - 1);
+        string head = cut > 0 ? collapsed[..cut] : collapsed[..PreflightLabelMaxChars];
+        return head.TrimEnd() + "…";
     }
 
     /// <summary>
@@ -270,8 +365,8 @@ public static class MermaidRenderer
     /// depends on) into the plan-guardrails container. The edge references the container's own
     /// subgraph id, so Mermaid clips the arrow to the container's OUTER BORDER (issue #210). A
     /// task-level preflight does not change this — the gated dependency edge is drawn exactly like
-    /// any other; the preflight is only ever a check node inside the consumer's own Preflights
-    /// subgraph.
+    /// any other; the preflight is only ever a check node inside the consumer's own container
+    /// (emitted before the container's guardrail check nodes — see <see cref="AppendTaskContainer"/>).
     /// </summary>
     private static void AppendContainerEdges(
         DependencyGraph graph,
@@ -307,12 +402,14 @@ public static class MermaidRenderer
     /// <c>diagram.html</c> at the plan root, opened in a new tab (<c>_blank</c>) so the diagram
     /// stays put. Emitted in the same ordinal/sorted order as the nodes for determinism, and using
     /// the SAME node-id scheme as <see cref="AppendNodesAndEdges"/> so every click target actually
-    /// exists.
+    /// exists. A task-level preflight's click tooltip carries its FULL description (not just its
+    /// name) since <see cref="AppendCheckNodes"/> draws only a truncated label for it — the
+    /// tooltip is the click-for-detail mechanism that keeps the full text from being lost.
     /// </summary>
     private static void AppendClickDirectives(
         PlanDefinition plan, IReadOnlyDictionary<string, string> nodeIdBase, StringBuilder sb)
     {
-        AppendCheckClicks(plan, plan.PlanPreflights, PlanPreflightsId, sb);
+        AppendCheckClicks(plan, plan.PlanPreflights, PlanPreflightsId, sb, tooltipIsFullDescription: false);
 
         foreach (TaskNode task in plan.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal))
         {
@@ -323,28 +420,39 @@ public static class MermaidRenderer
 
             if (task.Preflights.Count > 0)
             {
-                AppendCheckClicks(plan, task.Preflights, $"{containerId}_pf", sb);
+                AppendCheckClicks(plan, task.Preflights, $"{containerId}_pf", sb, tooltipIsFullDescription: true);
             }
 
-            AppendCheckClicks(plan, task.Guardrails, $"{containerId}_gr", sb);
+            AppendCheckClicks(plan, task.Guardrails, $"{containerId}_gr", sb, tooltipIsFullDescription: false);
         }
 
-        AppendCheckClicks(plan, plan.PlanGuardrails, PlanGuardrailsId, sb);
+        AppendCheckClicks(plan, plan.PlanGuardrails, PlanGuardrailsId, sb, tooltipIsFullDescription: false);
     }
 
     /// <summary>
     /// Append one <c>click</c> directive per check in <paramref name="checks"/> (sorted ordinal by
     /// name, mirroring <see cref="AppendCheckNodes"/> exactly so the ordinal-suffixed node id each
-    /// click targets is the one actually emitted for that check).
+    /// click targets is the one actually emitted for that check). The tooltip is normally the
+    /// check's <c>Name</c>; when <paramref name="tooltipIsFullDescription"/> is set (task-level
+    /// preflights, whose drawn label is truncated by <see cref="PreflightShortLabel"/>) the
+    /// tooltip carries <c>Description ?? Name</c> in full instead, so hovering/clicking the node
+    /// surfaces the complete text the truncated label dropped.
     /// </summary>
     private static void AppendCheckClicks(
-        PlanDefinition plan, IReadOnlyList<GuardrailDefinition> checks, string nodeIdPrefix, StringBuilder sb)
+        PlanDefinition plan,
+        IReadOnlyList<GuardrailDefinition> checks,
+        string nodeIdPrefix,
+        StringBuilder sb,
+        bool tooltipIsFullDescription)
     {
         int ordinal = 0;
         foreach (GuardrailDefinition check in checks.OrderBy(c => c.Name, StringComparer.Ordinal))
         {
             string checkPath = ToPlanRelative(plan.PlanDirectory, check.Path);
-            AppendLf(sb, $"  click {nodeIdPrefix}_{ordinal} href \"{checkPath}\" \"{ClickTooltip(check.Name)}\" _blank");
+            string tooltipText = tooltipIsFullDescription
+                ? (string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!)
+                : check.Name;
+            AppendLf(sb, $"  click {nodeIdPrefix}_{ordinal} href \"{checkPath}\" \"{ClickTooltip(tooltipText)}\" _blank");
             ordinal++;
         }
     }
@@ -359,9 +467,19 @@ public static class MermaidRenderer
             .Replace('\\', '/')
             .Replace("\"", "%22", StringComparison.Ordinal); // " is legal in Linux filenames; URL-encode to keep the click directive parseable
 
-    /// <summary>Make a label safe inside a double-quoted Mermaid <c>click</c> tooltip.</summary>
+    /// <summary>
+    /// Make a label safe inside a double-quoted Mermaid <c>click</c> tooltip: collapse any line
+    /// break to a space (a <c>click</c> directive is line-oriented, so a raw newline — now
+    /// possible here since a task-level preflight's tooltip can carry its full, sometimes
+    /// multi-line, description — would silently truncate or corrupt the directive) and escape
+    /// embedded double quotes.
+    /// </summary>
     private static string ClickTooltip(string text) =>
-        text.Replace("\"", "&quot;", StringComparison.Ordinal);
+        text
+            .Replace("\r\n", " ", StringComparison.Ordinal)
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Replace("\"", "&quot;", StringComparison.Ordinal);
 
     /// <summary>
     /// Append <paramref name="line"/> followed by an explicit <c>'\n'</c>. Used everywhere a

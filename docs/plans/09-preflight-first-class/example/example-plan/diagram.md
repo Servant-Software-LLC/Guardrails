@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=4d9320ecce259e39d8bc6e325163432fe9f35ae503e27d07894d0c98ddb24b8e -->
+<!-- guardrails:graph v1 source-sha256=ee7b7ab5e2a0116f5335f5b2fd1b386429997b975f33e783c87e9286af4cf9bf -->
 
 ```mermaid
 flowchart TD
@@ -8,26 +8,18 @@ flowchart TD
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph task_03_author_correlation_tests["03-author-correlation-tests"]
-    subgraph task_03_author_correlation_tests_guardrails["Guardrails"]
-      task_03_author_correlation_tests_gr_0["01-new-tests-exist"]:::guardrail
-      task_03_author_correlation_tests_gr_1["Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the plan-level negative preflight generalizes). scope:local — never re-run at a union."]:::guardrail
-    end
+    task_03_author_correlation_tests_gr_0["01-new-tests-exist"]:::guardrail
+    task_03_author_correlation_tests_gr_1["Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the plan-level negative preflight generalizes). scope:local — never re-run at a union."]:::guardrail
   end
   style task_03_author_correlation_tests fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_04_implement_correlation["04-implement-correlation"]
-    subgraph task_04_implement_correlation_guardrails["Guardrails"]
-      task_04_implement_correlation_gr_0["The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the plan-level negative preflight makes attributable to this task). scope:local."]:::guardrail
-    end
+    task_04_implement_correlation_gr_0["The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the plan-level negative preflight makes attributable to this task). scope:local."]:::guardrail
   end
   style task_04_implement_correlation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_05_wire_api_correlation_middleware["05-wire-api-correlation-middleware"]
-    subgraph task_05_wire_api_correlation_middleware_preflights["Preflights"]
-      task_05_wire_api_correlation_middleware_pf_0["Task-level JIT dependency-delivery precondition, keyed to the 04 -&gt; 05 dependsOn edge. Verifies that task 04 actually threaded RequestId into the inherited Acme.Payments.Core source at 05's taskBase, BEFORE 05's action runs. A deterministic byte-check (no live probe). NOT a guardrail; NEVER joins the integration set."]:::preflight
-    end
-    subgraph task_05_wire_api_correlation_middleware_guardrails["Guardrails"]
-      task_05_wire_api_correlation_middleware_gr_0["01-health-still-200"]:::guardrail
-      task_05_wire_api_correlation_middleware_gr_1["02-request-id-flows"]:::guardrail
-    end
+    task_05_wire_api_correlation_middleware_pf_0["Task-level JIT dependency-delivery…"]:::preflight
+    task_05_wire_api_correlation_middleware_gr_0["01-health-still-200"]:::guardrail
+    task_05_wire_api_correlation_middleware_gr_1["02-request-id-flows"]:::guardrail
   end
   style task_05_wire_api_correlation_middleware fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
@@ -45,3 +37,9 @@ flowchart TD
 ```
 
 _Structure only — retry, feedback, and needs-human edges are omitted._
+
+**Legend**
+
+- 🟣 **Preflight** — verified BEFORE the task's attempt loop; gates entry (dependency-delivery precondition)
+- 🟡 **Guardrail** — verified AFTER the task's action; must pass for the task to finish
+- 🟢 Plan-level containers ("Full Flight Checks" top, "Terminal Gate" bottom) run the same two checks once for the whole plan, at the very start and very end.
