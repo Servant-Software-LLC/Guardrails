@@ -166,7 +166,15 @@ public static class WorktreeContainmentHook
         extract() {
           # $1 = field name; extracts the first "<name>":"<value>" match (top-level or nested), then
           # unescapes \" and \\ — the two escapes a path can realistically contain.
-          printf '%s' "$input" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\(\([^"\\]\|\\.\)*\)".*/\1/p' | head -n1 \
+          #
+          # NOTE: this uses `sed -E` (POSIX extended regex) deliberately, NOT the default basic
+          # regex (BRE) mode. An earlier version used BRE with `\|` for alternation inside a `\(...\)`
+          # group -- `\|` as alternation in BRE is a GNU sed extension, unsupported by BSD sed (the
+          # stock /usr/bin/sed on macOS), where the substitution silently failed to match and this
+          # function returned empty for EVERY field. `-E` is POSIX and behaves identically on GNU and
+          # BSD sed. Validated with `sed --posix` (GNU's BSD-sed emulation) to confirm no other
+          # GNU-only extension is in play.
+          printf '%s' "$input" | sed -En 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' | head -n1 \
             | sed 's/\\"/"/g; s/\\\\/\\/g'
         }
 
