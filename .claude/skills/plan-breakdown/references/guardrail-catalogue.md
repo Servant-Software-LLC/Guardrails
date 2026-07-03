@@ -1792,6 +1792,26 @@ should fail before an expensive test run or a paid judge ever starts.
   a fail-on-present negative assertion (`if ($content -match "<keyword>") { … exit 1 }`), paired with the
   positive coverage check. See the negative-assertion section above; `stacks/dotnet.md §20`. WEAK
   (BLOCKER when the excluded scenario traps a downstream compile).
+- **Stale line-number pointer / unhedged architecture claim about a not-yet-run sibling** (#203): a
+  later-wave task's action prompt cites a **line number** ("Scheduler ~231-253") for code an
+  **earlier-wave task in the same plan** will create or modify before the later task executes, and/or
+  states **as settled fact** how that sibling's deliverable works ("this extends the same `Scheduler`
+  path"). Both claims were true only at plan-authoring time — the earlier task lands its own edits
+  before the later task runs by construction, so the line number is stale on arrival (not by bad luck)
+  and the architecture claim may simply be wrong (the earlier task may have built something structurally
+  different than what the plan predicted). The motivating incident (issue #202): a task's prompt
+  pointed at `Scheduler.cs ~231-253` and asserted the sibling task "extends the same Scheduler path" —
+  by execution time the lines had shifted AND the sibling had actually built a brand-new standalone
+  class (`PlanPreflightPhase.cs`), not a `Scheduler.cs` extension. The agent burned 60-170+ turns of
+  pure re-discovery across two attempts, one fully exhausting its turn budget touching zero of its own
+  deliverables. Fix: cite a **durable, structure-stable marker** instead of a line number (a distinctive
+  comment string, a method/class/type name, a grep-able symbol), and phrase any "how it currently works"
+  claim as a checkable hypothesis ("this reflects the plan-authoring-time state, before deliverable N
+  had actually run — verify it's still accurate"), never as a given. See SKILL.md Step 6's
+  durable-marker / architecture-caveat rule. **Pairs with the #204 `maxTurns: 75` trigger** (this
+  catalogue's "maxTurns budgeting (#94)" section) — a task that needs one usually needs the other; treat
+  them as one fix, not two independent bullets. WEAK (BLOCKER when the re-discovery cost is severe
+  enough to exhaust the task's turn budget, as in the motivating incident).
 - **Echo-judge**: a prompt-judge evaluating the action's own claim of success (its
   summary, its commit message) rather than the artifact.
 - **Replay-the-action**: a guardrail that **re-runs the action's own command** (e.g. a
@@ -1989,7 +2009,16 @@ in advance):
 - **integration / smoke / e2e** tests, especially an in-process harness, transport-client wiring, or
   spawning a server;
 - **work against an unfamiliar third-party SDK** (discover the API before writing code);
-- **terminal aggregation / wiring** tasks that connect several unfamiliar seams at once.
+- **terminal aggregation / wiring** tasks that connect several unfamiliar seams at once;
+- **integrates with, extends, or describes a sibling task's not-yet-landed implementation (#203/#204)**
+  — the task's action prompt must integrate with, extend, or describe an **earlier-wave deliverable in
+  the same multi-wave plan** that did not exist yet when the prompt was authored. The root cause
+  differs from the other three (temporal ordering within the plan, not external unfamiliarity or
+  aggregation complexity), but the re-discovery cost is the same shape: the agent must locate and
+  understand code that may not match what the prompt described, since the prompt was necessarily
+  written before that code existed. **Pair this bump with the durable-marker / architecture-caveat
+  authoring rule (SKILL.md Step 6, #203)** — they are companion fixes for the same situation (hedge the
+  prompt text AND budget the turns), not two bullets to apply independently.
 
 A guessed *exact* budget is impossible; the fixed bump only needs to clear the common boundary case
 (54 > 50). The real safety net is a **harness-side auto-escalate-on-`max_turns` retry policy**

@@ -509,6 +509,37 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   coverage tokens, SSOT §4.4) — a GR2026 warning on a negative assertion would be the #177 false positive,
   not a signal to remove the guardrail. (plan-breakdown Step 4 adds the matching authoring rule.)
 <!-- END ADDED PROBES #176 -->
+<!-- BEGIN ADDED PROBE #203/#204 — stale line-number pointer / unhedged sibling-architecture claim -->
+- **Stale line-number pointer / unhedged architecture claim about a not-yet-run sibling (#203/#204)**:
+  for every task whose action prompt references code belonging to **another task in the same plan**,
+  check the DAG wave placement first — is the referenced task in an **earlier wave** than this one (it
+  will run and commit its own edits before this task's attempt starts)? If so, scan this task's prompt
+  for two violations:
+  1. **A line number pointing into a file the earlier-wave task will modify** (`~231-253`, "around line
+     N", "lines X-Y") — by construction the earlier task's edits land before this task runs, so the
+     pointer is stale on arrival, not merely at risk of going stale. Flag **WEAK**, **BLOCKER** when the
+     cited file is exactly the earlier task's own `writeScope` (the collision is certain, not merely
+     plausible) — name the file and the earlier task.
+  2. **An unhedged "here's how it currently works" claim about the earlier task's implementation**
+     ("this REPLACES/extends the same `<X>` path", "task N built `<Y>` this way") stated as settled fact
+     rather than a caveated hypothesis. Flag **WEAK**; **BLOCKER** when the plan gives no other reason to
+     believe the claim holds (nothing else in the plan constrains HOW the earlier task must implement its
+     deliverable, so the claim is a guess dressed as fact).
+  This is the exact plan-0009-lineage failure (issue #202): a later-wave task's prompt cited
+  `Scheduler.cs ~231-253` and asserted a sibling task "extends the same Scheduler path" — the sibling
+  actually built a standalone `PlanPreflightPhase.cs`, and the line numbers had shifted by the time the
+  later task ran, costing 60-170+ turns of pure re-discovery (one attempt fully exhausted its turn
+  budget touching zero of its own deliverables). Fix: replace the line number with a durable,
+  structure-stable marker (a distinctive comment string, a method/class/type name, a grep-able symbol),
+  and rephrase the architecture claim as a checkable hypothesis — "this reflects the plan-authoring-time
+  state, before task N had actually run — verify it's still accurate before assuming the same shape
+  applies here" (catalogue → stale line-number pointer / unhedged architecture claim; SKILL.md Step 6).
+  **Cross-check `maxTurns`**: a task that trips this probe usually also needs the `maxTurns: 75` bump for
+  the fourth turn-expensive archetype (SKILL.md Step 4a / catalogue "maxTurns budgeting (#94)") — if the
+  prompt text is hedged/de-staled but the task is still left at the default budget (or vice versa), flag
+  it as a **half-applied fix**: the two are companions for the same re-discovery risk, not independent
+  bullets, so fixing only one leaves the other half of the risk unaddressed.
+<!-- END ADDED PROBE #203/#204 -->
 <!-- BEGIN ADDED PROBE #193 — orphaned pre-existing golden swept in by a broad tests-pass filter -->
 - **Orphaned golden swept in by a broad `tests-pass` `--filter` (#193)**: the **runtime** analogue of
   the #176 transitive-compilation probe. There the trap is compile-time (a test compiles a type a
@@ -640,6 +671,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.
 - [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
+- [ ] Every task whose prompt references an **earlier-wave sibling's** code was checked for a stale line-number pointer and an unhedged "here's how it currently works" claim (#203/#204): a cited line number into a file the earlier task will still modify is WEAK/BLOCKER (durable marker instead); an unhedged architecture claim about the sibling's not-yet-run implementation is WEAK/BLOCKER (caveat it as authoring-time state, verify before relying on it). Cross-check the paired `maxTurns: 75` bump (Step 4a's fourth archetype) — flag a **half-applied fix** if only one of the two companion rules was applied.
 - [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).
 <!-- BEGIN ADDED CHECKS #74/#75/#76/#96 -->
