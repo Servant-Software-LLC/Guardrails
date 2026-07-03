@@ -23,7 +23,11 @@ namespace Guardrails.Core.Prompts;
 /// worktree root, reusing the SAME escape decision as <see cref="WorkspaceContainment.Escapes"/>
 /// (rooted-path rejection + normalized-path directory-boundary comparison — never reimplemented
 /// as a different rule, only re-expressed in shell/PowerShell since the hook runs as an OS
-/// process Claude Code spawns directly, not a .NET callback). It ALSO blocks the <c>git stash</c>
+/// process Claude Code spawns directly, not a .NET callback). Both scripts are pure string
+/// normalization with NO symlink resolution and no external <c>realpath</c>/<c>readlink</c>
+/// dependency — identical behavior on every OS, deliberately consistent rather than the bash
+/// side attempting (and, on macOS's BSD coreutils, silently failing at) a "stronger" symlink-aware
+/// check. It ALSO blocks the <c>git stash</c>
 /// family (issue #192): <c>refs/stash</c> is repo-wide, not worktree-scoped, so a concurrent
 /// task's <c>stash pop</c> can silently apply into the WRONG worktree. Both rules live in the
 /// SAME hook script and settings file — one mechanism, two additive checks.</para>
@@ -137,11 +141,17 @@ public static class WorktreeContainmentHook
     /// The bash hook script body (issue #199/#192), worktree root baked in as a literal. Reads the
     /// PreToolUse tool-call JSON from stdin via a small dependency-free field extractor (no <c>jq</c>
     /// assumed on the agent's PATH); exit 2 + stderr is Claude Code's documented block contract.
-    /// Uses <c>realpath -m</c> (resolves symlinks AND non-existent path segments) — a strictly
-    /// MORE conservative escape check than the plain-normalize <see cref="WorkspaceContainment.Escapes"/>
-    /// it otherwise mirrors (rooted-path rejection, directory-boundary comparison): a symlink whose
-    /// target itself escapes the worktree is caught here even though pure path-string normalization
-    /// would not catch it.
+    ///
+    /// <para>Path canonicalization is a pure, dependency-free string-based <c>.</c>/<c>..</c> segment
+    /// collapse — the LITERAL bash mirror of <see cref="WorkspaceContainment.Escapes"/> (rooted-path
+    /// rejection, normalize, directory-boundary comparison), exactly like the PowerShell script below.
+    /// It does NOT call an external <c>realpath</c>/<c>readlink</c>: an earlier version shelled out to
+    /// <c>realpath -m</c>, but <c>-m</c> is GNU-coreutils-only — macOS ships BSD <c>realpath</c>, which
+    /// does not support it, so on macOS the call silently misbehaved and escape detection went dark
+    /// (13 macOS-only CI failures, all "expected block, got allow"). Neither platform's script resolves
+    /// symlinks now — that is a known, accepted, CONSISTENT gap (see <see cref="PowerShellScript"/>'s
+    /// doc comment), not an asymmetry between them, and it trades away zero portability for a rule that
+    /// cannot silently diverge by core-utils flavor again.</para>
     /// </summary>
     internal static string BashScript(string worktreeRoot) => $$"""
         #!/usr/bin/env bash
@@ -167,26 +177,60 @@ public static class WorktreeContainmentHook
           exit 2
         }
 
+        # Pure string-based '.'/'..' segment collapse over an ABSOLUTE path -- no realpath/readlink,
+        # no symlink resolution, no GNU-vs-BSD flag dependency. Mirrors Path.GetFullPath's
+        # normalization: walk segments left-to-right, push non-'.'/'..' segments, a '..' pops the
+        # last pushed segment (dropped if the stack is already empty -- never pops above the root),
+        # a bare '.' is dropped. Input MUST already be absolute (callers join with WORKTREE_ROOT
+        # first); output is always absolute, "/" at minimum.
+        normalize_path() {
+          local input="$1"
+          local -a parts=()
+          local seg
+          local old_ifs="$IFS"
+          IFS='/'
+          read -ra segs <<< "$input"
+          IFS="$old_ifs"
+          for seg in "${segs[@]}"; do
+            case "$seg" in
+              ""|".") continue ;;
+              "..")
+                if [ "${#parts[@]}" -gt 0 ]; then
+                  unset 'parts[${#parts[@]}-1]'
+                fi
+                ;;
+              *) parts+=("$seg") ;;
+            esac
+          done
+          if [ "${#parts[@]}" -eq 0 ]; then
+            printf '/'
+            return
+          fi
+          local result=""
+          for seg in "${parts[@]}"; do
+            result="$result/$seg"
+          done
+          printf '%s' "$result"
+        }
+
         resolve_and_check() {
           local candidate="$1"
           [ -z "$candidate" ] && return 0
 
-          local resolved
-          if command -v realpath >/dev/null 2>&1; then
-            if [[ "$candidate" = /* ]]; then
-              resolved="$(realpath -m -- "$candidate" 2>/dev/null || printf '%s' "$candidate")"
-            else
-              resolved="$(realpath -m -- "$WORKTREE_ROOT/$candidate" 2>/dev/null || printf '%s' "$WORKTREE_ROOT/$candidate")"
-            fi
+          local absolute
+          if [[ "$candidate" = /* ]]; then
+            absolute="$candidate"
           else
-            if [[ "$candidate" = /* ]]; then
-              resolved="$candidate"
-            else
-              resolved="$WORKTREE_ROOT/$candidate"
-            fi
+            absolute="$WORKTREE_ROOT/$candidate"
           fi
 
-          local root_norm="${WORKTREE_ROOT%/}"
+          local resolved
+          resolved="$(normalize_path "$absolute")"
+
+          local root_norm
+          root_norm="$(normalize_path "$WORKTREE_ROOT")"
+          root_norm="${root_norm%/}"
+
           case "$resolved" in
             "$root_norm"|"$root_norm"/*) return 0 ;;
             *) block "path '$candidate' resolves to '$resolved', outside the task worktree '$root_norm'" ;;

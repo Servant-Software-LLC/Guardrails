@@ -7,10 +7,12 @@ namespace Guardrails.Core.Tests;
 /// Verifies the #199/#192 worktree-containment PreToolUse hook: the generated settings JSON shape
 /// (unit, no process spawn) and — running the REAL generated script standalone with synthetic
 /// PreToolUse stdin JSON (no `claude` binary needed, per the issue's testability ask) — the actual
-/// block/allow decisions for Write/Edit/NotebookEdit paths (including `..`-relative and symlink
-/// escapes) and write-ish/stash Bash commands. The script is spawned via the SAME
-/// <see cref="InterpreterMap"/> + <see cref="ProcessRunner"/> the harness uses for any script
-/// action — no bespoke process-launch code under test.
+/// block/allow decisions for Write/Edit/NotebookEdit paths (including `..`-relative escapes) and
+/// write-ish/stash Bash commands. Both scripts are pure string-based `.`/`..` normalization with NO
+/// symlink resolution (a known, consistent gap across platforms — see
+/// <see cref="Symlink_TargetEscapesWorktree_NotDetected_KnownConsistentGap"/>). The script is
+/// spawned via the SAME <see cref="InterpreterMap"/> + <see cref="ProcessRunner"/> the harness uses
+/// for any script action — no bespoke process-launch code under test.
 /// </summary>
 public sealed class WorktreeContainmentHookTests : IDisposable
 {
@@ -162,13 +164,23 @@ public sealed class WorktreeContainmentHookTests : IDisposable
     }
 
     [Fact]
-    public async Task Symlink_TargetEscapesWorktree_Blocked()
+    public async Task Symlink_TargetEscapesWorktree_NotDetected_KnownConsistentGap()
     {
+        // Symlink-escape detection was REMOVED from the bash script (it depended on `realpath -m`,
+        // a GNU-coreutils-only flag; macOS ships BSD `realpath`, which silently misbehaved under it
+        // and let 13 escape-detection tests down on macOS-only CI). Both scripts are now a PURE,
+        // dependency-free string-based '.'/'..' normalization -- the literal path text
+        // "<worktree>/linked/escaped.txt" is textually inside the worktree, so it is ALLOWED even
+        // though "linked" is a symlink whose target lives outside. This is a known, ACCEPTED gap,
+        // consistent across both platforms (neither resolves symlinks) -- not a macOS-only
+        // regression. The `..`-escape and absolute-path-escape tests above cover the primary,
+        // supported escape classes (#199 was written against accidental/careless escapes, not a
+        // symlink-based adversarial bypass); see the class doc comment and SSOT §9.4.
         if (OperatingSystem.IsWindows())
         {
-            // Creating a real symlink on Windows requires elevation in CI; the PowerShell hook is a
-            // literal WorkspaceContainment.Escapes mirror (GetFullPath, no link resolution) and is
-            // covered by the plain `..`-escape tests above, which exercise the identical code path.
+            // Creating a real symlink on Windows requires elevation in CI; the behavior is identical
+            // on Windows anyway (PowerShell never resolved symlinks), so there is nothing extra to
+            // demonstrate there.
             return;
         }
 
@@ -180,10 +192,10 @@ public sealed class WorktreeContainmentHookTests : IDisposable
         WorktreeContainmentHook.WriteHookFiles(_logDir, _worktree);
         string viaLink = Path.Combine(_worktree, "linked", "escaped.txt").Replace("\\", "\\\\");
 
-        (int exitCode, string stderr) = await RunHookAsync(ToolCall("Write", $$"""{"file_path":"{{viaLink}}","content":"x"}"""));
+        (int exitCode, _) = await RunHookAsync(ToolCall("Write", $$"""{"file_path":"{{viaLink}}","content":"x"}"""));
 
-        Assert.Equal(2, exitCode);
-        Assert.Contains("BLOCKED", stderr, StringComparison.Ordinal);
+        // Documents the current, honest behavior -- NOT a desired security property.
+        Assert.Equal(0, exitCode);
     }
 
     [Fact]

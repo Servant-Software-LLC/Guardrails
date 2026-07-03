@@ -1459,6 +1459,14 @@ the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`).
   callback), never a DIFFERENT rule. For `Bash`, the script heuristically extracts a target path from
   write-ish forms — output redirection (`>`/`>>`), `tee`, `cp`/`mv`, `git checkout -- <path>`, `git
   worktree add <path>` — and applies the same escape check to whatever it can parse out.
+  **Both scripts are pure, dependency-free string-based `.`/`..` segment normalization — NEITHER
+  resolves symlinks, and neither calls an external `realpath`/`readlink`.** (An earlier version of
+  the bash script shelled out to `realpath -m` to also resolve symlinks; `-m` is GNU-coreutils-only,
+  so on macOS's BSD `realpath` the call silently misbehaved and escape detection went dark —
+  13 macOS-only CI failures, all "expected block, got allow." The fix dropped the external dependency
+  entirely rather than chase a portable flag: both platforms now implement the identical rule,
+  in-process, with no core-utils-flavor dependence.) The no-symlink-resolution gap is therefore
+  **consistent across platforms** — a known, accepted limitation, not a macOS-specific regression.
 - **git-stash safety (#192), same mechanism, additive rule.** `git stash`'s stack (`refs/stash`) is
   repo-wide, not per-worktree: concurrent worktree-mode tasks (or a human's own diagnostic worktree)
   independently reaching for `git stash`/`git stash pop` around the same time can grab the WRONG
