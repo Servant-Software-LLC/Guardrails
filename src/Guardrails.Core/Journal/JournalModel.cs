@@ -165,8 +165,10 @@ public sealed record AttemptRecord
 public sealed record AttemptProvenance
 {
     /// <summary>
-    /// The model the agent ran on — the resolved <c>--model</c> from the prompt-runner config, or
-    /// <c>"(cli default)"</c> when the runner left it unset. Null for a script attempt (no model).
+    /// The model the agent ran on — the FULLY RESOLVED <c>--model</c> (issue #200): the task.json
+    /// <c>action.model</c> override when the task declares one, else the prompt-runner config's own
+    /// <c>model</c>, else the sentinel <c>"(cli default)"</c> when neither is set. Null for a script
+    /// attempt (no model).
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Model { get; init; }

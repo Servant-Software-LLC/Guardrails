@@ -114,6 +114,12 @@ internal sealed class ActionRunner
             runnerConfig.EffectiveSettings(isGuardrail: false),
             task.Action.MaxTurns ?? promptFile.Frontmatter.MaxTurns);
 
+        // task.json action.model override (issue #200): task override > the runner's own configured
+        // model (already resolved into `settings.Model` above) > whatever the CLI's own default is —
+        // ApplyModelOverride leaves `settings` untouched when there is no task-level override, so a
+        // null Model still falls through to ClaudePromptRunner's "omit --model entirely" behavior.
+        settings = PromptExecutionSupport.ApplyModelOverride(settings, task.Action.Model);
+
         // Auto-escalate the turn budget after a prior max-turns exhaustion (issue #129 / #94): raise
         // the effective maxTurns by the multiplier so the retry has headroom instead of re-hitting the
         // same cap. 1× (no prior max-turns) leaves it unchanged.
