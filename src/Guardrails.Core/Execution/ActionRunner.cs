@@ -52,7 +52,8 @@ internal sealed class ActionRunner
         double timeoutMultiplier,
         string? stagingDir,
         double maxTurnsMultiplier,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? worktreeRoot = null)
     {
         if (task.Action.Kind != ActionKind.Prompt)
         {
@@ -65,7 +66,7 @@ internal sealed class ActionRunner
 
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken, worktreeRoot).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
@@ -91,7 +92,8 @@ internal sealed class ActionRunner
         double timeoutMultiplier,
         string? stagingDir,
         double maxTurnsMultiplier,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? worktreeRoot)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
         PromptFile promptFile = PromptExecutionSupport.LoadPromptFile(task.Action.Path);
@@ -99,12 +101,13 @@ internal sealed class ActionRunner
 
         IReadOnlyList<DependencyContextRef> dependencies = _dependencyContext.BuildDependencyContext(task);
         IReadOnlyList<PriorAttemptRef> priorAttempts = _dependencyContext.BuildPriorAttempts(task.Id, attemptNumber);
+        bool isWorktreeMode = !string.IsNullOrEmpty(worktreeRoot);
         // §3.5: the staging dir + from→to map are embedded verbatim in the prompt (agents read
         // instructions, not env vars) — only when the task declares stagingOutputs and a staging dir
         // was provisioned (the executor passes null otherwise).
         string composed = PromptComposer.ComposeAction(
             promptFile.Body, snapshotPath, fragmentOutPath, previousFeedbackPath, dependencies, priorAttempts,
-            stagingDir, stagingDir is not null ? task.StagingOutputs : null);
+            stagingDir, stagingDir is not null ? task.StagingOutputs : null, isWorktreeMode);
         AtomicFile.WriteAllText(Path.Combine(logDir, "composed-prompt.md"), composed);
 
         PromptRunnerSettings settings = PromptExecutionSupport.ApplyPromptOverrides(
@@ -115,6 +118,16 @@ internal sealed class ActionRunner
         // the effective maxTurns by the multiplier so the retry has headroom instead of re-hitting the
         // same cap. 1× (no prior max-turns) leaves it unchanged.
         settings = settings with { MaxTurns = ExtendTurns(settings.MaxTurns, maxTurnsMultiplier) };
+
+        // Worktree containment hook (issue #199/#192): the OUTER runtime boundary — hard-enforced via
+        // a Claude Code PreToolUse hook, on TOP of the write-scope CHECK's post-hoc diff (the INNER
+        // boundary, unaffected). Injected ONLY for a real segment worktree (worktreeRoot non-null);
+        // never for serial/shared-workspace mode, where there is no isolated tree to contain writes to.
+        if (isWorktreeMode)
+        {
+            string settingsPath = WorktreeContainmentHook.WriteHookFiles(logDir, worktreeRoot!);
+            settings = settings with { ExtraArgs = [.. settings.ExtraArgs, "--settings", settingsPath] };
+        }
 
         var invocation = new PromptInvocation
         {

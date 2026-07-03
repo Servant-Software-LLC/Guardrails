@@ -96,6 +96,26 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `guardrails.json`). `maxParallelism` defaults to **3**. The user's checkout is **read-only
   for the entire run**; the only optional write to the user's branch is `--merge-on-success`
   (AI-merge is withheld at that boundary).
+- **Runtime containment hook + stash safety (issues #199/#192, SSOT section 9.4):** the write-scope
+  CHECK (section 3.4 above) is a post-hoc, INNER boundary -- it only ever sees the segment's own
+  `git diff`, so a write to an absolute path OUTSIDE the segment (a sibling task's tree, the user's
+  main checkout, anywhere else) never appears in it and goes undetected. For every worktree-mode
+  prompt invocation (action OR guardrail) the harness now ALSO generates a Claude Code **PreToolUse
+  hook** (`Guardrails.Core.Prompts.WorktreeContainmentHook`, written into the attempt's log dir --
+  never inside the segment, so it can't pollute `git status`) and injects it via `claude -p
+  --settings <path>` -- an OUTER, hard-enforced runtime boundary absent in serial mode. It intercepts
+  `Write`/`Edit`/`MultiEdit`/`NotebookEdit` and write-ish `Bash` (redirects, `tee`/`cp`/`mv`, `git
+  checkout --`, `git worktree add`) and blocks (exit 2 + stderr) any target path resolving outside
+  the worktree root, reusing `WorkspaceContainment.Escapes`'s exact rule (re-expressed in
+  shell/PowerShell, since the hook runs as an OS process, not a .NET callback) -- never a
+  reimplemented rule. The SAME hook additively blocks the entire `git stash` family unconditionally
+  in worktree mode (`refs/stash` is repo-wide, not per-worktree -- a concurrent task's stash can
+  silently cross-contaminate a sibling's tree, the #192 incident), and the harness-contract context
+  every worktree-mode prompt already receives (`PromptComposer`, gated on `isWorktreeMode`) carries a
+  `## Worktree safety` advisory with the stash-free alternative (`git diff` -> `git checkout --` ->
+  `git apply`). Honest boundary: this defends the TOOL-CALL layer Claude Code exposes -- the `Bash`
+  matcher is a heuristic over command TEXT, not an OS-level sandbox, so it raises the bar sharply
+  against accidental/careless escapes but is not proof against a deliberately adversarial agent.
 - **Action kinds**: `.prompt.md` -> LLM (via pluggable `IPromptRunner`; v1 = Claude Code
   CLI headless); anything else -> process via the interpreter map.
 - **Guardrails**: deterministic (exit 0 = pass; failure reason on stdout) or prompt

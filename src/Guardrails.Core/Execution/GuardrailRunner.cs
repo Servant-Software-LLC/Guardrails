@@ -39,7 +39,8 @@ internal sealed class GuardrailRunner
         IReadOnlyDictionary<string, string> env,
         string snapshotPath,
         string logDir,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? worktreeRoot = null)
     {
         var results = new List<GuardrailResult>(task.Guardrails.Count);
         bool anyFailed = false;
@@ -48,7 +49,7 @@ internal sealed class GuardrailRunner
         foreach (GuardrailDefinition guardrail in task.Guardrails)
         {
             (GuardrailResult result, bool guardrailTimedOut) = guardrail.Kind == ActionKind.Prompt
-                ? await RunPromptGuardrailAsync(task, guardrail, workspace, env, snapshotPath, logDir, cancellationToken).ConfigureAwait(false)
+                ? await RunPromptGuardrailAsync(task, guardrail, workspace, env, snapshotPath, logDir, cancellationToken, worktreeRoot).ConfigureAwait(false)
                 : await RunScriptGuardrailAsync(task, guardrail, workspace, env, logDir, cancellationToken).ConfigureAwait(false);
 
             results.Add(result);
@@ -102,7 +103,8 @@ internal sealed class GuardrailRunner
         IReadOnlyDictionary<string, string> env,
         string snapshotPath,
         string logDir,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? worktreeRoot)
     {
         PromptRunnerRegistry registry = _promptSupport.RequireRegistry();
         PromptFile promptFile = PromptExecutionSupport.LoadPromptFile(guardrail.Path);
@@ -113,7 +115,8 @@ internal sealed class GuardrailRunner
             ? stdoutPath
             : Path.Combine(logDir, "action-stdout.log");
 
-        string composed = PromptComposer.ComposeGuardrail(promptFile.Body, snapshotPath, verdictPath, actionStdoutPath);
+        bool isWorktreeMode = !string.IsNullOrEmpty(worktreeRoot);
+        string composed = PromptComposer.ComposeGuardrail(promptFile.Body, snapshotPath, verdictPath, actionStdoutPath, isWorktreeMode);
         AtomicFile.WriteAllText(Path.Combine(logDir, $"composed-prompt.{Sanitize(guardrail.Name)}.md"), composed);
 
         var guardrailEnv = new Dictionary<string, string>(env, StringComparer.Ordinal)
@@ -124,6 +127,15 @@ internal sealed class GuardrailRunner
         PromptRunnerSettings settings = PromptExecutionSupport.ApplyPromptOverrides(
             runnerConfig.EffectiveSettings(isGuardrail: true),
             promptFile.Frontmatter.MaxTurns);
+
+        // Worktree containment hook (issue #199/#192) for a prompt GUARDRAIL: same OUTER boundary as
+        // a prompt action — a verifier prompt is still an agent that can Write/Edit/Bash.
+        if (isWorktreeMode)
+        {
+            string guardrailSettingsPath = WorktreeContainmentHook.WriteHookFiles(
+                logDir, worktreeRoot!, $"guardrail-{Sanitize(guardrail.Name)}");
+            settings = settings with { ExtraArgs = [.. settings.ExtraArgs, "--settings", guardrailSettingsPath] };
+        }
 
         var invocation = new PromptInvocation
         {

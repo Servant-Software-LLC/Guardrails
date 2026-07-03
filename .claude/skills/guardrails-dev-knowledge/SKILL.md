@@ -149,6 +149,23 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   codes. `PromptComposer` injects dependency-context + prior-attempt pointers that reference
   `transcript.md` (#26); it stays PURE (no IO) — `TaskExecutor` resolves paths/existence, and
   the renderer must stay deterministic (golden-file tested).
+- **Worktree containment hook (`WorktreeContainmentHook`, issues #199/#192, SSOT §9.4)**: the OUTER
+  runtime boundary, on top of the write-scope CHECK's post-hoc INNER diff. `WriteHookFiles(logDir,
+  worktreeRoot)` generates an OS-picked Claude Code PreToolUse hook script (`.ps1`/`.sh`, worktree
+  root baked in as a literal) + a `containment-settings.json` into the attempt's log dir (never
+  inside the segment — must not pollute `git status`); `ActionRunner`/`GuardrailRunner` append
+  `--settings <path>` to `PromptRunnerSettings.ExtraArgs` ONLY when a real segment worktree is
+  present (`worktreeRoot` param non-null; null in serial mode — no `--settings` there). The hook's
+  path-escape decision REUSES `WorkspaceContainment.Escapes`'s rule (re-expressed in shell/PowerShell
+  since the hook runs as a Claude-spawned OS process, not a .NET callback) — any future change to the
+  escape rule must be made in `WorkspaceContainment.Escapes` (unit-tested) AND both script templates
+  (`WorktreeContainmentHookTests` runs the REAL generated script standalone with synthetic PreToolUse
+  stdin JSON via `InterpreterMap`+`ProcessRunner` — no `claude` binary needed — as the drift-catching
+  regression gate). Same hook additively blocks the `git stash` family unconditionally in worktree
+  mode (#192); `PromptComposer.ComposeAction`/`ComposeGuardrail`'s `isWorktreeMode` param also injects
+  a `## Worktree safety` advisory section with the stash-free alternative. `WorktreeContainmentHookWiringTests`
+  (Integration.Tests) proves the end-to-end plumbing (settings file generated + `--settings` actually
+  reaches a fake-CLI's argv) through a real worktree-mode run.
 - **CLI output seam (`IConsoleIo`)**: the CLI writes ALL user-facing output through an
   injected `IConsoleIo` (`Out`/`Error` `TextWriter`s), never the process-global
   `Console.*`. Production wires `SystemConsoleIo.Instance` (the ONLY place that touches

@@ -1429,6 +1429,68 @@ safety net for a `.claude/`-writing task that did **not** declare `stagingOutput
 `stagingOutputs` for `.claude/`-targeted tasks (Option C) is a `plan-breakdown` skill change,
 tracked separately.
 
+### 9.4 Worktree-containment PreToolUse hook + git-stash safety (issues #199 / #192)
+
+Worktree isolation (§1) is a physical-tree boundary, but until #199 nothing at RUNTIME stopped a
+prompt agent from writing to an absolute path OUTSIDE its own segment worktree — a write there never
+appears in the segment's own `git diff`, so the write-scope CHECK (§3.4, the **INNER**, post-hoc
+boundary) never sees it and it goes completely undetected. #199 adds an **OUTER**, hard-enforced
+runtime boundary: for every worktree-mode prompt invocation (action OR guardrail — a verifier prompt
+is still an agent that can call `Write`/`Edit`/`Bash`), the harness generates a Claude Code
+**PreToolUse hook** and injects it via `claude -p --settings <path>` (session-scoped — never touches
+the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`). `--settings` is
+**absent** in serial/shared-workspace mode: there is no isolated segment tree to contain writes to.
+
+- **Generation.** `Guardrails.Core.Prompts.WorktreeContainmentHook.WriteHookFiles(logDir,
+  worktreeRoot)` writes two files into the attempt's **log dir** (`logs/<runId>/<task-id>/attempt-N/`
+  — harness-owned, OUTSIDE the segment worktree, so the generated files never pollute `git status` /
+  the write-scope diff): an OS-picked hook script (`containment-hook.ps1` on Windows,
+  `containment-hook.sh` on Unix — the segment worktree root is baked into the script as a literal, one
+  script per attempt, no extra env/arg plumbing) and `containment-settings.json` (one `PreToolUse`
+  matcher group covering `Write|Edit|MultiEdit|NotebookEdit|Bash`, one `command` hook pointing at the
+  script). `ActionRunner`/`GuardrailRunner` append `--settings <path-to-that-file>` to the invocation's
+  `ExtraArgs` whenever a real segment worktree is present.
+- **Interception mechanism.** The hook reads the PreToolUse tool-call JSON from stdin (`tool_name`,
+  `tool_input.file_path`/`notebook_path` for Write/Edit/MultiEdit/NotebookEdit, `tool_input.command`
+  for Bash). Exit code 2 + a stderr message is Claude Code's documented block contract; exit 0 allows
+  the call. The path-escape decision REUSES `WorkspaceContainment.Escapes`'s rule (rooted-path
+  rejection + normalized-path directory-boundary comparison against the worktree root) — re-expressed
+  in shell/PowerShell (the hook runs as an OS process Claude Code spawns directly, not a .NET
+  callback), never a DIFFERENT rule. For `Bash`, the script heuristically extracts a target path from
+  write-ish forms — output redirection (`>`/`>>`), `tee`, `cp`/`mv`, `git checkout -- <path>`, `git
+  worktree add <path>` — and applies the same escape check to whatever it can parse out.
+  **Both scripts are pure, dependency-free string-based `.`/`..` segment normalization — NEITHER
+  resolves symlinks, and neither calls an external `realpath`/`readlink`.** (An earlier version of
+  the bash script shelled out to `realpath -m` to also resolve symlinks; `-m` is GNU-coreutils-only,
+  so on macOS's BSD `realpath` the call silently misbehaved and escape detection went dark —
+  13 macOS-only CI failures, all "expected block, got allow." The fix dropped the external dependency
+  entirely rather than chase a portable flag: both platforms now implement the identical rule,
+  in-process, with no core-utils-flavor dependence.) The no-symlink-resolution gap is therefore
+  **consistent across platforms** — a known, accepted limitation, not a macOS-specific regression.
+- **git-stash safety (#192), same mechanism, additive rule.** `git stash`'s stack (`refs/stash`) is
+  repo-wide, not per-worktree: concurrent worktree-mode tasks (or a human's own diagnostic worktree)
+  independently reaching for `git stash`/`git stash pop` around the same time can grab the WRONG
+  entry — silently applying one worktree's uncommitted changes into a different one (this happened
+  twice in the dogfood run that raised #192, recovered via `git fsck --unreachable`). The SAME hook
+  script blocks the entire `git stash` family (`push`/`pop`/`apply`/`list`/…) unconditionally in
+  worktree mode, regardless of any path argument — one mechanism, two additive checks, not two
+  separate hooks. **Defense in depth**: the harness-contract context every worktree-mode prompt
+  invocation receives (the same injection point as the state/output/needsHuman contract,
+  `PromptComposer.ComposeAction`/`ComposeGuardrail`, gated on `isWorktreeMode`) ALSO appends a
+  `## Worktree safety` section warning that `git stash` is not safe here and giving the local,
+  stash-free alternative: `git diff > /tmp/mine.patch` then `git checkout -- <files>` to test the
+  baseline, then `git apply /tmp/mine.patch` to restore. The advisory section explains WHY before the
+  agent ever tries; the hook is the hard backstop if it tries anyway.
+- **Boundary / honesty note.** This defends at the TOOL-CALL layer Claude Code exposes
+  (Write/Edit/MultiEdit/NotebookEdit/Bash). The `Bash` matcher is a heuristic over the command TEXT,
+  not a sandboxed OS-level filesystem ACL — it cannot stop an agent from asking Claude Code to spawn
+  an arbitrary process that itself writes outside the worktree via a form the heuristic fails to
+  recognize (a compiled helper, an obscure redirection form, a script interpreter's own file-write
+  primitive). It raises the bar sharply against the classes of accidental/careless escape #199 was
+  written against (an absolute path typo, a "let me just check the sibling task's tree" excursion, a
+  stash collision); it is not a security sandbox against a deliberately adversarial agent. The
+  write-scope CHECK (§3.4) remains the INNER, unaffected boundary underneath it.
+
 ---
 
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
