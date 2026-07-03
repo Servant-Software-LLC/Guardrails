@@ -271,8 +271,9 @@ public sealed class PromptRunnerReliabilityTests
     public async Task Transient_BudgetExhausted_SettlesNeedsHuman_WithDistinctRateLimitReason()
     {
         // A pause budget so tiny it is spent before the (never-clearing) limit resolves: the task must
-        // settle needs-human with the DISTINCT rate-limited outcome and a "re-run later" reason — NOT
-        // a generic action failure, and NOT a burned retry budget.
+        // settle with the DISTINCT TaskOutcome.RateLimited (issue #190 part 1 — no longer a generic
+        // TaskOutcome.NeedsHuman) and a "re-run later" reason — NOT a generic action failure, and NOT a
+        // burned retry budget.
         var runner = new SequencingRunner(Transient("session limit · resets 11:20am"));   // never clears
 
         (RunReport report, TaskJournalEntry entry, _) =
@@ -280,10 +281,15 @@ public sealed class PromptRunnerReliabilityTests
                 transientPauseBudgetSeconds: 1);
 
         TaskResult task = Assert.Single(report.Tasks);
-        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Equal(TaskOutcome.RateLimited, task.Outcome);
+        Assert.False(task.IsGreen, "a rate-limited task must NOT be treated as green (dependents must block)");
         Assert.Contains("rate-limited", task.Summary);
         Assert.Contains("re-run later", task.Summary);
 
+        // The JOURNAL status deliberately stays needs-human (issue #190 part 1 design decision, see the
+        // AttemptJournaler.RateLimitExhausted doc comment): only the in-memory/per-run TaskOutcome the
+        // CLI renders distinguishes rate-limited from a generic needs-human. Resume still treats it like
+        // any other needs-human (fresh budget, §7) — unchanged by this issue.
         Assert.Equal(JournalTaskStatus.NeedsHuman, entry.Status);
         Assert.Contains(entry.Attempts, a => a.Outcome == AttemptOutcome.RateLimited);
         // The action retry budget (3 attempts) was NOT burned re-failing the rate limit.

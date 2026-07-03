@@ -276,12 +276,33 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   regardless of per-task outcomes.
 - Resume: `succeeded` is terminal (use `guardrails reset` to force);
   `needs-human`/`failed`/`blocked` -> fresh budget; crashed `running` -> `pending`.
+  **Outcome-agnostic by design (issue #190):** resume does NOT distinguish WHY a task is
+  `needs-human` -- a rate-limited/timeout/output-cap halt (self-resolving) and a genuine
+  `needsHuman`/permission-wall/exhausted-guardrail halt (needs a human fix first) both reset to
+  `pending` with a full fresh budget on a plain re-run. A clean per-outcome tightening was evaluated
+  and deliberately deferred (SSOT section 7) -- re-running without fixing anything can silently burn
+  a budget re-failing the identical way.
+  **Hand-fixing a merged WORKSPACE file (issue #197):** the user's checkout is read-only for the
+  whole run, so a fix to a file an upstream task already wrote+merged must be committed on the
+  harness's plan branch (`guardrails/<plan-name>`, at its integration worktree
+  `<worktreeRoot>/<runId>/_integration`) -- NOT the user's own checkout. `CreateSegment` forks every
+  new attempt off a LIVE rev-parse of the plan branch, so the commit is picked up automatically on
+  the next resume. Full steps: SSOT section 7.
 - Harness exit codes: 0 green / 1 harness or validation error (incl. a run **aborted** by an
   infrastructure fault, #150) / 2 needs-human or blocked, OR a wholly-green run whose opt-in delivery
   was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /
   3 cancelled. See SSOT section 7.1.
 - A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
   no retry burn on a genuine human decision.
+- **`needsHarnessWrite` (issue #191)**: a SECOND fragment escape hatch, parallel to `needsHuman` --
+  `{ "needsHarnessWrite": { "path", "content", "reason"? } }` asks the .NET HARNESS PROCESS ITSELF
+  (never subject to Claude Code's tool-permission layer) to write a `.claude/` file the action's own
+  subprocess can never write (broader than #101's new-subdirectory-only gap; survives
+  `dangerouslyDisableSandbox`). Unlike `needsHuman` it does NOT short-circuit -- guardrails still run
+  afterward. Validated BEFORE the write with two checks reusing existing predicates:
+  `WorkspaceContainment.Escapes` (always) and `WriteScope.IsInScope` (only when the task declares a
+  `writeScope` -- absent means allowed, mirroring section 3.4). Singular per attempt in v1. SSOT
+  section 9.
 
 ## The four-stage workflow
 

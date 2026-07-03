@@ -694,9 +694,51 @@ public sealed class TaskExecutor : ITaskExecutor
             }
         }
 
-        // --- write-scope check (plan 08 §2/§3.4): after action (and staging move), before guardrails
-        // Only runs when the task declares a writeScope AND the worktree carries a real
-        // git repo path (non-empty TaskBase). Skipped for FakeWorktreeProvider segments.
+        // --- needsHarnessWrite escape hatch (issue #191, SSOT §9): after action success, BEFORE the
+        // write-scope check and guardrails — the .NET harness process itself performs a write the
+        // action's own subprocess could never make (a .claude/ path the Claude Code runtime refuses
+        // unconditionally, broader than the new-subdirectory-only gap #101 fixed, and unaffected by
+        // dangerouslyDisableSandbox). Prospective validation (workspace-escape ALWAYS; writeScope
+        // membership when declared) runs BEFORE the write, reusing the SAME predicates the
+        // retrospective write-scope check uses below — so the two enforcement points can never drift.
+        // A rejected/failed write is treated as an ACTION FAILURE (skip guardrails, retry with
+        // actionable feedback) — this escape hatch unblocks write MECHANICS only, never verification:
+        // an in-scope write still falls through to the write-scope check (which will also see the
+        // just-written file — expected, not redundant) and the task's own guardrails, exactly as any
+        // other successful action does.
+        if (action.HarnessWriteRequest is { } harnessWriteRequest)
+        {
+            HarnessWriteOutcome writeOutcome = HarnessWrite.Validate(
+                harnessWriteRequest, effectiveWorkspace, task.WriteScope);
+
+            // The control key is consumed either way — it must never reach the fragment-merge check
+            // as a foreign/reserved key (mirrors needsHuman being fully consumed pre-merge).
+            HarnessWrite.StripFromFragment(fragmentOutPath);
+
+            if (!writeOutcome.Succeeded)
+            {
+                string feedback = writeOutcome.WasRejected
+                    ? RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!)
+                    : RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!);
+                return _journaler.FailedAttempt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
+                    AttemptOutcome.GuardrailFailed,
+                    new TaskResult
+                    {
+                        TaskId = task.Id,
+                        Outcome = TaskOutcome.GuardrailFailed,
+                        ActionExitCode = action.ExitCode,
+                        Summary = writeOutcome.WasRejected
+                            ? $"needsHarnessWrite rejected: {writeOutcome.FailureReason}"
+                            : $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
+                    },
+                    costUsd: action.CostUsd);
+            }
+        }
+
+        // --- write-scope check (plan 08 §2/§3.4): after action (and staging move / needsHarnessWrite),
+        // before guardrails. Only runs when the task declares a writeScope AND the worktree carries a
+        // real git repo path (non-empty TaskBase). Skipped for FakeWorktreeProvider segments.
         if (task.WriteScope is { } declaredScope && IsRealGitSegment(worktree))
         {
             // The stagingOutputs 'to' destinations are IMPLICITLY in-scope (SSOT §3.4/§3.5): a staging

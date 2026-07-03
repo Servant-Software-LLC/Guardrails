@@ -1070,6 +1070,61 @@ already exhausts to `needs-human`).
   `needs-human` / `failed` / `blocked` → `pending` with a fresh retry budget;
   `running` (crashed previous run) → `pending`, attempt numbering continues.
 
+**Resume does not distinguish WHY a task is `needs-human` (issue #190, documented — not tightened).**
+On a plain `guardrails run` resume (not `--fresh`), **ANY** task journaled `needs-human` — for **any**
+reason, including a genuine unresolved human-decision halt — is reset to `pending` and given a
+**FRESH retry budget**. `RunJournal.ResumeStatus` is a pure function of the journal `status` string
+alone; it does not inspect the task's last recorded `AttemptRecord.Outcome` to tell "this will
+probably self-resolve" (`rate-limited`, and likewise a transient `timeout`/`output-cap`/`max-turns`
+exhaustion) apart from "a human must actually act first" (the `needsHuman` prompt short-circuit, a
+`permission-denied` wall, a `task-preflight-failed` gate, or a genuinely exhausted guardrail-failure
+retry budget). Re-running the plan without having fixed anything therefore silently burns a full fresh
+retry budget re-attempting the SAME thing that already exhausted its budget — likely to fail
+identically (partially mitigated by the no-op-deadlock short-circuit above, which still needs 2
+identical no-op attempts to fire, not an immediate park).
+<br>
+This was evaluated for a clean tightening (teaching `ResumeStatus`/`ApplyResumeRules` to look at the
+last `AttemptRecord.Outcome` and auto-reset to `pending` ONLY for the auto-retryable infra outcomes —
+`rate-limited`/`timeout`/`output-cap`/`max-turns` — leaving a genuine `needsHuman`/`permission-denied`/
+`task-preflight-failed`/exhausted-guardrail-failure outcome parked at `needs-human` until an explicit
+`guardrails reset <folder> <task>`) and was **deliberately NOT implemented**: the existing resume-matrix
+test (`RunJournalTests.Resume_NormalizesStatusPerSsot`) already locks in "ANY non-succeeded status →
+`pending`" as outcome-agnostic SSOT-tested behavior, and the change would ripple into the Scheduler's
+resume pre-pass and require auditing every current and future `AttemptOutcome` for "does this still
+auto-retry on resume?" — real surface area for a behavior change that is not this issue's stated
+minimum bar. If a future issue wants the tightening, start from this note.
+
+**Hand-fixing a `needs-human` when the fix is a merged WORKSPACE file (issue #197).** The normal
+guidance — "inspect the latest attempt's `feedback.md`, fix the action or guardrails, then re-run to
+resume" — assumes the fix lands in a PLAN-FOLDER file (`task.json`, an action script, a guardrail),
+which a human edits directly in the plan dir on the run branch. In **worktree mode**, a fix
+sometimes needs to land in a **workspace SOURCE file an upstream task already wrote and merged onto
+the harness's internal integration branch** — and the user's own checkout is **read-only for the
+entire run** (Load-bearing invariant: worktree isolation), so editing it there does nothing; the fix
+must be committed on the harness's integration branch itself. Steps (verified against the actual
+`GitWorktreeProvider` implementation, not guessed from naming conventions):
+
+1. **Find the plan branch.** `git branch -a | grep guardrails/` or `git worktree list` — the plan
+   branch is named `guardrails/<plan-name>` (the plan FOLDER's name, e.g. `guardrails/hello-guardrails`
+   — NOT a hash; `git worktree list` also shows every live worktree's path and the branch it has
+   checked out).
+2. **Identify the integration worktree.** It is the worktree checked out on the plan branch, at
+   `<worktreeRoot>/<runId>/_integration` under the harness-owned worktree root (default
+   `<temp>/guardrails-worktrees/<plan-folder-name>-<hash>/`, §1 — overridable via `guardrails.json`'s
+   `worktreeRoot`). `git worktree list` output makes this unambiguous: the path ending `.../_integration`
+   is it.
+3. **Edit + commit the merged file THERE** — `git -C <integration-worktree-path> add <file>` then
+   `git -C <integration-worktree-path> commit`, or `cd` into that worktree and use plain `git`. This is
+   an ordinary human commit (NOT one of the harness's own internal `--no-verify` plumbing commits,
+   §5.3 "Hook policy") — it runs YOUR local `pre-commit`/`commit-msg` hooks normally, which is fine and
+   expected; it is just worth knowing your fix-commit behaves differently from the harness's own
+   internal commits (which deliberately bypass hooks) so the difference isn't confusing.
+4. **Re-run to resume.** `GitWorktreeProvider.CreateSegment` forks every new segment worktree off a
+   **live `git rev-parse` of the plan branch's current tip** at the moment it is created — never a
+   cached/stale reference — so the human's commit, once on the integration branch (which IS the plan
+   branch's worktree), becomes the base the next attempt for that task inherits. No extra step is
+   needed to "publish" the fix; the next resumed attempt sees it automatically.
+
 ### 7.1 Re-validate-only (`guardrails run --revalidate-task <id>`)
 
 `guardrails run [folder] --revalidate-task <task-id>` runs **only that one task's guardrails**
@@ -1231,6 +1286,57 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
 - A prompt action may signal an unresolvable decision by writing
   `{ "needsHuman": "<question>" }` into its fragment — the harness treats the attempt
   as needs-human immediately (no retry burn).
+
+**`needsHarnessWrite` — harness-mediated write escape hatch for `.claude/` (issue #191).** In
+worktree mode, a task action running as a Claude Code subprocess can **never** write under
+`.claude/` — the runtime's tool-permission layer refuses `.claude/` writes unconditionally in a
+fresh, never-interactively-approved segment worktree (broader than the new-subdirectory-only gap
+issue #101 fixed: this affects EXISTING files too), and the refusal survives every write mechanism
+including `dangerouslyDisableSandbox`. `needsHarnessWrite` is a second structured escape hatch,
+parallel to `needsHuman`, that lets the action ask the **.NET harness process itself** — not
+subject to Claude Code's tool-permission layer — to perform the write on its behalf:
+
+```jsonc
+{ "needsHarnessWrite": { "path": ".claude/skills/guardrails-review/SKILL.md", "content": "...", "reason": "..." } }
+```
+
+- **Wire contract.** A root fragment key, read from the SAME already-written `GUARDRAILS_STATE_OUT`
+  file `needsHuman` uses, via the same "read once" shape. `path` is workspace-relative (the same
+  convention `writeScope` entries use — the segment worktree in worktree mode, the plan workspace in
+  serial mode); `content` is the literal file content; `reason` is optional and human-readable.
+  **Singular only in v1** — one harness-write per attempt (the issue's own example shows a single
+  object, not an array). A task needing multiple `.claude/` files touched does so across multiple
+  attempts/retries; this is a documented v1 limitation, not solved here.
+- **Coexistence with a state fragment.** The key is CONSUMED (stripped from the fragment) before the
+  normal fragment-merge validation runs, so any OTHER top-level key the action ALSO wrote (its own
+  state contribution, keyed under its own task id) merges normally in the same attempt — a task can
+  request a harness write AND contribute state together. This differs from `needsHuman`, which is a
+  full short-circuit (no guardrails, no merge at all): `needsHarnessWrite` unblocks write MECHANICS
+  only, never verification — the task's guardrails still run afterward. If a fragment carries BOTH
+  `needsHuman` and `needsHarnessWrite`, `needsHuman` wins (checked first; a human-decision halt
+  trumps a mechanical write request).
+- **Two load-bearing safety checks, BOTH run BEFORE the write (a security boundary — otherwise any
+  task could claim "I'm blocked, please write this for me" and bypass `writeScope` entirely):**
+  1. **Workspace-escape check — ALWAYS runs, independent of `writeScope`.** Reuses
+     `WorkspaceContainment.Escapes` (the same "does this path escape the boundary" predicate used
+     elsewhere). An absolute path or a `../` climb-out is rejected even for a task with NO declared
+     `writeScope` — the segment-worktree containment is the boundary in that case.
+  2. **`writeScope`-membership check — only when the task DECLARES a `writeScope`.** Reuses
+     `WriteScope.IsInScope` — the SAME scope-matching predicate the post-hoc write-scope CHECK (§3.4)
+     uses, so the two enforcement points can never drift. **A task with NO `writeScope` declared
+     allows the write unconditionally**, mirroring §3.4's "Absent ⇒ no check" for the retrospective
+     check — the segment-worktree containment + the worktree-containment hook (§9.4) are the
+     backstops in that case.
+  A rejected request fails the attempt with actionable feedback naming the offending path (retries;
+  eventual `needs-human` on budget exhaustion) — the same shape as an out-of-scope write-scope
+  violation. A request that PASSES validation but whose actual write fails (disk full, a genuinely
+  unwritable location even for the harness process) is likewise treated as a failed attempt with
+  actionable feedback, never a crash.
+- **After the write, normal gating resumes.** A successful `needsHarnessWrite` falls through to the
+  SAME write-scope CHECK (§3.4, if the task declares one — the harness-written file is now part of
+  the segment's git diff too; this is expected, not redundant — the prospective check prevents the
+  attempt from even TRYING an out-of-scope write, the retrospective check is unchanged defense in
+  depth) and then the task's own `guardrails/`, exactly as any other successful action does.
 - **Failure classification (runner-agnostic).** A non-success prompt result is classified into a
   `PromptFailureKind` — `Transient` | `OutputCap` | `MaxTurns` | `Timeout` | `Error` — by the runner
   CLASS, which is the SOLE home of the fragile vendor error-string matching (a 429/503/529 status, an

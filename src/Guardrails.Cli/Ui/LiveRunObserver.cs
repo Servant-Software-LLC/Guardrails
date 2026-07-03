@@ -267,12 +267,23 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
-    private static string StatusMarkup(TaskOutcome outcome) => outcome switch
+    /// <summary>
+    /// The Spectre markup for a finished task's Status cell, keyed on its <see cref="TaskOutcome"/>.
+    /// Public (not private) for the same reason <see cref="Commands.RunCommand.Hyperlink"/> is — the
+    /// Cli assembly ships no <c>InternalsVisibleTo</c>, so a pure mapping method is the test seam
+    /// (issue #190: proves <see cref="TaskOutcome.RateLimited"/> renders distinctly from the generic
+    /// needs-human red).
+    /// </summary>
+    public static string StatusMarkup(TaskOutcome outcome) => outcome switch
     {
         TaskOutcome.Succeeded => "[green]succeeded[/]",
         TaskOutcome.Skipped => "[green]skipped[/]",
         TaskOutcome.Blocked => "[orange3]blocked[/]",
         TaskOutcome.Cancelled => "[grey]cancelled[/]",
+        // Issue #190: distinct from a generic needs-human — blue matches the PromptPaused transient
+        // color convention above, so a human reading the table associates blue with "provider-side,
+        // re-run later", never "your task is broken" (red).
+        TaskOutcome.RateLimited => "[blue]rate limited[/]",
         _ => "[red]needs human[/]"
     };
 }

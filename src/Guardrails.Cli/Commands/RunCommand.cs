@@ -583,6 +583,18 @@ public static class RunCommand
         TextWriter output,
         Func<string, TriageSummary?> triageFor)
     {
+        // Issue #190: a rate-limited task is NOT "fix the action or guardrails" — it is a healthy task
+        // waiting on a provider-side limit. Give it its own section with the correct advice ("re-run
+        // later") instead of folding it into the generic NEEDS HUMAN loop below, whose guidance would
+        // mislead an operator into debugging a task that isn't broken.
+        foreach (TaskResult rateLimited in tasks.Where(t => t.Outcome is TaskOutcome.RateLimited))
+        {
+            output.WriteLine();
+            output.WriteLine($"RATE LIMITED: {rateLimited.TaskId} — {rateLimited.Summary}");
+            output.WriteLine("  Not a task defect — a provider-side limit did not clear in time. Re-run this plan");
+            output.WriteLine("  later (the harness resumes from here), or raise transientPauseBudgetSeconds.");
+        }
+
         // First task id seen per category, so a later same-category task can point back to it.
         var firstTaskForCategory = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -673,6 +685,9 @@ public static class RunCommand
         TaskOutcome.GuardrailFailed => "GUARDRAIL FAILED",
         TaskOutcome.InvalidFragment => "INVALID FRAGMENT",
         TaskOutcome.NeedsHuman => "NEEDS HUMAN",
+        // Issue #190: distinct from a generic NEEDS HUMAN so the per-task summary line reads
+        // "re-run later", not "something is broken here".
+        TaskOutcome.RateLimited => "RATE LIMITED",
         TaskOutcome.Blocked => "BLOCKED",
         TaskOutcome.Cancelled => "CANCELLED",
         _ => outcome.ToString()
