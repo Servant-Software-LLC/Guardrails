@@ -54,19 +54,16 @@
   subgraph task_01_write_greeting_script["01-write-greeting-script"]
     task_01_write_greeting_script_gr_0["01-script-exists"]:::guardrail
     task_01_write_greeting_script_gr_1["02-script-runs-clean"]:::guardrail
-    task_01_write_greeting_script_anchor[" "]:::invisible
   end
   style task_01_write_greeting_script fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_02_generate_greeting["02-generate-greeting"]
     task_02_generate_greeting_gr_0["01-greeting-exists"]:::guardrail
     task_02_generate_greeting_gr_1["02-greeting-contains"]:::guardrail
-    task_02_generate_greeting_anchor[" "]:::invisible
   end
   style task_02_generate_greeting fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_quality_check["03-quality-check"]
     task_03_quality_check_gr_0["01-report-exists"]:::guardrail
     task_03_quality_check_gr_1["02-tone-is-friendly"]:::guardrail
-    task_03_quality_check_anchor[" "]:::invisible
   end
   style task_03_quality_check fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
@@ -78,21 +75,19 @@
   task_03_quality_check --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
-  classDef invisible fill:transparent,stroke:none;
-  click task_01_write_greeting_script_anchor href "tasks/01-write-greeting-script/" "01-write-greeting-script" _blank
   click task_01_write_greeting_script_gr_0 href "tasks/01-write-greeting-script/guardrails/01-script-exists.ps1" "01-script-exists" _blank
   click task_01_write_greeting_script_gr_1 href "tasks/01-write-greeting-script/guardrails/02-script-runs-clean.ps1" "02-script-runs-clean" _blank
-  click task_02_generate_greeting_anchor href "tasks/02-generate-greeting/" "02-generate-greeting" _blank
   click task_02_generate_greeting_gr_0 href "tasks/02-generate-greeting/guardrails/01-greeting-exists.ps1" "01-greeting-exists" _blank
   click task_02_generate_greeting_gr_1 href "tasks/02-generate-greeting/guardrails/02-greeting-contains.ps1" "02-greeting-contains" _blank
-  click task_03_quality_check_anchor href "tasks/03-quality-check/" "03-quality-check" _blank
   click task_03_quality_check_gr_0 href "tasks/03-quality-check/guardrails/01-report-exists.ps1" "01-report-exists" _blank
   click task_03_quality_check_gr_1 href "tasks/03-quality-check/guardrails/02-tone-is-friendly.prompt.md" "02-tone-is-friendly" _blank</script>
+<script type="application/json" id="task-folder-targets">{"task_01_write_greeting_script":"tasks/01-write-greeting-script/","task_02_generate_greeting":"tasks/02-generate-greeting/","task_03_quality_check":"tasks/03-quality-check/"}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
 
 const graph = document.getElementById('graph-source').textContent;
+const taskFolderTargets = JSON.parse(document.getElementById('task-folder-targets').textContent);
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;
 // the content is the user's own local plan, served from file:// — not untrusted input.
 // maxTextSize raises Mermaid's default 50 000-character source ceiling (issue #108): a large
@@ -104,6 +99,51 @@ const graph = document.getElementById('graph-source').textContent;
 // edges exceeded". Both ceilings must be lifted or a big plan still fails to render.
 mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', maxTextSize: 5000000, maxEdges: 100000, flowchart: { useMaxWidth: false } });
 
+// Inject a real clickable overlay on each task container's TITLE/LABEL ROW (issue #232/#233
+// superseded, issue #235). Mermaid never fires a `click` directive on a subgraph/cluster element,
+// and an anchor NODE inside the container gets packed into whatever sliver of space dagre's own
+// layout leaves — useless for a content-dense container. The title band is different: Mermaid
+// ALWAYS renders a cluster as exactly two children, a background <rect> then a <g
+// class="cluster-label">, with the label in its own reserved header strip above any leaf content —
+// so a full-width band from the cluster's top down to just past the label's bottom edge is empty BY
+// CONSTRUCTION, regardless of how many guardrails/preflights the task has.
+function addTaskContainerOverlays(svgEl) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const clusters = svgEl.querySelectorAll('g.cluster');
+  for (const cluster of clusters) {
+    const target = taskFolderTargets[cluster.id];
+    if (!target) continue; // not a task container (e.g. plan_preflights/plan_guardrails), or no map entry
+    const label = cluster.querySelector('.cluster-label');
+    if (!label) continue;
+
+    const clusterBox = cluster.getBBox();
+    const labelBox = label.getBBox();
+    const bandHeight = (labelBox.y + labelBox.height) - clusterBox.y + 8; // small padding below the title
+
+    const a = document.createElementNS(ns, 'a');
+    a.setAttribute('href', target);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('aria-label', 'Open task folder: ' + target);
+
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', String(clusterBox.x));
+    rect.setAttribute('y', String(clusterBox.y));
+    rect.setAttribute('width', String(clusterBox.width));
+    rect.setAttribute('height', String(bandHeight));
+    rect.setAttribute('fill', 'transparent'); // painted (hit-testable) but invisible — see remarks
+    rect.style.cursor = 'pointer';
+
+    a.appendChild(rect);
+    // Append as the LAST child — do NOT prepend as the first child. A cluster's only two original
+    // children are its background <rect> then its .cluster-label group (in that paint order).
+    // Appending puts the overlay on top of the background rect (so it is actually clickable)
+    // without covering the label text visually (the rect is transparent either way) — prepending
+    // instead would put the overlay BEHIND the background rect (which becomes second-in-order and
+    // paints over it), silently blocking every click.
+    cluster.appendChild(a);
+  }
+}
+
 let pz = null;
 try {
   const { svg } = await mermaid.render('dag', graph);
@@ -111,6 +151,7 @@ try {
   const el = document.querySelector('#stage svg');
   el.setAttribute('width', '100vw');
   el.setAttribute('height', '100vh');
+  addTaskContainerOverlays(el);
   pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });

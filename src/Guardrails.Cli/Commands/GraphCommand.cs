@@ -120,7 +120,8 @@ public static partial class GraphCommand
         if (!noHtml)
         {
             string interactive = MermaidRenderer.RenderInteractive(plan);
-            AtomicFile.WriteAllText(diagramHtmlPath, HtmlDiagramRenderer.Render(interactive, sourceHash));
+            IReadOnlyDictionary<string, string> taskFolderTargets = MermaidRenderer.TaskFolderTargets(plan);
+            AtomicFile.WriteAllText(diagramHtmlPath, HtmlDiagramRenderer.Render(interactive, sourceHash, taskFolderTargets));
             output.WriteLine($"Wrote {diagramHtmlPath}");
         }
 
