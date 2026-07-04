@@ -79,23 +79,60 @@ namespace Guardrails.Core.Graph;
 /// <c>:::guardrail</c>).
 /// </para>
 /// <para>
-/// <b>A task container's click targets a click-only anchor node (issue #211), NOT the subgraph
-/// itself.</b> The #210 edge fix above only changed how DAG EDGES attach to a container; it did
-/// not change (and never claimed to change) how the container's own <c>click href</c> directive
-/// resolves. Real headless-Chrome verification against the bundled <c>mermaid@11.4.1</c> — clicking
-/// the container body, its title text, and its fill rect, then checking whether a real navigation
-/// (a <c>window.open</c>/popup) actually fired — proved it NEVER does: Mermaid wraps a clickable
-/// LEAF node in a real <c>&lt;a href&gt; </c> element (confirmed firing), but never wraps a
-/// <c>&lt;g class="cluster"&gt;</c> (subgraph) in one, regardless of what id a <c>click</c>
-/// directive names. This is a genuine, still-open upstream Mermaid limitation (not a regression
-/// from #210, and not fixable by choosing a different id): mermaid-js/mermaid#1637 ("Let subgraph
-/// handle clicks") and #5428 ("click action for subgraphs") are both open feature requests as of
-/// this writing. The fix: <see cref="RenderInteractive"/> ONLY (never <see cref="Render"/>) emits
-/// one invisible click-only anchor node per task container — the LAST line inside the container
-/// block, so it never disturbs the preflight-before-guardrail emission-order contract — and the
-/// container's <c>click</c> directive targets that anchor instead of the container id. The anchor
-/// carries no edge (the #210 container→container edges are untouched) and no `class` assignment
-/// beyond `:::invisible`, so it is invisible and inert except as a click target.
+/// <b>A task container's click target is a POST-RENDER SVG overlay on its title band (issue
+/// #232/#233 superseded, issue #235), NOT a Mermaid-source mechanism at all.</b> The #210 edge fix
+/// above only changed how DAG EDGES attach to a container; it did not change (and never claimed to
+/// change) how the container's own click target resolves. Real headless-Chrome verification against
+/// the bundled <c>mermaid@11.4.1</c> — clicking the container body, its title text, and its fill
+/// rect, then checking whether a real navigation (a popup) actually fired — proved a Mermaid
+/// <c>click</c> directive targeting a subgraph/cluster id NEVER fires: Mermaid wraps a clickable LEAF
+/// node in a real <c>&lt;a href&gt;</c> element (confirmed firing), but never wraps a
+/// <c>&lt;g class="cluster"&gt;</c> (subgraph) in one, regardless of what id a <c>click</c> directive
+/// names. This is a genuine, still-open upstream Mermaid limitation: mermaid-js/mermaid#1637 ("Let
+/// subgraph handle clicks") and #5428 ("click action for subgraphs") are both open feature requests
+/// as of this writing.
+/// </para>
+/// <para>
+/// <b>Why the first fix (#232/#233, an invisible anchor NODE) was insufficient.</b> That fix added
+/// one <c>{containerId}_anchor[" "]:::invisible</c> node per container and pointed the container's
+/// <c>click</c> directive at it instead of the subgraph id — which DOES fire (Mermaid wraps it in a
+/// real <c>&lt;a href&gt;</c>, like any leaf node) but is USELESS in practice: dagre (Mermaid's layout
+/// engine) sizes a <c>[" "]</c>-labelled node to a tiny default (~39×20px) and packs it wherever ITS
+/// OWN layout algorithm decides — for a container with several guardrail leaf boxes packed
+/// side-by-side, that is a thin sliver squeezed into whatever gap remains, not centered and not
+/// where a user would naturally click. Measured on a real 4-guardrail task container: the anchor
+/// covered 0.44% of the container's area, in a narrow strip near the container's right edge, and
+/// none of 4 realistic click points (dead-center, near-title, left-margin, bottom-strip) landed on
+/// it — dead-center instead landed on a leaf guardrail box's own click target and opened THAT
+/// guardrail's source file instead of the task folder. Forcing the anchor wider via a padded label
+/// does not fix this either (verified): dagre still packs it into its own slot rather than centering
+/// or spanning it, and a content-dense container has almost no empty background region to reliably
+/// overlay in the first place. This whole "shape the anchor node's content to control its size/
+/// position" direction was abandoned as unfixable via the Mermaid-source anchor-node mechanism.
+/// </para>
+/// <para>
+/// <b>The fix: an SVG overlay on the container's TITLE/LABEL ROW, injected via JavaScript AFTER
+/// Mermaid's render completes.</b> Mermaid always renders a cluster (task container) as
+/// <c>&lt;g class="cluster" id="..."&gt;</c> with exactly two children: a background <c>&lt;rect&gt;</c>
+/// and a <c>&lt;g class="cluster-label"&gt;</c> (the title text) — the label always sits in its own
+/// reserved header strip ABOVE where any leaf node begins (measured on a real container: label
+/// spanned y=310.06→341.4, first leaf node did not start until y=373.7 — a genuine ~32px full-width
+/// gap). This band is empty BY CONSTRUCTION regardless of how many/how large a task's checks are, so
+/// it is a reliable click target no matter how content-dense the container is — unlike a dagre-packed
+/// interior node. <see cref="HtmlDiagramRenderer"/>'s embedded script (never
+/// <see cref="MermaidRenderer"/>/this Mermaid SOURCE, which stays exactly the container-model shape
+/// issue #210 left it) computes, for every task container, a full-width band from the container's
+/// bounding box down to just past the label's bottom edge, and appends a real
+/// <c>&lt;a href="..." target="_blank"&gt;&lt;rect fill="transparent"&gt;&lt;/a&gt;</c> covering that
+/// band as the cluster group's LAST child — appended (not inserted first), so it paints ON TOP of
+/// the cluster's own background rect (the cluster's only two original children) while still living
+/// in a different top-level SVG group from every leaf node's own clickable <c>&lt;a&gt;</c>, so it can
+/// never occlude or be occluded by a leaf-node click target. The Mermaid source contributes NO
+/// anchor node, NO <c>:::invisible</c> classDef, and no <c>click</c> directive for the container at
+/// all now — the task→folder path data the overlay script needs is threaded through as a small
+/// embedded JSON side-table (see <see cref="HtmlDiagramRenderer"/>), not a Mermaid <c>click</c>
+/// directive. Leaf check-node clicks are completely unaffected — they still use Mermaid's native
+/// <c>click href</c> mechanism, which already works.
 /// </para>
 /// <para>
 /// A task-level preflight still gates its producer's <c>dependsOn</c> edge: the edge remains
@@ -153,15 +190,15 @@ public static class MermaidRenderer
 
         var sb = new StringBuilder();
         AppendLf(sb, "flowchart TD");
-        AppendNodesAndEdges(plan, sb, includeClickAnchors: false);
-        AppendClassDefs(sb, includeInvisible: false);
+        AppendNodesAndEdges(plan, sb);
+        AppendClassDefs(sb);
         return sb.ToString();
     }
 
     /// <summary>
-    /// Render the plan PLUS <c>click</c> directives that open each node's source under the plan
-    /// folder — a task node opens its task folder, a check node opens its guardrail/preflight
-    /// file (issue #33). Used ONLY for the local <c>diagram.html</c> viewer:
+    /// Render the plan PLUS <c>click</c> directives that open each CHECK node's source under the
+    /// plan folder (a preflight/guardrail node opens its own file — issue #33). Used ONLY for the
+    /// local <c>diagram.html</c> viewer:
     /// <list type="bullet">
     ///   <item>GitHub renders Mermaid in a sandboxed mode that disables clicks, so these would be
     ///         inert in <c>diagram.md</c> — and the targets are <c>file://</c>-local anyway.</item>
@@ -170,34 +207,52 @@ public static class MermaidRenderer
     ///         same plan, as plan-relative forward-slash paths, so the output is byte-identical on
     ///         every OS (no timestamp, no absolute path).</item>
     /// </list>
+    /// A TASK CONTAINER's click target is NOT a Mermaid <c>click</c> directive at all (see class
+    /// remarks, "A task container's click target is a POST-RENDER SVG overlay..." — issue
+    /// #232/#233 superseded, issue #235): <see cref="HtmlDiagramRenderer"/>'s embedded script injects
+    /// a title-band overlay after Mermaid's render completes, using <see cref="TaskFolderTargets"/>
+    /// for the folder path data. This method emits no anchor node, no <c>invisible</c> classDef, and
+    /// no container <c>click</c> directive — only CHECK-node clicks, identical in shape to
+    /// <see cref="Render"/>'s Mermaid source plus the click lines.
     /// </summary>
-    /// <remarks>
-    /// <b>Task-container clicks target a click-only anchor node, not the subgraph itself
-    /// (issue #211).</b> Real headless-Chrome verification against the bundled
-    /// <c>mermaid@11.4.1</c> proved a <c>click</c> directive targeting a subgraph/cluster id
-    /// never fires — Mermaid wraps a clickable LEAF node in a real <c>&lt;a href&gt;</c> element,
-    /// but never does so for a <c>&lt;g class="cluster"&gt;</c> (subgraph); this matches Mermaid's
-    /// own still-open upstream limitation (mermaid-js/mermaid#1637, #5428: "let subgraph handle
-    /// clicks" / "click action for subgraphs"). So <see cref="RenderInteractive"/> emits ONE extra
-    /// invisible anchor node per task container (<paramref name="includeClickAnchors"/> true, this
-    /// method only) as the LAST line inside the container block, and the container's <c>click</c>
-    /// directive targets that anchor instead of the container id. This is click-target-only: the
-    /// #210 container→container DAG edges are UNCHANGED (still <c>subgraph --&gt; subgraph</c>,
-    /// still clip to the outer border) — the anchor carries no edge. <see cref="Render"/> (and thus
-    /// <c>diagram.md</c> and <see cref="SemanticContent"/>/the staleness hash) never sets this flag,
-    /// so the clean container model stays exactly as issue #210 left it: no interior anchor, no
-    /// <c>:::invisible</c> class, at all.
-    /// </remarks>
     public static string RenderInteractive(PlanDefinition plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
 
         var sb = new StringBuilder();
         AppendLf(sb, "flowchart TD");
-        IReadOnlyDictionary<string, string> nodeIdBase = AppendNodesAndEdges(plan, sb, includeClickAnchors: true);
-        AppendClassDefs(sb, includeInvisible: true);
+        IReadOnlyDictionary<string, string> nodeIdBase = AppendNodesAndEdges(plan, sb);
+        AppendClassDefs(sb);
         AppendClickDirectives(plan, nodeIdBase, sb);
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The task-id → plan-relative folder path map <see cref="HtmlDiagramRenderer"/> needs to inject
+    /// the title-band click overlay (see class remarks, issue #235): a task container's click target
+    /// is no longer a Mermaid-source mechanism, so this is how the same path data
+    /// <see cref="AppendClickDirectives"/> used to feed the removed anchor's <c>click href</c> now
+    /// reaches the post-render JavaScript instead — as a small embedded JSON side-table keyed by the
+    /// SAME container id (<c>task_&lt;base&gt;</c>) <see cref="AppendTaskContainer"/> emits, so the
+    /// overlay script can look a cluster's target up by its own DOM id. Plan-relative, forward-slash
+    /// paths (not OS separators, not absolute) for the same byte-identical-across-OSes reason as
+    /// <see cref="ToPlanRelative"/>.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> TaskFolderTargets(PlanDefinition plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        List<TaskNode> tasks = plan.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal).ToList();
+        IReadOnlyDictionary<string, string> nodeIdBase = AllocateNodeIdBases(tasks);
+
+        var targets = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (TaskNode task in tasks)
+        {
+            string containerId = $"task_{nodeIdBase[task.Id]}";
+            targets[containerId] = ToPlanRelative(plan.PlanDirectory, task.Directory) + "/";
+        }
+
+        return targets;
     }
 
     /// <summary>
@@ -209,25 +264,15 @@ public static class MermaidRenderer
     /// that is an edge endpoint in the bundled Mermaid. Shared by <see cref="Render"/> and
     /// <see cref="RenderInteractive"/>; deliberately EXCLUDED from the staleness key (see
     /// <see cref="SemanticContent"/>), which is why <see cref="SemanticContent"/> does not call it.
-    /// <paramref name="includeInvisible"/> additionally emits the <c>invisible</c> classDef the
-    /// click-only anchor nodes use (issue #211) — <see cref="RenderInteractive"/> only; the clean
-    /// <see cref="Render"/> output never declares an anchor node, so it never needs this class.
-    /// <c>fill:transparent</c> (NOT <c>fill:none</c>) is deliberate: real headless-Chrome
-    /// verification proved an SVG shape with <c>fill:none</c> is invisible to hit-testing too — the
-    /// browser's default <c>pointer-events: visiblePainted</c> only counts a shape as "painted" (and
-    /// therefore clickable) when it has an actual fill/stroke, so a <c>fill:none</c> anchor let every
-    /// click pass straight through to whatever sat underneath it and silently ate the click. A fully
-    /// transparent (alpha-0) fill still paints nothing visually but DOES count as painted for
-    /// hit-testing, so the anchor stays invisible AND becomes reliably clickable.
+    /// No longer emits an <c>invisible</c> classDef (issue #211's anchor-node mechanism was removed
+    /// entirely — issue #235; see class remarks): the task-container click target is now a
+    /// post-render SVG overlay <see cref="HtmlDiagramRenderer"/> injects via JavaScript, not a
+    /// Mermaid node/class at all.
     /// </summary>
-    private static void AppendClassDefs(StringBuilder sb, bool includeInvisible)
+    private static void AppendClassDefs(StringBuilder sb)
     {
         AppendLf(sb, "  classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;");
         AppendLf(sb, "  classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;");
-        if (includeInvisible)
-        {
-            AppendLf(sb, "  classDef invisible fill:transparent,stroke:none;");
-        }
     }
 
     /// <summary>
@@ -245,7 +290,7 @@ public static class MermaidRenderer
         ArgumentNullException.ThrowIfNull(plan);
 
         var sb = new StringBuilder();
-        AppendNodesAndEdges(plan, sb, includeClickAnchors: false);
+        AppendNodesAndEdges(plan, sb);
         return sb.ToString();
     }
 
@@ -253,10 +298,12 @@ public static class MermaidRenderer
     /// Append the container model (the semantic content) for the plan: the plan-level Full Flight
     /// Checks container, one container per task in ordinal order, the plan-level Terminal Gate
     /// container, and finally every container→container edge. The single shared emitter behind
-    /// <see cref="Render"/>, <see cref="SemanticContent"/>, and <see cref="RenderInteractive"/>.
-    /// Returns the task-id → node-id-base map so the caller can emit click directives against the
-    /// SAME node ids (the emitted bytes are unchanged whether or not the caller uses the return
-    /// value).
+    /// <see cref="Render"/>, <see cref="SemanticContent"/>, and <see cref="RenderInteractive"/> —
+    /// all three now emit the IDENTICAL container/node shape (issue #235 removed the interactive-only
+    /// anchor node), so <see cref="Render"/> and <see cref="RenderInteractive"/> differ ONLY in
+    /// whether <c>click</c> directives for CHECK nodes are appended afterward. Returns the
+    /// task-id → node-id-base map so the caller can emit click directives against the SAME node ids
+    /// (the emitted bytes are unchanged whether or not the caller uses the return value).
     /// </summary>
     /// <remarks>
     /// ORDER MATTERS: every container is emitted (fully, including its <c>end</c>) BEFORE any
@@ -264,14 +311,7 @@ public static class MermaidRenderer
     /// container ids, so both subgraph blocks must already be declared; emitting all containers
     /// first keeps every edge's endpoints resolvable and the output deterministic.
     /// </remarks>
-    /// <param name="includeClickAnchors">
-    /// When true (<see cref="RenderInteractive"/> only), each task container additionally declares
-    /// one invisible click-only anchor node (issue #211) — see <see cref="AppendTaskContainer"/>.
-    /// Never true for <see cref="Render"/>/<see cref="SemanticContent"/>: the clean container model
-    /// (and the staleness hash) must stay exactly as issue #210 left it.
-    /// </param>
-    private static IReadOnlyDictionary<string, string> AppendNodesAndEdges(
-        PlanDefinition plan, StringBuilder sb, bool includeClickAnchors)
+    private static IReadOnlyDictionary<string, string> AppendNodesAndEdges(PlanDefinition plan, StringBuilder sb)
     {
         var graph = new DependencyGraph(plan.Tasks);
 
@@ -290,7 +330,7 @@ public static class MermaidRenderer
         // --- one container per task ------------------------------------------------------
         foreach (TaskNode task in tasks)
         {
-            AppendTaskContainer(sb, task, nodeIdBase[task.Id], includeClickAnchors);
+            AppendTaskContainer(sb, task, nodeIdBase[task.Id]);
         }
 
         // --- plan-level "Terminal Gate" container (bottom, ALWAYS emitted) --------------
@@ -327,8 +367,7 @@ public static class MermaidRenderer
     /// leaf check node(s) — both DIRECTLY inside the container, with no nested
     /// <c>Preflights</c>/<c>Guardrails</c> wrapper subgraph (see class remarks, "Nested boxes
     /// dropped") — then the container's <c>style</c> fill. The DAG edge attaches to this
-    /// container's own subgraph id (no interior anchor; unaffected by
-    /// <paramref name="includeClickAnchor"/> — see below).
+    /// container's own subgraph id (no interior anchor).
     /// </summary>
     /// <remarks>
     /// <b>Emission-order contract (load-bearing, tested):</b> preflight check nodes are ALWAYS
@@ -337,18 +376,13 @@ public static class MermaidRenderer
     /// BEFORE the task's attempt loop and guardrails run AFTER it, so callers (and the legend) may
     /// rely on it as a stable convention.
     /// </remarks>
-    /// <param name="includeClickAnchor">
-    /// When true (<see cref="RenderInteractive"/> only, issue #211), appends one invisible
-    /// <c>{containerId}_anchor[" "]:::invisible</c> node as the LAST line inside the container
-    /// block — AFTER every check node, so it never disturbs the emission-order contract above.
-    /// This is a CLICK TARGET ONLY: no edge ever attaches to it (the #210 container→container DAG
-    /// edges are untouched). It exists because real headless-Chrome verification proved Mermaid
-    /// 11.4.1 never fires a <c>click</c> directive targeting a subgraph/cluster id — clickable
-    /// LEAF nodes are wrapped in a real <c>&lt;a href&gt;</c>, but a <c>&lt;g class="cluster"&gt;</c>
-    /// never is (matches the still-open mermaid-js/mermaid#1637 / #5428). A leaf node's `click`
-    /// still targets the leaf itself, unaffected.
-    /// </param>
-    private static void AppendTaskContainer(StringBuilder sb, TaskNode task, string @base, bool includeClickAnchor)
+    /// <remarks>
+    /// No anchor node of any kind is emitted here (issue #211's mechanism was removed entirely —
+    /// issue #235; see class remarks). <see cref="Render"/> and <see cref="RenderInteractive"/> now
+    /// emit byte-identical container/node shape for every task; the container's click target lives
+    /// entirely in <see cref="HtmlDiagramRenderer"/>'s post-render JavaScript overlay instead.
+    /// </remarks>
+    private static void AppendTaskContainer(StringBuilder sb, TaskNode task, string @base)
     {
         string containerId = $"task_{@base}";
 
@@ -359,11 +393,6 @@ public static class MermaidRenderer
         // the removed nested boxes used to convey visually.
         AppendCheckNodes(sb, "    ", $"{containerId}_pf", task.Preflights, "preflight", truncatePreflightLabel: true);
         AppendCheckNodes(sb, "    ", $"{containerId}_gr", task.Guardrails, "guardrail", truncatePreflightLabel: false);
-
-        if (includeClickAnchor)
-        {
-            AppendLf(sb, $"    {containerId}_anchor[\" \"]:::invisible");
-        }
 
         AppendLf(sb, "  end");
         AppendLf(sb, $"  style {containerId} {TaskStyle}");
@@ -469,10 +498,9 @@ public static class MermaidRenderer
     }
 
     /// <summary>
-    /// Append <c>click</c> directives (HTML-viewer only; see <see cref="RenderInteractive"/>):
-    /// each task container opens its task FOLDER (<c>tasks/&lt;id&gt;/</c>), each check node
-    /// (plan-level or task-level, preflight or guardrail) opens its own file — all as
-    /// plan-relative, forward-slash <c>file://</c> targets resolved relative to
+    /// Append <c>click</c> directives (HTML-viewer only; see <see cref="RenderInteractive"/>) for
+    /// every CHECK node — plan-level or task-level, preflight or guardrail — opening its own file
+    /// as a plan-relative, forward-slash <c>file://</c> target resolved relative to
     /// <c>diagram.html</c> at the plan root, opened in a new tab (<c>_blank</c>) so the diagram
     /// stays put. Emitted in the same ordinal/sorted order as the nodes for determinism, and using
     /// the SAME node-id scheme as <see cref="AppendNodesAndEdges"/> so every click target actually
@@ -481,13 +509,12 @@ public static class MermaidRenderer
     /// tooltip is the click-for-detail mechanism that keeps the full text from being lost.
     /// </summary>
     /// <remarks>
-    /// <b>A task container's click targets its anchor node, not the container id (issue #211).</b>
-    /// <see cref="RenderInteractive"/> always declares the container's <c>_anchor</c> node (see
-    /// <see cref="AppendTaskContainer"/>'s <c>includeClickAnchor</c>), so this method can always
-    /// target it — real headless-Chrome verification proved a <c>click</c> directive on the
-    /// subgraph/cluster id itself never fires in the bundled Mermaid. Leaf check-node clicks are
-    /// unaffected: they still target the leaf node itself, which Mermaid DOES wrap in a real
-    /// clickable <c>&lt;a href&gt;</c>.
+    /// <b>No container click directive is emitted here (issue #235).</b> A task container's click
+    /// target is no longer a Mermaid mechanism at all — see class remarks, "A task container's click
+    /// target is a POST-RENDER SVG overlay...". <see cref="HtmlDiagramRenderer"/> injects it via
+    /// JavaScript after Mermaid's render completes, using <see cref="TaskFolderTargets"/> for the
+    /// folder path data. Leaf check-node clicks are unaffected here: they still target the leaf node
+    /// itself, which Mermaid DOES wrap in a real clickable <c>&lt;a href&gt;</c>.
     /// </remarks>
     private static void AppendClickDirectives(
         PlanDefinition plan, IReadOnlyDictionary<string, string> nodeIdBase, StringBuilder sb)
@@ -498,10 +525,6 @@ public static class MermaidRenderer
         {
             string @base = nodeIdBase[task.Id];
             string containerId = $"task_{@base}";
-            string taskDir = ToPlanRelative(plan.PlanDirectory, task.Directory);
-            // Target the container's invisible click-only anchor (issue #211), not the container
-            // (subgraph) id itself — Mermaid never fires a click directive on a cluster element.
-            AppendLf(sb, $"  click {containerId}_anchor href \"{taskDir}/\" \"{ClickTooltip(task.Id)}\" _blank");
 
             if (task.Preflights.Count > 0)
             {
@@ -581,9 +604,10 @@ public static class MermaidRenderer
     /// guaranteeing distinct bases even when two task ids <see cref="Sanitize"/> to the same
     /// string (e.g. <c>a.b</c> and <c>a_b</c> both → <c>a_b</c>). The first claimant keeps the
     /// readable sanitized base; later collisions get a deterministic <c>_2</c>, <c>_3</c>, …
-    /// suffix in ordinal order. Every node/container family for a task (the container itself, its
-    /// click-only anchor when <see cref="RenderInteractive"/> emits one, and its preflight/guardrail
-    /// check nodes) derives from this unique base, so all ids stay collision-free.
+    /// suffix in ordinal order. Every node/container family for a task (the container itself and
+    /// its preflight/guardrail check nodes) derives from this unique base, so all ids stay
+    /// collision-free. Also used by <see cref="TaskFolderTargets"/> so its JSON side-table is keyed
+    /// by the SAME container id this method produces for <see cref="AppendNodesAndEdges"/>.
     /// </summary>
     private static IReadOnlyDictionary<string, string> AllocateNodeIdBases(IReadOnlyList<TaskNode> tasks)
     {

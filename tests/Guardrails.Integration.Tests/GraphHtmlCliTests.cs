@@ -64,13 +64,34 @@ public sealed class GraphHtmlCliTests
         string md = await File.ReadAllTextAsync(MdPath(plan.PlanDir), TestContext.Current.CancellationToken);
         string html = await File.ReadAllTextAsync(HtmlPath(plan.PlanDir), TestContext.Current.CancellationToken);
 
-        // The HTML wires nodes to their source under the plan folder; diagram.md stays click-free
-        // (GitHub disables clicks; targets are file://-local). The task container's click targets
-        // its click-only anchor node, not the container id itself (issue #211: Mermaid never fires
-        // a `click` directive on a subgraph/cluster element, only on a real leaf node).
-        Assert.Contains("click task_01_first_anchor href \"tasks/01-first/\"", html);
+        // The HTML wires CHECK nodes to their source under the plan folder via Mermaid `click`
+        // directives; diagram.md stays click-free (GitHub disables clicks; targets are
+        // file://-local). The task container's click target is NOT a Mermaid `click` directive at
+        // all (issue #211's anchor-node mechanism was superseded — issue #235): it is a post-render
+        // SVG title-band overlay fed by an embedded task-folder-targets JSON side-table instead.
+        Assert.DoesNotContain("click task_01_first_anchor", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("click task_01_first href", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"task-folder-targets\"", html, StringComparison.Ordinal);
+        Assert.Contains("\"task_01_first\"", html, StringComparison.Ordinal);
+        Assert.Contains("tasks/01-first/", html, StringComparison.Ordinal);
         Assert.Contains("tasks/01-first/guardrails/", html);
         Assert.DoesNotContain("click ", md);
+    }
+
+    [Fact]
+    public async Task DiagramHtml_OverlayScript_IsPresent_AndAppendsToCluster()
+    {
+        // Load-bearing z-order regression guard at the integration level too: appendChild (not
+        // insertBefore as firstChild) — inserting first would land the overlay BEHIND the
+        // cluster's own background rect, silently blocking every click.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        string html = await File.ReadAllTextAsync(HtmlPath(plan.PlanDir), TestContext.Current.CancellationToken);
+
+        Assert.Contains("function addTaskContainerOverlays", html, StringComparison.Ordinal);
+        Assert.Contains("cluster.appendChild(a)", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("insertBefore(a, cluster.firstChild", html, StringComparison.Ordinal);
     }
 
     [Fact]

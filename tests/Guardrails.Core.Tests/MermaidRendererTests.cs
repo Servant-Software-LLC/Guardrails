@@ -285,53 +285,70 @@ public sealed class MermaidRendererTests
         Assert.Contains("taskBase", clickLine);
     }
 
-    // === task-container click targets a click-only anchor, not the subgraph (issue #211) ==
+    // === task-container clicks: no Mermaid-source mechanism at all (issue #211 anchor-node =====
+    // === mechanism superseded; issue #235 moves the click target to a post-render SVG overlay) =
     //
     // Real headless-Chrome verification against the bundled mermaid@11.4.1 proved a `click`
     // directive targeting a subgraph/cluster id never fires: Mermaid wraps a clickable LEAF node
-    // in a real <a href> element, but never wraps a <g class="cluster"> (subgraph) in one. This
-    // matches Mermaid's own still-open upstream limitation (mermaid-js/mermaid#1637, #5428). The
-    // fix targets a dedicated invisible anchor node instead — RenderInteractive only; the clean
-    // Render output (diagram.md / the staleness hash) must stay exactly as issue #210 left it.
+    // in a real <a href> element, but never wraps a <g class="cluster"> (subgraph) in one. Issue
+    // #211's first fix (a dedicated invisible anchor NODE, RenderInteractive-only) proved USELESS
+    // in practice — real headless-Chrome measurement on a real 4-guardrail task container found
+    // dagre packed the anchor into a sliver covering only 0.44% of the container's area, missed by
+    // every realistic click point, with "dead-center" instead landing on a leaf guardrail box's own
+    // click target. The anchor-node mechanism is REMOVED entirely; MermaidRenderer no longer emits
+    // any container click directive, anchor node, or `invisible` classDef — HtmlDiagramRenderer's
+    // post-render JS overlay (see HtmlDiagramRendererTests) now owns the container click target,
+    // fed by MermaidRenderer.TaskFolderTargets.
 
     [Fact]
-    public void RenderInteractive_TaskContainerClick_TargetsAnAnchorNode_NotTheContainerId()
+    public void RenderInteractive_EmitsNoContainerClickDirective_ForTaskContainer()
     {
         string interactive = MermaidRenderer.RenderInteractive(Plan(TaskWith("01-a", [Guardrail("01-check")])));
         IReadOnlyList<string> lines = Lines(interactive);
 
-        // The container's own click directive must NOT target the bare container id (that never
-        // fires against a real Mermaid subgraph/cluster element) — it must target its anchor.
+        // Neither the bare container id (never fired anyway) nor the retired anchor-node click.
         Assert.DoesNotContain(lines, l => l.StartsWith("click task_01_a href", StringComparison.Ordinal));
-        Assert.Contains(lines, l => l.StartsWith("click task_01_a_anchor href", StringComparison.Ordinal)
-                                    && l.Contains("\"01-a\"", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.StartsWith("click task_01_a_anchor", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.Contains("_anchor", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void RenderInteractive_DeclaresOneInvisibleAnchorNode_AsTheLastLineInsideEachTaskContainer()
+    public void RenderInteractive_NoLongerDeclaresAnyAnchorNode_OrInvisibleClassDef()
     {
         string interactive = MermaidRenderer.RenderInteractive(Plan(
             TaskWithPreflights("01-a", [Guardrail("01-pf", description: "pf")], [Guardrail("01-gr"), Guardrail("02-gr")])));
         IReadOnlyList<string> lines = Lines(interactive);
 
-        int anchorIndex = lines.ToList().FindIndex(l => l == "task_01_a_anchor[\" \"]:::invisible");
-        int endIndex = lines.ToList().FindIndex(anchorIndex + 1, l => l == "end");
-        int lastGuardrailIndex = lines.ToList().FindLastIndex(l => l.Contains(":::guardrail", StringComparison.Ordinal));
-        int lastPreflightIndex = lines.ToList().FindLastIndex(l => l.Contains(":::preflight", StringComparison.Ordinal));
-
-        Assert.True(anchorIndex >= 0, "task container must declare its click-only anchor node");
-        // The anchor is the LAST line inside the block (right before `end`) — after every check
-        // node — so it never disturbs the preflight-before-guardrail emission-order contract.
-        Assert.True(endIndex == anchorIndex + 1, "the anchor must be the line immediately before `end`");
-        Assert.True(anchorIndex > lastGuardrailIndex && anchorIndex > lastPreflightIndex,
-            "the anchor must be emitted after every check node in the container");
+        Assert.DoesNotContain(lines, l => l.Contains("_anchor", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.Contains(":::invisible", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
     }
 
     [Fact]
-    public void RenderInteractive_AnchorNode_CarriesNoEdge()
+    public void RenderInteractive_And_Render_EmitIdenticalContainerShape()
     {
-        // The #210 container->container DAG edges are UNCHANGED by the click-anchor fix: they
-        // still attach to the container's own subgraph id, never to the anchor.
+        // With the anchor-node mechanism gone, RenderInteractive's container/node shape (ignoring
+        // the trailing click directives it appends) is now byte-identical to Render's — the two no
+        // longer diverge on a per-task extra node.
+        PlanDefinition plan = Plan(
+            TaskWithPreflights("01-a", [Guardrail("01-pf", description: "pf")], [Guardrail("01-gr"), Guardrail("02-gr")]),
+            TaskWith("02-b", [Guardrail("01-check")], "01-a"));
+
+        string clean = MermaidRenderer.Render(plan);
+        string interactive = MermaidRenderer.RenderInteractive(plan);
+
+        // Every line in the clean render must also appear in the interactive render (the
+        // interactive render only ADDS click lines; it never changes existing lines).
+        foreach (string line in Lines(clean))
+        {
+            Assert.Contains(line, Lines(interactive));
+        }
+    }
+
+    [Fact]
+    public void RenderInteractive_AnchorFreeContainerToContainer_EdgesUnaffected()
+    {
+        // The #210 container->container DAG edges are unaffected by the removal.
         string interactive = MermaidRenderer.RenderInteractive(Plan(
             TaskWith("01-a", [Guardrail("01-check")]),
             TaskWith("02-b", [Guardrail("01-check")], "01-a")));
@@ -342,19 +359,12 @@ public sealed class MermaidRendererTests
     }
 
     [Fact]
-    public void RenderInteractive_DeclaresInvisibleClassDef()
-    {
-        string interactive = MermaidRenderer.RenderInteractive(Plan(TaskWith("01-a", [Guardrail("01-check")])));
-
-        Assert.Contains(Lines(interactive), l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
-    }
-
-    [Fact]
     public void Render_NeverDeclaresAnAnchorNode_OrTheInvisibleClassDef()
     {
         // The clean Render output (diagram.md / SemanticContent / the staleness hash) must never
-        // gain an interior anchor node again — issue #210 deliberately removed it, and the #211
-        // click-only anchor is RenderInteractive-only.
+        // gain an interior anchor node — issue #210 deliberately removed the original one, and
+        // issue #235 removed the #211 replacement entirely (RenderInteractive never emits it either
+        // now).
         string clean = MermaidRenderer.Render(Plan(TaskWith("01-a", [Guardrail("01-check")])));
 
         Assert.DoesNotContain(Lines(clean), l => l.Contains("_anchor", StringComparison.Ordinal));
@@ -364,11 +374,62 @@ public sealed class MermaidRendererTests
     [Fact]
     public void RenderInteractive_LeafGuardrailClick_StillTargetsTheLeafNodeItself()
     {
-        // Leaf check-node clicks are unaffected by the #211 fix — Mermaid DOES wrap a clickable
-        // leaf node in a real <a href>, confirmed by real headless-Chrome verification.
+        // Leaf check-node clicks are completely unaffected by the container-click rework — Mermaid
+        // DOES wrap a clickable leaf node in a real <a href>, confirmed by real headless-Chrome
+        // verification.
         string interactive = MermaidRenderer.RenderInteractive(Plan(TaskWith("01-a", [Guardrail("01-check")])));
 
         Assert.Contains(Lines(interactive), l => l.StartsWith("click task_01_a_gr_0 href", StringComparison.Ordinal));
+    }
+
+    // === MermaidRenderer.TaskFolderTargets (issue #235: feeds the HtmlDiagramRenderer overlay) ==
+
+    [Fact]
+    public void TaskFolderTargets_MapsContainerId_ToPlanRelativeFolderPath_WithTrailingSlash()
+    {
+        IReadOnlyDictionary<string, string> targets =
+            MermaidRenderer.TaskFolderTargets(Plan(TaskWith("01-a", [Guardrail("01-check")])));
+
+        // Fixture paths (/fake/plan, /fake/tasks/01-a) are siblings, not nested — so the
+        // plan-relative path is "../tasks/01-a/" here; the real CLI plan layout nests tasks/
+        // under the plan folder, where the equivalent path has no "../" (see GraphHtmlCliTests).
+        Assert.True(targets.TryGetValue("task_01_a", out string? path));
+        Assert.Equal("../tasks/01-a/", path);
+        Assert.DoesNotContain('\\', path); // forward slashes only — byte-identical across OSes
+    }
+
+    [Fact]
+    public void TaskFolderTargets_UsesSameNodeIdBaseAs_AppendNodesAndEdges()
+    {
+        // A task id containing characters Sanitize() rewrites (e.g. '.') must map to the SAME
+        // container id the Mermaid source actually emits, so the overlay script's lookup by DOM id
+        // succeeds.
+        PlanDefinition plan = Plan(TaskWith("01-a.b", [Guardrail("01-check")]));
+        IReadOnlyDictionary<string, string> targets = MermaidRenderer.TaskFolderTargets(plan);
+
+        string interactive = MermaidRenderer.RenderInteractive(plan);
+        string containerLine = Assert.Single(Lines(interactive), l => l.StartsWith("subgraph task_", StringComparison.Ordinal));
+        string containerId = containerLine.Split('[')[0].Replace("subgraph ", "", StringComparison.Ordinal);
+
+        Assert.True(targets.ContainsKey(containerId), $"TaskFolderTargets must key by the same container id ({containerId}) the Mermaid source emits");
+    }
+
+    [Fact]
+    public void TaskFolderTargets_OneEntryPerTask_NoPlanLevelContainers()
+    {
+        IReadOnlyDictionary<string, string> targets = MermaidRenderer.TaskFolderTargets(Plan(
+            TaskWith("01-a", [Guardrail("01-check")]),
+            TaskWith("02-b", [Guardrail("01-check")], "01-a")));
+
+        Assert.Equal(2, targets.Count);
+        Assert.DoesNotContain("plan_preflights", targets.Keys);
+        Assert.DoesNotContain("plan_guardrails", targets.Keys);
+    }
+
+    [Fact]
+    public void TaskFolderTargets_NullPlan_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() => MermaidRenderer.TaskFolderTargets(null!));
     }
 
     // === contracts that must survive the rewrite (model-neutral) =======================

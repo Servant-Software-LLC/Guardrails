@@ -1,3 +1,6 @@
+using System.Text.Encodings.Web;
+using System.Text.Json;
+
 namespace Guardrails.Core.Graph;
 
 /// <summary>
@@ -38,18 +41,48 @@ namespace Guardrails.Core.Graph;
 /// the overlay div is the only approach that renders correctly. Static HTML, not templated from
 /// the Mermaid source, so it carries no bearing on <c>source-sha256</c>.
 /// </para>
+/// <para>
+/// <b>Task-container click target: a POST-RENDER SVG title-band overlay (issue #232/#233
+/// superseded, issue #235).</b> A Mermaid <c>click</c> directive never fires on a subgraph/cluster
+/// element (upstream limitation; see <see cref="MermaidRenderer"/> remarks), and the first fix
+/// attempt — an invisible anchor NODE inside the container — proved useless in practice: dagre
+/// sizes and packs it into whatever gap its own layout leaves, which for a content-dense container
+/// is a tiny, off-center sliver (measured: 0.44% of the container's area on a real 4-guardrail
+/// task). The fix implemented here instead runs AFTER <c>mermaid.render</c> resolves: for every
+/// <c>g.cluster</c> element whose id starts with <c>task_</c>, compute a full-width band from the
+/// cluster's own bounding box down to just past its <c>.cluster-label</c>'s bottom edge (Mermaid
+/// always reserves this header strip above any leaf content, so it is empty BY CONSTRUCTION
+/// regardless of how many guardrails/preflights the task has — unlike an interior anchor node) and
+/// append a real <c>&lt;a href="..." target="_blank"&gt;&lt;rect fill="transparent"&gt;&lt;/a&gt;</c>
+/// spanning it. APPENDED, not inserted first: a cluster's only two original children are its
+/// background <c>&lt;rect&gt;</c> then its <c>.cluster-label</c> group, so appending puts the
+/// overlay last in paint order (on top, clickable) without moving in front of the label text
+/// visually (the rect is transparent) and — because every leaf check node lives in an entirely
+/// separate top-level SVG group from its own container's <c>g.cluster</c> — the overlay can never
+/// occlude or be occluded by a leaf node's own click target either way. The task→folder-path data
+/// this script needs (<see cref="MermaidRenderer.TaskFolderTargets"/>) is embedded as a small JSON
+/// object keyed by the SAME container id the Mermaid source uses, in a
+/// <c>&lt;script type="application/json"&gt;</c> element read back via <c>textContent</c> (same
+/// verbatim/never-interpolated treatment as the Mermaid source itself, immune to the same escaping
+/// hazards).
+/// </para>
 /// </remarks>
 public static class HtmlDiagramRenderer
 {
     /// <summary>
     /// Build the <c>diagram.html</c> document for <paramref name="mermaidSource"/> (the exact
     /// text rendered into <c>diagram.md</c>, including the <c>flowchart TD</c> header and the
-    /// cosmetic <c>classDef</c> lines) stamped with <paramref name="sourceHash"/>.
+    /// cosmetic <c>classDef</c> lines) stamped with <paramref name="sourceHash"/>. <paramref
+    /// name="taskFolderTargets"/> is the task-container-id → plan-relative-folder-path map (see
+    /// <see cref="MermaidRenderer.TaskFolderTargets"/>) the embedded title-band overlay script uses
+    /// to resolve each container's click target (issue #235 — see class remarks).
     /// </summary>
-    public static string Render(string mermaidSource, string sourceHash)
+    public static string Render(
+        string mermaidSource, string sourceHash, IReadOnlyDictionary<string, string> taskFolderTargets)
     {
         ArgumentNullException.ThrowIfNull(mermaidSource);
         ArgumentException.ThrowIfNullOrEmpty(sourceHash);
+        ArgumentNullException.ThrowIfNull(taskFolderTargets);
 
         // Newline-normalize so the file is byte-identical across OSes (mirrors the renderer/hash).
         string source = mermaidSource
@@ -57,17 +90,29 @@ public static class HtmlDiagramRenderer
             .Replace("\r", "\n", StringComparison.Ordinal)
             .TrimEnd('\n');
 
+        // Encoder that escapes NOTHING beyond what JSON strictly requires (default System.Text.Json
+        // escapes '<', '>', '&', etc. as \uXXXX for HTML safety, which is unnecessary here — the
+        // JSON sits inside a <script type="application/json"> element, read back via textContent,
+        // exactly like the Mermaid source above — but using the unsafe-relaxed encoder keeps a
+        // task-id containing e.g. "&" readable in the raw HTML source without changing behavior).
+        string targetsJson = JsonSerializer.Serialize(taskFolderTargets, new JsonSerializerOptions
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        });
+
         // Normalize the full output — the template raw-string literal picks up \r\n when the
         // file is checked out with CRLF on Windows; the mermaid source is already normalized above.
         return Template
             .Replace("__SOURCE_SHA256__", sourceHash, StringComparison.Ordinal)
             .Replace("__GRAPH_SOURCE__", source, StringComparison.Ordinal)
+            .Replace("__TASK_FOLDER_TARGETS__", targetsJson, StringComparison.Ordinal)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace("\r", "\n", StringComparison.Ordinal);
     }
 
     // __SOURCE_SHA256__ is filled with a lowercase-hex hash (no escaping needed). __GRAPH_SOURCE__
     // is filled with the verbatim Mermaid text inside a raw-text <script> element (see remarks).
+    // __TASK_FOLDER_TARGETS__ is filled with a JSON object (container id -> folder path).
     private const string Template = """
 <!-- guardrails:graph v1 source-sha256=__SOURCE_SHA256__ -->
 <!doctype html>
@@ -119,11 +164,13 @@ public static class HtmlDiagramRenderer
   On GitHub, diagram.md renders instead.</div>
 
 <script type="text/plain" id="graph-source">__GRAPH_SOURCE__</script>
+<script type="application/json" id="task-folder-targets">__TASK_FOLDER_TARGETS__</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
 
 const graph = document.getElementById('graph-source').textContent;
+const taskFolderTargets = JSON.parse(document.getElementById('task-folder-targets').textContent);
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;
 // the content is the user's own local plan, served from file:// — not untrusted input.
 // maxTextSize raises Mermaid's default 50 000-character source ceiling (issue #108): a large
@@ -135,6 +182,51 @@ const graph = document.getElementById('graph-source').textContent;
 // edges exceeded". Both ceilings must be lifted or a big plan still fails to render.
 mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', maxTextSize: 5000000, maxEdges: 100000, flowchart: { useMaxWidth: false } });
 
+// Inject a real clickable overlay on each task container's TITLE/LABEL ROW (issue #232/#233
+// superseded, issue #235). Mermaid never fires a `click` directive on a subgraph/cluster element,
+// and an anchor NODE inside the container gets packed into whatever sliver of space dagre's own
+// layout leaves — useless for a content-dense container. The title band is different: Mermaid
+// ALWAYS renders a cluster as exactly two children, a background <rect> then a <g
+// class="cluster-label">, with the label in its own reserved header strip above any leaf content —
+// so a full-width band from the cluster's top down to just past the label's bottom edge is empty BY
+// CONSTRUCTION, regardless of how many guardrails/preflights the task has.
+function addTaskContainerOverlays(svgEl) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const clusters = svgEl.querySelectorAll('g.cluster');
+  for (const cluster of clusters) {
+    const target = taskFolderTargets[cluster.id];
+    if (!target) continue; // not a task container (e.g. plan_preflights/plan_guardrails), or no map entry
+    const label = cluster.querySelector('.cluster-label');
+    if (!label) continue;
+
+    const clusterBox = cluster.getBBox();
+    const labelBox = label.getBBox();
+    const bandHeight = (labelBox.y + labelBox.height) - clusterBox.y + 8; // small padding below the title
+
+    const a = document.createElementNS(ns, 'a');
+    a.setAttribute('href', target);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('aria-label', 'Open task folder: ' + target);
+
+    const rect = document.createElementNS(ns, 'rect');
+    rect.setAttribute('x', String(clusterBox.x));
+    rect.setAttribute('y', String(clusterBox.y));
+    rect.setAttribute('width', String(clusterBox.width));
+    rect.setAttribute('height', String(bandHeight));
+    rect.setAttribute('fill', 'transparent'); // painted (hit-testable) but invisible — see remarks
+    rect.style.cursor = 'pointer';
+
+    a.appendChild(rect);
+    // Append as the LAST child — do NOT prepend as the first child. A cluster's only two original
+    // children are its background <rect> then its .cluster-label group (in that paint order).
+    // Appending puts the overlay on top of the background rect (so it is actually clickable)
+    // without covering the label text visually (the rect is transparent either way) — prepending
+    // instead would put the overlay BEHIND the background rect (which becomes second-in-order and
+    // paints over it), silently blocking every click.
+    cluster.appendChild(a);
+  }
+}
+
 let pz = null;
 try {
   const { svg } = await mermaid.render('dag', graph);
@@ -142,6 +234,7 @@ try {
   const el = document.querySelector('#stage svg');
   el.setAttribute('width', '100vw');
   el.setAttribute('height', '100vh');
+  addTaskContainerOverlays(el);
   pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
