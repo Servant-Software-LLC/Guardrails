@@ -54,16 +54,19 @@
   subgraph task_01_write_greeting_script["01-write-greeting-script"]
     task_01_write_greeting_script_gr_0["01-script-exists"]:::guardrail
     task_01_write_greeting_script_gr_1["02-script-runs-clean"]:::guardrail
+    task_01_write_greeting_script_anchor[" "]:::invisible
   end
   style task_01_write_greeting_script fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_02_generate_greeting["02-generate-greeting"]
     task_02_generate_greeting_gr_0["01-greeting-exists"]:::guardrail
     task_02_generate_greeting_gr_1["02-greeting-contains"]:::guardrail
+    task_02_generate_greeting_anchor[" "]:::invisible
   end
   style task_02_generate_greeting fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_quality_check["03-quality-check"]
     task_03_quality_check_gr_0["01-report-exists"]:::guardrail
     task_03_quality_check_gr_1["02-tone-is-friendly"]:::guardrail
+    task_03_quality_check_anchor[" "]:::invisible
   end
   style task_03_quality_check fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
@@ -75,13 +78,14 @@
   task_03_quality_check --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
-  click task_01_write_greeting_script href "tasks/01-write-greeting-script/" "01-write-greeting-script" _blank
+  classDef invisible fill:transparent,stroke:none;
+  click task_01_write_greeting_script_anchor href "tasks/01-write-greeting-script/" "01-write-greeting-script" _blank
   click task_01_write_greeting_script_gr_0 href "tasks/01-write-greeting-script/guardrails/01-script-exists.ps1" "01-script-exists" _blank
   click task_01_write_greeting_script_gr_1 href "tasks/01-write-greeting-script/guardrails/02-script-runs-clean.ps1" "02-script-runs-clean" _blank
-  click task_02_generate_greeting href "tasks/02-generate-greeting/" "02-generate-greeting" _blank
+  click task_02_generate_greeting_anchor href "tasks/02-generate-greeting/" "02-generate-greeting" _blank
   click task_02_generate_greeting_gr_0 href "tasks/02-generate-greeting/guardrails/01-greeting-exists.ps1" "01-greeting-exists" _blank
   click task_02_generate_greeting_gr_1 href "tasks/02-generate-greeting/guardrails/02-greeting-contains.ps1" "02-greeting-contains" _blank
-  click task_03_quality_check href "tasks/03-quality-check/" "03-quality-check" _blank
+  click task_03_quality_check_anchor href "tasks/03-quality-check/" "03-quality-check" _blank
   click task_03_quality_check_gr_0 href "tasks/03-quality-check/guardrails/01-report-exists.ps1" "01-report-exists" _blank
   click task_03_quality_check_gr_1 href "tasks/03-quality-check/guardrails/02-tone-is-friendly.prompt.md" "02-tone-is-friendly" _blank</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>

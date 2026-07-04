@@ -56,16 +56,19 @@
   subgraph task_03_author_correlation_tests["03-author-correlation-tests"]
     task_03_author_correlation_tests_gr_0["01-new-tests-exist"]:::guardrail
     task_03_author_correlation_tests_gr_1["Anti-tautology: the new RequestId tests are RED against current code (the per-task polarity that the plan-level negative preflight generalizes). scope:local — never re-run at a union."]:::guardrail
+    task_03_author_correlation_tests_anchor[" "]:::invisible
   end
   style task_03_author_correlation_tests fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_04_implement_correlation["04-implement-correlation"]
     task_04_implement_correlation_gr_0["The new RequestId tests now PASS and the pre-existing Core tests STILL pass (the green that the plan-level negative preflight makes attributable to this task). scope:local."]:::guardrail
+    task_04_implement_correlation_anchor[" "]:::invisible
   end
   style task_04_implement_correlation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_05_wire_api_correlation_middleware["05-wire-api-correlation-middleware"]
     task_05_wire_api_correlation_middleware_pf_0["Task-level JIT dependency-delivery…"]:::preflight
     task_05_wire_api_correlation_middleware_gr_0["01-health-still-200"]:::guardrail
     task_05_wire_api_correlation_middleware_gr_1["02-request-id-flows"]:::guardrail
+    task_05_wire_api_correlation_middleware_anchor[" "]:::invisible
   end
   style task_05_wire_api_correlation_middleware fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
@@ -80,14 +83,15 @@
   task_05_wire_api_correlation_middleware --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
+  classDef invisible fill:transparent,stroke:none;
   click plan_preflights_0 href "preflights/01-all-repo-tests-green.ps1" "01-all-repo-tests-green" _blank
   click plan_preflights_1 href "preflights/02-correlation-id-absent.ps1" "02-correlation-id-absent" _blank
-  click task_03_author_correlation_tests href "tasks/03-author-correlation-tests/" "03-author-correlation-tests" _blank
+  click task_03_author_correlation_tests_anchor href "tasks/03-author-correlation-tests/" "03-author-correlation-tests" _blank
   click task_03_author_correlation_tests_gr_0 href "tasks/03-author-correlation-tests/guardrails/01-new-tests-exist.ps1" "01-new-tests-exist" _blank
   click task_03_author_correlation_tests_gr_1 href "tasks/03-author-correlation-tests/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
-  click task_04_implement_correlation href "tasks/04-implement-correlation/" "04-implement-correlation" _blank
+  click task_04_implement_correlation_anchor href "tasks/04-implement-correlation/" "04-implement-correlation" _blank
   click task_04_implement_correlation_gr_0 href "tasks/04-implement-correlation/guardrails/01-correlation-tests-green.ps1" "01-correlation-tests-green" _blank
-  click task_05_wire_api_correlation_middleware href "tasks/05-wire-api-correlation-middleware/" "05-wire-api-correlation-middleware" _blank
+  click task_05_wire_api_correlation_middleware_anchor href "tasks/05-wire-api-correlation-middleware/" "05-wire-api-correlation-middleware" _blank
   click task_05_wire_api_correlation_middleware_pf_0 href "tasks/05-wire-api-correlation-middleware/preflights/01-requestid-delivered-by-04.ps1" "Task-level JIT dependency-delivery precondition, keyed to the 04 -> 05 dependsOn edge. Verifies that task 04 actually threaded RequestId into the inherited Acme.Payments.Core source at 05's taskBase, BEFORE 05's action runs. A deterministic byte-check (no live probe). NOT a guardrail; NEVER joins the integration set." _blank
   click task_05_wire_api_correlation_middleware_gr_0 href "tasks/05-wire-api-correlation-middleware/guardrails/01-health-still-200.ps1" "01-health-still-200" _blank
   click task_05_wire_api_correlation_middleware_gr_1 href "tasks/05-wire-api-correlation-middleware/guardrails/02-request-id-flows.ps1" "02-request-id-flows" _blank

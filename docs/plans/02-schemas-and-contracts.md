@@ -1775,6 +1775,32 @@ every container is one — whereas `style <id>` colours it. `style <id>` also co
 plan-level bracket, which Mermaid renders as a plain node (not a cluster) — so the Full Flight
 Checks / Terminal Gate brackets keep their colour even when their folder is empty.
 
+**A task container's `click` targets a click-only anchor node, NOT the subgraph itself
+(issue #211).** The #210 edge fix above only changed how DAG EDGES attach to a container; it does
+NOT make the container's own `click href` directive fire. Real headless-Chrome verification
+against the bundled `mermaid@11.4.1` — clicking the container body, its title text, and its fill
+rect, then checking whether a real navigation (a popup/`window.open`) actually occurred — proved a
+`click` directive targeting a subgraph/cluster id **never fires**: Mermaid wraps a clickable LEAF
+node in a real `<a href>` element (confirmed firing), but never wraps a `<g class="cluster">`
+(subgraph) in one, regardless of what id the `click` directive names. This is a genuine, still-open
+upstream Mermaid limitation, not a regression from #210 and not fixable by choosing a different id:
+mermaid-js/mermaid#1637 ("Let subgraph handle clicks") and #5428 ("click action for subgraphs") are
+both open feature requests. The fix: `diagram.html` (never `diagram.md`) emits ONE additional
+invisible click-only anchor node per task container — the LAST line inside the container block, so
+it never disturbs the preflight-before-guardrail emission-order contract — and the container's
+`click` directive targets `<container>_anchor` instead of `<container>`. The anchor carries no edge
+(the #210 container→container DAG edges are unaffected) and uses `classDef invisible fill:
+transparent,stroke:none;` — **`fill:transparent`, not `fill:none`**: real headless-Chrome
+verification also proved an SVG shape with `fill:none` is invisible to hit-testing (the browser's
+default `pointer-events:visiblePainted` only treats a shape as clickable once it has an actual
+paint), so a `fill:none` anchor let clicks pass straight through to whatever sat underneath and
+silently ate them; a fully transparent (alpha-0) fill paints nothing visually but still counts as
+painted for hit-testing. The clean `Render` output (`diagram.md`, `SemanticContent`, the staleness
+hash) never gains this anchor or the `invisible` classDef — issue #210 deliberately removed the
+old anchor mechanism, and the #211 click-only anchor is `diagram.html`-only, by construction (only
+the click-augmented `RenderInteractive` path ever sets the anchor-emitting flag). Leaf check-node
+clicks are unaffected — Mermaid already wraps them in a working `<a href>`.
+
 **A task-level preflight still gates its `dependsOn` edge.** A `tasks/<id>/preflights/` check
 verifies a producer actually delivered what a consumer depends on; collapsing both into
 containers does not erase that relationship. The `task_producer --> task_consumer` edge remains
@@ -1786,7 +1812,8 @@ node itself.
 **Colouring.** Two `classDef`s colour the leaf check nodes — `preflight` and `guardrail` —
 referenced inline (`:::preflight` / `:::guardrail`). The two container kinds (task container,
 plan-level container) are coloured per container by a `style <id> …` statement instead, for the
-edge-endpoint reason above.
+edge-endpoint reason above. `diagram.html` only, a third `classDef invisible` (issue #211, see
+above) styles each task container's click-only anchor node — never present in `diagram.md`.
 
 **Provenance comment.** The first line of `diagram.md` is, verbatim:
 
