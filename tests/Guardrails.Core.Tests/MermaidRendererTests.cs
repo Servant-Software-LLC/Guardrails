@@ -86,7 +86,7 @@ public sealed class MermaidRendererTests
                                     && l.Contains("Guardrails", StringComparison.Ordinal));
         Assert.DoesNotContain(lines, l => l.StartsWith("subgraph", StringComparison.Ordinal)
                                     && l.Contains("Preflights", StringComparison.Ordinal));
-        Assert.Contains("Solution builds clean", string.Join("\n", lines));
+        Assert.Contains("01-build", string.Join("\n", lines));
     }
 
     [Fact]
@@ -155,14 +155,16 @@ public sealed class MermaidRendererTests
     // === label safety (model-neutral) — green in both models ===========================
 
     [Fact]
-    public void Render_GuardrailWithDescription_UsesDescriptionAsDrawnLabel()
+    public void Render_GuardrailWithDescription_StillUsesNameAsDrawnLabel_NotTheDescription()
     {
+        // Issue #222: the drawn label is ALWAYS the check's Name, regardless of whether a
+        // description is present. A prior version preferred Description when present; that
+        // preference is gone.
         IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
             TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]))));
 
-        Assert.Contains("Solution builds clean", string.Join("\n", lines));
-        // The bare Name is NOT used as a drawn label when a description is present.
-        Assert.DoesNotContain(lines, l => l.Contains("[\"01-build\"]", StringComparison.Ordinal));
+        Assert.DoesNotContain("Solution builds clean", string.Join("\n", lines));
+        Assert.Contains(lines, l => l.Contains("[\"01-build\"]", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -175,25 +177,31 @@ public sealed class MermaidRendererTests
     }
 
     [Fact]
-    public void Render_GuardrailDescriptionWithHtmlChars_IsHtmlEscaped()
+    public void Render_GuardrailNameWithHtmlChars_IsHtmlEscaped()
     {
         // Mermaid renders labels as HTML: < / > would silently drop text as stray tags, & must be escaped
-        // first (no double-escaping), and # can trigger entity parsing.
+        // first (no double-escaping), and # can trigger entity parsing. The escaping (Quote()) is a
+        // shared helper applied to whatever string ends up as the drawn label — always Name now
+        // (issue #222) — so this exercises the same code path with Name as the carrier.
         IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
-            TaskWith("01-a", [Guardrail("01-build", description: "a < b && c > d #1")]))));
+            TaskWith("01-a", [Guardrail("a < b && c > d #1")]))));
 
         Assert.Contains("a &lt; b &amp;&amp; c &gt; d &#35;1", string.Join("\n", lines));
     }
 
     [Fact]
-    public void Render_GuardrailDescriptionWithNewlines_CollapsesToSingleSafeLine()
+    public void Render_GuardrailDescriptionWithNewlines_TooltipCollapsesToSingleSafeLine()
     {
-        // A raw newline in a Mermaid label would break the WHOLE diagram; the renderer collapses
-        // \r\n / \r / \n to single spaces.
-        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+        // A check's Name (file-derived) can never contain a raw newline, so this scenario can only
+        // arise in a Description now that the drawn label is always Name (issue #222) — it moved to
+        // the click tooltip (RenderInteractive), the one place a description still surfaces. A raw
+        // newline in a Mermaid `click` directive would break the WHOLE diagram; the renderer
+        // collapses \r\n / \r / \n to single spaces there too.
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.RenderInteractive(Plan(
             TaskWith("01-a", [Guardrail("01-build", description: "line one\r\nline two\rline three\nline four")]))));
 
-        Assert.Contains("line one line two line three line four", string.Join("\n", lines));
+        Assert.Contains(lines, l => l.StartsWith("click", StringComparison.Ordinal)
+            && l.Contains("line one line two line three line four", StringComparison.Ordinal));
     }
 
     // === emission-order contract (preflights before guardrails, no nested boxes) =======
@@ -209,8 +217,8 @@ public sealed class MermaidRendererTests
         string render = MermaidRenderer.Render(Plan(
             TaskWithPreflights("01-a", [preflight], [guardrail])));
 
-        int preflightIndex = render.IndexOf("dependency delivered", StringComparison.Ordinal);
-        int guardrailIndex = render.IndexOf("builds clean", StringComparison.Ordinal);
+        int preflightIndex = render.IndexOf("01-dep-delivered", StringComparison.Ordinal);
+        int guardrailIndex = render.IndexOf("01-build", StringComparison.Ordinal);
 
         Assert.True(preflightIndex >= 0 && guardrailIndex >= 0);
         Assert.True(preflightIndex < guardrailIndex,
@@ -229,10 +237,13 @@ public sealed class MermaidRendererTests
         Assert.Contains(lines, l => l.Contains(":::preflight", StringComparison.Ordinal));
     }
 
-    // === preflight label truncation + click-for-detail =================================
+    // === every check's drawn label is its Name; full Description lives in the click tooltip =====
+    // (issue #222 — a prior version truncated a task-level preflight's Description into the drawn
+    // label instead; the owner asked for the short, stable Name every check's click target already
+    // opens, uniformly for every check kind at both scopes, so no truncation heuristic is needed.)
 
     [Fact]
-    public void Render_LongPreflightDescription_IsTruncatedInTheDrawnLabel()
+    public void Render_LongPreflightDescription_DrawnLabelIsTheNameNotTheDescription()
     {
         const string longDescription =
             "Task-level JIT dependency-delivery precondition, keyed to the 04 -> 05 dependsOn edge. "
@@ -244,26 +255,32 @@ public sealed class MermaidRendererTests
             TaskWithPreflights("01-a", [preflight], [Guardrail("01-build")])));
 
         Assert.DoesNotContain(longDescription, render);
-        Assert.DoesNotContain("taskBase", render); // well past the truncation budget
+        Assert.DoesNotContain("taskBase", render);
+        Assert.Contains("01-dep-delivered", render);
     }
 
     [Fact]
-    public void Render_ShortPreflightDescription_IsNotTruncated()
+    public void Render_GuardrailWithLongDescription_DrawnLabelIsAlsoTheNameNotTheDescription()
     {
-        GuardrailDefinition preflight = Guardrail("01-dep-delivered", description: "JIT dependency delivered");
+        // Not just task-level preflights — EVERY check kind (plan-level or task-level, preflight or
+        // guardrail) draws its Name, never its Description, regardless of description length.
+        const string longDescription =
+            "Structural check that the barrier test's four load-bearing assertions survive verbatim "
+            + "after the hardening edit, so a fix cannot quietly weaken them to tolerate a race.";
+        GuardrailDefinition guardrail = Guardrail("02-assertions-not-weakened", description: longDescription);
 
-        string render = MermaidRenderer.Render(Plan(
-            TaskWithPreflights("01-a", [preflight], [Guardrail("01-build")])));
+        string render = MermaidRenderer.Render(Plan(TaskWith("01-a", [guardrail])));
 
-        Assert.Contains("JIT dependency delivered", render);
+        Assert.DoesNotContain(longDescription, render);
+        Assert.Contains("02-assertions-not-weakened", render);
     }
 
     [Fact]
-    public void RenderInteractive_LongPreflightDescription_IsRecoverableViaClickTooltip()
+    public void RenderInteractive_LongDescription_IsRecoverableViaClickTooltip()
     {
-        // The truncated NODE LABEL must not lose the full text — it must be reachable via the SAME
-        // click mechanism RenderInteractive already uses for every node (issue #33): the node's
-        // `click` directive tooltip carries the full description even though its drawn label doesn't.
+        // The drawn label (the Name) does not lose the full description — it remains reachable via
+        // the SAME click mechanism RenderInteractive already uses for every node (issue #33): the
+        // node's `click` directive tooltip carries the full description.
         const string longDescription =
             "Task-level JIT dependency-delivery precondition, keyed to the 04 -> 05 dependsOn edge. "
             + "Verifies that task 04 actually threaded RequestId into the inherited source at 05's "
@@ -278,9 +295,9 @@ public sealed class MermaidRendererTests
         string clickLine = Assert.Single(lines, l => l.StartsWith("click", StringComparison.Ordinal)
                                                      && l.Contains("_pf_0", StringComparison.Ordinal));
 
-        // The drawn node label is truncated...
+        // The drawn node label is the short Name...
         Assert.DoesNotContain(longDescription, nodeLabelLine);
-        Assert.DoesNotContain("taskBase", nodeLabelLine);
+        Assert.Contains("01-dep-delivered", nodeLabelLine);
         // ...but the SAME node's click tooltip carries the full description.
         Assert.Contains("taskBase", clickLine);
     }

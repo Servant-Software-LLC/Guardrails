@@ -10,9 +10,10 @@ namespace Guardrails.Core.Tests;
 /// plan's diagram. It is the SHA-256 of the renderer's semantic content (drawn node labels +
 /// DAG shape), so it must be deterministic, order-independent for inputs the renderer sorts
 /// (guardrails, dependsOn, task enumeration), change when the DAG's shape changes
-/// (add/remove task, add/remove guardrail, change dependsOn) OR when a drawn label changes
-/// (a guardrail <c>description</c>), and be unaffected by what the diagram does NOT draw
-/// (<c>action.Kind</c>, cosmetic styling).
+/// (add/remove task, add/remove guardrail, change dependsOn) OR when a drawn label changes (a
+/// check's <c>name</c> — issue #222: the drawn label is ALWAYS a check's <c>name</c>, never its
+/// <c>description</c>), and be unaffected by what the diagram does NOT draw (<c>action.Kind</c>,
+/// cosmetic styling, and now a check's <c>description</c> too).
 /// </summary>
 public sealed class GraphSourceHashTests
 {
@@ -146,7 +147,8 @@ public sealed class GraphSourceHashTests
     [Fact]
     public void Compute_Changes_WhenGuardrailNameChanges_AndItIsTheDrawnLabel()
     {
-        // No description → the guardrail Name IS the drawn label, so a rename changes the hash.
+        // The drawn label is ALWAYS the guardrail's Name now (issue #222), regardless of whether a
+        // description is present, so a rename always changes the hash.
         PlanDefinition before = Plan(TaskWith("01-a", [Guardrail("01-build")]));
         PlanDefinition after = Plan(TaskWith("01-a", [Guardrail("01-compile")]));
 
@@ -154,16 +156,18 @@ public sealed class GraphSourceHashTests
     }
 
     [Fact]
-    public void Compute_Changes_WhenGuardrailDescriptionChanges()
+    public void Compute_Unchanged_WhenOnlyGuardrailDescriptionChanges()
     {
-        // The realignment: the renderer draws Description ?? Name, so editing the description
-        // (the DRAWN label) MUST change the hash.
+        // The re-realignment (issue #222): the renderer now draws a check's Name only, never its
+        // Description — so a description-only edit (which changes only the click tooltip's text,
+        // diagram.html-only, unhashed) must NOT change the hash. A guardrail's description can be
+        // freely rewritten without `graph --check` reporting the plan stale.
         PlanDefinition before = Plan(
             TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]));
         PlanDefinition after = Plan(
             TaskWith("01-a", [Guardrail("01-build", description: "Solution builds with zero warnings")]));
 
-        Assert.NotEqual(GraphSourceHash.Compute(before), GraphSourceHash.Compute(after));
+        Assert.Equal(GraphSourceHash.Compute(before), GraphSourceHash.Compute(after));
     }
 
     [Fact]
@@ -179,17 +183,18 @@ public sealed class GraphSourceHashTests
     }
 
     [Fact]
-    public void Compute_Unchanged_WhenOnlyGuardrailFileBasenameChanges_ButLabelIsTheDescription()
+    public void Compute_Changes_WhenGuardrailNameChanges_EvenWithADescriptionPresent()
     {
-        // With a description present, the guardrail Name (and thus its file basename) is NOT
-        // drawn — only the description is — so renaming the guardrail file does not change the
-        // hash. (Contrast Compute_Changes_WhenGuardrailNameChanges_AndItIsTheDrawnLabel.)
+        // Contrast the OLD behavior this replaces: previously, when a description was present, the
+        // guardrail's Name (and thus its file basename) was NOT drawn — only the description was —
+        // so renaming the guardrail file did not move the hash. Now the Name is ALWAYS drawn
+        // (issue #222), so a rename changes the hash regardless of whether a description exists.
         PlanDefinition before = Plan(
             TaskWith("01-a", [Guardrail("01-build", description: "Solution builds clean")]));
         PlanDefinition after = Plan(
             TaskWith("01-a", [Guardrail("01-compile", description: "Solution builds clean")]));
 
-        Assert.Equal(GraphSourceHash.Compute(before), GraphSourceHash.Compute(after));
+        Assert.NotEqual(GraphSourceHash.Compute(before), GraphSourceHash.Compute(after));
     }
 
     [Fact]

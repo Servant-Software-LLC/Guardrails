@@ -243,15 +243,32 @@ public sealed class GraphCliTests
     }
 
     [Fact]
-    public async Task Graph_CheckAfterEditingGuardrailDescription_ExitsStale()
+    public async Task Graph_CheckAfterEditingGuardrailDescription_ExitsZero()
     {
-        // The realignment: the renderer draws the guardrail Description ?? Name. Adding a
-        // sidecar description changes the DRAWN label, so the diagram is now stale.
+        // Issue #222: the drawn label is ALWAYS the guardrail's Name, never its Description.
+        // Adding a sidecar description changes only the click tooltip (diagram.html-only,
+        // unhashed) — the diagram stays FRESH.
         using var plan = new ScriptPlanBuilder().AddTask("01-first");
 
         await InvokeCapturingAsync("graph", plan.PlanDir);
 
         SetGuardrailDescription(plan.PlanDir, "01-first", "Build passes with zero warnings");
+
+        (int exit, _) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
+
+        Assert.Equal(ExitCodes.Success, exit);
+    }
+
+    [Fact]
+    public async Task Graph_CheckAfterRenamingGuardrail_ExitsStale()
+    {
+        // Contrast the test above: renaming the guardrail changes its Name — the drawn label
+        // (issue #222) — so the diagram IS stale, regardless of whether a description is present.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        await InvokeCapturingAsync("graph", plan.PlanDir);
+
+        RenameGuardrail(plan.PlanDir, "01-first", "01-check", "01-verify-build");
 
         (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--check");
 
@@ -348,14 +365,35 @@ public sealed class GraphCliTests
 
     /// <summary>
     /// Write a metadata sidecar carrying a <c>description</c> next to the task's single
-    /// <c>ScriptPlanBuilder</c>-emitted guardrail (<c>01-check.{ps1,sh}</c>), so the renderer
-    /// draws that description as the guardrail label.
+    /// <c>ScriptPlanBuilder</c>-emitted guardrail (<c>01-check.{ps1,sh}</c>). Since issue #222 the
+    /// drawn label is always the guardrail's Name, never its description, so this only changes the
+    /// click tooltip (diagram.html-only, unhashed) — it does NOT move the staleness key.
     /// </summary>
     private static void SetGuardrailDescription(string planDir, string taskId, string description)
     {
         string guardrailsDir = Path.Combine(planDir, "tasks", taskId, "guardrails");
         string sidecarPath = Path.Combine(guardrailsDir, "01-check.json");
         File.WriteAllText(sidecarPath, $$"""{ "description": "{{description}}" }""");
+    }
+
+    /// <summary>
+    /// Rename the task's guardrail file (script + optional JSON sidecar, if present) from
+    /// <paramref name="oldName"/> to <paramref name="newName"/> — changes the guardrail's Name,
+    /// the drawn label (issue #222), so the diagram becomes stale.
+    /// </summary>
+    private static void RenameGuardrail(string planDir, string taskId, string oldName, string newName)
+    {
+        string guardrailsDir = Path.Combine(planDir, "tasks", taskId, "guardrails");
+        string scriptExt = OperatingSystem.IsWindows() ? ".ps1" : ".sh";
+        File.Move(
+            Path.Combine(guardrailsDir, oldName + scriptExt),
+            Path.Combine(guardrailsDir, newName + scriptExt));
+
+        string oldSidecar = Path.Combine(guardrailsDir, oldName + ".json");
+        if (File.Exists(oldSidecar))
+        {
+            File.Move(oldSidecar, Path.Combine(guardrailsDir, newName + ".json"));
+        }
     }
 
     /// <summary>
