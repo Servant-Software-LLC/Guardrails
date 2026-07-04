@@ -410,7 +410,15 @@ function addTaskContainerOverlays(svgEl) {
     rect.setAttribute('y', String(clusterBox.y));
     rect.setAttribute('width', String(clusterBox.width));
     rect.setAttribute('height', String(bandHeight));
-    rect.setAttribute('fill', 'transparent'); // painted (hit-testable) but invisible — see remarks
+    // Inline style (not the `fill` ATTRIBUTE) deliberately: Mermaid's own generated stylesheet
+    // carries a rule like `#dag .cluster rect{fill:<theme color>;...}` that colors every cluster's
+    // background rect. Since this overlay rect is nested inside the .cluster group (so it stays in
+    // the same paint context as the background rect it sits atop), that same selector matches it
+    // too — and a CSS class/tag selector beats a plain presentation attribute, so `fill="transparent"`
+    // as an attribute got silently overridden, painting a solid theme-colored bar over the title text.
+    // An inline style wins over any external/embedded stylesheet rule (short of `!important`), so it
+    // reliably stays invisible regardless of Mermaid's theme.
+    rect.style.fill = 'transparent';
     rect.style.cursor = 'pointer';
 
     a.appendChild(rect);

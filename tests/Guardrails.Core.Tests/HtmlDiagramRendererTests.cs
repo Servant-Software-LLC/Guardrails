@@ -195,6 +195,25 @@ public sealed class HtmlDiagramRendererTests
     }
 
     [Fact]
+    public void Render_OverlayScript_SetsFillViaInlineStyle_NotTheFillAttribute()
+    {
+        // Real-browser regression (found live, not guessed): Mermaid's own generated stylesheet
+        // carries a rule shaped like `#dag .cluster rect{fill:<theme color>;...}`. Since the
+        // overlay rect is nested inside the .cluster group, that selector matches it too — and a
+        // CSS class/tag selector beats a plain HTML presentation attribute, so
+        // `rect.setAttribute('fill', 'transparent')` was silently overridden, painting a solid
+        // theme-colored bar over the container's title text (confirmed via getComputedStyle:
+        // attribute said "transparent", computed fill was the theme's cluster-background color).
+        // An inline style (`rect.style.fill = ...`) wins over any external/embedded stylesheet
+        // rule short of `!important`, so it reliably stays invisible. This test would have caught
+        // the regression: `Assert.Contains("'transparent'")` alone passes for EITHER form.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("rect.style.fill = 'transparent'", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("rect.setAttribute('fill'", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Render_OverlayScript_RunsAfterMermaidRenderResolves()
     {
         string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
