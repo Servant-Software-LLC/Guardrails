@@ -285,6 +285,92 @@ public sealed class MermaidRendererTests
         Assert.Contains("taskBase", clickLine);
     }
 
+    // === task-container click targets a click-only anchor, not the subgraph (issue #211) ==
+    //
+    // Real headless-Chrome verification against the bundled mermaid@11.4.1 proved a `click`
+    // directive targeting a subgraph/cluster id never fires: Mermaid wraps a clickable LEAF node
+    // in a real <a href> element, but never wraps a <g class="cluster"> (subgraph) in one. This
+    // matches Mermaid's own still-open upstream limitation (mermaid-js/mermaid#1637, #5428). The
+    // fix targets a dedicated invisible anchor node instead — RenderInteractive only; the clean
+    // Render output (diagram.md / the staleness hash) must stay exactly as issue #210 left it.
+
+    [Fact]
+    public void RenderInteractive_TaskContainerClick_TargetsAnAnchorNode_NotTheContainerId()
+    {
+        string interactive = MermaidRenderer.RenderInteractive(Plan(TaskWith("01-a", [Guardrail("01-check")])));
+        IReadOnlyList<string> lines = Lines(interactive);
+
+        // The container's own click directive must NOT target the bare container id (that never
+        // fires against a real Mermaid subgraph/cluster element) — it must target its anchor.
+        Assert.DoesNotContain(lines, l => l.StartsWith("click task_01_a href", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("click task_01_a_anchor href", StringComparison.Ordinal)
+                                    && l.Contains("\"01-a\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RenderInteractive_DeclaresOneInvisibleAnchorNode_AsTheLastLineInsideEachTaskContainer()
+    {
+        string interactive = MermaidRenderer.RenderInteractive(Plan(
+            TaskWithPreflights("01-a", [Guardrail("01-pf", description: "pf")], [Guardrail("01-gr"), Guardrail("02-gr")])));
+        IReadOnlyList<string> lines = Lines(interactive);
+
+        int anchorIndex = lines.ToList().FindIndex(l => l == "task_01_a_anchor[\" \"]:::invisible");
+        int endIndex = lines.ToList().FindIndex(anchorIndex + 1, l => l == "end");
+        int lastGuardrailIndex = lines.ToList().FindLastIndex(l => l.Contains(":::guardrail", StringComparison.Ordinal));
+        int lastPreflightIndex = lines.ToList().FindLastIndex(l => l.Contains(":::preflight", StringComparison.Ordinal));
+
+        Assert.True(anchorIndex >= 0, "task container must declare its click-only anchor node");
+        // The anchor is the LAST line inside the block (right before `end`) — after every check
+        // node — so it never disturbs the preflight-before-guardrail emission-order contract.
+        Assert.True(endIndex == anchorIndex + 1, "the anchor must be the line immediately before `end`");
+        Assert.True(anchorIndex > lastGuardrailIndex && anchorIndex > lastPreflightIndex,
+            "the anchor must be emitted after every check node in the container");
+    }
+
+    [Fact]
+    public void RenderInteractive_AnchorNode_CarriesNoEdge()
+    {
+        // The #210 container->container DAG edges are UNCHANGED by the click-anchor fix: they
+        // still attach to the container's own subgraph id, never to the anchor.
+        string interactive = MermaidRenderer.RenderInteractive(Plan(
+            TaskWith("01-a", [Guardrail("01-check")]),
+            TaskWith("02-b", [Guardrail("01-check")], "01-a")));
+        IReadOnlyList<string> lines = Lines(interactive);
+
+        Assert.Contains("task_01_a --> task_02_b", lines);
+        Assert.DoesNotContain(lines, l => l.Contains("_anchor", StringComparison.Ordinal) && l.Contains("-->", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RenderInteractive_DeclaresInvisibleClassDef()
+    {
+        string interactive = MermaidRenderer.RenderInteractive(Plan(TaskWith("01-a", [Guardrail("01-check")])));
+
+        Assert.Contains(Lines(interactive), l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Render_NeverDeclaresAnAnchorNode_OrTheInvisibleClassDef()
+    {
+        // The clean Render output (diagram.md / SemanticContent / the staleness hash) must never
+        // gain an interior anchor node again — issue #210 deliberately removed it, and the #211
+        // click-only anchor is RenderInteractive-only.
+        string clean = MermaidRenderer.Render(Plan(TaskWith("01-a", [Guardrail("01-check")])));
+
+        Assert.DoesNotContain(Lines(clean), l => l.Contains("_anchor", StringComparison.Ordinal));
+        Assert.DoesNotContain(Lines(clean), l => l.StartsWith("classDef invisible", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RenderInteractive_LeafGuardrailClick_StillTargetsTheLeafNodeItself()
+    {
+        // Leaf check-node clicks are unaffected by the #211 fix — Mermaid DOES wrap a clickable
+        // leaf node in a real <a href>, confirmed by real headless-Chrome verification.
+        string interactive = MermaidRenderer.RenderInteractive(Plan(TaskWith("01-a", [Guardrail("01-check")])));
+
+        Assert.Contains(Lines(interactive), l => l.StartsWith("click task_01_a_gr_0 href", StringComparison.Ordinal));
+    }
+
     // === contracts that must survive the rewrite (model-neutral) =======================
 
     [Fact]

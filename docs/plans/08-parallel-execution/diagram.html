@@ -54,11 +54,13 @@
   subgraph task_01_update_ssot_schema_contract["01-update-ssot-schema-contract"]
     task_01_update_ssot_schema_contract_gr_0["01-ssot-has-new-sections"]:::guardrail
     task_01_update_ssot_schema_contract_gr_1["02-ssot-allocates-fresh-gr-codes"]:::guardrail
+    task_01_update_ssot_schema_contract_anchor[" "]:::invisible
   end
   style task_01_update_ssot_schema_contract fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_02_author_tests_worktree_provider_seam["02-author-tests-worktree-provider-seam"]
     task_02_author_tests_worktree_provider_seam_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_02_author_tests_worktree_provider_seam_gr_1["02-seam-scenarios-present"]:::guardrail
+    task_02_author_tests_worktree_provider_seam_anchor[" "]:::invisible
   end
   style task_02_author_tests_worktree_provider_seam fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_03_implement_worktree_provider_seam_and_channel_envelope["03-implement-worktree-provider-seam-and-channel-envelope"]
@@ -66,6 +68,7 @@
     task_03_implement_worktree_provider_seam_and_channel_envelope_gr_1["02-fake-implements-provider"]:::guardrail
     task_03_implement_worktree_provider_seam_and_channel_envelope_gr_2["03-seam-tests-pass"]:::guardrail
     task_03_implement_worktree_provider_seam_and_channel_envelope_gr_3["04-tests-untouched"]:::guardrail
+    task_03_implement_worktree_provider_seam_and_channel_envelope_anchor[" "]:::invisible
   end
   style task_03_implement_worktree_provider_seam_and_channel_envelope fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_04_deserialize_scheduler_begin_triad_teardown["04-deserialize-scheduler-begin-triad-teardown"]
@@ -73,11 +76,13 @@
     task_04_deserialize_scheduler_begin_triad_teardown_gr_1["02-core-builds"]:::guardrail
     task_04_deserialize_scheduler_begin_triad_teardown_gr_2["03-seam-suite-still-green"]:::guardrail
     task_04_deserialize_scheduler_begin_triad_teardown_gr_3["04-exclusive-gate-removed-from-scheduler"]:::guardrail
+    task_04_deserialize_scheduler_begin_triad_teardown_anchor[" "]:::invisible
   end
   style task_04_deserialize_scheduler_begin_triad_teardown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_05_author_tests_git_worktree_lifecycle["05-author-tests-git-worktree-lifecycle"]
     task_05_author_tests_git_worktree_lifecycle_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_05_author_tests_git_worktree_lifecycle_gr_1["02-lifecycle-scenarios-present"]:::guardrail
+    task_05_author_tests_git_worktree_lifecycle_anchor[" "]:::invisible
   end
   style task_05_author_tests_git_worktree_lifecycle fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_06_implement_git_worktree_provider_and_reuse_topology["06-implement-git-worktree-provider-and-reuse-topology"]
@@ -85,11 +90,13 @@
     task_06_implement_git_worktree_provider_and_reuse_topology_gr_1["02-provider-implements-interface"]:::guardrail
     task_06_implement_git_worktree_provider_and_reuse_topology_gr_2["03-lifecycle-tests-pass"]:::guardrail
     task_06_implement_git_worktree_provider_and_reuse_topology_gr_3["04-tests-untouched"]:::guardrail
+    task_06_implement_git_worktree_provider_and_reuse_topology_anchor[" "]:::invisible
   end
   style task_06_implement_git_worktree_provider_and_reuse_topology fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_07_author_tests_validation_gates_and_triad_removal["07-author-tests-validation-gates-and-triad-removal"]
     task_07_author_tests_validation_gates_and_triad_removal_gr_0["01-tests-build"]:::guardrail
     task_07_author_tests_validation_gates_and_triad_removal_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_07_author_tests_validation_gates_and_triad_removal_anchor[" "]:::invisible
   end
   style task_07_author_tests_validation_gates_and_triad_removal fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_08_implement_validation_gates_and_triad_teardown["08-implement-validation-gates-and-triad-teardown"]
@@ -97,22 +104,26 @@
     task_08_implement_validation_gates_and_triad_teardown_gr_1["02-triad-torn-down"]:::guardrail
     task_08_implement_validation_gates_and_triad_teardown_gr_2["03-gate-tests-pass"]:::guardrail
     task_08_implement_validation_gates_and_triad_teardown_gr_3["04-tests-untouched"]:::guardrail
+    task_08_implement_validation_gates_and_triad_teardown_anchor[" "]:::invisible
   end
   style task_08_implement_validation_gates_and_triad_teardown fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_09_author_tests_logs_elevation_and_runconfig["09-author-tests-logs-elevation-and-runconfig"]
     task_09_author_tests_logs_elevation_and_runconfig_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_09_author_tests_logs_elevation_and_runconfig_gr_1["02-config-scenarios-present"]:::guardrail
+    task_09_author_tests_logs_elevation_and_runconfig_anchor[" "]:::invisible
   end
   style task_09_author_tests_logs_elevation_and_runconfig fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_10_implement_logs_elevation_and_runconfig["10-implement-logs-elevation-and-runconfig"]
     task_10_implement_logs_elevation_and_runconfig_gr_0["01-core-builds"]:::guardrail
     task_10_implement_logs_elevation_and_runconfig_gr_1["02-logs-runconfig-tests-pass"]:::guardrail
     task_10_implement_logs_elevation_and_runconfig_gr_2["03-tests-untouched"]:::guardrail
+    task_10_implement_logs_elevation_and_runconfig_anchor[" "]:::invisible
   end
   style task_10_implement_logs_elevation_and_runconfig fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_11_author_tests_writescope_matcher_truth_table_and_fuzz["11-author-tests-writescope-matcher-truth-table-and-fuzz"]
     task_11_author_tests_writescope_matcher_truth_table_and_fuzz_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_11_author_tests_writescope_matcher_truth_table_and_fuzz_gr_1["02-truth-table-rows-present"]:::guardrail
+    task_11_author_tests_writescope_matcher_truth_table_and_fuzz_anchor[" "]:::invisible
   end
   style task_11_author_tests_writescope_matcher_truth_table_and_fuzz fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_12_implement_writescope_matcher["12-implement-writescope-matcher"]
@@ -120,77 +131,91 @@
     task_12_implement_writescope_matcher_gr_1["02-matcher-file-exists"]:::guardrail
     task_12_implement_writescope_matcher_gr_2["03-matcher-tests-pass"]:::guardrail
     task_12_implement_writescope_matcher_gr_3["04-tests-untouched"]:::guardrail
+    task_12_implement_writescope_matcher_anchor[" "]:::invisible
   end
   style task_12_implement_writescope_matcher fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_13_author_tests_writescope_check["13-author-tests-writescope-check"]
     task_13_author_tests_writescope_check_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_13_author_tests_writescope_check_gr_1["02-check-scenarios-present"]:::guardrail
+    task_13_author_tests_writescope_check_anchor[" "]:::invisible
   end
   style task_13_author_tests_writescope_check fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_14_implement_writescope_check_and_scoped_revert["14-implement-writescope-check-and-scoped-revert"]
     task_14_implement_writescope_check_and_scoped_revert_gr_0["01-core-builds"]:::guardrail
     task_14_implement_writescope_check_and_scoped_revert_gr_1["02-check-tests-pass"]:::guardrail
     task_14_implement_writescope_check_and_scoped_revert_gr_2["03-tests-untouched"]:::guardrail
+    task_14_implement_writescope_check_and_scoped_revert_anchor[" "]:::invisible
   end
   style task_14_implement_writescope_check_and_scoped_revert fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_15_author_tests_reverifier_seam["15-author-tests-reverifier-seam"]
     task_15_author_tests_reverifier_seam_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_15_author_tests_reverifier_seam_gr_1["02-reverifier-scenarios-present"]:::guardrail
+    task_15_author_tests_reverifier_seam_anchor[" "]:::invisible
   end
   style task_15_author_tests_reverifier_seam fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_16_implement_reverifier_seam["16-implement-reverifier-seam"]
     task_16_implement_reverifier_seam_gr_0["01-core-builds"]:::guardrail
     task_16_implement_reverifier_seam_gr_1["02-reverifier-tests-pass"]:::guardrail
     task_16_implement_reverifier_seam_gr_2["03-tests-untouched"]:::guardrail
+    task_16_implement_reverifier_seam_anchor[" "]:::invisible
   end
   style task_16_implement_reverifier_seam fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_17_author_tests_merge_lock_and_ff_and_union_settle["17-author-tests-merge-lock-and-ff-and-union-settle"]
     task_17_author_tests_merge_lock_and_ff_and_union_settle_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_17_author_tests_merge_lock_and_ff_and_union_settle_gr_1["02-settle-scenarios-present"]:::guardrail
+    task_17_author_tests_merge_lock_and_ff_and_union_settle_anchor[" "]:::invisible
   end
   style task_17_author_tests_merge_lock_and_ff_and_union_settle fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_18_implement_merge_lock_and_ff_and_union_settle["18-implement-merge-lock-and-ff-and-union-settle"]
     task_18_implement_merge_lock_and_ff_and_union_settle_gr_0["01-core-builds"]:::guardrail
     task_18_implement_merge_lock_and_ff_and_union_settle_gr_1["02-settle-tests-pass"]:::guardrail
     task_18_implement_merge_lock_and_ff_and_union_settle_gr_2["03-tests-untouched"]:::guardrail
+    task_18_implement_merge_lock_and_ff_and_union_settle_anchor[" "]:::invisible
   end
   style task_18_implement_merge_lock_and_ff_and_union_settle fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_19_author_tests_resume_and_reset_retry["19-author-tests-resume-and-reset-retry"]
     task_19_author_tests_resume_and_reset_retry_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_19_author_tests_resume_and_reset_retry_gr_1["02-resume-scenarios-present"]:::guardrail
+    task_19_author_tests_resume_and_reset_retry_anchor[" "]:::invisible
   end
   style task_19_author_tests_resume_and_reset_retry fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_20_implement_resume_reconciliation_and_reset_retry["20-implement-resume-reconciliation-and-reset-retry"]
     task_20_implement_resume_reconciliation_and_reset_retry_gr_0["01-core-builds"]:::guardrail
     task_20_implement_resume_reconciliation_and_reset_retry_gr_1["02-resume-tests-pass"]:::guardrail
     task_20_implement_resume_reconciliation_and_reset_retry_gr_2["03-tests-untouched"]:::guardrail
+    task_20_implement_resume_reconciliation_and_reset_retry_anchor[" "]:::invisible
   end
   style task_20_implement_resume_reconciliation_and_reset_retry fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_21_author_tests_merge_on_success["21-author-tests-merge-on-success"]
     task_21_author_tests_merge_on_success_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_21_author_tests_merge_on_success_gr_1["02-merge-on-success-scenarios-present"]:::guardrail
+    task_21_author_tests_merge_on_success_anchor[" "]:::invisible
   end
   style task_21_author_tests_merge_on_success fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_22_implement_merge_on_success["22-implement-merge-on-success"]
     task_22_implement_merge_on_success_gr_0["01-cli-builds"]:::guardrail
     task_22_implement_merge_on_success_gr_1["02-merge-on-success-tests-pass"]:::guardrail
     task_22_implement_merge_on_success_gr_2["03-tests-untouched"]:::guardrail
+    task_22_implement_merge_on_success_anchor[" "]:::invisible
   end
   style task_22_implement_merge_on_success fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_23_author_tests_guardrail_scope_field["23-author-tests-guardrail-scope-field"]
     task_23_author_tests_guardrail_scope_field_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_23_author_tests_guardrail_scope_field_gr_1["02-scope-scenarios-present"]:::guardrail
+    task_23_author_tests_guardrail_scope_field_anchor[" "]:::invisible
   end
   style task_23_author_tests_guardrail_scope_field fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_24_implement_guardrail_scope_field["24-implement-guardrail-scope-field"]
     task_24_implement_guardrail_scope_field_gr_0["01-core-builds"]:::guardrail
     task_24_implement_guardrail_scope_field_gr_1["02-scope-tests-pass"]:::guardrail
     task_24_implement_guardrail_scope_field_gr_2["03-tests-untouched"]:::guardrail
+    task_24_implement_guardrail_scope_field_anchor[" "]:::invisible
   end
   style task_24_implement_guardrail_scope_field fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_25_author_tests_ai_merge_worker["25-author-tests-ai-merge-worker"]
     task_25_author_tests_ai_merge_worker_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_25_author_tests_ai_merge_worker_gr_1["02-ai-merge-scenarios-present"]:::guardrail
+    task_25_author_tests_ai_merge_worker_anchor[" "]:::invisible
   end
   style task_25_author_tests_ai_merge_worker fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_26_implement_ai_merge_worker["26-implement-ai-merge-worker"]
@@ -198,28 +223,34 @@
     task_26_implement_ai_merge_worker_gr_1["02-ai-merge-tests-pass"]:::guardrail
     task_26_implement_ai_merge_worker_gr_2["03-tests-untouched"]:::guardrail
     task_26_implement_ai_merge_worker_gr_3["04-deterministic-gates-present"]:::guardrail
+    task_26_implement_ai_merge_worker_anchor[" "]:::invisible
   end
   style task_26_implement_ai_merge_worker fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_27_update_plan_breakdown_skill["27-update-plan-breakdown-skill"]
     task_27_update_plan_breakdown_skill_gr_0["01-skill-emits-new-mechanisms"]:::guardrail
     task_27_update_plan_breakdown_skill_gr_1["02-worked-example-uses-writescope-not-triad"]:::guardrail
+    task_27_update_plan_breakdown_skill_anchor[" "]:::invisible
   end
   style task_27_update_plan_breakdown_skill fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_28_update_guardrails_review_skill["28-update-guardrails-review-skill"]
     task_28_update_guardrails_review_skill_gr_0["01-review-skill-has-scope-probes"]:::guardrail
+    task_28_update_guardrails_review_skill_anchor[" "]:::invisible
   end
   style task_28_update_guardrails_review_skill fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_29_update_domain_knowledge_skill["29-update-domain-knowledge-skill"]
     task_29_update_domain_knowledge_skill_gr_0["01-domain-knowledge-updated"]:::guardrail
+    task_29_update_domain_knowledge_skill_anchor[" "]:::invisible
   end
   style task_29_update_domain_knowledge_skill fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_30_build_solution_gate["30-build-solution-gate"]
     task_30_build_solution_gate_gr_0["01-solution-builds"]:::guardrail
+    task_30_build_solution_gate_anchor[" "]:::invisible
   end
   style task_30_build_solution_gate fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_32_author_tests_needs_human_triage["32-author-tests-needs-human-triage"]
     task_32_author_tests_needs_human_triage_gr_0["01-tests-fail-on-current-code"]:::guardrail
     task_32_author_tests_needs_human_triage_gr_1["02-triage-scenarios-present"]:::guardrail
+    task_32_author_tests_needs_human_triage_anchor[" "]:::invisible
   end
   style task_32_author_tests_needs_human_triage fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_33_implement_needs_human_triage["33-implement-needs-human-triage"]
@@ -227,6 +258,7 @@
     task_33_implement_needs_human_triage_gr_1["02-triage-class-exists"]:::guardrail
     task_33_implement_needs_human_triage_gr_2["03-triage-tests-pass"]:::guardrail
     task_33_implement_needs_human_triage_gr_3["04-tests-untouched"]:::guardrail
+    task_33_implement_needs_human_triage_anchor[" "]:::invisible
   end
   style task_33_implement_needs_human_triage fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
@@ -278,116 +310,117 @@
   task_30_build_solution_gate --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
-  click task_01_update_ssot_schema_contract href "tasks/01-update-ssot-schema-contract/" "01-update-ssot-schema-contract" _blank
+  classDef invisible fill:transparent,stroke:none;
+  click task_01_update_ssot_schema_contract_anchor href "tasks/01-update-ssot-schema-contract/" "01-update-ssot-schema-contract" _blank
   click task_01_update_ssot_schema_contract_gr_0 href "tasks/01-update-ssot-schema-contract/guardrails/01-ssot-has-new-sections.ps1" "01-ssot-has-new-sections" _blank
   click task_01_update_ssot_schema_contract_gr_1 href "tasks/01-update-ssot-schema-contract/guardrails/02-ssot-allocates-fresh-gr-codes.ps1" "02-ssot-allocates-fresh-gr-codes" _blank
-  click task_02_author_tests_worktree_provider_seam href "tasks/02-author-tests-worktree-provider-seam/" "02-author-tests-worktree-provider-seam" _blank
+  click task_02_author_tests_worktree_provider_seam_anchor href "tasks/02-author-tests-worktree-provider-seam/" "02-author-tests-worktree-provider-seam" _blank
   click task_02_author_tests_worktree_provider_seam_gr_0 href "tasks/02-author-tests-worktree-provider-seam/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_02_author_tests_worktree_provider_seam_gr_1 href "tasks/02-author-tests-worktree-provider-seam/guardrails/02-seam-scenarios-present.ps1" "02-seam-scenarios-present" _blank
-  click task_03_implement_worktree_provider_seam_and_channel_envelope href "tasks/03-implement-worktree-provider-seam-and-channel-envelope/" "03-implement-worktree-provider-seam-and-channel-envelope" _blank
+  click task_03_implement_worktree_provider_seam_and_channel_envelope_anchor href "tasks/03-implement-worktree-provider-seam-and-channel-envelope/" "03-implement-worktree-provider-seam-and-channel-envelope" _blank
   click task_03_implement_worktree_provider_seam_and_channel_envelope_gr_0 href "tasks/03-implement-worktree-provider-seam-and-channel-envelope/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_03_implement_worktree_provider_seam_and_channel_envelope_gr_1 href "tasks/03-implement-worktree-provider-seam-and-channel-envelope/guardrails/02-fake-implements-provider.ps1" "02-fake-implements-provider" _blank
   click task_03_implement_worktree_provider_seam_and_channel_envelope_gr_2 href "tasks/03-implement-worktree-provider-seam-and-channel-envelope/guardrails/03-seam-tests-pass.ps1" "03-seam-tests-pass" _blank
   click task_03_implement_worktree_provider_seam_and_channel_envelope_gr_3 href "tasks/03-implement-worktree-provider-seam-and-channel-envelope/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
-  click task_04_deserialize_scheduler_begin_triad_teardown href "tasks/04-deserialize-scheduler-begin-triad-teardown/" "04-deserialize-scheduler-begin-triad-teardown" _blank
+  click task_04_deserialize_scheduler_begin_triad_teardown_anchor href "tasks/04-deserialize-scheduler-begin-triad-teardown/" "04-deserialize-scheduler-begin-triad-teardown" _blank
   click task_04_deserialize_scheduler_begin_triad_teardown_gr_0 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/01-restore-seam-removed-from-executor.ps1" "01-restore-seam-removed-from-executor" _blank
   click task_04_deserialize_scheduler_begin_triad_teardown_gr_1 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/02-core-builds.ps1" "02-core-builds" _blank
   click task_04_deserialize_scheduler_begin_triad_teardown_gr_2 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/03-seam-suite-still-green.ps1" "03-seam-suite-still-green" _blank
   click task_04_deserialize_scheduler_begin_triad_teardown_gr_3 href "tasks/04-deserialize-scheduler-begin-triad-teardown/guardrails/04-exclusive-gate-removed-from-scheduler.ps1" "04-exclusive-gate-removed-from-scheduler" _blank
-  click task_05_author_tests_git_worktree_lifecycle href "tasks/05-author-tests-git-worktree-lifecycle/" "05-author-tests-git-worktree-lifecycle" _blank
+  click task_05_author_tests_git_worktree_lifecycle_anchor href "tasks/05-author-tests-git-worktree-lifecycle/" "05-author-tests-git-worktree-lifecycle" _blank
   click task_05_author_tests_git_worktree_lifecycle_gr_0 href "tasks/05-author-tests-git-worktree-lifecycle/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_05_author_tests_git_worktree_lifecycle_gr_1 href "tasks/05-author-tests-git-worktree-lifecycle/guardrails/02-lifecycle-scenarios-present.ps1" "02-lifecycle-scenarios-present" _blank
-  click task_06_implement_git_worktree_provider_and_reuse_topology href "tasks/06-implement-git-worktree-provider-and-reuse-topology/" "06-implement-git-worktree-provider-and-reuse-topology" _blank
+  click task_06_implement_git_worktree_provider_and_reuse_topology_anchor href "tasks/06-implement-git-worktree-provider-and-reuse-topology/" "06-implement-git-worktree-provider-and-reuse-topology" _blank
   click task_06_implement_git_worktree_provider_and_reuse_topology_gr_0 href "tasks/06-implement-git-worktree-provider-and-reuse-topology/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_06_implement_git_worktree_provider_and_reuse_topology_gr_1 href "tasks/06-implement-git-worktree-provider-and-reuse-topology/guardrails/02-provider-implements-interface.ps1" "02-provider-implements-interface" _blank
   click task_06_implement_git_worktree_provider_and_reuse_topology_gr_2 href "tasks/06-implement-git-worktree-provider-and-reuse-topology/guardrails/03-lifecycle-tests-pass.ps1" "03-lifecycle-tests-pass" _blank
   click task_06_implement_git_worktree_provider_and_reuse_topology_gr_3 href "tasks/06-implement-git-worktree-provider-and-reuse-topology/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
-  click task_07_author_tests_validation_gates_and_triad_removal href "tasks/07-author-tests-validation-gates-and-triad-removal/" "07-author-tests-validation-gates-and-triad-removal" _blank
+  click task_07_author_tests_validation_gates_and_triad_removal_anchor href "tasks/07-author-tests-validation-gates-and-triad-removal/" "07-author-tests-validation-gates-and-triad-removal" _blank
   click task_07_author_tests_validation_gates_and_triad_removal_gr_0 href "tasks/07-author-tests-validation-gates-and-triad-removal/guardrails/01-tests-build.ps1" "01-tests-build" _blank
   click task_07_author_tests_validation_gates_and_triad_removal_gr_1 href "tasks/07-author-tests-validation-gates-and-triad-removal/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
-  click task_08_implement_validation_gates_and_triad_teardown href "tasks/08-implement-validation-gates-and-triad-teardown/" "08-implement-validation-gates-and-triad-teardown" _blank
+  click task_08_implement_validation_gates_and_triad_teardown_anchor href "tasks/08-implement-validation-gates-and-triad-teardown/" "08-implement-validation-gates-and-triad-teardown" _blank
   click task_08_implement_validation_gates_and_triad_teardown_gr_0 href "tasks/08-implement-validation-gates-and-triad-teardown/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_08_implement_validation_gates_and_triad_teardown_gr_1 href "tasks/08-implement-validation-gates-and-triad-teardown/guardrails/02-triad-torn-down.ps1" "02-triad-torn-down" _blank
   click task_08_implement_validation_gates_and_triad_teardown_gr_2 href "tasks/08-implement-validation-gates-and-triad-teardown/guardrails/03-gate-tests-pass.ps1" "03-gate-tests-pass" _blank
   click task_08_implement_validation_gates_and_triad_teardown_gr_3 href "tasks/08-implement-validation-gates-and-triad-teardown/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
-  click task_09_author_tests_logs_elevation_and_runconfig href "tasks/09-author-tests-logs-elevation-and-runconfig/" "09-author-tests-logs-elevation-and-runconfig" _blank
+  click task_09_author_tests_logs_elevation_and_runconfig_anchor href "tasks/09-author-tests-logs-elevation-and-runconfig/" "09-author-tests-logs-elevation-and-runconfig" _blank
   click task_09_author_tests_logs_elevation_and_runconfig_gr_0 href "tasks/09-author-tests-logs-elevation-and-runconfig/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_09_author_tests_logs_elevation_and_runconfig_gr_1 href "tasks/09-author-tests-logs-elevation-and-runconfig/guardrails/02-config-scenarios-present.ps1" "02-config-scenarios-present" _blank
-  click task_10_implement_logs_elevation_and_runconfig href "tasks/10-implement-logs-elevation-and-runconfig/" "10-implement-logs-elevation-and-runconfig" _blank
+  click task_10_implement_logs_elevation_and_runconfig_anchor href "tasks/10-implement-logs-elevation-and-runconfig/" "10-implement-logs-elevation-and-runconfig" _blank
   click task_10_implement_logs_elevation_and_runconfig_gr_0 href "tasks/10-implement-logs-elevation-and-runconfig/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_10_implement_logs_elevation_and_runconfig_gr_1 href "tasks/10-implement-logs-elevation-and-runconfig/guardrails/02-logs-runconfig-tests-pass.ps1" "02-logs-runconfig-tests-pass" _blank
   click task_10_implement_logs_elevation_and_runconfig_gr_2 href "tasks/10-implement-logs-elevation-and-runconfig/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
-  click task_11_author_tests_writescope_matcher_truth_table_and_fuzz href "tasks/11-author-tests-writescope-matcher-truth-table-and-fuzz/" "11-author-tests-writescope-matcher-truth-table-and-fuzz" _blank
+  click task_11_author_tests_writescope_matcher_truth_table_and_fuzz_anchor href "tasks/11-author-tests-writescope-matcher-truth-table-and-fuzz/" "11-author-tests-writescope-matcher-truth-table-and-fuzz" _blank
   click task_11_author_tests_writescope_matcher_truth_table_and_fuzz_gr_0 href "tasks/11-author-tests-writescope-matcher-truth-table-and-fuzz/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_11_author_tests_writescope_matcher_truth_table_and_fuzz_gr_1 href "tasks/11-author-tests-writescope-matcher-truth-table-and-fuzz/guardrails/02-truth-table-rows-present.ps1" "02-truth-table-rows-present" _blank
-  click task_12_implement_writescope_matcher href "tasks/12-implement-writescope-matcher/" "12-implement-writescope-matcher" _blank
+  click task_12_implement_writescope_matcher_anchor href "tasks/12-implement-writescope-matcher/" "12-implement-writescope-matcher" _blank
   click task_12_implement_writescope_matcher_gr_0 href "tasks/12-implement-writescope-matcher/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_12_implement_writescope_matcher_gr_1 href "tasks/12-implement-writescope-matcher/guardrails/02-matcher-file-exists.ps1" "02-matcher-file-exists" _blank
   click task_12_implement_writescope_matcher_gr_2 href "tasks/12-implement-writescope-matcher/guardrails/03-matcher-tests-pass.ps1" "03-matcher-tests-pass" _blank
   click task_12_implement_writescope_matcher_gr_3 href "tasks/12-implement-writescope-matcher/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
-  click task_13_author_tests_writescope_check href "tasks/13-author-tests-writescope-check/" "13-author-tests-writescope-check" _blank
+  click task_13_author_tests_writescope_check_anchor href "tasks/13-author-tests-writescope-check/" "13-author-tests-writescope-check" _blank
   click task_13_author_tests_writescope_check_gr_0 href "tasks/13-author-tests-writescope-check/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_13_author_tests_writescope_check_gr_1 href "tasks/13-author-tests-writescope-check/guardrails/02-check-scenarios-present.ps1" "02-check-scenarios-present" _blank
-  click task_14_implement_writescope_check_and_scoped_revert href "tasks/14-implement-writescope-check-and-scoped-revert/" "14-implement-writescope-check-and-scoped-revert" _blank
+  click task_14_implement_writescope_check_and_scoped_revert_anchor href "tasks/14-implement-writescope-check-and-scoped-revert/" "14-implement-writescope-check-and-scoped-revert" _blank
   click task_14_implement_writescope_check_and_scoped_revert_gr_0 href "tasks/14-implement-writescope-check-and-scoped-revert/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_14_implement_writescope_check_and_scoped_revert_gr_1 href "tasks/14-implement-writescope-check-and-scoped-revert/guardrails/02-check-tests-pass.ps1" "02-check-tests-pass" _blank
   click task_14_implement_writescope_check_and_scoped_revert_gr_2 href "tasks/14-implement-writescope-check-and-scoped-revert/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
-  click task_15_author_tests_reverifier_seam href "tasks/15-author-tests-reverifier-seam/" "15-author-tests-reverifier-seam" _blank
+  click task_15_author_tests_reverifier_seam_anchor href "tasks/15-author-tests-reverifier-seam/" "15-author-tests-reverifier-seam" _blank
   click task_15_author_tests_reverifier_seam_gr_0 href "tasks/15-author-tests-reverifier-seam/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_15_author_tests_reverifier_seam_gr_1 href "tasks/15-author-tests-reverifier-seam/guardrails/02-reverifier-scenarios-present.ps1" "02-reverifier-scenarios-present" _blank
-  click task_16_implement_reverifier_seam href "tasks/16-implement-reverifier-seam/" "16-implement-reverifier-seam" _blank
+  click task_16_implement_reverifier_seam_anchor href "tasks/16-implement-reverifier-seam/" "16-implement-reverifier-seam" _blank
   click task_16_implement_reverifier_seam_gr_0 href "tasks/16-implement-reverifier-seam/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_16_implement_reverifier_seam_gr_1 href "tasks/16-implement-reverifier-seam/guardrails/02-reverifier-tests-pass.ps1" "02-reverifier-tests-pass" _blank
   click task_16_implement_reverifier_seam_gr_2 href "tasks/16-implement-reverifier-seam/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
-  click task_17_author_tests_merge_lock_and_ff_and_union_settle href "tasks/17-author-tests-merge-lock-and-ff-and-union-settle/" "17-author-tests-merge-lock-and-ff-and-union-settle" _blank
+  click task_17_author_tests_merge_lock_and_ff_and_union_settle_anchor href "tasks/17-author-tests-merge-lock-and-ff-and-union-settle/" "17-author-tests-merge-lock-and-ff-and-union-settle" _blank
   click task_17_author_tests_merge_lock_and_ff_and_union_settle_gr_0 href "tasks/17-author-tests-merge-lock-and-ff-and-union-settle/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_17_author_tests_merge_lock_and_ff_and_union_settle_gr_1 href "tasks/17-author-tests-merge-lock-and-ff-and-union-settle/guardrails/02-settle-scenarios-present.ps1" "02-settle-scenarios-present" _blank
-  click task_18_implement_merge_lock_and_ff_and_union_settle href "tasks/18-implement-merge-lock-and-ff-and-union-settle/" "18-implement-merge-lock-and-ff-and-union-settle" _blank
+  click task_18_implement_merge_lock_and_ff_and_union_settle_anchor href "tasks/18-implement-merge-lock-and-ff-and-union-settle/" "18-implement-merge-lock-and-ff-and-union-settle" _blank
   click task_18_implement_merge_lock_and_ff_and_union_settle_gr_0 href "tasks/18-implement-merge-lock-and-ff-and-union-settle/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_18_implement_merge_lock_and_ff_and_union_settle_gr_1 href "tasks/18-implement-merge-lock-and-ff-and-union-settle/guardrails/02-settle-tests-pass.ps1" "02-settle-tests-pass" _blank
   click task_18_implement_merge_lock_and_ff_and_union_settle_gr_2 href "tasks/18-implement-merge-lock-and-ff-and-union-settle/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
-  click task_19_author_tests_resume_and_reset_retry href "tasks/19-author-tests-resume-and-reset-retry/" "19-author-tests-resume-and-reset-retry" _blank
+  click task_19_author_tests_resume_and_reset_retry_anchor href "tasks/19-author-tests-resume-and-reset-retry/" "19-author-tests-resume-and-reset-retry" _blank
   click task_19_author_tests_resume_and_reset_retry_gr_0 href "tasks/19-author-tests-resume-and-reset-retry/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_19_author_tests_resume_and_reset_retry_gr_1 href "tasks/19-author-tests-resume-and-reset-retry/guardrails/02-resume-scenarios-present.ps1" "02-resume-scenarios-present" _blank
-  click task_20_implement_resume_reconciliation_and_reset_retry href "tasks/20-implement-resume-reconciliation-and-reset-retry/" "20-implement-resume-reconciliation-and-reset-retry" _blank
+  click task_20_implement_resume_reconciliation_and_reset_retry_anchor href "tasks/20-implement-resume-reconciliation-and-reset-retry/" "20-implement-resume-reconciliation-and-reset-retry" _blank
   click task_20_implement_resume_reconciliation_and_reset_retry_gr_0 href "tasks/20-implement-resume-reconciliation-and-reset-retry/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_20_implement_resume_reconciliation_and_reset_retry_gr_1 href "tasks/20-implement-resume-reconciliation-and-reset-retry/guardrails/02-resume-tests-pass.ps1" "02-resume-tests-pass" _blank
   click task_20_implement_resume_reconciliation_and_reset_retry_gr_2 href "tasks/20-implement-resume-reconciliation-and-reset-retry/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
-  click task_21_author_tests_merge_on_success href "tasks/21-author-tests-merge-on-success/" "21-author-tests-merge-on-success" _blank
+  click task_21_author_tests_merge_on_success_anchor href "tasks/21-author-tests-merge-on-success/" "21-author-tests-merge-on-success" _blank
   click task_21_author_tests_merge_on_success_gr_0 href "tasks/21-author-tests-merge-on-success/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_21_author_tests_merge_on_success_gr_1 href "tasks/21-author-tests-merge-on-success/guardrails/02-merge-on-success-scenarios-present.ps1" "02-merge-on-success-scenarios-present" _blank
-  click task_22_implement_merge_on_success href "tasks/22-implement-merge-on-success/" "22-implement-merge-on-success" _blank
+  click task_22_implement_merge_on_success_anchor href "tasks/22-implement-merge-on-success/" "22-implement-merge-on-success" _blank
   click task_22_implement_merge_on_success_gr_0 href "tasks/22-implement-merge-on-success/guardrails/01-cli-builds.ps1" "01-cli-builds" _blank
   click task_22_implement_merge_on_success_gr_1 href "tasks/22-implement-merge-on-success/guardrails/02-merge-on-success-tests-pass.ps1" "02-merge-on-success-tests-pass" _blank
   click task_22_implement_merge_on_success_gr_2 href "tasks/22-implement-merge-on-success/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
-  click task_23_author_tests_guardrail_scope_field href "tasks/23-author-tests-guardrail-scope-field/" "23-author-tests-guardrail-scope-field" _blank
+  click task_23_author_tests_guardrail_scope_field_anchor href "tasks/23-author-tests-guardrail-scope-field/" "23-author-tests-guardrail-scope-field" _blank
   click task_23_author_tests_guardrail_scope_field_gr_0 href "tasks/23-author-tests-guardrail-scope-field/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_23_author_tests_guardrail_scope_field_gr_1 href "tasks/23-author-tests-guardrail-scope-field/guardrails/02-scope-scenarios-present.ps1" "02-scope-scenarios-present" _blank
-  click task_24_implement_guardrail_scope_field href "tasks/24-implement-guardrail-scope-field/" "24-implement-guardrail-scope-field" _blank
+  click task_24_implement_guardrail_scope_field_anchor href "tasks/24-implement-guardrail-scope-field/" "24-implement-guardrail-scope-field" _blank
   click task_24_implement_guardrail_scope_field_gr_0 href "tasks/24-implement-guardrail-scope-field/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_24_implement_guardrail_scope_field_gr_1 href "tasks/24-implement-guardrail-scope-field/guardrails/02-scope-tests-pass.ps1" "02-scope-tests-pass" _blank
   click task_24_implement_guardrail_scope_field_gr_2 href "tasks/24-implement-guardrail-scope-field/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
-  click task_25_author_tests_ai_merge_worker href "tasks/25-author-tests-ai-merge-worker/" "25-author-tests-ai-merge-worker" _blank
+  click task_25_author_tests_ai_merge_worker_anchor href "tasks/25-author-tests-ai-merge-worker/" "25-author-tests-ai-merge-worker" _blank
   click task_25_author_tests_ai_merge_worker_gr_0 href "tasks/25-author-tests-ai-merge-worker/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_25_author_tests_ai_merge_worker_gr_1 href "tasks/25-author-tests-ai-merge-worker/guardrails/02-ai-merge-scenarios-present.ps1" "02-ai-merge-scenarios-present" _blank
-  click task_26_implement_ai_merge_worker href "tasks/26-implement-ai-merge-worker/" "26-implement-ai-merge-worker" _blank
+  click task_26_implement_ai_merge_worker_anchor href "tasks/26-implement-ai-merge-worker/" "26-implement-ai-merge-worker" _blank
   click task_26_implement_ai_merge_worker_gr_0 href "tasks/26-implement-ai-merge-worker/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_26_implement_ai_merge_worker_gr_1 href "tasks/26-implement-ai-merge-worker/guardrails/02-ai-merge-tests-pass.ps1" "02-ai-merge-tests-pass" _blank
   click task_26_implement_ai_merge_worker_gr_2 href "tasks/26-implement-ai-merge-worker/guardrails/03-tests-untouched.ps1" "03-tests-untouched" _blank
   click task_26_implement_ai_merge_worker_gr_3 href "tasks/26-implement-ai-merge-worker/guardrails/04-deterministic-gates-present.ps1" "04-deterministic-gates-present" _blank
-  click task_27_update_plan_breakdown_skill href "tasks/27-update-plan-breakdown-skill/" "27-update-plan-breakdown-skill" _blank
+  click task_27_update_plan_breakdown_skill_anchor href "tasks/27-update-plan-breakdown-skill/" "27-update-plan-breakdown-skill" _blank
   click task_27_update_plan_breakdown_skill_gr_0 href "tasks/27-update-plan-breakdown-skill/guardrails/01-skill-emits-new-mechanisms.ps1" "01-skill-emits-new-mechanisms" _blank
   click task_27_update_plan_breakdown_skill_gr_1 href "tasks/27-update-plan-breakdown-skill/guardrails/02-worked-example-uses-writescope-not-triad.ps1" "02-worked-example-uses-writescope-not-triad" _blank
-  click task_28_update_guardrails_review_skill href "tasks/28-update-guardrails-review-skill/" "28-update-guardrails-review-skill" _blank
+  click task_28_update_guardrails_review_skill_anchor href "tasks/28-update-guardrails-review-skill/" "28-update-guardrails-review-skill" _blank
   click task_28_update_guardrails_review_skill_gr_0 href "tasks/28-update-guardrails-review-skill/guardrails/01-review-skill-has-scope-probes.ps1" "01-review-skill-has-scope-probes" _blank
-  click task_29_update_domain_knowledge_skill href "tasks/29-update-domain-knowledge-skill/" "29-update-domain-knowledge-skill" _blank
+  click task_29_update_domain_knowledge_skill_anchor href "tasks/29-update-domain-knowledge-skill/" "29-update-domain-knowledge-skill" _blank
   click task_29_update_domain_knowledge_skill_gr_0 href "tasks/29-update-domain-knowledge-skill/guardrails/01-domain-knowledge-updated.ps1" "01-domain-knowledge-updated" _blank
-  click task_30_build_solution_gate href "tasks/30-build-solution-gate/" "30-build-solution-gate" _blank
+  click task_30_build_solution_gate_anchor href "tasks/30-build-solution-gate/" "30-build-solution-gate" _blank
   click task_30_build_solution_gate_gr_0 href "tasks/30-build-solution-gate/guardrails/01-solution-builds.ps1" "01-solution-builds" _blank
-  click task_32_author_tests_needs_human_triage href "tasks/32-author-tests-needs-human-triage/" "32-author-tests-needs-human-triage" _blank
+  click task_32_author_tests_needs_human_triage_anchor href "tasks/32-author-tests-needs-human-triage/" "32-author-tests-needs-human-triage" _blank
   click task_32_author_tests_needs_human_triage_gr_0 href "tasks/32-author-tests-needs-human-triage/guardrails/01-tests-fail-on-current-code.ps1" "01-tests-fail-on-current-code" _blank
   click task_32_author_tests_needs_human_triage_gr_1 href "tasks/32-author-tests-needs-human-triage/guardrails/02-triage-scenarios-present.ps1" "02-triage-scenarios-present" _blank
-  click task_33_implement_needs_human_triage href "tasks/33-implement-needs-human-triage/" "33-implement-needs-human-triage" _blank
+  click task_33_implement_needs_human_triage_anchor href "tasks/33-implement-needs-human-triage/" "33-implement-needs-human-triage" _blank
   click task_33_implement_needs_human_triage_gr_0 href "tasks/33-implement-needs-human-triage/guardrails/01-core-builds.ps1" "01-core-builds" _blank
   click task_33_implement_needs_human_triage_gr_1 href "tasks/33-implement-needs-human-triage/guardrails/02-triage-class-exists.ps1" "02-triage-class-exists" _blank
   click task_33_implement_needs_human_triage_gr_2 href "tasks/33-implement-needs-human-triage/guardrails/03-triage-tests-pass.ps1" "03-triage-tests-pass" _blank

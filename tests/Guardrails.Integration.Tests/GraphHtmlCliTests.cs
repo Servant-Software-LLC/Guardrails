@@ -65,8 +65,10 @@ public sealed class GraphHtmlCliTests
         string html = await File.ReadAllTextAsync(HtmlPath(plan.PlanDir), TestContext.Current.CancellationToken);
 
         // The HTML wires nodes to their source under the plan folder; diagram.md stays click-free
-        // (GitHub disables clicks; targets are file://-local).
-        Assert.Contains("click task_01_first href \"tasks/01-first/\"", html);
+        // (GitHub disables clicks; targets are file://-local). The task container's click targets
+        // its click-only anchor node, not the container id itself (issue #211: Mermaid never fires
+        // a `click` directive on a subgraph/cluster element, only on a real leaf node).
+        Assert.Contains("click task_01_first_anchor href \"tasks/01-first/\"", html);
         Assert.Contains("tasks/01-first/guardrails/", html);
         Assert.DoesNotContain("click ", md);
     }
