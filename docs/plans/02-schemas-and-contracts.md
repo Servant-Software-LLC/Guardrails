@@ -1724,15 +1724,20 @@ temporal fact is now preserved by a GUARANTEED emission order — a task's prefl
 node(s), if any, are always emitted BEFORE its guardrail check node(s) within the container.
 This is a stable, tested convention, not a rendering accident, and callers may rely on it.
 
-**Preflight labels are truncated, with the full text reachable via click.** A task-level
-preflight's descriptive text can run to many words (it documents a specific dependency-delivery
-precondition); drawing it in full would dwarf the rest of the diagram. The drawn label is
-instead a short, truncated form (a word-boundary cut around 40 characters, with a trailing
-ellipsis when truncated); the FULL `description` is never lost — it remains reachable via the
-SAME `click` directive mechanism `diagram.html` already uses for every node (source-file
-click-through, issue #33): the tooltip argument of a task-level preflight's `click` directive
-carries the full description instead of the bare check name. Guardrail check nodes and
-plan-level check nodes are unaffected — only a task-level preflight's drawn label is truncated.
+**Every check node's drawn label is its short, stable `name` — never its `description`, and never
+truncated.** An earlier version drew a task-level preflight's full descriptive text (which can run
+to many words — it documents a specific dependency-delivery precondition) and truncated it to a
+word-boundary cut around 40 characters so it wouldn't dwarf the rest of the diagram. That
+truncation was scoped to task-level preflights only; guardrail check nodes and plan-level check
+nodes still drew their full, untruncated `description`, which could be equally long (a guardrail's
+`description` documents the specific gaming vector it catches, per the `catches:` authoring
+doctrine — legitimately detailed content). The fix (issue #222): draw every check's `name` — the
+file-derived identifier (e.g. `01-core-tests-green-excluding-target`), already short, stable, and
+matching the file the node's own click target opens — uniformly for every check kind at both
+scopes. No truncation heuristic is needed anywhere now. The FULL `description` (falling back to
+`name` when absent) is never lost — it remains reachable via the SAME `click` directive mechanism
+`diagram.html` already uses for every node (source-file click-through, issue #33): the tooltip
+argument of every check's `click` directive carries the full description.
 
 **Legend — static content OUTSIDE the Mermaid graph.** A Mermaid-native legend (a disconnected
 subgraph of dummy colour-swatch nodes) was prototyped and rendered BROKEN headless against the
@@ -1883,9 +1888,11 @@ immediately follows the caption, also outside the hashed content.
 (container membership, check node labels, and the container→container DAG shape) as emitted by
 the renderer, excluding the cosmetic leaf-node `classDef` color definitions and the legend. It
 changes whenever the DRAWN diagram changes — a task, a dependency, or a check (container/DAG
-shape), or a node label (a check's `description`, which the renderer draws as its label —
-truncated for a task-level preflight, but the truncated form is still part of what's drawn, so it
-still moves the hash). **Critically, it folds the PLAN-LEVEL `<plan>/preflights/` and
+shape), or a node label. Since a check's drawn label is always its `name` (issue #222 — never its
+`description`, and never truncated), the hash is sensitive to a check's `name` changing but NOT to
+a `description`-only edit — a check's description can be freely rewritten (to improve the
+click-tooltip text) without moving the hash or making `graph --check` report the plan stale.
+**Critically, it folds the PLAN-LEVEL `<plan>/preflights/` and
 `<plan>/guardrails/` folder checks too, not just the per-task `tasks{}` structure** — those
 checks are not reachable through any task, so a hash computed from task structure alone would
 leave the diagram falsely "fresh" after someone edits a Terminal Gate check's label or

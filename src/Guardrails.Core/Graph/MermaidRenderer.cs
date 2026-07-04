@@ -53,13 +53,15 @@ namespace Guardrails.Core.Graph;
 /// `graph --check` spuriously report a plan stale.
 /// </para>
 /// <para>
-/// <b>Preflight labels are truncated with click-for-detail.</b> A task-level preflight's full
-/// descriptive text (which can run to many words) is too long to draw as an inline node label
-/// without dwarfing the rest of the diagram, so the drawn label is a short synthesized name (see
-/// <see cref="PreflightShortLabel"/>) while the full <see cref="GuardrailDefinition.Description"/>
-/// remains reachable via the SAME <c>click</c>-directive mechanism <see cref="RenderInteractive"/>
-/// already uses for every other node (source-file click-through, issue #33) — the tooltip
-/// argument of that directive carries the full text, so no new mechanism was introduced.
+/// <b>Every check node's drawn label is its short, stable <c>Name</c> — never its (possibly long)
+/// <c>Description</c>.</b> A prior version drew a task-level preflight's full descriptive text
+/// (which can run to many words) and truncated it to fit; the owner asked instead for the same
+/// short, meaningful identifier the node's own click target already opens, uniformly for every
+/// check kind at both scopes (issue #222) — so no truncation heuristic is needed anywhere. The
+/// full <see cref="GuardrailDefinition.Description"/> remains reachable via the SAME
+/// <c>click</c>-directive mechanism <see cref="RenderInteractive"/> already uses for every node
+/// (source-file click-through, issue #33) — the tooltip argument of that directive carries the
+/// full text for every check, so no new mechanism was introduced.
 /// </para>
 /// <para>
 /// The DAG is drawn <c>subgraph --&gt; subgraph</c>: each edge references a container's subgraph
@@ -357,7 +359,7 @@ public static class MermaidRenderer
         string checkClass)
     {
         AppendLf(sb, $"  subgraph {containerId}[{Quote(label)}]");
-        AppendCheckNodes(sb, "    ", $"{containerId}", checks, checkClass, truncatePreflightLabel: false);
+        AppendCheckNodes(sb, "    ", $"{containerId}", checks, checkClass);
         AppendLf(sb, "  end");
         AppendLf(sb, $"  style {containerId} {PlanLevelStyle}");
     }
@@ -391,8 +393,8 @@ public static class MermaidRenderer
         // Preflights BEFORE guardrails — see remarks: this order is the emission-order contract
         // that now carries the "before the attempt loop" / "after the action" temporal semantic
         // the removed nested boxes used to convey visually.
-        AppendCheckNodes(sb, "    ", $"{containerId}_pf", task.Preflights, "preflight", truncatePreflightLabel: true);
-        AppendCheckNodes(sb, "    ", $"{containerId}_gr", task.Guardrails, "guardrail", truncatePreflightLabel: false);
+        AppendCheckNodes(sb, "    ", $"{containerId}_pf", task.Preflights, "preflight");
+        AppendCheckNodes(sb, "    ", $"{containerId}_gr", task.Guardrails, "guardrail");
 
         AppendLf(sb, "  end");
         AppendLf(sb, $"  style {containerId} {TaskStyle}");
@@ -401,64 +403,29 @@ public static class MermaidRenderer
     /// <summary>
     /// Append <paramref name="checks"/> (sorted ordinal by name, for input-order independence) as
     /// <c>{nodeIdPrefix}_{ordinal}[label]:::{checkClass}</c> node lines, one per check. Drawn label
-    /// is <c>Description ?? Name</c>, EXCEPT for a task-level preflight
-    /// (<paramref name="truncatePreflightLabel"/> true) whose long descriptive text is truncated
-    /// to a short synthesized name (see <see cref="PreflightShortLabel"/>) — the full description
-    /// remains reachable via the node's <c>click</c> tooltip in <see cref="RenderInteractive"/>
-    /// (issue #33's existing click mechanism, reused rather than inventing a new one).
+    /// is ALWAYS <see cref="GuardrailDefinition.Name"/> — the check's own short, stable identifier
+    /// (the file-derived name, e.g. <c>01-core-tests-green-excluding-target</c>), never the
+    /// (possibly long) <see cref="GuardrailDefinition.Description"/>. A prior version drew the
+    /// description (truncated for task-level preflights only, issue #211) — the owner asked
+    /// instead for the same short, meaningful identifier every box's click target already opens,
+    /// uniformly for every check kind at both scopes (issue #222). The full description remains
+    /// reachable via the node's <c>click</c> tooltip in <see cref="RenderInteractive"/> (issue
+    /// #33's existing click mechanism, unaffected by this change) — no truncation heuristic is
+    /// needed anywhere now.
     /// </summary>
     private static void AppendCheckNodes(
         StringBuilder sb,
         string indent,
         string nodeIdPrefix,
         IReadOnlyList<GuardrailDefinition> checks,
-        string checkClass,
-        bool truncatePreflightLabel)
+        string checkClass)
     {
         int ordinal = 0;
         foreach (GuardrailDefinition check in checks.OrderBy(c => c.Name, StringComparer.Ordinal))
         {
-            string full = string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!;
-            string label = truncatePreflightLabel ? PreflightShortLabel(check) : full;
-            AppendLf(sb, $"{indent}{nodeIdPrefix}_{ordinal}[{Quote(label)}]:::{checkClass}");
+            AppendLf(sb, $"{indent}{nodeIdPrefix}_{ordinal}[{Quote(check.Name)}]:::{checkClass}");
             ordinal++;
         }
-    }
-
-    /// <summary>
-    /// Longest drawn label before <see cref="PreflightShortLabel"/> truncates to an ellipsis. Long
-    /// enough to keep a short synthesized phrase intact, short enough that a task-level preflight
-    /// node no longer dwarfs the rest of the diagram (the owner-reported "busy" symptom).
-    /// </summary>
-    private const int PreflightLabelMaxChars = 40;
-
-    /// <summary>
-    /// A short drawn label for a task-level preflight check node: <c>Description ?? Name</c>,
-    /// truncated to <see cref="PreflightLabelMaxChars"/> characters (word-boundary where
-    /// possible) with a trailing ellipsis when it would otherwise overflow. The FULL text is never
-    /// lost — it remains reachable via the node's <c>click</c> tooltip (see
-    /// <see cref="AppendClickDirectives"/>/<see cref="ClickTooltip"/>), which already carries the
-    /// check's full description for every node kind.
-    /// </summary>
-    private static string PreflightShortLabel(GuardrailDefinition check)
-    {
-        string full = string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!;
-        string collapsed = full
-            .Replace("\r\n", " ", StringComparison.Ordinal)
-            .Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal)
-            .Trim();
-
-        if (collapsed.Length <= PreflightLabelMaxChars)
-        {
-            return collapsed;
-        }
-
-        // Prefer breaking at the last space within budget so the truncation reads as whole words;
-        // fall back to a hard cut when the first "word" alone exceeds the budget.
-        int cut = collapsed.LastIndexOf(' ', Math.Min(PreflightLabelMaxChars, collapsed.Length) - 1);
-        string head = cut > 0 ? collapsed[..cut] : collapsed[..PreflightLabelMaxChars];
-        return head.TrimEnd() + "…";
     }
 
     /// <summary>
@@ -519,7 +486,7 @@ public static class MermaidRenderer
     private static void AppendClickDirectives(
         PlanDefinition plan, IReadOnlyDictionary<string, string> nodeIdBase, StringBuilder sb)
     {
-        AppendCheckClicks(plan, plan.PlanPreflights, PlanPreflightsId, sb, tooltipIsFullDescription: false);
+        AppendCheckClicks(plan, plan.PlanPreflights, PlanPreflightsId, sb);
 
         foreach (TaskNode task in plan.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal))
         {
@@ -528,38 +495,35 @@ public static class MermaidRenderer
 
             if (task.Preflights.Count > 0)
             {
-                AppendCheckClicks(plan, task.Preflights, $"{containerId}_pf", sb, tooltipIsFullDescription: true);
+                AppendCheckClicks(plan, task.Preflights, $"{containerId}_pf", sb);
             }
 
-            AppendCheckClicks(plan, task.Guardrails, $"{containerId}_gr", sb, tooltipIsFullDescription: false);
+            AppendCheckClicks(plan, task.Guardrails, $"{containerId}_gr", sb);
         }
 
-        AppendCheckClicks(plan, plan.PlanGuardrails, PlanGuardrailsId, sb, tooltipIsFullDescription: false);
+        AppendCheckClicks(plan, plan.PlanGuardrails, PlanGuardrailsId, sb);
     }
 
     /// <summary>
     /// Append one <c>click</c> directive per check in <paramref name="checks"/> (sorted ordinal by
     /// name, mirroring <see cref="AppendCheckNodes"/> exactly so the ordinal-suffixed node id each
-    /// click targets is the one actually emitted for that check). The tooltip is normally the
-    /// check's <c>Name</c>; when <paramref name="tooltipIsFullDescription"/> is set (task-level
-    /// preflights, whose drawn label is truncated by <see cref="PreflightShortLabel"/>) the
-    /// tooltip carries <c>Description ?? Name</c> in full instead, so hovering/clicking the node
-    /// surfaces the complete text the truncated label dropped.
+    /// click targets is the one actually emitted for that check). The tooltip is ALWAYS
+    /// <c>Description ?? Name</c> in full, for every check kind at both scopes — since the drawn
+    /// label is now always the short <c>Name</c> (issue #222), the tooltip is the one place the
+    /// full description lives; there is no longer a "some checks get the full text, others don't"
+    /// distinction.
     /// </summary>
     private static void AppendCheckClicks(
         PlanDefinition plan,
         IReadOnlyList<GuardrailDefinition> checks,
         string nodeIdPrefix,
-        StringBuilder sb,
-        bool tooltipIsFullDescription)
+        StringBuilder sb)
     {
         int ordinal = 0;
         foreach (GuardrailDefinition check in checks.OrderBy(c => c.Name, StringComparer.Ordinal))
         {
             string checkPath = ToPlanRelative(plan.PlanDirectory, check.Path);
-            string tooltipText = tooltipIsFullDescription
-                ? (string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!)
-                : check.Name;
+            string tooltipText = string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!;
             AppendLf(sb, $"  click {nodeIdPrefix}_{ordinal} href \"{checkPath}\" \"{ClickTooltip(tooltipText)}\" _blank");
             ordinal++;
         }

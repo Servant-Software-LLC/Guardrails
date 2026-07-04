@@ -72,8 +72,9 @@ public sealed class ContainerDiagramTests : IDisposable
 
         Assert.DoesNotContain(leaf, l => IsSubgraphLabelled(l, "Preflights"));
         Assert.DoesNotContain(leaf, l => IsSubgraphLabelled(l, "Guardrails"));
-        Assert.Contains(leaf, l => l.Contains("LEAF PREFLIGHT DEP", StringComparison.Ordinal));
-        Assert.Contains(leaf, l => l.Contains("LEAF GUARDRAIL", StringComparison.Ordinal));
+        // Drawn label is always the check's Name (issue #222), not its description.
+        Assert.Contains(leaf, l => l.Contains("01-dep-delivered", StringComparison.Ordinal));
+        Assert.Contains(leaf, l => l.Contains("01-verify", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -85,8 +86,8 @@ public sealed class ContainerDiagramTests : IDisposable
         IReadOnlyList<string> lines = Lines(Render(WriteCanonicalPlan()));
         IReadOnlyList<string> leaf = ContainerBlock(lines, l => IsTaskContainerHeader(l, "02_leaf"));
 
-        int preflightIndex = IndexOfLineContaining(leaf, "LEAF PREFLIGHT DEP");
-        int guardrailIndex = IndexOfLineContaining(leaf, "LEAF GUARDRAIL");
+        int preflightIndex = IndexOfLineContaining(leaf, "01-dep-delivered");
+        int guardrailIndex = IndexOfLineContaining(leaf, "01-verify");
 
         Assert.True(preflightIndex >= 0 && guardrailIndex >= 0);
         Assert.True(preflightIndex < guardrailIndex,
@@ -114,8 +115,9 @@ public sealed class ContainerDiagramTests : IDisposable
         IReadOnlyList<string> planGuardrails =
             ContainerBlock(lines, l => l.StartsWith("subgraph plan_guardrails", StringComparison.Ordinal));
 
-        Assert.Contains(planPreflights, l => l.Contains("PLAN PREFLIGHT BASELINE", StringComparison.Ordinal));
-        Assert.Contains(planGuardrails, l => l.Contains("PLAN GUARDRAIL TERMINAL", StringComparison.Ordinal));
+        // Drawn label is always the check's Name (issue #222), not its description.
+        Assert.Contains(planPreflights, l => l.Contains("01-baseline", StringComparison.Ordinal));
+        Assert.Contains(planGuardrails, l => l.Contains("01-terminal", StringComparison.Ordinal));
     }
 
     // =====================================================================================
@@ -175,7 +177,7 @@ public sealed class ContainerDiagramTests : IDisposable
 
         IReadOnlyList<string> leaf = ContainerBlock(lines, l => IsTaskContainerHeader(l, "02_leaf"));
         Assert.DoesNotContain(leaf, l => IsSubgraphLabelled(l, "Preflights"));
-        Assert.Contains(leaf, l => l.Contains("LEAF PREFLIGHT DEP", StringComparison.Ordinal));
+        Assert.Contains(leaf, l => l.Contains("01-dep-delivered", StringComparison.Ordinal));
     }
 
     // =====================================================================================
@@ -228,23 +230,22 @@ public sealed class ContainerDiagramTests : IDisposable
     // =====================================================================================
 
     [Fact]
-    public void GraphCheck_EditingPlanLevelGuardrailCheckLabel_ReportsStale()
+    public void GraphCheck_RenamingPlanLevelGuardrailCheck_ReportsStale()
     {
-        // Editing a <plan>/guardrails/ (plan-level Terminal Gate) check's DRAWN label must change
-        // source-sha256 — proving the hash folds the PLAN-LEVEL folder checks, not just tasks{}. The
-        // current renderer folds only tasks{}, so the hash is unchanged and `graph --check` would
-        // wrongly report "up to date": this assertion fails (TDD red).
+        // Renaming a <plan>/guardrails/ (plan-level Terminal Gate) check's file changes its Name —
+        // the DRAWN label (issue #222: always Name, never description) — so source-sha256 must
+        // change, proving the hash folds the PLAN-LEVEL folder checks, not just tasks{}.
         string planDir = WriteCanonicalPlan();
         string storedHash = GraphSourceHash.Compute(LoadPlan(planDir)); // what diagram.md would embed
 
-        // Edit the plan-level Terminal Gate check's drawn label (its description sidecar).
-        File.WriteAllText(Path.Combine(PlanGuardrailsDir(planDir), "01-terminal.json"),
-            "{ \"description\": \"PLAN GUARDRAIL TERMINAL (revised)\", \"scope\": \"integration\" }");
+        File.Delete(Path.Combine(PlanGuardrailsDir(planDir), "01-terminal.ps1"));
+        File.Delete(Path.Combine(PlanGuardrailsDir(planDir), "01-terminal.json"));
+        WriteCheckFile(PlanGuardrailsDir(planDir), "01-terminal-revised", "PLAN GUARDRAIL TERMINAL", scope: "integration");
 
         string freshHash = GraphSourceHash.Compute(LoadPlan(planDir));
 
         Assert.True(GraphCheckReportsStale(storedHash, freshHash),
-            "editing a <plan>/guardrails/ check must move source-sha256 so `graph --check` exits 2 (stale); "
+            "renaming a <plan>/guardrails/ check must move source-sha256 so `graph --check` exits 2 (stale); "
             + "the current renderer folds only tasks{}, leaving the plan-level Terminal Gate check invisible to the hash");
     }
 
@@ -263,10 +264,27 @@ public sealed class ContainerDiagramTests : IDisposable
     }
 
     [Fact]
-    public void SourceHash_EditingPlanLevelPreflightCheckLabel_ChangesHash_FoldingTheFullFlightFolder()
+    public void SourceHash_RenamingPlanLevelPreflightCheck_ChangesHash_FoldingTheFullFlightFolder()
     {
-        // The Full Flight Checks folder (<plan>/preflights/) is folded too: editing a plan-level
-        // preflight's drawn label moves the hash. Current renderer ignores <plan>/preflights/ (red).
+        // The Full Flight Checks folder (<plan>/preflights/) is folded too: renaming a plan-level
+        // preflight changes its Name — the drawn label (issue #222) — which moves the hash.
+        string planDir = WriteCanonicalPlan();
+        string before = GraphSourceHash.Compute(LoadPlan(planDir));
+
+        File.Delete(Path.Combine(PlanPreflightsDir(planDir), "01-baseline.ps1"));
+        File.Delete(Path.Combine(PlanPreflightsDir(planDir), "01-baseline.json"));
+        WriteCheckFile(PlanPreflightsDir(planDir), "01-baseline-revised", "PLAN PREFLIGHT BASELINE", scope: null);
+
+        string after = GraphSourceHash.Compute(LoadPlan(planDir));
+        Assert.NotEqual(before, after);
+    }
+
+    [Fact]
+    public void SourceHash_Unchanged_WhenOnlyPlanLevelPreflightDescriptionChanges()
+    {
+        // Complementary to the rename test above: a description-only edit (same Name, same file)
+        // must NOT move the hash — the drawn label is always Name (issue #222), never description,
+        // so a description can be freely rewritten without `graph --check` reporting the plan stale.
         string planDir = WriteCanonicalPlan();
         string before = GraphSourceHash.Compute(LoadPlan(planDir));
 
@@ -274,7 +292,7 @@ public sealed class ContainerDiagramTests : IDisposable
             "{ \"description\": \"PLAN PREFLIGHT BASELINE (revised)\" }");
 
         string after = GraphSourceHash.Compute(LoadPlan(planDir));
-        Assert.NotEqual(before, after);
+        Assert.Equal(before, after);
     }
 
     // =====================================================================================
