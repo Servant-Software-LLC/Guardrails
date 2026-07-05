@@ -424,11 +424,15 @@ public sealed class LogSiteExportTests
     }
 
     [Fact]
-    public void TaskPage_SingleAttempt_NoAttemptDropdown_SectionAlwaysVisible_DoesNotRegress()
+    public void TaskPage_SingleAttempt_StillShowsAttemptDropdown_MatchingTheLiveViewer()
     {
-        // #206: the single-attempt case is BY FAR the most common in practice and must not regress. No
-        // attempt-level <select> is rendered (nothing to pick between); the one attempt still renders its
-        // file combobox exactly as before, and its content is visible (not hidden).
+        // Issue #241: the single-attempt case is BY FAR the most common in practice, and the static
+        // export must match the live viewer here — LogServer's page shell unconditionally carries an
+        // attempt <select>, even before/with just one attempt. A prior version omitted the dropdown
+        // for a single attempt ("nothing to pick between"); caught live during a real dogfood as an
+        // inconsistency (a user who watched a task pass on attempt 1 in the live view, then checked the
+        // exported static page afterward, found the dropdown had disappeared). The one attempt's section
+        // still renders its file combobox exactly as before, and its content is visible (not hidden).
         string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(logsRoot);
         try
@@ -452,8 +456,9 @@ public sealed class LogSiteExportTests
 
             string page = File.ReadAllText(Path.Combine(logsRoot, "01-task", "index.html"));
 
-            // No attempt dropdown — nothing to pick between with only one attempt.
-            Assert.DoesNotContain("id=\"attemptselect\"", page);
+            // The attempt dropdown IS present — one option, matching the live viewer's page shell.
+            Assert.Contains("<select id=\"attemptselect\" class=\"attemptselect\">", page);
+            Assert.Contains("<option value=\"1\" selected>attempt 1</option>", page);
 
             // The one attempt's section is present and NOT hidden.
             Assert.Contains("<section class=\"attempt\" data-attempt=\"1\">", page);
