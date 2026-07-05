@@ -239,15 +239,19 @@ public static class LogSiteRenderer
     /// One task's static page: every attempt on disk is rendered into its own <c>&lt;section
     /// data-attempt="N"&gt;</c> (issue #206), each carrying a file <c>&lt;select&gt;</c> combobox that
     /// toggles between that attempt's files, all inlined as hidden <c>&lt;pre class="filebody"&gt;</c>
-    /// blocks (the PREFERRED file — transcript, else raw stream, else action stdout — shown first). When
-    /// there is more than one attempt, an attempt <c>&lt;select id="attemptselect"&gt;</c> — mirroring the
-    /// live viewer's attempt dropdown (<see cref="LogServer"/>) — lets the user pick which attempt's
-    /// section is visible; every attempt's markup stays inlined in the one exported file (a <c>file://</c>
-    /// page can't fetch siblings), the dropdown only shows/hides <c>&lt;section&gt;</c>s. Default selection
-    /// is the LATEST attempt, matching the live viewer's default. A single-attempt task renders no
-    /// attempt dropdown at all — its one section is simply always visible. The existing per-attempt file
-    /// combobox is untouched: it stays nested inside its attempt's <c>&lt;section&gt;</c> and is shown/hidden
-    /// as part of it. A Source section (action file + guardrail scripts from <c>&lt;task.Directory&gt;</c>,
+    /// blocks (the PREFERRED file — transcript, else raw stream, else action stdout — shown first).
+    /// Whenever there is at least one attempt, an attempt <c>&lt;select id="attemptselect"&gt;</c> — always
+    /// rendered, matching the live viewer's attempt dropdown (<see cref="LogServer"/>: its
+    /// <c>&lt;select id="attempt"&gt;</c> is unconditionally present in the page shell, even with a single
+    /// attempt — populated with just one option) — lets the user pick which attempt's section is visible;
+    /// every attempt's markup stays inlined in the one exported file (a <c>file://</c> page can't fetch
+    /// siblings), the dropdown only shows/hides <c>&lt;section&gt;</c>s. Default selection is the LATEST
+    /// attempt, matching the live viewer's default. (Before issue #241's follow-up, a single-attempt task
+    /// rendered no dropdown at all — an inconsistency with the live viewer, caught live during a real
+    /// dogfood: a user who watched a task pass on attempt 1 in the live view, then checked the exported
+    /// static page afterward, found the dropdown had disappeared.) The existing per-attempt file combobox
+    /// is untouched: it stays nested inside its attempt's <c>&lt;section&gt;</c> and is shown/hidden as
+    /// part of it. A Source section (action file + guardrail scripts from <c>&lt;task.Directory&gt;</c>,
     /// #141 item 3) and the "← all tasks" back-link follow, unchanged.
     ///
     /// <para>Trade-off (#145 Feature 2, extended by #206): inlining every attempt's every file bloats the
@@ -263,7 +267,7 @@ public static class LogSiteRenderer
         // "follow latest" default (LogServer's TaskTemplate: `asel.value = ... d.attempt`).
         int latest = attempts.Count > 0 ? attempts[^1] : 0;
 
-        if (attempts.Count > 1)
+        if (attempts.Count > 0)
         {
             AppendAttemptSelect(sections, attempts, latest);
         }
@@ -313,8 +317,10 @@ public static class LogSiteRenderer
     /// <summary>
     /// Render the attempt-level <c>&lt;select id="attemptselect"&gt;</c> (issue #206): one option per
     /// attempt (oldest first, matching the on-page section order), the <paramref name="latest"/> attempt
-    /// pre-selected — mirroring the live viewer's "default to latest" behaviour. Only emitted when a task
-    /// has more than one attempt; a single-attempt task has nothing to pick between.
+    /// pre-selected — mirroring the live viewer's "default to latest" behaviour. Emitted whenever a task
+    /// has at least one attempt (issue #241) — including exactly one — so the static export always
+    /// matches the live viewer's page shell, which unconditionally carries an attempt <c>&lt;select&gt;</c>
+    /// regardless of how many attempts exist.
     /// </summary>
     private static void AppendAttemptSelect(StringBuilder sections, IReadOnlyList<int> attempts, int latest)
     {
