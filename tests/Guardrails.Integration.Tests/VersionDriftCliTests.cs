@@ -40,7 +40,7 @@ public sealed class VersionDriftCliTests : IDisposable
         versionOption.Action = new VersionWithDriftAction(
             io, HarnessVersion, _bundledSkills, new[] { _scanRoot });
 
-        int exitCode = await root.Parse("--version").InvokeAsync();
+        int exitCode = await root.Parse("--version").InvokeAsync(configuration: null, TestContext.Current.CancellationToken);
         return (exitCode, io.OutText, io.ErrorText);
     }
 
@@ -141,7 +141,7 @@ public sealed class VersionDriftCliTests : IDisposable
         versionOption.Action = new VersionWithDriftAction(
             io, HarnessVersion, _bundledSkills, new[] { _scanRoot, collidingRoot });
 
-        int exitCode = await root.Parse("--version").InvokeAsync();
+        int exitCode = await root.Parse("--version").InvokeAsync(configuration: null, TestContext.Current.CancellationToken);
         string errText = io.ErrorText;
 
         Assert.Equal(ExitCodes.Success, exitCode);
