@@ -331,6 +331,56 @@ public sealed class PlanGuardrailPhaseTests
         Assert.Single(report.Tasks, t => t.Outcome == TaskOutcome.Succeeded);
     }
 
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    // Behaviour 5 (issue #240) — the terminal phase's success path is bracketed with plain console
+    // lines, matching Full Flight Checks' treatment (PlanPreflightPhaseTests). Previously totally
+    // silent on success: no live-table row (the table's lifetime doesn't even span this phase), no
+    // line at all — a real gap surfaced live during the #214 dogfood.
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public async Task TerminalGate_Green_PrintsRunningThenPassed_ToConsole()
+    {
+        using var plan = new PlanGuardrailPlan(worktree: false);
+        plan.HandFixTerminalGate(); // green from the start — this run should settle wholly green.
+
+        (int exit, string output) = await RunCliCapturedAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains("Terminal Gate: running...", output);
+        Assert.Contains("Terminal Gate: passed.", output);
+    }
+
+    [Fact]
+    public async Task NoPlanGuardrails_PrintsNothingAboutTerminalGate()
+    {
+        // A plan with no <plan>/guardrails/ folder at all opts out of this phase entirely (SSOT §7) —
+        // printing "Terminal Gate: running..." for a plan that never declared one would be noise, not
+        // signal.
+        using var plan = new ScriptPlanBuilder().AddTask("01-a");
+
+        (int exit, string output) = await RunCliCapturedAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.DoesNotContain("Terminal Gate", output);
+    }
+
+    [Fact]
+    public async Task TerminalGate_Red_PrintsRunningButNotPassed()
+    {
+        // The default PlanGuardrailPlan fixture starts with a RED terminal check — the phase DOES
+        // run (the DAG settles green first), so "running..." must print, but it fails, so "passed."
+        // must NOT — the existing PrintTerminalGateFailure path (asserted elsewhere) carries the
+        // failure detail instead.
+        using var plan = new PlanGuardrailPlan(worktree: false);
+
+        (int exit, string output) = await RunCliCapturedAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.TaskFailed, exit);
+        Assert.Contains("Terminal Gate: running...", output);
+        Assert.DoesNotContain("Terminal Gate: passed.", output);
+    }
+
     /// <summary>
     /// Hand-wire the REAL <see cref="Scheduler"/> over the given worktree provider + re-verifier, exactly as
     /// MergeLockAndSettleTests / TopologyReuseForkSchedulerTests do. Load-only (no validate) so the fan-out

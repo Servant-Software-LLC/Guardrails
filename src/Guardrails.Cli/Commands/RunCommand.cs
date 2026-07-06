@@ -153,9 +153,26 @@ public static class RunCommand
         // HERE — no task runs, zero tokens spent — journaled as planPreflights.status =
         // plan-preflight-failed (a top-level section OUTSIDE tasks{}). A passed marker whose planHash
         // still matches the current plan is SKIPPED on resume rather than re-evaluated (the B1 fix).
+        // Issue #240: this phase (and the terminal one below) previously ran entirely silently on
+        // success — no row in the live table (its lifetime doesn't even span these phases, #240's own
+        // investigation), no console line at all. Bracket with plain WriteLines, guarded on the plan
+        // actually declaring this folder (EvaluateAsync itself no-ops for free when it doesn't, so
+        // printing "running..." then would be misleading noise for a plan that never opted in).
+        bool hasPlanPreflights = probe.Plan.PlanPreflights.Count > 0;
+        if (hasPlanPreflights)
+        {
+            io.Out.WriteLine("Full Flight Checks: running...");
+        }
+
         bool preflightsPassed = await PlanPreflightPhase
             .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), cancellationToken)
             .ConfigureAwait(false);
+
+        if (hasPlanPreflights && preflightsPassed)
+        {
+            io.Out.WriteLine("Full Flight Checks: passed.");
+        }
+
         if (!preflightsPassed)
         {
             io.Out.WriteLine();
@@ -221,9 +238,26 @@ public static class RunCommand
             // B2(b) terminal-only resume falls out for free: a resume where every task is already
             // succeeded drains the DAG with nothing left to do (report.AllSucceeded stays true, no
             // attempt burned), so this phase unconditionally re-fires against the current HEAD.
+            // Issue #240: same silent-on-success gap as Full Flight Checks above. This phase is only
+            // ever actually invoked when the DAG settled green AND the plan declares this folder (the
+            // `!report.AllSucceeded ||` short-circuit means EvaluateAsync is never called at all
+            // otherwise) — gate the bracketing lines on exactly that, or "Terminal Gate: running..."
+            // would misleadingly print for a run that failed before ever reaching this phase.
+            bool hasPlanGuardrails = probe.Plan.PlanGuardrails.Count > 0;
+            bool willEvaluateTerminalGate = report.AllSucceeded && hasPlanGuardrails;
+            if (willEvaluateTerminalGate)
+            {
+                io.Out.WriteLine("Terminal Gate: running...");
+            }
+
             bool planGuardrailsPassed = !report.AllSucceeded
                 || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), cancellationToken)
                     .ConfigureAwait(false);
+
+            if (willEvaluateTerminalGate && planGuardrailsPassed)
+            {
+                io.Out.WriteLine("Terminal Gate: passed.");
+            }
 
             int exitCode = Finish(report, probe.Plan, runId, io);
             if (report.AllSucceeded && !planGuardrailsPassed)

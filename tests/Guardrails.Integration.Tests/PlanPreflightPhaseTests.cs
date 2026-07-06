@@ -229,6 +229,48 @@ public sealed class PlanPreflightPhaseTests
     }
 
     // ═════════════════════════════════════════════════════════════════════════════════════════
+    // Behavior #5 (issue #240) — the pre-DAG phase's success path is bracketed with plain console
+    // lines. Previously totally silent on success: no live-table row (its lifetime doesn't even span
+    // this phase, which runs BEFORE the live table is constructed), no line at all — a real gap
+    // surfaced live during the #214 dogfood.
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData(1)] // serial mode
+    [InlineData(2)] // worktree mode
+    public async Task FullFlightChecks_Green_PrintsRunningThenPassed_ToConsole(int maxParallelism)
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreatePlan(repo.RepoPath, maxParallelism);
+        WritePlanPreflight(planDir, PreflightKind.Green);
+        WriteTask(planDir, "01-only", createBaselineArtifact: false, guardrailPasses: true);
+
+        (int exit, string output) = await RunCliCapturedAsync(planDir);
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains("Full Flight Checks: running...", output);
+        Assert.Contains("Full Flight Checks: passed.", output);
+    }
+
+    [Theory]
+    [InlineData(1)] // serial mode
+    [InlineData(2)] // worktree mode
+    public async Task NoPlanPreflights_PrintsNothingAboutFullFlightChecks(int maxParallelism)
+    {
+        // A plan with no <plan>/preflights/ folder at all opts out of this phase entirely (SSOT §7) —
+        // printing "Full Flight Checks: running..." for a plan that never declared one would be noise,
+        // not signal.
+        using var repo = new TempGitRepo();
+        string planDir = CreatePlan(repo.RepoPath, maxParallelism);
+        WriteTask(planDir, "01-only", createBaselineArtifact: false, guardrailPasses: true);
+
+        (int exit, string output) = await RunCliCapturedAsync(planDir);
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.DoesNotContain("Full Flight Checks", output);
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════
     // Fixture helpers — committed plan folders inside a temp git repo. Self-contained (the
     // TempGitRepo pattern is copied here because the task's write-scope is this one file), mirroring
     // the git-worktree fixtures in GitHookIsolationTests / StagingOutputsRunTests. Scripts are
@@ -389,6 +431,21 @@ public sealed class PlanPreflightPhaseTests
             : new[] { "run", planDir, "--no-ui", "--no-log-server" };
 
         return await root.Parse(args).InvokeAsync();
+    }
+
+    /// <summary>As <see cref="RunCliAsync"/> but also returns the captured console stdout (issue #240).</summary>
+    private static async Task<(int Exit, string Out)> RunCliCapturedAsync(string planDir, bool fresh = false)
+    {
+        var io = new StringConsoleIo();
+        var root = new RootCommand("plan-preflight phase cli test root");
+        root.Add(RunCommand.Create(io));
+
+        string[] args = fresh
+            ? new[] { "run", planDir, "--fresh", "--no-ui", "--no-log-server" }
+            : new[] { "run", planDir, "--no-ui", "--no-log-server" };
+
+        int exit = await root.Parse(args).InvokeAsync();
+        return (exit, io.OutText);
     }
 
     /// <summary>Read <c>state/run.json</c> exactly as it stands on disk (no resume normalization).</summary>
