@@ -38,7 +38,20 @@ public sealed class WorktreeProviderSeamTests
     {
         public List<WorktreeHandle> CreatedSegments { get; } = [];
         public List<WorktreeHandle> ReusedSegments { get; } = [];
-        public int IntegrateCallCount { get; private set; }
+
+        // ROOT CAUSE of the issue-#214 flake (confirmed by an instrumented local repro:
+        // 13 runs, this counter read 1/2/3 while every other assertion was stable and the
+        // barrier opened every time — i.e. NOT thread-pool starvation). The Scheduler calls
+        // IWorktreeProvider.Integrate CONCURRENTLY: the provider.Integrate(...) invocation in
+        // Scheduler.OnSettledAsync runs OUTSIDE the scheduler's _gate, so the moment the
+        // rendezvous barrier releases all 3 tasks at once, all 3 worker threads enter Integrate
+        // together. A plain `IntegrateCallCount++` is a non-atomic read-modify-write, so those
+        // concurrent increments lose updates and the counter settles at 1 or 2 — which is what
+        // `Assert.Equal(3, provider.IntegrateCallCount)` intermittently saw. The fix is to make
+        // the increment atomic; this does NOT weaken the assertion — Integrate genuinely runs
+        // exactly 3 times, and the counter now records all 3.
+        private int _integrateCallCount;
+        public int IntegrateCallCount => Volatile.Read(ref _integrateCallCount);
 
         public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct) =>
             new()
@@ -92,7 +105,9 @@ public sealed class WorktreeProviderSeamTests
 
         public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct)
         {
-            IntegrateCallCount++;
+            // Atomic — see the IntegrateCallCount field comment: the Scheduler calls this
+            // concurrently from its worker threads (off-gate), so a plain ++ would race.
+            Interlocked.Increment(ref _integrateCallCount);
             return IntegrationResult.FastForward;
         }
 
