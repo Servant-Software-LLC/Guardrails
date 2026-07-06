@@ -60,7 +60,7 @@ public static class SkillVersionReport
 
         var statuses = new List<SkillVersionStatus>();
 
-        foreach (string root in scanRoots)
+        foreach (string root in DeduplicateRoots(scanRoots))
         {
             foreach (string name in knownSkillNames.OrderBy(n => n, StringComparer.Ordinal))
             {
@@ -81,6 +81,41 @@ public static class SkillVersionReport
         }
 
         return statuses;
+    }
+
+    /// <summary>
+    /// Collapse scan roots that resolve to the same directory into one, preserving first-seen
+    /// order and the caller's original (un-resolved) string for reporting. The two conceptual
+    /// roots (user-level, project-level) legitimately coincide when the current working
+    /// directory resolves under the user's profile — without this, every installed skill under
+    /// that shared root would be reported once per colliding root string (issue: skills reported
+    /// twice for one physical install). The dedup key is the full path compared with
+    /// <see cref="StringComparer.OrdinalIgnoreCase"/>: Windows and (default) macOS filesystems
+    /// are case-insensitive, so two roots differing only by case are the same physical directory
+    /// there and must collapse. On case-sensitive Linux this is a conservative choice — it could
+    /// in principle treat two case-variant paths as one when they are genuinely distinct
+    /// directories — but the two roots this dedup exists for (user-level and project-level skills
+    /// dirs) are never intentional case-only variants of each other, so the practical risk is nil
+    /// against the real, observed bug (accidental exact collision) it fixes.
+    /// </summary>
+    private static IReadOnlyList<string> DeduplicateRoots(IReadOnlyList<string> scanRoots)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var deduplicated = new List<string>(scanRoots.Count);
+
+        foreach (string root in scanRoots)
+        {
+            // GetFullPath does not itself strip a trailing separator, so trim explicitly —
+            // otherwise "root" and "root\" would compare as distinct despite being the same
+            // directory (same pattern as WorkspaceContainment.Escapes).
+            string fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+            if (seen.Add(fullPath))
+            {
+                deduplicated.Add(root);
+            }
+        }
+
+        return deduplicated;
     }
 
     /// <summary>

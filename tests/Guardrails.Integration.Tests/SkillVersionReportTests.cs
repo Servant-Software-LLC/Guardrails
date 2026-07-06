@@ -253,6 +253,48 @@ public sealed class SkillVersionReportTests
         Assert.True(status.Drifted);
     }
 
+    [Fact]
+    public void ScanRootsResolvingToSameDirectory_AreScannedOnce()
+    {
+        // Issue: DefaultScanRoots() returns a user-level and a project-level root that
+        // legitimately coincide when the cwd resolves under the user's profile. Without dedup,
+        // every installed skill under that one physical directory was reported once per
+        // colliding root string.
+        using var sb = new Sandbox();
+        string root = sb.MakeRoot("skills");
+        sb.MakeSkill(root, "plan-breakdown", "1.0.0-preview.26"); // drifted
+
+        // Two distinct strings that resolve to the exact same directory: a trailing separator
+        // variant, and the literal same string again.
+        string rootWithTrailingSeparator = root + Path.DirectorySeparatorChar;
+
+        IReadOnlyList<SkillVersionStatus> report = SkillVersionReport.Build(
+            "1.0.0-preview.27",
+            KnownSkills,
+            new[] { root, rootWithTrailingSeparator, root });
+
+        // Exactly one status per skill found, not one per colliding root string.
+        Assert.Equal(1, report.Count(s => s.Name == "plan-breakdown"));
+        Assert.True(report.Single(s => s.Name == "plan-breakdown").Drifted);
+    }
+
+    [Fact]
+    public void ScanRootsResolvingToSameDirectory_ButDistinctPhysicalDirs_AreBothScanned()
+    {
+        // Sanity check on the other side: two DIFFERENT physical directories are never collapsed
+        // just because dedup exists.
+        using var sb = new Sandbox();
+        string userRoot = sb.MakeRoot("user");
+        string projectRoot = sb.MakeRoot("project");
+        sb.MakeSkill(userRoot, "plan-breakdown", "1.0.0-preview.27");
+        sb.MakeSkill(projectRoot, "plan-breakdown", "1.0.0-preview.26");
+
+        IReadOnlyList<SkillVersionStatus> report = SkillVersionReport.Build(
+            "1.0.0-preview.27", KnownSkills, new[] { userRoot, projectRoot });
+
+        Assert.Equal(2, report.Count);
+    }
+
     /// <summary>Write an UNSTAMPED source SKILL.md (frontmatter fence, no metadata block).</summary>
     private static void WriteUnstampedSource(string root, string skill)
     {
