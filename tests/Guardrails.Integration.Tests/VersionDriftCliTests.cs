@@ -123,6 +123,47 @@ public sealed class VersionDriftCliTests : IDisposable
     }
 
     [Fact]
+    public async Task Version_CollidingScanRoots_WarnsOncePerSkill_NotOncePerRoot()
+    {
+        // Issue: DefaultScanRoots() returns a user-level and a project-level root that
+        // legitimately collapse to the same physical directory when the cwd resolves under the
+        // user's profile. Before the fix, every installed skill under that one directory was
+        // warned about twice — once per (identical) root string.
+        InstallSkill("plan-breakdown", "1.0.0-preview.26"); // drifted
+        InstallSkill("guardrails-review", version: null);   // unversioned
+
+        var io = new StringConsoleIo();
+        var root = new RootCommand("test root");
+        VersionOption versionOption = root.Options.OfType<VersionOption>().Single();
+
+        // Two scan-root strings that resolve to the exact same directory as _scanRoot.
+        string collidingRoot = _scanRoot + Path.DirectorySeparatorChar;
+        versionOption.Action = new VersionWithDriftAction(
+            io, HarnessVersion, _bundledSkills, new[] { _scanRoot, collidingRoot });
+
+        int exitCode = await root.Parse("--version").InvokeAsync();
+        string errText = io.ErrorText;
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Equal(1, CountOccurrences(errText, "- plan-breakdown"));
+        Assert.Equal(1, CountOccurrences(errText, "- guardrails-review"));
+        Assert.Contains("WARNING: 2 installed", errText);
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        int count = 0;
+        int index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
+    }
+
+    [Fact]
     public async Task Version_NoBundledSkills_SkipsCheckSilently()
     {
         // A build that does not carry skills: the bundled dir is absent.
