@@ -211,10 +211,19 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   B), on partial merges where downstream tasks have **not run yet** — so a terminal postcondition
   spuriously fails at an intermediate union and escalates a healthy partial merge to `needs-human`
   (surfaced live by `parallel-hello`). Decision test per integration guardrail: *"would this pass on
-  a partial merge with a downstream task unsettled?"* If **no**, it is a terminal postcondition
-  wearing an integration scope. Fix: keep the integration gate to an invariant true of any valid
-  intermediate union ("any produced file present is non-empty + conflict-marker-free"); move the
-  terminal assertion to a `local` guardrail on the sink (runs in-attempt on the sink's segment).
+  a partial merge with a downstream task unsettled?"* Evaluate that test against **every union point
+  that can occur anywhere in the plan before the guardrail's own task has run** — not only unions
+  structurally upstream of that task in the DAG. `scope:"integration"` re-verifies at every fan-in
+  **plan-wide** (SSOT §4.3, "no per-task or per-colliding-sibling guardrail selection at a union"), so
+  a merge by a **completely unrelated parallel sibling** counts just as much as one that feeds the
+  guardrail's own ancestor chain. "Does a union feed into MY task's ancestors?" is the too-narrow
+  version of this question, and it will miss exactly that case — two siblings with zero dependency on
+  the guardrail's task, each merging back onto the plan branch before that task has even started
+  (#250: this is precisely what happened to a composition-root wiring guardrail live in review — see
+  the catalogue's composition-root section for the matching gotcha). If **no**, it is a terminal
+  postcondition wearing an integration scope. Fix: keep the integration gate to an invariant true of
+  any valid intermediate union ("any produced file present is non-empty + conflict-marker-free"); move
+  the terminal assertion to a `local` guardrail on the sink (runs in-attempt on the sink's segment).
   BLOCKER on a parallel plan with unions — it spuriously red-halts a correct run. (Catalogue →
   union-safe integration section; SSOT §4.3/§5.3.)
 - **Overlapping writeScopes with no integration union-guardrail (#132)**: when **two or more tasks
@@ -665,7 +674,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).
-- [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test); terminal postconditions live in a `local` guardrail on the sink (#125).
+- [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test, checked against EVERY union point plan-wide — including a merge by a completely unrelated parallel sibling, not just unions structurally upstream of the guardrail's own task in the DAG, #250); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.
 - [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
 - [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.

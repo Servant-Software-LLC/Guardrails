@@ -639,8 +639,26 @@ Concretely, fire on any of:
      the wired object is reached) — prefer (a), then the reflection form of (b), then the grep.
 
    The guardrail belongs on the **wiring task** (artifact 1), since that task owns producing the
-   wired composition root. It is `scope: "integration"` when it drives the whole assembled feature
-   (so it re-runs at union points and on the terminal gate).
+   wired composition root. It is `scope: "integration"` **only when it ALSO passes the #125
+   union-safe decision test** — *"would this pass on a partial merge with a downstream task
+   unsettled?"* — evaluated against every union point anywhere in the plan, not just ones upstream
+   of the wiring task (a completely unrelated parallel sibling merging back onto the plan branch is a
+   union too, and `scope:"integration"` re-verifies there just the same, SSOT §4.3).
+
+   This is an easy case to get backwards: "it drives the whole assembled feature, so mark it
+   `scope: "integration"`" and "check it's union-safe" can read as being in tension — apply them
+   together instead. A composition-root guardrail almost always asserts "the collaborator IS wired,"
+   which typically **cannot** pass until the wiring task's own action has actually run (nothing is
+   wired before then) — that fails the #125 test outright, and answers the "when does this fire"
+   question for scope, not just for the guardrail's existence. In that (common) case the guardrail
+   should be `scope: "local"` instead (the default — omit the `scope` key), verified only in the
+   wiring task's own attempt, never re-verified at some other task's merge. Getting this backwards is
+   not hypothetical: a `scope:"integration"` composition-root guardrail was re-verified — and
+   correctly failed — by two completely unrelated parallel siblings that each merged back onto the
+   plan branch before the wiring task had even started, costing both a wasted rollback-and-retry
+   cycle for a plan whose guardrails had already passed review (#250). Reserve
+   `scope: "integration"` here for the rarer case where the guardrail asserts a union-safe invariant
+   that holds even on a partial merge — not "is this fully wired yet."
 
 **Why the existing gates miss it (state this in the report when it fires).** The TDD pair
 (`tests-fail-on-current-code` → `specific-tests-pass`) proves the component; the terminal
@@ -1146,9 +1164,18 @@ template:
    at an upstream union, so it never fires early.
 
 **Decision test (apply to every `scope:"integration"` guardrail):** *"If this ran on a partial merge
-where a downstream task has not settled yet, would it pass?"* If **no**, it is a terminal
-postcondition wearing an integration scope — demote it to a `local` guardrail on the task that owns
-the postcondition, and (if needed) replace it with a union-safe invariant at integration scope. An
+where a downstream task has not settled yet, would it pass?"* Apply it against **every union point
+that can occur anywhere in the plan before the guardrail's own task has run** — not only unions
+structurally upstream of that task in the DAG. A `scope:"integration"` guardrail re-verifies at
+**every** fan-in plan-wide (§4.3 above: "no per-task or per-colliding-sibling guardrail selection at
+a union"), so a merge by a **completely unrelated parallel sibling** counts just as much as a union
+that feeds the guardrail's own ancestor chain. Checking only "does a union feed into MY task's
+ancestors?" is the too-narrow version of this test, and it will miss exactly that case — this is
+what actually happened live in review: two siblings with zero dependency on a composition-root
+wiring task each merged back onto the plan branch (and re-verified, and failed, that task's
+guardrail) before the wiring task had even started (#250). If **no**, it is a terminal postcondition
+wearing an integration scope — demote it to a `local` guardrail on the task that owns the
+postcondition, and (if needed) replace it with a union-safe invariant at integration scope. An
 integration guardrail asserting a terminal-only postcondition is an **anti-pattern** (see the
 anti-patterns list).
 
