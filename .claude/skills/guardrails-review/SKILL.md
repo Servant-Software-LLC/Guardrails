@@ -38,6 +38,13 @@ was drawn. Branch on the exit code:
   report — `--check` couldn't even load the plan, so the folder has a deeper problem.
 - **exit 0** (fresh) → nothing to do.
 
+While reading each guardrail script during this pass, flag any that pattern-match a
+specific tool's PRINTED console output (a `Select-String`/regex on a build or test
+tool's summary/error text) rather than just its exit code or a file it wrote — Step 2's
+adversarial pass runs that tool once against the real workspace to check the pattern
+against genuine output (see "Pattern-matching guardrail not verified against real
+output" below). Noting candidates here avoids re-reading every script during the pass.
+
 ### 2. Adversarial pass per task (the heart)
 Role-play a lazy or wrong implementer. Concrete probes (mirror of the catalogue's
 anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalogue.md`):
@@ -579,6 +586,36 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   #176 transitive-compilation and the write-scope test-protection gate. plan-breakdown Step 4 adds
   the matching cross-cutting-output re-baseline authoring rule.)
 <!-- END ADDED PROBE #193 -->
+<!-- BEGIN ADDED PROBE #248 — pattern-matching guardrail not verified against real output -->
+- **Pattern-matching guardrail not verified against real output (#248)**: any guardrail that
+  pattern-matches/regexes against a **specific tool's printed console output** — a
+  `Select-String`/regex check on `dotnet test`'s summary line, a grep on a build tool's error
+  format, anything parsing text a tool PRINTS rather than just checking its exit code or a file
+  it wrote — carries an unstated assumption about that tool's exact output format. Reading the
+  script and judging whether the regex "looks plausible" is a different question from "does it
+  actually match what the tool prints," and a purely textual review cannot tell them apart. For
+  every such guardrail, **run the underlying tool once** against the existing repo/workspace (it
+  already has a buildable/runnable state — this costs one invocation of the real tool, not a
+  purpose-built repro of the guardrail's specific scenario) and check the pattern against the
+  real output. Tell: a `Select-String` / regex / grep on a tool's stdout whose pattern encodes
+  field order or exact wording the review has not confirmed against a real run. The motivating
+  case (#248): a `tests-fail-on-stubs` guardrail's
+  `Select-String -Pattern "Passed:\s*\d+,\s*Failed:\s*[1-9]"`, stacked on top of an
+  already-sufficient exit-code check, assumed xUnit's summary line reads "Passed: N, Failed: M"
+  — it's always "Failed: N, Passed: M" — so the regex could never match and the guardrail failed
+  UNCONDITIONALLY regardless of what the agent did. The same bug existed identically in four
+  scripts in one plan; a purely textual read of all four missed it because the regex reads as
+  plausible without a real `dotnet test` run to check it against. Scope this narrowly — do
+  **not** run the tool for guardrails with no output-format assumption to verify (`Test-Path`, a
+  `git diff`, a bare exit-code check): there is nothing there a tool invocation would confirm.
+  Fix: run the tool, observe its real output, and confirm the pattern matches; once confirmed
+  either way, the usual fix is to DROP the pattern-match entirely and rely on the exit code alone
+  (the catalogue's stub-based-TDD form already does this correctly, `stacks/dotnet.md §4.1` —
+  this is a review-side gap, not a doctrine gap). **BLOCKER** when the pattern can be shown to
+  never match the real output (the guardrail fails unconditionally, dead-ending every attempt at
+  `needsHuman`); **WEAK** when it matches today but rests on a fragile, unconfirmed format
+  assumption (SDK/framework version, locale, verbosity level) that could silently break later.
+<!-- END ADDED PROBE #248 -->
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -689,5 +726,6 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every test-author task whose prompt enumerates ≥3 behaviors has a covers-key-behaviors check (2–3 distinctive terms, scoped to the one test file), named as a lower bound, with the unchecked behaviors reported (#75).
 - [ ] Every producer↔consumer derived-name seam has a consumer-driven integration guardrail on a both-sides-present task that drives the real lookup for EVERY item and asserts 200 + a per-item marker — union-safe, no hard-coded name copy, no sampling (#96).
 <!-- END ADDED CHECKS #74/#75/#76/#96 -->
+- [ ] Every guardrail that pattern-matches/regexes a tool's PRINTED console output (not just its exit code or a file it wrote) was verified by actually RUNNING that tool once against the real repo/workspace and checking the pattern against the real output — not just reasoning about whether the regex looks plausible; a pattern shown to never match the real output is a BLOCKER (the guardrail fails unconditionally, dead-ending every attempt at `needsHuman`), a fragile-but-currently-matching format assumption is WEAK. Does not apply to exit-code-only / file-existence / diff checks — there is no output-format assumption to verify there (#248).
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
 - [ ] The review was recorded with `guardrails mark-reviewed <folder>` once findings were addressed/declined — clearing the GR2025 nudge (#79/#131); NOT run while a BLOCKER remained open.
