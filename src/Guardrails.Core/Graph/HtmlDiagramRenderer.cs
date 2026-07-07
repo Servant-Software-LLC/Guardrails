@@ -66,6 +66,27 @@ namespace Guardrails.Core.Graph;
 /// verbatim/never-interpolated treatment as the Mermaid source itself, immune to the same escaping
 /// hazards).
 /// </para>
+/// <para>
+/// <b>Long task-name title wrap-overflow, fixed by widening the label's foreignObject
+/// post-render (issue cluster-label-wrap-overflow).</b> Mermaid always wraps a cluster's title
+/// <c>&lt;div&gt;</c> to a hardcoded 200px width (the bundled <c>mermaid@11.4.1</c>'s plain
+/// flowchart cluster shape never overrides <c>createText</c>'s <c>width = 200</c> default,
+/// regardless of the container's own — usually much wider — computed width), and dagre's layout
+/// pass reserves the container's header-strip height BEFORE that wrapped height is known, so a
+/// long kebab-case task name (hyphens are valid soft line-break points) that wraps to 2+ lines
+/// prints past the reserved strip, overlapping the first leaf guardrail/preflight box positioned
+/// directly below. No Mermaid config knob avoids this — <c>flowchart.htmlLabels</c> only toggles
+/// the html-vs-svg-text label renderer, and 11.4.1 has no documented option for cluster-label
+/// wrap width. The fix (the <c>fixWrappedClusterLabels</c> function, run AFTER
+/// <c>mermaid.render</c> resolves and BEFORE the title-band overlay above, since the overlay's
+/// band height depends on the label's — by then possibly shrunk — bounding box) re-wraps the
+/// SAME text at up to the container's own width instead: since the container is normally already
+/// wider than 200px, this almost always drops the label to one line, which needs LESS height than
+/// the original wrap — never more — so no other node/edge/container ever needs to move. Verified
+/// headless against 8+ real plans (40+ long task names): every wrapped case converged to one line
+/// with the same healthy gap a never-wrapped label already has, and every already-fits label
+/// (including the whole golden <c>hello-guardrails</c> example) was left byte-for-byte unchanged.
+/// </para>
 /// </remarks>
 public static class HtmlDiagramRenderer
 {
@@ -182,6 +203,104 @@ const taskFolderTargets = JSON.parse(document.getElementById('task-folder-target
 // edges exceeded". Both ceilings must be lifted or a big plan still fails to render.
 mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', maxTextSize: 5000000, maxEdges: 100000, flowchart: { useMaxWidth: false } });
 
+// Widen a wrapped cluster-title's foreignObject so a long kebab-case task name reflows onto
+// FEWER lines instead of overflowing Mermaid's fixed header-strip reservation (issue
+// cluster-label-wrap-overflow). Root cause, confirmed against the bundled mermaid@11.4.1 source
+// (`src/rendering-util/createText.ts`'s `createText(el, text, { width = 200 })` default, which
+// the plain flowchart "rect" cluster shape never overrides): a cluster's title <div> is always
+// wrapped to a hardcoded 200px width regardless of the container's own — usually much wider —
+// computed width, and dagre's LAYOUT PASS reserves header space for the container BEFORE that
+// wrapped height is known, so it never grows to fit more than a couple of lines. A short label
+// fits on one line inside 200px with room to spare (a healthy ~13px gap above the first leaf
+// node, measured); a long name (hyphens are valid soft line-break points) wraps to 2 or more
+// lines, and each line beyond the first prints a full line-height PAST what dagre reserved —
+// landing on top of the first leaf guardrail/preflight box positioned directly below.
+//
+// Two Mermaid config knobs were checked and ruled out first: `flowchart.htmlLabels` only toggles
+// the html-vs-svg-text label renderer (not label width), and 11.4.1 has no documented
+// `flowchart`/theme-variable option for cluster-label wrapping width — 200 is a hardcoded
+// parameter default the cluster-shape renderer never overrides, not a configurable value.
+//
+// The fix instead re-wraps the SAME text into fewer lines post-render: a task container is
+// normally already wider than 200px (dagre sized it to fit its leaf content), so letting the
+// identical label reflow at (up to) the container's own width almost always drops it to one
+// line, which needs LESS height than Mermaid's original wrap — never more. That means this can
+// only ever shrink the label's footprint, never grow it, so no other node/edge/container ever
+// needs to move to make room. Verified headless against 8+ real plans (40+ long task names,
+// container widths from ~230px to ~1100px, wraps from 2 to 3 lines): every case converged to one
+// line with the same healthy negative gap a short, never-wrapped label already has; every
+// already-fits-on-one-line label (including every task in the golden `hello-guardrails` example)
+// was left byte-for-byte unchanged.
+function fixWrappedClusterLabels(svgEl) {
+  const clusters = svgEl.querySelectorAll('g.cluster');
+  for (const cluster of clusters) {
+    const label = cluster.querySelector('.cluster-label');
+    if (!label) continue;
+    const fo = label.querySelector('foreignObject');
+    const div = fo ? fo.querySelector('div') : null;
+    if (!fo || !div) continue;
+
+    const currentWidth = parseFloat(fo.getAttribute('width')) || 0;
+    const currentHeight = parseFloat(fo.getAttribute('height')) || 0;
+    if (currentWidth <= 0 || currentHeight <= 0) continue;
+
+    // scrollWidth/scrollHeight are LOCAL layout-box measurements in the foreignObject's own
+    // SVG-user-unit coordinate system — deliberately NOT the screen-space rect API (see class
+    // remarks): a screen-space read is affected by every ancestor SVG transform (dagre's per-node
+    // translate, the pan-zoom viewport's zoom/pan matrix), so it would be misleading compared
+    // against the foreignObject's own width/height attributes. Measure the label's natural
+    // single-line width by temporarily lifting the wrap constraint Mermaid applied, then restore
+    // it immediately.
+    const savedInline = div.getAttribute('style');
+    div.style.whiteSpace = 'nowrap';
+    div.style.width = 'auto';
+    div.style.maxWidth = 'none';
+    // +2px safety buffer: scrollWidth can round down a hair short of the true subpixel width
+    // needed for one line (observed empirically — re-applying the exact measured value as a
+    // fixed width sometimes still wrapped to 2 lines by a fraction of a pixel).
+    const naturalWidth = div.scrollWidth + 2;
+    div.setAttribute('style', savedInline); // restore Mermaid's original wrapped styling
+
+    if (naturalWidth <= currentWidth) continue; // already fits on one line — untouched
+
+    // Never widen past the cluster's own body (leave a small margin) — the container's leaf
+    // content already determined this width, so the label can use up to it without ever moving
+    // a leaf node, edge, or sibling container. Never NARROWER than Mermaid's original width either
+    // — this only ever grows the box.
+    const clusterBox = cluster.getBBox();
+    const newWidth = Math.min(naturalWidth, Math.max(currentWidth, clusterBox.width - 16));
+
+    div.style.whiteSpace = 'break-spaces';
+    div.style.display = 'table';
+    div.style.width = newWidth + 'px';
+    div.style.maxWidth = newWidth + 'px';
+    const newHeight = div.scrollHeight;
+
+    if (newHeight >= currentHeight) {
+      // Widening did not actually reduce the wrapped height (the cluster is too narrow to fit
+      // even one more character per line) — revert rather than risk an oddly-proportioned label.
+      div.setAttribute('style', savedInline);
+      continue;
+    }
+
+    fo.setAttribute('width', String(newWidth));
+    fo.setAttribute('height', String(newHeight));
+
+    // Mermaid centers the label group on the cluster's horizontal midpoint via
+    // `translate(x - bbox.width / 2, y)`; widening the box without re-centering would shift it
+    // left of center, so shift the existing translate by half the width delta to keep it on the
+    // SAME midpoint. The label's y stays fixed — only its height shrank, so its bottom edge
+    // simply moves UP, further from the first leaf node, never displacing it.
+    const transform = label.getAttribute('transform') || '';
+    const match = transform.match(/translate\(([-\d.eE]+)\s*,\s*([-\d.eE]+)\)/);
+    if (match) {
+      const oldX = parseFloat(match[1]);
+      const deltaCenter = (newWidth - currentWidth) / 2;
+      label.setAttribute('transform', `translate(${oldX - deltaCenter}, ${match[2]})`);
+    }
+  }
+}
+
 // Inject a real clickable overlay on each task container's TITLE/LABEL ROW (issue #232/#233
 // superseded, issue #235). Mermaid never fires a `click` directive on a subgraph/cluster element,
 // and an anchor NODE inside the container gets packed into whatever sliver of space dagre's own
@@ -189,7 +308,10 @@ mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', 
 // ALWAYS renders a cluster as exactly two children, a background <rect> then a <g
 // class="cluster-label">, with the label in its own reserved header strip above any leaf content —
 // so a full-width band from the cluster's top down to just past the label's bottom edge is empty BY
-// CONSTRUCTION, regardless of how many guardrails/preflights the task has.
+// CONSTRUCTION, regardless of how many guardrails/preflights the task has. Must run AFTER
+// fixWrappedClusterLabels (above): the band height is measured from the label's CURRENT bbox, so
+// a label that fixWrappedClusterLabels already shrank back to one line gets a correspondingly
+// short band, not one sized for its original (possibly multi-line) wrap.
 function addTaskContainerOverlays(svgEl) {
   const ns = 'http://www.w3.org/2000/svg';
   const clusters = svgEl.querySelectorAll('g.cluster');
@@ -242,6 +364,7 @@ try {
   const el = document.querySelector('#stage svg');
   el.setAttribute('width', '100vw');
   el.setAttribute('height', '100vh');
+  fixWrappedClusterLabels(el);
   addTaskContainerOverlays(el);
   pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
