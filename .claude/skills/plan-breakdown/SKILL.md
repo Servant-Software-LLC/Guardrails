@@ -953,9 +953,15 @@ upstream task that creates it:
      (drive-the-real-factory test, reflection-on-factory test, and the weakest-acceptable source
      grep) are `stacks/dotnet.md §10`. Author the production-wiring TEST via the TDD pair (author it
      red against the unwired factory — `tests-fail-on-current-code` proves it fails before wiring —
-     then the wiring task makes it green). Mark the guardrail `scope: "integration"` when it drives
-     the whole assembled feature. When the plan names no concrete observable to assert on, surface
-     it in the breakdown report (Step 7) as a decision the human must confirm — do not invent one.
+     then the wiring task makes it green). Mark the guardrail `scope: "integration"` **only when it
+     ALSO passes the #125 union-safe decision test** (catalogue → composition-root section) —
+     evaluated against every union point anywhere in the plan, not just ones upstream of this wiring
+     task, since a completely unrelated parallel sibling's merge re-verifies it too (SSOT §4.3). In
+     practice this guardrail asserts "the collaborator IS wired," which typically can't be true until
+     the wiring task's own attempt has run — so it usually belongs at `scope: "local"` (the default,
+     no `scope` key) instead; getting this backwards is what caused #250 live. When the plan names no
+     concrete observable to assert on, surface it in the breakdown report (Step 7) as a decision the
+     human must confirm — do not invent one.
      (Compose with the server/executable bullet below when the plan is BOTH: wire the entry point to
      the launcher AND wire a collaborator into the factory — two distinct wiring deliverables.)
 - **Server/executable plan (Step 4 entry-point-wiring signal fired) → insert a wiring task

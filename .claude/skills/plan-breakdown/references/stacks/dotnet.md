@@ -745,7 +745,13 @@ exit 0
 
 This is strictly weaker — `new FooImpl(` can sit in a dead branch the production path never reaches,
 and the grep cannot tell. Use it only when the factory cannot be driven from a test at all; prefer
-10a, then 10b. Mark 10a/10b `scope: "integration"` when they drive the whole assembled feature.
+10a, then 10b. Mark 10a/10b `scope: "integration"` only when they ALSO pass the catalogue's #125
+union-safe decision test, checked plan-wide — not just against unions upstream of the wiring task
+(a merge by an unrelated parallel sibling re-verifies it too, SSOT §4.3). In practice these
+guardrails assert "the collaborator IS wired," which can't be true until the wiring task's own
+attempt has run — so they usually fail that test and belong at `scope: "local"` (the default)
+instead. See the catalogue's composition-root section for the full decision rule and the #250
+incident this trap caused live in review.
 
 ### 10d. Dispatch / factory pairing — the right concrete type for the right mode (#158)
 
