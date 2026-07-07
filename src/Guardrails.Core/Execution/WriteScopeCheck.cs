@@ -50,22 +50,34 @@ public static class WriteScopeCheck
             return new WriteScopeCheckResult
             {
                 Passed = false,
-                OffendingPaths = [$"<git-error: {ex.Message}>"]
+                OffendingPaths = [new WriteScopeOffense { Path = $"<git-error: {ex.Message}>", Status = '?' }]
             };
         }
 
-        var offending = new List<string>();
+        var offending = new List<WriteScopeOffense>();
         foreach (string rawLine in diffOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string line = rawLine.Trim();
             int tabIdx = line.IndexOf('\t');
             if (tabIdx < 0) continue;
 
+            // git diff --name-status prints a single status letter (A/M/D — renames are disabled via
+            // --no-renames, so no multi-char "R100"-style scores appear here) before the tab.
+            string statusField = line[..tabIdx].Trim();
+            char status = statusField.Length > 0 ? statusField[0] : '?';
+
             string path = line[(tabIdx + 1)..].Trim().Replace('\\', '/');
             if (string.IsNullOrEmpty(path)) continue;
 
             if (!WriteScope.IsInScope(path, scope))
-                offending.Add(path);
+            {
+                offending.Add(new WriteScopeOffense
+                {
+                    Path = path,
+                    Status = status,
+                    Preview = CapturePreviewIfNewFile(repoPath, path, status)
+                });
+            }
         }
 
         return new WriteScopeCheckResult
@@ -73,6 +85,53 @@ public static class WriteScopeCheck
             Passed = offending.Count == 0,
             OffendingPaths = offending
         };
+    }
+
+    /// <summary>
+    /// Issue #253's forensic-trace gap: <see cref="ScopedRevert"/> deletes a newly-added out-of-scope
+    /// file outright, leaving nothing for a human to inspect afterward — no way to tell whether it was
+    /// a genuine (if misguided) agent write or unattributable environmental cruft swept up by
+    /// <c>git add -A</c> (e.g. a leaked test fixture — the suspected mechanism in #253). Captures a
+    /// best-effort snapshot — size plus a short text preview — for an 'A' (new/untracked) offense
+    /// ONLY, while the file still exists in the worktree (i.e. called from <see cref="Check"/>,
+    /// strictly before the caller invokes <see cref="ScopedRevert"/>). 'M'/'D' offenses return null:
+    /// their taskBase blob is always separately recoverable via <c>git show taskBase:&lt;path&gt;</c>,
+    /// so no snapshot is needed. Returns null (never throws) when the file is missing, unreadable, or
+    /// binary-looking — this is a diagnostic nicety, not something that may fail the check itself.
+    /// </summary>
+    private static WriteScopeOffensePreview? CapturePreviewIfNewFile(string repoPath, string relativePath, char status)
+    {
+        if (status != 'A') return null;
+
+        try
+        {
+            string fullPath = Path.Combine(repoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            var info = new FileInfo(fullPath);
+            if (!info.Exists) return null;
+
+            const int maxPreviewBytes = 500;
+            byte[] buffer = new byte[(int)Math.Min(maxPreviewBytes, info.Length)];
+            using (FileStream stream = info.OpenRead())
+            {
+                int read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+                if (read < buffer.Length) Array.Resize(ref buffer, read);
+            }
+
+            // A NUL byte anywhere in the sampled prefix is the same cheap binary sniff git itself uses.
+            string textPreview = Array.IndexOf(buffer, (byte)0) < 0
+                ? System.Text.Encoding.UTF8.GetString(buffer)
+                : "<binary content>";
+
+            return new WriteScopeOffensePreview { SizeBytes = info.Length, TextPreview = textPreview };
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -121,18 +180,18 @@ public static class WriteScopeCheck
     /// Membership at base is probed per-path with <c>git cat-file -e &lt;taskBase&gt;:&lt;path&gt;</c>;
     /// only the offending paths are touched, so a same-attempt in-scope edit survives the revert.
     /// </remarks>
-    public static void ScopedRevert(string repoPath, string taskBase, IReadOnlyList<string> offendingPaths)
+    public static void ScopedRevert(string repoPath, string taskBase, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
         if (offendingPaths.Count == 0) return;
 
         var existedAtBase = new List<string>();
         var addedSinceBase = new List<string>();
-        foreach (string path in offendingPaths)
+        foreach (WriteScopeOffense offense in offendingPaths)
         {
-            if (ExistsAtBase(repoPath, taskBase, path))
-                existedAtBase.Add(path);
+            if (ExistsAtBase(repoPath, taskBase, offense.Path))
+                existedAtBase.Add(offense.Path);
             else
-                addedSinceBase.Add(path);
+                addedSinceBase.Add(offense.Path);
         }
 
         // Modified/deleted tracked files: restore the base blob into the index AND the working tree.
@@ -210,5 +269,54 @@ public sealed record WriteScopeCheckResult
     public bool Passed { get; init; }
 
     /// <summary>Changed paths that fall outside the declared write-scope. Empty when <see cref="Passed"/>.</summary>
-    public IReadOnlyList<string> OffendingPaths { get; init; } = [];
+    public IReadOnlyList<WriteScopeOffense> OffendingPaths { get; init; } = [];
+}
+
+/// <summary>
+/// One offending path from a write-scope violation (issue #253), paired with its raw
+/// <c>git diff --name-status</c> change-status letter — <c>A</c> (new/untracked addition),
+/// <c>M</c> (modification of a file that existed at <c>taskBase</c>), <c>D</c> (deletion of a file
+/// that existed at <c>taskBase</c>), or <c>?</c> for the WS_2 git-error sentinel path, which never
+/// had a real diff line to read a letter from. Surfacing the letter (and, for a new file, a
+/// forensic preview — see <see cref="Preview"/>) lets a human debugging a <c>needs-human</c>
+/// write-scope violation immediately tell "a brand-new untracked file with no history at this
+/// task's base commit" (suspicious/unattributable — <c>git add -A</c> sweeps up ANY untracked file
+/// present in the worktree, not just ones the agent's own tool calls wrote) apart from "a
+/// modification of a file that genuinely existed before this attempt" (far more likely a real
+/// agent mistake).
+/// </summary>
+public sealed record WriteScopeOffense
+{
+    /// <summary>The offending path, forward-slash separated, workspace-relative.</summary>
+    public required string Path { get; init; }
+
+    /// <summary>The raw git status letter for this path (see the type doc comment for the full set).</summary>
+    public required char Status { get; init; }
+
+    /// <summary>True for a brand-new/untracked addition (<c>Status == 'A'</c>) — the class of write
+    /// this issue's diagnostic improvement targets.</summary>
+    public bool IsNewFile => Status == 'A';
+
+    /// <summary>
+    /// For an <see cref="IsNewFile"/> offense only: a best-effort forensic snapshot captured while the
+    /// file still existed in the worktree, before <see cref="WriteScopeCheck.ScopedRevert"/> deletes
+    /// it — otherwise the file is simply gone with no trace for a later post-mortem (issue #253).
+    /// Null for <c>M</c>/<c>D</c> offenses (the taskBase blob is always separately recoverable via
+    /// <c>git show taskBase:&lt;path&gt;</c>) and for an <see cref="IsNewFile"/> offense whose content
+    /// could not be captured (missing/unreadable file, race, etc.).
+    /// </summary>
+    public WriteScopeOffensePreview? Preview { get; init; }
+}
+
+/// <summary>A forensic snapshot of a newly-added out-of-scope file, captured before it is reverted.</summary>
+public sealed record WriteScopeOffensePreview
+{
+    /// <summary>The file's size in bytes at capture time.</summary>
+    public required long SizeBytes { get; init; }
+
+    /// <summary>
+    /// Up to the first 500 bytes of the file, decoded as UTF-8, or the literal string
+    /// <c>"&lt;binary content&gt;"</c> when a NUL byte in that prefix suggests binary content.
+    /// </summary>
+    public required string TextPreview { get; init; }
 }

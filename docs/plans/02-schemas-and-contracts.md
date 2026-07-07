@@ -444,7 +444,19 @@ tree on the pass path anyway. A violation is a guardrail-class failure: the harn
 **scoped revert** that undoes ONLY the out-of-scope paths — an out-of-scope MODIFY/DELETE is restored
 with `git checkout <taskBase> -- <path>`, a newly-ADDED out-of-scope file is removed with
 `git rm -f -- <path>` — leaving same-attempt **in-scope WIP intact**, then retries with feedback
-naming the out-of-scope paths (eventual `needs-human`).
+naming the out-of-scope paths (eventual `needs-human`). **Diagnostic (issue #253):** `git add -A`
+sweeps up EVERY untracked file present in the segment worktree at check time, not just ones the
+agent's own tool calls wrote — an environmental leak (a stray build/test artifact, an interrupted
+process's leftover) can therefore surface as an unattributable "write-scope violation" with no trace
+in the agent's own transcript. Each offending path in `WriteScopeCheckResult.OffendingPaths` (a
+`WriteScopeOffense`, not a bare string) carries the raw `git diff --name-status` change-status letter
+(`A`/`M`/`D`; `?` for the WS_2 git-error sentinel) so a human debugging a later `needs-human` can tell
+a brand-new/untracked file with no history at `taskBase` (suspicious/unattributable) apart from a
+modification/deletion of a file that genuinely existed before the attempt (far more likely a real
+agent mistake). An `A` offense also carries a best-effort forensic `Preview` (size + a short text
+snippet) captured DURING the check, before the scoped revert deletes the file — otherwise the file
+is simply gone with no trace by the time anyone reads the retry feedback. Both are threaded into
+`RetryPolicy.ForWriteScopeViolation`'s feedback text.
 **Absent ⇒ no check** (the off-switch — a task that can't be confidently scoped omits the field and
 is reported as a broad surface, never given a vacuous `**`). **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
