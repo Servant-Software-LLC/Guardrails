@@ -2138,6 +2138,26 @@ should fail before an expensive test run or a paid judge ever starts.
   suite.
 <!-- END ADDED ANTI-PATTERNS #221 -->
 
+<!-- BEGIN ADDED ANTI-PATTERNS #251 (auto-merge friendly; do not merge into the list above) -->
+- **Relative path handed to a self-canonicalizing tool** (#251): a guardrail script passes a bare
+  **relative** directory/file argument to a tool that does its own internal path canonicalization
+  (e.g. `bats --tap tests/scripts/`) instead of resolving it to an absolute path first. On
+  Windows/Git-Bash the tool's internal canonicalization can produce the Windows drive-letter hybrid
+  form (`C:/Users/...`) rather than POSIX-absolute (`/c/Users/...`), which the tool's own downstream
+  logic (bats' `load` library loader, motivating case) then rejects as "not absolute" — a **BLOCKER**:
+  the guardrail can never pass, regardless of how correct the implementation is. Fix: resolve the
+  argument to an absolute path yourself, first — `"$(cd <dir> && pwd)"` — before the tool ever sees it.
+  See the absolute-path-resolution section above.
+- **Bare `grep '^not ok'` as bats TDD-red proof** (#251): a bats-based test-author task's anti-tautology
+  "red" check is a bare `grep -q '^not ok'` against `bats --tap` output. bats emits its own synthetic
+  `not ok N bats-gather-tests` / `not ok N bats-source-scripts` lines on a **suite LOAD failure** — a
+  different condition from "a real test ran and failed" — and those lines match the identical `^not ok`
+  pattern, so the check accidentally passes when the suite never loaded a single test. Fix: exclude the
+  internal marker names before counting a match as proof of red (`grep '^not ok' | grep -v
+  'bats-gather-tests\|bats-source-scripts'`, or equivalent). See the bash/bats TDD-red-specificity
+  section above.
+<!-- END ADDED ANTI-PATTERNS #251 -->
+
 <!-- BEGIN ADDED SECTION #94 — maxTurns budgeting doctrine (auto-merge friendly; do not merge into prose above) -->
 ## maxTurns budgeting — a turn-budget exhaustion is NOT a sizing failure (#94)
 
@@ -2266,6 +2286,88 @@ exit 0
 Issue #104 is the harness-side counterpart (granting the write up front); the breakdown owns only the
 detection + seeding doctrine here.
 <!-- END ADDED SECTION #101 -->
+
+<!-- BEGIN ADDED SECTION #251a — absolute-path resolution for tools with their own path canonicalization (auto-merge friendly; do not merge into prose above) -->
+## Absolute-path resolution — pre-resolve paths for tools that canonicalize internally (Windows/Git-Bash) (#251)
+
+**The rule.** A guardrail script that hands a directory/file argument to a tool which does its **own**
+internal path canonicalization MUST resolve that argument to an absolute path itself, FIRST —
+`"$(cd <dir> && pwd)"` — and never pass a bare **relative** path. On Windows/Git-Bash a relative path
+handed to such a tool can get internally resolved to the **Windows drive-letter hybrid form**
+(`C:/Users/...`) instead of proper POSIX-absolute (`/c/Users/...`), and if any downstream logic inside
+that tool (or a library it loads) requires a leading `/` before it will accept a path as "absolute," the
+hybrid form is rejected outright — producing a guardrail that **can never pass**, regardless of how
+correct the implementation under test is.
+
+**Worked example — `bats`.** `bats`' own `load` helper (used inside a `.bats` file to source a shared
+library) rejects any library path that isn't POSIX-absolute. Handing `bats` a **relative** suite
+directory triggers its internal canonicalization, which on Windows/Git-Bash can produce the hybrid
+form — and `load` then fails before a single real test runs:
+
+```bash
+# BAD - relative path; bats canonicalizes it internally. On Windows/Git-Bash this can produce
+# the hybrid C:/Users/... form, which bats' own library loader then rejects as "not absolute" -
+# the whole suite fails to LOAD, before any real test runs:
+npx bats --tap tests/scripts/
+#   1..1
+#   not ok 1 bats-gather-tests
+#   # Passed library load path is not an absolute path: C:/Users/.../tests/scripts/_helpers.bash
+
+# GOOD - resolve to an absolute path FIRST, so bats never has to canonicalize it itself:
+suite_dir="$(cd tests/scripts && pwd)"
+npx bats --tap "$suite_dir"
+```
+
+**This is stack-agnostic doctrine, not a `bats` quirk.** Any cross-platform CLI tool that does its own
+path resolution — not just `bats` — can hit the same trap on Windows/Git-Bash: resolve the path
+yourself before the tool sees it, and the tool's internal canonicalization step is never reached. Apply
+this whenever a guardrail script (or the action prompt it's paired with) invokes an external tool with a
+directory/file argument on a bash-based stack. No `stacks/bash.md` ships yet (only `stacks/dotnet.md`
+does, per SKILL.md Step 0) — this rule lives here, in the universal catalogue, until one does; migrate it
+verbatim into `stacks/bash.md` §"absolute paths" if that file is ever created, rather than duplicating it.
+<!-- END ADDED SECTION #251a -->
+
+<!-- BEGIN ADDED SECTION #251b — bats TDD-red specificity, excluding synthetic suite-load markers (auto-merge friendly; do not merge into prose above) -->
+## Bash/bats TDD-red specificity — exclude bats' own synthetic suite-load markers (#251)
+
+This extends the Stub-based TDD SSOT above (#155) for a **bats-based** test-author task specifically:
+the same "the red must COMPILE and FAIL, never merely exit non-zero" doctrine applies, but bats' TAP
+output has its own failure mode that a naive check conflates with genuine red.
+
+**The trap.** The obvious anti-tautology check for a bats suite is "did at least one test fail?", tested
+with a bare `grep -q '^not ok'` against `bats --tap` output. That check **accidentally passes** for the
+wrong reason: bats emits its **own synthetic** `not ok N bats-gather-tests` / `not ok N
+bats-source-scripts` lines when the suite **fails to LOAD at all** (a missing/broken `load` target, a
+syntax error in a `.bats` file, or — the motivating case — the absolute-path trap above) — and those
+synthetic lines match `^not ok` identically to a genuine failing test. A bare `grep '^not ok'` cannot
+tell "the suite loaded and a real test failed" (true TDD red) apart from "the suite never loaded a
+single test" (a load failure that proves nothing about the behavior under test).
+
+**Fix — exclude the internal marker names before treating a match as proof of red:**
+
+```bash
+# catches: a bats SUITE-LOAD failure (bats' own synthetic "not ok N bats-gather-tests" /
+#          "not ok N bats-source-scripts" markers) being mistaken for a genuine failing test -
+#          both match a bare `^not ok` scan identically, so a suite that never loaded a single
+#          real test would accidentally satisfy this "red" check for the wrong reason.
+set -euo pipefail
+tap_out="$(npx bats --tap "$(cd tests/scripts && pwd)" || true)"
+genuine_failures="$(printf '%s\n' "$tap_out" | grep '^not ok' | grep -v 'bats-gather-tests\|bats-source-scripts' || true)"
+if [ -z "$genuine_failures" ]; then
+    echo "no genuine failing test found - either the suite passed (not TDD-red) or it never loaded a real test (see TAP output above for why)"
+    echo "$tap_out"
+    exit 1
+fi
+exit 0
+```
+
+**Pairs with the absolute-path section above.** The two bugs compound: the relative-path trap makes the
+suite fail to LOAD, and the bare `grep '^not ok'` check then mistakes that load failure for the "red"
+the test-author task was supposed to prove — going green for a completely different reason than the one
+the guardrail author intended. Fixing only one of the two still leaves a gap: fixing the path without
+fixing the grep leaves the suite genuinely loading, but a *different* future load failure (a typo'd
+`load` target, a syntax error) would still slip through as accidental "red." Fix both.
+<!-- END ADDED SECTION #251b -->
 
 ## The artifact-ancestry rule
 
