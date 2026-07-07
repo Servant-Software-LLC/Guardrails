@@ -236,4 +236,106 @@ public sealed class HtmlDiagramRendererTests
         Assert.Contains("id=\"task-folder-targets\"", html, StringComparison.Ordinal);
         Assert.Contains("{}", html, StringComparison.Ordinal);
     }
+
+    // === long task-name title wrap-overflow fix (issue cluster-label-wrap-overflow) ====
+    //
+    // Mermaid always wraps a cluster's title <div> to a hardcoded 200px width (bundled
+    // mermaid@11.4.1's plain flowchart cluster shape never overrides createText's width=200
+    // default), and dagre's layout pass reserves the container's header-strip height BEFORE that
+    // wrapped height is known — so a long kebab-case task name that wraps to 2+ lines prints past
+    // the reserved strip, overlapping the first leaf guardrail/preflight box below it. No Mermaid
+    // config knob avoids this (verified against the bundled 11.4.1 source). The fix re-wraps the
+    // SAME text at up to the container's own (already wider) width post-render instead, verified
+    // headless against 8+ real plans (40+ long task names, container widths ~230px-~1100px,
+    // wraps of 2-3 lines): every case converged to one line with the same healthy gap a
+    // never-wrapped label already has, and every already-fits label was left byte-for-byte
+    // unchanged (including the whole golden hello-guardrails example).
+
+    [Fact]
+    public void Render_DefinesFixWrappedClusterLabelsFunction()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("function fixWrappedClusterLabels(svgEl)", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_WrapFix_RunsAfterMermaidRenderResolves_AndBeforeTheOverlay()
+    {
+        // Ordering is load-bearing: addTaskContainerOverlays measures the label's CURRENT bbox to
+        // size its click band, so a label the wrap fix already shrank back to one line must be
+        // fixed FIRST, or the band would be sized for the original (possibly multi-line) wrap.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        int renderCall = html.IndexOf("await mermaid.render(", StringComparison.Ordinal);
+        int wrapFixInvocation = html.IndexOf("fixWrappedClusterLabels(", renderCall, StringComparison.Ordinal);
+        int overlayInvocation = html.IndexOf("addTaskContainerOverlays(", renderCall, StringComparison.Ordinal);
+
+        Assert.True(renderCall >= 0 && wrapFixInvocation > renderCall && overlayInvocation > renderCall,
+            "both post-render fixes must be invoked after the render call");
+        Assert.True(wrapFixInvocation < overlayInvocation,
+            "the wrap fix must run BEFORE the title-band overlay so the band reflects the corrected label size");
+    }
+
+    [Fact]
+    public void Render_WrapFix_MeasuresViaScrollWidth_NotGetBoundingClientRect()
+    {
+        // Regression guard for the exact measurement pitfall this fix's own investigation hit:
+        // getBoundingClientRect() reports on-screen pixels affected by the page's pan-zoom
+        // transform, which is misleading when compared against a foreignObject's local width/
+        // height attributes. scrollWidth/scrollHeight are local layout-box measurements, in the
+        // SAME coordinate system as those attributes, regardless of the current zoom level.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        int fnStart = html.IndexOf("function fixWrappedClusterLabels", StringComparison.Ordinal);
+        int fnEnd = html.IndexOf("\n}\n", fnStart, StringComparison.Ordinal);
+        string fnBody = html[fnStart..fnEnd];
+
+        Assert.Contains("div.scrollWidth", fnBody, StringComparison.Ordinal);
+        Assert.Contains("div.scrollHeight", fnBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("getBoundingClientRect", fnBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_WrapFix_NeverNarrowsBelowMermaidsOriginalWidth()
+    {
+        // The fix only ever WIDENS a label (fewer lines needs less height, never more) — it must
+        // never choose a width narrower than what Mermaid already assigned, which would be a
+        // regression risking MORE wrapping, not less.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("Math.max(currentWidth, clusterBox.width - 16)", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_WrapFix_SkipsLabelsThatAlreadyFitOnOneLine()
+    {
+        // Short names (e.g. every task in the golden hello-guardrails example) must be left
+        // completely untouched — this is the guard that makes that a no-op.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("if (naturalWidth <= currentWidth) continue;", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_WrapFix_RevertsWhenWideningDoesNotReduceHeight()
+    {
+        // A container too narrow to help must fall back to Mermaid's original sizing rather than
+        // risk an oddly-proportioned label — never regress relative to the pre-fix rendering.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("if (newHeight >= currentHeight)", html, StringComparison.Ordinal);
+        Assert.Contains("div.setAttribute('style', savedInline);", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_WrapFix_RecentersTheLabelOnTheSameMidpointAfterWidening()
+    {
+        // Mermaid centers the label group via translate(x - bbox.width / 2, y); widening without
+        // re-centering would shift the (now wider) box off-center over the cluster.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("deltaCenter", html, StringComparison.Ordinal);
+        Assert.Contains("label.setAttribute('transform',", html, StringComparison.Ordinal);
+    }
 }
