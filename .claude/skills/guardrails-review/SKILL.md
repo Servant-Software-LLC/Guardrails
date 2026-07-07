@@ -525,6 +525,30 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   coverage tokens, SSOT §4.4) — a GR2026 warning on a negative assertion would be the #177 false positive,
   not a signal to remove the guardrail. (plan-breakdown Step 4 adds the matching authoring rule.)
 <!-- END ADDED PROBES #176 -->
+<!-- BEGIN ADDED PROBE #221 — prose-only prohibition with no structural backing -->
+- **Prose-only prohibition, no structural backing (#221)**: for every explicit **"do NOT …"** statement
+  in a task's action prompt ("do NOT wrap this in a retry loop," "do NOT weaken this assertion to
+  tolerate fewer than N arrivals," "do NOT use approach X"), verify a guardrail exists that would catch
+  the forbidden shortcut. A prohibition backed by nothing but prose is free for an adversarial — or
+  merely lazy — implementer to ignore; this probe mirrors exactly how the pattern was found (a real
+  dogfood, not a synthesized example): a flaky-concurrency-test hardening plan forbade weakening
+  `Assert.Equal(3, …)` to `Assert.True(… >= 2)` and forbade a retry-until-pass wrapper, and neither
+  prohibition had a backing guardrail — both are the cheapest wrong implementation for their task.
+  **Check the forbidden behavior against structural checkability** (a regex/count/shape test on the file
+  the task modifies) before flagging: if it IS checkable and no guardrail enforces it, that's the
+  finding; if it genuinely is NOT checkable (a judgment call with no mechanical proxy), confirm the
+  breakdown report says so explicitly rather than treating the gap as covered. **Escalate to BLOCKER when
+  the task's OTHER guardrail is empirical/statistical** (a "run N times, assert it always passes" flake
+  check) — the forbidden shortcut can make THAT guardrail easier to pass, not harder (a weakened
+  assertion tolerates the very race the empirical check exists to catch), so the guardrail suite as a
+  whole rewards the shortcut instead of merely missing it. WEAK when the guardrail suite is otherwise
+  deterministic and simply silent on the prohibition. Fix: add the missing structural guardrail (a
+  negative assertion, #176, for an excluded keyword/scenario; a regex-lock on load-bearing text
+  surviving verbatim, or a call-count + forbidden-construct scan for a banned approach/shape) — or, if
+  genuinely not checkable, require the breakdown report to name it as an accepted, unguarded judgment
+  call. (Catalogue → "Prose-only prohibition, no structural backing"; plan-breakdown Step 6 adds the
+  matching authoring rule.)
+<!-- END ADDED PROBE #221 -->
 <!-- BEGIN ADDED PROBE #203/#204 — stale line-number pointer / unhedged sibling-architecture claim -->
 - **Stale line-number pointer / unhedged architecture claim about a not-yet-run sibling (#203/#204)**:
   for every task whose action prompt references code belonging to **another task in the same plan**,
@@ -717,6 +741,7 @@ remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 - [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.
 - [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
+- [ ] Every explicit **"do NOT …"** statement in a task's action prompt has a matching structural guardrail (a negative assertion, #176, for an excluded keyword/scenario; a regex-lock on load-bearing text surviving verbatim, or a count/forbidden-construct scan for a banned approach/shape) — or the breakdown report states explicitly that the forbidden behavior is not structurally checkable. WEAK when the prohibition is merely uncovered by an otherwise-deterministic suite; **BLOCKER** when the task's OTHER guardrail is empirical/statistical (a "run N times, assert it always passes" flake check) and the forbidden shortcut would make THAT guardrail EASIER to pass rather than harder — the perverse-incentive case (#221).
 - [ ] Every task whose prompt references an **earlier-wave sibling's** code was checked for a stale line-number pointer and an unhedged "here's how it currently works" claim (#203/#204): a cited line number into a file the earlier task will still modify is WEAK/BLOCKER (durable marker instead); an unhedged architecture claim about the sibling's not-yet-run implementation is WEAK/BLOCKER (caveat it as authoring-time state, verify before relying on it). Cross-check the paired `maxTurns: 75` bump (Step 4a's fourth archetype) — flag a **half-applied fix** if only one of the two companion rules was applied.
 - [ ] Every `scope:"integration"` union guardrail's expected-contribution tokens are each produced by a task in the integration task's ANCESTOR set (a directed path producer → fan-in); a token whose only producer is a disconnected leaf / side branch is WEAK ("if task `<N>` is later removed, this guardrail will fail spuriously — add a DAG edge or drop the check") (#159).
 - [ ] Every task ran through the over-size split-trigger; any task bundling multiple deliverables / wide blast radius / 1:1-to-a-milestone / expensive-retry is flagged WEAK with a proposed split (#111).

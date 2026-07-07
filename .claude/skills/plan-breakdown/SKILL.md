@@ -1192,6 +1192,23 @@ Per `references/schemas.md`, exactly:
   Author the prompt text AND set the budget together; they are the two halves of the same fix for the
   same underlying situation (Step 4a says more on when the pairing is required vs. one without the
   other).
+- **Every explicit "do NOT …" prohibition in a generated action prompt needs a matching structural
+  guardrail — or an explicit note that none exists (#221).** Before finalizing any action prompt that
+  states a prohibition ("do NOT wrap this in a retry loop," "do NOT weaken this assertion," "do NOT use
+  approach X"), ask: **is the forbidden behavior structurally checkable** — a regex, a count, or a
+  shape/AST test on the file this task modifies? If **yes**, emit a guardrail enforcing it ALONGSIDE the
+  prohibition (Step 4/5) — never rely on the prose alone; an adversarial or merely lazy implementation is
+  free to ignore a prohibition no guardrail backs. Reach for the archetype that fits the shape: a
+  **negative assertion** (fail-on-present, #176) for an excluded keyword/scenario; a **regex-lock**
+  asserting the load-bearing text survives verbatim, or a **count + forbidden-construct scan** (e.g.
+  "exactly one call to `X`, no `for`/`while`/`catch`") for a banned approach/shape. If **no** (a genuine
+  judgment call with no mechanical proxy), **state that explicitly in the breakdown report** (Step 7)
+  rather than silently leaving it unguarded — an unacknowledged, unguarded prohibition is invisible to
+  the human reviewer. **Watch for the perverse case**: when the task's other guardrail is
+  EMPIRICAL/statistical (a "run N times, assert it always passes" flake check), the forbidden shortcut
+  can make that guardrail EASIER to pass, not harder (a weakened assertion tolerates the very race the
+  guardrail exists to catch) — treat that combination as the highest-priority case to close. (Catalogue →
+  "Prose-only prohibition, no structural backing.")
 - `state/seed.json` only if the plan implies initial shared state (input paths,
   names, configuration the tasks read).
 - Scripts: prefer the workspace's native platform; note any interpreter requirement

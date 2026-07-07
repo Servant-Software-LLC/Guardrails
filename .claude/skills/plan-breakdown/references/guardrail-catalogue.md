@@ -1561,6 +1561,108 @@ on a both-sides-present task that drives the real lookup for **every** item and 
 marker (union-safe; the per-side independent file-exists / content checks do NOT cover the seam).
 <!-- END ADDED SECTION #96 -->
 
+<!-- BEGIN ADDED SECTION #221 — prose-only prohibition, no structural backing (auto-merge friendly; do not merge into prose above) -->
+## Prose-only prohibition — an explicit "do NOT …" needs a matching structural guardrail (#221)
+
+Generalizes the **negative assertion** archetype above (#176) from "an excluded SCENARIO/keyword" to
+any explicit forbidden APPROACH or SHAPE the action prompt states, and states the authoring doctrine as
+its own rule rather than a per-instance archetype pick. When a generated action prompt writes an
+explicit prohibition — "do NOT wrap this in a retry loop," "do NOT weaken this assertion," "do NOT use
+approach X" — the prohibition itself is not a guardrail. It is prose one implementer (an adversarial
+one, or a merely lazy or wrong one) is free to ignore, while the guardrails that actually gate task
+completion say nothing about it.
+
+**The rule.** For every explicit "do NOT …" statement written into a generated action prompt, ask: *is
+the forbidden behavior structurally checkable* — a regex, a count, or a shape/AST test on the file the
+task modifies? If **yes**, emit a guardrail enforcing the prohibition alongside the prose — never rely
+on the prose alone. If **no** (a genuine judgment call with no mechanical proxy — "do NOT make the fix
+uglier than it needs to be"), say so explicitly in the breakdown report rather than silently leaving it
+unguarded; an unguarded, unacknowledged prohibition is a coverage gap the human reviewer has no way to
+notice.
+
+**Why this is sharper than an ordinary coverage gap — the perverse-incentive angle.** An ordinary
+coverage gap means a completion criterion goes unverified — the guardrails are silent where they should
+speak. A prose-only prohibition can be WORSE than silent: when the surrounding guardrail is
+EMPIRICAL/statistical rather than structural, the guardrail can actively **REWARD** the forbidden
+shortcut instead of merely failing to catch it. That is not hypothetical — it is exactly how this
+pattern was found (a real adversarial review pass, not a synthesized example):
+
+**Worked case — hardening a flaky concurrency test (`WorktreeProviderSeamTests`).** The plan's action
+prompt stated two explicit prohibitions with no backing guardrail:
+
+1. *"do NOT weaken any assertion to tolerate fewer than 3 arrivals (e.g. changing `Assert.Equal(3, …)`
+   to `Assert.True(… >= 2)`)."* The cheapest wrong implementation is exactly the forbidden weakened
+   assertion — and it is **perverse**: the plan's own empirical guardrail ("run the test N times, assert
+   it always passes") becomes **EASIER** to satisfy with the weakened assertion, because it now
+   tolerates the very race the plan exists to fix. The statistical guardrail doesn't just fail to catch
+   the shortcut — it pays the shortcut a higher pass rate than the honest fix.
+2. *"do NOT wrap the test body in a retry-until-pass loop."* The cheapest wrong implementation is
+   exactly the forbidden retry-until-pass wrapper — it brute-forces a ~50%-per-try race into a high
+   per-outer-iteration pass rate with zero real fix, and nothing in the guardrail suite structurally
+   distinguishes it from a genuine fix (both converge to "usually passes").
+
+Both were closed with small, cheap, purely structural guardrails once named:
+
+```powershell
+# catches: an implementation that "fixes" the flaky test by WEAKENING one of the four load-bearing
+#          assertions (e.g. Assert.Equal(3, ...) -> Assert.True(... >= 2)) so the test tolerates the
+#          very race it exists to catch. Lock the assertions to survive VERBATIM.
+$f = "tests/Worktree.Tests/WorktreeProviderSeamTests.cs"
+$content = Get-Content $f -Raw
+$required = @(
+    'Assert\.Equal\(3,\s*arrivals\.Count\)'
+    # ... the other three load-bearing assertions, one regex each
+)
+foreach ($pattern in $required) {
+    if ($content -notmatch $pattern) {
+        Write-Output "$f no longer contains the load-bearing assertion matching '$pattern' - do not weaken an assertion to tolerate fewer arrivals than the race actually produces"
+        exit 1
+    }
+}
+exit 0
+```
+
+```powershell
+# catches: an implementation that "fixes" the flaky test by wrapping the test body in a
+#          retry-until-pass loop instead of fixing the race - it brute-forces a high pass rate with
+#          zero real fix, and an empirical N-run guardrail cannot tell the difference. Assert the
+#          method calls the driving async method EXACTLY ONCE and contains no for/while/catch.
+$f = "tests/Worktree.Tests/WorktreeProviderSeamTests.cs"
+$content = Get-Content $f -Raw
+$method = [regex]::Match($content, '(?s)public async Task ConcurrentArrivals_.*?\n    \}').Value
+$calls = [regex]::Matches($method, '\bAcquireWorktreeAsync\s*\(').Count
+if ($calls -ne 1) {
+    Write-Output "$f drives AcquireWorktreeAsync $calls times in the test body - expected exactly 1 (a retry-until-pass loop brute-forces the race instead of fixing it)"
+    exit 1
+}
+if ($method -match '\b(for|while|catch)\s*\(') {
+    Write-Output "$f contains a for/while/catch construct in the test body - do not wrap the test in a retry-until-pass loop"
+    exit 1
+}
+exit 0
+```
+
+**This generalizes past concurrency tests.** Any generated prompt with "do NOT do X" where X is
+checkable has the same shape — the intent is real, stated in the one place (prose) an agent is free to
+ignore, while completion is gated by guardrails that never mention it. Treat every such prohibition as
+a candidate guardrail, not decoration on the prompt.
+
+**Relation to the negative assertion archetype (#176).** Negative assertion is the KEYWORD/SCENARIO
+special case of this rule (a `-match "<token>" → exit 1` fail-on-present check). This rule is the
+general authoring doctrine: it also covers forbidden *shapes* (a retry loop, a weakened assertion, a
+banned control-flow construct, a call-count invariant) that a single keyword match cannot express, and
+it names the check-for-a-backing-guardrail step as mandatory authoring practice rather than one
+archetype among many. Emit a negative assertion when the prohibition is keyword-shaped; reach for a
+count/shape check (regex-lock, call-count, forbidden-construct scan) when it is not — either way, the
+prohibition gets a guardrail or an explicit "not structurally checkable" note in the report.
+
+**Decision-tree leaf:** *the action prompt contains an explicit "do NOT …" statement* → ask whether the
+forbidden behavior is structurally checkable (regex/count/shape test on the modified file). YES → emit
+a guardrail enforcing it (a negative assertion for a keyword/scenario, a regex-lock or shape/count check
+for a forbidden approach), placed alongside the prohibition. NO → state so explicitly in the breakdown
+report — never leave it silently unguarded.
+<!-- END ADDED SECTION #221 -->
+
 ## The decision tree (apply per task)
 
 ```
@@ -2011,6 +2113,30 @@ should fail before an expensive test run or a paid judge ever starts.
   only per-side file-exists/content checks and no end-to-end lookup over the whole set. See the
   name-convention-seam section; `stacks/dotnet.md §18`.
 <!-- END ADDED ANTI-PATTERNS #74/#75/#76/#96 -->
+
+<!-- BEGIN ADDED ANTI-PATTERNS #221 (auto-merge friendly; do not merge into prose above) -->
+- **Prose-only prohibition, no structural backing** (#221): the action prompt states an explicit "do
+  NOT …" ("do NOT wrap this in a retry loop," "do NOT weaken this assertion to tolerate fewer than N
+  arrivals") and the forbidden behavior is **structurally checkable** — but no guardrail enforces it, so
+  the prohibition survives only as prose an implementer (adversarial, or merely lazy or wrong) is free
+  to ignore. Sharper than an ordinary coverage gap: when the task's OTHER guardrail is
+  EMPIRICAL/statistical (a "run it N times, assert it always passes" flake check), the guardrail can
+  actively **REWARD** the forbidden shortcut rather than merely miss it — a weakened assertion that
+  tolerates the race makes the N-run check EASIER to pass, and a retry-until-pass wrapper brute-forces a
+  high pass rate with zero real fix, indistinguishable from a genuine fix to a statistical check alone.
+  (Motivating case: a flaky concurrency test's action prompt forbade weakening `Assert.Equal(3, …)` to
+  `Assert.True(… >= 2)` and forbade a retry-until-pass wrapper — neither prohibition had a guardrail, and
+  both are exactly the cheapest wrong implementation for their task.) Fix: for every "do NOT …" in a
+  generated prompt, ask whether the forbidden behavior is structurally checkable (a regex/count/shape
+  test on the file the task modifies). If yes, emit a guardrail alongside the prohibition — a regex-lock
+  on load-bearing assertions surviving verbatim, a call-count + forbidden-construct scan (no
+  `for`/`while`/`catch`) for a banned control-flow shape, or a negative assertion (#176) for a
+  keyword/scenario. If no, state so explicitly in the breakdown report rather than leaving it silently
+  unguarded. See the prose-only-prohibition section above; SKILL.md Step 6 adds the matching authoring
+  rule. BLOCKER when the empirical guardrail actively rewards the forbidden shortcut (the
+  perverse-incentive case); WEAK when the prohibition is merely uncovered by an otherwise-deterministic
+  suite.
+<!-- END ADDED ANTI-PATTERNS #221 -->
 
 <!-- BEGIN ADDED SECTION #94 — maxTurns budgeting doctrine (auto-merge friendly; do not merge into prose above) -->
 ## maxTurns budgeting — a turn-budget exhaustion is NOT a sizing failure (#94)
