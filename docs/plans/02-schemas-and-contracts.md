@@ -1915,8 +1915,15 @@ styling, or by the legend's wording.
 **Command contract.**
 
 - `guardrails graph [folder]` — render and write `diagram.md` + `diagram.html`; print the
-  written paths; exit `0`. Front-doors through load/validate first: on any load/validate
-  error, print diagnostics and exit `1`.
+  written `diagram.md` path, then (unless `--no-html`) a `Diagram (interactive): <link>` line
+  for `diagram.html` — a clickable OSC 8 hyperlink built from the absolute path via .NET's
+  `Uri` (reusing `RunCommand.Hyperlink`, the same escape shape `guardrails run`'s `Logs` link
+  uses), falling back to the plain absolute path when the terminal cannot render one; exit `0`.
+  Building this link in the CLI (issue #249) — rather than the caller hand-assembling a
+  `file://` URL from a shell `pwd` — is what keeps it correct under Git Bash/MSYS on Windows,
+  whose `pwd` returns the non-resolvable mount form (`/f/...`) instead of the native drive
+  form (`F:/...`) a `file://` URI needs. Front-doors through load/validate first: on any
+  load/validate error, print diagnostics and exit `1`.
 - `--no-html` — write only `diagram.md`; skip `diagram.html`. Has no effect with `--stdout`.
 - `--stdout` — print the diagram to stdout; write nothing to disk (neither `diagram.md` nor
   `diagram.html`); exit `0`.

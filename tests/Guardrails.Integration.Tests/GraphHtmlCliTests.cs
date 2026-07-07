@@ -106,6 +106,62 @@ public sealed class GraphHtmlCliTests
         Assert.False(File.Exists(HtmlPath(plan.PlanDir)), "--no-html must not write diagram.html");
     }
 
+    /// <summary>
+    /// Issue #249: the "Diagram (interactive)" link plan-breakdown's SKILL.md Step 7 relays
+    /// verbatim must be emitted by the CLI itself — built from .NET's own <see cref="Uri"/> off the
+    /// absolute <c>diagram.html</c> path via <see cref="RunCommand.Hyperlink"/> — rather than the
+    /// skill hand-assembling a <c>file://</c> URL from a shell <c>pwd</c> (which under Git
+    /// Bash/MSYS on Windows yields the non-resolvable <c>/f/...</c> mount form instead of the
+    /// native <c>F:/...</c> drive form). <see cref="RunCommand.Hyperlink"/>'s own unit tests
+    /// (<c>PostMortemLogsLinkTests</c>) pin the exact OSC 8 escape shape and the
+    /// percent-encoded/well-formed <c>file://</c> URI it produces; this test pins that
+    /// <c>guardrails graph</c> actually calls it for the diagram-link line, under the redirected
+    /// output every CLI integration test runs under (so no raw escape bytes leak here — that
+    /// branch is exercised directly by <c>Hyperlink_Enabled_EmitsWellFormedOsc8_TargetingFileUri</c>).
+    /// </summary>
+    [Fact]
+    public async Task Graph_Default_PrintsDiagramInteractiveLink_AbsolutePath_NoEscapeWhenRedirected()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, exit);
+
+        string linkLine = output.Split('\n').Single(l => l.Contains("Diagram (interactive)"));
+        Assert.Contains(HtmlPath(plan.PlanDir), linkLine);
+
+        // Redirected test-host output must stay clean — no OSC 8 escape sequence leaks (the
+        // interactive branch is unreachable through this redirected CLI seam, mirroring
+        // PostMortemLogsLinkTests' treatment of the analogous "Logs" link).
+        Assert.DoesNotContain("]8;;", output);
+
+        // The underlying URI is well-formed and resolves via .NET's own Uri — never a shell pwd.
+        string uri = new Uri(HtmlPath(plan.PlanDir)).AbsoluteUri;
+        Assert.StartsWith("file://", uri);
+    }
+
+    [Fact]
+    public async Task NoHtml_PrintsNoDiagramInteractiveLink()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--no-html");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.DoesNotContain("Diagram (interactive)", output);
+    }
+
+    [Fact]
+    public async Task Stdout_PrintsNoDiagramInteractiveLink()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeCapturingAsync("graph", plan.PlanDir, "--stdout");
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.DoesNotContain("Diagram (interactive)", output);
+    }
+
     [Fact]
     public async Task Stdout_WritesNeitherFile()
     {
