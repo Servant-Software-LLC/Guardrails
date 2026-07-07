@@ -355,4 +355,54 @@ public sealed class RetryPolicyTests
         Assert.Contains("## Prior attempt work is salvageable", feedback);
         Assert.DoesNotContain("```", feedback); // no diff-stat code block when the stat is empty
     }
+
+    // ── #253 write-scope diagnostic: status letter + forensic preview ─────────────────────────────
+
+    [Fact]
+    public void WriteScopeViolation_NamesEachPath_WithItsGitStatusLetter()
+    {
+        var offenses = new List<WriteScopeOffense>
+        {
+            new() { Path = "outside.txt", Status = 'A' },
+            new() { Path = "config/settings.json", Status = 'M' },
+            new() { Path = "old/Gone.cs", Status = 'D' }
+        };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 2, offenses);
+
+        Assert.Contains("`outside.txt` (A: new/untracked", feedback);
+        Assert.Contains("`config/settings.json` (M: modified", feedback);
+        Assert.Contains("`old/Gone.cs` (D: deleted", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_NewFileWithPreview_IncludesSizeAndContentSnippet()
+    {
+        // Issue #253: a brand-new/untracked out-of-scope file is the suspicious case (no history at
+        // taskBase) — its captured preview must reach the feedback since the file itself is already
+        // gone (ScopedRevert deleted it) by the time anyone reads this text.
+        var offense = new WriteScopeOffense
+        {
+            Path = "outside.txt",
+            Status = 'A',
+            Preview = new WriteScopeOffensePreview { SizeBytes = 42, TextPreview = "out of scope cruft" }
+        };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 1, [offense]);
+
+        Assert.Contains("42 byte(s) before revert", feedback);
+        Assert.Contains("out of scope cruft", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_ModifiedFile_NoPreviewSection()
+    {
+        // M/D offenses never carry a Preview (the taskBase blob is separately recoverable) — the
+        // feedback must not fabricate a "byte(s) before revert" section for one.
+        var offense = new WriteScopeOffense { Path = "config/settings.json", Status = 'M' };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("04-implement"), attempt: 1, [offense]);
+
+        Assert.DoesNotContain("byte(s) before revert", feedback);
+    }
 }

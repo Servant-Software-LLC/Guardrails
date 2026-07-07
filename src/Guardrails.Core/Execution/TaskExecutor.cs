@@ -767,7 +767,7 @@ public sealed class TaskExecutor : ITaskExecutor
                 // Scoped revert: restore only the out-of-scope paths to taskBase state.
                 WriteScopeCheck.ScopedRevert(worktree.WorktreePath, worktree.TaskBase, scopeCheck.OffendingPaths);
 
-                string offendingList = string.Join(", ", scopeCheck.OffendingPaths);
+                string offendingList = string.Join(", ", scopeCheck.OffendingPaths.Select(o => o.Path));
                 string feedback = RetryPolicy.ForWriteScopeViolation(task, attemptNumber, scopeCheck.OffendingPaths);
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,

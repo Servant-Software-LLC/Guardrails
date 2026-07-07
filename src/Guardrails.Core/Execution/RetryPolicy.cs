@@ -371,16 +371,36 @@ public static class RetryPolicy
     /// Names each offending path so the agent removes the out-of-scope change on retry. The
     /// harness has already performed a scoped revert of the offending paths before calling this.
     /// </summary>
-    public static string ForWriteScopeViolation(TaskNode task, int attempt, IReadOnlyList<string> offendingPaths)
+    /// <remarks>
+    /// Issue #253: each path is labelled with its raw git change-status (A/M/D) so a human debugging
+    /// a later <c>needs-human</c> can immediately tell a brand-new untracked file with no history at
+    /// this task's base commit — suspicious/unattributable, since <c>git add -A</c> sweeps up ANY
+    /// untracked file present in the worktree, not just ones the agent's own tool calls wrote — apart
+    /// from a modification/deletion of a file that genuinely existed before this attempt (far more
+    /// likely a real agent mistake). A new file also carries a <see cref="WriteScopeOffensePreview"/>
+    /// (size + content preview) captured before the revert deleted it, since by the time anyone reads
+    /// this feedback the file itself is already gone from the worktree.
+    /// </remarks>
+    public static string ForWriteScopeViolation(TaskNode task, int attempt, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
         var text = new StringBuilder();
         AppendHeader(text, task, attempt);
         text.AppendLine("## Write-scope violation");
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
-        foreach (string path in offendingPaths)
+        foreach (WriteScopeOffense offense in offendingPaths)
         {
-            text.AppendLine($"- `{path}`");
+            text.AppendLine($"- `{offense.Path}` ({DescribeStatus(offense.Status)})");
+            if (offense.Preview is { } preview)
+            {
+                text.AppendLine($"  - {preview.SizeBytes} byte(s) before revert:");
+                text.AppendLine("    ```");
+                foreach (string previewLine in preview.TextPreview.Replace("\r\n", "\n").Split('\n'))
+                {
+                    text.AppendLine($"    {previewLine}");
+                }
+                text.AppendLine("    ```");
+            }
         }
 
         text.AppendLine();
@@ -389,6 +409,15 @@ public static class RetryPolicy
         text.AppendLine("by this task's writeScope (SSOT §3.4, plan 08 §2).");
         return text.ToString();
     }
+
+    /// <summary>Human-readable label for a <see cref="WriteScopeOffense.Status"/> letter.</summary>
+    private static string DescribeStatus(char status) => status switch
+    {
+        'A' => "A: new/untracked — no history at this task's base commit",
+        'M' => "M: modified a file that existed at this task's base commit",
+        'D' => "D: deleted a file that existed at this task's base commit",
+        _ => $"{status}: unrecognized git change status"
+    };
 
     /// <summary>
     /// Compose feedback for a <c>needsHarnessWrite</c> request REJECTED by prospective validation

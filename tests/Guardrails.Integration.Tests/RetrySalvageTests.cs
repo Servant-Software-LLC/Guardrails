@@ -14,7 +14,17 @@ namespace Guardrails.Integration.Tests;
 /// out-of-writeScope file is still caught by the (unchanged) write-scope check, and ref pruning on
 /// task settle-succeeded / <c>--fresh</c>.
 /// </summary>
-public sealed class RetrySalvageTests : IDisposable
+/// <remarks>
+/// Issue #253 tripwire: <see cref="HostRepoCleanlinessGuard"/> (an <see cref="IClassFixture{T}"/>)
+/// snapshots the REAL Guardrails repo checkout hosting this test run before the class's first test
+/// and re-checks it after the last. This class's fixtures use the exact literal filenames
+/// (<c>outside.txt</c>, <c>src/output.txt</c>) that a real dogfood run mysteriously saw attributed to
+/// two unrelated tasks with zero trace in either task's own transcript — every fixture root here is
+/// already isolated under <see cref="Path.GetTempPath"/>, and a thorough investigation (see the issue)
+/// could not reproduce a leak from running this suite, but the guard stands regardless as the tripwire
+/// that would catch ANY future regression reintroducing one.
+/// </remarks>
+public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>, IDisposable
 {
     private static readonly bool Windows = OperatingSystem.IsWindows();
     private readonly string _root = Path.Combine(Path.GetTempPath(), "gr-salvage-" + Guid.NewGuid().ToString("N"));
@@ -410,5 +420,89 @@ public sealed class RetrySalvageTests : IDisposable
         }
         catch (IOException) { /* best-effort teardown */ }
         catch (UnauthorizedAccessException) { /* best-effort teardown */ }
+    }
+}
+
+/// <summary>
+/// Issue #253 tripwire, shared as an <see cref="IClassFixture{T}"/> so it wraps every test in
+/// <see cref="RetrySalvageTests"/> (constructed once before the class's first test, disposed once
+/// after its last): snapshots <c>git status --porcelain</c> of the REAL repo checkout hosting this
+/// test run, then asserts on teardown that no NEW path appeared. A dogfood run once saw a live task's
+/// write-scope check (<c>git add -A</c> in its segment worktree) attribute two files —
+/// <c>outside.txt</c> and <c>src/output.txt</c> — to the agent with zero trace in its own transcript.
+/// Those are the exact literal fixture names <see cref="RetrySalvageTests.WriteFakeCli"/> uses, which
+/// made this suite a prime (if never confirmed) suspect; every fixture root in this file is already
+/// isolated under <see cref="Path.GetTempPath"/>, so this guard is currently a no-op tripwire, not a
+/// fix for a confirmed leak — its value is catching any FUTURE regression that reintroduces one,
+/// exactly matching the issue's own suggested regression test ("assert `git status` in the real repo
+/// stays clean around this test").
+/// </summary>
+public sealed class HostRepoCleanlinessGuard : IDisposable
+{
+    private readonly string? _hostRepoRoot;
+    private readonly HashSet<string> _before;
+
+    public HostRepoCleanlinessGuard()
+    {
+        _hostRepoRoot = FindEnclosingGitRepo(AppContext.BaseDirectory);
+        _before = _hostRepoRoot is null ? [] : StatusLines(_hostRepoRoot);
+    }
+
+    public void Dispose()
+    {
+        // Not running from within a git checkout (e.g. some future packaging context) — nothing to
+        // guard; this is a best-effort tripwire, not a hard requirement of the test environment.
+        if (_hostRepoRoot is null) return;
+
+        HashSet<string> after = StatusLines(_hostRepoRoot);
+        List<string> newEntries = after.Except(_before).ToList();
+
+        Assert.True(newEntries.Count == 0,
+            "RetrySalvageTests must not leave any new untracked/modified path in the REAL repo " +
+            "hosting the test run (issue #253) -- new git-status line(s): " + string.Join(" | ", newEntries));
+    }
+
+    /// <summary>Walks up from <paramref name="startDir"/> looking for a `.git` dir/file (a worktree's
+    /// `.git` is a file, not a dir). Returns null if none is found (not running inside a checkout).</summary>
+    private static string? FindEnclosingGitRepo(string startDir)
+    {
+        var dir = new DirectoryInfo(startDir);
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, ".git")) ||
+                File.Exists(Path.Combine(dir.FullName, ".git")))
+            {
+                return dir.FullName;
+            }
+
+            dir = dir.Parent;
+        }
+
+        return null;
+    }
+
+    private static HashSet<string> StatusLines(string repoRoot)
+    {
+        var psi = new ProcessStartInfo("git")
+        {
+            WorkingDirectory = repoRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        psi.ArgumentList.Add("status");
+        psi.ArgumentList.Add("--porcelain");
+        using Process proc = Process.Start(psi)!;
+        string stdout = proc.StandardOutput.ReadToEnd();
+        proc.StandardError.ReadToEnd();
+        proc.WaitForExit();
+
+        // A failure here (e.g. git not on PATH in some exotic environment) must not itself fail the
+        // guard — return an empty snapshot so before/after compare equal and this stays a no-op.
+        if (proc.ExitCode != 0) return [];
+
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(l => l.TrimEnd('\r'))
+            .ToHashSet(StringComparer.Ordinal);
     }
 }

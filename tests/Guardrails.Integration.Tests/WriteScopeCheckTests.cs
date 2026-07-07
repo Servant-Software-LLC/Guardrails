@@ -147,8 +147,18 @@ public sealed class WriteScopeCheckTests
             $"Expected check to FAIL for an out-of-scope {changeKind}");
         Assert.NotEmpty(result.OffendingPaths);
         // Every offending path must reside in the out-of-scope location
-        Assert.All(result.OffendingPaths, p =>
-            Assert.Contains("tests", p, StringComparison.OrdinalIgnoreCase));
+        Assert.All(result.OffendingPaths, o =>
+            Assert.Contains("tests", o.Path, StringComparison.OrdinalIgnoreCase));
+
+        // The status letter must match the change actually made (issue #253 diagnostic).
+        char expectedStatus = changeKind switch
+        {
+            "add" => 'A',
+            "modify" => 'M',
+            "delete" => 'D',
+            _ => throw new InvalidOperationException($"unexpected changeKind {changeKind}")
+        };
+        Assert.All(result.OffendingPaths, o => Assert.Equal(expectedStatus, o.Status));
     }
 
     /// <summary>
@@ -197,9 +207,11 @@ public sealed class WriteScopeCheckTests
 
         Assert.False(result.Passed,
             "Rename to an out-of-scope path must fail the check");
-        // The A (new) path is out of scope — it must appear in the offending list
+        // The A (new) path is out of scope — it must appear in the offending list, tagged 'A'
+        // (git presents an untracked rename destination the same way as any other new file).
         Assert.Contains(result.OffendingPaths,
-            p => p.Replace('\\', '/').EndsWith("docs/NewName.cs", StringComparison.OrdinalIgnoreCase));
+            o => o.Path.Replace('\\', '/').EndsWith("docs/NewName.cs", StringComparison.OrdinalIgnoreCase)
+                 && o.Status == 'A');
     }
 
     /// <summary>
@@ -226,9 +238,10 @@ public sealed class WriteScopeCheckTests
 
         Assert.False(result.Passed,
             "Rename from an out-of-scope path must fail the check");
-        // The D (old) path is out of scope — it must appear in the offending list
+        // The D (old) path is out of scope — it must appear in the offending list, tagged 'D'.
         Assert.Contains(result.OffendingPaths,
-            p => p.Replace('\\', '/').EndsWith("tests/OldFile.cs", StringComparison.OrdinalIgnoreCase));
+            o => o.Path.Replace('\\', '/').EndsWith("tests/OldFile.cs", StringComparison.OrdinalIgnoreCase)
+                 && o.Status == 'D');
     }
 
     /// <summary>
@@ -289,7 +302,8 @@ public sealed class WriteScopeCheckTests
         Assert.False(result.Passed,
             "An implementation task editing a test file excluded from its writeScope must FAIL the check");
         Assert.Contains(result.OffendingPaths,
-            p => p.Replace('\\', '/').EndsWith("tests/MyFeatureTests.cs", StringComparison.OrdinalIgnoreCase));
+            o => o.Path.Replace('\\', '/').EndsWith("tests/MyFeatureTests.cs", StringComparison.OrdinalIgnoreCase)
+                 && o.Status == 'M');
     }
 
     // -------------------------------------------------------------------------
@@ -387,7 +401,8 @@ public sealed class WriteScopeCheckTests
             "Expected check to FAIL because config/settings.json is outside writeScope");
         Assert.NotEmpty(result.OffendingPaths);
         Assert.Contains(result.OffendingPaths,
-            p => p.Replace('\\', '/').EndsWith("config/settings.json", StringComparison.OrdinalIgnoreCase));
+            o => o.Path.Replace('\\', '/').EndsWith("config/settings.json", StringComparison.OrdinalIgnoreCase)
+                 && o.Status == 'M'); // config/settings.json existed at taskBase -- a modify, not an add
 
         // Perform the scoped revert — ONLY the out-of-scope offending paths
         WriteScopeCheck.ScopedRevert(repo.RepoPath, taskBase, result.OffendingPaths);
@@ -397,5 +412,93 @@ public sealed class WriteScopeCheckTests
 
         // The out-of-scope file must be RESTORED to its taskBase content
         Assert.Equal("{\"base\": true}", repo.ReadFile("config/settings.json"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue #253 diagnostic: status letter + forensic preview on a new-file offense
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// A brand-new out-of-scope file (no history at <c>taskBase</c>) is tagged <c>Status == 'A'</c>
+    /// and carries a captured content preview — the forensic trace that lets a human debugging a
+    /// later <c>needs-human</c> immediately tell "unattributable new file" apart from "a real edit to
+    /// something that already existed" (issue #253's proposed fix #1).
+    /// </summary>
+    [Fact]
+    public void NewOutOfScopeFile_TaggedAdded_AndCarriesContentPreview()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile("src/InScope.cs", "// base", "add in-scope base");
+        string taskBase = repo.HeadSha();
+        IReadOnlyList<string> scope = ["src/**"];
+
+        const string content = "out of scope cruft — could be a leaked fixture (issue #253)";
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "docs"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "docs", "outside.txt"), content);
+        TempGitRepo.Git(repo.RepoPath, "add", "docs/outside.txt");
+        TempGitRepo.Git(repo.RepoPath, "commit", "-m", "add out-of-scope untracked-style file");
+
+        var result = WriteScopeCheck.Check(repo.RepoPath, taskBase, scope);
+
+        Assert.False(result.Passed);
+        WriteScopeOffense offense = Assert.Single(result.OffendingPaths);
+        Assert.Equal('A', offense.Status);
+        Assert.True(offense.IsNewFile);
+        Assert.NotNull(offense.Preview);
+        // SizeBytes is the on-disk UTF-8 byte count, not the .NET (UTF-16) char count — content
+        // contains an em dash, which is multiple bytes in UTF-8 but one char in a C# string.
+        Assert.Equal(System.Text.Encoding.UTF8.GetByteCount(content), offense.Preview!.SizeBytes);
+        Assert.Contains("issue #253", offense.Preview.TextPreview);
+    }
+
+    /// <summary>
+    /// The preview is captured DURING <see cref="WriteScopeCheck.Check"/> — before the caller invokes
+    /// <see cref="WriteScopeCheck.ScopedRevert"/> deletes the file — so it survives as the only
+    /// remaining forensic trace even after the revert wipes the file from the worktree.
+    /// </summary>
+    [Fact]
+    public void NewOutOfScopeFile_PreviewSurvivesAfterScopedRevertDeletesTheFile()
+    {
+        using var repo = new TempGitRepo();
+        string taskBase = repo.HeadSha();
+        IReadOnlyList<string> scope = ["src/**"];
+
+        const string content = "attempt-1-output";
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "src"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "notsrc.txt"), content);
+        TempGitRepo.Git(repo.RepoPath, "add", "notsrc.txt");
+        TempGitRepo.Git(repo.RepoPath, "commit", "-m", "add out-of-scope file");
+
+        var result = WriteScopeCheck.Check(repo.RepoPath, taskBase, scope);
+        WriteScopeOffense offense = Assert.Single(result.OffendingPaths);
+        Assert.NotNull(offense.Preview);
+
+        WriteScopeCheck.ScopedRevert(repo.RepoPath, taskBase, result.OffendingPaths);
+
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "notsrc.txt")),
+            "sanity: the revert really does delete the new out-of-scope file");
+        Assert.Equal(content, offense.Preview!.TextPreview); // the ALREADY-CAPTURED result is unaffected
+    }
+
+    /// <summary>
+    /// A modified/deleted (M/D) offense never carries a preview — its taskBase blob is always
+    /// separately recoverable via <c>git show</c>, so there is nothing extra to capture.
+    /// </summary>
+    [Fact]
+    public void ModifiedOutOfScopeFile_NoPreview()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile("config/settings.json", "{\"base\": true}", "add base config");
+        string taskBase = repo.HeadSha();
+        IReadOnlyList<string> scope = ["src/**"];
+
+        repo.CommitFile("config/settings.json", "{\"modified\": true}", "modify out-of-scope file");
+
+        var result = WriteScopeCheck.Check(repo.RepoPath, taskBase, scope);
+
+        WriteScopeOffense offense = Assert.Single(result.OffendingPaths);
+        Assert.Equal('M', offense.Status);
+        Assert.False(offense.IsNewFile);
+        Assert.Null(offense.Preview);
     }
 }
