@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Guardrails.Core.Hashing;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Graph;
@@ -34,15 +35,8 @@ public static class GraphSourceHash
     {
         ArgumentNullException.ThrowIfNull(plan);
 
-        string semantic = NormalizeNewlines(MermaidRenderer.SemanticContent(plan));
+        string semantic = HashText.NormalizeNewlines(MermaidRenderer.SemanticContent(plan));
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(semantic));
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
-
-    /// <summary>
-    /// Collapse <c>\r\n</c> and lone <c>\r</c> to <c>\n</c> so the hash is platform-independent.
-    /// Mirrors <see cref="Guardrails.Core.Journal.PlanHash"/>'s normalization.
-    /// </summary>
-    private static string NormalizeNewlines(string text) =>
-        text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal);
 }

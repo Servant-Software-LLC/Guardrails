@@ -132,4 +132,52 @@ public sealed class ReviewMarkerCliTests
         Assert.Equal(ExitCodes.Success, exit);
         Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, output); // stale → warns again
     }
+
+    // ── #260: guardrail/action BODY edits after review re-stale the marker (the reported bug) ────────
+
+    [Fact]
+    public async Task MarkReviewed_ThenGuardrailBodyWeakened_ReStales_AndReportsDifferentHash()
+    {
+        // The issue's EXACT repro. Pre-#260 the marker keyed on the narrow PlanHash (guardrails.json +
+        // task.json only), so weakening a guardrail body left the "reviewed" attestation vouching. Now
+        // it keys on PlanDefinitionHash, so the body edit re-stales it and mark-reviewed reports a
+        // different hash.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int markExit, _) = await InvokeAsync("mark-reviewed", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, markExit);
+        string? hashBefore = ReviewMarker.Read(plan.PlanDir)?.PlanHash;
+        Assert.False(string.IsNullOrEmpty(hashBefore));
+
+        // Fresh marker: validate is quiet.
+        (int _, string quiet) = await InvokeAsync("validate", plan.PlanDir);
+        Assert.DoesNotContain(DiagnosticCodes.ReviewMarkerMissingOrStale, quiet);
+
+        // Weaken the guardrail body (turn a real check into `exit 0`) — bytes change, task.json does not.
+        plan.WeakenGuardrail("01-first");
+
+        // validate re-emits GR2025 …
+        (int valExit, string afterEdit) = await InvokeAsync("validate", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, valExit);
+        Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, afterEdit);
+
+        // … and mark-reviewed now records a DIFFERENT hash.
+        (int reExit, _) = await InvokeAsync("mark-reviewed", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, reExit);
+        Assert.NotEqual(hashBefore, ReviewMarker.Read(plan.PlanDir)?.PlanHash);
+    }
+
+    [Fact]
+    public async Task MarkReviewed_ThenActionBodyEdited_ReStales()
+    {
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+        await InvokeAsync("mark-reviewed", plan.PlanDir);
+
+        // Editing the action body (bytes change) re-stales the marker even though task.json is untouched.
+        File.WriteAllText(plan.ActionPath("01-first"), "# edited action body after review\n");
+
+        (int exit, string output) = await InvokeAsync("validate", plan.PlanDir);
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, output);
+    }
 }

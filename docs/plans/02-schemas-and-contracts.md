@@ -1441,11 +1441,15 @@ consumers); `PlanDefinitionHash` = whole-plan behavior, keys the review marker (
 `PlanHash`'s ⊇ each `TaskDefinitionHash`'s — and the per-task file-set enumeration in step 2 is the
 **same primitive** `TaskDefinitionHash` uses, shared so the two cannot drift.
 
-> **Coordination note (#274 / #281):** §7.2 `TaskDefinitionHash` and the shared per-task enumeration
-> primitive land with **#274 Part A** (draft PR #281), which edits this same §7 region. Until #281
-> merges there is no §7.2 on `master`; read every step-2 / nesting reference to §7.2 as *"when #274
-> Part A lands"*. `PlanDefinitionHash` is defined to **stand alone** on current `master` and simply
-> re-uses that enumeration primitive once it exists — so this draft is reviewable independently of #281.
+> **Coordination note (#274 / #281):** This change (#260) introduces BOTH `PlanDefinitionHash` AND the
+> shared per-task file-set enumeration primitive it folds over — implemented as
+> `Guardrails.Core.Journal.TaskDefinitionFiles` (`Enumerate(TaskNode) → (label, absolutePath)` pairs:
+> `task.json` + resolved action + `guardrails/**` + `preflights/**`). §7.2 `TaskDefinitionHash` — a
+> separate per-task hash that **reuses that exact enumerator** — lands with **#274 Part A** (draft PR
+> #281), which edits this same §7 region. Until #281 merges there is no §7.2 on `master`; read every
+> step-2 / nesting reference to §7.2 as *"when #274 Part A lands"*. Because #260 already owns the shared
+> enumerator, #274 simply consumes it (dropping any own copy on rebase) — so the two hashes cannot drift
+> on "what defines a task," and this change is reviewable independently of #281.
 
 ---
 

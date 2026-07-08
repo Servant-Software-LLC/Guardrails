@@ -73,6 +73,21 @@ public sealed class ScriptPlanBuilder : IDisposable
     private static string ActionFileName => UsePowerShell ? "action.ps1" : "action.sh";
     private static string GuardrailFileName => UsePowerShell ? "01-check.ps1" : "01-check.sh";
 
+    /// <summary>Absolute path to a task's action file (OS-appropriate extension).</summary>
+    public string ActionPath(string taskId) => Path.Combine(_root, "tasks", taskId, ActionFileName);
+
+    /// <summary>Absolute path to a task's single (<c>01-check</c>) guardrail file.</summary>
+    public string GuardrailPath(string taskId) =>
+        Path.Combine(_root, "tasks", taskId, "guardrails", GuardrailFileName);
+
+    /// <summary>
+    /// Rewrite a task's guardrail body to a byte-different but still-passing script — the issue's
+    /// "weaken a guardrail after review" edit (e.g. dropping a real check for a bare <c>exit 0</c>).
+    /// Different bytes, so it must re-stale the review marker (issue #260).
+    /// </summary>
+    public void WeakenGuardrail(string taskId) =>
+        WriteScript(GuardrailPath(taskId), Body(succeeds: true, "weakened guardrail"));
+
     private static string Body(bool succeeds, string label)
     {
         if (UsePowerShell)
