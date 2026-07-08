@@ -119,6 +119,7 @@ decision (issue #275) and is deliberately NOT done here.
   "mergeOnSuccess": false,            // OPTIONAL; if true AND the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here)
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issue #195). Default true. Preserves a rolled-back max-turns/output-cap attempt to a git ref instead of pure discard; set false to disable
+  "autonomyPolicy": "prompt",         // OPTIONAL; the UNIFIED prompt/halt/auto knob at every decision boundary (§2.1). "prompt" (default) | "halt" | "auto". GR2031 if unrecognized. Subsumes the #274 Part C driftPolicy (folded in: halt→halt, reprocess→auto)
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
     ".ps1": ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{script}", "{args}"]
   },
@@ -216,6 +217,38 @@ decision (issue #275) and is deliberately NOT done here.
   Deliberately scoped to non-logic outcomes: a `guardrail-failed` rollback is **never** preserved by
   this flag (the code may be genuinely wrong, so silently carrying it forward is the wrong default).
   Set `false` to disable salvage entirely for a plan.
+
+### 2.1 `autonomyPolicy` — the unified autonomy knob + the shared decisions log (shared foundation, #254/#269/#274)
+
+`autonomyPolicy` is **one** enum governing **every** prompt/halt/auto decision boundary in the harness — a
+single shared field replacing the per-feature knobs that would otherwise multiply (the #274 Part C
+`driftPolicy`, the #269 overwatcher, the #254 inter-wave adjustment). It has three values:
+
+- **`prompt`** (default) — at a decision boundary, if stdin is an **interactive TTY** the harness presents
+  the details and asks for approval (apply on approval, halt on decline). If **non-interactive**
+  (`Console.IsInputRedirected`), it does **NOT** block — it **halts honestly** (exit 2) with the same
+  details for out-of-band review. (The `ResetCommand.Confirm`/`IsInputRedirected` discipline.)
+- **`halt`** — never prompt, never auto; always halt (exit 2) for out-of-band human action. Most conservative.
+- **`auto`** ("just handle everything") — apply the decision without prompting **wherever it is SAFE /
+  SANCTIONED**; an UNSAFE / UNSOUND action **still halts regardless of policy**.
+
+**Load-bearing invariant:** `auto` authorizes **SPEND / APPLICATION of a SAFE action, never an UNSOUND
+one.** An unsound boundary (e.g. a task-level fan-in-descendant drift rewind, §7.2) always halts regardless
+of policy. An unrecognized value is a validation error (**GR2031**). CLI `--autonomy <value>` overrides.
+
+**Folding in the #274 Part C `driftPolicy`.** Part C ships `driftPolicy: "halt" (default) | "reprocess"`.
+Under `autonomyPolicy`: `halt` → `halt`; `reprocess` → `auto`; the new middle value `prompt` becomes the
+unified default (changing Part C's effective default from `halt` to `prompt` — non-interactive `prompt`
+degrades to `halt`, so CI drift still halts). `--reprocess-drift` becomes an alias for `--autonomy auto`.
+Part C's GR2031 (invalid `driftPolicy`) and this field's GR2031 (invalid `autonomyPolicy`) are the **same
+check generalized** — one code, no collision.
+
+**The shared reporting surface — the decisions log.** Every autonomy-policy decision point is recorded in an
+append-only, `boundary`-discriminated `decisions[]` array in `run.json` (§7), and rendered **under the live
+task table** (via `IRunObserver`) and in the static log site (§12). The discriminator `boundary`
+distinguishes the decision-class: `drift` (#274, task or wave granularity), `wave` (#254 inter-wave / wave
+completion / wave drift), `task` (#269 overwatcher per-task attempts-vs-fix-vs-halt). #269's design of
+record reuses this policy + log verbatim.
 
 ## 3. `tasks/<id>/task.json`
 
@@ -360,6 +393,11 @@ The terminal whole-repo integration gate is the final soundness boundary, run on
 plan-branch HEAD after all other tasks succeed. It re-runs the run's **integration set** (§4.3) — typically
 the whole-repo build and the full test suite — as the whole-repo soundness boundary for FF chains and
 AI-resolved unions.
+
+**Multi-wave plans (§14):** each **wave** carries its own exit/terminal gate `<plan>/<wave>/guardrails/`, and
+**GR2028 applies per wave** (a multi-leaf/fan-in wave must carry ≥1 real integration re-run). The last
+wave's exit gate runs on the fully-merged HEAD and IS the whole-plan terminal boundary; the plan-root
+`<plan>/guardrails/` is optional-additive (Open Decision B).
 
 **The gate is now a first-class FOLDER, `<plan>/guardrails/`, NOT a task (design-of-record
 09-preflight-first-class).** The terminal checks live in the plan-level `<plan>/guardrails/` folder (§1),
@@ -908,6 +946,16 @@ single `git reset --hard preHead` (NOT `merge --abort`, which fails rc=128 on th
 path) — leaving state, git, and journal all UNCHANGED, never half-merged, and the user's checkout
 untouched.
 
+**Multi-wave plans (§14):** in a waved plan the `Guardrails-Task:` trailer value is the **wave-qualified
+id** `<waveDir>/<taskFolder>`. When a whole **wave** completes, the harness additionally writes an empty
+**wave-completion marker commit** on the plan branch carrying `Guardrails-Wave: <waveDir>` /
+`Guardrails-Wave-Hash: <WaveDefinitionHash>` / `Guardrails-Run: <runId>` — the wave-level analogue of this
+trailer triple, and the durable "this wave completed" record + Part C wave-scoped-rewind boundary (§14).
+Like the task-hash line it is an internal `--no-verify` commit and is backward-compatibly omitted when
+unavailable. The plan branch is **continuous across waves** — wave N+1's tasks fork from the plan-branch
+tip that already carries wave N's integrated work (that is what "wave N+1 runs against materialized
+upstream" means; that materialized state lives on the integration worktree, not the user's checkout).
+
 **Internal commits bypass user git hooks (#149).** Every commit the harness makes for its own
 bookkeeping — the segment integration commit (`git commit --no-verify --allow-empty …` in `Integrate`)
 and the non-FF union merge commit (`git commit --no-verify …` in `CommitStagedMerge`) — runs with
@@ -1040,6 +1088,13 @@ overwrite another task's captured `fileHashes` (or any derived key) by writing u
 task's id. `needsHuman` is **exempt** — it short-circuits the attempt (§9) *before* the merge
 step, so it is never subject to this rule.
 
+**Multi-wave plans (§14):** in a waved plan the "task's own id" is the **wave-qualified id**
+`<waveDir>/<taskFolder>` (e.g. `wave-02-provision/01-author-tests`), so two waves may each reuse `01-`
+numbering without their state namespaces colliding. The rule is otherwise unchanged — a bare, non-qualified
+key is rejected as foreign exactly like a `stableId`-keyed one (#164). The cross-wave state-read
+lint (GR2022) gains a wave-aware branch (§14): a read of an **earlier-wave** id is satisfied by the wave
+barrier, a **same-wave** id still needs a `dependsOn` ancestor, a **later-wave** id is an error.
+
 A fragment that exists but is not a parseable JSON object ⇒ the attempt **fails**
 (reason: "invalid state fragment") and is retried — better than silently dropping data.
 An **empty** object `{}` passes vacuously (no keys) and merges nothing. The fragment is
@@ -1146,7 +1201,29 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     // (never null noise) when the gate passed or no two writeScopes overlap. HEDGED, not a confident
     // assertion (§3.4, #272 Part 2): overlap is a WEAK signal, the failure detail is the primary one.
     "collisionHint": "Overlapping writeScopes exist between these task pairs — EXPECTED for a TDD stub+impl pair … the reported failure detail is the PRIMARY signal … '07-…' & '09-…' (shared: Launcher.cs)"
-  }
+  },
+
+  // OPTIONAL top-level sections — MULTI-WAVE plans (§14). Additive: a flat (non-waved) plan OMITS both.
+  // In a waved plan, `tasks{}` keys, the `Guardrails-Task:` trailer, and the state single-writer key are
+  // all WAVE-QUALIFIED (`<waveDir>/<taskFolder>`, §6.2/§5.3/§14).
+  "waves": {                            // per-wave completion + phase record (§14; keyed by wave dir, in strict order)
+    "wave-01-scaffold": {
+      "status": "completed",            // pending | running | completed | needs-human | blocked
+      "definitionHash": "sha256:…",     // WaveDefinitionHash at completion (§7.2) — folds the wave's task hashes + wave-gate folders
+      "entry":  { "status": "passed", "planHash": "sha256:…", "checks": [ /* like planPreflights */ ] },
+      "exit":   { "status": "passed", "planHash": "sha256:…", "failedChecks": [] }   // like planGuardrails
+    }
+  },
+  "decisions": [                        // §2.1 shared reporting surface — append-only autonomy-policy decision log
+    {
+      "boundary": "wave",               // task | wave | drift — the decision-class discriminator (extensible)
+      "policy": "prompt",               // the autonomyPolicy value in force at this boundary
+      "decision": "prompted-approved",  // halted | prompted-approved | prompted-declined | auto-applied
+      "at": "2026-07-08T14:03:11Z",
+      "subject": "wave-02-provision",   // the unit the decision concerned (task id / wave dir / drifted unit)
+      "headline": "…", "detail": "…"
+    }
+  ]
 }
 ```
 
@@ -1584,6 +1661,16 @@ consumers); `PlanDefinitionHash` = whole-plan behavior, keys the review marker (
 `TaskDefinitionHash` (§7.2) = one task's behavior. Their inputs nest — `PlanDefinitionHash`'s inputs ⊇
 `PlanHash`'s ⊇ each `TaskDefinitionHash`'s — and the per-task file-set enumeration in step 2 is the
 **same primitive** `TaskDefinitionHash` uses, shared so the two cannot drift.
+
+**Multi-wave plans (§14) — `WaveDefinitionHash`.** A waved plan adds a **per-wave** hash that sits between
+`PlanDefinitionHash` and `TaskDefinitionHash` in the nesting: `WaveDefinitionHash(wave)` folds the wave's
+constituent **`TaskDefinitionHash` values** (in wave-relative task-id order) plus the wave-level
+`<plan>/<wave>/preflights/**` and `guardrails/**` files. Folding the child hashes (not re-reading task
+files) guarantees the wave hash changes iff a task hash changes or a wave-gate file changes, so the levels
+cannot drift. It anchors wave-level drift (§7.2 wave-granularity `DefinitionDrift`) and is recorded in the
+`Guardrails-Wave-Hash:` trailer + the journal `waves[]` record. In a waved plan the review marker (§13) and
+its `PlanDefinitionHash` are **per-wave** (each wave subfolder carries its own), so an already-reviewed +
+run upstream wave never re-stales when a downstream wave is authored later.
 
 > **Coordination note (#260 / #274 Part A).** #260 introduced BOTH `PlanDefinitionHash` AND the shared
 > per-task file-set enumeration primitive it folds over — `Guardrails.Core.Journal.TaskDefinitionFiles`
@@ -2067,6 +2154,11 @@ again. §9.3's halt rule now fires only for its originally-intended scope — a 
 `flowchart TD`, using the **container model** (design-of-record 09-preflight-first-class),
 and writes two companion files:
 
+**Multi-wave plans (§14):** `guardrails graph <plan>/<wave>` renders each **wave** subfolder's diagram
+unchanged (its Full-Flight-Checks / Terminal-Gate brackets are the wave's entry/exit folders). An OPTIONAL
+plan-level **wave map** (`<plan>/diagram.md`) draws the strict-order chain `wave-01 → wave-02 → …` of
+wave-containers, each `click`-linking to its wave diagram (reuses the container/style machinery).
+
 - **`diagram.md`** — the GitHub render artifact: a provenance comment + fenced Mermaid
   block + structure-only caption. GitHub renders it inline.
 - **`diagram.html`** — the local-navigation companion: a self-contained pan/zoom/fullscreen
@@ -2319,6 +2411,12 @@ the `dependsOn` DAG from the (changed) plan — these are machine-owned and not 
 script, or adding a new one). So a regeneration must re-derive tasks while **preserving human
 guardrail edits**, discarding them only when the task they belong to no longer exists. The
 manifest is the deterministic foundation that makes this possible. (Tracked in issue #5.)
+
+**Multi-wave plans (§14):** `guardrails.baseline` is **per-wave** — each wave subfolder carries its own,
+captured over that wave's authored files. `guardrails lock`/`merge` (which already take a folder argument)
+operate on `<plan>/<wave>/`, so regenerating a downstream wave against a materialized upstream diffs against
+that wave's own frozen baseline and never disturbs an already-run upstream wave. `stableId` uniqueness
+(GR2010) and the regeneration merge are scoped per wave.
 
 ### 11.1 The baseline file
 
@@ -2707,3 +2805,172 @@ bodies. Re-running `/guardrails-review` (or `guardrails mark-reviewed`) clears i
 
 The marker is **written by the `/guardrails-review` skill**; the harness only reads it
 (`ReviewMarker.Read`/`Evaluate`), computes staleness, and surfaces the warning.
+
+**Multi-wave plans (§14):** the review marker + its `PlanDefinitionHash` are **per-wave** — each wave
+subfolder carries its own `<plan>/<wave>/state/guardrails-review.json`, keyed on that wave's own
+`PlanDefinitionHash` (computed over the wave's own authored files; the shared `guardrails.json` is
+**excluded** so an upstream wave's marker stays stable, Open Decision C). GR2025 is surfaced **JIT per wave**
+— checked before that wave runs — so an already-reviewed + run upstream wave never re-stales when a
+downstream wave is authored later.
+
+---
+
+## 14. Multi-wave plans (nested layout) — design of record `10-multi-wave-plans.md`, issue #254
+
+> **Status: PLANNED (design of record `10-multi-wave-plans.md`, in maintainer review).** The v1 skeleton is
+> specified here in present tense (the design-draft convention); the overwatcher-**driven** inter-wave
+> adjustment and bounded auto-heal are **v2 bets** (§14.9) that only need the **seam** defined in v1.
+
+**The recursion.** The system is `task ⊂ wave ⊂ plan`. A **wave** is a first-class **completion unit** —
+made of tasks plus its own entry/exit gates — that participates in the SAME resume + drift + reset model as
+a task, one level up. A **waved plan** is a **strictly-ordered** sequence of wave completion units sharing
+**one run config, one continuous plan branch, and one continuous journal**, with a **hard barrier** between
+waves. There is **no DAG of waves** — a total order (wave 1, then 2, …), driven by the wave folder's numeric
+prefix.
+
+### 14.1 Layout + detection
+
+A waved plan replaces the plan-root `tasks/` with ordered **wave subfolders**, each a mini-plan folder:
+
+```
+plan-name/
+├── guardrails.json                  # ONE shared run config (no per-wave config in v1)
+├── preflights/                      # OPTIONAL whole-run Full Flight Checks (once, before wave 1)
+├── guardrails/                      # OPTIONAL whole-plan Terminal Gate (once, after last wave) — additive
+├── state/  logs/  diagram.md        # ONE continuous journal/state/review + logs; OPTIONAL plan-level wave map
+└── wave-01-<slug>/                  # a wave = a mini-plan folder
+    ├── preflights/                  #   wave ENTRY gate ("prior wave's outputs materialized")
+    ├── guardrails/                  #   wave EXIT/terminal gate ("this wave's postconditions; releases next")
+    ├── guardrails.baseline          #   OPTIONAL, per-wave (§11)
+    ├── diagram.md / diagram.html
+    ├── state/guardrails-review.json  #  OPTIONAL, per-wave review marker (§13)
+    └── tasks/<NN-verb-object>/…      #  the wave's task DAG
+    wave-02-<slug>/ …
+```
+
+**Detection.** A plan folder is *waved* iff it has **no root `tasks/`** AND ≥1 immediate subdirectory
+matching **`^wave-([0-9]+)-[a-z0-9-]+$`**. The numeric group is **load-bearing** — it drives the strict
+total order (there is no `dependsOnWave` edge). Validation:
+- **GR2032** (error) — **mixed layout**: both a root `tasks/` and `wave-*/` subdirectories present.
+- **GR2033** (error) — **wave numbering**: a duplicate `NN`, or a non-conforming subdirectory sitting
+  alongside wave dirs. A numbering **gap** is a warning, not an error (Open Decision F).
+- **GR2034** (error) — a **cross-wave `dependsOn`** edge (a task edge naming a task in another wave);
+  cross-wave ordering is the barrier's job, so each wave's DAG is self-contained.
+
+### 14.2 Wave-qualified identity (the load-bearing delta)
+
+In a waved plan a task's canonical id is **`<waveDir>/<taskFolder>`** (e.g.
+`wave-02-provision/01-author-tests`). This is the value used in the journal `tasks{}` keys, the
+`Guardrails-Task:` trailer (§5.3), and the **state single-writer key** (§6.2) — so two waves may each reuse
+`01-` numbering without colliding. `dependsOn` names siblings **within the same wave** by plain folder name
+(cross-wave = GR2034). Cross-wave state reads use the wave-qualified key and are satisfied by the barrier
+(GR2022 wave branch, §6.2).
+
+### 14.3 The wave scope of the four-folder model
+
+Waves add a **middle scope** to the two-scope model (§3.3), reusing the same folder mechanism:
+
+| Scope | Preflight | Guardrail | Runs |
+|---|---|---|---|
+| Plan (whole run) | `<plan>/preflights/` (opt.) | `<plan>/guardrails/` (opt., additive) | preflights once before wave 1; guardrails once after last wave |
+| **Wave (per stage)** | `<plan>/<wave>/preflights/` = entry gate | `<plan>/<wave>/guardrails/` = exit/terminal gate | entry before the wave's DAG (against plan-branch HEAD = materialized prior wave); exit at wave end on merged HEAD-so-far |
+| Task | `tasks/<id>/preflights/` | `tasks/<id>/guardrails/` | per task |
+
+*Terminal-gate-of-wave-N == preflight-of-wave-(N+1)*: one boundary, two authored folders. **GR2028 applies
+per wave** (a multi-leaf/fan-in wave's exit gate must carry ≥1 real integration re-run). The **last wave's
+exit gate runs on the fully-merged HEAD** and is the whole-plan terminal soundness boundary; a plan-root
+`<plan>/guardrails/` is **optional-additive** (Open Decision B). `catches:`/GR2027 and the one shared
+parser apply to all six folder instances.
+
+### 14.4 Execution — wave loop + hard barrier (the scheduler delta)
+
+A wave is a partition of the task DAG with a hard barrier. The delta is a **thin wave loop above the
+existing Scheduler** (whose internals — workers, `maxParallelism`, retry, needs-human/blocked, per-task
+resume pre-pass, integration/settle — are unchanged). Per wave, in strict order:
+
+1. skip if already complete (§14.6);
+2. **[between-wave step]** v1: if the next wave is absent/empty/unreviewed → **honest halt** (exit 2) with
+   JIT-breakdown instructions pointed at the integration worktree (§14.9 v2 plugs the overwatcher in here);
+3. run the wave **entry preflight** (the §7 plan-preflight phase, scoped to the wave; skip-once-per-hash);
+4. build the wave's `DependencyGraph` over its own tasks and drain it on the **continuous plan branch** via
+   the existing Scheduler;
+5. **HARD BARRIER** — full drain; any needs-human/blocked halts the run at this wave (later waves never start);
+6. run the wave **exit/terminal gate** (the §3.3 plan-guardrail phase, scoped to the wave); fail → halt;
+7. write the wave-completion marker commit (§14.5) + journal the wave complete;
+8. next wave.
+
+The `DependencyGraph`'s existing topological-level accessor is renamed **`Waves()` → `Tiers()`** (a wave
+*contains* tiers) to free the word "wave" for this plan-stage concept.
+
+### 14.5 The recursive completion-unit model — durable wave completion + `WaveDefinitionHash`
+
+**Wave-completed predicate** = every task in the wave has a green durable record (journal `succeeded` +
+`Guardrails-Task:` trailer) AND the wave's exit-gate marker is `passed` for the wave's current hash.
+
+**Durable anchor** = an empty **`Guardrails-Wave:` marker commit** on the plan branch (§5.3) carrying
+`Guardrails-Wave: <waveDir>` / `Guardrails-Wave-Hash: <WaveDefinitionHash>` / `Guardrails-Run: <runId>` —
+the wave-level analogue of the task integration commit's trailer triple; survives `run.json` loss and is the
+Part C wave-scoped-rewind boundary. (Open Decision E: derived-only is the lighter alternative.)
+
+**`WaveDefinitionHash`** (§7.2/§7.3 nesting) folds each constituent task's **`TaskDefinitionHash`** (in
+wave-relative task-id order) plus the wave-level `preflights/**` and `guardrails/**` files, `sha256:`-prefixed,
+same discipline as `PlanHash`. Nesting: `PlanDefinitionHash` ⊇ `WaveDefinitionHash` ⊇ `TaskDefinitionHash`.
+
+### 14.6 Cross-wave resume
+
+One journal, one continuous plan branch. Iterate waves in order; a wave whose tasks are all `succeeded` AND
+whose exit-gate marker is `passed` for the current wave hash **skips entirely**; the first wave failing that
+test is the **resume-target** (run entry preflight skip-once, resume its DAG via the existing per-task
+pre-pass, run its exit gate), then continue. Per-wave phase markers (`waves[].entry` / `waves[].exit`, §7)
+mirror `planPreflights` (skip-once-per-hash — many entry checks are negative baselines true only at the
+wave's start) and `planGuardrails` (always re-evaluate the current HEAD) exactly.
+
+**Wave-drift resume branch.** For each wave about to be skip-as-complete, recompute `WaveDefinitionHash` and
+compare to the recorded one (journal or `Guardrails-Wave-Hash:` trailer): absent (upgrade) → assume-unchanged
+→ skip; match → durable skip; **mismatch on a COMPLETED wave → wave-level drift → halt/resolve per
+`autonomyPolicy` (§2.1)**, reported as a wave-granularity `DefinitionDrift` entry (wave id, old→new hash,
+which constituent tasks drifted, which wave-gate files changed, the downstream waves that will re-run, and
+the remediation paths).
+
+### 14.7 Drift vs forward-adjustment — the `isCompleted` predicate
+
+Drift is defined **strictly over COMPLETED units**. One predicate governs both levels:
+
+| Event | Drift? | Governed by |
+|---|---|---|
+| Edit a **pending** task | No (authoring) | — |
+| Edit a **completed** task | Yes → halt/resolve | `autonomyPolicy` (§7.2) |
+| Adjust an **unrun (all-pending)** future wave | No (sanctioned forward adjustment) | `autonomyPolicy` |
+| A **completed wave**'s definition changed | Yes → halt/resolve | `autonomyPolicy` |
+
+> **Drift ⟺ the changed unit was already COMPLETED.** Forward adjustment only ever touches all-`pending`
+> units → never drift; a change to a completed unit → always drift.
+
+This makes a spurious halt on a legitimate forward adjustment impossible (it changes no completed unit) and
+silent reuse of a drifted completed wave impossible (any completed-unit change trips its drift check). A
+**partially-run** wave is not wave-completed (wave-drift N/A), but its individual green tasks remain
+task-drift-protected and its pending tasks are freely editable. The overwatcher's write-authority (v2) is
+restricted to fully-`pending` future waves.
+
+### 14.8 Reset / `--fresh` at wave granularity
+
+- **`--fresh`** (Part B) tears down the whole plan branch — all waves, all `Guardrails-Wave:`/`Guardrails-Task:`
+  commits, the integration worktree — and re-seeds.
+- **`guardrails reset <plan> <wave>/<taskId>`** — task-scoped rewind: that task + its in-wave descendants +
+  all later waves (they built on it).
+- **`guardrails reset <plan> <wave>`** — wave-scoped rewind: every task in the wave + rewind the plan branch
+  to the predecessor wave's marker (user HEAD for wave 1) → re-runs that wave + all downstream waves.
+- **Always-safe-suffix property:** because waves are a strict total order with **no cross-wave fan-in**, a
+  wave-scoped rewind is *always* a safe trailing suffix — the fan-in-descendant unsoundness that forces
+  task-level Part C to sometimes halt cannot arise across waves, so wave-granularity `auto` resolve is
+  unconditionally sound.
+
+### 14.9 Phasing — v1 skeleton vs v2 bets
+
+**v1 (skeleton):** §14.1–§14.8 + the shared autonomy policy + decisions log (§2.1) exercised by wave-level
+drift and the between-wave JIT checkpoint (`prompt`/`halt` paths); per-wave diagrams; per-wave task table
+(an `IRunObserver` `WaveStarted`/`WaveCompleted` concern — no new contract). Between waves = a plain human
+JIT-breakdown/review checkpoint (proceed if the next wave is authored+reviewed, else honest halt). **v2 bets
+(deferred):** overwatcher-**driven** intelligent inter-wave adjustment (`auto`/`prompt` authoring of a
+future wave, gated by `autonomyPolicy`, re-staling that wave's review marker) and **bounded auto-heal** —
+both plug into the v1 between-wave seam and reuse §2.1 verbatim; **gated on #269's own design of record**.

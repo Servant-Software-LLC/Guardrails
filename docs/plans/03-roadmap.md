@@ -59,6 +59,15 @@ Each slots into an existing v1 seam — none invalidates the architecture:
    (report + honest-halt), never silently scaffolded. *Seam: `$e2eStack` detection in
    `plan-breakdown` Step 0 + a new `interaction-flow` guardrail archetype +
    `references/e2e/<driver>.md`.*
+6. **Overwatcher-driven self-healing + inter-wave adjustment** (#269, #254 v2) — an AI
+   run supervisor that, at a decision boundary, grants adjusted attempts / diagnoses a
+   doomed task / applies a bounded authoring fix (never softening a deterministic
+   guardrail's verdict), AND — between waves of a multi-wave plan — proposes intelligent
+   adjustments to the next (all-pending) wave. Gated by the shared `autonomyPolicy`
+   (prompt/halt/auto, SSOT §2.1) and reported in the shared `boundary`-discriminated
+   decisions log. **#269 needs its own design of record first.** *Seam: the multi-wave
+   skeleton's between-wave decision point + the shared autonomy policy + decisions log,
+   all defined by the #254 v1 skeleton (below).*
 
 ## Seeded risk register (uber-report carries these every run)
 
@@ -83,3 +92,16 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   destructive plan-branch rewind primitive, exposed as manual scoped `reset <folder> <taskId>` AND opt-in
   run-time auto-resolve of the safe (trailing-suffix) set: DEFERRED to its own design→draft-PR review**
   (destructive/load-bearing — auto-invalidating a fan-in descendant is unsound, which is why Part A halts).
+
+- **#254 multi-wave plans — v1 wave-execution SKELETON** (design of record `10-multi-wave-plans.md`). Nested
+  `<plan>/<wave>/tasks/…` layout with strict-order wave execution: a thin wave loop + hard barrier above the
+  existing Scheduler; per-wave entry/exit gates (the four-folder model gains a middle **wave scope**);
+  wave-qualified task identity (journal key / `Guardrails-Task:` trailer / state single-writer key);
+  a continuous plan branch + cross-wave resume; the recursive **`task ⊂ wave ⊂ plan`** completion-unit model
+  — durable wave completion via a `Guardrails-Wave:` marker commit + a `WaveDefinitionHash` that nests
+  between `PlanDefinitionHash` and `TaskDefinitionHash`, wave-level drift, and wave-scoped `reset`
+  (always a safe suffix, since strict order forbids cross-wave fan-in). Between waves in v1 = a plain human
+  JIT-breakdown/review checkpoint (honest halt if the next wave isn't ready). Ships the **shared foundation**
+  the overwatcher (bet #6) reuses: the unified `autonomyPolicy` (SSOT §2.1) + the `boundary`-discriminated
+  decisions log. **Auto-heal + overwatcher-driven inter-wave adjustment are v2 bets (bet #6), not v1** — v1
+  only defines the seam.
