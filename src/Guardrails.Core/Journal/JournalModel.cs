@@ -114,6 +114,18 @@ public sealed record TaskJournalEntry
     /// <summary>The merge sequence assigned when this task's fragment merged; null until then.</summary>
     public long? MergeSequence { get; init; }
 
+    /// <summary>
+    /// The task's <c>TaskDefinitionHash</c> (SSOT §7.2, issue #274 Part A) stamped at its most recent
+    /// SUCCESSFUL settle: a <c>sha256:</c>-prefixed hash of <c>task.json</c> + the resolved action file +
+    /// <c>guardrails/**</c> + <c>preflights/**</c>. On resume the harness recomputes the current hash and,
+    /// if it no longer matches this recorded one, halts with a definition-drift report instead of silently
+    /// reusing the stale cached segment. OPTIONAL and additive — a journal entry predating this field OMITS
+    /// it (serialized only when non-null via <see cref="JsonIgnoreAttribute"/>); an absent recorded hash is
+    /// treated as "unknown — assume unchanged" on resume, so an upgrade never forces a re-run storm.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DefinitionHash { get; init; }
+
     /// <summary>Attempt records in attempt order (1-based).</summary>
     public IReadOnlyList<AttemptRecord> Attempts { get; init; } = [];
 }

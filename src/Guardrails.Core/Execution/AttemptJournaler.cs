@@ -82,7 +82,10 @@ internal sealed class AttemptJournaler
             LogDir = relativeLogDir,
             Provenance = provenance
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence);
+        // §7.2 (#274 Part A): stamp the task's definition hash on the serial-mode success settle, so a
+        // later resume compares the current definition against it and halts on drift instead of skipping.
+        _journal.RecordAttempt(
+            task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, TaskDefinitionHash.Compute(task));
 
         // Always show a cost field so the summary column never reads as a reporting gap (issue #58).
         // Key the marker off the ACTION KIND, not cost-nullness: a succeeded PROMPT action can

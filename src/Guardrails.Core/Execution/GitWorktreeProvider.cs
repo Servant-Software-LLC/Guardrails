@@ -151,7 +151,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // (e.g. GitGuardian's pre-commit, which fired offline and crashed the run in the incident)
         // must NOT gate it. User hooks run only on the user-facing merge (MergePlanBranchIntoUserBranch).
         GitIn(segment.WorktreePath, "add", "-A");
-        string commitMsg = $"Guardrails-Task: {taskId}\nGuardrails-Run: {integ.RunId}";
+        string commitMsg = TrailerMessage(taskId, integ.RunId, segment.DefinitionHash);
         GitIn(segment.WorktreePath, "commit", "--no-verify", "--allow-empty", "-m", commitMsg);
 
         // C2: capture the segment's commit sha so a downstream fan-out ForkFromTip forks off the
@@ -191,15 +191,35 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// settled task leaves a first-parent trailer on the plan branch exactly like the FF path.
     /// Called by the Scheduler only after the union re-verify passes. Clears the rollback anchor.
     /// </remarks>
-    public string CommitStagedMerge(IntegrationHandle integ, string taskId, CancellationToken ct)
+    public string CommitStagedMerge(
+        IntegrationHandle integ, string taskId, CancellationToken ct, string? definitionHash = null)
     {
-        string commitMsg = $"Guardrails-Task: {taskId}\nGuardrails-Run: {integ.RunId}";
+        string commitMsg = TrailerMessage(taskId, integ.RunId, definitionHash);
         // --no-verify (issue #149): the union merge commit in the harness-owned integration worktree
         // is an INTERNAL plumbing commit (machine bookkeeping on the plan branch), not the user's
         // deliverable — user git hooks must NOT gate it. They run only on the user-facing merge.
         GitIn(integ.IntegrationWorktreePath, "commit", "--no-verify", "-m", commitMsg);
         _preMergeIntegHead = "";
         return GitIn(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
+    }
+
+    /// <summary>
+    /// The integration commit message carrying the parseable resume trailers
+    /// (<c>Guardrails-Task:</c> / <c>Guardrails-Run:</c>), plus the OPTIONAL third
+    /// <c>Guardrails-Task-Hash:</c> line (issue #274 Part A, §7.2) when
+    /// <paramref name="definitionHash"/> is available — written identically on the FF'd segment commit
+    /// and the non-FF merge commit, omitted when null so old commits and fake providers stay
+    /// backward-compatible.
+    /// </summary>
+    private static string TrailerMessage(string taskId, string runId, string? definitionHash)
+    {
+        string msg = $"Guardrails-Task: {taskId}\nGuardrails-Run: {runId}";
+        if (!string.IsNullOrEmpty(definitionHash))
+        {
+            msg += $"\nGuardrails-Task-Hash: {definitionHash}";
+        }
+
+        return msg;
     }
 
     /// <inheritdoc />
@@ -481,55 +501,136 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// integrations land on it), so a task already integrated there must not be re-run after a
     /// journal loss/reset — even though a resumed run carries a fresh runId. Read-only.
     /// </remarks>
-    public IReadOnlySet<string> ReconcileFromPlanBranch(IntegrationHandle integ) =>
+    public IReadOnlyDictionary<string, PlanBranchTaskRecord> ReconcileFromPlanBranch(IntegrationHandle integ) =>
         CollectTrailerTasks(integ.PlanBranchName, runIdFilter: null);
 
     /// <summary>
     /// W-1 protection (b): like <see cref="ReconcileFromPlanBranch(IntegrationHandle)"/> but counts
     /// only commits whose <c>Guardrails-Run:</c> matches <paramref name="runId"/> — used where a
-    /// single run's own integrations must be isolated from earlier runs' trailers.
+    /// single run's own integrations must be isolated from earlier runs' trailers. Returns the task-id
+    /// SET (the drift-report enrichment is irrelevant here).
     /// </summary>
     public IReadOnlySet<string> ReconcileFromPlanBranch(IntegrationHandle integ, string runId) =>
-        CollectTrailerTasks(integ.PlanBranchName, runId);
+        CollectTrailerTasks(integ.PlanBranchName, runId).Keys.ToHashSet(StringComparer.Ordinal);
 
-    /// <summary>
-    /// Walk <paramref name="planBranch"/>'s first-parent history and collect task ids from
-    /// <c>Guardrails-Task:</c> trailers. When <paramref name="runIdFilter"/> is non-null, only
-    /// commits whose <c>Guardrails-Run:</c> matches are counted; when null, every trailer counts.
-    /// </summary>
-    private IReadOnlySet<string> CollectTrailerTasks(string planBranch, string? runIdFilter)
+    /// <inheritdoc />
+    /// <remarks>
+    /// Recover the file's bytes at <paramref name="commitSha"/> via <c>git show &lt;sha&gt;:&lt;rel&gt;</c>
+    /// (issue #274 Part A). Returns null when the path is not tracked at that commit (a new file, or the
+    /// plan folder was not committed there) or the commit is unresolvable — the drift report's Tier-2
+    /// enrichment then degrades gracefully for that file while Tier 1 (the aggregate hash) stands.
+    /// </remarks>
+    public string? ReadFileAtCommit(string commitSha, string absolutePath)
     {
-        string log = Git("log", "--first-parent", "--format=%B", planBranch);
-        var settled = new HashSet<string>(StringComparer.Ordinal);
-        string? currentTask = null;
-        string? currentRun = null;
-
-        void Flush()
+        if (string.IsNullOrEmpty(commitSha))
         {
-            if (currentTask != null && (runIdFilter is null || currentRun == runIdFilter))
-                settled.Add(currentTask);
-            currentTask = null;
-            currentRun = null;
+            return null;
         }
 
-        foreach (string rawLine in log.Split('\n'))
+        if (RepoRelativePath(absolutePath) is not { } rel)
         {
-            string line = rawLine.Trim();
+            return null;
+        }
 
-            if (string.IsNullOrEmpty(line))
+        var (stdout, exit) = TryGitIn(_repoPath, "show", $"{commitSha}:{rel}");
+        return exit == 0 ? stdout : null;
+    }
+
+    /// <inheritdoc />
+    public string? RepoRelativePath(string absolutePath)
+    {
+        string rel = Path.GetRelativePath(_repoPath, absolutePath).Replace('\\', '/');
+        // A path outside the repo root ("../…") or an unrelated rooted path cannot be addressed as
+        // <commit>:<rel>; treat it as unrecoverable rather than handing git a nonsense spec.
+        return rel.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(rel) ? null : rel;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <c>git ls-tree -r --name-only &lt;commit&gt; -- &lt;relDir&gt;</c> lists the files tracked under the
+    /// task folder at that commit; converting each repo-relative result back to an absolute path lets the
+    /// drift reporter fold them into the union with the current on-disk set, so a REMOVED file is still
+    /// named (issue #274 Part A).
+    /// </remarks>
+    public IReadOnlyList<string> ListFilesAtCommit(string commitSha, string absoluteDir)
+    {
+        if (string.IsNullOrEmpty(commitSha) || RepoRelativePath(absoluteDir) is not { } relDir)
+        {
+            return [];
+        }
+
+        var (stdout, exit) = TryGitIn(_repoPath, "ls-tree", "-r", "--name-only", commitSha, "--", relDir);
+        if (exit != 0)
+        {
+            return [];
+        }
+
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0)
+            .Select(rel => Path.GetFullPath(Path.Combine(_repoPath, rel)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Walk <paramref name="planBranch"/>'s first-parent history and collect, per task id, its
+    /// <c>Guardrails-Task:</c> trailer commit sha and <c>Guardrails-Task-Hash:</c> (issue #274 Part A).
+    /// The MOST RECENT integration per task wins (git log is newest-first, so the first occurrence is
+    /// kept). When <paramref name="runIdFilter"/> is non-null, only commits whose <c>Guardrails-Run:</c>
+    /// matches are counted; when null, every trailer counts. Each commit record is framed by a record
+    /// separator with its sha, then its raw body — control chars git never emits in a commit message —
+    /// so a body's own blank lines can't split one commit across two records.
+    /// </summary>
+    private IReadOnlyDictionary<string, PlanBranchTaskRecord> CollectTrailerTasks(
+        string planBranch, string? runIdFilter)
+    {
+        // Frame each commit record with the shared HashText separators (control chars git never
+        // emits in a commit message), so a body's own blank lines can't split one commit's
+        // trailers across two records the way the prior blank-line-delimited %B parse could.
+        char recordSep = Hashing.HashText.RecordSeparator;
+        char unitSep = Hashing.HashText.UnitSeparator;
+        string log = Git("log", "--first-parent", $"--format={recordSep}%H{unitSep}%B", planBranch);
+
+        var settled = new Dictionary<string, PlanBranchTaskRecord>(StringComparer.Ordinal);
+
+        foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int split = record.IndexOf(unitSep);
+            if (split < 0)
             {
-                Flush();
                 continue;
             }
 
-            if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
-                currentTask = line["Guardrails-Task: ".Length..];
-            else if (line.StartsWith("Guardrails-Run: ", StringComparison.Ordinal))
-                currentRun = line["Guardrails-Run: ".Length..];
+            string commitSha = record[..split].Trim();
+            string body = record[(split + 1)..];
+
+            string? currentTask = null;
+            string? currentRun = null;
+            string? currentHash = null;
+
+            foreach (string rawLine in body.Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
+                    currentTask = line["Guardrails-Task: ".Length..];
+                else if (line.StartsWith("Guardrails-Run: ", StringComparison.Ordinal))
+                    currentRun = line["Guardrails-Run: ".Length..];
+                else if (line.StartsWith("Guardrails-Task-Hash: ", StringComparison.Ordinal))
+                    currentHash = line["Guardrails-Task-Hash: ".Length..];
+            }
+
+            if (currentTask is null || (runIdFilter is not null && currentRun != runIdFilter))
+            {
+                continue;
+            }
+
+            // Newest-first: keep the FIRST record seen for a task id (its most recent integration).
+            if (!settled.ContainsKey(currentTask))
+            {
+                settled[currentTask] = new PlanBranchTaskRecord(commitSha, currentHash);
+            }
         }
 
-        // Flush any trailing block (log output may not end with a blank line).
-        Flush();
         return settled;
     }
 

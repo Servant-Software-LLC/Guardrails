@@ -146,6 +146,93 @@ public sealed record RunReport
 
     /// <summary>True when the run was aborted by an infrastructure fault (see <see cref="Abort"/>).</summary>
     public bool Aborted => Abort is not null;
+
+    /// <summary>
+    /// Non-null when the resume pre-pass HALTED the run because at least one already-<c>succeeded</c>
+    /// task's current <c>TaskDefinitionHash</c> no longer matches the hash recorded at its last
+    /// successful settle (SSOT §7.2, issue #274 Part A). The harness scheduled NOTHING — it neither
+    /// silently reused the stale cached segment nor silently re-ran the changed task. A pre-DAG halt, a
+    /// sibling of <see cref="Abort"/>; the CLI renders it where <see cref="Abort"/> renders and exits
+    /// <b>2</b> (actionable/needs-human, matching planPreflights/planGuardrails), NOT 1. When set, treat
+    /// the run as halted regardless of per-task outcomes.
+    /// </summary>
+    public DefinitionDriftReport? DefinitionDrift { get; init; }
+
+    /// <summary>True when the run halted on a definition-drift (see <see cref="DefinitionDrift"/>).</summary>
+    public bool HasDefinitionDrift => DefinitionDrift is not null;
+}
+
+/// <summary>
+/// The issue #274 Part A definition-drift halt (SSOT §7.2): every already-succeeded task whose
+/// definition changed since it last succeeded, reported for the human's decision rather than silently
+/// re-executed (auto-invalidating a fan-in descendant would fork it from a base still carrying its own
+/// stale commit — the exact bug one level down — so auto-invalidation is unsound; that soundness limit
+/// is why Part A halts).
+/// </summary>
+public sealed record DefinitionDriftReport
+{
+    /// <summary>The drifted tasks, in plan order.</summary>
+    public required IReadOnlyList<DriftedTask> Tasks { get; init; }
+}
+
+/// <summary>One task whose <c>TaskDefinitionHash</c> drifted since its last successful settle (§7.2).</summary>
+public sealed record DriftedTask
+{
+    /// <summary>The drifted task's id.</summary>
+    public required string TaskId { get; init; }
+
+    /// <summary>The <c>sha256:</c>-prefixed definition hash recorded at the last successful settle.</summary>
+    public required string OldHash { get; init; }
+
+    /// <summary>The <c>sha256:</c>-prefixed definition hash of the current on-disk definition.</summary>
+    public required string NewHash { get; init; }
+
+    /// <summary>
+    /// The plan-branch commit bearing this task's <c>Guardrails-Task-Hash:</c> trailer (§5.3) — the
+    /// anchor the Tier-2 per-file breakdown recovers old bytes from. Null when unavailable (serial mode,
+    /// a journal-only success with no plan-branch commit) — Tier 2 then degrades, Tier 1 stands.
+    /// </summary>
+    public string? OldCommit { get; init; }
+
+    /// <summary>
+    /// The Tier-2 per-file breakdown of which definition files drifted (best-effort). Empty when the
+    /// old bytes were not recoverable from <see cref="OldCommit"/> — see <see cref="Note"/>.
+    /// </summary>
+    public IReadOnlyList<ChangedDefinitionFile> ChangedFiles { get; init; } = [];
+
+    /// <summary>The reference command <c>git diff &lt;oldCommit&gt;..HEAD -- &lt;task paths&gt;</c> for full content.</summary>
+    public required string DiffCommand { get; init; }
+
+    /// <summary>
+    /// The task's transitive-descendant set (<c>DependencyGraph.TransitiveDependentsOf</c>, full DAG
+    /// closure) — a changed producer can change a consumer's inputs. Reported for the human's decision,
+    /// not re-executed.
+    /// </summary>
+    public IReadOnlyList<string> Dependents { get; init; } = [];
+
+    /// <summary>
+    /// A Tier-2 degradation note when the prior file bytes were not recoverable from git (e.g. the plan
+    /// folder was uncommitted at <see cref="OldCommit"/>, or there is no plan-branch commit at all);
+    /// null when the full per-file breakdown is present. Tier 1 (the aggregate hash drift) never depends
+    /// on git recovery.
+    /// </summary>
+    public string? Note { get; init; }
+}
+
+/// <summary>One drifted definition file in a <see cref="DriftedTask"/>'s Tier-2 breakdown (§7.2).</summary>
+public sealed record ChangedDefinitionFile
+{
+    /// <summary>The file's path relative to the task folder (e.g. <c>guardrails/03-covers.ps1</c>, <c>action.prompt.md</c>).</summary>
+    public required string Path { get; init; }
+
+    /// <summary>How it drifted: <c>added</c>, <c>removed</c>, or <c>modified</c>.</summary>
+    public required string Change { get; init; }
+
+    /// <summary>Lines added (approximate line-multiset delta); null when not a modification/addition.</summary>
+    public int? Added { get; init; }
+
+    /// <summary>Lines removed (approximate line-multiset delta); null when not a modification/removal.</summary>
+    public int? Removed { get; init; }
 }
 
 /// <summary>

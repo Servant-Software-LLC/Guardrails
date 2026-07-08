@@ -491,7 +491,10 @@ public sealed class TaskExecutor : ITaskExecutor
             Outcome = AttemptOutcome.Succeeded,
             LogDir = relativeLogDir
         };
-        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.Succeeded);
+        // §7.2 (#274 Part A): a revalidate that flips the task to succeeded also stamps its definition
+        // hash, so a subsequent resume detects a later definition edit rather than skipping stale.
+        _journal.RecordAttempt(
+            task.Id, record, JournalTaskStatus.Succeeded, definitionHash: TaskDefinitionHash.Compute(task));
 
         var ok = new TaskResult
         {

@@ -304,6 +304,16 @@ public static class RunCommand
         string planDirectory = plan.PlanDirectory;
         string logsRoot = Path.Combine(planDirectory, "logs", runId);
 
+        // Issue #274 Part A — definition-drift halt (§7.2). A pre-DAG halt: nothing ran and no logs were
+        // written, so render ONLY the itemized drift block and exit 2 (actionable/needs-human, matching
+        // planPreflights/planGuardrails — NOT 1), skipping the normal per-task summary + logs pointer that
+        // would otherwise list every task as a misleading "not started".
+        if (report.DefinitionDrift is { } drift)
+        {
+            PrintDefinitionDrift(drift, planDirectory, io);
+            return ExitCodes.TaskFailed;
+        }
+
         // Write the DURABLE final site (issue #141 item 2): all-static links, NO meta-refresh, every
         // task page — so the artifact left on disk is complete and self-contained (identical to
         // `logs --export`). The during-run writer left a refreshing index with live links; this
@@ -434,6 +444,92 @@ public static class RunCommand
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Render the definition-drift halt (issue #274 Part A, SSOT §7.2): for each drifted task, its
+    /// old → new short definition hash, the best-effort per-file breakdown (added/removed/modified + an
+    /// approximate ± line count, or the Tier-2 "not recoverable" note), the reference <c>git diff</c>
+    /// command for full content, and its transitive-descendant set — followed by the two remediation
+    /// paths named in §7.2. The changed task(s) are reported for the human's decision, never silently
+    /// re-executed.
+    /// </summary>
+    private static void PrintDefinitionDrift(
+        Core.Execution.DefinitionDriftReport drift, string planDirectory, IConsoleIo io)
+    {
+        TextWriter output = io.Out;
+        string folder = Path.GetFileName(
+            planDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+        output.WriteLine();
+        output.WriteLine("DEFINITION DRIFT — halting; nothing was scheduled (SSOT §7.2, issue #274).");
+        output.WriteLine("One or more already-succeeded tasks have a definition (task.json / action / guardrails /");
+        output.WriteLine("preflights) that changed since they last succeeded. The harness will NOT silently reuse the");
+        output.WriteLine("stale cached result, nor silently re-run the changed task — you decide.");
+
+        foreach (Core.Execution.DriftedTask t in drift.Tasks)
+        {
+            output.WriteLine();
+            output.WriteLine($"  {t.TaskId}");
+            output.WriteLine($"    definition hash: {ShortHash(t.OldHash)} -> {ShortHash(t.NewHash)}");
+
+            if (t.ChangedFiles.Count > 0)
+            {
+                output.WriteLine("    changed files:");
+                foreach (Core.Execution.ChangedDefinitionFile f in t.ChangedFiles)
+                {
+                    output.WriteLine($"      - {f.Path}  {f.Change}{FormatDelta(f)}");
+                }
+            }
+
+            if (t.Note is { Length: > 0 } note)
+            {
+                output.WriteLine($"    note: {note}");
+            }
+
+            output.WriteLine($"    full diff: {t.DiffCommand}");
+
+            if (t.Dependents.Count > 0)
+            {
+                output.WriteLine($"    dependents also affected: {string.Join(", ", t.Dependents)}");
+            }
+        }
+
+        output.WriteLine();
+        output.WriteLine("Remediation:");
+        output.WriteLine($"  guardrails reset {folder} -y             — full correct rebuild (works today)");
+        output.WriteLine($"  guardrails reset {folder} <taskId>...    — scoped reset of only the drifted task(s)");
+        output.WriteLine("                                             + descendants (Part C — not yet shipped)");
+    }
+
+    /// <summary>Shorten a <c>sha256:</c>-prefixed hash for display (e.g. <c>sha256:a6bee1…</c>).</summary>
+    private static string ShortHash(string hash)
+    {
+        const string prefix = "sha256:";
+        if (hash.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            string hex = hash[prefix.Length..];
+            return prefix + (hex.Length <= 6 ? hex : hex[..6] + "…");
+        }
+
+        return hash.Length <= 12 ? hash : hash[..12] + "…";
+    }
+
+    /// <summary>Render a changed file's approximate ± line delta (e.g. <c> (+6 -2)</c>); empty when none.</summary>
+    private static string FormatDelta(Core.Execution.ChangedDefinitionFile f)
+    {
+        var parts = new List<string>();
+        if (f.Added is > 0)
+        {
+            parts.Add($"+{f.Added}");
+        }
+
+        if (f.Removed is > 0)
+        {
+            parts.Add($"-{f.Removed}");
+        }
+
+        return parts.Count == 0 ? "" : $" ({string.Join(" ", parts)})";
     }
 
     /// <summary>
