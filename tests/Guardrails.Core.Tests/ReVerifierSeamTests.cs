@@ -281,6 +281,78 @@ public sealed class ReVerifierSeamTests : IDisposable
         }
     }
 
+    // =========================================================================
+    // #263: a bash-invoked (.sh) guardrail must receive GUARDRAILS_WORKSPACE without any backslash —
+    // on Windows the harness converts the native backslash absolute path to forward-slash form before
+    // launch (WindowsBashPaths, gated in ScriptUnitRunner); off Windows the path is already
+    // forward-slash native, so the assertion holds unconditionally and this test genuinely runs
+    // cross-platform through the REAL production path (GuardrailReVerifier → ScriptUnitRunner →
+    // InterpreterMap → ProcessRunner) — the exact seam the issue's bash-guardrail bug lived in.
+    // =========================================================================
+
+    [Fact]
+    public async Task ShGuardrail_ReceivesWorkspaceWithoutBackslashes()
+    {
+        const string noBackslashCheck =
+            """
+            #!/usr/bin/env bash
+            if printf '%s' "$GUARDRAILS_WORKSPACE" | grep -qF '\'; then
+                echo "backslash found in GUARDRAILS_WORKSPACE: $GUARDRAILS_WORKSPACE"
+                exit 1
+            fi
+            exit 0
+            """;
+
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition g = new()
+        {
+            Name = "01-no-backslash",
+            Path = Path.Combine(_tempRoot, "01-no-backslash.sh"),
+            Kind = ActionKind.Script
+        };
+        File.WriteAllText(g.Path, noBackslashCheck);
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot, [g], TestContext.Current.CancellationToken);
+
+        Assert.True(result.Passed,
+            "GUARDRAILS_WORKSPACE handed to a bash-invoked (.sh) guardrail must never contain a " +
+            "backslash (#263) — a guardrail that interpolates it into an escape-sensitive context " +
+            "(node -e, a regex, sed/awk) would otherwise have the path silently corrupted. " +
+            string.Join("; ", result.FailedGuardrails.Select(f => $"{f.Name}: {f.Reason}")));
+    }
+
+    [Fact]
+    public async Task Ps1Guardrail_OnWindows_KeepsNativeBackslashWorkspace()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return; // A native-backslash assertion is only meaningful on Windows.
+        }
+
+        // #263 negative control: the forward-slash conversion is scoped to BASH invocations only — a
+        // PowerShell (.ps1) guardrail, which is backslash-native, must see the workspace UNCHANGED.
+        const string keepsBackslashCheck =
+            """
+            if ($env:GUARDRAILS_WORKSPACE -notlike '*\*') {
+                Write-Output "GUARDRAILS_WORKSPACE was unexpectedly forward-slashed: $env:GUARDRAILS_WORKSPACE"
+                exit 1
+            }
+            exit 0
+            """;
+
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition g = WriteGuardrailScript("01-native-backslash", keepsBackslashCheck);
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot, [g], TestContext.Current.CancellationToken);
+
+        Assert.True(result.Passed,
+            "A PowerShell guardrail must keep the native backslash GUARDRAILS_WORKSPACE form (#263) — " +
+            "the forward-slash conversion is scoped to bash invocations only. " +
+            string.Join("; ", result.FailedGuardrails.Select(f => $"{f.Name}: {f.Reason}")));
+    }
+
     public static TheoryData<string, string, string, bool, string> AdversarialQuotingCases() => new()
     {
         // Case 1 — the exact #173 shape: single-quoted regex with embedded double-quotes,

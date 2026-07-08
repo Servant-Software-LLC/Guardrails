@@ -41,8 +41,29 @@ internal sealed class ScriptUnitRunner
             };
         }
 
+        // #263: on Windows, a script launched THROUGH BASH must see its GUARDRAILS_* path env vars in
+        // forward-slash form (see WindowsBashPaths) — backslashes silently corrupt when a guardrail
+        // interpolates one into an escape-sensitive context (node -e, a regex, sed/awk). Every OTHER
+        // interpreter this class launches (pwsh, cmd, python, a direct exe) keeps the native backslash
+        // form it expects, and this is a deliberate no-op off Windows (paths there are already
+        // forward-slash native). Gated on the RESOLVED executable, not the script extension, so a
+        // guardrails.json "interpreters" override that still points ".sh" at bash gets the fix too.
+        IReadOnlyDictionary<string, string> effectiveEnv =
+            OperatingSystem.IsWindows() && IsBashExecutable(resolution.Command.Executable)
+                ? WindowsBashPaths.ToForwardSlashForm(env)
+                : env;
+
         return await _processRunner
-            .RunAsync(resolution.Command, workspace, env, timeout, cancellationToken)
+            .RunAsync(resolution.Command, workspace, effectiveEnv, timeout, cancellationToken)
             .ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// True when <paramref name="executable"/> is a bash launcher: bare <c>bash</c> or any path whose
+    /// final segment (extension stripped) is <c>bash</c> — matching both the built-in Windows Git-Bash
+    /// candidates (<c>...\Git\bin\bash.exe</c>, <c>...\Git\usr\bin\bash.exe</c>) and a config-overridden
+    /// bash path. Case-insensitive so it also matches a Windows-native <c>Bash.EXE</c> spelling.
+    /// </summary>
+    private static bool IsBashExecutable(string executable) =>
+        Path.GetFileNameWithoutExtension(executable).Equals("bash", StringComparison.OrdinalIgnoreCase);
 }
