@@ -304,6 +304,41 @@ public sealed class WaveExecutionRunTests
     }
 
     [Fact]
+    public async Task WaveReset_WaveTrailedButNonEmptyHandFix_Refuses_DoesNotDiscardIt()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateTwoWavePlan(repo.RepoPath);
+        var (r1, _) = await RunAsync(planDir, repo.RepoPath, repo.WorktreeRoot);
+        Assert.True(r1.AllSucceeded);
+
+        // #311 WEAK-1 red-bar: a human hand-fix that CHANGES A FILE and (via `git commit --amend` onto a
+        // marker tip, or a copy-pasted trailer) carries a Guardrails-Wave: trailer. The marker exemption
+        // gates on empty-tree-delta, so this impersonator is NOT exempted → falls through to the trailer-less
+        // REFUSE and is preserved. Committed in a DETACHED worktree (the branch is checked out elsewhere),
+        // then the branch ref is moved to it.
+        string handFixWt = Path.Combine(repo.WorktreeRoot, "handfix");
+        TempGitRepo.Git(repo.RepoPath, "worktree", "add", "--detach", handFixWt, "guardrails/plan");
+        try
+        {
+            File.WriteAllText(Path.Combine(handFixWt, "config.txt"), "hand-fixed by a human");
+            TempGitRepo.Git(handFixWt, "add", "-A");
+            TempGitRepo.Git(handFixWt, "commit", "-m", "human hand-fix\n\nGuardrails-Wave: wave-99-impersonator");
+            string handFix = TempGitRepo.Git(handFixWt, "rev-parse", "HEAD").Trim();
+            TempGitRepo.Git(repo.RepoPath, "update-ref", "refs/heads/guardrails/plan", handFix);
+
+            RunReset.WaveResetResult reset = RunReset.WaveReset(new PlanLoader().Load(planDir).Plan!, "wave-02-build");
+
+            Assert.Equal(RunReset.WaveResetOutcome.Refused, reset.Outcome);
+            Assert.Equal(handFix, repo.PlanBranchTip("plan")); // the Wave-trailered impersonator was NOT discarded
+        }
+        finally
+        {
+            try { TempGitRepo.Git(repo.RepoPath, "worktree", "remove", "--force", handFixWt); }
+            catch (InvalidOperationException) { /* best-effort teardown */ }
+        }
+    }
+
+    [Fact]
     public async Task WaveReset_IgnoresDanglingJournalMarkerSha_RewindsFromLiveHistory()
     {
         using var repo = new TempGitRepo();

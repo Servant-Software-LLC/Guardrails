@@ -255,7 +255,7 @@ public sealed class Scheduler
             WaveNode wave = waves[i];
 
             // 1. Completion + wave-drift (SSOT §14.5/§14.6).
-            (bool complete, string? recordedHash) = EvaluateWaveCompletion(wave, planBranchRecords, waveMarkers);
+            (bool complete, string? recordedHash) = EvaluateWaveCompletion(wave, planBranchRecords, waveMarkers, trailerTracking);
             if (complete)
             {
                 string currentHash = Journal.WaveDefinitionHash.Compute(wave);
@@ -600,21 +600,31 @@ public sealed class Scheduler
     // --- wave loop helpers (SSOT §14, #254 M2b) -------------------------------------------
 
     /// <summary>
-    /// Whether a wave is COMPLETE (SSOT §14.5): every task green (journal <c>succeeded</c> OR a durable
-    /// plan-branch trailer) AND its completion is recorded (journal <c>completed</c> OR a
-    /// <c>Guardrails-Wave:</c> marker). Also returns the recorded <c>WaveDefinitionHash</c> for the
-    /// drift check (null ⇒ "unknown — assume unchanged").
+    /// Whether a wave is COMPLETE (SSOT §14.5): every task DURABLY green AND its completion is recorded
+    /// (journal <c>completed</c> OR a <c>Guardrails-Wave:</c> marker). Also returns the recorded
+    /// <c>WaveDefinitionHash</c> for the drift check (null ⇒ "unknown — assume unchanged").
+    /// <para>
+    /// "Durably green" is trailer-authoritative in worktree mode (#311 NIT-2): when the plan branch is the
+    /// durable integration record (<paramref name="trailerTracking"/>), a task counts green ONLY if its
+    /// <c>Guardrails-Task:</c> trailer is on the branch — a journal-<c>succeeded</c>-but-trailer-ABSENT task
+    /// (a kill / rewind that discarded the commit) forces the wave INCOMPLETE, mirroring the flat path's
+    /// "trailer-absent ⇒ re-run" reconciliation (<see cref="DetectDefinitionDrift"/>) so a no-drift crash
+    /// can't leave a wave falsely complete over a missing base. In serial / non-trailer mode there are no
+    /// trailers, so the journal <c>succeeded</c> status is authoritative (the pre-#311 behaviour).
+    /// </para>
     /// </summary>
     private (bool Complete, string? RecordedHash) EvaluateWaveCompletion(
         WaveNode wave,
         IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords,
-        IReadOnlyDictionary<string, PlanBranchWaveRecord> waveMarkers)
+        IReadOnlyDictionary<string, PlanBranchWaveRecord> waveMarkers,
+        bool trailerTracking)
     {
         Journal.WaveJournalEntry? je = _journal.WaveEntryOf(wave.Dir);
         waveMarkers.TryGetValue(wave.Dir, out PlanBranchWaveRecord? marker);
 
-        bool allTasksGreen = wave.Tasks.Count > 0 && wave.Tasks.All(t =>
-            _journal.StatusOf(t.Id) == JournalTaskStatus.Succeeded || planBranchRecords.ContainsKey(t.Id));
+        bool allTasksGreen = wave.Tasks.Count > 0 && wave.Tasks.All(t => trailerTracking
+            ? planBranchRecords.ContainsKey(t.Id)
+            : _journal.StatusOf(t.Id) == JournalTaskStatus.Succeeded);
 
         bool completionRecorded = je?.Status == Journal.WaveStatus.Completed || marker is not null;
 

@@ -911,7 +911,15 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
                 Task = taskBySha.GetValueOrDefault(sha),
                 ParentSha = firstParent,
                 MergedInTasks = mergedIn,
+                // A GENUINE Guardrails-Wave: marker is EMPTY (CommitWaveMarker always commits --allow-empty
+                // against a clean integration worktree). Gate the marker exemption on BOTH the trailer AND an
+                // empty tree delta vs its first parent (#311 WEAK-1): a human hand-fix that carries a
+                // Guardrails-Wave: trailer (a `git commit --amend` onto a marker tip, a copy-pasted trailer)
+                // ALWAYS changes files, so it fails the empty-tree gate → NOT classified a marker → falls
+                // through to the trailer-less REFUSE and is preserved, never silently discarded.
                 IsWaveMarker = waveMarkerShas.Contains(sha)
+                    && !string.IsNullOrEmpty(firstParent)
+                    && HasEmptyTreeDelta(repoPath, firstParent, sha)
             });
         }
 
@@ -1001,10 +1009,32 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
+    /// True when <paramref name="sha"/> has an EMPTY tree delta vs <paramref name="parent"/> (#311 WEAK-1):
+    /// <c>git diff --quiet &lt;parent&gt; &lt;sha&gt;</c> exits 0 iff the two trees are identical. A genuine
+    /// <c>Guardrails-Wave:</c> marker is always empty (committed <c>--allow-empty</c> against a clean tree);
+    /// a human hand-fix changes files. FAIL-SAFE: any git error (exit ≠ 0/1, or a spawn failure) reads as
+    /// "not empty" → the commit is NOT treated as a marker → it falls through to the trailer-less REFUSE.
+    /// </summary>
+    private static bool HasEmptyTreeDelta(string repoPath, string parent, string sha)
+    {
+        try
+        {
+            var (_, exit) = TryGitIn(repoPath, "diff", "--quiet", parent, sha);
+            return exit == 0;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// The set of commit shas whose LAST trailer block carries a <c>Guardrails-Wave:</c> trailer (#254 M2b) —
-    /// the harness's own empty wave-marker commits. Parses the SAME <see cref="TrailerShaBodyFormat"/> log
+    /// the CANDIDATE harness wave-marker commits. Parses the SAME <see cref="TrailerShaBodyFormat"/> log
     /// <see cref="ParseShaToTask"/> reads, with the identical last-trailer-block discipline, so a body's own
-    /// blank lines can never split a record and a stray mention in prose never counts.
+    /// blank lines can never split a record and a stray mention in prose never counts. The empty-tree gate
+    /// (<see cref="HasEmptyTreeDelta"/>) is applied by <see cref="GatherFirstParentHistory"/> on top of this
+    /// (#311 WEAK-1) so a hand-fix carrying the trailer but changing files is NOT exempted.
     /// </summary>
     private static IReadOnlySet<string> ParseWaveMarkerShas(string log)
     {

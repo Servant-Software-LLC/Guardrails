@@ -76,8 +76,10 @@ public static class ResetCommand
 
     /// <summary>
     /// Part-C-style wave-scoped reset (SSOT §14.8): rewind the named wave + downstream waves off the plan
-    /// branch and journal-reset them. Always sound (a wave-scoped rewind is a safe trailing suffix), so
-    /// there is no REFUSE path — only Done / UnknownWave / NoJournal.
+    /// branch and journal-reset them. A wave-scoped rewind is a safe trailing suffix for PURE-HARNESS
+    /// history, but it still routes through the marker-aware <c>SafeSuffixEvaluator</c> (#311), so it CAN
+    /// REFUSE — when a trailer-less human hand-fix sits in the removed range — or report a concurrent
+    /// modification. Handles Done / Refused / ConcurrentModification / UnknownWave / NoJournal.
     /// </summary>
     private static int WaveScopedReset(Core.Model.PlanDefinition plan, string waveDir, IConsoleIo io)
     {

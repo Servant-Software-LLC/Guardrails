@@ -70,7 +70,15 @@ public static class RunReset
     /// Reset a single task to <c>pending</c> (keeping attempt history), so the next
     /// <c>run</c> re-executes just that task. Also clears that task's captured baseline subdir
     /// (issue #51) so a re-run re-snapshots the file's current bytes rather than reverting to a
-    /// stale baseline. Returns false if the task is unknown to the journal (the caller reports it).
+    /// stale baseline.
+    /// <para>
+    /// <b>Return contract (#311 NIT-3):</b> <c>true</c> when the task was reset. <c>false</c> covers
+    /// SEVERAL distinct outcomes — the task is unknown to the journal, OR (worktree mode) the delegated
+    /// safe <see cref="ScopedReset"/> REFUSED (an unattributed commit in the range) or hit a concurrent
+    /// modification. The bool cannot distinguish them; a caller that needs the richer outcome (refusal
+    /// reason, concurrent-modification) must call <see cref="ScopedReset"/> directly (as the CLI does).
+    /// This helper is a convenience for a serial/flat single-task reset where a plain success/fail suffices.
+    /// </para>
     /// <para>
     /// WEAK-3 (#311): in WORKTREE mode a journal-only reset is a SILENT NO-OP for resume — the task's
     /// plan-branch <c>Guardrails-Task:</c> trailer survives, so the resume pre-pass (and, for a waved plan,

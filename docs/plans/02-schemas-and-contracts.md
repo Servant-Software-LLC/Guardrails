@@ -3177,11 +3177,17 @@ restricted to fully-`pending` future waves.
   across waves. **But a human commit on the plan branch is the exception** (#197 hand-fix / #311 BLOCKER): a
   rewind must never silently discard unattributed human work. So a wave-scoped rewind **ROUTES THROUGH the
   same `SafeSuffixEvaluator`** the task path uses (via `IWorktreeProvider.EvaluateSafeSuffix`), made
-  **marker-aware**: a `TrailerCommit.IsWaveMarker` flag (set for the harness's own `Guardrails-Wave:` marker
-  commits) EXEMPTS them from the evaluator's trailer-less REFUSE, so the check (a) DERIVES the reset target
-  from the live first-parent history — always an ancestor of the tip, no dangling-sha sideways reset — (b)
-  EXEMPTS the markers so the always-safe property holds for pure-harness history, and (c) still REFUSES if a
-  trailer-less **non-marker** commit (a human hand-fix) sits in the removed range. It reuses the Part C
+  **marker-aware**: a `TrailerCommit.IsWaveMarker` flag EXEMPTS
+  the harness's own `Guardrails-Wave:` marker commits from the evaluator's trailer-less REFUSE, so the check
+  (a) DERIVES the reset target from the live first-parent history — always an ancestor of the tip, no
+  dangling-sha sideways reset — (b) EXEMPTS the markers so the always-safe property holds for pure-harness
+  history, and (c) still REFUSES if a trailer-less **non-marker** commit (a human hand-fix) sits in the
+  removed range. **A genuine `Guardrails-Wave:` marker is an EMPTY commit** (`CommitWaveMarker` commits
+  `--allow-empty` against a clean integration worktree). The `IsWaveMarker` classification therefore gates
+  on **BOTH** the `Guardrails-Wave:` trailer **AND an empty tree delta vs its first parent** (#311 WEAK-1):
+  a Wave-trailered **NON-empty** commit — a human `git commit --amend` onto a marker tip, or a copy-pasted
+  trailer, which by definition changes files — is NOT a marker, so it falls through to the trailer-less
+  REFUSE and is preserved (the marker exemption can never become a silent-discard hole). It reuses the Part C
   rewind primitive (`RewindPlanBranchTo`), the crash-atomic `RewindIntent` marker (now carrying the wave
   dirs too, so a crash-replay clears the wave entries — never a dangling `MarkerSha`), and a tip
   compare-and-swap. On a FLAT plan there are no markers, so the flag is always false and the task-path
