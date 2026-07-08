@@ -252,42 +252,72 @@ public sealed class TaskExecutor : ITaskExecutor
 
             feedbackPath = attempt.FeedbackPath;
 
-            // #174 / #182: no-op-deadlock short-circuit. A guardrail-failed attempt whose action made NO
-            // observable change AND whose guardrail failure is byte-identical to the PREVIOUS attempt's —
-            // which was ALSO a no-op — proves a further attempt cannot differ (a no-op cannot fix a merge
-            // artifact, and an unchanged failure shows nothing converged). Escalate to needs-human NOW (on
-            // the 2nd such attempt) instead of reproducing the identical failure through the rest of the
-            // budget. The just-recorded attempt is journaled `running`; RecordSettle flips the task to
-            // needs-human without a synthetic attempt — the same shape the budget-exhaustion path settles
-            // to. Gated on a present fingerprint, so only a genuine guardrail failure (never an action
-            // failure / timeout / invalid-fragment) participates; those reset the tracking below.
+            // Two sibling "a further attempt provably cannot converge" short-circuits, settling
+            // needs-human NOW (on the 2nd guardrail-failed attempt) instead of reproducing the identical
+            // failure through the rest of the budget. Both REQUIRE a byte-identical guardrail failure
+            // across the two attempts — the load-bearing "nothing converged" evidence — and differ only
+            // in the SECOND piece of evidence that the retry is pointless:
             //
-            // "No observable change" differs by mode:
-            //   - WORKTREE (#174): exit 0, no fragment, no file diff vs taskBase — ActionWasNoOp already
-            //     encodes all three, so the worktree gate needs nothing more.
-            //   - SERIAL (#182): no taskBase to diff, so ActionWasNoOp encodes only exit 0 + no fragment.
-            //     The serial gate ADDS the requirement that the action's stdout/stderr fingerprint is
-            //     byte-identical across the two attempts — confident, conservative evidence the action
-            //     itself behaved identically (a task slowly CONVERGING via changing output is never
-            //     short-circuited). This does NOT loosen the byte-identical-guardrail-failure requirement.
-            bool serialGateMet = isRealGitSegment
-                || (previousActionOutputFingerprint is not null
-                    && string.Equals(attempt.ActionOutputFingerprint, previousActionOutputFingerprint, StringComparison.Ordinal));
+            //   * #174 / #182 (no-op deadlock): the action made NO observable change (a no-op cannot fix
+            //     a guardrail failure it did not cause — e.g. a terminal integrationGate no-op against an
+            //     AI-merge artifact). "No observable change" differs by mode:
+            //       - WORKTREE (#174): exit 0, no fragment, no file diff vs taskBase — ActionWasNoOp
+            //         already encodes all three, so the worktree gate needs nothing more.
+            //       - SERIAL (#182): no taskBase to diff, so ActionWasNoOp encodes only exit 0 + no
+            //         fragment; the serial gate ADDS a byte-identical action-output requirement (the
+            //         proxy for "the action behaved identically").
+            //   * #264 (deterministic-script reproduction): the action is a `script` whose recorded
+            //     output reproduced BYTE-IDENTICALLY across the two attempts — positive evidence the
+            //     script is DETERMINISTIC, so re-running the unchanged script is provably pointless (no
+            //     agent self-corrects between attempts). A script that WROTE FILES is not a no-op (its
+            //     segment diff is non-empty), so #174 never fires for it in worktree mode; #264 is its
+            //     sibling for exactly that gap. Scoped to worktree mode — a serial deterministic script
+            //     is already a no-op under #182's serial model — and the byte-identical action-output
+            //     requirement IS the flaky/nondeterministic-script escape hatch (a script whose output
+            //     differs across attempts keeps its full budget, because a retry genuinely might pass).
+            //
+            // RecordSettle flips the task to needs-human without a synthetic attempt — the same shape the
+            // budget-exhaustion path settles to. The tracking below is carried only across guardrail
+            // failures, so a non-guardrail failure (action failure / timeout / invalid fragment) never
+            // participates.
+            bool actionOutputReproduced =
+                previousActionOutputFingerprint is not null
+                && string.Equals(attempt.ActionOutputFingerprint, previousActionOutputFingerprint, StringComparison.Ordinal);
 
-            if (!isFinal
-                && attempt.GuardrailFailureFingerprint is { Length: > 0 } currentFingerprint
-                && attempt.ActionWasNoOp
+            bool guardrailFailureReproduced =
+                attempt.GuardrailFailureFingerprint is { Length: > 0 }
+                && string.Equals(attempt.GuardrailFailureFingerprint, previousFailureFingerprint, StringComparison.Ordinal);
+
+            // #174 / #182: the worktree gate proves "no change" via the taskBase file diff (isRealGitSegment);
+            // serial requires byte-identical action output too.
+            bool noOpDeadlock =
+                attempt.ActionWasNoOp
                 && previousAttemptWasNoOp
-                && string.Equals(currentFingerprint, previousFailureFingerprint, StringComparison.Ordinal)
-                && serialGateMet)
+                && (isRealGitSegment || actionOutputReproduced);
+
+            // #264: a deterministic script (worktree mode) whose action output reproduced byte-identically.
+            bool deterministicScriptReproduced =
+                task.Action.Kind == ActionKind.Script
+                && isRealGitSegment
+                && actionOutputReproduced;
+
+            if (!isFinal && guardrailFailureReproduced && (noOpDeadlock || deterministicScriptReproduced))
             {
                 _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+
+                // A no-op deadlock keeps its established wording (it did LITERALLY nothing); a script
+                // that DID work but reproduced identically (#264) gets the deterministic-script wording.
+                // When both hold (a no-op script), the more specific no-op message wins.
+                string why = noOpDeadlock
+                    ? "action is a no-op and the guardrail failure is unchanged; retrying will not " +
+                      "help, escalating to needs-human"
+                    : "the script action reproduced byte-identical output and the guardrail failure is " +
+                      "unchanged; retrying will not help, escalating to needs-human";
+
                 return last with
                 {
                     Outcome = TaskOutcome.NeedsHuman,
-                    Summary = $"{last.Summary} — action is a no-op and the guardrail failure is " +
-                              "unchanged; retrying will not help, escalating to needs-human " +
-                              $"(after {attemptIndex} identical attempt(s))"
+                    Summary = $"{last.Summary} — {why} (after {attemptIndex} identical attempt(s))"
                 };
             }
 
@@ -769,7 +799,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 string offendingList = string.Join(", ", scopeCheck.OffendingPaths.Select(o => o.Path));
                 string feedback = RetryPolicy.ForWriteScopeViolation(task, attemptNumber, scopeCheck.OffendingPaths);
-                return _journaler.FailedAttempt(
+                AttemptResult scopeFailure = _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     AttemptOutcome.GuardrailFailed,
                     new TaskResult
@@ -780,6 +810,22 @@ public sealed class TaskExecutor : ITaskExecutor
                         Summary = $"write-scope violation: {offendingList}"
                     },
                     costUsd: action.CostUsd);
+
+                // #264: attach the reproduction signals so a DETERMINISTIC script that re-writes the same
+                // out-of-scope paths every attempt short-circuits to needs-human instead of burning the
+                // whole budget (the observed `10-gitignore` write-scope case). A write-scope violation
+                // means the action wrote out-of-scope files — never a no-op — so #174 never applies here;
+                // #264 (script + byte-identical action output) is the sibling that fires. The failure
+                // fingerprint is the stable set of offending paths + git statuses; the action-output
+                // fingerprint is the script's own stdout/stderr. Only ever compared against another
+                // write-scope violation's fingerprint (write-scope runs BEFORE guardrails and returns
+                // here on violation), so a re-run that instead fails a guardrail simply won't match.
+                return scopeFailure with
+                {
+                    ActionWasNoOp = false,
+                    GuardrailFailureFingerprint = FingerprintWriteScopeViolation(scopeCheck.OffendingPaths),
+                    ActionOutputFingerprint = FingerprintActionOutput(action)
+                };
             }
         }
 
@@ -964,6 +1010,18 @@ public sealed class TaskExecutor : ITaskExecutor
     /// </summary>
     private static string FingerprintActionOutput(ActionRun action) =>
         string.Concat(action.StandardOutput, "", action.StandardError);
+
+    /// <summary>
+    /// A canonical signature of a WRITE-SCOPE violation (issue #264): each offending path's git
+    /// change-status letter + path, joined with record/unit separators and prefixed so it can never
+    /// collide with a guardrail-failure fingerprint. Two attempts whose write-scope violations reproduce
+    /// byte-identically — a DETERMINISTIC script re-writing the same out-of-scope paths every attempt —
+    /// carry EQUAL fingerprints; combined with byte-identical action output, the loop escalates to
+    /// needs-human instead of re-running the unchanged script the rest of the budget. Status + path are
+    /// attempt-stable; the forensic preview is intentionally excluded (irrelevant to convergence).
+    /// </summary>
+    private static string FingerprintWriteScopeViolation(IReadOnlyList<WriteScopeOffense> offenses) =>
+        "write-scope" + string.Join("", offenses.Select(o => $"{o.Status}{o.Path}"));
 
     /// <summary>
     /// True when <paramref name="worktree"/> is a real git segment (worktree mode) rather than a

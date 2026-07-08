@@ -9,19 +9,26 @@ using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 namespace Guardrails.Integration.Tests;
 
 /// <summary>
-/// Issue #174 — the no-op-deadlock short-circuit. A worktree-mode task whose action is a genuine
-/// no-op (exits 0, writes no state fragment, touches no file) but whose guardrails keep failing the
-/// SAME way cannot converge by retrying. The harness must escalate to <c>needs-human</c> on the
-/// SECOND such attempt instead of exhausting the whole retry budget reproducing the identical failure
-/// (the real plan-0009 terminal <c>integrationGate</c> against an un-fixable merge artifact).
+/// Issue #264 — the deterministic-script reproduction short-circuit. A <c>script</c>-action task
+/// cannot self-correct between attempts (there is no agent, just fixed bytes), so when a script's
+/// recorded output reproduces BYTE-IDENTICALLY across two guardrail-class-failed attempts, re-running
+/// it the rest of the budget is guaranteed-wasted work. The harness must escalate to
+/// <c>needs-human</c> on the SECOND identical attempt instead of exhausting the whole retry budget
+/// (the observed <c>02-vendor-validator</c> guardrail case and <c>10-gitignore</c> write-scope case).
 ///
-/// These run in worktree mode (a real git repo + <c>maxParallelism: 2</c>) because the "action made
-/// no file changes" half of the signal is proven by diffing the segment against <c>taskBase</c> — the
-/// short-circuit is deliberately conservative and never fires in serial mode.
+/// This is the SIBLING of the #174 no-op-deadlock short-circuit: #174 fires only when the action made
+/// NO file change, but a script that WROTE FILES is not a no-op — the gap #264 fills. The SAFE trigger
+/// is byte-identical action output (positive evidence the script is DETERMINISTIC); a nondeterministic
+/// script whose output differs across attempts keeps its full budget, because a retry genuinely might
+/// pass (the flaky/network/timestamp escape hatch).
+///
+/// These run in worktree mode (a real git repo + <c>maxParallelism: 2</c>) because the byte-identical
+/// action-output evidence is the load-bearing signal and the write-scope check only runs against a real
+/// segment; the serial deterministic-script case is already covered by the #182 serial no-op gate.
 /// </summary>
-public sealed class NoOpDeadlockShortCircuitTests
+public sealed class ScriptActionReproductionShortCircuitTests
 {
-    // A real git repo for worktree mode; mirrors the proven-safe teardown in MergeLockAndSettleTests.
+    // A real git repo for worktree mode; mirrors NoOpDeadlockShortCircuitTests' proven-safe teardown.
     private sealed class TempGitRepo : IDisposable
     {
         private readonly string _root;
@@ -30,7 +37,7 @@ public sealed class NoOpDeadlockShortCircuitTests
 
         public TempGitRepo()
         {
-            _root = Path.Combine(Path.GetTempPath(), "gr-174-" + Guid.NewGuid().ToString("N"));
+            _root = Path.Combine(Path.GetTempPath(), "gr-264-" + Guid.NewGuid().ToString("N"));
             RepoPath = Path.Combine(_root, "repo");
             WorktreeRoot = Path.Combine(_root, "worktrees");
             Directory.CreateDirectory(RepoPath);
@@ -39,7 +46,7 @@ public sealed class NoOpDeadlockShortCircuitTests
             Git(RepoPath, "init");
             Git(RepoPath, "config", "user.email", "test@guardrails.local");
             Git(RepoPath, "config", "user.name", "Guardrails Test");
-            File.WriteAllText(Path.Combine(RepoPath, "README.md"), "# noop-deadlock-test");
+            File.WriteAllText(Path.Combine(RepoPath, "README.md"), "# script-reproduction-test");
             Git(RepoPath, "add", ".");
             Git(RepoPath, "commit", "-m", "Initial commit");
         }
@@ -80,12 +87,12 @@ public sealed class NoOpDeadlockShortCircuitTests
     }
 
     /// <summary>
-    /// Writes a single-task worktree-mode plan inside <paramref name="repoPath"/> with a high retry
-    /// budget. The action body and guardrail body are OS-appropriate snippets supplied by the caller,
-    /// so a test can make the action a no-op (or a real writer) and the guardrail a stable (or varying)
-    /// failure. <c>maxParallelism: 2</c> forces worktree mode (real segments, real <c>taskBase</c>).
+    /// Writes a single-task worktree-mode plan inside <paramref name="repoPath"/>. The action/guardrail
+    /// bodies are OS-appropriate snippets supplied by the caller; an optional <paramref name="writeScope"/>
+    /// drives the deterministic write-scope check. <c>maxParallelism: 2</c> forces worktree mode.
     /// </summary>
-    private static string CreateOneTaskPlan(string repoPath, int defaultRetries, string actionBody, string guardrailBody)
+    private static string CreateOneTaskPlan(
+        string repoPath, int defaultRetries, string actionBody, string guardrailBody, string? writeScope = null)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(planDir);
@@ -102,14 +109,15 @@ public sealed class NoOpDeadlockShortCircuitTests
             }
             """);
 
-        string taskDir = Path.Combine(planDir, "tasks", "01-noop-gate");
+        string taskDir = Path.Combine(planDir, "tasks", "01-script-gate");
         Directory.CreateDirectory(taskDir);
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+        string scopeLine = writeScope is null ? "" : $",\n              \"writeScope\": [\"{writeScope}\"]";
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            """
+            $$"""
             {
-              "description": "no-op terminal gate (issue #174)",
-              "dependsOn": []
+              "description": "deterministic script gate (issue #264)",
+              "dependsOn": []{{scopeLine}}
             }
             """);
 
@@ -133,19 +141,26 @@ public sealed class NoOpDeadlockShortCircuitTests
         }
     }
 
-    /// <summary>A genuine no-op action: exits 0, writes no fragment, touches no file.</summary>
-    private static string NoOpAction() => "exit 0";
-
-    /// <summary>An action that writes a NEW file every attempt — observable change (NOT a no-op).</summary>
-    private static string WritingAction() => OperatingSystem.IsWindows()
-        ? "Set-Content -NoNewline -Path 'work.txt' -Value 'did work'; exit 0"
-        : "printf 'did work' > work.txt; exit 0";
+    /// <summary>
+    /// A DETERMINISTIC script: writes a file (so it is NOT a #174 no-op) and prints a STABLE stdout,
+    /// byte-identical on every attempt — the observed <c>02-vendor-validator</c> shape.
+    /// </summary>
+    private static string DeterministicWritingAction() => OperatingSystem.IsWindows()
+        ? "Set-Content -NoNewline -Path 'work.txt' -Value 'did work'; Write-Output 'Vendored deps @ 863d130'; exit 0"
+        : "printf 'did work' > work.txt; echo 'Vendored deps @ 863d130'; exit 0";
 
     /// <summary>
-    /// An action that writes a file AND emits a CHANGING stdout each attempt (counter-file driven under
-    /// the plan dir, which survives the F2 segment reset). It is not a #174 no-op (it writes a file) and
-    /// not a #264 deterministic reproduction (its stdout differs across attempts), so NEITHER
-    /// short-circuit fires and the full retry budget is honored.
+    /// A DETERMINISTIC script that writes an OUT-OF-SCOPE file (root <c>outside.txt</c>, outside a
+    /// <c>src/**</c> scope) identically every attempt — the observed <c>10-gitignore</c> write-scope shape.
+    /// </summary>
+    private static string OutOfScopeWritingAction() => OperatingSystem.IsWindows()
+        ? "Set-Content -NoNewline -Path 'outside.txt' -Value 'not in scope'; Write-Output 'wrote dotfile'; exit 0"
+        : "printf 'not in scope' > outside.txt; echo 'wrote dotfile'; exit 0";
+
+    /// <summary>
+    /// A NONDETERMINISTIC script: writes a file AND prints a CHANGING stdout each attempt (counter-file
+    /// driven under the plan dir, which survives the F2 segment reset). A retry genuinely might behave
+    /// differently, so the short-circuit must NOT fire and the full budget is honored.
     /// </summary>
     private static string NondeterministicWritingAction() => OperatingSystem.IsWindows()
         ? """
@@ -170,25 +185,8 @@ public sealed class NoOpDeadlockShortCircuitTests
         ? "Write-Output 'duplicate class CommanderRestImporter in Launcher.cs'; exit 1"
         : "echo 'duplicate class CommanderRestImporter in Launcher.cs'; exit 1";
 
-    /// <summary>
-    /// A guardrail that fails with a DIFFERENT message each attempt (driven by a counter file under the
-    /// plan dir) — the changed-output case, where retrying might still converge so the budget is kept.
-    /// </summary>
-    private static string VaryingFailure() => OperatingSystem.IsWindows()
-        ? """
-          $f = Join-Path $env:GUARDRAILS_PLAN_DIR 'g.count'
-          Add-Content -Path $f -Value 'x'
-          $n = (Get-Content $f).Count
-          Write-Output "failure number $n"
-          exit 1
-          """
-        : """
-          f="$GUARDRAILS_PLAN_DIR/g.count"
-          echo x >> "$f"
-          n=$(wc -l < "$f" | tr -d '[:space:]')
-          echo "failure number $n"
-          exit 1
-          """;
+    /// <summary>A guardrail that always passes (the write-scope check fails first, before guardrails run).</summary>
+    private static string AlwaysPass() => "exit 0";
 
     private static async Task<(RunReport report, string planDir)> RunAsync(TempGitRepo repo, string planDir)
     {
@@ -200,7 +198,7 @@ public sealed class NoOpDeadlockShortCircuitTests
         stateManager.Initialize();
         RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
         var registry = PromptRunnerRegistry.Build(load.Plan!.Config,
-            _ => throw new InvalidOperationException("No prompt runners in #174 tests."));
+            _ => throw new InvalidOperationException("No prompt runners in #264 tests."));
         var interpreterMap = new InterpreterMap(new PathExecutableProbe(), load.Plan!.Config.Interpreters);
         var executor = new TaskExecutor(
             load.Plan!, new ProcessRunner(), interpreterMap, stateManager, journal, IRunObserver.Null, registry);
@@ -216,62 +214,66 @@ public sealed class NoOpDeadlockShortCircuitTests
         JournalReader.Read(RunJournal.PathFor(planDir)).Tasks[taskId].Attempts.Count;
 
     [Fact]
-    public async Task NoOpAction_IdenticalGuardrailFailure_EscalatesOnSecondAttempt_NotAfterWholeBudget()
+    public async Task DeterministicScript_WritesFiles_GuardrailFailsIdentically_EscalatesOnSecondAttempt()
     {
-        // Budget = 1 + 5 = 6 attempts. The #174 short-circuit must escalate on attempt 2.
+        // Budget = 1 + 5 = 6 attempts. The script writes a file (NOT a #174 no-op) but reproduces
+        // byte-identical stdout AND fails the same guardrail every attempt → #264 escalates on attempt 2.
         using var repo = new TempGitRepo();
-        string planDir = CreateOneTaskPlan(repo.RepoPath, defaultRetries: 5, NoOpAction(), StableFailure());
+        string planDir = CreateOneTaskPlan(repo.RepoPath, defaultRetries: 5, DeterministicWritingAction(), StableFailure());
 
         var (report, _) = await RunAsync(repo, planDir);
 
-        TaskResult gate = report.Tasks.Single(t => t.TaskId == "01-noop-gate");
+        TaskResult gate = report.Tasks.Single(t => t.TaskId == "01-script-gate");
         Assert.Equal(TaskOutcome.NeedsHuman, gate.Outcome);
-        Assert.Contains("no-op", gate.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("script", gate.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("retrying will not help", gate.Summary, StringComparison.OrdinalIgnoreCase);
+        // It is the #264 (deterministic-script) path, NOT the #174 no-op path (the action DID write a file).
+        Assert.DoesNotContain("no-op", gate.Summary, StringComparison.OrdinalIgnoreCase);
+
+        // Escalated on the 2ND attempt — exactly 2 attempts journaled, NOT the full budget of 6.
+        Assert.Equal(2, AttemptCount(planDir, "01-script-gate"));
+        Assert.Equal(JournalTaskStatus.NeedsHuman,
+            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-script-gate"].Status);
+    }
+
+    [Fact]
+    public async Task DeterministicScript_WriteScopeViolationReproduces_EscalatesOnSecondAttempt()
+    {
+        // The observed 10-gitignore case: a script deterministically writes an OUT-OF-SCOPE file, so the
+        // write-scope CHECK (a guardrail-class failure) fails identically every attempt. Budget = 1 + 5 = 6;
+        // #264 must escalate on attempt 2 rather than burning the whole budget on the unchanged violation.
+        using var repo = new TempGitRepo();
+        string planDir = CreateOneTaskPlan(
+            repo.RepoPath, defaultRetries: 5, OutOfScopeWritingAction(), AlwaysPass(), writeScope: "src/**");
+
+        var (report, _) = await RunAsync(repo, planDir);
+
+        TaskResult gate = report.Tasks.Single(t => t.TaskId == "01-script-gate");
+        Assert.Equal(TaskOutcome.NeedsHuman, gate.Outcome);
+        Assert.Contains("script", gate.Summary, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("retrying will not help", gate.Summary, StringComparison.OrdinalIgnoreCase);
 
         // Escalated on the 2ND attempt — exactly 2 attempts journaled, NOT the full budget of 6.
-        Assert.Equal(2, AttemptCount(planDir, "01-noop-gate"));
-        Assert.Equal(JournalTaskStatus.NeedsHuman,
-            JournalReader.Read(RunJournal.PathFor(planDir)).Tasks["01-noop-gate"].Status);
+        Assert.Equal(2, AttemptCount(planDir, "01-script-gate"));
     }
 
     [Fact]
-    public async Task ActionMakesNondeterministicChanges_GuardrailKeepsFailing_RetriesFullBudget_NoShortCircuit()
+    public async Task NondeterministicScript_DifferentOutputEachAttempt_GuardrailFails_RetriesFullBudget()
     {
-        // The action writes a file (→ NOT a #174 no-op) AND emits a CHANGING stdout each attempt (→ NOT
-        // a #264 deterministic reproduction), so NEITHER short-circuit fires. The task still ends
-        // needs-human via normal budget exhaustion, but only after the FULL budget.
-        //
-        // (A DETERMINISTIC writing script — same scenario but byte-identical output every attempt — is
-        // now the #264 short-circuit target, covered by ScriptActionReproductionShortCircuitTests.)
+        // The byte-identical guard, not a blanket "all scripts short-circuit": the action's stdout changes
+        // every attempt, so there is NO positive evidence of determinism and a retry genuinely might pass.
+        // The short-circuit must NOT fire — the full budget is spent (1 + 2 retries = 3 attempts).
         using var repo = new TempGitRepo();
-        string planDir = CreateOneTaskPlan(repo.RepoPath, defaultRetries: 2, NondeterministicWritingAction(), StableFailure());
+        string planDir = CreateOneTaskPlan(
+            repo.RepoPath, defaultRetries: 2, NondeterministicWritingAction(), StableFailure());
 
         var (report, _) = await RunAsync(repo, planDir);
 
-        TaskResult gate = report.Tasks.Single(t => t.TaskId == "01-noop-gate");
+        TaskResult gate = report.Tasks.Single(t => t.TaskId == "01-script-gate");
         Assert.Equal(TaskOutcome.GuardrailFailed, gate.Outcome);
         Assert.DoesNotContain("retrying will not help", gate.Summary, StringComparison.OrdinalIgnoreCase);
 
-        // Full budget honored: 1 + 2 retries = 3 attempts (no early short-circuit).
-        Assert.Equal(3, AttemptCount(planDir, "01-noop-gate"));
-    }
-
-    [Fact]
-    public async Task NoOpAction_GuardrailOutputDiffersEachAttempt_RetriesNormally_NoShortCircuit()
-    {
-        // A no-op action, but the guardrail failure CHANGES every attempt → those can still converge,
-        // so the short-circuit must NOT fire; the full budget is spent.
-        using var repo = new TempGitRepo();
-        string planDir = CreateOneTaskPlan(repo.RepoPath, defaultRetries: 2, NoOpAction(), VaryingFailure());
-
-        var (report, _) = await RunAsync(repo, planDir);
-
-        TaskResult gate = report.Tasks.Single(t => t.TaskId == "01-noop-gate");
-        Assert.Equal(TaskOutcome.GuardrailFailed, gate.Outcome);
-        Assert.DoesNotContain("retrying will not help", gate.Summary, StringComparison.OrdinalIgnoreCase);
-
-        // Full budget honored: 1 + 2 retries = 3 attempts — the changing output is never short-circuited.
-        Assert.Equal(3, AttemptCount(planDir, "01-noop-gate"));
+        // Full budget honored: the changing action output blocks the deterministic-reproduction gate.
+        Assert.Equal(3, AttemptCount(planDir, "01-script-gate"));
     }
 }

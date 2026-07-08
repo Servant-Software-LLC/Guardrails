@@ -188,7 +188,7 @@ public static class RetryPolicy
         IReadOnlyList<GuardrailResult> results)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, task.Action.Kind);
         text.AppendLine("## Failed guardrails");
 
         foreach (GuardrailResult failed in results.Where(r => !r.Passed))
@@ -384,7 +384,7 @@ public static class RetryPolicy
     public static string ForWriteScopeViolation(TaskNode task, int attempt, IReadOnlyList<WriteScopeOffense> offendingPaths)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, task.Action.Kind);
         text.AppendLine("## Write-scope violation");
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
@@ -579,14 +579,35 @@ public static class RetryPolicy
         return !string.Equals(trimmed, reason?.Trim(), StringComparison.Ordinal);
     }
 
-    private static void AppendHeader(StringBuilder text, TaskNode task, int attempt)
+    /// <summary>
+    /// The shared feedback header. <paramref name="actionKind"/> selects the retry-guidance line
+    /// (issue #264): a PROMPT action gets the agent-oriented "fix what failed, keep what works"
+    /// wording — it is read by an agent that CAN self-correct between attempts. A <c>script</c> action
+    /// gets a deterministic-action message instead: there is no agent to read this, re-running the
+    /// unchanged script produces byte-identical output and fails the same guardrail every time, so the
+    /// script or its guardrail must be EDITED to converge. Defaults to the prompt wording so the many
+    /// prompt-only feedback methods (output-cap, max-turns, timeout, …) are unchanged.
+    /// </summary>
+    private static void AppendHeader(
+        StringBuilder text, TaskNode task, int attempt, ActionKind actionKind = ActionKind.Prompt)
     {
         text.AppendLine($"# Attempt {attempt} of task '{task.Id}' failed");
         text.AppendLine();
         text.AppendLine($"Task: {task.Description}");
         text.AppendLine();
-        text.AppendLine("Fix the specific problems below. Do NOT start over from scratch — keep what");
-        text.AppendLine("already works and address only what failed.");
+        if (actionKind == ActionKind.Script)
+        {
+            text.AppendLine("This is a deterministic `script` action — there is no agent to self-correct");
+            text.AppendLine("between attempts. Re-running the unchanged script produces byte-identical output");
+            text.AppendLine("and fails the same guardrail every time; the script or its guardrail must be");
+            text.AppendLine("edited to converge.");
+        }
+        else
+        {
+            text.AppendLine("Fix the specific problems below. Do NOT start over from scratch — keep what");
+            text.AppendLine("already works and address only what failed.");
+        }
+
         text.AppendLine();
     }
 
