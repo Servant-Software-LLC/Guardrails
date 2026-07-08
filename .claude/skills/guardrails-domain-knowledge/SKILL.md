@@ -203,6 +203,20 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   never in serial mode when the action's stdout/stderr CHANGED across attempts, never when the guardrail
   output CHANGED between attempts (those can still converge). Same `needs-human` transition as budget
   exhaustion. (SSOT section 7.)
+- **Deterministic-script reproduction short-circuit (#264)** -- a **SIBLING** of the no-op one for
+  `script` actions, which have **no agent to self-correct** between attempts. On the **2nd**
+  guardrail-class-failed attempt the harness settles `needs-human` early when the action is a `script`, the
+  run is in **worktree mode**, AND **both** the action's recorded stdout/stderr AND the guardrail-class
+  failure (a failed guardrail, OR a write-scope violation keyed on its offending paths + git statuses)
+  reproduced **byte-identically** to the previous attempt -- positive evidence the script is behaving
+  DETERMINISTICALLY, so a re-run is provably pointless. It fills the gap the no-op short-circuit misses: a
+  script that WROTE FILES is not a no-op (non-empty segment diff), so the #174 `ActionWasNoOp` half is
+  false and it never fires. The flaky/nondeterministic escape hatch is preserved -- a script hitting a
+  network service, stamping a timestamp, or with a flaky guardrail produces DIFFERENT output/failure across
+  attempts and keeps its **full budget**. Retry feedback is **script-appropriate** (a deterministic-action
+  header -- "no agent to self-correct... edit the script or its guardrail to converge", SSOT section 8),
+  not the agent-oriented "fix what failed, don't start over" wording. Same `needs-human` transition as
+  budget exhaustion. (SSOT section 7.)
 - **Prompt-runner failure classification** (SSOT section 9, #114/#115/#119): a non-success prompt
   result is classified (in the runner quarantine) into `Transient` | `OutputCap` | `Timeout` | `Error`.
   - **Transient** (429/503/529, "overloaded", rate/session/usage limit): does NOT consume the retry
@@ -243,19 +257,24 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     fail -> `reset --hard preHead`; `needs-human`; no fragment, no `mergeSequence`.
   - AI-merge + re-verify run in a private forked worktree **off** the serialize lock; only the
     final integration of the verified result into the plan branch is **under the lock**.
-- **Merge-collision attribution on gate failure (#175)**: when the terminal `integrationGate` fails on
-  the final merged HEAD (typically the whole-repo build/test), the `needs-human` diagnosis is **enriched**
-  with merge-collision suspects -- the harness scans the plan for every task pair whose `writeScope`s
-  **overlap** and appends those pairs + the shared path(s), so a human sees *"this may be a merge collision
-  between '07-...' & '09-...' (shared: Launcher.cs)"* rather than a bare build error. A gate failure is
-  frequently a 3-way/AI-merge that silently kept **both** copies of a definition two overlapping-scope
-  tasks each appended to a shared file -- a duplicate class/member (CS0101) with **no conflict marker**.
-  The hint is **advisory + structural** -- derived PURELY from the `writeScope`-overlap topology (never the
-  compiler error text / a CS-code), added **only** when ≥2 `writeScope`s overlap (nothing for disjoint
-  scopes). It is **attribution, not prevention**: the harness cannot generically detect a semantic
-  duplicate (that is the build guardrail's job); the PREVENTION is authoring -- the overlapping-writeScope
-  union-guardrail's **duplicate-definition check** (`plan-breakdown` emits it, `guardrails-review` flags
-  its absence; catalogue → overlapping-writeScope union-guardrail). (SSOT section 3.3.)
+- **Merge-collision attribution on gate failure (#175), HEDGED (#272)**: when the terminal gate fails on
+  the final merged HEAD (typically the whole-repo build/test), the `needs-human` diagnosis leads with the
+  **reported failure detail as the PRIMARY signal**, then -- **only** when ≥2 `writeScope`s overlap --
+  appends the overlapping task pairs + the shared path(s) as a **possibility to verify IF that detail looks
+  merge-related**, NOT an assertion a collision occurred. Mere `writeScope` overlap is a **WEAK** signal: a
+  TDD stub+impl pair overlaps **by design** (the impl overwrites the stub) and merges cleanly the
+  overwhelming majority of the time, so the pre-#272 confident *"this may be a merge collision between
+  '07-...' & '09-...'"* wording sent triage down the wrong path when the merge was in fact clean and the
+  failure unrelated. The hedged hint still points at the real trap it exists to catch -- a 3-way/AI-merge
+  that silently kept **both** copies of a definition two overlapping-scope tasks each appended to a shared
+  file (a duplicate class/member, CS0101, with **no conflict marker**) -- but leaves the reported failure
+  detail as the thing to trust first. The hint is **advisory + structural** -- derived PURELY from the
+  `writeScope`-overlap topology (never the compiler error text / a CS-code), added **only** when ≥2
+  `writeScope`s overlap (nothing for disjoint scopes). It is **attribution, not prevention**: the harness
+  cannot generically detect a semantic duplicate (that is the build guardrail's job); the PREVENTION is
+  authoring -- the overlapping-writeScope union-guardrail's **duplicate-definition check** (`plan-breakdown`
+  emits it, `guardrails-review` flags its absence; catalogue → overlapping-writeScope union-guardrail).
+  (SSOT section 3.3 / 3.4.)
 - **B1 atomic settle** (under the serialize lock, fixed order): (1) deep-merge fragment into
   `state.json`; (2) `git commit` the integration carrying `Guardrails-Task`/`Guardrails-Run`
   trailers (FF'd commits AND merge commits); (3) consume `mergeSequence` + journal `Succeeded`.

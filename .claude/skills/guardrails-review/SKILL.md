@@ -713,16 +713,21 @@ so the harness's review nudge clears:
 guardrails mark-reviewed <folder>
 ```
 
-This writes the committed, plan-hash-keyed `state/guardrails-review.json` marker (SSOT §13) — the skill
-can't compute the `PlanHash` itself, so it delegates to the CLI. Until the plan changes, `guardrails
-validate`/`run` stop emitting the GR2025 "not reviewed" warning; editing any `task.json` /
-`guardrails.json` re-stales the marker and the nudge returns. The marker is COMMITTED as part of the
-reviewed plan: because it is `planHash`-keyed it is an attestation about the committed plan content
-that self-invalidates the instant any `task.json` / `guardrails.json` changes the planHash (the
-GR2025 nudge returns), so committing it can never falsely vouch for changed content. `--fresh` does
-NOT wipe it — `--fresh` clears only genuine runtime state (`run.json`, `state.json`,
-`merge-conflicts.log`, `logs/`, `captured/`). Do NOT mark a plan reviewed while a BLOCKER finding
-remains unaddressed — the marker vouches that the plan was genuinely reviewed.
+This writes the committed, `PlanDefinitionHash`-keyed `state/guardrails-review.json` marker (SSOT §13 /
+§7.3) — the skill can't compute the `PlanDefinitionHash` itself, so it delegates to the CLI. Until the
+plan's behavioral definition changes, `guardrails validate`/`run` stop emitting the GR2025 "not reviewed"
+warning; editing any `task.json` / `guardrails.json`, **an `action.*` body, or a guardrail/preflight body
+or `.json` sidecar** re-stales the marker and the nudge returns. `PlanDefinitionHash` **covers
+guardrail/preflight/action BODIES** — not just structure/config like the narrower `PlanHash` — so editing
+a guardrail's LOGIC after review (broadening a grep, dropping an assertion, `exit 0`-ing a check) NOW
+re-stales the marker and re-fires GR2025 (#260); bodies are exactly what the review scrutinizes most, so
+the attestation covers them. The marker is COMMITTED as part of the reviewed plan: because it is
+`PlanDefinitionHash`-keyed it is an attestation about the committed plan content that self-invalidates the
+instant any reviewed file — `task.json`, `guardrails.json`, an `action.*`, or any guardrail/preflight body
+or sidecar — changes the `PlanDefinitionHash` (the GR2025 nudge returns), so committing it can never
+falsely vouch for changed content. `--fresh` does NOT wipe it — `--fresh` clears only genuine runtime
+state (`run.json`, `state.json`, `merge-conflicts.log`, `logs/`, `captured/`). Do NOT mark a plan reviewed
+while a BLOCKER finding remains unaddressed — the marker vouches that the plan was genuinely reviewed.
 
 ## Quality bar
 - [ ] `guardrails validate` ran first; findings don't duplicate the tool.
