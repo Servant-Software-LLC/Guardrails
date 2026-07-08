@@ -117,6 +117,7 @@ decision (issue #275) and is deliberately NOT done here.
   "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/guardrails-worktrees/<hash>/<runId>/
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": false,            // OPTIONAL; if true AND the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here)
+  "driftPolicy": "halt",              // OPTIONAL; on-resume definition-drift policy (§7.2): "halt" (default) halts for review; "reprocess" pre-authorizes the Part C safe-auto-resolve (unsafe drift ALWAYS halts). CLI --reprocess-drift overrides. GR2031 if unrecognized
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issue #195). Default true. Preserves a rolled-back max-turns/output-cap attempt to a git ref instead of pure discard; set false to disable
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
@@ -175,6 +176,14 @@ decision (issue #275) and is deliberately NOT done here.
   delivery of the plan branch into the user's original branch. **AI-merge is withheld at this
   boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts to `needs-human`
   with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the user's commits.
+- `driftPolicy` (default `"halt"`; CLI `--reprocess-drift` overrides to `"reprocess"`, exactly as
+  `--merge-on-success` overrides `mergeOnSuccess`) selects how a resume handles **definition drift** on
+  an already-`succeeded` task (§7.2). `"halt"` — the Part A behavior — halts for human review
+  (`RunReport.DefinitionDrift`, exit 2). `"reprocess"` **pre-authorizes the Part C safe-auto-resolve**:
+  the harness rewinds the plan branch past the provably-safe drifted suffix and re-runs it with **no
+  prompt**. It authorizes **spend**, never an **unsound** rewind — an unsafe (non-suffix / uncontained
+  fan-in) drift **always** halts regardless of this field, and a non-interactive `"halt"` run never
+  prompts. An unrecognized value is a validation error (**GR2031**).
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
@@ -1390,9 +1399,12 @@ case: it simply falls through to this same normal resume.
 by an unexpected infrastructure fault (#150: an honest halt rendered from the aborted `RunReport`, full
 fault in `logs/<runId>/abort.log`, never a raw stack trace) · `2` the operation completed but an
 actionable condition was found — for `run`: a task is needs-human/blocked, OR the pre-DAG
-`planPreflights` phase failed (§7, exit **before** any task is scheduled), OR a **definition-drift halt**
-(§7.2 — an already-`succeeded` task's definition changed since it settled; the pre-pass scheduled nothing
-and returned `RunReport.DefinitionDrift`), OR the terminal `planGuardrails`
+`planPreflights` phase failed (§7, exit **before** any task is scheduled), OR a **declined or refused
+definition-drift halt** (§7.2 — an already-`succeeded` task's definition changed since it settled and the
+drift was **not** auto-resolved: the pre-pass scheduled nothing and returned `RunReport.DefinitionDrift`.
+A Part C **auto-resolved** drift is NOT this code — it rewinds, re-runs the safe suffix, and returns the
+**normal** run exit code, `0` green / `2` needs-human, never a drift-specific one), OR the terminal
+`planGuardrails`
 gate failed on the merged HEAD (§3.3/§7.1 above — durable on the plan branch; re-fires on resume or via
 `--revalidate-task plan:guardrails`), OR every task passed but the opt-in end-of-run delivery to the
 user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or `HookRejected` `MergeOnSuccessResult`
@@ -1418,8 +1430,9 @@ argument is passed through unchanged, so a genuinely bad path still produces the
 Editing an already-`succeeded` task's definition and re-running must not silently reuse the stale cached
 segment. A per-task **`definitionHash`** (§7 wire example above) makes such an edit observable, and on
 resume the harness **halts honestly** — it neither silently reuses the old bytes nor silently re-runs
-the changed task. **Part A is HALT-ONLY**; the auto-resolve / scoped-rewind primitive is **Part C**
-(fast-follow, its own design→draft-PR review — destructive/load-bearing).
+the changed task. **Part A is HALT-ONLY**; the auto-resolve / scoped-rewind primitive is **Part C**,
+specified below as a reviewable draft (**"Safe-auto-resolve + scoped rewind"**) — destructive/load-bearing,
+so it lands via its own implementation PR.
 
 **What `definitionHash` covers.** The hash is computed over exactly the files that define one task's
 behavior, in a fixed order: `task.json`; then the resolved **action file** (`TaskNode.Action.Path` — the
@@ -1498,7 +1511,7 @@ down — so auto-invalidation is unsound; that soundness limit is why Part A hal
 
 **The two remediation paths** named in the halt message:
 - **`guardrails reset <folder> -y`** — a full correct rebuild; works today (Part B tears down the plan branch, §6.1).
-- **`guardrails reset <folder> <taskId>...`** — a **scoped** reset of only the drifted task(s) + descendants, valid when the named set is a safe trailing suffix of plan-branch history. **Part C (fast-follow).** The same safety-check + rewind primitive additionally powers an opt-in **run-time auto-resolve** of the safe set; the unsafe (fan-in / non-suffix) case always halts regardless. (Not implemented in Part A.)
+- **`guardrails reset <folder> <taskId>...`** — a **scoped** reset of only the drifted task(s) + descendants, valid when the named set is a safe trailing suffix of plan-branch history. **Part C (this draft — designed in "Safe-auto-resolve + scoped rewind" below; its own implementation PR).** The same safety-check + rewind primitive additionally powers an opt-in **run-time auto-resolve** of the safe set; the unsafe (fan-in / non-suffix) case always halts regardless.
 
 **`--dry-run` preview.** `guardrails run --dry-run` previews the halt honestly — a drifted already-`succeeded`
 task shows `HALT (definition drift)` in the per-task resolution instead of a stale `SKIP (succeeded)`. For
@@ -1507,6 +1520,95 @@ parity with a real resume it consults BOTH the journal's recorded hash AND the p
 touches nothing); it degrades to journal-only when the workspace is not a git repo or the plan branch is
 absent. A genuine read failure while recomputing a hash simply omits that task from the preview (a dry run
 never aborts), whereas a real run would honestly abort — the dry run is advisory, not the gate.
+
+#### Safe-auto-resolve + scoped rewind (Part C, issue #274)
+
+Part A halts because *auto-invalidating* a drifted task is unsound — re-running it forks from a base that
+still physically carries its own stale integration commit (above). Part C lifts the halt for a
+**provably-safe** subset by physically **rewinding the plan branch past the stale commits** before the
+re-run, so the re-run forks from a base that no longer contains them, and **refuses (halts, exit 2) on
+everything else**. It is **DESTRUCTIVE** — it rewrites the durable, harness-owned plan branch
+`guardrails/<plan-name>` (never the user's checkout, which stays read-only for the whole run) — so it
+lands via its **own implementation PR + test matrix**, and the floor on *any* check ambiguity is
+**HALT, never destroy**. One primitive powers it, **authored once, two consumers**: the run-time
+auto-resolve here and the manual scoped reset below.
+
+**The drifted set `S`.** `S` = the drifted tasks Part A detected **∪** their transitive descendants
+(`DependencyGraph.TransitiveDependentsOf` — the same closure Part A reports, §7.2 above): a descendant
+consumed a now-stale producer output, so it must re-run too. Descendants always integrate *after* their
+producers (integration order respects `dependsOn`), so in the clean case `S` is a contiguous tail of
+history.
+
+**The trailing-suffix safety check** (the load-bearing predicate). Walk the plan branch's
+**`--first-parent`** history back from `HEAD`; each integration commit carries a `Guardrails-Task:`
+trailer (§5.3). Let `c_j` be the **earliest-integrated** commit of any member of `S`. `S` is *safe to
+rewind* **iff both** hold:
+1. **First-parent closure** — every commit in the removed range `[c_j … HEAD]` carries a
+   `Guardrails-Task:` trailer whose task is a **member of `S`** (nothing outside `S` integrated at or
+   after `S`'s earliest commit).
+2. **Merge-lineage closure — the merge-tip caveat (MUST be honored)** — for **every** merge/union commit
+   in that removed range, **every** task reachable via its **non-first-parent** lineage(s) (a fan-in
+   second parent, or any parent of an octopus union, back to the merge-base with the retained mainline)
+   is **also a member of `S`**. `git reset --hard` un-integrates those lineages too, yet a first-parent
+   walk never sees their trailers — so a fan-in whose merged-in upstreams are **not** contained in `S`
+   is **NOT** trivially safe, and the check **refuses**.
+
+When safe: `git reset --hard <parent-of-c_j>` on the plan branch (physically removing exactly `S`'s
+commits and only them), journal-reset every member of `S` to `pending` (§6.1), and the next scheduling
+wave re-runs `S` from a base that no longer contains the stale bytes — sound **exactly** on the set the
+check accepts, the soundness Part A's rejected auto-invalidate lacked. The rewind runs at the **pre-DAG
+gate**, *before* the Scheduler builds any wave, so no segment worktree is ever forked off the
+soon-to-be-rewound tip. The discarded commits stay recoverable via the plan branch's **reflog** for its
+expiry window (destructive, but not unrecoverable).
+
+**Refuse floor (un-overridable).** Anything the check cannot *prove* safe halts — a non-`S` trailer in
+the removed range, an uncontained merge lineage, **or a commit with no identifiable `Guardrails-Task:`
+trailer at all** (e.g. a human hand-fix commit on the integration branch, §7). No flag turns on an
+unsound rewind: `--reprocess-drift` / `driftPolicy: "reprocess"` authorizes **spend**, never
+**soundness**.
+
+**Gating** (the cost-surprise reconciliation — auto-resolve silently re-runs green work and spends
+tokens, so it must be **authorized**; the confirm discloses BOTH the token spend AND that the plan branch
+is rewound):
+
+| Context | Safe drift | Unsafe drift |
+|---|---|---|
+| **Default, interactive TTY** | print the per-file report, then **CONFIRM** (`y/N`, noting "rewinds the plan branch and re-runs N tasks, M of them prompt tasks") at the pre-DAG gate → `y` = auto-resolve, `N` = halt (`DefinitionDrift`, exit 2) | **HALT** always (exit 2) |
+| **Default, non-interactive** (CI / redirected stdin / overwatcher) | **HALT** (exit 2) — never prompts, never spends unbidden | **HALT** always |
+| **`--reprocess-drift` / `driftPolicy: "reprocess"`** (§2) | auto-resolve, **no prompt** (already authorized) | **HALT** always — the flag authorizes **SPEND**, never an **UNSOUND** rewind |
+
+Interactivity is decided by the existing **`ResetCommand.Confirm` idiom** (`Console.IsInputRedirected` ⇒
+refuse/halt; else prompt) — reused, not reinvented.
+
+**`DriftResolved` — an observer/journal event, NOT a new terminal bucket.** An auto-resolved run flows
+straight into the normal outcome and returns the **NORMAL** run exit code (`0` green / `2` needs-human,
+§7.1) — a resolved drift is *not* a distinct terminal state. Only a **declined / refused** drift is the
+exit-2 `RunReport.DefinitionDrift` (§7.2 above). To keep an unattended (`--reprocess-drift`) or confirmed
+rewind accountable, the resolution is recorded both ways: an **`IRunObserver.DriftResolved`** signal
+surfaced at the decision point (so an interactive operator sees exactly what a `y` will rebuild, *before*
+answering) and a durable, additive top-level **`driftResolutions[]`** journal section (optional, like
+`planPreflights` / `planGuardrails`, §7) capturing the rewind target commit and, per rebuilt task, its
+old→new short `definitionHash` — the same per-file payload `DefinitionDrift` reports. Every rewind,
+attended or not, leaves this audit trail of *what was discarded and why*.
+
+**Own PR + synthetic-history test matrix.** Because the primitive is destructive, it ships with an
+explicit history matrix proving the check accepts exactly the safe sets and the floor is HALT on every
+ambiguity: **linear** (clean tail ⇒ safe) · **fan-out** (drifted producer + all forked branches in `S`
+⇒ safe; one branch outside `S` ⇒ refuse) · **fan-in** (merged-in upstream contained in `S` ⇒ safe;
+uncontained ⇒ refuse — the merge-tip caveat) · **interleaved** (an independent non-`S` task integrated
+inside the tail ⇒ refuse) · **merge-tip / octopus** (a union commit at/inside the tail with an
+uncontained lineage ⇒ refuse) · **trailer-less commit in range** (a human hand-fix ⇒ refuse).
+
+**The manual scoped reset — the second consumer.** `guardrails reset <folder> <taskId>...` extends
+today's **journal-only** per-task reset (`RunReset.Task`) with the **same** safety-check + rewind
+primitive. Journal-only reset is latently unsound in worktree mode — it marks the task `pending` but
+leaves its stale commit physically on the plan branch, so a re-run forks a descendant off a
+stale-carrying base (the exact bug Part A halts on). Part C closes that: **safe** (`S` = the named
+task(s) ∪ descendants forms a trailing suffix) ⇒ rewind + journal-reset, and the next `guardrails run`
+re-runs `S`; **unsafe** ⇒ **refuse**, naming the blocking task, and point the user at
+`guardrails reset <folder> -y` — the full rebuild that is always sound because Part B tears down the
+whole plan branch (§6.1). Same primitive, same floor; only the entry point and the authorization surface
+differ.
 
 ### 7.3 `PlanDefinitionHash` — the plan's full behavioral definition (issue #260)
 
