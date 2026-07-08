@@ -56,7 +56,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // Reuse an integration worktree already checked out on the plan branch (a prior run's,
         // surviving the journal reset) — git refuses to check the same branch out twice, so a
         // resume must adopt the existing checkout rather than add a second one.
-        string integPath = ExistingWorktreeForBranch(planBranch)
+        string integPath = WorktreeForBranch(_repoPath, planBranch)
             ?? AddIntegrationWorktree(runId, planBranch);
 
         _integration = new IntegrationHandle
@@ -353,6 +353,83 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
+    /// Issue #274 (part B): fully tear down THIS plan's durable cross-run resume record so a
+    /// <c>--fresh</c> run or a full <c>reset</c> genuinely starts over. The plan branch
+    /// <c>guardrails/&lt;planName&gt;</c> and its integration worktree carry the <c>Guardrails-Task:</c>
+    /// trailers that <see cref="ReconcileFromPlanBranch(IntegrationHandle)"/>'s resume pre-pass reads to
+    /// skip an already-succeeded task. <see cref="PruneStaleSegmentBranches"/> DELIBERATELY preserves the
+    /// plan branch (a 2-component <c>guardrails/&lt;plan&gt;</c> is not a segment branch) — correct for a
+    /// normal resume, but it meant neither <c>--fresh</c> nor <c>reset -y</c> ever cleared it, so a
+    /// "fresh" run silently reused the stale trailers and re-skipped edited tasks. This removes the plan
+    /// branch and its integration worktree so a fresh reset really is a clean slate:
+    /// <list type="number">
+    /// <item>remove the integration worktree checked out on the plan branch — located git-authoritatively
+    /// via <see cref="WorktreeForBranch"/> (runId-agnostic), then swept off disk with the SAME pattern
+    /// <see cref="Discard"/>/<see cref="PruneStaleSegmentBranches"/> use (<c>git worktree remove --force</c>
+    /// + issue #109 <see cref="Io.SafeDelete"/> for Windows read-only loose objects);</item>
+    /// <item><c>git worktree prune</c>;</item>
+    /// <item><c>git branch -D guardrails/&lt;planName&gt;</c>;</item>
+    /// <item>a final disk sweep of any <c>_integration</c> directory a crash orphaned under
+    /// <paramref name="worktreeRoot"/> WITHOUT a live git registration — the manual <c>rm -rf</c> hazard
+    /// #274 was reported on (the root is this plan's own harness-owned tree, safe to sweep).</item>
+    /// </list>
+    /// Static (so <see cref="State.RunReset"/> can tear down without a run-scoped provider) and every
+    /// step best-effort/swallowed, mirroring <see cref="PruneStaleSegmentBranches"/>'s posture exactly: a
+    /// missing branch/worktree is a no-op (teardown is idempotent) and a partial/non-git repo never
+    /// aborts the reset. MUST be called ONLY on the explicit fresh/full-reset path — a normal resume must
+    /// preserve the plan branch and resume against it.
+    /// </summary>
+    public static void TeardownPlanBranch(string repoPath, string worktreeRoot, string planName)
+    {
+        // An empty/whitespace plan name would target the invalid branch "guardrails/" — nothing to do
+        // (mirrors CreateIntegration's #160 guard, on the teardown side).
+        if (string.IsNullOrWhiteSpace(planName)) return;
+        string planBranch = $"guardrails/{planName}";
+
+        // Remove the integration worktree checked out on the plan branch first — a checked-out branch
+        // cannot be deleted. Located via the git-authoritative listing (not a path reconstruction: the
+        // integration path bakes in the runId, unknown here).
+        try
+        {
+            if (WorktreeForBranch(repoPath, planBranch) is { } integWorktree && Directory.Exists(integWorktree))
+            {
+                try { GitIn(repoPath, "worktree", "remove", "--force", integWorktree); }
+                catch (InvalidOperationException) { /* not a registered worktree; pruned below */ }
+                // Issue #109: clear any tree git left on disk (Windows read-only loose objects).
+                SafeDelete.DeleteDirectory(integWorktree);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Not a git repo, or git unavailable — nothing to tear down.
+            return;
+        }
+
+        try { GitIn(repoPath, "worktree", "prune"); } catch (InvalidOperationException) { /* best-effort */ }
+        try { GitIn(repoPath, "branch", "-D", planBranch); } catch (InvalidOperationException) { /* best-effort */ }
+
+        // Belt-and-suspenders (issue #274): sweep any _integration directory a crash orphaned under the
+        // plan's worktree root without a live git registration — WorktreeForBranch only finds REGISTERED
+        // worktrees, so an unregistered leftover would survive step 1. This is the manual `rm -rf` users
+        // had to run by hand. Materialize the enumeration before deleting (deleting during a live
+        // AllDirectories walk throws); the whole sweep is best-effort.
+        if (Directory.Exists(worktreeRoot))
+        {
+            try
+            {
+                foreach (string integDir in Directory
+                    .EnumerateDirectories(worktreeRoot, "_integration", SearchOption.AllDirectories)
+                    .ToList())
+                {
+                    SafeDelete.DeleteDirectory(integDir);
+                }
+            }
+            catch (IOException) { /* best-effort */ }
+            catch (UnauthorizedAccessException) { /* best-effort */ }
+        }
+    }
+
+    /// <summary>
     /// W-1 protection (a): delete all <c>guardrails/&lt;runId&gt;/*</c> branches (and their
     /// worktrees) before any resume logic reads trailers, so stale segment refs cannot
     /// be mistaken for integrated work. The integration branch (<c>guardrails/&lt;planName&gt;</c>)
@@ -619,13 +696,19 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
-    /// The absolute path of the worktree that already has <paramref name="branch"/> checked out, or
-    /// null when no worktree holds it. Parses <c>git worktree list --porcelain</c> (its
-    /// <c>worktree</c> + <c>branch refs/heads/&lt;name&gt;</c> record pairs).
+    /// The absolute path of the worktree that already has <paramref name="branch"/> checked out in the
+    /// repo at <paramref name="repoPath"/>, or null when no worktree holds it. Parses
+    /// <c>git worktree list --porcelain</c> (its <c>worktree</c> + <c>branch refs/heads/&lt;name&gt;</c>
+    /// record pairs). Static and shared so BOTH <see cref="CreateIntegration"/> (adopting an existing
+    /// integration worktree on resume) and <see cref="TeardownPlanBranch"/> (removing it on a fresh
+    /// reset) locate the plan branch's worktree through ONE parse of the git-authoritative listing —
+    /// runId-agnostic, since the integration path bakes in the runId
+    /// (<c>&lt;worktreeRoot&gt;/&lt;runId&gt;/_integration</c>), so a path reconstruction from the
+    /// worktree root alone could not find it.
     /// </summary>
-    private string? ExistingWorktreeForBranch(string branch)
+    private static string? WorktreeForBranch(string repoPath, string branch)
     {
-        string listing = Git("worktree", "list", "--porcelain");
+        string listing = GitIn(repoPath, "worktree", "list", "--porcelain");
         string? currentPath = null;
         foreach (string rawLine in listing.Split('\n'))
         {

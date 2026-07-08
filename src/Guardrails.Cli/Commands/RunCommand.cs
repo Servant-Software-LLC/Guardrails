@@ -23,7 +23,7 @@ public static class RunCommand
 
         var freshOption = new Option<bool>("--fresh")
         {
-            Description = "Delete runtime state (run.json, state.json, logs) and re-seed before running."
+            Description = "Delete runtime state (run.json, state.json, logs), tear down the plan branch and all worktrees, then re-seed before running."
         };
 
         var noUiOption = new Option<bool>("--no-ui")
@@ -136,7 +136,9 @@ public static class RunCommand
         if (fresh)
         {
             RunReset.Fresh(probe.Plan.PlanDirectory);
-            io.Out.WriteLine("Fresh run: runtime state cleared and re-seeded.\n");
+            io.Out.WriteLine(
+                "Fresh run: runtime state cleared, the plan branch and all worktrees were torn down, "
+                + "and state was re-seeded from your current HEAD.\n");
         }
 
         bool live = !noUi && AnsiConsole.Profile.Capabilities.Interactive && !Console.IsOutputRedirected;

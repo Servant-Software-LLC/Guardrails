@@ -262,4 +262,76 @@ public sealed class GitWorktreeLifecycleTests
         Assert.True(Directory.Exists(integPath),
             "Integration worktree must NOT be removed by Discard — it is reattached, not pruned");
     }
+
+    /// <summary>
+    /// Issue #274 (part B): <see cref="GitWorktreeProvider.TeardownPlanBranch"/> removes the plan branch
+    /// <c>guardrails/&lt;plan-name&gt;</c> AND its checked-out integration worktree — the durable resume
+    /// record a <c>--fresh</c> / full <c>reset</c> must genuinely clear. The integration worktree is
+    /// located git-authoritatively (<c>git worktree list</c>), so the runId-bearing path is found without
+    /// reconstruction.
+    /// </summary>
+    [Fact]
+    public void TeardownPlanBranch_RemovesPlanBranch_AndItsIntegrationWorktree()
+    {
+        using var repo = new TempGitRepo();
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        IntegrationHandle integ = provider.CreateIntegration("teardown-plan", "run-274", CancellationToken.None);
+        string integPath = integ.IntegrationWorktreePath;
+
+        Assert.True(repo.BranchExists("guardrails/teardown-plan"), "sanity: the plan branch exists before teardown");
+        Assert.True(Directory.Exists(integPath), "sanity: the integration worktree exists before teardown");
+
+        GitWorktreeProvider.TeardownPlanBranch(repo.RepoPath, repo.WorktreeRoot, "teardown-plan");
+
+        Assert.False(repo.BranchExists("guardrails/teardown-plan"),
+            "TeardownPlanBranch must delete the plan branch guardrails/teardown-plan");
+        Assert.False(Directory.Exists(integPath),
+            "TeardownPlanBranch must remove the integration worktree from disk");
+        // git's own worktree list no longer references the torn-down worktree.
+        string listing = TempGitRepo.Git(repo.RepoPath, "worktree", "list", "--porcelain");
+        Assert.DoesNotContain("teardown-plan", listing, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Teardown is idempotent (issue #274): a missing plan branch is a swallowed no-op, callable
+    /// repeatedly without throwing — matching <see cref="GitWorktreeProvider.PruneStaleSegmentBranches"/>'s
+    /// best-effort posture. A non-git / partial repo must never abort the reset.
+    /// </summary>
+    [Fact]
+    public void TeardownPlanBranch_WhenNoPlanBranch_IsSwallowedNoOp()
+    {
+        using var repo = new TempGitRepo();
+
+        // No plan branch was ever created — teardown must be a no-op, callable twice.
+        GitWorktreeProvider.TeardownPlanBranch(repo.RepoPath, repo.WorktreeRoot, "never-created");
+        GitWorktreeProvider.TeardownPlanBranch(repo.RepoPath, repo.WorktreeRoot, "never-created");
+
+        Assert.False(repo.BranchExists("guardrails/never-created"));
+    }
+
+    /// <summary>
+    /// Belt-and-suspenders (issue #274): an <c>_integration</c> directory a crash orphaned under the
+    /// plan's worktree root — with no live git registration, so <c>git worktree list</c> never surfaces
+    /// it — is swept off disk by the teardown. This is the manual <c>rm -rf</c> the reporter had to run
+    /// three times by hand on a second machine.
+    /// </summary>
+    [Fact]
+    public void TeardownPlanBranch_SweepsOrphanedIntegrationDirectory()
+    {
+        using var repo = new TempGitRepo();
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        provider.CreateIntegration("orphan-plan", "run-live", CancellationToken.None);
+
+        // Simulate a prior run's crash-orphaned integration tree: a bare _integration directory under the
+        // worktree root that git no longer has registered (WorktreeForBranch cannot find it).
+        string orphan = Path.Combine(repo.WorktreeRoot, "run-old", "_integration");
+        Directory.CreateDirectory(orphan);
+        File.WriteAllText(Path.Combine(orphan, "leftover.txt"), "stale");
+
+        GitWorktreeProvider.TeardownPlanBranch(repo.RepoPath, repo.WorktreeRoot, "orphan-plan");
+
+        Assert.False(repo.BranchExists("guardrails/orphan-plan"), "the live plan branch is torn down");
+        Assert.False(Directory.Exists(orphan),
+            "an orphaned _integration directory under the worktree root must be swept from disk");
+    }
 }

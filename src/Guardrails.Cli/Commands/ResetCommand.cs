@@ -81,7 +81,9 @@ public static class ResetCommand
         }
 
         RunReset.Fresh(planDirectory);
-        io.Out.WriteLine("Full reset done: run.json, state.json, and logs deleted; state re-seeded.");
+        io.Out.WriteLine(
+            "Full reset done: run.json, state.json, and logs deleted; the plan branch and all worktrees "
+            + "torn down; state re-seeded.");
         return ExitCodes.Success;
     }
 

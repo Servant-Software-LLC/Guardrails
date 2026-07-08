@@ -17,11 +17,14 @@ public static class RunReset
     /// <summary>
     /// Full fresh reset (SSOT §6.1): delete <c>run.json</c>, <c>state.json</c>,
     /// <c>merge-conflicts.log</c>, the plan-root <c>logs/</c> tree (all runs' attempt artifacts and
-    /// any exported static log site, §8) and the <c>captured/</c> baseline store, then re-seed
-    /// <c>state.json</c> from <c>seed.json</c> (or <c>{}</c>). The committed <c>seed.json</c>, the task
-    /// folders, and the committed review marker <c>state/guardrails-review.json</c> (§13) are
-    /// untouched — the marker is a committed plan artifact (planHash-keyed, self-invalidating on any
-    /// edit), NOT per-run runtime state, so a fresh slate keeps the prior review attestation.
+    /// any exported static log site, §8) and the <c>captured/</c> baseline store; tear down the plan
+    /// branch <c>guardrails/&lt;plan-name&gt;</c> and its worktrees (issue #274, part B — the plan branch
+    /// is the durable cross-run resume record, so a genuine fresh slate must clear it, not just the
+    /// runtime-state files); then re-seed <c>state.json</c> from <c>seed.json</c> (or <c>{}</c>). The
+    /// committed <c>seed.json</c>, the task folders, and the committed review marker
+    /// <c>state/guardrails-review.json</c> (§13) are untouched — the marker is a committed plan artifact
+    /// (planHash-keyed, self-invalidating on any edit), NOT per-run runtime state, so a fresh slate keeps
+    /// the prior review attestation.
     /// </summary>
     /// <remarks>
     /// <c>captured/</c> (issue #51, the restore-on-retry baselines) MUST be wiped: a stale baseline
@@ -47,10 +50,12 @@ public static class RunReset
         // (the nudge returns) — a fresh run must keep the prior review attestation, not erase it.
         DeleteDirectoryIfExists(Path.Combine(stateDir, "captured"));
 
-        // F3: prune stale guardrails/<runId>/* segment+fork branches and their worktrees left
-        // behind by a crashed worktree-mode run. State-file deletion alone never touches git refs,
-        // so a crashed run's segment branches would survive --fresh. Best-effort: a non-git
-        // workspace or a load failure must not abort the reset.
+        // F3 + issue #274: prune stale guardrails/<runId>/* segment+fork branches and their worktrees
+        // left behind by a crashed worktree-mode run, AND tear down the plan branch guardrails/<plan-name>
+        // itself. State-file deletion alone never touches git refs, so a crashed run's segment branches —
+        // and, crucially, the plan branch whose trailers drive resume — would survive --fresh, silently
+        // reusing already-succeeded segments even for edited tasks. Best-effort: a non-git workspace or a
+        // load failure must not abort the reset.
         PruneStaleWorktreesAndBranches(planDirectory);
 
         // Re-seed immediately so a subsequent run starts from the seed-derived state.
@@ -85,8 +90,9 @@ public static class RunReset
 
     /// <summary>
     /// Load the plan (best-effort) to resolve its workspace + worktree root, then prune any stale
-    /// <c>guardrails/&lt;runId&gt;/*</c> segment/fork branches and worktrees from the workspace repo.
-    /// Swallows every failure (unloadable plan, non-git workspace) so <c>--fresh</c> never aborts.
+    /// <c>guardrails/&lt;runId&gt;/*</c> segment/fork branches and worktrees from the workspace repo AND
+    /// tear down the plan branch <c>guardrails/&lt;plan-name&gt;</c> itself (issue #274, part B). Swallows
+    /// every failure (unloadable plan, non-git workspace) so <c>--fresh</c> never aborts.
     /// </summary>
     private static void PruneStaleWorktreesAndBranches(string planDirectory)
     {
@@ -97,6 +103,17 @@ public static class RunReset
 
             GitWorktreeProvider.PruneStaleSegmentBranches(
                 plan.Workspace, SchedulerFactory.WorktreeRootFor(plan));
+
+            // Issue #274 (part B): tear down the plan branch itself. It is the DURABLE cross-run resume
+            // record — its Guardrails-Task: trailers drive the "already succeeded, skip it" pre-pass — and
+            // PruneStaleSegmentBranches DELIBERATELY preserves it (it is a 2-component plan branch, not a
+            // segment branch). Correct for a normal resume, but it meant --fresh / reset -y never actually
+            // cleared it, so a "fresh" run silently reused the stale trailers. This runs ONLY on the
+            // fresh/full-reset path (Fresh is the sole caller) — a normal resume never reaches here, so the
+            // plan branch is preserved and resumed against exactly as before. The plan name matches the
+            // Scheduler's branch-creating derivation (Path.GetFileName(plan.PlanDirectory)).
+            GitWorktreeProvider.TeardownPlanBranch(
+                plan.Workspace, SchedulerFactory.WorktreeRootFor(plan), Path.GetFileName(plan.PlanDirectory));
 
             // #195 retry-salvage pruning (deliverable 6): a --fresh reset also clears every preserved
             // salvage ref across the whole repo, alongside the existing stale segment/fork branch

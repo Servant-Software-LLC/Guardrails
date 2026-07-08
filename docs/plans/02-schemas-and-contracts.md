@@ -924,9 +924,16 @@ analysis — the default remains that the harness does not mutate the user's che
   from `seed.json` (or `{}`) when missing. `guardrails run --fresh` deletes runtime
   state and re-seeds. The `--fresh` deletion list is: `run.json`, `state.json`,
   `merge-conflicts.log`, `state/captured/`, and the plan-root `logs/` tree (all runs'
-  attempt artifacts and any static log site, on-the-fly or exported, §8/§12.3). It does **NOT** delete
-  `state/guardrails-review.json` — that marker is a committed plan artifact (§13),
-  planHash-keyed so it self-invalidates on any edit, NOT per-run runtime state.
+  attempt artifacts and any static log site, on-the-fly or exported, §8/§12.3). It **also tears down
+  the plan branch `guardrails/<plan-name>` and its worktrees** (issue #274, part B): the plan branch is
+  the durable cross-run resume record — its `Guardrails-Task:` trailers drive the "already succeeded,
+  skip it" pre-pass (§7) — so, unlike the stale segment/fork branch prune which deliberately *preserves*
+  it, a genuine fresh slate must remove it (branch + its integration worktree + any orphaned
+  `_integration` directory under the plan's worktree root), else a "fresh" run silently reuses the stale
+  trailers and re-skips edited tasks. This teardown fires **only** on the explicit `--fresh` /
+  `guardrails reset` (full-reset) path — a normal resume preserves the plan branch and resumes against
+  it. It does **NOT** delete `state/guardrails-review.json` — that marker is a committed plan artifact
+  (§13), planHash-keyed so it self-invalidates on any edit, NOT per-run runtime state.
 - The **harness is the single writer** of `state.json`. Child processes never touch it.
 
 ### 6.2 Fragments (snapshot in, fragment out)
