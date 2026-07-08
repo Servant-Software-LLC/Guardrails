@@ -109,6 +109,56 @@ public sealed class ReVerifierSeamTests : IDisposable
     }
 
     // =========================================================================
+    // #272 Part 1: a failing plan-level gate's reason must carry the TAIL of stdout
+    // (the #179-style re-emitted failure detail), NOT the preamble FIRST line — this
+    // is the ONLY signal an operator gets (a plan gate never retries / composes feedback).
+    // The re-verify seam funnels BOTH plan-level gates (PlanPreflightPhase +
+    // PlanGuardrailPhase), so pinning it here covers both.
+    // =========================================================================
+
+    [Fact]
+    public async Task FailingGuardrail_Reason_CarriesTail_NotPreambleFirstLine()
+    {
+        const string preamble = "added 464 packages, and audited 465 packages in 24s";
+        const string tailDetail = "FAIL  dsl-tools/dfd.test.ts > round-trips the DSL";
+        const string tailSummary = "vitest suite is not green at the terminal gate";
+
+        // Realistic shape: an npm-ci preamble line, then a FULL test run (many PASS lines) so the preamble is
+        // far from the end, then the #179-style re-emitted failure block at the very END. The reason is the
+        // TAIL, so the preamble genuinely scrolls off and the re-emitted detail lands.
+        string emit(string line) => OperatingSystem.IsWindows() ? $"Write-Output '{line}'\n" : $"echo '{line}'\n";
+        var body = new System.Text.StringBuilder();
+        if (!OperatingSystem.IsWindows())
+        {
+            body.Append("#!/usr/bin/env bash\n");
+        }
+        body.Append(emit(preamble));
+        for (int i = 1; i <= 20; i++)
+        {
+            body.Append(emit($"PASS  dsl-tools/case-{i:00}.test.ts"));
+        }
+        body.Append(emit("=== Failure details (re-emitted at the end, #179) ==="));
+        body.Append(emit(tailDetail));
+        body.Append(emit(tailSummary));
+        body.Append("exit 1");
+
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition g = WriteGuardrailScript("01-vitest-suite", body.ToString());
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot, [g], TestContext.Current.CancellationToken);
+
+        GuardrailResult failed = Assert.Single(result.FailedGuardrails);
+        string reason = failed.Reason ?? string.Empty;
+
+        // The re-emitted failure detail at the END is carried (both the FAIL line and the summary line)...
+        Assert.Contains(tailDetail, reason, StringComparison.Ordinal);
+        Assert.Contains(tailSummary, reason, StringComparison.Ordinal);
+        // ...and the npm-ci preamble FIRST line (the pre-#272 mis-reported "reason") is NOT surfaced.
+        Assert.DoesNotContain(preamble, reason, StringComparison.Ordinal);
+    }
+
+    // =========================================================================
     // Attempt-decoupled: GUARDRAILS_ACTION_* env vars must NOT be injected
     // The scenarios-present guardrail greps for the exact method name below.
     // =========================================================================
@@ -268,9 +318,10 @@ public sealed class ReVerifierSeamTests : IDisposable
                 : $"failed: {failure?.Reason}") +
             ". A pwsh ParserError (#173) would show as an unexpected failure here.");
 
-        // The reason a failing guardrail surfaces is its FIRST stdout line; a passing one
-        // we re-run to capture stdout would be redundant — instead the failing cases assert
-        // their printed token, proving the body parsed and reached its Write-Output.
+        // The reason a failing guardrail surfaces is the TAIL of its stdout (#272 Part 1); each case
+        // here prints a single marker line, so that line IS the tail. A passing one we re-run to capture
+        // stdout would be redundant — instead the failing cases assert their printed token, proving the
+        // body parsed and reached its Write-Output.
         if (!expectPass)
         {
             Assert.NotNull(failure);

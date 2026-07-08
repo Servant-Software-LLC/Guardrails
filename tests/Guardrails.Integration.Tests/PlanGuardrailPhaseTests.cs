@@ -152,6 +152,39 @@ public sealed class PlanGuardrailPhaseTests
         Assert.Contains("plan-guardrail terminal gate RED (deliberate)", output);
     }
 
+    /// <summary>
+    /// Issue #272 Part 1 (the plan-level analogue of #179): when a terminal <c>&lt;plan&gt;/guardrails/</c>
+    /// check emits PREAMBLE noise first (an <c>npm ci</c> line) and re-emits the REAL failure detail at the
+    /// END of stdout, the journaled <c>planGuardrails.failedChecks[].reason</c> must carry the TAIL (the
+    /// re-emitted detail), NOT the early preamble line. Pre-#272 the reason was the FIRST non-empty line, so
+    /// a failing gate reported <c>added 464 packages…</c> and hid the vitest error — zero actionable signal.
+    /// </summary>
+    [Fact]
+    public async Task PlanGuardrailRed_Reason_CarriesReEmittedTail_NotPreambleFirstLine()
+    {
+        using var plan = new PlanGuardrailPlan(worktree: false);
+        // Overwrite the terminal check with one that prints npm-ci preamble noise FIRST, then re-emits the
+        // real failure detail at the END (the #179 convention) before exiting non-zero.
+        WriteScript(plan.TerminalCheckPath, PreambleThenTailTerminalScript());
+
+        (int exit, string output) = await RunCliCapturedAsync("run", plan.PlanDir, "--no-ui", "--no-log-server");
+        Assert.Equal(ExitCodes.TaskFailed, exit);
+
+        JournalDocument doc = ReadJournal(plan.PlanDir);
+        Assert.NotNull(doc.PlanGuardrails);
+        FailedGuardrail check = Assert.Single(doc.PlanGuardrails!.FailedChecks);
+
+        // The stored reason carries the re-emitted TAIL — both the specific FAIL line and the summary line...
+        Assert.Contains("FAIL  dsl-tools/dfd.test.ts", check.Reason, StringComparison.Ordinal);
+        Assert.Contains("vitest suite is not green at the terminal gate", check.Reason, StringComparison.Ordinal);
+        // ...and NOT the npm-ci preamble first line (the pre-#272 mis-reported reason).
+        Assert.DoesNotContain("added 464 packages", check.Reason, StringComparison.Ordinal);
+
+        // The console halt block surfaces the same tail detail (and not the preamble).
+        Assert.Contains("vitest suite is not green at the terminal gate", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("added 464 packages", output, StringComparison.Ordinal);
+    }
+
     // ═════════════════════════════════════════════════════════════════════════════════════════
     // Behaviour 2 — B2 terminal-only resume: all tasks SKIP (no attempt burned), ONLY the terminal
     // phase re-fires. Method names carry "Resume".
@@ -658,6 +691,32 @@ public sealed class PlanGuardrailPhaseTests
             "#          the run when a check exits non-zero.\n" +
             "echo 'plan-guardrail terminal gate " + verdict + "'\n" +
             "exit " + code + "\n";
+    }
+
+    /// <summary>
+    /// A terminal <c>&lt;plan&gt;/guardrails/</c> check that emits <c>npm ci</c> preamble noise FIRST, runs a
+    /// FULL test suite (many lines, so the preamble is far from the end), then re-emits its real failure
+    /// detail at the END (the #179 convention) before failing (exit 1) — the exact #272 Part 1 shape. Opens
+    /// with the required <c>catches:</c> declaration (GR2027).
+    /// </summary>
+    private static string PreambleThenTailTerminalScript()
+    {
+        string emit(string line) => Ps ? $"Write-Output '{line}'\n" : $"echo '{line}'\n";
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append(Ps ? string.Empty : "#!/usr/bin/env bash\n");
+        sb.Append("# catches: the plan-level terminal gate must report the RE-EMITTED failure detail (tail),\n");
+        sb.Append("#          not the npm-ci preamble first line (#272 Part 1).\n");
+        sb.Append(emit("added 464 packages, and audited 465 packages in 24s"));
+        for (int i = 1; i <= 20; i++)
+        {
+            sb.Append(emit($"PASS  dsl-tools/case-{i:00}.test.ts"));
+        }
+        sb.Append(emit("=== Failure details (re-emitted so they land in the harness feedback tail) ==="));
+        sb.Append(emit("FAIL  dsl-tools/dfd.test.ts > round-trips the DSL"));
+        sb.Append(emit("vitest suite is not green at the terminal gate"));
+        sb.Append("exit 1\n");
+        return sb.ToString();
     }
 
     private static void WriteScript(string path, string content)

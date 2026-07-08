@@ -52,10 +52,14 @@ public sealed class GuardrailReVerifier : IReVerifier
 
             if (!result.Succeeded)
             {
+                // #272 Part 1: a plan-level gate's reason is the ONLY operator signal (no retry, no
+                // feedback.md tail), so it must carry the ACTUAL failure detail — the TAIL of stdout, where
+                // the #179 convention re-emits it — not the FIRST line, which is a guardrail's preamble
+                // noise (npm ci / dotnet restore / an echo). GuardrailFailureReason.Tail does exactly that.
                 string reason = result.TimedOut
                     ? "guardrail timed out"
-                    : FirstNonEmptyLine(result.StandardOutput)
-                      ?? FirstNonEmptyLine(result.StandardError)
+                    : GuardrailFailureReason.Tail(result.StandardOutput)
+                      ?? GuardrailFailureReason.Tail(result.StandardError)
                       ?? $"exit code {result.ExitCode}";
 
                 failed.Add(new GuardrailResult { Name = guardrail.Name, Passed = false, Reason = reason });
@@ -63,20 +67,5 @@ public sealed class GuardrailReVerifier : IReVerifier
         }
 
         return new ReVerifyResult { Passed = failed.Count == 0, FailedGuardrails = failed };
-    }
-
-    private static string? FirstNonEmptyLine(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        foreach (string line in text.Split('\n'))
-        {
-            string trimmed = line.Trim();
-            if (trimmed.Length > 0)
-                return trimmed;
-        }
-
-        return null;
     }
 }

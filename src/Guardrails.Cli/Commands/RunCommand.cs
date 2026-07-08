@@ -378,7 +378,17 @@ public static class RunCommand
         {
             foreach (FailedGuardrail check in failedChecks)
             {
-                output.WriteLine($"  FAILED: {check.Name} — {check.Reason}");
+                // #272 Part 1: the reason now carries the TAIL of the guardrail's stdout (the re-emitted
+                // failure detail), which may span multiple lines. Print the first line on the `FAILED:`
+                // line and INDENT the continuation lines so the block stays legible instead of losing the
+                // alignment at column 0.
+                string[] reasonLines = (check.Reason ?? string.Empty)
+                    .Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+                output.WriteLine($"  FAILED: {check.Name} — {reasonLines[0]}");
+                for (int i = 1; i < reasonLines.Length; i++)
+                {
+                    output.WriteLine($"          {reasonLines[i]}");
+                }
             }
             output.WriteLine($"  (full detail in {journalPath} under \"planGuardrails\")");
         }
