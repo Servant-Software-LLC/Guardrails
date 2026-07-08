@@ -1048,6 +1048,23 @@ Per `references/schemas.md`, exactly:
 - `guardrails.json`: version + sensible run config. **Any `.prompt.md` anywhere ⇒
   the `promptRunners` block with a resolvable default is REQUIRED** (else GR2008).
   Scope `allowedTools` to what the actions genuinely need.
+- **Multi-task plans should default-include read-only git inspection in `allowedTools`
+  (#252).** When the plan has **≥2 tasks joined by `dependsOn`** — i.e. a downstream
+  task's action prompt runs in a workspace an ancestor task has already committed
+  changes to — add a handful of **READ-ONLY** git commands to the default
+  `allowedTools` alongside whatever stack-specific entries are already there
+  (`Bash(dotnet *)` for a dotnet plan, etc.): `Bash(git log*)`, `Bash(git diff*)`,
+  `Bash(git show*)`, `Bash(git status*)`. "What did the prior task actually change
+  before I extend it further?" is a normal, common instinct for a later task in a
+  sequential chain, not a plan smell — without these, the agent burns turns on
+  rejected `git log`/`git diff` attempts (in whatever compound-vs-bare form it tries
+  next — the rejection is identical either way) and falls back to broad `Grep`/`Glob`
+  sweeps across dozens of files to reconstruct context a single `git diff` would have
+  given directly. Keep every **state-mutating** git operation OUT of the allowed set —
+  `restore`, `reset`, `checkout` (outside the task's own files), `push`, `commit`,
+  `stash` stay ungranted; this is about read-only inspection, never loosened write
+  access. A single-task plan (nothing yet for a task to inspect) has no need for this —
+  omit it there, as the existing single-task templates correctly do.
 - `task.json` per task: `description` (one actionable line), `dependsOn`, a **`stableId`**
   (see below), and overrides only when justified. One `action.*` file per task folder.
 - **`stableId` — mint one per task by default.** It is an **internal regeneration-identity

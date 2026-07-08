@@ -680,7 +680,14 @@ produces and the repo doesn't already contain → a missing guardrail-enabling t
   (`$fragment.'<folder-name>'.<key>`); a mismatch between the prompt's key and the guardrail's
   index is the same BLOCKER. Fix: rewrite the fragment example to
   `{ "<this-task-folder-name>": { … } }` and align the guardrail's index.
-- `promptRunners` present iff prompts exist; `allowedTools` scoped, not blanket.
+- `promptRunners` present iff prompts exist; `allowedTools` scoped, not blanket. **On a
+  multi-task plan (≥2 tasks joined by `dependsOn`), flag an `allowedTools` that carries
+  stack-specific commands but no read-only git inspection** (`Bash(git log*)`, `Bash(git
+  diff*)`, `Bash(git show*)`, `Bash(git status*)`) **— a MINOR finding, not a blocker**
+  (plan-breakdown Step 6, #252): without it a downstream task's prompt cannot cheaply
+  inspect what an ancestor task already committed and falls back to broad `Grep`/`Glob`
+  sweeps. Do not suggest adding any state-mutating git command (`restore`, `reset`,
+  `checkout`, `push`, `commit`, `stash`) — those stay outside `allowedTools` by design.
 
 ### 6. Report
 

@@ -94,7 +94,10 @@ designed, not scope creep.
     "claude": {
       "command": "claude",
       "permissionMode": "acceptEdits",
-      "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
+      "allowedTools": [
+        "Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)",
+        "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)", "Bash(git status*)"
+      ],
       "maxTurns": 50,
       "guardrailOverrides": {
         "permissionMode": "default",
@@ -105,6 +108,14 @@ designed, not scope creep.
   }
 }
 ```
+
+The four `Bash(git …*)` entries are READ-ONLY inspection commands (#252) — this plan is a
+5-task chain (`00-baseline` → `01-author-tests` → `02-implement` → `03-update-readme` →
+`04-suite-green`), so `02-implement-stats-flag`'s action prompt may reasonably want to run
+`git diff` / `git log` to see exactly what `01-author-stats-tests` committed (the test file
+and its stub) before extending the stub into real logic — the textbook case the default now
+covers. Note what is deliberately absent: `restore`, `reset`, `checkout`, `push`, `commit`,
+`stash` — every state-mutating git operation stays outside `allowedTools`.
 
 ### `tasks/00-baseline-inventory-tests-green/` — **INSERTED TASK** (brownfield positive-baseline / preflight root, #181)
 
