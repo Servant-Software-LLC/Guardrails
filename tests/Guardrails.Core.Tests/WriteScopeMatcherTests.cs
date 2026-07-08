@@ -127,6 +127,49 @@ public sealed class WriteScopeMatcherTests
     }
 
     // =========================================================================
+    // Issue #262 — dotfile write-scope entries.
+    // A leading-dot dotfile FILE (".gitignore", ".npmrc", ...) is structurally
+    // indistinguishable from a dotfile DIRECTORY (".github") — both are a single
+    // leading dot with no interior extension — so Normalize misclassified the FILE
+    // case as a directory ('<entry>/**') and a writeScope of ".gitignore" never
+    // claimed the file ".gitignore" (dead-ending a legit dotfile edit at
+    // needs-human). A bare leading-dot entry now matches its literal path in
+    // ADDITION to the directory expansion. Regression floor: non-dot globs, the
+    // dotfile-DIRECTORY arm, and genuine out-of-scope discrimination must all hold.
+    // Kept separate from the pinned §2.1(d) 27-row table (which stays verbatim).
+    // =========================================================================
+
+    [Theory]
+    // the exact reported bug: a literal dotfile entry claims its own file
+    [InlineData(".gitignore", ".gitignore", true)]
+    // generalizes to every single-dot dotfile
+    [InlineData(".npmrc", ".npmrc", true)]
+    [InlineData(".editorconfig", ".editorconfig", true)]
+    [InlineData(".gitattributes", ".gitattributes", true)]
+    // a dotfile nested under a directory also matches literally
+    [InlineData("config/.npmrc", "config/.npmrc", true)]
+    // a dotfile with an interior extension was never broken — still a file literal
+    [InlineData(".env.local", ".env.local", true)]
+    // a dotfile-DIRECTORY glob still claims nested files (no WS_1 '.github' regression)
+    [InlineData(".github/**", ".github/workflows/ci.yml", true)]
+    // a BARE dotfile-directory entry still claims nested files (directory arm intact)
+    [InlineData(".github", ".github/workflows/ci.yml", true)]
+    // a '*'-segment glob still descends into a dot-directory (standard dot-aware behavior)
+    [InlineData("**/*.cs", ".github/scripts/foo.cs", true)]
+    // a normal non-dot directory glob is unaffected
+    [InlineData("src/**", "src/Foo.cs", true)]
+    // DISCRIMINATION: a dotfile entry must NOT match an unrelated in-repo path
+    [InlineData(".gitignore", "src/Foo.cs", false)]
+    // DISCRIMINATION: a dotfile entry must NOT match a DIFFERENT dotfile
+    [InlineData(".gitignore", ".gitattributes", false)]
+    // DISCRIMINATION: a root-declared dotfile must NOT match a same-named file nested under a dir
+    [InlineData(".gitignore", "src/.gitignore", false)]
+    public void IsInScope_Dotfiles_Issue262(string glob, string path, bool expected)
+    {
+        Assert.Equal(expected, WriteScope.IsInScope(path, [glob]));
+    }
+
+    // =========================================================================
     // §2.2 — Generative / property tests, seeded and reproducible
     //
     // Seed 0x08C0FFEE (plan-08 + COFFEE mnemonic).  A failing counterexample from

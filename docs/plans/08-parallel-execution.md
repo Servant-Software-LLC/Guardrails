@@ -425,6 +425,18 @@ Matching is segment-by-segment against the `/`-separated path. Within a single s
   must reappear between the two `**`s), or trailing (`src/Feature/**`).
 - A **bare directory** entry (no glob, e.g. `src/Feature`) **normalizes to `src/Feature/**`** — it
   matches files *under* the directory, never the directory entry itself.
+- A **leading-dot dotfile** entry (issue #262): a bare (no-`*`, no trailing-slash) entry whose final
+  segment is a leading-dot dotfile with no interior extension — `.gitignore`, `.npmrc`,
+  `.editorconfig`, `.gitattributes`, `config/.npmrc` — is structurally indistinguishable from a
+  dotfile *directory* like `.github` (both are a single leading dot, no interior extension). The
+  file-vs-directory heuristic can only guess, and guessing *directory* (`<entry>/**`) made a
+  `writeScope: [".gitignore"]` never claim the FILE `.gitignore`. Such an entry therefore matches its
+  **literal path** (exact, `SegmentComparison`-cased equality) in ADDITION to the `<entry>/**`
+  directory expansion: the literal arm claims the file, the directory arm still claims nested files if
+  it is in fact a directory. The literal arm demands exact equality, so it never over-claims
+  (`.gitignore` does not match `src/Foo.cs` nor `src/.gitignore`), and the directory arm is inert for
+  a real dotfile file (a bare directory path never appears in a file diff). A `*`-bearing dotfile glob
+  is unaffected and already descends dot-directory segments (`**/*.cs` matches `.github/scripts/foo.cs`).
 - A **trailing slash** is an **explicit directory marker** (issue #136): `src/Feature/` and the dotted
   `src/Foo.Bar/` both normalize to `<dir>/**`, claiming nested files. The slash is honoured *before* the
   file-vs-directory extension heuristic, so a dotted directory name is not mis-read as a file — and it
