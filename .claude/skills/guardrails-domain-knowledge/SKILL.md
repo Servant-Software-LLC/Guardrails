@@ -468,6 +468,54 @@ guardrails will run -- with tests-fail-on-current-code proving non-tautology) ->
 BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
 (`guardrails graph --check`) and regenerates if the human's edits made it stale.
 
+## Multi-wave plans (nested layout, M2 v1 -- SSOT section 14)
+
+The recursion is **`task ⊂ wave ⊂ plan`**: a **wave** is a first-class completion unit -- a task DAG plus
+its own entry/exit gates -- that participates in the SAME resume + drift + reset model as a task, one level
+up. A **waved plan** is a strictly-ordered sequence of waves sharing **one run config, one continuous plan
+branch, and one continuous journal**, separated by **hard barriers**. There is **no DAG of waves** -- a
+total order driven by the wave folder's numeric prefix.
+
+- **Layout / detection.** A plan is *waved* iff it has **no root `tasks/`** AND >=1 immediate subdir
+  matching **`^wave-([0-9]+)-[a-z0-9-]+$`** (the numeric group is load-bearing -- it drives the strict
+  order). Each wave is a mini-plan folder `<plan>/<waveDir>/{preflights,guardrails,tasks}/`. A flat plan is
+  unchanged. Loader/validator codes: **GR2032** mixed layout (root `tasks/` AND wave dirs), **GR2033** wave
+  numbering (duplicate `NN` or a non-conforming sibling dir = error; a numbering **gap** = warning),
+  **GR2034** cross-wave `dependsOn` (`dependsOn` is intra-wave, plain sibling folder names only).
+- **Wave-qualified identity (the load-bearing delta, generalizes invariant #2).** In a waved plan a task's
+  canonical id is **`<waveDir>/<taskFolder>`** (e.g. `wave-02-provision/01-author-tests`). This id is the
+  journal `tasks{}` key, the `Guardrails-Task:` trailer value, AND the **section 6.2 single-writer
+  state-fragment key** -- a fragment's top-level key must equal this exact id, so two waves may each reuse
+  `01-` numbering with zero namespace collision; a bare/other-wave key is rejected as foreign (exactly like
+  a `stableId`-keyed one, #164). The GR2022 cross-task state-read lint gains a **wave-aware branch**: an
+  earlier-wave read is satisfied by the barrier, a same-wave read still needs the `dependsOn` ancestor, a
+  later-wave read is an error.
+- **`WaveDefinitionHash`** (section 7.2/7.3) nests between `PlanDefinitionHash` and `TaskDefinitionHash`:
+  it FOLDS each constituent task's `TaskDefinitionHash` value plus the wave's own preflight/guardrail gate
+  files, and **excludes the shared `guardrails.json`** (Decision C). Folding the child hashes guarantees
+  the levels cannot drift. It anchors **wave-level drift**: a COMPLETED wave whose hash changed on resume
+  gets the SAME drift treatment as a task -- halt/prompt/auto per `autonomyPolicy`, a `boundary:"wave"`
+  `decisions[]` entry. Drift fires ONLY on already-COMPLETED units; editing an all-`pending` future wave is
+  sanctioned forward adjustment, NOT drift (the `isCompleted` predicate is the clean separator).
+- **Wave loop + hard barrier (design intent).** Per wave in strict order: skip if complete (resume); run
+  the wave ENTRY preflight; drain the wave's DAG on the continuous plan branch via the EXISTING Scheduler;
+  HARD BARRIER (full drain -- any needs-human/blocked halts the run, later waves never start); run the wave
+  EXIT gate; write the **`Guardrails-Wave:` / `Guardrails-Wave-Hash:` marker commit** (Decision E) + journal
+  the wave complete; the between-wave step is a plain human JIT checkpoint (honest halt at an
+  absent/empty/unreviewed next wave, pointed at the integration worktree, Decision D). Per-wave `waves[]`
+  journal record + entry/exit phase markers mirror `planPreflights`/`planGuardrails`. Wave-scoped
+  `guardrails reset <plan> <wave>` is always a safe suffix under strict order.
+- **STATUS (M2 v1): the FOUNDATION landed; the EXECUTION LOOP is staged.** Landed + tested: the nested-layout
+  loader/validator (GR2032-GR2034, GR2022 wave branch), wave-qualified identity (the single-writer key),
+  `WaveDefinitionHash`, the journal `waves[]` schema (`WaveStatus`/`WaveJournalEntry`), the
+  `DependencyGraph.Waves()->Tiers()` rename, and a committed waved fixture that validates clean. **DEFERRED
+  (its own reviewed slice):** the wave-execution loop itself -- the continuous plan branch across waves,
+  per-wave gate invocation, the marker commit, cross-wave resume, and runtime wave-drift resolution -- which
+  needs the Scheduler/journal refactor called out in the design (a per-wave sub-plan cannot reuse the
+  plan-scoped journal as-is). Until then **`guardrails run` on a waved plan HONESTLY HALTS** (exit 1) rather
+  than run it as a flat DAG that would ignore the wave barriers; `validate`/`plan`/loader fully support
+  waved plans.
+
 ## Load-bearing invariants
 
 1. **Deterministic over prompts** -- prompt-judges are last resort, never alone, and
@@ -490,6 +538,7 @@ BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
 | Mental model, principles, out-of-scope | `docs/plans/01-overview.md` |
 | Milestones, exit criteria, v2 bets, risk register | `docs/plans/03-roadmap.md` |
 | Founding plan (history) | `docs/plans/00-initial-plan.md` |
+| Multi-wave plans (nested layout, design of record) | `docs/plans/10-multi-wave-plans.md` (contract in SSOT section 14) |
 | Golden example (runnable + skill reference) | `examples/hello-guardrails/` |
 
 ## Status (update as milestones complete)
@@ -512,10 +561,11 @@ BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
   action -> guardrails -> merge, writes the section 8 per-attempt log layout. New CLI: `status`,
   `reset <folder> [task]`, `run --fresh`. M4 still owns DAG/parallelism/retry/needs-human.
 - M4 DAG + parallelism + retry: **complete**. `DependencyGraph` (cycle detection -> GR2007,
-  waves, transitive-dependent closure), Channel-based `Scheduler` (maxParallelism workers;
-  failure blocks the transitive closure while independent branches finish; resume pre-pass),
-  `TaskExecutor` retry loop (budget = 1 + retries; `feedback.md` written per failed attempt;
-  budget exhaustion -> `needs-human`; cancellation -> `pending`), `guardrails plan` (waves
+  **`Tiers()`** = the DAG's topological levels [renamed from `Waves()` in M2 to free "wave" for the
+  plan-stage concept, SSOT section 14.4], transitive-dependent closure), Channel-based `Scheduler`
+  (maxParallelism workers; failure blocks the transitive closure while independent branches finish;
+  resume pre-pass), `TaskExecutor` retry loop (budget = 1 + retries; `feedback.md` written per failed
+  attempt; budget exhaustion -> `needs-human`; cancellation -> `pending`), `guardrails plan` (**tiers**
   preview), Spectre live table UI, exit code 3 on cancellation. `SerialExecutor` is gone --
   `Scheduler` with maxParallelism 1 is serial mode.
 - M5 Prompts: **complete**. Full `promptRunners` config parsing; `IPromptRunner` seam,
@@ -585,3 +635,18 @@ BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
   / `StashIfRollingBack`, `GuardrailArchetypes`, `GitWorktreeProvider.DiffAgainstBase`,
   `AttemptArtifacts.WriteSalvagePatch`, `RetryPolicy` (rollback/salvage-aware `AppendHeader` +
   `AppendVerdictLedger` + `AppendSalvageSection`), `SalvageRef.PatchPath`.
+- **M2 multi-wave plans -- v1 FOUNDATION landed; execution loop staged** (#254, branch
+  `feat/m2-wave-skeleton`, SSOT section 14, design `docs/plans/10-multi-wave-plans.md`). See the
+  **Multi-wave plans** section above for the model. Landed + tested (Core 885 / Integration 492 +2 skips,
+  clean Release): nested-layout detection + waved loader/validator (**GR2032** mixed, **GR2033** numbering,
+  **GR2034** cross-wave `dependsOn`, GR2022 wave-aware branch); **wave-qualified identity** (`TaskNode.Id` =
+  `<waveDir>/<folder>`, `TaskNode.WaveDir`, `PlanDefinition.Waves`/`IsWaved`, `WaveNode`) -- the highest-risk
+  single-writer generalization, pinned by a no-collision property test; **`WaveDefinitionHash`**; the journal
+  **`waves[]` schema** (`WaveStatus`, `WaveJournalEntry` reusing the plan-phase section shapes); GR2028
+  per-wave; the `DependencyGraph.Waves()->Tiers()` rename (+ `guardrails plan`/`--dry-run` "Tier" output);
+  committed `waved-example` fixture validates clean. **DEFERRED to a follow-up reviewed slice:** the
+  wave-execution loop (continuous plan branch, per-wave gate invocation, `Guardrails-Wave:` marker commit,
+  cross-wave resume, runtime wave-drift resolution, wave-scoped reset execution) -- it needs the
+  Scheduler/journal refactor to run per-wave against one continuous journal. **`guardrails run` on a waved
+  plan honestly HALTS (exit 1)** until then, never running it as a barrier-less flat DAG. Next-free GR code:
+  **GR1010 / GR2035**.

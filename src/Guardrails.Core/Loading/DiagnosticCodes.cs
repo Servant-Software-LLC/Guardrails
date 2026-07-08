@@ -274,4 +274,39 @@ public static class DiagnosticCodes
     /// same code, one check.)
     /// </summary>
     public const string InvalidAutonomyPolicy = "GR2031";
+
+    // --- Multi-wave plans (nested layout, #254 / SSOT §14) ----------------------------
+    // Next-free allocation confirmed at authoring time: GR2031 (InvalidAutonomyPolicy) is the last taken
+    // code above, so GR2032–GR2034 are the next free CONTIGUOUS block for the multi-wave feature
+    // (design-of-record 10-multi-wave-plans, SSOT §14.1). Do not renumber.
+
+    /// <summary>
+    /// A plan folder has a MIXED layout: both a root <c>tasks/</c> directory AND one or more
+    /// <c>wave-*/</c> wave subdirectories (SSOT §14.1). A plan is either FLAT (a root <c>tasks/</c>) or
+    /// WAVED (no root <c>tasks/</c>, ≥1 <c>wave-NN-slug/</c> subdir) — never both. A mixed layout is
+    /// ambiguous (would the root tasks run before, after, or interleaved with the waves?) and is always an
+    /// authoring mistake. An ERROR.
+    /// </summary>
+    public const string MixedWaveLayout = "GR2032";
+
+    /// <summary>
+    /// A waved plan's wave numbering is malformed (SSOT §14.1, Open Decision F): two wave dirs share the
+    /// same numeric prefix <c>NN</c> (a duplicate — the strict total order is then ambiguous), OR a
+    /// subdirectory sitting alongside the wave dirs does not conform to the wave-dir pattern
+    /// <c>^wave-([0-9]+)-[a-z0-9-]+$</c> and is not a recognised plan-root folder (a typo'd wave dir, e.g.
+    /// <c>wave-scaffold</c> with no number). Both are ERRORS — the numeric prefix is load-bearing (it drives
+    /// the wave order, there is no <c>dependsOnWave</c> edge). A numbering GAP (e.g. wave-01 then wave-03,
+    /// no wave-02) is a WARNING, not an error — the order is still unambiguous.
+    /// </summary>
+    public const string WaveNumbering = "GR2033";
+
+    /// <summary>
+    /// A task in a waved plan declares a <c>dependsOn</c> edge that names a task in ANOTHER wave (SSOT
+    /// §14.1/§14.2). Cross-wave ordering is the job of the wave barrier (a wave never starts until the
+    /// prior wave fully drained), NOT a task edge, so each wave's DAG must be self-contained ("no DAG of
+    /// waves"). A <c>dependsOn</c> references siblings within the SAME wave by plain folder name; a
+    /// wave-qualified reference (<c>&lt;otherWave&gt;/&lt;task&gt;</c>) or a plain name that resolves to a
+    /// task in a different wave is an ERROR.
+    /// </summary>
+    public const string CrossWaveDependency = "GR2034";
 }

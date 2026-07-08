@@ -8,7 +8,7 @@ namespace Guardrails.Cli.Commands;
 
 /// <summary>
 /// <c>guardrails run &lt;folder&gt; --dry-run</c> — validate the plan, print the execution
-/// waves (identical to <c>plan</c>), the per-task action resolution (kind, runner,
+/// tiers (identical to <c>plan</c>), the per-task action resolution (kind, runner,
 /// retry budget), and which tasks a resume would SKIP (read from the journal
 /// without normalizing or persisting it). Exits 0 having run nothing and touched no state.
 /// </summary>
@@ -53,25 +53,25 @@ public static class DryRun
         output.WriteLine($"Dry run — {plan.Tasks.Count} task(s); validation passed. Nothing was executed; no state was touched.");
         output.WriteLine();
 
-        PrintWaves(plan, output);
+        PrintTiers(plan, output);
         PrintResolution(plan, statuses, journal, trailerHashes, output);
         PrintResumeSkips(plan, statuses, journal, trailerHashes, output);
 
         return ExitCodes.Success;
     }
 
-    private static void PrintWaves(PlanDefinition plan, TextWriter output)
+    private static void PrintTiers(PlanDefinition plan, TextWriter output)
     {
         var graph = new DependencyGraph(plan.Tasks);
-        IReadOnlyList<IReadOnlyList<TaskNode>> waves = graph.Waves();
+        IReadOnlyList<IReadOnlyList<TaskNode>> tiers = graph.Tiers();
 
-        output.WriteLine($"Execution plan — {plan.Tasks.Count} task(s), {waves.Count} wave(s), maxParallelism {plan.Config.MaxParallelism}");
+        output.WriteLine($"Execution plan — {plan.Tasks.Count} task(s), {tiers.Count} tier(s), maxParallelism {plan.Config.MaxParallelism}");
         output.WriteLine();
 
-        for (int i = 0; i < waves.Count; i++)
+        for (int i = 0; i < tiers.Count; i++)
         {
-            output.WriteLine($"Wave {i}:");
-            foreach (TaskNode task in waves[i])
+            output.WriteLine($"Tier {i}:");
+            foreach (TaskNode task in tiers[i])
             {
                 string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
                 string deps = task.DependsOn.Count == 0 ? "" : $"  (after: {string.Join(", ", task.DependsOn)})";

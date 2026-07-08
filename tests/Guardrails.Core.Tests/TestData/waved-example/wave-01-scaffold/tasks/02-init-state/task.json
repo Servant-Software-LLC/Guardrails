@@ -1,0 +1,1 @@
+{ "description": "Initialize state from the config", "dependsOn": ["01-create-config"] }

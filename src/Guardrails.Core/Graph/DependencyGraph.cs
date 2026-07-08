@@ -4,9 +4,14 @@ namespace Guardrails.Core.Graph;
 
 /// <summary>
 /// The plan's dependency DAG: forward edges (dependency → dependent) computed once from
-/// <c>dependsOn</c>, cycle detection with a printable cycle path, execution waves for
-/// <c>guardrails plan</c>, and the transitive-dependent closure used to block downstream
-/// tasks when one halts. Immutable after construction; safe to share across workers.
+/// <c>dependsOn</c>, cycle detection with a printable cycle path, execution TIERS (the DAG's
+/// topological levels) for <c>guardrails plan</c>, and the transitive-dependent closure used to
+/// block downstream tasks when one halts. Immutable after construction; safe to share across workers.
+/// <para>
+/// "Tier" (formerly "wave", renamed for multi-wave plans, SSOT §14.4) is the DAG-level concept — a
+/// tier is a topological level within ONE task DAG. The coarser human-authored "wave" is a plan STAGE
+/// that CONTAINS a task DAG (which itself has tiers); a wave contains tiers.
+/// </para>
 /// </summary>
 public sealed class DependencyGraph
 {
@@ -113,12 +118,13 @@ public sealed class DependencyGraph
     }
 
     /// <summary>
-    /// Execution waves: wave 0 contains tasks with no dependencies; wave N contains tasks
-    /// whose deepest dependency sits in wave N−1. Tasks within one wave may run in
+    /// Execution tiers (the DAG's topological levels; formerly <c>Waves()</c>, renamed for
+    /// multi-wave plans, SSOT §14.4): tier 0 contains tasks with no dependencies; tier N contains
+    /// tasks whose deepest dependency sits in tier N−1. Tasks within one tier may run in
     /// parallel (subject to <c>maxParallelism</c>). Throws when the
     /// graph has a cycle — call <see cref="FindCycle"/> first.
     /// </summary>
-    public IReadOnlyList<IReadOnlyList<TaskNode>> Waves()
+    public IReadOnlyList<IReadOnlyList<TaskNode>> Tiers()
     {
         var depth = new Dictionary<string, int>(StringComparer.Ordinal);
 

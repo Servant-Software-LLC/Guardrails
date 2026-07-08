@@ -7,7 +7,7 @@ namespace Guardrails.Integration.Tests;
 
 /// <summary>
 /// Drives <c>guardrails run --dry-run</c> through the real CLI pipeline and asserts the
-/// M7 contract: it prints the waves preview and per-task resolution, marks resume SKIPs
+/// M7 contract: it prints the tiers preview and per-task resolution, marks resume SKIPs
 /// after a partial run, exits 0, and — critically — never touches state (the <c>state/</c>
 /// directory is left byte-for-byte identical). Output is captured from a per-invocation
 /// <see cref="StringConsoleIo"/> — no <c>Console.SetOut</c>, no global state, parallel-safe.
@@ -36,9 +36,9 @@ public sealed class DryRunCliTests
 
         Assert.Equal(ExitCodes.Success, exit);
 
-        // Waves preview present.
-        Assert.Contains("Wave 0:", output);
-        Assert.Contains("Wave 1:", output);
+        // Tiers preview present.
+        Assert.Contains("Tier 0:", output);
+        Assert.Contains("Tier 1:", output);
         Assert.Contains("01-first", output);
         Assert.Contains("02-second", output);
 

@@ -48,7 +48,7 @@ public sealed class DependencyGraphTests
     }
 
     [Fact]
-    public void Waves_DiamondGroupsCorrectly()
+    public void Tiers_DiamondGroupsCorrectly()
     {
         var graph = new DependencyGraph([
             Task("01-root"),
@@ -57,12 +57,12 @@ public sealed class DependencyGraphTests
             Task("04-join", "02-left", "03-right")
         ]);
 
-        IReadOnlyList<IReadOnlyList<TaskNode>> waves = graph.Waves();
+        IReadOnlyList<IReadOnlyList<TaskNode>> tiers = graph.Tiers();
 
-        Assert.Equal(3, waves.Count);
-        Assert.Equal(["01-root"], waves[0].Select(t => t.Id));
-        Assert.Equal(["02-left", "03-right"], waves[1].Select(t => t.Id));
-        Assert.Equal(["04-join"], waves[2].Select(t => t.Id));
+        Assert.Equal(3, tiers.Count);
+        Assert.Equal(["01-root"], tiers[0].Select(t => t.Id));
+        Assert.Equal(["02-left", "03-right"], tiers[1].Select(t => t.Id));
+        Assert.Equal(["04-join"], tiers[2].Select(t => t.Id));
     }
 
     [Fact]
