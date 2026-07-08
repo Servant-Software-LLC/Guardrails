@@ -51,9 +51,14 @@ public static class RunCommand
             Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess on regardless of guardrails.json."
         };
 
+        var autonomyOption = new Option<string?>("--autonomy")
+        {
+            Description = "Set the unified autonomy policy for this run (SSOT §2.1): 'prompt' (default; interactive confirm, else halt), 'halt' (always halt), or 'auto' (apply a SAFE decision with no prompt). Overrides guardrails.json. An UNSAFE action still halts regardless."
+        };
+
         var reprocessDriftOption = new Option<bool>("--reprocess-drift")
         {
-            Description = "On a resume with a PROVABLY-SAFE definition drift, auto-resolve it with no prompt: rewind the plan branch past the safe drifted suffix and re-run it (SSOT §7.2). Forces driftPolicy=reprocess. An UNSAFE drift still halts."
+            Description = "Legacy alias for --autonomy auto: on a resume with a PROVABLY-SAFE definition drift, auto-resolve it with no prompt — rewind the plan branch past the safe drifted suffix and re-run it (SSOT §7.2). An UNSAFE drift still halts."
         };
 
         var revalidateTaskOption = new Option<string?>("--revalidate-task")
@@ -74,6 +79,7 @@ public static class RunCommand
         command.Add(noLogServerOption);
         command.Add(logPortOption);
         command.Add(mergeOnSuccessOption);
+        command.Add(autonomyOption);
         command.Add(reprocessDriftOption);
         command.Add(revalidateTaskOption);
         command.Add(skipReviewCheckOption);
@@ -87,6 +93,7 @@ public static class RunCommand
             bool noLogServer = parseResult.GetValue(noLogServerOption);
             int logPort = parseResult.GetValue(logPortOption);
             bool mergeOnSuccess = parseResult.GetValue(mergeOnSuccessOption);
+            string? autonomy = parseResult.GetValue(autonomyOption);
             bool reprocessDrift = parseResult.GetValue(reprocessDriftOption);
             string? revalidateTask = parseResult.GetValue(revalidateTaskOption);
             bool skipReviewCheck = parseResult.GetValue(skipReviewCheckOption);
@@ -110,14 +117,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, reprocessDrift, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, autonomy, reprocessDrift, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, bool reprocessDrift, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, string? autonomy, bool reprocessDrift, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -140,12 +147,30 @@ public static class RunCommand
             probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MergeOnSuccess = true } } };
         }
 
-        // --reprocess-drift forces the Part C safe-auto-resolve on (SSOT §7.2 / §2: "CLI --reprocess-drift
-        // overrides to reprocess"). Like --merge-on-success it only augments — it turns a prompt/halt policy
-        // into reprocess for this run, never the other way — so a plan already set to reprocess is unaffected.
-        if (reprocessDrift && probe.Plan.Config.DriftPolicy != Core.Model.DriftPolicy.Reprocess)
+        // --autonomy <value> sets the unified autonomy policy for this run (SSOT §2.1), overriding
+        // guardrails.json; --reprocess-drift is its legacy alias for `auto`. Parse --autonomy first, then let
+        // --reprocess-drift force `auto` (so the two agree; if a conflicting --autonomy and --reprocess-drift
+        // are BOTH given, --reprocess-drift's explicit auto-intent wins). An UNSAFE action still halts.
+        Core.Model.AutonomyPolicy? autonomyOverride = null;
+        if (!string.IsNullOrWhiteSpace(autonomy))
         {
-            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { DriftPolicy = Core.Model.DriftPolicy.Reprocess } } };
+            if (!Core.Model.AutonomyPolicies.TryParse(autonomy, out Core.Model.AutonomyPolicy parsed))
+            {
+                io.Out.WriteLine($"Unknown --autonomy value '{autonomy}'. Expected 'prompt', 'halt', or 'auto' (SSOT §2.1).");
+                return ExitCodes.HarnessError;
+            }
+
+            autonomyOverride = parsed;
+        }
+
+        if (reprocessDrift)
+        {
+            autonomyOverride = Core.Model.AutonomyPolicy.Auto;
+        }
+
+        if (autonomyOverride is { } policy && probe.Plan.Config.AutonomyPolicy != policy)
+        {
+            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { AutonomyPolicy = policy } } };
         }
 
         if (fresh)
@@ -198,15 +223,16 @@ public static class RunCommand
             return ExitCodes.TaskFailed;
         }
 
-        // Part C interactive drift confirm (SSOT §7.2, issue #274). The default driftPolicy is "prompt":
-        // a PROVABLY-SAFE drift must ask the operator BEFORE the run. The Spectre live table cannot host a
-        // Console.ReadLine, so the prompt happens HERE — before any UI — via the same
+        // Part C interactive drift confirm (SSOT §2.1/§7.2, issue #274). The default autonomyPolicy is
+        // "prompt": a PROVABLY-SAFE drift must ask the operator BEFORE the run. The Spectre live table cannot
+        // host a Console.ReadLine, so the prompt happens HERE — before any UI — via the same
         // Console.IsInputRedirected idiom as ResetCommand.Confirm. A `y` becomes driftPreConfirmed (the
         // Scheduler then rewinds + re-runs); every other case (no drift, unsafe, non-interactive) falls
         // through to the Scheduler, which halts or auto-resolves exactly as the policy dictates and renders
-        // the authoritative report. --reprocess-drift / driftPolicy:halt skip the prompt entirely.
+        // the authoritative report. --autonomy auto (or --reprocess-drift) / autonomyPolicy:halt skip the
+        // prompt entirely.
         DriftAuthorization? driftAuthorization = null;
-        if (probe.Plan.Config.DriftPolicy == Core.Model.DriftPolicy.Prompt)
+        if (probe.Plan.Config.AutonomyPolicy == Core.Model.AutonomyPolicy.Prompt)
         {
             (DriftPromptDecision decision, DriftAuthorization? authorized) =
                 ConfirmSafeDriftIfInteractive(probe.Plan, journal, io);

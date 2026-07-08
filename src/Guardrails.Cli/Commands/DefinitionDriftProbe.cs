@@ -8,7 +8,7 @@ namespace Guardrails.Cli.Commands;
 
 /// <summary>
 /// A READ-ONLY, pre-live-region probe for the Part C interactive drift confirm (issue #274, SSOT §7.2).
-/// The default <c>driftPolicy: "prompt"</c> must prompt the operator BEFORE the run — and the Spectre
+/// The default <c>autonomyPolicy: "prompt"</c> must prompt the operator BEFORE the run — and the Spectre
 /// live table cannot host a <c>Console.ReadLine</c> — so the CLI probes here (before any UI), and, when a
 /// provably-safe drift is found in an interactive TTY, asks. A <c>y</c> becomes the
 /// <c>driftPreConfirmed</c> flag the Scheduler's pre-DAG gate honors; everything else (no drift, an

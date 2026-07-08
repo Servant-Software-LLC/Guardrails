@@ -3,13 +3,14 @@ namespace Guardrails.Core.Execution;
 /// <summary>
 /// The operator-authorized safe-rewind plan captured by the CLI's pre-DAG drift probe and threaded into
 /// the Scheduler (issue #274 Part C, SSOT §7.2 — the consent-vs-execution + compare-and-swap fix). The
-/// default <c>driftPolicy: "prompt"</c> shows the operator a preview computed from THIS captured decision;
-/// a <c>y</c> authorizes exactly THIS — so the Scheduler executes the CAPTURED set and CAS-verifies the
-/// plan-branch tip still equals <see cref="ExpectedTip"/>, rather than re-deriving a possibly-different
-/// plan from files an operator edited (or a commit a concurrent session added) during the blocking prompt.
-/// If the fresh decision diverges from the captured one, or the tip has moved, the Scheduler HALTS — it
-/// never rewinds a set the human did not approve. <c>null</c> = not pre-authorized (a <c>reprocess</c> run
-/// auto-resolves on its own fresh decision; a <c>halt</c> or unconfirmed <c>prompt</c> run halts).
+/// default <c>autonomyPolicy: "prompt"</c> shows the operator a preview computed from THIS captured
+/// decision; a <c>y</c> authorizes exactly THIS — so the Scheduler executes the CAPTURED set and
+/// CAS-verifies the plan-branch tip still equals <see cref="ExpectedTip"/>, rather than re-deriving a
+/// possibly-different plan from files an operator edited (or a commit a concurrent session added) during the
+/// blocking prompt. If the fresh decision diverges from the captured one, or the tip has moved, the
+/// Scheduler HALTS — it never rewinds a set the human did not approve. <c>null</c> = not pre-authorized (an
+/// <c>auto</c> run auto-resolves on its own fresh decision; a <c>halt</c> or unconfirmed <c>prompt</c> run
+/// halts).
 /// </summary>
 public sealed record DriftAuthorization
 {

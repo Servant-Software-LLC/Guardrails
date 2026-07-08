@@ -85,9 +85,10 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   suffix of the plan branch's `--first-parent` trailer history (honoring the merge-tip caveat: a fan-in
   whose merged-in upstreams aren't in the set is refused); when safe, the plan branch is physically rewound
   (`git reset --hard`, reflog-recoverable) past the stale commits and the set journal-reset to re-run.
-  **Two consumers:** run-time auto-resolve (`driftPolicy` — `"prompt"` default prompts interactively /
-  halts in CI, `"reprocess"` / `--reprocess-drift` auto-resolves, `"halt"` strict) and the manual scoped
-  `reset <folder> <taskId>...` (rewinds a safe set, refuses an unsafe one). **Unsafe drift ALWAYS halts —
-  no flag authorizes an unsound rewind** (auto-invalidating a fan-in descendant off a stale-carrying base
-  is the unsoundness Part A halted on). Auto-resolved runs return the normal exit code + a durable
-  `driftResolutions[]` audit; only a declined/refused drift is the exit-2 `DefinitionDrift` halt.
+  **Two consumers:** run-time auto-resolve (gated by the unified `autonomyPolicy` — `"prompt"` default
+  prompts interactively / halts in CI, `"auto"` via `--autonomy auto` or the legacy alias `--reprocess-drift`
+  auto-resolves, `"halt"` strict) and the manual scoped `reset <folder> <taskId>...` (rewinds a safe set,
+  refuses an unsafe one). **Unsafe drift ALWAYS halts — no flag authorizes an unsound rewind**
+  (auto-invalidating a fan-in descendant off a stale-carrying base is the unsoundness Part A halted on).
+  Auto-resolved runs return the normal exit code + a `boundary:"drift"` entry in the unified `decisions[]`
+  audit (M1 fold, SSOT §2.1); only a declined/refused drift is the exit-2 `DefinitionDrift` halt.

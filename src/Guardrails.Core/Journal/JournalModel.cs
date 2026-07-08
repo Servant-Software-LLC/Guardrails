@@ -45,15 +45,16 @@ public sealed record JournalDocument
     public PlanGuardrailsSection? PlanGuardrails { get; init; }
 
     /// <summary>
-    /// OPTIONAL durable audit of Part C safe-drift auto-resolutions (SSOT §7/§7.2, issue #274 Part C): one
-    /// entry per rewind — the rewind target commit + per rebuilt task its old→new short
-    /// <c>definitionHash</c>. Appended whether the rewind was prompted-<c>y</c>, flag-authorized
-    /// (<c>--reprocess-drift</c>), or via the manual scoped <c>reset</c>. Additive and
+    /// OPTIONAL, append-only, unified autonomy-policy decision log (SSOT §2.1/§7): one entry per decision
+    /// boundary, <c>boundary</c>-discriminated (M1 emits only <c>drift</c> — a Part C safe-drift rewind's
+    /// audit, whether prompted-<c>y</c>, <c>--autonomy auto</c>-authorized, or via the manual scoped
+    /// <c>reset</c>; the <c>wave</c>/<c>task</c> boundaries append here in M2/M3). This is the canonical
+    /// durable store (it replaces the pre-fold <c>driftResolutions[]</c> section). Additive and
     /// backward-compatible on the same terms as <see cref="PlanPreflights"/> — absent (not <c>null</c>
-    /// noise) on a plan that never resolved a drift.
+    /// noise) on a run that recorded no decision.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyList<Execution.DriftResolution>? DriftResolutions { get; init; }
+    public IReadOnlyList<Execution.DecisionEntry>? Decisions { get; init; }
 }
 
 /// <summary>

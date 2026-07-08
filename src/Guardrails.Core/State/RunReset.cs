@@ -141,8 +141,8 @@ public static class RunReset
     /// the set; when it is NOT (a non-suffix, an uncontained fan-in, a trailer-less commit), REFUSE and name
     /// the blocking task — the caller points the user at the always-sound <c>guardrails reset &lt;folder&gt; -y</c>
     /// full rebuild. In serial mode / a non-git plan folder there is no plan branch to carry a stale commit,
-    /// so it degrades to a sound journal-only reset of the set. Records a <c>manual-reset</c> entry in the
-    /// durable <c>driftResolutions[]</c> journal section whenever it resets anything.
+    /// so it degrades to a sound journal-only reset of the set. Records a <c>drift</c>-boundary entry
+    /// (SSOT §2.1/§7) in the durable <c>decisions[]</c> journal section whenever it resets anything.
     /// </summary>
     public static ScopedResetResult ScopedReset(PlanDefinition plan, IReadOnlyList<string> taskIds)
     {
@@ -239,12 +239,8 @@ public static class RunReset
             resolvedTasks.Add(new DriftResolvedTask { TaskId = task.Id, OldHash = oldHash, NewHash = newHash });
         }
 
-        journal.RecordDriftResolution(new DriftResolution
-        {
-            Trigger = "manual-reset",
-            RewindTarget = willRewind ? decision.ResetTarget : null,
-            Tasks = resolvedTasks
-        });
+        journal.RecordDecision(DriftDecisions.ManualReset(
+            plan.Config.AutonomyPolicy, willRewind ? decision.ResetTarget : null, resolvedTasks));
 
         if (willRewind)
         {

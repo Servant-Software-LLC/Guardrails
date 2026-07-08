@@ -15,12 +15,14 @@ public sealed class StatePlanBuilder : IDisposable
 
     private readonly string _root;
 
-    public StatePlanBuilder(string? seedJson = null, int defaultRetries = 0, int maxParallelism = 1)
+    public StatePlanBuilder(
+        string? seedJson = null, int defaultRetries = 0, int maxParallelism = 1, string? autonomyPolicy = null)
     {
         _root = Path.Combine(Path.GetTempPath(), "gr-m3-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_root);
         // defaultRetries defaults to 0 here so single-attempt test semantics stay exact;
         // M4 retry tests opt in explicitly.
+        string autonomyLine = autonomyPolicy is null ? "" : $",\n              \"autonomyPolicy\": \"{autonomyPolicy}\"";
         File.WriteAllText(Path.Combine(_root, "guardrails.json"),
             $$"""
             {
@@ -28,7 +30,7 @@ public sealed class StatePlanBuilder : IDisposable
               "guardrailMode": "failFast",
               "workspace": ".",
               "defaultRetries": {{defaultRetries}},
-              "maxParallelism": {{maxParallelism}}
+              "maxParallelism": {{maxParallelism}}{{autonomyLine}}
             }
             """);
         Directory.CreateDirectory(Path.Combine(_root, "tasks"));

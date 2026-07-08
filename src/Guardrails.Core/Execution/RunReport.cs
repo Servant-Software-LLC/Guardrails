@@ -162,13 +162,14 @@ public sealed record RunReport
     public bool HasDefinitionDrift => DefinitionDrift is not null;
 
     /// <summary>
-    /// Non-null when the pre-DAG gate AUTO-RESOLVED a provably-safe definition drift this run (issue #274
-    /// Part C, SSOT §7.2): the plan branch was rewound past the safe drifted suffix and its tasks
-    /// journal-reset to re-run. This is NOT a halt — the run proceeds and returns the normal exit code
-    /// (0 green / 2 needs-human); it carries the audit (rewind target + per-task old→new hash) for the
-    /// end-of-run summary, mirroring the durable <c>driftResolutions[]</c> journal section.
+    /// Non-null when the pre-DAG gate recorded an autonomy-policy decision this run (SSOT §2.1/§7): in M1
+    /// this is a Part C safe definition-drift AUTO-RESOLVED (§7.2) — the plan branch was rewound past the
+    /// safe drifted suffix and its tasks journal-reset to re-run. This is NOT a halt — the run proceeds and
+    /// returns the normal exit code (0 green / 2 needs-human); it carries the <c>drift</c>-boundary
+    /// <see cref="DecisionEntry"/> for the end-of-run summary, mirroring the durable <c>decisions[]</c>
+    /// journal section.
     /// </summary>
-    public DriftResolution? DriftResolution { get; init; }
+    public DecisionEntry? Decision { get; init; }
 }
 
 /// <summary>

@@ -316,16 +316,16 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     public void ResetTaskToPending(string taskId) => ResetTask(taskId);
 
     /// <summary>
-    /// Part C (issue #274, SSOT §7/§7.2): append <paramref name="resolution"/> to the durable top-level
-    /// <c>driftResolutions[]</c> section and persist. Additive — the section stays absent until the first
-    /// rewind (never <c>null</c> noise).
+    /// SSOT §2.1/§7: append <paramref name="entry"/> to the durable, unified top-level <c>decisions[]</c>
+    /// section and persist. Additive — the section stays absent until the first decision (never <c>null</c>
+    /// noise).
     /// </summary>
-    public void RecordDriftResolution(Execution.DriftResolution resolution)
+    public void RecordDecision(Execution.DecisionEntry entry)
     {
         lock (_gate)
         {
-            var resolutions = new List<Execution.DriftResolution>(_document.DriftResolutions ?? []) { resolution };
-            _document = _document with { DriftResolutions = resolutions };
+            var decisions = new List<Execution.DecisionEntry>(_document.Decisions ?? []) { entry };
+            _document = _document with { Decisions = decisions };
             Persist();
         }
     }

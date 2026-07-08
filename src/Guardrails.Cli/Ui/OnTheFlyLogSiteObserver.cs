@@ -133,7 +133,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
 
     public void PlanHashMismatch(string previousPlanHash) => _inner.PlanHashMismatch(previousPlanHash);
 
-    public void DriftResolved(DriftResolution resolution) => _inner.DriftResolved(resolution);
+    public void DecisionRecorded(DecisionEntry entry) => _inner.DecisionRecorded(entry);
 
     public void ParallelismClampedNoProvider(int requested) => _inner.ParallelismClampedNoProvider(requested);
 

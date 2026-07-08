@@ -68,9 +68,9 @@ public interface ISchedulerJournal
     void ResetTaskToPending(string taskId) { }
 
     /// <summary>
-    /// Append a Part C drift-resolution record to the durable top-level <c>driftResolutions[]</c> journal
-    /// section (issue #274, SSOT §7/§7.2) — the audit of what a rewind discarded and why. Default no-op
-    /// for fakes; <see cref="Journal.RunJournal"/> persists it.
+    /// Append an autonomy-policy decision to the durable, unified top-level <c>decisions[]</c> journal
+    /// section (SSOT §2.1/§7) — the audit of what a decision boundary did (M1: a drift rewind's discard).
+    /// Default no-op for fakes; <see cref="Journal.RunJournal"/> persists it.
     /// </summary>
-    void RecordDriftResolution(DriftResolution resolution) { }
+    void RecordDecision(DecisionEntry entry) { }
 }

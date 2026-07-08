@@ -106,11 +106,11 @@ public sealed class PlanLoader
             return null;
         }
 
-        DriftPolicy driftPolicy = DriftPolicy.Prompt;
-        if (raw.DriftPolicy is not null && !TryParseDriftPolicy(raw.DriftPolicy, out driftPolicy))
+        AutonomyPolicy autonomyPolicy = AutonomyPolicy.Prompt;
+        if (raw.AutonomyPolicy is not null && !AutonomyPolicies.TryParse(raw.AutonomyPolicy, out autonomyPolicy))
         {
-            diagnostics.Add(Error(DiagnosticCodes.InvalidDriftPolicy, configPath,
-                $"Unknown driftPolicy '{raw.DriftPolicy}'. Expected 'prompt' (default), 'reprocess', or 'halt' (SSOT §2/§7.2)."));
+            diagnostics.Add(Error(DiagnosticCodes.InvalidAutonomyPolicy, configPath,
+                $"Unknown autonomyPolicy '{raw.AutonomyPolicy}'. Expected 'prompt' (default), 'halt', or 'auto' (SSOT §2.1/§7.2)."));
             return null;
         }
 
@@ -146,7 +146,7 @@ public sealed class PlanLoader
             RunOnCurrentBranch = raw.RunOnCurrentBranch ?? false,
             MergeOnSuccess = raw.MergeOnSuccess ?? false,
             TriageAutoFile = raw.TriageAutoFile ?? false,
-            DriftPolicy = driftPolicy,
+            AutonomyPolicy = autonomyPolicy,
             PreserveAttemptsForSalvage = raw.PreserveAttemptsForSalvage ?? true,
             Interpreters = interpreters,
             PromptRunnerNames = runners.Names,
@@ -167,30 +167,6 @@ public sealed class PlanLoader
                 return true;
             default:
                 mode = GuardrailMode.FailFast;
-                return false;
-        }
-    }
-
-    /// <summary>
-    /// Parse the <c>driftPolicy</c> string (SSOT §2/§7.2, issue #274 Part C). Recognises
-    /// <c>prompt</c> (default), <c>reprocess</c>, and <c>halt</c> (trim + case-insensitive); any other
-    /// value returns false so the caller emits <see cref="DiagnosticCodes.InvalidDriftPolicy"/>.
-    /// </summary>
-    private static bool TryParseDriftPolicy(string value, out DriftPolicy policy)
-    {
-        switch (value.Trim().ToLowerInvariant())
-        {
-            case "prompt":
-                policy = DriftPolicy.Prompt;
-                return true;
-            case "reprocess":
-                policy = DriftPolicy.Reprocess;
-                return true;
-            case "halt":
-                policy = DriftPolicy.Halt;
-                return true;
-            default:
-                policy = DriftPolicy.Prompt;
                 return false;
         }
     }

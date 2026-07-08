@@ -351,16 +351,18 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   the parent of `S`'s earliest commit -- DESTRUCTIVE on the harness-owned `guardrails/<plan>` branch, never
   the user's checkout; discarded commits stay reflog-recoverable), journal-resets `S`, and the next wave
   re-runs it from the clean base -- at the pre-DAG gate, before any segment is forked. **Two consumers, one
-  primitive:** (1) run-time auto-resolve gated by `driftPolicy` (§2, default `"prompt"` = prompt in an
-  interactive TTY / HALT non-interactively; `"reprocess"` or `--reprocess-drift` = auto-resolve no prompt;
-  `"halt"` = strict Part A). (2) manual scoped `guardrails reset <folder> <taskId>...` = the named set ∪
-  descendants; safe ⇒ rewind + reset, unsafe ⇒ REFUSE naming the blocker (use `reset <folder> -y` for the
-  always-sound full rebuild). **Unsafe drift ALWAYS halts under EVERY policy -- no flag authorizes an
-  unsound rewind (spend, not soundness).** An auto-resolved run returns the NORMAL exit code (0/2) + emits
-  `IRunObserver.DriftResolved` and a durable additive top-level `driftResolutions[]` journal section
-  (rewind target + per-task old->new hash); only a declined/refused drift is the exit-2
+  primitive:** (1) run-time auto-resolve gated by the unified `autonomyPolicy` (SSOT §2.1, default
+  `"prompt"` = prompt in an interactive TTY / HALT non-interactively; `"auto"`, via `--autonomy auto` or the
+  legacy alias `--reprocess-drift`, = auto-resolve no prompt; `"halt"` = strict Part A). (2) manual scoped
+  `guardrails reset <folder> <taskId>...` = the named set ∪ descendants; safe ⇒ rewind + reset, unsafe ⇒
+  REFUSE naming the blocker (use `reset <folder> -y` for the always-sound full rebuild). **Unsafe drift
+  ALWAYS halts under EVERY policy -- no flag authorizes an unsound rewind (spend, not soundness).** An
+  auto-resolved run returns the NORMAL exit code (0/2) + emits `IRunObserver.DecisionRecorded` and appends a
+  `boundary:"drift"` entry to the durable, unified top-level `decisions[]` journal section (SSOT §2.1/§7 --
+  the canonical store, which replaced the pre-fold `driftResolutions[]`; its headline/subject/detail carry
+  the rewind target + per-task old->new hash); only a declined/refused drift is the exit-2
   `RunReport.DefinitionDrift`. Serial mode / non-git = no plan branch to carry a stale commit, so both
-  consumers degrade to a sound journal-only reset (no rewind). Unrecognized `driftPolicy` = **GR2031**.
+  consumers degrade to a sound journal-only reset (no rewind). Unrecognized `autonomyPolicy` = **GR2031**.
   **Crash-atomic + CAS:** the rewind + per-task journal-reset are made crash-atomic by a
   `state/rewind-intent.json` marker (written before `reset --hard`, cleared after both effects persist,
   replayed idempotently on resume) AND a general resume invariant -- a journal-`succeeded` task whose

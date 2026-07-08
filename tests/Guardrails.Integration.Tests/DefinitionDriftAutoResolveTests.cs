@@ -210,7 +210,7 @@ public sealed class DefinitionDriftAutoResolveTests
     // 2. End-to-end run-time auto-resolve (real scheduler, real GitWorktreeProvider).
     // ---------------------------------------------------------------------------------------------
 
-    private static string CreateLinearPlan(string repoPath, string driftPolicyLine)
+    private static string CreateLinearPlan(string repoPath, string autonomyPolicyLine)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
@@ -221,7 +221,7 @@ public sealed class DefinitionDriftAutoResolveTests
               "guardrailMode": "failFast",
               "workspace": "..",
               "defaultRetries": 0,
-              "maxParallelism": 2{{driftPolicyLine}}
+              "maxParallelism": 2{{autonomyPolicyLine}}
             }
             """);
         WriteTask(planDir, "01-task-a", []);
@@ -286,10 +286,10 @@ public sealed class DefinitionDriftAutoResolveTests
     }
 
     [Fact]
-    public async Task Reprocess_EditedSucceededTask_RewindsReRunsGreen_StaleGone_Journaled()
+    public async Task Auto_EditedSucceededTask_RewindsReRunsGreen_StaleGone_DecisionLogged()
     {
         using var repo = new TempGitRepo();
-        string planDir = CreateLinearPlan(repo.RepoPath, ",\n  \"driftPolicy\": \"reprocess\"");
+        string planDir = CreateLinearPlan(repo.RepoPath, ",\n  \"autonomyPolicy\": \"auto\"");
         repo.CommitAll("add plan");
         CancellationToken ct = TestContext.Current.CancellationToken;
 
@@ -307,29 +307,33 @@ public sealed class DefinitionDriftAutoResolveTests
 
         Assert.Null(second.DefinitionDrift);                 // auto-resolved, not halted
         Assert.True(second.AllSucceeded);
-        Assert.NotNull(second.DriftResolution);
-        Assert.Equal("reprocess", second.DriftResolution!.Trigger);
-        Assert.Contains(second.DriftResolution.Tasks, t => t.TaskId == "01-task-a");
-        Assert.Contains(second.DriftResolution.Tasks, t => t.TaskId == "02-task-b"); // descendant re-run too
+        Assert.NotNull(second.Decision);
+        Assert.Equal("drift", second.Decision!.Boundary);
+        Assert.Equal("auto", second.Decision.Policy);
+        Assert.Equal("auto-applied", second.Decision.Decision);
+        Assert.Contains("01-task-a", second.Decision.Subject);
+        Assert.Contains("02-task-b", second.Decision.Subject); // descendant re-run too
 
         // The stale 01 integration is physically gone: the branch now records 01's NEW definition hash.
         string newHash = ReadTaskHashOnBranch(repo, planBranch, "01-task-a");
         Assert.NotEqual(staleHash, newHash);
         Assert.Equal(TaskDefinitionHash(planDir, "01-task-a"), newHash);
 
-        // The durable driftResolutions[] audit was written.
+        // The durable, unified decisions[] audit was written (boundary:"drift").
         JournalDocument journal = JournalReader.Read(RunJournal.PathFor(planDir));
-        Assert.NotNull(journal.DriftResolutions);
-        DriftResolution recorded = Assert.Single(journal.DriftResolutions!);
-        Assert.Equal("reprocess", recorded.Trigger);
-        Assert.NotNull(recorded.RewindTarget);
+        Assert.NotNull(journal.Decisions);
+        DecisionEntry recorded = Assert.Single(journal.Decisions!);
+        Assert.Equal("drift", recorded.Boundary);
+        Assert.Equal("auto", recorded.Policy);
+        Assert.Equal("auto-applied", recorded.Decision);
+        Assert.Contains("rewound the plan branch", recorded.Headline); // a real plan-branch rewind happened
     }
 
     [Fact]
     public async Task HaltPolicy_AlwaysHalts_EvenWhenPreConfirmed()
     {
         using var repo = new TempGitRepo();
-        string planDir = CreateLinearPlan(repo.RepoPath, ",\n  \"driftPolicy\": \"halt\"");
+        string planDir = CreateLinearPlan(repo.RepoPath, ",\n  \"autonomyPolicy\": \"halt\"");
         repo.CommitAll("add plan");
         CancellationToken ct = TestContext.Current.CancellationToken;
 
@@ -343,7 +347,7 @@ public sealed class DefinitionDriftAutoResolveTests
         RunReport second = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
 
         Assert.NotNull(second.DefinitionDrift);
-        Assert.Null(second.DriftResolution);
+        Assert.Null(second.Decision);
     }
 
     // ---------------------------------------------------------------------------------------------
