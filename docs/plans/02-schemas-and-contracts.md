@@ -1609,7 +1609,36 @@ expiry window (destructive, but not unrecoverable).
 **Refuse floor (un-overridable).** Anything the check cannot *prove* safe halts — a non-`S` trailer in the
 removed range, an uncontained merge lineage, **or a commit with no identifiable `Guardrails-Task:` trailer
 at all** (e.g. a human hand-fix commit on the integration branch, §7). No flag turns on an unsound rewind:
-`--reprocess-drift` / `driftPolicy: "reprocess"` authorizes **spend**, never **soundness**.
+`--reprocess-drift` / `driftPolicy: "reprocess"` authorizes **spend**, never **soundness**. Attribution
+reads **only the commit's last trailer block** (git-`interpret-trailers` semantics), so a `Guardrails-Task:`
+line quoted in a hand-fix commit's *prose* is NOT mistaken for attribution — the hand-fix stays
+un-attributed and the rewind refuses it.
+
+**Crash-atomicity, compare-and-swap, and resume reconciliation (a contract, not an implementation
+detail).** The rewind (one atomic `git reset --hard` removing the WHOLE suffix) and the per-task
+journal-reset (one durable write per member of `S`) are two separate persisted effects, so the resolution
+is made **crash-atomic** three ways:
+- **Rewind-intent marker.** A `state/rewind-intent.json` marker (the safe set `S`, the pre-rewind tip, the
+  reset target; transient, gitignored, cleared by `--fresh`) is written **before** the `git reset --hard`
+  and cleared **only after** both the rewind and every journal-reset persist. On resume the pre-pass
+  replays it idempotently (re-reset all of `S` to `pending`) then clears it — so a kill between the two
+  effects self-heals to "re-run the safe set", never a lost commit. Written by BOTH consumers, replayed by
+  the run's pre-pass.
+- **Resume reconciliation invariant (the robust net, independent of the marker).** In worktree mode the
+  plan branch is the authoritative integration record, so the pre-pass now enforces: **a task the journal
+  calls `succeeded` but whose integration `Guardrails-Task:` trailer is ABSENT from the current plan-branch
+  first-parent history MUST re-run** (mark `pending`). This closes the exact invariant a `reset --hard` can
+  break — a non-drifted descendant, in `S` only via the transitive closure, whose commit was discarded but
+  whose unchanged hash the drift check would never re-flag — and catches the inconsistency however it arose
+  (crash, an external rewind). Serial / non-git plans keep the journal-only semantics (no trailers to
+  consult).
+- **Compare-and-swap on the tip.** Because the operator may run concurrent sessions on the same plan (and
+  the default `prompt` blocks on a `Console.ReadLine`), the destructive section is guarded by a CAS: the
+  Scheduler executes the **captured** authorized plan (safe set + reset target + the plan-branch tip the
+  operator saw), and immediately before the rewind re-reads the current tip — if it has moved (a concurrent
+  session advanced/rewound the branch), or the captured plan no longer matches this run's fresh decision
+  (files edited during the prompt), it **HALTS** rather than rewind a set the human never saw. The manual
+  scoped reset applies the same CAS (a moved tip aborts without touching the branch).
 
 **Gating** (the cost-surprise reconciliation — auto-resolve silently re-runs green work and spends tokens,
 so it must be **authorized**):

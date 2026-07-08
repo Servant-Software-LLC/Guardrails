@@ -205,16 +205,17 @@ public static class RunCommand
         // Scheduler then rewinds + re-runs); every other case (no drift, unsafe, non-interactive) falls
         // through to the Scheduler, which halts or auto-resolves exactly as the policy dictates and renders
         // the authoritative report. --reprocess-drift / driftPolicy:halt skip the prompt entirely.
-        bool driftPreConfirmed = false;
+        DriftAuthorization? driftAuthorization = null;
         if (probe.Plan.Config.DriftPolicy == Core.Model.DriftPolicy.Prompt)
         {
-            DriftPromptDecision decision = ConfirmSafeDriftIfInteractive(probe.Plan, journal, io);
+            (DriftPromptDecision decision, DriftAuthorization? authorized) =
+                ConfirmSafeDriftIfInteractive(probe.Plan, journal, io);
             if (decision == DriftPromptDecision.Declined)
             {
                 return ExitCodes.TaskFailed; // operator answered N — halt without running (they saw the preview).
             }
 
-            driftPreConfirmed = decision == DriftPromptDecision.Confirmed;
+            driftAuthorization = authorized; // non-null only on a `y`; carries the CAPTURED plan (S + target + tip)
         }
 
         // The log server is a companion to the live table: start it only in the interactive path
@@ -255,7 +256,7 @@ public static class RunCommand
 
                 await using var liveObserver = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
                 var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
-                report = await ExecuteAsync(probe.Plan, siteObserver, driftPreConfirmed, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -263,7 +264,7 @@ public static class RunCommand
                     new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
                 siteObserver.WriteInitialIndex();
                 PrintStaticIndexLink(logsRoot, io);
-                report = await ExecuteAsync(probe.Plan, siteObserver, driftPreConfirmed, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, cancellationToken).ConfigureAwait(false);
             }
 
             // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -501,13 +502,13 @@ public static class RunCommand
     /// authorizes an unsound rewind); the Scheduler renders the authoritative refusal report. Interactivity
     /// uses the same <see cref="Console.IsInputRedirected"/> idiom as <c>ResetCommand.Confirm</c>.
     /// </summary>
-    private static DriftPromptDecision ConfirmSafeDriftIfInteractive(
+    private static (DriftPromptDecision Decision, DriftAuthorization? Authorization) ConfirmSafeDriftIfInteractive(
         Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io)
     {
         DefinitionDriftProbe.Result drift = DefinitionDriftProbe.Evaluate(plan, journal);
         if (!drift.HasDrift || drift.Decision.Outcome == SafeSuffixOutcome.Refused || Console.IsInputRedirected)
         {
-            return DriftPromptDecision.NotPrompted;
+            return (DriftPromptDecision.NotPrompted, null);
         }
 
         PrintDriftPromptPreview(drift, io);
@@ -522,10 +523,19 @@ public static class RunCommand
         if (!yes)
         {
             io.Out.WriteLine("Declined — nothing was changed (definition-drift halt, SSOT §7.2).");
-            return DriftPromptDecision.Declined;
+            return (DriftPromptDecision.Declined, null);
         }
 
-        return DriftPromptDecision.Confirmed;
+        // Capture EXACTLY what the operator approved (S + reset target + the tip they saw) so the Scheduler
+        // rewinds that, not a plan re-derived from files edited during this blocking prompt, and so a
+        // concurrent same-plan session that moved the branch is caught by the tip compare-and-swap.
+        var authorization = new DriftAuthorization
+        {
+            SafeSet = drift.SafeSet,
+            ResetTarget = drift.Decision.ResetTarget,
+            ExpectedTip = drift.Decision.ExpectedTip ?? ""
+        };
+        return (DriftPromptDecision.Confirmed, authorization);
     }
 
     /// <summary>
@@ -545,8 +555,9 @@ public static class RunCommand
 
         output.WriteLine($"  Re-run set (drifted + descendants): {string.Join(", ", drift.SafeSet)}");
         output.WriteLine(
-            "  A 'y' rewinds the harness-owned plan branch (discarded commits stay recoverable via git reflog)");
-        output.WriteLine("  and re-runs that set; your own checkout is untouched.");
+            "  A 'y' rewinds the harness-owned plan branch and re-runs that set; your own checkout is untouched.");
+        output.WriteLine(
+            "  Discarded commits stay recoverable via git reflog until a later '--fresh' / 'reset -y' tears the branch down.");
     }
 
     /// <summary>
@@ -599,11 +610,35 @@ public static class RunCommand
         }
 
         output.WriteLine();
-        output.WriteLine("Remediation:");
-        output.WriteLine($"  guardrails run {folder} --reprocess-drift — auto-resolve a PROVABLY-SAFE drift (rewind + re-run)");
-        output.WriteLine($"  guardrails reset {folder} <taskId>...     — scoped reset of only the drifted task(s) + descendants");
-        output.WriteLine($"                                              (rewinds the plan branch when the set is a safe suffix; refuses otherwise)");
-        output.WriteLine($"  guardrails reset {folder} -y              — full correct rebuild (always sound)");
+        if (drift.SafeToAutoResolve)
+        {
+            // The drifted set IS a provably-safe suffix — the halt is a policy/consent choice, so the
+            // auto-resolve flag actually works. Lead with it.
+            output.WriteLine("Remediation (this drift is a PROVABLY-SAFE suffix — auto-resolve is available):");
+            output.WriteLine($"  guardrails run {folder} --reprocess-drift — rewind the plan branch past the safe suffix + re-run");
+            output.WriteLine($"                                              (or re-run interactively to confirm with 'y')");
+            output.WriteLine($"  guardrails reset {folder} <taskId>...     — scoped reset of only the drifted task(s) + descendants");
+            output.WriteLine($"  guardrails reset {folder} -y              — full correct rebuild (always sound)");
+        }
+        else
+        {
+            // The rewind was REFUSED as unsound — --reprocess-drift would just re-halt on the same floor.
+            // Surface WHY and steer straight to the always-sound full rebuild.
+            output.WriteLine("Cannot safely auto-resolve — the drifted set is NOT a safe trailing suffix of the plan branch:");
+            if (drift.RewindRefusal is { Length: > 0 } refusal)
+            {
+                output.WriteLine($"  {refusal}");
+            }
+
+            if (drift.RewindBlockingTask is { Length: > 0 } blocker)
+            {
+                output.WriteLine($"  blocking task: {blocker}");
+            }
+
+            output.WriteLine();
+            output.WriteLine("Remediation (--reprocess-drift would REFUSE the same way — do not use it here):");
+            output.WriteLine($"  guardrails reset {folder} -y — full correct rebuild (always sound; tears the plan branch down)");
+        }
     }
 
     /// <summary>Shorten a <c>sha256:</c>-prefixed hash for display (e.g. <c>sha256:a6bee1…</c>).</summary>
@@ -750,11 +785,11 @@ public static class RunCommand
     private static Task<RunReport> ExecuteAsync(
         Core.Model.PlanDefinition plan,
         IRunObserver observer,
-        bool driftPreConfirmed,
+        DriftAuthorization? driftAuthorization,
         CancellationToken cancellationToken)
     {
         Scheduler scheduler = SchedulerFactory.Create(
-            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftPreConfirmed);
+            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization);
         return scheduler.RunAsync(plan, cancellationToken);
     }
 

@@ -150,6 +150,24 @@ public interface IWorktreeProvider
     void PruneSalvageRefs(string taskId) { }
 
     /// <summary>
+    /// True when this provider maintains the durable <c>Guardrails-Task:</c> trailer record on a plan
+    /// branch (issue #274 Part C). It gates the resume reconciliation invariant "a journal-<c>Succeeded</c>
+    /// task whose integration trailer is ABSENT from the current plan-branch history MUST re-run" — sound
+    /// ONLY where the branch is the authoritative integration record. Default <c>false</c> (serial mode /
+    /// fake providers keep no trailers, so the journal alone is authoritative there);
+    /// <see cref="GitWorktreeProvider"/> overrides to <c>true</c>.
+    /// </summary>
+    bool TracksPlanBranchTrailers => false;
+
+    /// <summary>
+    /// The current plan-branch tip sha (issue #274 Part C) — the compare-and-swap read taken immediately
+    /// before a destructive rewind so a concurrent same-plan session (or an operator editing between a
+    /// prompt and its confirmation) that advanced the branch is DETECTED and the rewind refused. Default
+    /// empty string for fake/serial providers.
+    /// </summary>
+    string CurrentPlanBranchTip(IntegrationHandle integ) => "";
+
+    /// <summary>
     /// Part C safe-auto-resolve (issue #274, SSOT §7.2): evaluate whether the drifted set
     /// <paramref name="safeSet"/> forms a provably-safe trailing suffix of the plan branch that a
     /// destructive <c>git reset --hard</c> can rewind past — via the pure

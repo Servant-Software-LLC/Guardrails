@@ -41,6 +41,9 @@ public static class RunReset
         DeleteFileIfExists(Path.Combine(stateDir, "run.json"));
         DeleteFileIfExists(Path.Combine(stateDir, "state.json"));
         DeleteFileIfExists(Path.Combine(stateDir, "merge-conflicts.log"));
+        // Issue #274 Part C: a stale rewind-intent marker (a crash mid safe-drift-resolution) must not
+        // survive a fresh slate — it would replay a reset for a plan the fresh run already cleared.
+        DeleteFileIfExists(RewindIntent.PathFor(planDirectory));
         // The per-attempt artifacts (and any exported static log site) live under the PLAN-ROOT
         // logs/<runId>/ tree (SSOT §8, plan-08: a sibling of state/, divided by runId) — NOT the
         // pre-plan-08 state/logs/. Delete the whole logs/ tree so a fresh run starts clean and the
@@ -97,6 +100,9 @@ public static class RunReset
 
         /// <summary>The set is NOT a provably-safe trailing suffix — refused; the plan branch was left untouched.</summary>
         Refused,
+
+        /// <summary>The plan branch moved between the safe-suffix decision and the rewind (a concurrent same-plan session) — aborted without touching the branch; re-run the command (issue #274 Part C compare-and-swap).</summary>
+        ConcurrentModification,
 
         /// <summary>A named task id is unknown to the run journal — nothing was changed.</summary>
         UnknownTask,
@@ -183,11 +189,33 @@ public static class RunReset
             };
         }
 
-        // Safe: DESTRUCTIVELY rewind the plan branch past the safe suffix (reflog-recoverable). A
-        // NothingToRewind decision (serial / no plan branch) skips the rewind — the journal reset suffices.
-        if (decision is { Outcome: SafeSuffixOutcome.Safe, ResetTarget: { } target })
+        bool willRewind = decision.Outcome == SafeSuffixOutcome.Safe && decision.ResetTarget is not null;
+
+        // Compare-and-swap (issue #274 Part C): the branch must still be exactly where the safe-suffix
+        // decision was computed — a concurrent same-plan session that advanced/rewound it since would make
+        // us discard its work. On a mismatch, abort WITHOUT touching the branch (the user re-runs).
+        if (willRewind)
         {
-            GitWorktreeProvider.RewindPlanBranch(plan.Workspace, planBranch, target);
+            string currentTip = GitWorktreeProvider.CurrentPlanBranchTip(plan.Workspace, planBranch);
+            if (!string.Equals(currentTip, decision.ExpectedTip, StringComparison.Ordinal))
+            {
+                return new ScopedResetResult { Outcome = ScopedResetOutcome.ConcurrentModification };
+            }
+        }
+
+        // CRASH-ATOMIC destructive section (issue #274 Part C): write the rewind-intent marker BEFORE the
+        // rewind so a kill between the rewind and the journal-resets is replayed idempotently on the next
+        // `guardrails run`; clear it only AFTER both effects persist.
+        var setInOrder = plan.Tasks.Where(t => set.Contains(t.Id)).Select(t => t.Id).ToList();
+        if (willRewind)
+        {
+            RewindIntent.Write(plan.PlanDirectory, new RewindIntent
+            {
+                SafeSet = setInOrder,
+                PreRewindTip = decision.ExpectedTip,
+                ResetTarget = decision.ResetTarget
+            });
+            GitWorktreeProvider.RewindPlanBranch(plan.Workspace, planBranch, decision.ResetTarget!);
         }
 
         // Journal-reset every member of S (in plan order), clearing each task's captured baseline (as the
@@ -214,15 +242,20 @@ public static class RunReset
         journal.RecordDriftResolution(new DriftResolution
         {
             Trigger = "manual-reset",
-            RewindTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null,
+            RewindTarget = willRewind ? decision.ResetTarget : null,
             Tasks = resolvedTasks
         });
+
+        if (willRewind)
+        {
+            RewindIntent.Clear(plan.PlanDirectory);
+        }
 
         return new ScopedResetResult
         {
             Outcome = ScopedResetOutcome.Done,
             ResetTasks = resetInOrder,
-            RewindTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null
+            RewindTarget = willRewind ? decision.ResetTarget : null
         };
     }
 

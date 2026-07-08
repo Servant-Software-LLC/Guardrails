@@ -79,8 +79,11 @@ public static class ResetCommand
                 if (result.RewindTarget is { } target)
                 {
                     io.Out.WriteLine(
-                        $"Rewound the plan branch past {result.ResetTasks.Count} task(s) (reset to {Short(target)}; " +
-                        "discarded commits stay recoverable via git reflog) and reset them to pending: " + set + ".");
+                        $"Rewound the plan branch past {result.ResetTasks.Count} task(s) (reset to {Short(target)}) " +
+                        "and reset them to pending: " + set + ".");
+                    io.Out.WriteLine(
+                        "  Discarded commits stay recoverable via git reflog UNTIL a later " +
+                        $"'guardrails run {folder} --fresh' or 'guardrails reset {folder} -y' tears the plan branch down.");
                 }
                 else
                 {
@@ -89,6 +92,12 @@ public static class ResetCommand
 
                 io.Out.WriteLine("Run 'guardrails run' to re-execute them.");
                 return ExitCodes.Success;
+
+            case RunReset.ScopedResetOutcome.ConcurrentModification:
+                io.Out.WriteLine(
+                    "The plan branch changed while the reset was deciding (a concurrent same-plan run?). " +
+                    "Nothing was changed — re-run this command.");
+                return ExitCodes.HarnessError;
 
             case RunReset.ScopedResetOutcome.Refused:
                 io.Out.WriteLine("REFUSED — the requested task(s) + descendants are NOT a safe trailing suffix of the");

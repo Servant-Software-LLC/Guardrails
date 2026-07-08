@@ -60,6 +60,15 @@ public sealed record SafeSuffixDecision
     /// <summary>The <c>git reset --hard</c> target sha (the parent of the oldest removed commit); non-null only when <see cref="Outcome"/> is <see cref="SafeSuffixOutcome.Safe"/>.</summary>
     public string? ResetTarget { get; init; }
 
+    /// <summary>
+    /// The plan-branch HEAD (newest first-parent commit sha) the decision was computed against — the
+    /// **compare-and-swap** anchor (issue #274 Part C). Before the destructive rewind the caller re-reads
+    /// the current tip and refuses if it no longer equals this, so a concurrent same-plan session (or an
+    /// operator editing between a prompt and its confirmation) can never make the harness discard work the
+    /// human/decision never saw. Empty string when the history is empty.
+    /// </summary>
+    public string? ExpectedTip { get; init; }
+
     /// <summary>The number of first-parent integration commits physically removed from the mainline; for the operator-facing confirm/audit.</summary>
     public int RemovedCommitCount { get; init; }
 
@@ -122,6 +131,10 @@ public static class SafeSuffixEvaluator
         ArgumentNullException.ThrowIfNull(firstParentNewestFirst);
         ArgumentNullException.ThrowIfNull(safeSet);
 
+        // The CAS anchor: the plan-branch HEAD this decision is computed against (empty for no history).
+        string expectedTip = firstParentNewestFirst.Count > 0 ? firstParentNewestFirst[0].Sha : "";
+        SafeSuffixDecision Tag(SafeSuffixDecision d) => d with { ExpectedTip = expectedTip };
+
         // 1. The oldest (largest index, newest-first) first-parent commit whose task is in S. Everything
         //    from HEAD (index 0) back through THIS commit is the removed range.
         int oldest = -1;
@@ -138,7 +151,7 @@ public static class SafeSuffixEvaluator
         {
             // No S task has an integration commit on the first-parent chain — nothing to physically
             // rewind. The caller falls back to a journal-only reset (sound where there is no branch).
-            return SafeSuffixDecision.Nothing();
+            return Tag(SafeSuffixDecision.Nothing());
         }
 
         // 2. Every commit in [0 .. oldest] must be attributable to a task IN S (first-parent closure),
@@ -150,40 +163,40 @@ public static class SafeSuffixEvaluator
 
             if (c.Task is null)
             {
-                return SafeSuffixDecision.Refused(
+                return Tag(SafeSuffixDecision.Refused(
                     $"commit {Short(c.Sha)} in the rewind range carries no Guardrails-Task: trailer " +
-                    "(a human hand-fix on the plan branch?) — refusing to discard unattributable work.");
+                    "(a human hand-fix on the plan branch?) — refusing to discard unattributable work."));
             }
 
             if (!safeSet.Contains(c.Task))
             {
-                return SafeSuffixDecision.Refused(
+                return Tag(SafeSuffixDecision.Refused(
                     $"commit {Short(c.Sha)} integrates '{c.Task}', which is not in the safe set — refusing " +
                     "(rewinding would discard a task that did not drift; the drifted set is not a trailing suffix).",
-                    c.Task);
+                    c.Task));
             }
 
             foreach (string? merged in c.MergedInTasks)
             {
                 if (merged is null)
                 {
-                    return SafeSuffixDecision.Refused(
+                    return Tag(SafeSuffixDecision.Refused(
                         $"merge {Short(c.Sha)} pulls in a lineage with no Guardrails-Task: trailer — refusing " +
-                        "(the merge-tip caveat: reset --hard would un-integrate unattributable merged work).");
+                        "(the merge-tip caveat: reset --hard would un-integrate unattributable merged work)."));
                 }
 
                 if (!safeSet.Contains(merged))
                 {
-                    return SafeSuffixDecision.Refused(
+                    return Tag(SafeSuffixDecision.Refused(
                         $"merge {Short(c.Sha)} pulls in '{merged}', which is not in the safe set — refusing " +
                         "(the merge-tip caveat: reset --hard would un-integrate a merged-in upstream that did not drift).",
-                        merged);
+                        merged));
                 }
             }
         }
 
         // Safe: rewind to the parent of the oldest removed commit.
-        return SafeSuffixDecision.Safe(firstParentNewestFirst[oldest].ParentSha, removedCommitCount: oldest + 1);
+        return Tag(SafeSuffixDecision.Safe(firstParentNewestFirst[oldest].ParentSha, removedCommitCount: oldest + 1));
     }
 
     private static string Short(string sha) => sha.Length <= 8 ? sha : sha[..8];

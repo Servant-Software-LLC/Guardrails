@@ -38,10 +38,13 @@ public sealed class Scheduler
 
     private readonly IAiMergeWorker? _aiMergeWorker;
 
-    // Part C (#274, SSOT §7.2): when true, a Prompt-policy safe drift is treated as pre-authorized (the
-    // CLI already prompted the operator OUTSIDE the live region and got a `y`). Core never prompts
-    // itself, so without this a Prompt-policy safe drift HALTS. Reprocess auto-resolves regardless.
-    private readonly bool _driftPreConfirmed;
+    // Part C (#274, SSOT §7.2): the operator-authorized safe-rewind plan captured by the CLI's pre-DAG
+    // probe (S + reset target + the plan-branch tip the operator saw). Non-null ONLY on a Prompt-policy
+    // run the CLI already confirmed OUTSIDE the live region with a `y`. Core never prompts itself, so
+    // without this a Prompt-policy safe drift HALTS. The Scheduler executes the CAPTURED plan (verifying
+    // it still matches + a tip compare-and-swap), never a possibly-diverged recompute. Reprocess
+    // auto-resolves on its own fresh decision; halt/unconfirmed-prompt halt.
+    private readonly DriftAuthorization? _driftAuthorization;
 
     public Scheduler(
         PlanDefinition plan,
@@ -52,7 +55,7 @@ public sealed class Scheduler
         int? maxParallelism = null,
         IReVerifier? reVerifier = null,
         IAiMergeWorker? aiMergeWorker = null,
-        bool driftPreConfirmed = false)
+        DriftAuthorization? driftAuthorization = null)
     {
         _plan = plan;
         _executor = executor;
@@ -61,7 +64,7 @@ public sealed class Scheduler
         _observer = observer ?? IRunObserver.Null;
         _reVerifier = reVerifier;
         _aiMergeWorker = aiMergeWorker;
-        _driftPreConfirmed = driftPreConfirmed;
+        _driftAuthorization = driftAuthorization;
 
         int requested = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
 
@@ -126,9 +129,18 @@ public sealed class Scheduler
         // being re-run. Prune this run's stale segment refs first so they can't be mistaken for work.
         IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords =
             new Dictionary<string, PlanBranchTaskRecord>(StringComparer.Ordinal);
+        bool trailerTracking = _worktreeProvider?.TracksPlanBranchTrailers == true && integ is not null;
         if (_worktreeProvider is { } wp && integ is { } activeInteg)
         {
             wp.PruneStaleRunBranches(runId, activeInteg);
+
+            // Part C crash-atomicity (#274, SSOT §7.2): if a prior safe-drift resolution was killed BETWEEN
+            // the plan-branch rewind and its per-task journal-resets, a rewind-intent marker survives.
+            // Replay it idempotently — re-reset the whole recorded set to pending so a non-drifted
+            // descendant whose commit was already discarded re-runs (never silently skipped) — then clear
+            // it. Runs BEFORE the reconcile read below so the replayed statuses are seen.
+            ReplayRewindIntentIfPresent();
+
             planBranchRecords = wp.ReconcileFromPlanBranch(activeInteg);
         }
 
@@ -151,21 +163,28 @@ public sealed class Scheduler
         DriftResolution? driftResolution = null;
         try
         {
-            (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords);
+            (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords, trailerTracking);
 
             if (drifted.Count > 0)
             {
                 // Part C (#274, SSOT §7.2): try to AUTO-RESOLVE a provably-safe drift by physically
                 // rewinding the plan branch past the safe suffix (destructive; the floor on any ambiguity
-                // is HALT). An unsafe drift, a strict "halt" policy, or an unconfirmed "prompt" policy all
-                // fall through to the Part A halt below — nothing scheduled, the rich per-file report.
-                driftResolution = TryResolveDrift(plan, graph, drifted, integ);
+                // is HALT). An unsafe drift, a strict "halt" policy, an unconfirmed "prompt" policy, a
+                // consent-void plan, or a moved tip (CAS) all fall through to the Part A halt below.
+                DriftGateResult gate = TryResolveDrift(plan, graph, drifted, integ);
 
-                if (driftResolution is null)
+                if (gate.Resolution is null)
                 {
+                    // HALT with the rich per-file report — enriched so the CLI can distinguish a
+                    // safe-but-unconfirmed halt (offer --reprocess-drift) from an UNSAFE refusal (steer to
+                    // the always-sound full rebuild + name the blocker), instead of leading with a flag
+                    // that would just re-halt.
                     return BuildReport(plan, settled, cancelled: false)
-                        with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
+                        with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider)
+                            with { SafeToAutoResolve = gate.SafeToAutoResolve, RewindRefusal = gate.Refusal, RewindBlockingTask = gate.BlockingTask } };
                 }
+
+                driftResolution = gate.Resolution;
 
                 // Resolved: audit (durable journal section + live observer), then re-derive the
                 // pre-settle-green set now that S is journal-reset to pending AND rewound off the branch —
@@ -178,7 +197,7 @@ public sealed class Scheduler
                     planBranchRecords = wpAfter.ReconcileFromPlanBranch(integAfter);
                 }
 
-                (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords);
+                (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords, trailerTracking);
                 if (drifted.Count > 0)
                 {
                     // Defensive: a correct rewind clears every drift. If any residual survives, halt
@@ -377,7 +396,10 @@ public sealed class Scheduler
     /// task's definition files from disk, so its IO is wrapped by the caller's #150 honest-abort guard.
     /// </summary>
     private (HashSet<string> PreSettledGreen, List<DefinitionDriftReporter.DriftInput> Drifted)
-        DetectDefinitionDrift(PlanDefinition plan, IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords)
+        DetectDefinitionDrift(
+            PlanDefinition plan,
+            IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords,
+            bool trailerTracking)
     {
         var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
         var drifted = new List<DefinitionDriftReporter.DriftInput>();
@@ -389,6 +411,19 @@ public sealed class Scheduler
             if (!journalGreen && trailer is null)
             {
                 continue;
+            }
+
+            // Part C resume reconciliation (#274, SSOT §7.2): where the plan branch is the authoritative
+            // integration record (worktree mode), a task that the journal calls Succeeded but whose
+            // integration trailer is ABSENT from the current plan-branch history had its commit rewound off
+            // (a crash mid safe-drift-resolution, or an external rewind). Its work is NOT on the branch —
+            // it MUST re-run, never be skipped. This closes the new invariant Part C's reset --hard can
+            // break, catching the inconsistency however it arose. Serial / non-trailer providers keep the
+            // journal-only semantics (no trailers to consult).
+            if (trailerTracking && journalGreen && trailer is null)
+            {
+                _journal.ResetTaskToPending(task.Id);
+                continue; // pending → scheduled (re-run)
             }
 
             preSettledGreen.Add(task.Id);
@@ -413,31 +448,45 @@ public sealed class Scheduler
         return (preSettledGreen, drifted);
     }
 
+    /// <summary>The outcome of the Part C gate: a resolution (rewound + reset) or a halt, with the safe/unsafe distinction the CLI needs to render the right remedy.</summary>
+    private sealed record DriftGateResult(
+        DriftResolution? Resolution, bool SafeToAutoResolve, string? Refusal, string? BlockingTask)
+    {
+        public static DriftGateResult Resolved(DriftResolution resolution) => new(resolution, true, null, null);
+
+        /// <summary>Halt because the rewind is UNSOUND (a non-suffix / uncontained fan-in / trailer-less commit) — no flag authorizes it.</summary>
+        public static DriftGateResult Unsafe(string? refusal, string? blockingTask) => new(null, false, refusal, blockingTask);
+
+        /// <summary>Halt a provably-SAFE drift because the policy/consent did not authorize it (strict halt, unconfirmed prompt, a consent-void plan, or a moved tip).</summary>
+        public static DriftGateResult HaltSafe() => new(null, true, null, null);
+    }
+
     /// <summary>
     /// Part C safe-auto-resolve (issue #274, SSOT §7.2). The drifted set <c>S</c> = the drifted tasks ∪
     /// their <see cref="DependencyGraph.TransitiveDependentsOf"/> closure (a changed producer can change a
     /// consumer's inputs). Evaluate whether <c>S</c> forms a provably-safe trailing suffix of the plan
     /// branch (<see cref="SafeSuffixEvaluator"/> via the provider), then apply the gating:
     /// <list type="bullet">
-    ///   <item>UNSAFE (Refused) → <c>null</c> (HALT). No policy authorizes an unsound rewind.</item>
-    ///   <item><see cref="DriftPolicy.Halt"/> → <c>null</c> (strict opt-out, the Part A behavior).</item>
-    ///   <item><see cref="DriftPolicy.Reprocess"/> → resolve, no prompt (pre-authorized spend).</item>
-    ///   <item><see cref="DriftPolicy.Prompt"/> → resolve ONLY when <see cref="_driftPreConfirmed"/> (the
-    ///     CLI prompted OUTSIDE the live region and got a <c>y</c>); otherwise <c>null</c> (Core never
-    ///     prompts — a non-interactive / unconfirmed run halts).</item>
+    ///   <item>UNSAFE (Refused) → HALT (unsafe). No policy authorizes an unsound rewind.</item>
+    ///   <item><see cref="DriftPolicy.Halt"/> → HALT (safe; strict opt-out, the Part A behavior).</item>
+    ///   <item><see cref="DriftPolicy.Reprocess"/> → resolve on this run's own fresh decision (pre-authorized spend).</item>
+    ///   <item><see cref="DriftPolicy.Prompt"/> → resolve ONLY when the CLI captured an operator <c>y</c>
+    ///     (<see cref="_driftAuthorization"/>) AND that captured plan still matches this fresh decision AND
+    ///     the branch tip has not moved; otherwise HALT (Core never prompts).</item>
     /// </list>
-    /// When it resolves: DESTRUCTIVELY rewind the plan branch to the safe target (worktree mode; a
-    /// journal-only reset when there is no physical suffix, which is sound in serial mode), journal-reset
-    /// every member of <c>S</c> to <c>pending</c>, and return the audit record. Returns <c>null</c> to
-    /// mean "halt with the Part A report".
+    /// The destructive section is CRASH-ATOMIC: a rewind-intent marker is written BEFORE the
+    /// <c>git reset --hard</c> and cleared only AFTER both the rewind and every journal-reset persist, so a
+    /// kill in between is idempotently replayed on resume. A COMPARE-AND-SWAP on the plan-branch tip guards
+    /// against a concurrent same-plan session (or an operator editing during the blocking prompt) making the
+    /// harness rewind a set the decision/human never saw — a mismatch HALTS, never rewinds.
     /// </summary>
-    private DriftResolution? TryResolveDrift(
+    private DriftGateResult TryResolveDrift(
         PlanDefinition plan,
         DependencyGraph graph,
         List<DefinitionDriftReporter.DriftInput> drifted,
         IntegrationHandle? integ)
     {
-        // S = drifted ∪ transitive descendants.
+        // S = drifted ∪ transitive descendants (this run's OWN fresh computation).
         var safeSet = new HashSet<string>(StringComparer.Ordinal);
         foreach (DefinitionDriftReporter.DriftInput d in drifted)
         {
@@ -454,10 +503,11 @@ public sealed class Scheduler
             ? provider.EvaluateSafeSuffix(activeInteg, safeSet)
             : SafeSuffixDecision.Nothing();
 
-        // Refuse floor (un-overridable): an unsafe rewind ALWAYS halts, regardless of policy.
+        // Refuse floor (un-overridable): an unsafe rewind ALWAYS halts, regardless of policy. Surface the
+        // reason + blocker so the CLI steers to the always-sound rebuild rather than a re-halting flag.
         if (decision.Outcome == SafeSuffixOutcome.Refused)
         {
-            return null;
+            return DriftGateResult.Unsafe(decision.Refusal, decision.BlockingTask);
         }
 
         // Authorization gate (only a provably-safe / nothing-to-rewind drift reaches here).
@@ -467,19 +517,57 @@ public sealed class Scheduler
             case DriftPolicy.Reprocess:
                 trigger = "reprocess";
                 break;
-            case DriftPolicy.Prompt when _driftPreConfirmed:
+
+            case DriftPolicy.Prompt when _driftAuthorization is { } auth:
+                // Consent integrity: the operator approved a SPECIFIC plan (from the probe's preview). If
+                // files edited during the blocking prompt changed what would be rewound (S / target
+                // diverges), HALT — never rewind a set the human did not see.
+                if (!AuthorizationMatches(auth, safeSet, decision))
+                {
+                    return DriftGateResult.HaltSafe();
+                }
+
                 trigger = "prompt";
                 break;
-            default: // Halt, or an unconfirmed Prompt policy — Core never prompts.
-                return null;
+
+            default: // Halt policy, or an unconfirmed Prompt policy — Core never prompts.
+                return DriftGateResult.HaltSafe();
         }
 
-        // DESTRUCTIVE rewind when there is a physical suffix to remove; discarded commits stay in the
-        // reflog. A NothingToRewind decision skips the git reset — the journal reset below suffices.
-        if (decision is { Outcome: SafeSuffixOutcome.Safe, ResetTarget: { } target }
-            && _worktreeProvider is { } rewindProvider && integ is { } rewindInteg)
+        // Compare-and-swap: for a real rewind, the branch must still be exactly where the decision (and,
+        // for a prompt, the operator) saw it. A concurrent same-plan session that advanced/rewound the
+        // branch since is DETECTED here → HALT rather than discard its work.
+        string? resetTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null;
+        if (decision.Outcome == SafeSuffixOutcome.Safe)
         {
-            rewindProvider.RewindPlanBranchTo(rewindInteg, target);
+            string authorizedTip = _driftAuthorization?.ExpectedTip ?? decision.ExpectedTip ?? "";
+            string currentTip = _worktreeProvider is { } tipProvider && integ is { } tipInteg
+                ? tipProvider.CurrentPlanBranchTip(tipInteg)
+                : "";
+            if (!string.Equals(currentTip, authorizedTip, StringComparison.Ordinal))
+            {
+                return DriftGateResult.HaltSafe();
+            }
+        }
+
+        // CRASH-ATOMIC destructive section. The marker is only needed for a real plan-branch rewind
+        // (trailer-tracking); a serial journal-only reset has no discarded commits to lose and self-heals
+        // via re-detection. Write BEFORE the rewind, clear only AFTER both effects persist.
+        bool useMarker = decision.Outcome == SafeSuffixOutcome.Safe
+            && _worktreeProvider?.TracksPlanBranchTrailers == true;
+        if (useMarker)
+        {
+            State.RewindIntent.Write(_plan.PlanDirectory, new State.RewindIntent
+            {
+                SafeSet = safeSet.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                PreRewindTip = decision.ExpectedTip,
+                ResetTarget = resetTarget
+            });
+        }
+
+        if (resetTarget is not null && _worktreeProvider is { } rewindProvider && integ is { } rewindInteg)
+        {
+            rewindProvider.RewindPlanBranchTo(rewindInteg, resetTarget);
         }
 
         // Journal-reset every member of S so the next scheduling wave re-runs it from the clean base.
@@ -488,12 +576,69 @@ public sealed class Scheduler
             _journal.ResetTaskToPending(taskId);
         }
 
-        return new DriftResolution
+        if (useMarker)
+        {
+            State.RewindIntent.Clear(_plan.PlanDirectory);
+        }
+
+        return DriftGateResult.Resolved(new DriftResolution
         {
             Trigger = trigger,
-            RewindTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null,
+            RewindTarget = resetTarget,
             Tasks = BuildResolvedTasks(plan, drifted, safeSet)
-        };
+        });
+    }
+
+    /// <summary>
+    /// True when the operator-approved plan (<paramref name="auth"/>, captured by the CLI probe) still
+    /// matches this run's fresh decision — same reset target and same safe set. A mismatch means files were
+    /// edited during the blocking prompt so a rewind now would discard a set the human never saw → the
+    /// caller HALTS (issue #274 Part C consent integrity).
+    /// </summary>
+    private static bool AuthorizationMatches(
+        DriftAuthorization auth, HashSet<string> safeSet, SafeSuffixDecision decision)
+    {
+        if (!string.Equals(auth.ResetTarget, decision.ResetTarget, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (auth.SafeSet.Count != safeSet.Count)
+        {
+            return false;
+        }
+
+        foreach (string t in auth.SafeSet)
+        {
+            if (!safeSet.Contains(t))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Replay a surviving rewind-intent marker (issue #274 Part C crash-atomicity): a prior resolution was
+    /// killed between the plan-branch rewind and its journal-resets. Idempotently re-reset the whole
+    /// recorded set to <c>pending</c> (so a non-drifted descendant whose commit was already discarded
+    /// re-runs, never silently skipped), then clear the marker. Best-effort: a read hiccup leaves the
+    /// general trailer-reconciliation invariant as the safety net.
+    /// </summary>
+    private void ReplayRewindIntentIfPresent()
+    {
+        if (State.RewindIntent.TryRead(_plan.PlanDirectory) is not { } intent)
+        {
+            return;
+        }
+
+        foreach (string taskId in intent.SafeSet)
+        {
+            _journal.ResetTaskToPending(taskId);
+        }
+
+        State.RewindIntent.Clear(_plan.PlanDirectory);
     }
 
     /// <summary>

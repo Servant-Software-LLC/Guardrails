@@ -361,7 +361,15 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (rewind target + per-task old->new hash); only a declined/refused drift is the exit-2
   `RunReport.DefinitionDrift`. Serial mode / non-git = no plan branch to carry a stale commit, so both
   consumers degrade to a sound journal-only reset (no rewind). Unrecognized `driftPolicy` = **GR2031**.
-  (SSOT §7.2.)
+  **Crash-atomic + CAS:** the rewind + per-task journal-reset are made crash-atomic by a
+  `state/rewind-intent.json` marker (written before `reset --hard`, cleared after both effects persist,
+  replayed idempotently on resume) AND a general resume invariant -- a journal-`succeeded` task whose
+  plan-branch trailer is ABSENT (its commit was rewound off) MUST re-run, never be skipped (closes the lost
+  non-drifted-descendant hole). A **compare-and-swap** on the plan-branch tip guards concurrent same-plan
+  sessions / mid-prompt edits: the Scheduler executes the CLI's CAPTURED authorized plan and re-verifies
+  the tip before rewinding, HALTING (never destroying) on a moved tip or a diverged plan. Attribution reads
+  only a commit's LAST trailer block (git-interpret-trailers), so a `Guardrails-Task:` line in a hand-fix's
+  prose is not mis-attributed. (SSOT §7.2.)
   **Outcome-agnostic by design (issue #190):** resume does NOT distinguish WHY a task is
   `needs-human` -- a rate-limited/timeout/output-cap halt (self-resolving) and a genuine
   `needsHuman`/permission-wall/exhausted-guardrail halt (needs a human fix first) both reset to

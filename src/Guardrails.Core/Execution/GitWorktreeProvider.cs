@@ -628,9 +628,11 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             string? currentRun = null;
             string? currentHash = null;
 
-            foreach (string rawLine in body.Split('\n'))
+            // Only the LAST trailer block attributes (git interpret-trailers semantics) — a stray
+            // Guardrails-Task: line in a human hand-fix commit's prose must NOT be read as attribution
+            // (issue #274 Part C NIT). A genuine hand-fix stays un-attributed → the rewind refuses it.
+            foreach (string line in LastTrailerBlockLines(body))
             {
-                string line = rawLine.Trim();
                 if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
                     currentTask = line["Guardrails-Task: ".Length..];
                 else if (line.StartsWith("Guardrails-Run: ", StringComparison.Ordinal))
@@ -683,6 +685,24 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             // to journal-only, never a crash.
             return empty;
         }
+    }
+
+    /// <inheritdoc />
+    public bool TracksPlanBranchTrailers => true;
+
+    /// <inheritdoc />
+    public string CurrentPlanBranchTip(IntegrationHandle integ) =>
+        CurrentPlanBranchTip(_repoPath, integ.PlanBranchName);
+
+    /// <summary>
+    /// The current tip sha of <paramref name="planBranch"/> (issue #274 Part C compare-and-swap). Static so
+    /// the manual scoped reset can read it without a run-scoped provider. Degrades to the empty string when
+    /// the branch does not exist / git is unavailable — a non-git plan folder has no branch to CAS against.
+    /// </summary>
+    public static string CurrentPlanBranchTip(string repoPath, string planBranch)
+    {
+        var (stdout, exit) = TryGitIn(repoPath, "rev-parse", planBranch);
+        return exit == 0 ? stdout.Trim() : "";
     }
 
     /// <inheritdoc />
@@ -857,13 +877,14 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             string sha = record[..split].Trim();
             string body = record[(split + 1)..];
 
+            // Only the LAST trailer block attributes (see ParseTrailerRecords) — a stray Guardrails-Task:
+            // in a human hand-fix's prose stays un-attributed (null) so the rewind refuses it (#274 Part C).
             string? task = null;
-            foreach (string rawLine in body.Split('\n'))
+            foreach (string line in LastTrailerBlockLines(body))
             {
-                string bodyLine = rawLine.Trim();
-                if (bodyLine.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
+                if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
                 {
-                    task = bodyLine["Guardrails-Task: ".Length..];
+                    task = line["Guardrails-Task: ".Length..];
                 }
             }
 
@@ -871,6 +892,61 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         }
 
         return map;
+    }
+
+    /// <summary>
+    /// The lines of a commit body's LAST trailer block (approximating <c>git interpret-trailers</c>): the
+    /// final paragraph, returned ONLY when every one of its non-blank lines is trailer-shaped
+    /// (<c>Key: value</c>, key = letters/digits/hyphen). This is what makes a <c>Guardrails-Task:</c>
+    /// occurrence in ordinary prose NOT count as attribution (issue #274 Part C NIT) — a human hand-fix
+    /// commit that merely mentions a trailer keeps its <c>null</c> attribution and is refused by the safe
+    /// rewind. Returns an empty list when the final paragraph is prose (not a trailer block).
+    /// </summary>
+    private static IReadOnlyList<string> LastTrailerBlockLines(string body)
+    {
+        string[] lines = body.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+
+        int end = lines.Length - 1;
+        while (end >= 0 && lines[end].Trim().Length == 0) end--; // skip trailing blanks
+        if (end < 0) return [];
+
+        int start = end;
+        while (start > 0 && lines[start - 1].Trim().Length > 0) start--; // to the top of the final paragraph
+
+        var block = new List<string>(end - start + 1);
+        for (int i = start; i <= end; i++)
+        {
+            string line = lines[i].Trim();
+            if (!IsTrailerLine(line))
+            {
+                return []; // the final paragraph is prose, not a trailer block → no attribution
+            }
+
+            block.Add(line);
+        }
+
+        return block;
+    }
+
+    /// <summary>True when <paramref name="trimmed"/> is a trailer line <c>Key: value</c> (key = letters/digits/hyphen, then <c>": "</c>, then a non-empty value).</summary>
+    private static bool IsTrailerLine(string trimmed)
+    {
+        int colon = trimmed.IndexOf(':');
+        if (colon <= 0 || colon + 1 >= trimmed.Length || trimmed[colon + 1] != ' ')
+        {
+            return false;
+        }
+
+        for (int i = 0; i < colon; i++)
+        {
+            char ch = trimmed[i];
+            if (!char.IsLetterOrDigit(ch) && ch != '-')
+            {
+                return false;
+            }
+        }
+
+        return trimmed.Length > colon + 2; // a non-empty value after ": "
     }
 
     /// <summary>

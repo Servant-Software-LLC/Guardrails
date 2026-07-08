@@ -47,6 +47,7 @@ public static class PlanGitignore
         "/state/run.json\n" +
         "/state/state.json\n" +
         "/state/merge-conflicts.log\n" +
+        "/state/rewind-intent.json\n" +
         "/state/captured/\n";
 
     /// <summary>

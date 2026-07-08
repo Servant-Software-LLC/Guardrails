@@ -151,6 +151,31 @@ public sealed class DefinitionDriftAutoResolveTests
     }
 
     [Fact]
+    public void Gatherer_StrayTrailerInProse_NotAttributed_HandFixRefusesRewind()
+    {
+        // A human hand-fix commit whose message QUOTES a Guardrails-Task: line mid-body (not in the final
+        // trailer block) must NOT be attributed — only the last trailer block counts (git interpret-trailers
+        // semantics). It stays un-attributed (null) so the safe rewind refuses to discard the human's work.
+        using var repo = new TempGitRepo();
+        const string branch = "guardrails/plan";
+        TempGitRepo.Git(repo.RepoPath, "checkout", "-b", branch);
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", Trailer("01-a"));
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m",
+            "Revert bad merge\n\nThis reverted the integration:\nGuardrails-Task: 01-a\nGuardrails-Run: r1\n\nDone by hand after the merge broke.");
+        string handFixSha = TempGitRepo.Git(repo.RepoPath, "rev-parse", "HEAD").Trim();
+
+        IReadOnlyList<TrailerCommit> history = GitWorktreeProvider.GatherFirstParentHistory(repo.RepoPath, branch);
+        // The mid-body Guardrails-Task: is prose, so the hand-fix commit is un-attributed (null), NOT 01-a.
+        Assert.Null(history.Single(c => c.Sha == handFixSha).Task);
+
+        // Rewinding a set that includes 01-a now REFUSES — the trailer-less hand-fix sits inside the range.
+        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(
+            repo.RepoPath, branch, new HashSet<string>(["01-a"], StringComparer.Ordinal));
+        Assert.Equal(SafeSuffixOutcome.Refused, decision.Outcome);
+        Assert.Contains("no Guardrails-Task: trailer", decision.Refusal);
+    }
+
+    [Fact]
     public void Rewind_PhysicallyRemovesCommits_ButLeavesThemReflogRecoverable()
     {
         using var repo = new TempGitRepo();
@@ -242,7 +267,7 @@ public sealed class DefinitionDriftAutoResolveTests
     }
 
     private static async Task<RunReport> RunAsync(
-        string planDir, GitWorktreeProvider provider, bool driftPreConfirmed, CancellationToken ct)
+        string planDir, GitWorktreeProvider provider, CancellationToken ct, DriftAuthorization? driftAuthorization = null)
     {
         PlanLoadResult load = new PlanLoader().Load(planDir);
         Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
@@ -256,7 +281,7 @@ public sealed class DefinitionDriftAutoResolveTests
         var executor = new TaskExecutor(load.Plan!, new ProcessRunner(), interpreterMap, stateManager, journal, IRunObserver.Null, registry);
         var scheduler = new Scheduler(
             load.Plan!, executor, journal, worktreeProvider: provider, reVerifier: new PassReVerifier(),
-            driftPreConfirmed: driftPreConfirmed);
+            driftAuthorization: driftAuthorization);
         return await scheduler.RunAsync(load.Plan!, ct);
     }
 
@@ -268,7 +293,7 @@ public sealed class DefinitionDriftAutoResolveTests
         repo.CommitAll("add plan");
         CancellationToken ct = TestContext.Current.CancellationToken;
 
-        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), false, ct);
+        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
         Assert.True(first.AllSucceeded, "phase 1 must fully succeed");
 
         string planBranch = $"guardrails/{Path.GetFileName(planDir)}";
@@ -278,7 +303,7 @@ public sealed class DefinitionDriftAutoResolveTests
         File.WriteAllText(Path.Combine(planDir, "tasks", "01-task-a", "guardrails", GuardrailFile),
             (Ps ? "" : "#!/usr/bin/env bash\n") + "# edited guardrail — an extra assertion line\nexit 0\n");
 
-        RunReport second = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), false, ct);
+        RunReport second = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
 
         Assert.Null(second.DefinitionDrift);                 // auto-resolved, not halted
         Assert.True(second.AllSucceeded);
@@ -308,14 +333,14 @@ public sealed class DefinitionDriftAutoResolveTests
         repo.CommitAll("add plan");
         CancellationToken ct = TestContext.Current.CancellationToken;
 
-        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), false, ct);
+        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
         Assert.True(first.AllSucceeded);
 
         File.WriteAllText(Path.Combine(planDir, "tasks", "01-task-a", "guardrails", GuardrailFile),
             (Ps ? "" : "#!/usr/bin/env bash\n") + "# edited\nexit 0\n");
 
-        // Even with driftPreConfirmed=true (simulating an operator y), a strict halt policy still halts.
-        RunReport second = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), true, ct);
+        // A strict halt policy always halts (the CLI passes no authorization for halt policy).
+        RunReport second = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
 
         Assert.NotNull(second.DefinitionDrift);
         Assert.Null(second.DriftResolution);
@@ -333,7 +358,7 @@ public sealed class DefinitionDriftAutoResolveTests
         repo.CommitAll("add plan");
         CancellationToken ct = TestContext.Current.CancellationToken;
 
-        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), false, ct);
+        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
         Assert.True(first.AllSucceeded);
 
         PlanLoadResult load = new PlanLoader().Load(planDir);
@@ -344,7 +369,7 @@ public sealed class DefinitionDriftAutoResolveTests
         Assert.Equal(["01-task-a", "02-task-b"], result.ResetTasks.OrderBy(x => x)); // set ∪ descendants
 
         // A plain resume now re-runs the reset set from the clean base and goes green — no drift halt.
-        RunReport second = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), false, ct);
+        RunReport second = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
         Assert.Null(second.DefinitionDrift);
         Assert.True(second.AllSucceeded);
     }
@@ -386,6 +411,83 @@ public sealed class DefinitionDriftAutoResolveTests
         Assert.Equal("03-c", result.BlockingTask);
         // The plan branch was left UNTOUCHED (refuse floor = HALT, never destroy).
         Assert.Equal(tipBefore, TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim());
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 4. Crash-atomicity: rewind + journal-reset must survive a kill BETWEEN the two effects.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task CrashMidResolution_MarkerReplay_ReRunsNonDriftedDescendant()
+    {
+        // The BLOCKER: a resolution rewinds S = {01 (drifted), 02 (a non-drifted descendant)} atomically,
+        // then journal-resets per task. A kill AFTER the rewind + AFTER 01 is reset but BEFORE 02 is reset
+        // leaves 02 journal-Succeeded (hash unchanged → drift NEVER re-flags it) while its commit is gone —
+        // silently skipped, its green work lost. The rewind-intent marker makes it crash-atomic: on resume
+        // it is replayed (re-reset the whole set) so 02 re-runs.
+        using var repo = new TempGitRepo();
+        string planDir = CreateLinearPlan(repo.RepoPath, "");
+        repo.CommitAll("add plan");
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
+        Assert.True(first.AllSucceeded);
+
+        string planBranch = $"guardrails/{Path.GetFileName(planDir)}";
+        IReadOnlyList<TrailerCommit> history = GitWorktreeProvider.GatherFirstParentHistory(repo.RepoPath, planBranch);
+        string oldTip = history[0].Sha;
+        string baseSha = history[^1].Sha; // the base (no-trailer) commit — the rewind target for the whole chain
+
+        // Simulate the crash state: branch rewound, ONLY 01 journal-reset, 02 still Succeeded, marker present.
+        GitWorktreeProvider.RewindPlanBranch(repo.RepoPath, planBranch, baseSha);
+        RunJournal crashJournal = RunJournal.LoadOrCreate(new PlanLoader().Load(planDir).Plan!);
+        crashJournal.ResetTask("01-task-a"); // 02-task-b deliberately left Succeeded
+        RewindIntent.Write(planDir, new RewindIntent
+        {
+            SafeSet = ["01-task-a", "02-task-b"],
+            PreRewindTip = oldTip,
+            ResetTarget = baseSha
+        });
+
+        // Resume. Without the marker replay, 02 (journal-Succeeded, hash matches) would be SKIPPED and its
+        // discarded work lost. With it, 02 re-runs.
+        RunReport resumed = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
+
+        Assert.Null(resumed.DefinitionDrift);
+        Assert.True(resumed.AllSucceeded);
+        TaskResult twoResult = resumed.Tasks.Single(t => t.TaskId == "02-task-b");
+        Assert.Equal(TaskOutcome.Succeeded, twoResult.Outcome); // RE-RAN, not Skipped
+        Assert.Null(RewindIntent.TryRead(planDir));             // marker cleared after replay
+    }
+
+    [Fact]
+    public async Task JournalGreenButTrailerAbsent_ReconciliationReRunsIt_NoMarker()
+    {
+        // The general resume invariant (independent of the marker): a task the journal calls Succeeded but
+        // whose integration trailer is ABSENT from the current plan-branch history (its commit was rewound
+        // off, however that arose) MUST re-run — never be skipped. Here the branch is rewound with the
+        // journal left untouched and NO marker present; the reconciliation alone recovers both tasks.
+        using var repo = new TempGitRepo();
+        string planDir = CreateLinearPlan(repo.RepoPath, "");
+        repo.CommitAll("add plan");
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        RunReport first = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
+        Assert.True(first.AllSucceeded);
+
+        string planBranch = $"guardrails/{Path.GetFileName(planDir)}";
+        string baseSha = GitWorktreeProvider.GatherFirstParentHistory(repo.RepoPath, planBranch)[^1].Sha;
+
+        // Rewind the branch off both integrations, journal untouched (01 & 02 still Succeeded), NO marker.
+        GitWorktreeProvider.RewindPlanBranch(repo.RepoPath, planBranch, baseSha);
+        Assert.Null(RewindIntent.TryRead(planDir));
+
+        RunReport resumed = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
+
+        Assert.Null(resumed.DefinitionDrift);
+        Assert.True(resumed.AllSucceeded);
+        Assert.Equal(TaskOutcome.Succeeded, resumed.Tasks.Single(t => t.TaskId == "01-task-a").Outcome);
+        Assert.Equal(TaskOutcome.Succeeded, resumed.Tasks.Single(t => t.TaskId == "02-task-b").Outcome);
     }
 
     // ---------------------------------------------------------------------------------------------
