@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Guardrails.Cli;
+using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
@@ -240,6 +242,33 @@ public sealed class DefinitionDriftTests
         string planBranch = $"guardrails/{Path.GetFileName(planDir)}";
         string log = TempGitRepo.Git(repo.RepoPath, "log", "--format=%B", planBranch);
         Assert.Contains("Guardrails-Task-Hash: sha256:", log);
+    }
+
+    [Fact]
+    public async Task DryRun_JournalReset_PreviewsDriftFromPlanBranchTrailer()
+    {
+        // NIT parity: on a journal-reset resume only the plan-branch Guardrails-Task-Hash: trailer
+        // survives. --dry-run must still preview the halt (via a read-only git query), not a stale SKIP.
+        using var repo = new TempGitRepo();
+        string planDir = CreateLinearPlan(repo.RepoPath);
+        repo.CommitAll("add plan");
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        (RunReport report1, _) = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
+        Assert.True(report1.AllSucceeded);
+
+        // Simulate the journal-reset resume: delete run.json so ONLY the plan-branch trailer records the
+        // definition hash. Then edit the succeeded task's guardrail (drift the definition).
+        File.Delete(RunJournal.PathFor(planDir));
+        File.WriteAllText(Path.Combine(planDir, "tasks", "01-task-a", "guardrails", GuardrailFile),
+            (Ps ? "" : "#!/usr/bin/env bash\n") + "# edited guardrail\nexit 0\n");
+
+        var io = new StringConsoleIo();
+        int exit = DryRun.Execute(planDir, io, skipReviewCheck: true);
+
+        Assert.Equal(ExitCodes.Success, exit); // a dry run always exits 0, touching nothing.
+        Assert.Contains("HALT (definition drift)", io.OutText);
+        Assert.Contains("would HALT on definition drift", io.OutText);
     }
 
     [Fact]

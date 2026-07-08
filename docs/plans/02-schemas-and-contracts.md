@@ -1500,6 +1500,14 @@ down — so auto-invalidation is unsound; that soundness limit is why Part A hal
 - **`guardrails reset <folder> -y`** — a full correct rebuild; works today (Part B tears down the plan branch, §6.1).
 - **`guardrails reset <folder> <taskId>...`** — a **scoped** reset of only the drifted task(s) + descendants, valid when the named set is a safe trailing suffix of plan-branch history. **Part C (fast-follow).** The same safety-check + rewind primitive additionally powers an opt-in **run-time auto-resolve** of the safe set; the unsafe (fan-in / non-suffix) case always halts regardless. (Not implemented in Part A.)
 
+**`--dry-run` preview.** `guardrails run --dry-run` previews the halt honestly — a drifted already-`succeeded`
+task shows `HALT (definition drift)` in the per-task resolution instead of a stale `SKIP (succeeded)`. For
+parity with a real resume it consults BOTH the journal's recorded hash AND the plan-branch
+`Guardrails-Task-Hash:` trailer via a **read-only** `git log` (no integration worktree — the dry run still
+touches nothing); it degrades to journal-only when the workspace is not a git repo or the plan branch is
+absent. A genuine read failure while recomputing a hash simply omits that task from the preview (a dry run
+never aborts), whereas a real run would honestly abort — the dry run is advisory, not the gate.
+
 ### 7.3 `PlanDefinitionHash` — the plan's full behavioral definition (issue #260)
 
 `PlanDefinitionHash` is a **second**, broader plan hash — distinct from the `PlanHash` the journal

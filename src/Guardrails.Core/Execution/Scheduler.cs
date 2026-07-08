@@ -132,46 +132,32 @@ public sealed class Scheduler
         // on ANY candidate halts the whole run — schedule NOTHING, emit no skip events, return a
         // DefinitionDrift report — rather than silently reusing the stale cached segment (never runs the
         // edit) or silently re-running the changed task (unsound for a fan-in descendant, §7.2).
-        var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
-        var drifted = new List<DefinitionDriftReporter.DriftInput>();
-        foreach (TaskNode task in plan.Tasks)
+        // The drift check recomputes each pre-settled task's hash, reading its definition files from
+        // disk (task.json / action / guardrails). That IO can throw — a transient share-lock on Windows
+        // (an editor / antivirus / indexer holding a guardrail or task.json) is the exact hazard. It runs
+        // BEFORE the worker loop, so it is OUTSIDE WorkerLoopAsync's #150 fault capture; wrap it here so a
+        // read failure degrades to an HONEST ABORTED report (exit 1, abort.log) rather than an uncaught
+        // stack trace. It must ABORT, not silently skip the check — silently skipping could let a real
+        // drift through.
+        HashSet<string> preSettledGreen;
+        List<DefinitionDriftReporter.DriftInput> drifted;
+        try
         {
-            bool journalGreen = _journal.StatusOf(task.Id) == JournalTaskStatus.Succeeded;
-            planBranchRecords.TryGetValue(task.Id, out PlanBranchTaskRecord? trailer);
-            if (!journalGreen && trailer is null)
+            (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords);
+
+            if (drifted.Count > 0)
             {
-                continue;
-            }
-
-            preSettledGreen.Add(task.Id);
-
-            // Recorded hash: prefer the journal's (the primary record); fall back to the plan-branch
-            // trailer (covers a journal-reset resume where only the plan branch survives). Both are
-            // stamped at the same settle, so they agree; either being present enables the check.
-            string? recordedHash = _journal.RecordedDefinitionHash(task.Id) ?? trailer?.DefinitionHash;
-
-            // Recorded hash absent (a pre-upgrade journal/trailer with no hash) → "unknown, assume
-            // unchanged", so upgrading never forces a re-run storm on an unedited plan.
-            if (recordedHash is null)
-            {
-                continue;
-            }
-
-            string currentHash = Journal.TaskDefinitionHash.Compute(task);
-            if (!string.Equals(recordedHash, currentHash, StringComparison.Ordinal))
-            {
-                drifted.Add(new DefinitionDriftReporter.DriftInput(
-                    task.Id, recordedHash, currentHash, trailer?.CommitSha));
+                // Pre-DAG halt: nothing scheduled, no skip events emitted. The integration worktree stays
+                // attached to the plan branch exactly as a normal resume leaves it (no sweep to run — no
+                // segment worktree was created).
+                return BuildReport(plan, settled, cancelled: false)
+                    with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
             }
         }
-
-        if (drifted.Count > 0)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Pre-DAG halt: nothing scheduled, no skip events emitted. The integration worktree stays
-            // attached to the plan branch exactly as a normal resume leaves it (no sweep to run — no
-            // segment worktree was created).
-            return BuildReport(plan, settled, cancelled: false)
-                with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
+            return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                with { Abort = BuildDefinitionReadAbort(ex) };
         }
 
         // No drift: emit the resume skips for the pre-settled-green candidates (plan order).
@@ -340,6 +326,68 @@ public sealed class Scheduler
 
         return report with { MergeOnSuccessOutcome = mergeOutcome, MergeOnSuccessDetail = mergeDetail };
     }
+
+    /// <summary>
+    /// The resume drift pre-pass (§7.2, #274 Part A): determine the pre-settled-green candidates (journal
+    /// <c>Succeeded</c> OR a plan-branch trailer) and, for each one carrying a recorded definition hash,
+    /// recompute the current <see cref="Journal.TaskDefinitionHash"/> and record a drift when they differ.
+    /// A recorded-absent candidate (pre-upgrade) is treated as "unknown — assume unchanged". Reads the
+    /// task's definition files from disk, so its IO is wrapped by the caller's #150 honest-abort guard.
+    /// </summary>
+    private (HashSet<string> PreSettledGreen, List<DefinitionDriftReporter.DriftInput> Drifted)
+        DetectDefinitionDrift(PlanDefinition plan, IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords)
+    {
+        var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
+        var drifted = new List<DefinitionDriftReporter.DriftInput>();
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            bool journalGreen = _journal.StatusOf(task.Id) == JournalTaskStatus.Succeeded;
+            planBranchRecords.TryGetValue(task.Id, out PlanBranchTaskRecord? trailer);
+            if (!journalGreen && trailer is null)
+            {
+                continue;
+            }
+
+            preSettledGreen.Add(task.Id);
+
+            // Recorded hash: prefer the journal's (the primary record); fall back to the plan-branch
+            // trailer (covers a journal-reset resume where only the plan branch survives). Both are
+            // stamped at the same settle, so they agree; either being present enables the check.
+            string? recordedHash = _journal.RecordedDefinitionHash(task.Id) ?? trailer?.DefinitionHash;
+            if (recordedHash is null)
+            {
+                continue;
+            }
+
+            string currentHash = Journal.TaskDefinitionHash.Compute(task);
+            if (!string.Equals(recordedHash, currentHash, StringComparison.Ordinal))
+            {
+                drifted.Add(new DefinitionDriftReporter.DriftInput(
+                    task.Id, recordedHash, currentHash, trailer?.CommitSha));
+            }
+        }
+
+        return (preSettledGreen, drifted);
+    }
+
+    /// <summary>
+    /// The <see cref="RunAbort"/> for a definition-file read failure during the resume drift pre-pass
+    /// (§7.2, #274 Part A): typically a transient file lock (an editor / antivirus / indexer holding a
+    /// guardrail or <c>task.json</c>, common on Windows). Distinct from <see cref="BuildAbort"/> so the
+    /// remedy is specific — and it makes explicit that the drift check ABORTS rather than silently skips,
+    /// so a real definition change can never slip through unseen.
+    /// </summary>
+    private static RunAbort BuildDefinitionReadAbort(Exception fault) => new()
+    {
+        Headline = "The run was aborted: a task definition file could not be read during the resume "
+                 + $"drift check: {fault.Message}",
+        Remedy = "A definition file (task.json / the action / a guardrail) could not be read — often a "
+               + "transient file lock (an editor, antivirus, or indexer holding it, common on Windows). "
+               + "Release it and re-run. The drift check is aborted rather than skipped, so a real "
+               + "definition change can never slip through unseen.",
+        Detail = fault.ToString()
+    };
 
     /// <summary>
     /// Build the <see cref="RunAbort"/> for an infrastructure fault (issue #150): a one-line headline

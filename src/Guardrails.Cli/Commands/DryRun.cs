@@ -1,3 +1,4 @@
+using Guardrails.Core.Execution;
 using Guardrails.Core.Graph;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
@@ -41,12 +42,20 @@ public static class DryRun
             ? new Dictionary<string, JournalTaskStatus>(StringComparer.Ordinal)
             : journal.Tasks.ToDictionary(p => p.Key, p => p.Value.Status, StringComparer.Ordinal);
 
+        // §7.2 drift-preview parity: a real resume compares the CURRENT definition against the hash
+        // recorded on the journal OR the plan-branch trailer (a journal-reset resume survives only via the
+        // trailer). Consult the trailer too via a READ-ONLY git query — no integration worktree, touches
+        // nothing — so the preview does not under-predict a drift halt. Empty for a non-git plan folder /
+        // absent plan branch (then the preview is journal-only, exactly as before).
+        IReadOnlyDictionary<string, PlanBranchTaskRecord> trailerHashes =
+            GitWorktreeProvider.ReadPlanBranchTaskHashes(plan.Workspace, Path.GetFileName(plan.PlanDirectory));
+
         output.WriteLine($"Dry run — {plan.Tasks.Count} task(s); validation passed. Nothing was executed; no state was touched.");
         output.WriteLine();
 
         PrintWaves(plan, output);
-        PrintResolution(plan, statuses, journal, output);
-        PrintResumeSkips(plan, statuses, journal, output);
+        PrintResolution(plan, statuses, journal, trailerHashes, output);
+        PrintResumeSkips(plan, statuses, journal, trailerHashes, output);
 
         return ExitCodes.Success;
     }
@@ -75,7 +84,7 @@ public static class DryRun
 
     private static void PrintResolution(
         PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses,
-        JournalDocument? journal, TextWriter output)
+        JournalDocument? journal, IReadOnlyDictionary<string, PlanBranchTaskRecord> trailerHashes, TextWriter output)
     {
         output.WriteLine("Per-task resolution:");
         output.WriteLine($"  {"TASK",-36} {"KIND",-7} {"RUNNER",-10} {"RETRY BUDGET",-13} RESUME");
@@ -90,7 +99,7 @@ public static class DryRun
             // §7.2 (#274 Part A): an already-succeeded task whose definition changed since it settled would
             // HALT a real resume (a definition-drift halt), not skip — preview that honestly instead of a
             // stale "SKIP (succeeded)".
-            string resume = IsDrifted(task, journal)
+            string resume = IsDrifted(task, journal, trailerHashes)
                 ? "HALT (definition drift)"
                 : WouldSkip(task, statuses) ? "SKIP (succeeded)" : "run";
 
@@ -102,17 +111,17 @@ public static class DryRun
 
     private static void PrintResumeSkips(
         PlanDefinition plan, IReadOnlyDictionary<string, JournalTaskStatus> statuses,
-        JournalDocument? journal, TextWriter output)
+        JournalDocument? journal, IReadOnlyDictionary<string, PlanBranchTaskRecord> trailerHashes, TextWriter output)
     {
         IReadOnlyList<string> drifted = plan.Tasks
-            .Where(t => IsDrifted(t, journal))
+            .Where(t => IsDrifted(t, journal, trailerHashes))
             .Select(t => t.Id)
             .ToList();
 
         // A drifted succeeded task would halt a real run, so it is NOT a skip — exclude it from the skip
         // list and call it out separately with the remediation the halt itself prints.
         IReadOnlyList<string> skips = plan.Tasks
-            .Where(t => WouldSkip(t, statuses) && !IsDrifted(t, journal))
+            .Where(t => WouldSkip(t, statuses) && !IsDrifted(t, journal, trailerHashes))
             .Select(t => t.Id)
             .ToList();
 
@@ -131,24 +140,42 @@ public static class DryRun
     }
 
     /// <summary>
-    /// True when <paramref name="task"/> is journaled <c>succeeded</c> with a recorded
-    /// <c>TaskDefinitionHash</c> that no longer matches its current on-disk definition (SSOT §7.2, issue
-    /// #274 Part A) — i.e. a real resume would HALT on definition drift rather than skip. An absent
-    /// recorded hash (a pre-upgrade journal) is treated as "unknown, assume unchanged".
+    /// True when <paramref name="task"/> has a recorded <c>TaskDefinitionHash</c> — on the journal
+    /// (status <c>succeeded</c>) OR the plan-branch trailer (a journal-reset resume survives only via the
+    /// trailer, mirroring the real pre-pass, §7.2) — that no longer matches its current on-disk
+    /// definition, i.e. a real resume would HALT on definition drift rather than skip. The journal hash is
+    /// preferred; an absent recorded hash (a pre-upgrade journal/trailer) is treated as "unknown, assume
+    /// unchanged". Journal-only when the trailer query returned empty (non-git plan folder).
     /// </summary>
-    private static bool IsDrifted(TaskNode task, JournalDocument? journal)
+    private static bool IsDrifted(
+        TaskNode task, JournalDocument? journal, IReadOnlyDictionary<string, PlanBranchTaskRecord> trailerHashes)
     {
-        if (journal is null || !journal.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry))
+        string? recorded = null;
+        if (journal is not null
+            && journal.Tasks.TryGetValue(task.Id, out TaskJournalEntry? entry)
+            && entry.Status == JournalTaskStatus.Succeeded)
+        {
+            recorded = entry.DefinitionHash;
+        }
+
+        recorded ??= trailerHashes.TryGetValue(task.Id, out PlanBranchTaskRecord? trailer) ? trailer.DefinitionHash : null;
+
+        if (recorded is null)
         {
             return false;
         }
 
-        if (entry.Status != JournalTaskStatus.Succeeded || entry.DefinitionHash is not { } recorded)
+        // A dry run is advisory and must never crash or touch state: if a definition file can't be read
+        // (e.g. a transient lock), omit this task from the preview rather than throwing. A real run would
+        // honestly abort (§7.2) — the preview is not the gate.
+        try
+        {
+            return !string.Equals(recorded, TaskDefinitionHash.Compute(task), StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return false;
         }
-
-        return !string.Equals(recorded, TaskDefinitionHash.Compute(task), StringComparison.Ordinal);
     }
 
     /// <summary>

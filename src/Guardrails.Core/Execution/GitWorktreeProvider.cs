@@ -582,15 +582,30 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// so a body's own blank lines can't split one commit across two records.
     /// </summary>
     private IReadOnlyDictionary<string, PlanBranchTaskRecord> CollectTrailerTasks(
-        string planBranch, string? runIdFilter)
+        string planBranch, string? runIdFilter) =>
+        ParseTrailerRecords(Git("log", "--first-parent", TrailerLogFormat, planBranch), runIdFilter);
+
+    /// <summary>
+    /// The <c>git log</c> pretty-format that frames each commit record with the shared HashText
+    /// separators (control chars git never emits in a commit message): a record separator, the commit
+    /// sha, a unit separator, then the raw body — so a body's own blank lines can't split one commit's
+    /// trailers across two records the way the prior blank-line-delimited <c>%B</c> parse could.
+    /// </summary>
+    private static string TrailerLogFormat =>
+        $"--format={Hashing.HashText.RecordSeparator}%H{Hashing.HashText.UnitSeparator}%B";
+
+    /// <summary>
+    /// Parse the <see cref="TrailerLogFormat"/> log into per-task <see cref="PlanBranchTaskRecord"/>s
+    /// (commit sha + <c>Guardrails-Task-Hash:</c>). The MOST RECENT integration per task wins (git log is
+    /// newest-first, so the first occurrence is kept). When <paramref name="runIdFilter"/> is non-null,
+    /// only commits whose <c>Guardrails-Run:</c> matches are counted. Pure (no IO), shared by the instance
+    /// resume reconcile and the static <see cref="ReadPlanBranchTaskHashes"/> dry-run query.
+    /// </summary>
+    private static IReadOnlyDictionary<string, PlanBranchTaskRecord> ParseTrailerRecords(
+        string log, string? runIdFilter)
     {
-        // Frame each commit record with the shared HashText separators (control chars git never
-        // emits in a commit message), so a body's own blank lines can't split one commit's
-        // trailers across two records the way the prior blank-line-delimited %B parse could.
         char recordSep = Hashing.HashText.RecordSeparator;
         char unitSep = Hashing.HashText.UnitSeparator;
-        string log = Git("log", "--first-parent", $"--format={recordSep}%H{unitSep}%B", planBranch);
-
         var settled = new Dictionary<string, PlanBranchTaskRecord>(StringComparer.Ordinal);
 
         foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
@@ -632,6 +647,37 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         }
 
         return settled;
+    }
+
+    /// <summary>
+    /// Read-only query of the plan branch's per-task <c>Guardrails-Task-Hash:</c> trailers (issue #274
+    /// Part A) WITHOUT creating an integration worktree — for the <c>--dry-run</c> drift preview, which
+    /// must touch nothing. Runs <c>git log</c> (read-only) in <paramref name="repoPath"/> against
+    /// <c>guardrails/&lt;planName&gt;</c>; degrades to the EMPTY map (never throws) when the workspace is
+    /// not a git repo, git is unavailable, or the plan branch does not exist — so a dry run in a non-git
+    /// plan folder behaves exactly as before (journal-only). Static so the CLI needs no run-scoped
+    /// provider or integration handle.
+    /// </summary>
+    public static IReadOnlyDictionary<string, PlanBranchTaskRecord> ReadPlanBranchTaskHashes(
+        string repoPath, string planName)
+    {
+        var empty = new Dictionary<string, PlanBranchTaskRecord>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(planName))
+        {
+            return empty;
+        }
+
+        try
+        {
+            var (log, exit) = TryGitIn(repoPath, "log", "--first-parent", TrailerLogFormat, $"guardrails/{planName}");
+            return exit == 0 ? ParseTrailerRecords(log, runIdFilter: null) : empty;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            // git not installed, or the working dir is not a repo — the dry-run preview simply falls back
+            // to journal-only, never a crash.
+            return empty;
+        }
     }
 
     /// <summary>
