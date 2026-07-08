@@ -102,11 +102,25 @@ internal sealed class ActionRunner
         IReadOnlyList<DependencyContextRef> dependencies = _dependencyContext.BuildDependencyContext(task);
         IReadOnlyList<PriorAttemptRef> priorAttempts = _dependencyContext.BuildPriorAttempts(task.Id, attemptNumber);
         bool isWorktreeMode = !string.IsNullOrEmpty(worktreeRoot);
+
+        // Prompt-output staging (SSOT §9.5, issue #266): the harness's own GUARDRAILS_STATE_OUT
+        // target is never handed to the sub-agent directly — a `.claude/`-nested plan folder would
+        // put it inside Claude Code's sensitive-path block. Stage it under a plain dot-folder inside
+        // the effective workspace root instead (never `.claude/`-nested, always inside the worktree-
+        // containment hook's allowed root) and promote it to fragmentOutPath the instant the runner
+        // returns, unconditionally for every prompt action.
+        string effectiveWorkspaceRoot = worktreeRoot ?? _plan.Workspace;
+        string attemptFolder = Path.GetFileName(logDir);
+        string stagingStateOutPath = PromptOutputStaging.PrepareStagingPath(
+            effectiveWorkspaceRoot, task.Id, attemptFolder, fragmentOutPath);
+
         // §3.5: the staging dir + from→to map are embedded verbatim in the prompt (agents read
         // instructions, not env vars) — only when the task declares stagingOutputs and a staging dir
-        // was provisioned (the executor passes null otherwise).
+        // was provisioned (the executor passes null otherwise). The output-contract path embedded in
+        // the prompt TEXT is the STAGING path (#266) so it matches what the agent is actually told to
+        // write to via GUARDRAILS_STATE_OUT below.
         string composed = PromptComposer.ComposeAction(
-            promptFile.Body, snapshotPath, fragmentOutPath, previousFeedbackPath, dependencies, priorAttempts,
+            promptFile.Body, snapshotPath, stagingStateOutPath, previousFeedbackPath, dependencies, priorAttempts,
             stagingDir, stagingDir is not null ? task.StagingOutputs : null, isWorktreeMode);
         AtomicFile.WriteAllText(Path.Combine(logDir, "composed-prompt.md"), composed);
 
@@ -135,12 +149,20 @@ internal sealed class ActionRunner
             settings = settings with { ExtraArgs = [.. settings.ExtraArgs, "--settings", settingsPath] };
         }
 
+        // Copy-with-override (mirrors GuardrailRunner's guardrailEnv pattern): a PROMPT action's
+        // GUARDRAILS_STATE_OUT is overridden to the staging path for THIS invocation only — the
+        // shared `env` dict handed in by the caller is never mutated.
+        var actionEnv = new Dictionary<string, string>(env, StringComparer.Ordinal)
+        {
+            ["GUARDRAILS_STATE_OUT"] = stagingStateOutPath
+        };
+
         var invocation = new PromptInvocation
         {
             ComposedPrompt = composed,
             WorkingDirectory = workspace,
             PlanDirectory = _plan.PlanDirectory,
-            Environment = env,
+            Environment = actionEnv,
             Settings = settings,
             Timeout = Extend(
                 _resolveTimeout(task, task.Action.TimeoutSeconds ?? promptFile.Frontmatter.TimeoutSeconds),
@@ -151,6 +173,10 @@ internal sealed class ActionRunner
 
         PromptResult result = await registry.Resolve(task.Action.Runner ?? promptFile.Frontmatter.Runner)
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
+
+        // Promote the staged fragment to its documented final location THE INSTANT the sub-agent
+        // process exits — strictly before anything below reads fragmentOutPath (SSOT §9.5).
+        PromptOutputStaging.PromoteAndCleanup(stagingStateOutPath, fragmentOutPath);
 
         // A prompt action's fragment may carry the needsHuman escape (SSOT §9) or a needsHarnessWrite
         // request (SSOT §9, issue #191) — both read from the same already-written fragment file.

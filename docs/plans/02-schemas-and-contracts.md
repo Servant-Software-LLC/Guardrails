@@ -725,6 +725,14 @@ action's command. Two honesty constraints the guardrail catalogue expands on:
   own self-reported success line in `_STDOUT`, which is an echo-judge. When the strong
   postcondition isn't expressible from recorded output, re-executing reality is the honest gate.
 
+**Physical write target vs. this table's documented location (issue #266).** For a PROMPT
+action/guardrail, the sub-agent is handed a per-attempt STAGING path for `GUARDRAILS_STATE_OUT` /
+`GUARDRAILS_VERDICT_OUT` — never the path this table documents — and the harness promotes the
+staged file into that documented location immediately after the sub-agent process exits, before
+anything else reads it (§9.5). A SCRIPT action/guardrail's target is the documented path directly,
+unchanged: only a Claude Code sub-agent's own Write tool call is ever subject to the `.claude/`
+sensitive-path block (§9.3), so only the prompt path needs the indirection.
+
 **cwd = `GUARDRAILS_WORKSPACE` (the EFFECTIVE workspace), in every mode** (#134). The action's
 and guardrail's process working directory is set to the SAME directory that
 `GUARDRAILS_WORKSPACE` names: in worktree mode the task's isolated **segment worktree**; in serial
@@ -1305,7 +1313,9 @@ logs/<runId>/<task-id>/attempt-N/
 ├── attempt-provenance.json  # #198: model + segment worktree (branch + path) + base commit known at launch; absent for a serial script attempt
 ├── action-stdout.log / action-stderr.log
 ├── action-result.json
-├── action-out-fragment.json # the LIVE GUARDRAILS_STATE_OUT target the action writes
+├── action-out-fragment.json # the harness-PROMOTED GUARDRAILS_STATE_OUT result (§9.5); a SCRIPT
+                              #   action writes it directly, a PROMPT action writes a staging copy
+                              #   the harness moves here immediately after the sub-agent exits
 ├── fragment.json            # copy of the fragment made on successful merge — audit trail
 ├── composed-prompt.md       # prompt ACTION: exactly what the runner got
 ├── claude-stream.jsonl      # prompt ACTION: raw runner output stream (canonical debug artifact)
@@ -1325,6 +1335,11 @@ Prompt **actions** write `composed-prompt.md` / `claude-stream.jsonl` / `transcr
 `guardrail-<name>.verdict.json` verdict file. Script guardrails write
 `guardrail-<name>.stdout.log` / `.stderr.log`. The `<name>` is sanitized for the filesystem (any
 character other than a letter, digit, `-`, `_`, or `.` becomes `_`).
+
+As of issue #266, a prompt action's `action-out-fragment.json` and a prompt guardrail's
+`guardrail-<name>.verdict.json` are written by the sub-agent to a per-attempt STAGING path and
+PROMOTED here by the harness immediately afterward (§9.5) — never written directly to this
+location by the sub-agent itself.
 
 At the **task** level (`logs/<runId>/<task-id>/`, the parent of the `attempt-N/` dirs), a failed **union
 re-verify** (a non-FF or AI-merge integration whose merged bytes fail the integration-guardrail set, §4.3)
@@ -1616,7 +1631,11 @@ resumes from here).
 **Residual (honest scope).** This is a **detect-and-halt-honestly** mitigation: it ends the #86/#104
 retry-budget waste and lands the human on an actionable diagnosis on the first (structural) or second
 (repeated) attempt. It does **not** itself grant `.claude/` write access — the root cause is a
-Claude-Code-runtime restriction the harness cannot override from outside the sub-agent.
+Claude-Code-runtime restriction the harness cannot override from outside the sub-agent. Issue #266
+removes one further trigger of this rule structurally: the harness's own default STATE_OUT/VERDICT_OUT
+targets are never `.claude/`-nested from the sub-agent's point of view, regardless of where the plan
+folder itself lives (§9.5) — so this halt rule's remaining scope is exactly a task-declared `.claude/`
+write that skipped `stagingOutputs`.
 
 The full autonomous fix is the `task.json` `stagingOutputs` contract (§3.5, issue #130): a task
 declares the `.claude/` deliverable it produces and a staging path the action writes instead, and
@@ -1688,6 +1707,59 @@ the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`).
   written against (an absolute path typo, a "let me just check the sibling task's tree" excursion, a
   stash collision); it is not a security sandbox against a deliberately adversarial agent. The
   write-scope CHECK (§3.4) remains the INNER, unaffected boundary underneath it.
+
+### 9.5 Prompt-output staging: STATE_OUT / VERDICT_OUT never target the plan folder directly (issue #266)
+
+A plan folder nested under `.claude/` (a natural place to keep one — `/plan-breakdown` puts the
+task folder beside its source `.md`, and this repo's own plan docs already live under
+`.claude/plans/`) puts `logs/<runId>/<task>/attempt-N/…` under `.claude/` too — the harness's
+OWN default targets for `GUARDRAILS_STATE_OUT` (§5.1, §6.2) and `GUARDRAILS_VERDICT_OUT` (§4.2).
+Before #266, a prompt action/guardrail's own Write tool call to either target hit the SAME
+structural `.claude/` sensitive-path block §9.3 describes for a task's own deliverable — except
+`stagingOutputs` (§3.5) could not help here, because these are harness-internal, task-oblivious
+targets that exist on EVERY prompt attempt regardless of what the task declares; there is nothing
+for a plan author to opt into.
+
+**The fix generalizes the `stagingOutputs`/#130 pattern to the harness's own default targets,
+unconditionally, for every PROMPT action/guardrail** (never scripts — a script subprocess has no
+Claude Code tool-permission layer to be blocked by, so its target is the documented path directly,
+byte-for-byte as before): the sub-agent is handed a per-attempt STAGING path —
+`<effectiveWorkspaceRoot>/.guardrails-agent-io/<task-id>/attempt-N/<final-filename>` — for
+`GUARDRAILS_STATE_OUT`/`GUARDRAILS_VERDICT_OUT` (embedded in the composed prompt text AND the env
+var, so the two never disagree), and the harness (`Guardrails.Core.Execution.PromptOutputStaging`)
+promotes the staged file to its documented final location the INSTANT the sub-agent process exits
+— before the needsHuman/needsHarnessWrite fragment reads (§9), before the verdict read (§4.2),
+before anything else in the attempt pipeline touches it.
+
+**Why this staging location, not system TEMP (unlike `GUARDRAILS_MERGE_OUT`, §9.1).** The AI-merge
+worker's MERGE_OUT staging under system TEMP works because that invocation never receives the
+worktree-containment hook (§9.4) — nothing there enforces "stay inside the worktree." A prompt
+action/guardrail DOES receive that hook, which blocks any Write/Edit/Bash target resolving OUTSIDE
+`worktree.WorktreePath`. Routing through system TEMP would trade the `.claude/` block for a
+self-inflicted containment-hook block. `.guardrails-agent-io/` is a plain dot-folder INSIDE the
+effective workspace root (the segment worktree in worktree mode, the plan `workspace` in serial
+mode — mirroring `.guardrails-staging/`'s own placement exactly), so it satisfies BOTH constraints
+without any change to `WorktreeContainmentHook` and without a new `--add-dir` grant.
+
+**Cleanup.** Because the promote step MOVES (never copies) the one expected file and nothing else
+is ever written under that leaf directory, the harness also deletes the whole per-attempt staging
+subtree afterward (belt-and-braces, mirroring `StagingMover`'s "delete the whole tree" idiom) — no
+`.gitignore`/`.git/info/exclude` entry is needed (git never tracks empty directories), unlike
+`stagingOutputs`.
+
+**Interaction with `needsHarnessWrite` (#191).** Unaffected and complementary, not overlapping:
+`needsHarnessWrite`'s own write is already performed by the .NET harness process directly
+(`AtomicFile.WriteAllText`), never through the sub-agent's tool-permission layer — this fix is a
+PREREQUISITE for it, not a duplicate: before #266, a `.claude/`-nested plan folder could not even
+get a fragment written at all, so a `needsHarnessWrite` request embedded in that fragment was
+unreachable. After #266, `needsHarnessWrite` becomes usable for `.claude/`-nested plans too.
+
+**Interaction with §9.3's permission-wall halt.** The "structural `.claude/` path" halt rule used
+to fire — correctly, but for the wrong reason — on the harness's OWN fragment/verdict targets
+whenever the plan folder itself was `.claude/`-nested. After this fix, that trigger no longer
+exists: the sub-agent is never handed a `.claude/`-nested target for its OWN STATE_OUT/VERDICT_OUT
+again. §9.3's halt rule now fires only for its originally-intended scope — a task-declared
+`.claude/` write that did not use `stagingOutputs`.
 
 ---
 

@@ -116,12 +116,22 @@ internal sealed class GuardrailRunner
             : Path.Combine(logDir, "action-stdout.log");
 
         bool isWorktreeMode = !string.IsNullOrEmpty(worktreeRoot);
-        string composed = PromptComposer.ComposeGuardrail(promptFile.Body, snapshotPath, verdictPath, actionStdoutPath, isWorktreeMode);
+
+        // Prompt-output staging (SSOT §9.5, issue #266): identical shape to ActionRunner's
+        // GUARDRAILS_STATE_OUT staging — a `.claude/`-nested plan folder would put the harness's own
+        // GUARDRAILS_VERDICT_OUT target inside Claude Code's sensitive-path block. Stage it under the
+        // effective workspace root and promote to verdictPath the instant the runner returns.
+        string effectiveWorkspaceRoot = worktreeRoot ?? _plan.Workspace;
+        string attemptFolder = Path.GetFileName(logDir);
+        string stagingVerdictPath = PromptOutputStaging.PrepareStagingPath(
+            effectiveWorkspaceRoot, task.Id, attemptFolder, verdictPath);
+
+        string composed = PromptComposer.ComposeGuardrail(promptFile.Body, snapshotPath, stagingVerdictPath, actionStdoutPath, isWorktreeMode);
         AtomicFile.WriteAllText(Path.Combine(logDir, $"composed-prompt.{Sanitize(guardrail.Name)}.md"), composed);
 
         var guardrailEnv = new Dictionary<string, string>(env, StringComparer.Ordinal)
         {
-            ["GUARDRAILS_VERDICT_OUT"] = verdictPath
+            ["GUARDRAILS_VERDICT_OUT"] = stagingVerdictPath
         };
 
         PromptRunnerSettings settings = PromptExecutionSupport.ApplyPromptOverrides(
@@ -151,6 +161,10 @@ internal sealed class GuardrailRunner
 
         PromptResult promptResult = await registry.Resolve(promptFile.Frontmatter.Runner)
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
+
+        // Promote the staged verdict to its documented final location THE INSTANT the sub-agent
+        // process exits — strictly before GuardrailVerdictReader reads verdictPath (SSOT §9.5).
+        PromptOutputStaging.PromoteAndCleanup(stagingVerdictPath, verdictPath);
 
         // Pass/fail is the verdict file, full stop (NEVER the exit code).
         GuardrailVerdict verdict = GuardrailVerdictReader.Read(verdictPath);
