@@ -313,18 +313,45 @@ public sealed class LogServerTests
     [Fact]
     public async Task CallerChosenPort_BindsToExactlyThatPort()
     {
-        // A non-zero port is honoured verbatim with a single bind attempt (no retry — the caller
-        // picked it). Pick a free port via a throwaway probe, then assert the server lands on it.
-        int port = FreeLoopbackPort();
+        // The product honours a non-zero caller-chosen port with a SINGLE bind attempt (no retry —
+        // the caller picked it; see LogServer.TryStart maxAttempts). We pick a free port via a
+        // throwaway probe, then hand THAT back as the chosen port. There is a tiny TOCTOU window
+        // between releasing the probe and the server binding, in which a shared CI runner can steal
+        // the port — making the single-attempt bind return null (issue #277 flake: Assert.NotNull
+        // failed on ubuntu-latest). Re-probe a FRESH free port and re-bind to close that window.
+        //
+        // Crucially, the "honoured EXACTLY" assertion stays OUTSIDE the retry loop: the loop only
+        // re-tries on a null return (a lost bind race), never on a bound-but-wrong-port server. So a
+        // regression where the server ignores the chosen port and OS-assigns a different one still
+        // fails here (Assert.Equal), and a regression where the caller-chosen bind never succeeds
+        // still fails (Assert.NotNull after the budget is exhausted) — the de-flake weakens neither.
         using var temp = new TempPlan();
-        LogServer? server = LogServer.TryStart(temp.Dir, TempPlan.RunId, [Task("01-alpha", "First")], port, TextWriter.Null);
-        Assert.NotNull(server);
+
+        LogServer? server = null;
+        int port = 0;
+        for (int attempt = 0; attempt < BindRetryBudget && server is null; attempt++)
+        {
+            port = FreeLoopbackPort();
+            server = LogServer.TryStart(temp.Dir, TempPlan.RunId, [Task("01-alpha", "First")], port, TextWriter.Null);
+        }
+
+        Assert.NotNull(server); // a free caller-chosen port bound within the budget (not a product bug)
 
         await using (server)
         {
             Assert.Equal($"http://127.0.0.1:{port}/", server!.BaseUrl);
         }
     }
+
+    /// <summary>
+    /// How many times <see cref="CallerChosenPort_BindsToExactlyThatPort"/> re-probes a fresh free
+    /// port and re-binds when the single-attempt caller-chosen bind loses the probe→bind race. Each
+    /// re-probe draws a different ephemeral port from the OS, so a port stolen in one iteration is
+    /// dodged by the next; the compound odds of losing the race this many times running are
+    /// vanishingly small, while a genuine "caller-chosen bind never works" regression still exhausts
+    /// the budget and fails the test.
+    /// </summary>
+    private const int BindRetryBudget = 10;
 
     // --- #141 item 4: empty-file marking in /files -------------------------------------------
 
