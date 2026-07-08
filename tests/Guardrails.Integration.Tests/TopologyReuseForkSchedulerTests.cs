@@ -570,4 +570,66 @@ public sealed class TopologyReuseForkSchedulerTests
         // Every task is a resume-skip (already integrated), not a re-execution.
         Assert.All(second.Tasks, t => Assert.Equal(TaskOutcome.Skipped, t.Outcome));
     }
+
+    /// <summary>True when the plan branch <c>guardrails/plan</c> exists in the repo root.</summary>
+    private static bool PlanBranchExists(string repoPath)
+    {
+        try { TempGitRepo.Git(repoPath, "rev-parse", "--verify", "--quiet", "refs/heads/guardrails/plan"); return true; }
+        catch { return false; }
+    }
+
+    // ── #274 part B (wiring): --fresh / reset tears down the plan branch through RunReset.Fresh ──────
+    [Fact]
+    public async Task Fresh_TearsDownPlanBranch_SoAStaleTrailerCannotBeReused()
+    {
+        // A green run leaves the durable resume record: the plan branch guardrails/plan with
+        // Guardrails-Task: trailers, and its reattached integration worktree. RunReset.Fresh (the sole
+        // path behind `run --fresh` AND `reset -y` full reset) must now tear BOTH down — else a "fresh"
+        // run silently reuses the stale trailers and re-skips edited tasks (issue #274).
+        using var repo = new TempGitRepo();
+        string planDir = CreateChainPlan(repo.RepoPath, ("01-a", []), ("02-b", ["01-a"]));
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        RunReport report = await RunAsync(planDir, provider, new SpyReVerifier(), TestContext.Current.CancellationToken);
+        Assert.True(report.AllSucceeded);
+        Assert.True(PlanBranchExists(repo.RepoPath), "sanity: the plan branch exists after a green run");
+        Assert.True(IntegrationWorktreeExists(repo.WorktreeRoot), "sanity: the integration worktree survives a green run");
+
+        // The single teardown behind both `guardrails run --fresh` and `guardrails reset -y`.
+        RunReset.Fresh(planDir);
+
+        Assert.False(PlanBranchExists(repo.RepoPath),
+            "issue #274: --fresh / reset must delete the plan branch guardrails/plan");
+        // git no longer lists any worktree checked out on the (now-deleted) plan branch.
+        string worktrees = TempGitRepo.Git(repo.RepoPath, "worktree", "list");
+        Assert.DoesNotContain("guardrails/plan", worktrees, StringComparison.Ordinal);
+    }
+
+    // ── #274 part B (regression guard): a NORMAL resume must PRESERVE the plan branch ────────────────
+    [Fact]
+    public async Task NormalResume_PreservesPlanBranch_AndSkipsAlreadySucceededTasks()
+    {
+        // The critical scoping proof: the teardown is fresh/reset-ONLY. A plain `guardrails run` (no
+        // --fresh, no reset) must leave the plan branch intact and resume against its trailers exactly as
+        // before — skipping already-succeeded tasks. If teardown ever leaked onto the resume path, this
+        // second run would re-execute (or lose) already-integrated work.
+        using var repo = new TempGitRepo();
+        string planDir = CreateChainPlan(repo.RepoPath, ("01-a", []), ("02-b", ["01-a"]));
+
+        RunReport first = await RunAsync(
+            planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            new SpyReVerifier(), TestContext.Current.CancellationToken);
+        Assert.True(first.AllSucceeded);
+        Assert.True(PlanBranchExists(repo.RepoPath), "sanity: the plan branch exists after the first run");
+
+        // A plain re-run — NO RunReset.Fresh — the ordinary resume path.
+        RunReport second = await RunAsync(
+            planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            new SpyReVerifier(), TestContext.Current.CancellationToken);
+
+        Assert.True(second.AllSucceeded);
+        Assert.All(second.Tasks, t => Assert.Equal(TaskOutcome.Skipped, t.Outcome));
+        Assert.True(PlanBranchExists(repo.RepoPath),
+            "issue #274: a normal resume must NOT tear down the plan branch — teardown is fresh/reset-only");
+    }
 }
