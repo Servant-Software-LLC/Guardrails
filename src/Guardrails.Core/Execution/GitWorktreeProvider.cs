@@ -988,7 +988,11 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         try
         {
             var env = new Dictionary<string, string> { ["GIT_INDEX_FILE"] = tempIndex };
-            GitInWithEnv(worktreePath, env, "add", "-A");
+            // #306 review NIT-2: stage through the SAME reconstructable-exclusion pathspec set as the
+            // segment commit (#280) — but into the THROWAWAY index (GIT_INDEX_FILE), so node_modules and
+            // the harness's own .guardrails-* scaffolding never bloat the agent-applyable salvage patch,
+            // while the segment's real staged/unstaged state stays untouched.
+            GitInWithEnv(worktreePath, env, SegmentStaging.StageAllArguments().ToArray());
             string treeSha = GitInWithEnv(worktreePath, env, "write-tree").Trim();
             string parentSha = GitIn(worktreePath, "rev-parse", "HEAD").Trim();
             string commitSha = GitIn(
@@ -1017,8 +1021,32 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         {
             return GitIn(worktreePath, "diff", "--stat", taskBase, refName).Trim();
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         {
+            // "never throws" per the summary: a git-spawn failure (git off PATH, bad dir) surfaces as
+            // Win32Exception, not InvalidOperationException — catch the full best-effort set (#306 WEAK-2).
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// A full, applyable unified-diff patch of <paramref name="refName"/> against
+    /// <paramref name="taskBase"/> (issue #306) — the exact bytes a retry agent can <c>git apply</c> from
+    /// the clean segment (which the F2 reset restores to <paramref name="taskBase"/>) to recover ALL of a
+    /// rolled-back attempt's work, or read to cherry-pick by hand. Uses <c>--binary</c> so a binary change
+    /// is still applyable, and <c>--no-color</c> so the patch is never polluted by a user's
+    /// <c>color.diff=always</c> git config. Returns an empty string (never throws) when the ref is missing
+    /// or the diff otherwise fails, so a best-effort feedback composer degrades gracefully.
+    /// </summary>
+    public static string DiffAgainstBase(string worktreePath, string taskBase, string refName)
+    {
+        try
+        {
+            return GitIn(worktreePath, "diff", "--binary", "--no-color", taskBase, refName);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            // "never throws" per the summary — full best-effort catch set, incl. a git-spawn Win32Exception (#306 WEAK-2).
             return "";
         }
     }

@@ -102,18 +102,21 @@ public sealed record RunConfig
     public string? DefaultPromptRunner { get; init; }
 
     /// <summary>
-    /// When true (the default), a worktree-mode retry rollback for a NON-LOGIC outcome — <c>max-turns</c>
-    /// or <c>output-cap</c> — preserves the attempt's full working-tree state (including uncommitted
-    /// writes) to an inspectable git ref (<c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c>) BEFORE the
-    /// existing <c>git reset --hard &lt;taskBase&gt; + git clean -fd</c> rollback runs (issue #195). The
-    /// next attempt still starts from the clean <c>taskBase</c> — this does NOT change — but its retry
-    /// feedback names every salvageable prior ref plus a <c>git diff --stat</c> summary of what it
-    /// changed, so the agent can <c>git checkout &lt;ref&gt; -- &lt;path&gt;</c> the good parts instead of
-    /// re-deriving everything from scratch. Deliberately scoped to non-logic outcomes: a
-    /// <c>guardrail-failed</c> rollback is NOT preserved by default (the code may be genuinely wrong, and
-    /// silently carrying it forward is the wrong default) — set this false to disable salvage entirely,
-    /// e.g. if a plan's timeout/max-turns retries are observed to regress from stale salvage refs.
-    /// No-op in serial mode (no segment worktree to preserve).
+    /// When true (the default), a worktree-mode NON-FINAL retry rollback STASHES the attempt's full
+    /// working-tree state (including uncommitted writes) to an inspectable git ref
+    /// (<c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c>) plus a directly-applyable patch file BEFORE the
+    /// existing <c>git reset --hard &lt;taskBase&gt; + git clean -fd</c> rollback runs (issues #195 / #306).
+    /// The next attempt still starts from the clean <c>taskBase</c> — this does NOT change — but its retry
+    /// feedback exposes the stash as a first-class, agent-controlled input: a <c>git diff --stat</c>
+    /// summary, the applyable patch (<c>git apply</c> for ALL the prior work), and the ref
+    /// (<c>git checkout &lt;ref&gt; -- &lt;path&gt;</c> for SOME), so the agent can pull all/some/none instead of
+    /// re-deriving from a summary. <b>Issue #306</b> extends this beyond #195's original non-logic
+    /// outcomes: salvage now fires for EVERY non-final worktree failure kind — guardrail-fail, action-fail,
+    /// timeout, max-turns, output-cap, write-scope — because the agent (informed by the per-guardrail
+    /// verdicts), not the harness, decides how much to reuse; the clean-slate reset remains the default
+    /// starting point. Set this false to disable salvage entirely. No-op in serial mode (no segment
+    /// worktree to stash) and on the final attempt (never reset). Fragment-rejection paths are the one
+    /// documented exception (they keep the #162 re-author disclosure and are not stashed).
     /// </summary>
     public bool PreserveAttemptsForSalvage { get; init; } = true;
 

@@ -84,6 +84,40 @@ internal static class AttemptArtifacts
         AtomicFile.WriteAllText(Path.Combine(logDir, "scope-clean.log"), sb.ToString());
     }
 
+    /// <summary>
+    /// Write <c>prior-attempt.patch</c> — the applyable retry-salvage patch (issue #306): the full
+    /// unified diff of a rolled-back attempt vs the task's <c>taskBase</c>, so the NEXT attempt can
+    /// <c>git apply</c> it to recover ALL the prior work or read it to cherry-pick. Lives in the
+    /// preserved attempt's OWN log dir (a sibling of its <c>feedback.md</c>), never inside the segment
+    /// worktree (which must stay clean for <c>git status</c> / the write-scope diff). Returns the
+    /// absolute path written, or null when <paramref name="patch"/> is empty (nothing to salvage) — the
+    /// caller then falls back to the git ref alone. Best-effort: an IO failure returns null rather than
+    /// aborting the retry loop.
+    /// </summary>
+    public static string? WriteSalvagePatch(string logDir, string patch)
+    {
+        if (string.IsNullOrEmpty(patch))
+        {
+            return null;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(logDir);
+            string path = Path.Combine(logDir, "prior-attempt.patch");
+            AtomicFile.WriteAllText(path, patch);
+            return path;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Write <c>guardrail-&lt;name&gt;.stdout.log</c> and <c>.stderr.log</c>.</summary>
     public static void WriteGuardrailLogs(string logDir, string guardrailName, ProcessResult result)
     {

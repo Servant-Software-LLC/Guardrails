@@ -6,13 +6,15 @@ using Guardrails.Core.State;
 namespace Guardrails.Integration.Tests;
 
 /// <summary>
-/// End-to-end tests for issue #195 (retry salvage): a worktree-mode task that hits a NON-LOGIC
-/// budget-exhaustion outcome (<c>max-turns</c>) has its rolled-back attempt preserved to an
-/// inspectable git ref BEFORE the existing F2 <c>reset --hard</c> discards it, and the NEXT
-/// attempt's <c>feedback.md</c> names the ref plus a <c>git diff --stat</c> summary. Covers the
-/// scope guard (a <c>guardrail-failed</c> rollback does NOT preserve by default), that a salvaged
-/// out-of-writeScope file is still caught by the (unchanged) write-scope check, and ref pruning on
-/// task settle-succeeded / <c>--fresh</c>.
+/// End-to-end tests for retry salvage (issues #195 / #306): a worktree-mode task's rolled-back
+/// non-final attempt is STASHED to an inspectable git ref + an applyable patch file BEFORE the F2
+/// <c>reset --hard</c> discards it, and the NEXT attempt's <c>feedback.md</c> exposes the stash (ref +
+/// patch + <c>git diff --stat</c> summary) so the retry can pull all/some/none. Issue #306 supersedes
+/// #195's scope guard: salvage now fires for EVERY non-final worktree failure — including the
+/// <b>guardrail-fail</b> path (with per-guardrail verdicts), not only <c>max-turns</c>/<c>output-cap</c>.
+/// Covers that stash is opt-out (<c>preserveAttemptsForSalvage: false</c>), that a salvaged
+/// out-of-writeScope file is still caught by the (unchanged) write-scope check, and ref pruning on task
+/// settle-succeeded / <c>--fresh</c>.
 /// </summary>
 /// <remarks>
 /// Issue #253 tripwire: <see cref="HostRepoCleanlinessGuard"/> (an <see cref="IClassFixture{T}"/>)
@@ -44,6 +46,14 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
 
         /// <summary>Every attempt succeeds cleanly but the GUARDRAIL is what fails (script always exit 1).</summary>
         AlwaysSucceedActionOnly,
+
+        /// <summary>
+        /// Like <see cref="AlwaysSucceedActionOnly"/>, but the failing guardrail is named
+        /// <c>01-test-files-pristine</c> — a PROTECTED-ARTIFACT (tests-untouched-class) check whose name the
+        /// old bare-<c>"untouched"</c> substring MISSED. #306 WEAK-1: this attempt must NOT be stashed
+        /// (gamed-artifact work is unrecoverable via salvage, not merely un-advertised).
+        /// </summary>
+        ProtectedArtifactGuardrailFails,
 
         /// <summary>
         /// Attempt 1 hits max-turns; attempt 2+ succeeds but ALSO writes an out-of-scope file, modeling
@@ -101,7 +111,7 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
 
         Assert.Contains("## Prior attempt work is salvageable", feedback);
         Assert.Contains(RefAttempt1, feedback);
-        Assert.Contains($"git checkout {RefAttempt1} -- <path>", feedback);
+        Assert.Contains($"git checkout \"{RefAttempt1}\" -- <path>", feedback);
         Assert.Contains("output.txt", feedback); // the diff-stat summary names the changed file
     }
 
@@ -135,18 +145,118 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
     }
 
     [Fact]
-    public async Task GuardrailFailedRollback_DoesNotPreserveByDefault()
+    public async Task GuardrailFailedRollback_IsStashedAndExposed_WithVerdicts_Issue306()
     {
-        // Scope guard: a task whose GUARDRAIL fails (the action itself always succeeds — never
-        // max-turns/output-cap) must NOT get a salvage ref, even with the config on. The code may be
-        // genuinely wrong, so a guardrail-class failure is never silently carried forward.
+        // #306 RED-BAR (supersedes #195's scope guard): a task whose GUARDRAIL fails on a non-final
+        // attempt is now STASHED — under the OLD behavior this ref did NOT exist (the whole point of the
+        // fix). The stashed ref must contain the attempt's real in-scope file, and attempt-1's feedback
+        // (read by attempt 2) must expose an APPLYABLE PATCH FILE + the ref + per-guardrail verdicts —
+        // not just a summary. The action always succeeds and writes src/output.txt; the guardrail (exit 1)
+        // is what fails.
         RunReport report = await RunAsync(FakeMode.AlwaysSucceedActionOnly);
 
         TaskResult task = Assert.Single(report.Tasks);
         Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome); // needs-human after budget exhaustion
 
+        // The stash ref exists AND holds the rolled-back attempt's real work (was gone before #306).
+        Assert.True(RefExists(_repoPath, RefAttempt1),
+            "a guardrail-failed non-final rollback must now be stashed to a salvage ref (issue #306)");
+        string blobAtRef = RunGit(_repoPath, "show", $"{RefAttempt1}:src/output.txt").Trim();
+        Assert.Equal("attempt-1-output", blobAtRef);
+
+        // The retry input exposes the stash DIRECTLY: an applyable patch file + the ref, plus verdicts.
+        string attempt1Dir = AttemptDir(1);
+        Assert.True(File.Exists(Path.Combine(attempt1Dir, "prior-attempt.patch")),
+            "expected a directly-applyable prior-attempt.patch in the stashed attempt's log dir");
+        string feedback = File.ReadAllText(Path.Combine(attempt1Dir, "feedback.md"));
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains(RefAttempt1, feedback);
+        Assert.Contains("prior-attempt.patch", feedback);              // git apply target named
+        Assert.Contains("## Prior attempt: guardrail verdicts", feedback);
+        Assert.Contains("- ❌ 01-ok", feedback);                        // the failing guardrail's verdict
+    }
+
+    [Fact]
+    public async Task GuardrailFailedRollback_NotStashed_WhenSalvageDisabled()
+    {
+        // The clean-slate reset remains the default and the stash is opt-out: with the config off, a
+        // guardrail-failed rollback creates no ref and offers no salvage section.
+        RunReport report = await RunAsync(FakeMode.AlwaysSucceedActionOnly, preserveAttemptsForSalvage: false);
+
+        Assert.Equal(TaskOutcome.GuardrailFailed, Assert.Single(report.Tasks).Outcome);
         Assert.False(RefExists(_repoPath, RefAttempt1),
-            "a guardrail-failed rollback must not preserve a salvage ref by default");
+            "salvage must not preserve a guardrail-failed rollback when preserveAttemptsForSalvage is false");
+
+        string feedback = File.ReadAllText(Path.Combine(AttemptDir(1), "feedback.md"));
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+    }
+
+    [Fact]
+    public async Task ProtectedArtifactGuardrailFail_IsNotStashed_NorAdvertised_Issue306_WEAK1()
+    {
+        // #306 review WEAK-1 RED-BAR: a protected-artifact (tests-untouched-class) guardrail failure —
+        // named "01-test-files-pristine", a synonym the OLD bare-"untouched" substring MISSED — means the
+        // agent gamed the check by editing a protected file. Its work must be genuinely UNRECOVERABLE via
+        // salvage: NO ref, NO patch (suppressed AT CREATION, not merely un-advertised). Under the old code
+        // the ref + patch WERE written AND the feedback actively instructed `git apply` on the gamed patch.
+        RunReport report = await RunAsync(FakeMode.ProtectedArtifactGuardrailFails);
+        Assert.Equal(TaskOutcome.GuardrailFailed, Assert.Single(report.Tasks).Outcome);
+
+        Assert.False(RefExists(_repoPath, RefAttempt1),
+            "a protected-artifact (gamed-tests) failure must NOT be stashed to a salvage ref (issue #306 WEAK-1)");
+        Assert.False(File.Exists(Path.Combine(AttemptDir(1), "prior-attempt.patch")),
+            "no applyable salvage patch may be written for a gamed-artifact attempt");
+
+        string feedback = File.ReadAllText(Path.Combine(AttemptDir(1), "feedback.md"));
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+        Assert.DoesNotContain("git apply", feedback);          // never advertise the gamed patch
+        Assert.Contains("Do NOT edit the test file", feedback); // the authoritative guidance survives
+    }
+
+    [Fact]
+    public void SalvageGitFaults_DegradeGracefully_NeverThrow_Issue306_WEAK2()
+    {
+        // #306 review WEAK-2: a git-spawn failure during salvage (git off PATH, a bad working dir, ENOMEM)
+        // surfaces as Win32Exception — NOT InvalidOperationException — so a catch of only the latter would
+        // let it ESCAPE and crash the attempt. Prove (a) the fault a bad worktree throws is a type the
+        // widened salvage catch handles, and (b) the diff helpers honour their "never throws" contract.
+        string bogus = Path.Combine(_root, "does-not-exist-" + Guid.NewGuid().ToString("N"));
+
+        Exception? ex = Record.Exception(
+            () => GitWorktreeProvider.PreserveAttemptToRef(bogus, "refs/guardrails/x/attempt-1"));
+        Assert.NotNull(ex);
+        Assert.True(
+            ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException,
+            $"expected a fault the widened salvage catch handles, got {ex!.GetType().FullName}: {ex.Message}");
+
+        // The diff helpers must degrade to "" (their documented "never throws" contract) even on a bogus dir.
+        Assert.Equal("", GitWorktreeProvider.DiffAgainstBase(bogus, "HEAD", "refs/guardrails/x/attempt-1"));
+        Assert.Equal("", GitWorktreeProvider.DiffStatAgainstBase(bogus, "HEAD", "refs/guardrails/x/attempt-1"));
+    }
+
+    [Fact]
+    public void PreserveAttemptToRef_ExcludesReconstructableDirs_FromSalvagePatch_Issue306_NIT2()
+    {
+        // #306 review NIT-2: the salvage snapshot now routes through SegmentStaging's exclusion pathspecs,
+        // so node_modules (and the harness's own .guardrails-* scaffolding) never bloat the agent-applyable
+        // patch — while a real in-scope file is still captured.
+        string taskBase = RunGit(_repoPath, "rev-parse", "HEAD").Trim();
+        Directory.CreateDirectory(Path.Combine(_repoPath, "src"));
+        File.WriteAllText(Path.Combine(_repoPath, "src", "real.txt"), "kept");
+        Directory.CreateDirectory(Path.Combine(_repoPath, "node_modules", "pkg"));
+        File.WriteAllText(Path.Combine(_repoPath, "node_modules", "pkg", "index.js"), "reconstructable");
+
+        const string refName = "refs/guardrails/nit2/attempt-1";
+        GitWorktreeProvider.PreserveAttemptToRef(_repoPath, refName);
+
+        // The real in-scope file is in the snapshot; node_modules is excluded.
+        Assert.Equal("kept", RunGit(_repoPath, "show", $"{refName}:src/real.txt").Trim());
+        var (_, exit) = TryRunGit(_repoPath, "cat-file", "-e", $"{refName}:node_modules/pkg/index.js");
+        Assert.NotEqual(0, exit); // node_modules path is absent from the salvage tree
+
+        string patch = GitWorktreeProvider.DiffAgainstBase(_repoPath, taskBase, refName);
+        Assert.Contains("src/real.txt", patch);
+        Assert.DoesNotContain("node_modules", patch);
     }
 
     [Fact]
@@ -239,10 +349,14 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
             """);
         File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "Implement the thing.\n");
 
-        string guardrailBody = mode == FakeMode.AlwaysSucceedActionOnly
+        bool guardrailFails = mode is FakeMode.AlwaysSucceedActionOnly or FakeMode.ProtectedArtifactGuardrailFails;
+        string guardrailBody = guardrailFails
             ? (Windows ? "exit 1\n" : "#!/usr/bin/env bash\nexit 1\n")
             : (Windows ? "exit 0\n" : "#!/usr/bin/env bash\nexit 0\n");
-        WriteScript(Path.Combine(taskDir, "guardrails", Windows ? "01-ok.ps1" : "01-ok.sh"), guardrailBody);
+        // #306 WEAK-1: the protected-artifact mode names the guardrail with a synonym ("pristine") the old
+        // bare-"untouched" substring would have missed, so the test exercises the de-fragilized matcher.
+        string guardrailBase = mode == FakeMode.ProtectedArtifactGuardrailFails ? "01-test-files-pristine" : "01-ok";
+        WriteScript(Path.Combine(taskDir, "guardrails", Windows ? $"{guardrailBase}.ps1" : $"{guardrailBase}.sh"), guardrailBody);
     }
 
     /// <summary>

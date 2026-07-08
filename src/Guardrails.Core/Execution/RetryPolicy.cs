@@ -15,16 +15,28 @@ public static class RetryPolicy
     private const int TailChars = 4000;
 
     /// <summary>Compose feedback for an attempt whose ACTION failed (guardrails were skipped).</summary>
-    public static string ForActionFailure(TaskNode task, int attempt, ProcessResult action)
+    /// <param name="fileWritesRolledBack">
+    /// True in worktree mode for a non-final attempt (segment reset to taskBase before the next attempt):
+    /// the header must not claim preserved work (issue #167 gap — this path previously always emitted the
+    /// "keep what already works" header even when the writes were discarded).
+    /// </param>
+    /// <param name="salvageRef">
+    /// Retry salvage (issue #306): when non-null, the rolled-back attempt was stashed — appends the
+    /// salvage-adoption section so the agent can recover the good parts. Null when salvage is off, not
+    /// worktree mode, or the attempt produced nothing.
+    /// </param>
+    public static string ForActionFailure(
+        TaskNode task, int attempt, ProcessResult action, bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## What failed");
         text.AppendLine(action.TimedOut
             ? "The action timed out and was killed. Guardrails were skipped."
             : $"The action exited with code {action.ExitCode}. Guardrails were skipped.");
         AppendTail(text, "Action stderr (tail)", action.StandardError);
         AppendTail(text, "Action stdout (tail)", action.StandardOutput);
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
@@ -40,10 +52,11 @@ public static class RetryPolicy
     /// to this git ref before the F2 reset — appends the salvage-adoption section naming it. Null when
     /// salvage is off, not in worktree mode, or the preserve itself failed (best-effort).
     /// </param>
-    public static string ForOutputCapExceeded(TaskNode task, int attempt, SalvageRef? salvageRef = null)
+    public static string ForOutputCapExceeded(
+        TaskNode task, int attempt, SalvageRef? salvageRef = null, bool fileWritesRolledBack = false)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## Response truncated at the output-token cap");
         text.AppendLine();
         text.AppendLine("Your previous response exceeded the runner's output-token cap, so it was cut off and");
@@ -86,7 +99,7 @@ public static class RetryPolicy
         TaskNode task, int attempt, bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## The previous attempt ran out of turns");
         text.AppendLine();
         text.AppendLine("The previous attempt hit the max-turns cap and was stopped mid-progress — this is a TURN");
@@ -142,21 +155,38 @@ public static class RetryPolicy
     /// <param name="fileWritesRolledBack">
     /// True in worktree mode for a non-final attempt (the segment is reset to taskBase + cleaned
     /// before the next attempt — issue #167): the partial work on disk is GONE, so the feedback must
-    /// NOT tell the agent to continue from it; it discloses the reset and instructs re-authoring ALL
-    /// files. False in serial mode (file writes persist) and on the final attempt (never reset), where
-    /// the existing "continue from preserved partial work" guidance is kept.
+    /// NOT tell the agent to continue from it; it discloses the reset. False in serial mode (file
+    /// writes persist) and on the final attempt (never reset), where the existing "continue from
+    /// preserved partial work" guidance is kept.
     /// </param>
-    public static string ForTimeout(TaskNode task, int attempt, bool fileWritesRolledBack = false)
+    /// <param name="salvageRef">
+    /// Retry salvage (issue #306): when non-null, the rolled-back attempt was stashed to a git ref +
+    /// applyable patch before the reset — the "your work is gone, re-author" instruction is then softened
+    /// to point at the salvage section, and that section is appended. Null when salvage is off, not
+    /// worktree mode, or the attempt produced nothing. (Issue #306 extends salvage to timeout, which
+    /// #195 had deliberately left out.)
+    /// </param>
+    public static string ForTimeout(
+        TaskNode task, int attempt, bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## The previous attempt timed out");
         text.AppendLine();
         // #167: only the "PARTIAL WORK is preserved" claim is mode-dependent. In worktree mode the
         // attempt's writes are reverted (rollback note below), so that claim is false — drop it; the
         // "don't re-explore, the clock matters" advice is valid in BOTH modes and is kept. Serial mode
-        // is byte-for-byte unchanged.
-        if (fileWritesRolledBack)
+        // is byte-for-byte unchanged. #306: when a salvage ref exists, the reverted work is recoverable,
+        // so the "re-author the files" instruction points at the salvage section instead of a flat redo.
+        if (fileWritesRolledBack && salvageRef is not null)
+        {
+            text.AppendLine("The previous attempt ran out of time and was stopped. Its partial work was reverted from");
+            text.AppendLine("your working tree, but it was NOT discarded — see '## Prior attempt work is salvageable'");
+            text.AppendLine("below to recover it. Do NOT waste the extended clock re-reading the whole codebase to");
+            text.AppendLine("re-orient: recover what's good and go straight to the deliverable.");
+            text.AppendLine();
+        }
+        else if (fileWritesRolledBack)
         {
             text.AppendLine("The previous attempt ran out of time and was stopped. Its partial work was reverted (see");
             text.AppendLine("the rollback note below), so re-author the files — but do NOT waste the extended clock");
@@ -178,17 +208,49 @@ public static class RetryPolicy
         text.AppendLine("  STOP and write {\"needsHuman\": \"<this task is under-sized for the timeout; suggest a split>\"}");
         text.AppendLine("  to GUARDRAILS_STATE_OUT rather than burning more attempts.");
         AppendRollbackDisclosure(text, fileWritesRolledBack);
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
-    /// <summary>Compose feedback for an attempt where one or more GUARDRAILS failed.</summary>
+    /// <summary>
+    /// Compose feedback for an attempt where one or more GUARDRAILS failed.
+    /// </summary>
+    /// <param name="fileWritesRolledBack">
+    /// True in worktree mode for a non-final attempt (the segment is reset to taskBase + cleaned before
+    /// the next attempt): the attempt's file writes are reverted, so the header must NOT claim the work
+    /// is preserved on disk (issue #167 gap — this path previously ALWAYS emitted "keep what already
+    /// works" regardless of the reset). False in serial mode and on the final attempt.
+    /// </param>
+    /// <param name="salvageRef">
+    /// Retry salvage (issue #306): when non-null, the attempt's rolled-back working tree was stashed to a
+    /// git ref + applyable patch before the reset — appends the salvage-adoption section and makes the
+    /// header's "keep what already works" intent TRUE (recover, don't re-author). Null when salvage is
+    /// off, not worktree mode, the attempt was a no-op, or the preserve failed.
+    /// </param>
     public static string ForGuardrailFailures(
         TaskNode task,
         int attempt,
-        IReadOnlyList<GuardrailResult> results)
+        IReadOnlyList<GuardrailResult> results,
+        bool fileWritesRolledBack = false,
+        SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt, task.Action.Kind);
+
+        // A tests-untouched (protected-artifact) failure means the agent gamed a check by editing a
+        // protected upstream file. TaskExecutor already SUPPRESSES the salvage stash AT CREATION for this
+        // case (issue #306 review WEAK-1) — so salvageRef arrives null and nothing is offered — but we
+        // re-derive the signal here as belt-and-suspenders (a caller passing a stale ref must still not
+        // have it advertised) and to gate the dedicated block below. NOTE: the actual guarantee that a
+        // gamed edit can never reach green is the DETERMINISTIC per-attempt re-check (write-scope + this
+        // task's guardrails, re-run on every attempt's FINAL state); this suppression is defense-in-depth
+        // (don't hand back / advertise the gamed patch), not the load-bearing safety property.
+        bool testsUntouchedFailed = results.Any(r => !r.Passed && GuardrailArchetypes.IsProtectedArtifactCheck(r.Name));
+        SalvageRef? effectiveSalvage = testsUntouchedFailed ? null : salvageRef;
+
+        // WEAK-3: the header is mode-aware even on the tests-untouched path — in worktree mode the F2
+        // reset discarded the WHOLE tree (not just the restored test file), so with no salvage offered
+        // this yields the honest "rolled back, re-author" header rather than a false "keep what works".
+        AppendHeader(text, task, attempt, task.Action.Kind, fileWritesRolledBack, effectiveSalvage);
         text.AppendLine("## Failed guardrails");
 
         foreach (GuardrailResult failed in results.Where(r => !r.Passed))
@@ -218,11 +280,11 @@ public static class RetryPolicy
         // authored baseline for the next attempt (issue #51), so steer the agent to fix the
         // IMPLEMENTATION and emit the "Do NOT edit the test file(s)" block, then RETURN.
         //
-        // Returning here suppresses the WHOLE "Guardrails that PASSED (do not break these)" footer —
-        // not just a tests-pass entry. That is deliberate: a tests-pass guardrail that went green by
-        // editing the tests is exactly what must NOT be preserved, and after restore the passing set
-        // is recomputed next attempt anyway, so listing "do not break these" here would be misleading.
-        bool testsUntouchedFailed = results.Any(r => !r.Passed && IsTestsUntouched(r.Name));
+        // Returning here suppresses the WHOLE verdict ledger + salvage footer — not just a tests-pass
+        // entry. That is deliberate: a tests-pass guardrail that went green by editing the tests is
+        // exactly what must NOT be preserved (nor its work re-offered for salvage), and after restore the
+        // passing set is recomputed next attempt anyway, so listing "do not break these" here would
+        // mislead. (testsUntouchedFailed was computed at the top to gate the header + salvage disposition.)
         if (testsUntouchedFailed)
         {
             text.AppendLine("## Do NOT edit the test file(s)");
@@ -235,18 +297,48 @@ public static class RetryPolicy
             return text.ToString();
         }
 
-        IReadOnlyList<string> passed = results.Where(r => r.Passed).Select(r => r.Name).ToList();
-        if (passed.Count > 0)
-        {
-            text.AppendLine($"Guardrails that PASSED (do not break these): {string.Join(", ", passed)}");
-        }
+        // Per-guardrail verdicts (issue #306): a compact ✅/❌ ledger of EVERY guardrail this attempt ran,
+        // so the agent sees exactly how much already passed and can make a TARGETED fix rather than
+        // re-deriving. Ordered as the guardrails ran (cheapest-first, ordinal by filename). The ✅ set is
+        // the "do not break these" constraint; each ❌ carries its one-line reason (full output is in the
+        // "## Failed guardrails" detail above). Skipped on the tests-untouched path (handled above).
+        AppendVerdictLedger(text, results);
+        AppendSalvageSection(text, effectiveSalvage);
 
         return text.ToString();
     }
 
-    /// <summary>A guardrail whose name marks it as a tests-untouched check (doctrine: <c>NN-tests-untouched</c>).</summary>
-    private static bool IsTestsUntouched(string name) =>
-        name.Contains("untouched", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Append the "## Prior attempt: guardrail verdicts" ledger (issue #306) — every guardrail marked
+    /// ✅ (passed, do not break) or ❌ (failed, with its one-line reason). This is the "how much is
+    /// already good to start from" signal that turns a one-token miss into a one-token fix instead of a
+    /// full re-author. No-op when there are no results.
+    /// </summary>
+    private static void AppendVerdictLedger(StringBuilder text, IReadOnlyList<GuardrailResult> results)
+    {
+        if (results.Count == 0)
+        {
+            return;
+        }
+
+        text.AppendLine("## Prior attempt: guardrail verdicts");
+        text.AppendLine();
+        foreach (GuardrailResult r in results)
+        {
+            if (r.Passed)
+            {
+                text.AppendLine($"- ✅ {r.Name}");
+            }
+            else
+            {
+                string reason = string.IsNullOrWhiteSpace(r.Reason) ? "guardrail failed (no reason printed)" : r.Reason!;
+                text.AppendLine($"- ❌ {r.Name} — {reason}");
+            }
+        }
+
+        text.AppendLine();
+        text.AppendLine("The ✅ guardrails already pass — do not break them. Fix only the ❌ ones (full detail above).");
+    }
 
     /// <summary>
     /// Compose feedback for an attempt rejected because its state fragment was invalid (SSOT §6.2).
@@ -257,7 +349,10 @@ public static class RetryPolicy
     public static string ForInvalidFragment(TaskNode task, int attempt, string reason, bool fileWritesRolledBack = false)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        // #167/#306: route the rollback flag into the header so it never says "keep what already works"
+        // while the body (AppendRollbackDisclosure) instructs re-authoring. Fragment rejections keep the
+        // #162 re-author disclosure and are NOT salvaged (documented scope boundary), so no salvage ref.
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack);
         text.AppendLine("## Invalid state fragment");
         text.AppendLine(reason);
         text.AppendLine();
@@ -282,7 +377,9 @@ public static class RetryPolicy
     public static string ForForeignKey(TaskNode task, int attempt, IReadOnlyList<string> foreignKeys, bool fileWritesRolledBack = false)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        // #167/#306: route the rollback flag into the header (see ForInvalidFragment). Fragment
+        // rejections are NOT salvaged (documented scope boundary) — no salvage ref here.
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack);
         text.AppendLine("## State fragment wrote a key this task does not own");
         text.AppendLine();
         foreach (string key in foreignKeys)
@@ -324,12 +421,16 @@ public static class RetryPolicy
     }
 
     /// <summary>
-    /// Append the retry-salvage adoption section (issue #195) when a prior attempt's rolled-back
-    /// working tree was preserved to a git ref before the F2 reset discarded it: names the ref, its
-    /// <c>git diff --stat</c> summary, and instructs the agent to selectively adopt the good parts
-    /// (<c>git checkout &lt;ref&gt; -- &lt;path&gt;</c>) rather than re-deriving everything from scratch — the
-    /// core "salvage, don't restart clean" behavior the issue is built on. No-op when
-    /// <paramref name="salvageRef"/> is null (salvage off, serial mode, or the preserve itself failed).
+    /// Append the retry-salvage adoption section (issues #195 / #306): the prior attempt's rolled-back
+    /// working tree was stashed before the F2 reset discarded it, and this exposes it as a FIRST-CLASS,
+    /// agent-controlled retry input — the agent decides whether to pull ALL of it (<c>git apply</c> the
+    /// patch), SOME of it (<c>git checkout &lt;ref&gt; -- &lt;path&gt;</c> per file), or NONE (re-author). The
+    /// framing is deliberately outcome-NEUTRAL: #306 offers this on EVERY non-final worktree failure
+    /// (guardrail-fail, action-fail, timeout, max-turns, output-cap, write-scope), not only the #195
+    /// non-logic budget-exhaustion outcomes, so it must not claim the attempt "was making real progress"
+    /// — the per-guardrail verdicts (where shown, on the guardrail-fail path) tell the agent what
+    /// already passed. No-op when <paramref name="salvageRef"/> is null (salvage off, serial mode, an
+    /// empty/no-op diff, or the preserve itself failed).
     /// </summary>
     private static void AppendSalvageSection(StringBuilder text, SalvageRef? salvageRef)
     {
@@ -341,15 +442,24 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("## Prior attempt work is salvageable");
         text.AppendLine();
-        text.AppendLine($"Attempt {salvageRef.Attempt}'s FULL working tree — before the reset above — was preserved");
-        text.AppendLine($"to the git ref `{salvageRef.RefName}`. That attempt was likely making REAL progress (it ran");
-        text.AppendLine("out of budget, not out of correctness), so REVIEW it and selectively adopt what's good instead");
-        text.AppendLine("of re-deriving everything from scratch:");
+        text.AppendLine($"Attempt {salvageRef.Attempt}'s FULL working tree — before the reset above — was stashed to the");
+        text.AppendLine($"git ref `{salvageRef.RefName}` so you can BUILD ON IT instead of re-deriving everything. The");
+        text.AppendLine("clean base is still the default starting point; recovering the prior work is YOUR call — pull");
+        text.AppendLine("all of it, some of it, or none:");
         text.AppendLine();
-        text.AppendLine($"- Inspect what changed: `git show --stat {salvageRef.RefName}` or `git diff <taskBase> {salvageRef.RefName}`.");
-        text.AppendLine($"- Pull in a file that is CORRECT as-is: `git checkout {salvageRef.RefName} -- <path>`.");
-        text.AppendLine("- Redo, from scratch, only what is INCOMPLETE or wrong — do not blindly restore every file;");
-        text.AppendLine("  judge each one.");
+        if (salvageRef.PatchPath is { Length: > 0 } patchPath)
+        {
+            // Forward slashes so the command works verbatim on every OS: git accepts `C:/…` on Windows,
+            // and it avoids a bash backslash-escape hazard in the emitted command.
+            string applyPath = patchPath.Replace('\\', '/');
+            text.AppendLine($"- Pull in EVERYTHING, then edit: `git apply \"{applyPath}\"` re-applies the whole prior");
+            text.AppendLine("  attempt on top of the clean base. (Or open that patch file to read exactly what changed.)");
+        }
+
+        text.AppendLine($"- Pull in ONE file that is correct as-is: `git checkout \"{salvageRef.RefName}\" -- <path>`.");
+        text.AppendLine($"- Inspect before adopting: `git show --stat \"{salvageRef.RefName}\"` or `git diff <taskBase> \"{salvageRef.RefName}\"`.");
+        text.AppendLine("- Re-author, from scratch, only what is INCOMPLETE or wrong — judge each file; do not blindly");
+        text.AppendLine("  restore everything.");
 
         if (!string.IsNullOrWhiteSpace(salvageRef.DiffStat))
         {
@@ -381,10 +491,23 @@ public static class RetryPolicy
     /// (size + content preview) captured before the revert deleted it, since by the time anyone reads
     /// this feedback the file itself is already gone from the worktree.
     /// </remarks>
-    public static string ForWriteScopeViolation(TaskNode task, int attempt, IReadOnlyList<WriteScopeOffense> offendingPaths)
+    /// <param name="fileWritesRolledBack">
+    /// True in worktree mode for a non-final attempt: the F2 reset reverts the WHOLE attempt (including
+    /// the in-scope changes) before the next one, so the feedback must NOT claim "your in-scope changes
+    /// are preserved" (a #167-class false claim this corrects). False in serial mode / the final attempt,
+    /// where only the out-of-scope paths were reverted and the in-scope work genuinely persists.
+    /// </param>
+    /// <param name="salvageRef">
+    /// Retry salvage (issue #306): when non-null, the attempt (after the out-of-scope scoped-revert) was
+    /// stashed to a git ref + applyable patch before the reset — so the in-scope work IS recoverable.
+    /// Appends the salvage-adoption section. Null in serial mode or when salvage is off.
+    /// </param>
+    public static string ForWriteScopeViolation(
+        TaskNode task, int attempt, IReadOnlyList<WriteScopeOffense> offendingPaths,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt, task.Action.Kind);
+        AppendHeader(text, task, attempt, task.Action.Kind, fileWritesRolledBack, salvageRef);
         text.AppendLine("## Write-scope violation");
         text.AppendLine();
         text.AppendLine("The following path(s) were modified but fall OUTSIDE this task's declared writeScope:");
@@ -404,9 +527,23 @@ public static class RetryPolicy
         }
 
         text.AppendLine();
-        text.AppendLine("The harness has already reverted those files to their pre-attempt state. Your");
-        text.AppendLine("in-scope changes are preserved. On retry, ensure you only write to paths covered");
-        text.AppendLine("by this task's writeScope (SSOT §3.4, plan 08 §2).");
+        if (fileWritesRolledBack)
+        {
+            // Worktree mode: the out-of-scope paths were scoped-reverted, then the WHOLE attempt is reset
+            // to taskBase before the next one — so the in-scope work is NOT on disk either. It is stashed
+            // (see the salvage section) when salvage is on. Do not claim it "is preserved".
+            text.AppendLine("The out-of-scope path(s) above were reverted, and the whole attempt is then reset to a");
+            text.AppendLine("clean base before your retry. On retry, ensure you only write to paths covered by this");
+            text.AppendLine("task's writeScope (SSOT §3.4, plan 08 §2).");
+        }
+        else
+        {
+            text.AppendLine("The harness has already reverted those files to their pre-attempt state. Your");
+            text.AppendLine("in-scope changes are preserved. On retry, ensure you only write to paths covered");
+            text.AppendLine("by this task's writeScope (SSOT §3.4, plan 08 §2).");
+        }
+
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
@@ -426,10 +563,12 @@ public static class RetryPolicy
     /// path actually within scope, or asks a human if the deliverable genuinely needs a broader scope.
     /// Mirrors <see cref="ForWriteScopeViolation"/>'s phrasing/actionability for the prospective case.
     /// </summary>
-    public static string ForHarnessWriteOutOfScope(TaskNode task, int attempt, string requestedPath, string reason)
+    public static string ForHarnessWriteOutOfScope(
+        TaskNode task, int attempt, string requestedPath, string reason,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## needsHarnessWrite rejected");
         text.AppendLine();
         text.AppendLine($"Your `needsHarnessWrite` request for `{requestedPath}` was REJECTED before any write happened:");
@@ -439,6 +578,7 @@ public static class RetryPolicy
         text.AppendLine("Request a path that is genuinely within this task's declared `writeScope` (SSOT §3.4), or,");
         text.AppendLine("if the deliverable truly needs a broader scope, write `{\"needsHuman\": \"<why>\"}` to");
         text.AppendLine("GUARDRAILS_STATE_OUT instead so a human can widen the scope.");
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
@@ -447,10 +587,12 @@ public static class RetryPolicy
     /// write failed (disk full, a genuinely unwritable location even for the harness process, etc.) —
     /// treated as an action failure: guardrails are skipped and the retry gets an actionable reason.
     /// </summary>
-    public static string ForHarnessWriteFailed(TaskNode task, int attempt, string requestedPath, string reason)
+    public static string ForHarnessWriteFailed(
+        TaskNode task, int attempt, string requestedPath, string reason,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## needsHarnessWrite failed");
         text.AppendLine();
         text.AppendLine($"The harness attempted to write `{requestedPath}` on your behalf but the write itself failed:");
@@ -459,6 +601,7 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("This is not a scope problem — the path was in bounds. Retry, or write");
         text.AppendLine("`{\"needsHuman\": \"<why>\"}` to GUARDRAILS_STATE_OUT if the write is likely to keep failing.");
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
@@ -470,10 +613,12 @@ public static class RetryPolicy
     /// feedback names the staging dir and the exact <c>from→to</c> map. An empty-source move is a
     /// deliverable-not-produced condition (guardrail-class), not a crash.
     /// </summary>
-    public static string ForStagingFailure(TaskNode task, int attempt, string reason)
+    public static string ForStagingFailure(
+        TaskNode task, int attempt, string reason,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
     {
         var text = new StringBuilder();
-        AppendHeader(text, task, attempt);
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## Staging move failed");
         text.AppendLine();
         text.AppendLine(reason);
@@ -495,6 +640,7 @@ public static class RetryPolicy
 
         text.AppendLine("Do NOT write under `.claude/` directly — the runtime refuses it. Stage your files under");
         text.AppendLine("the staging dir and the harness will move them into `.claude/` for you (SSOT §3.5).");
+        AppendSalvageSection(text, salvageRef);
         return text.ToString();
     }
 
@@ -581,15 +727,30 @@ public static class RetryPolicy
 
     /// <summary>
     /// The shared feedback header. <paramref name="actionKind"/> selects the retry-guidance line
-    /// (issue #264): a PROMPT action gets the agent-oriented "fix what failed, keep what works"
-    /// wording — it is read by an agent that CAN self-correct between attempts. A <c>script</c> action
-    /// gets a deterministic-action message instead: there is no agent to read this, re-running the
-    /// unchanged script produces byte-identical output and fails the same guardrail every time, so the
-    /// script or its guardrail must be EDITED to converge. Defaults to the prompt wording so the many
-    /// prompt-only feedback methods (output-cap, max-turns, timeout, …) are unchanged.
+    /// (issue #264): a <c>script</c> action gets a deterministic-action message (there is no agent to
+    /// read this; re-running unchanged bytes fails the same guardrail every time, so the script or its
+    /// guardrail must be EDITED to converge). A PROMPT action gets one of THREE agent-oriented lines,
+    /// chosen by what actually happened to its on-disk work (issues #167 / #306) — so the header can
+    /// never claim preserved work the harness did not provide:
+    /// <list type="bullet">
+    ///   <item><b>Persisted</b> (serial mode / the final attempt — no reset): file writes are still on
+    ///     disk, so the classic "keep what already works, address only what failed" wording is
+    ///     ACCURATE and unchanged.</item>
+    ///   <item><b>Rolled back but stashed</b> (worktree non-final WITH a salvage ref, #306): the segment
+    ///     was reset to a clean base, but the prior work was SAVED — point the agent at the salvage
+    ///     section so "keep what already works" becomes true via recovery, not a false claim.</item>
+    ///   <item><b>Rolled back and lost</b> (worktree non-final, salvage off/failed): the writes are
+    ///     genuinely gone — say so honestly and instruct re-authoring (the #167 gap this closes).</item>
+    /// </list>
+    /// Defaults keep the Persisted prompt wording, so callers that pass no disposition are unchanged.
     /// </summary>
     private static void AppendHeader(
-        StringBuilder text, TaskNode task, int attempt, ActionKind actionKind = ActionKind.Prompt)
+        StringBuilder text,
+        TaskNode task,
+        int attempt,
+        ActionKind actionKind = ActionKind.Prompt,
+        bool fileWritesRolledBack = false,
+        SalvageRef? salvageRef = null)
     {
         text.AppendLine($"# Attempt {attempt} of task '{task.Id}' failed");
         text.AppendLine();
@@ -601,6 +762,19 @@ public static class RetryPolicy
             text.AppendLine("between attempts. Re-running the unchanged script produces byte-identical output");
             text.AppendLine("and fails the same guardrail every time; the script or its guardrail must be");
             text.AppendLine("edited to converge.");
+        }
+        else if (fileWritesRolledBack && salvageRef is not null)
+        {
+            text.AppendLine("Your previous attempt was rolled back to a clean base (so a broken partial state");
+            text.AppendLine("cannot compound), but that work was SAVED, not lost. Recover the parts that already");
+            text.AppendLine("work from '## Prior attempt work is salvageable' below, then make ONLY the change");
+            text.AppendLine("needed to fix what failed — do NOT re-author from scratch what already worked.");
+        }
+        else if (fileWritesRolledBack)
+        {
+            text.AppendLine("Your previous attempt's file writes were rolled back to a clean base and are NOT");
+            text.AppendLine("recoverable. Re-author from scratch, but carry forward what you learned and go");
+            text.AppendLine("straight at what failed — do not re-explore the whole codebase to re-orient.");
         }
         else
         {
