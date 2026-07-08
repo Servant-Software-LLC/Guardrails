@@ -65,7 +65,9 @@ Each slots into an existing v1 seam — none invalidates the architecture:
    guardrail's verdict), AND — between waves of a multi-wave plan — proposes intelligent
    adjustments to the next (all-pending) wave. Gated by the shared `autonomyPolicy`
    (prompt/halt/auto, SSOT §2.1) and reported in the shared `boundary`-discriminated
-   decisions log. **#269 needs its own design of record first.** *Seam: the multi-wave
+   decisions log. **#269 design of record: `11-overwatcher.md`** — its v1 *diagnose +
+   propose* supervisor is a post-v1 fast-follow (below); this bet is the v2 slice
+   (`auto`-value silent auto-heal + the inter-wave role). *Seam: the multi-wave
    skeleton's between-wave decision point + the shared autonomy policy + decisions log,
    all defined by the #254 v1 skeleton (below).*
 
@@ -105,3 +107,19 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   the overwatcher (bet #6) reuses: the unified `autonomyPolicy` (SSOT §2.1) + the `boundary`-discriminated
   decisions log. **Auto-heal + overwatcher-driven inter-wave adjustment are v2 bets (bet #6), not v1** — v1
   only defines the seam.
+
+- **#269 overwatcher — v1 active *diagnose + propose* supervisor** (design of record `11-overwatcher.md`).
+  The active generalization of the shipped one-shot §9.2 triage into an in-run supervisor that fires at
+  conservative, deterministically-detected struggle transitions (once per transition), classifies
+  doomed-vs-retryable, and renders a precise diagnosis under the task table + the shared `decisions[]`
+  (`boundary:"task"`). Governed by the shared `autonomyPolicy` (SSOT §2.1): `halt` = diagnose + always
+  halt; `prompt` (default) = diagnose + TTY-propose the sanctioned **action-layer** levers (ephemeral
+  guidance injection / `maxTurns`·`retries`·`timeout` runtime budget bumps), honest-halt when
+  non-interactive. The mechanical asymmetry — a `TaskDefinitionFiles`-keyed classifier the harness (not
+  the LLM) applies — keeps the **verdict surface** (guardrail/preflight bodies + `writeScope`/`scope`/
+  `dependsOn`/`integrationGate`) propose-only + review-marker-re-staling (via #260), while the
+  **action/budget layer** is auto-applicable. Subsumes §9.2 (now its terminal-exhaustion case §9.2.1);
+  generalizes #94/#264/#174 as policies while the deterministic short-circuits stay the floor ("no
+  sanctioned change ⇒ no grant ⇒ honest halt"). **Bounded auto-heal (`auto`-value silent application +
+  authoring-defect fix classes) and the inter-wave role are v2 (bet #6)** — v1 defines the seam. No new
+  GR code (reuses GR2031/`autonomyPolicy` + GR2025/review-staleness; next-free is GR2035 if ever needed).
