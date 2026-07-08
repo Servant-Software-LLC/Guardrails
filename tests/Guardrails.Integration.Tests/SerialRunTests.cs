@@ -78,6 +78,21 @@ public sealed class SerialRunTests
         Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
     }
 
+    [Fact]
+    public async Task BashInvokedTask_ReceivesGuardrailsEnvWithoutBackslashes()
+    {
+        // #263: a bash-invoked (.sh) action AND guardrail must both see their GUARDRAILS_* path env
+        // vars (built by TaskExecutor.BuildEnvironment / BuildGuardrailEnvironment — the full attempt
+        // path, not just the re-verify seam) free of backslashes. On Windows this genuinely runs Git
+        // Bash; on Linux/macOS ".sh" is already the native choice and the assertion holds trivially.
+        using var plan = new BashOnlyEnvAssertingPlan();
+
+        RunReport report = await RunAsync(plan.PlanDir);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+    }
+
     private static string Summarize(RunReport report) =>
         string.Join("\n", report.Tasks.Select(t => $"{t.TaskId}: {t.Outcome} ({t.Summary})"));
 }

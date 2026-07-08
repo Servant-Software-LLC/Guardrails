@@ -776,6 +776,21 @@ round-trip non-ASCII faithfully and match the harness's own UTF-8-no-BOM writes
 (`AtomicFile`). For prompt processes, the same information is *embedded in the
 composed prompt* (agents read instructions, not env vars).
 
+**On Windows, a script launched THROUGH BASH sees `GUARDRAILS_*` path values in forward-slash form**
+(issue #263) — `C:/Users/...`, a straight backslash→forward-slash swap of the same absolute path, not
+the MSYS `/c/Users/...` mount form. .NET absolute paths on Windows are backslash-separated; bash's own
+path handling (`cd`, `test -f`, `[ -f ... ]`) tolerates that fine, but a guardrail that interpolates
+the SAME value into an escape-sensitive context another language/tool parses — a `node -e` JS string
+literal, a regex, `sed`, `awk`, `perl -e` — has each backslash silently consumed as an escape
+character, corrupting the path (`\2` read as an escape) and failing with a misleading downstream error
+that looks like a domain bug in the guardrail rather than harness path corruption. The conversion is
+scoped tightly: **Windows only** (a no-op everywhere else — paths are already forward-slash native),
+**bash-resolved interpreter only** (gated on the §5.2 interpreter map's resolved executable, not merely
+the `.sh` extension, so a config-overridden `.sh` interpreter that is NOT bash is unaffected — a
+PowerShell `.ps1` script keeps its native backslash form, since PowerShell's own path handling is
+backslash-native), and **`GUARDRAILS_`-prefixed keys only** — a task's own declared `action.env`
+entries (§2) are never touched, so an author's literal value is never second-guessed.
+
 ### 5.2 Interpreter map (built-in defaults)
 
 | Extension | Command line (first available wins) |
