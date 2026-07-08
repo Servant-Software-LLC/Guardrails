@@ -4,13 +4,15 @@ using Guardrails.Core.State;
 namespace Guardrails.Cli.Commands;
 
 /// <summary>
-/// <c>guardrails reset [folder] [taskId]</c>. With a task id: push that task back to
-/// <c>pending</c> (keeping its attempt history) so the next run re-executes just it.
-/// Without a task id: confirm, then delete <c>run.json</c>, <c>state.json</c>, and the logs
-/// tree, and re-seed (a full fresh slate). <c>--yes</c> skips the confirmation prompt.
-/// The folder defaults to the current directory when omitted, so <c>guardrails reset</c>
-/// resets cwd, <c>guardrails reset . &lt;taskId&gt;</c> targets a task in the current directory,
-/// and a lone positional binds to <c>folder</c>.
+/// <c>guardrails reset [folder] [taskId...]</c>. With one or more task ids: reset that set ∪ its
+/// descendants to <c>pending</c> so the next run re-executes them — and, when the set is a provably-safe
+/// trailing suffix of the harness-owned plan branch, DESTRUCTIVELY rewind the plan branch past it so the
+/// re-run forks from a clean base (issue #274 Part C, SSOT §7.2); an unsafe set is REFUSED with the
+/// blocking task named. Without a task id: confirm, then delete <c>run.json</c>, <c>state.json</c>, and
+/// the logs tree, tear down the plan branch, and re-seed (a full fresh slate). <c>--yes</c> skips the
+/// confirmation prompt. The folder defaults to the current directory when omitted, so
+/// <c>guardrails reset</c> resets cwd, <c>guardrails reset . &lt;taskId&gt;</c> targets a task in the
+/// current directory, and a lone positional binds to <c>folder</c>.
 /// </summary>
 public static class ResetCommand
 {
@@ -18,10 +20,10 @@ public static class ResetCommand
     {
         var folderArgument = FolderArgument.Create();
 
-        var taskArgument = new Argument<string?>("taskId")
+        var taskArgument = new Argument<string[]>("taskId")
         {
-            Description = "Optional task id to reset to pending (omit for a full fresh reset).",
-            Arity = ArgumentArity.ZeroOrOne
+            Description = "Optional task id(s) to reset to pending — with descendants (omit for a full fresh reset).",
+            Arity = ArgumentArity.ZeroOrMore
         };
 
         var yesOption = new Option<bool>("--yes", "-y")
@@ -29,7 +31,7 @@ public static class ResetCommand
             Description = "Skip the confirmation prompt for a full reset."
         };
 
-        var command = new Command("reset", "Reset a task to pending, or wipe runtime state for a fresh run.");
+        var command = new Command("reset", "Reset a task (and descendants) to pending, or wipe runtime state for a fresh run.");
         command.Add(folderArgument);
         command.Add(taskArgument);
         command.Add(yesOption);
@@ -37,15 +39,15 @@ public static class ResetCommand
         command.SetAction(parseResult =>
         {
             string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
-            string? taskId = parseResult.GetValue(taskArgument);
+            string[] taskIds = parseResult.GetValue(taskArgument) ?? [];
             bool yes = parseResult.GetValue(yesOption);
-            return Run(folder, taskId, yes, io);
+            return Run(folder, taskIds, yes, io);
         });
 
         return command;
     }
 
-    private static int Run(string folder, string? taskId, bool yes, IConsoleIo io)
+    private static int Run(string folder, string[] taskIds, bool yes, IConsoleIo io)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -55,22 +57,64 @@ public static class ResetCommand
             return ExitCodes.HarnessError;
         }
 
-        return string.IsNullOrWhiteSpace(taskId)
+        return taskIds.Length == 0
             ? FullReset(probe.Plan.PlanDirectory, yes, io)
-            : TaskReset(probe.Plan, taskId, io);
+            : ScopedReset(probe.Plan, taskIds, io);
     }
 
-    private static int TaskReset(Core.Model.PlanDefinition plan, string taskId, IConsoleIo io)
+    /// <summary>
+    /// Part C scoped reset (issue #274, SSOT §7.2): reset the named task(s) ∪ descendants, rewinding the
+    /// plan branch when the set is a safe trailing suffix and REFUSING (naming the blocker) otherwise.
+    /// </summary>
+    private static int ScopedReset(Core.Model.PlanDefinition plan, string[] taskIds, IConsoleIo io)
     {
-        if (RunReset.Task(plan, taskId))
-        {
-            io.Out.WriteLine($"Task '{taskId}' reset to pending. Run 'guardrails run' to re-execute it.");
-            return ExitCodes.Success;
-        }
+        string folder = Path.GetFileName(
+            plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        RunReset.ScopedResetResult result = RunReset.ScopedReset(plan, taskIds);
 
-        io.Out.WriteLine($"Task '{taskId}' is not in the run journal (run the plan first, or check the id).");
-        return ExitCodes.HarnessError;
+        switch (result.Outcome)
+        {
+            case RunReset.ScopedResetOutcome.Done:
+                string set = string.Join(", ", result.ResetTasks);
+                if (result.RewindTarget is { } target)
+                {
+                    io.Out.WriteLine(
+                        $"Rewound the plan branch past {result.ResetTasks.Count} task(s) (reset to {Short(target)}; " +
+                        "discarded commits stay recoverable via git reflog) and reset them to pending: " + set + ".");
+                }
+                else
+                {
+                    io.Out.WriteLine($"Reset {result.ResetTasks.Count} task(s) to pending: {set}.");
+                }
+
+                io.Out.WriteLine("Run 'guardrails run' to re-execute them.");
+                return ExitCodes.Success;
+
+            case RunReset.ScopedResetOutcome.Refused:
+                io.Out.WriteLine("REFUSED — the requested task(s) + descendants are NOT a safe trailing suffix of the");
+                io.Out.WriteLine("plan branch, so rewinding them would discard work that did not change (SSOT §7.2):");
+                io.Out.WriteLine($"  {result.Refusal}");
+                if (result.BlockingTask is { } blocker)
+                {
+                    io.Out.WriteLine($"  blocking task: {blocker}");
+                }
+
+                io.Out.WriteLine($"Use 'guardrails reset {folder} -y' for a full, always-sound rebuild.");
+                return ExitCodes.TaskFailed;
+
+            case RunReset.ScopedResetOutcome.UnknownTask:
+                io.Out.WriteLine(
+                    $"Task '{result.UnknownTaskId}' is not in the run journal (run the plan first, or check the id).");
+                return ExitCodes.HarnessError;
+
+            case RunReset.ScopedResetOutcome.NoJournal:
+            default:
+                io.Out.WriteLine("No run journal yet — run the plan first before resetting a task.");
+                return ExitCodes.HarnessError;
+        }
     }
+
+    private static string Short(string sha) => sha.Length <= 8 ? sha : sha[..8];
 
     private static int FullReset(string planDirectory, bool yes, IConsoleIo io)
     {

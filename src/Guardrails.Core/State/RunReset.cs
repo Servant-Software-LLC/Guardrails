@@ -1,4 +1,5 @@
 using Guardrails.Core.Execution;
+using Guardrails.Core.Graph;
 using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
@@ -86,6 +87,161 @@ public static class RunReset
         journal.ResetTask(taskId);
         DeleteDirectoryIfExists(Path.Combine(plan.PlanDirectory, "state", "captured", taskId));
         return true;
+    }
+
+    /// <summary>The outcome of a Part C scoped reset (issue #274, SSOT §7.2).</summary>
+    public enum ScopedResetOutcome
+    {
+        /// <summary>The named set (∪ descendants) was reset — rewound off the plan branch when it formed a safe suffix, else journal-only.</summary>
+        Done,
+
+        /// <summary>The set is NOT a provably-safe trailing suffix — refused; the plan branch was left untouched.</summary>
+        Refused,
+
+        /// <summary>A named task id is unknown to the run journal — nothing was changed.</summary>
+        UnknownTask,
+
+        /// <summary>No run journal exists yet (the plan has not been run) — nothing to reset.</summary>
+        NoJournal
+    }
+
+    /// <summary>The result of <see cref="ScopedReset"/> (issue #274 Part C).</summary>
+    public sealed record ScopedResetResult
+    {
+        /// <summary>Which outcome applies.</summary>
+        public required ScopedResetOutcome Outcome { get; init; }
+
+        /// <summary>The full reset set S (named ∪ descendants), in plan order — populated on <see cref="ScopedResetOutcome.Done"/>.</summary>
+        public IReadOnlyList<string> ResetTasks { get; init; } = [];
+
+        /// <summary>The commit the plan branch was rewound to; null for a journal-only reset (serial / no plan branch).</summary>
+        public string? RewindTarget { get; init; }
+
+        /// <summary>The refusal reason, on <see cref="ScopedResetOutcome.Refused"/>.</summary>
+        public string? Refusal { get; init; }
+
+        /// <summary>The out-of-set task that blocked the rewind, on <see cref="ScopedResetOutcome.Refused"/>.</summary>
+        public string? BlockingTask { get; init; }
+
+        /// <summary>The unknown task id, on <see cref="ScopedResetOutcome.UnknownTask"/>.</summary>
+        public string? UnknownTaskId { get; init; }
+    }
+
+    /// <summary>
+    /// Part C scoped reset (issue #274, SSOT §7.2): reset the named task(s) ∪ their transitive descendants,
+    /// applying the SAME safety-check + rewind primitive as the run-time auto-resolve — the second consumer
+    /// of the one primitive. When the set is a provably-safe trailing suffix of the plan branch, DESTRUCTIVELY
+    /// rewind the plan branch past it (so a later <c>guardrails run</c> forks a clean base) and journal-reset
+    /// the set; when it is NOT (a non-suffix, an uncontained fan-in, a trailer-less commit), REFUSE and name
+    /// the blocking task — the caller points the user at the always-sound <c>guardrails reset &lt;folder&gt; -y</c>
+    /// full rebuild. In serial mode / a non-git plan folder there is no plan branch to carry a stale commit,
+    /// so it degrades to a sound journal-only reset of the set. Records a <c>manual-reset</c> entry in the
+    /// durable <c>driftResolutions[]</c> journal section whenever it resets anything.
+    /// </summary>
+    public static ScopedResetResult ScopedReset(PlanDefinition plan, IReadOnlyList<string> taskIds)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(taskIds);
+
+        if (!File.Exists(RunJournal.PathFor(plan.PlanDirectory)))
+        {
+            return new ScopedResetResult { Outcome = ScopedResetOutcome.NoJournal };
+        }
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        foreach (string id in taskIds)
+        {
+            if (!journal.Document.Tasks.ContainsKey(id))
+            {
+                return new ScopedResetResult { Outcome = ScopedResetOutcome.UnknownTask, UnknownTaskId = id };
+            }
+        }
+
+        // S = named tasks ∪ transitive descendants (a changed producer can change a consumer's inputs).
+        var graph = new DependencyGraph(plan.Tasks);
+        var set = new HashSet<string>(taskIds, StringComparer.Ordinal);
+        foreach (string id in taskIds)
+        {
+            foreach (string dependent in graph.TransitiveDependentsOf(id))
+            {
+                set.Add(dependent);
+            }
+        }
+
+        string planName = Path.GetFileName(plan.PlanDirectory);
+        string planBranch = $"guardrails/{planName}";
+        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(plan.Workspace, planBranch, set);
+
+        // Refuse floor: an unsafe rewind is never performed — the plan branch is left untouched.
+        if (decision.Outcome == SafeSuffixOutcome.Refused)
+        {
+            return new ScopedResetResult
+            {
+                Outcome = ScopedResetOutcome.Refused,
+                Refusal = decision.Refusal,
+                BlockingTask = decision.BlockingTask
+            };
+        }
+
+        // Safe: DESTRUCTIVELY rewind the plan branch past the safe suffix (reflog-recoverable). A
+        // NothingToRewind decision (serial / no plan branch) skips the rewind — the journal reset suffices.
+        if (decision is { Outcome: SafeSuffixOutcome.Safe, ResetTarget: { } target })
+        {
+            GitWorktreeProvider.RewindPlanBranch(plan.Workspace, planBranch, target);
+        }
+
+        // Journal-reset every member of S (in plan order), clearing each task's captured baseline (as the
+        // single-task RunReset.Task does), and record the per-task old→new hash audit.
+        var resolvedTasks = new List<DriftResolvedTask>();
+        var resetInOrder = new List<string>();
+        var byId = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (!set.Contains(task.Id))
+            {
+                continue;
+            }
+
+            resetInOrder.Add(task.Id);
+            DeleteDirectoryIfExists(Path.Combine(plan.PlanDirectory, "state", "captured", task.Id));
+
+            string oldHash = journal.RecordedDefinitionHash(task.Id) ?? "(none recorded)";
+            string newHash = SafeComputeHash(byId.GetValueOrDefault(task.Id));
+            journal.ResetTask(task.Id);
+            resolvedTasks.Add(new DriftResolvedTask { TaskId = task.Id, OldHash = oldHash, NewHash = newHash });
+        }
+
+        journal.RecordDriftResolution(new DriftResolution
+        {
+            Trigger = "manual-reset",
+            RewindTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null,
+            Tasks = resolvedTasks
+        });
+
+        return new ScopedResetResult
+        {
+            Outcome = ScopedResetOutcome.Done,
+            ResetTasks = resetInOrder,
+            RewindTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null
+        };
+    }
+
+    /// <summary>Compute a task's current definition hash, degrading to a sentinel on a read failure (audit only, never the gate).</summary>
+    private static string SafeComputeHash(TaskNode? task)
+    {
+        if (task is null)
+        {
+            return "(unknown)";
+        }
+
+        try
+        {
+            return TaskDefinitionHash.Compute(task);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return "(unreadable)";
+        }
     }
 
     /// <summary>

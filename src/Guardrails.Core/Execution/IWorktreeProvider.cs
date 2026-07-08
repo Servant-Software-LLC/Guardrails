@@ -148,4 +148,26 @@ public interface IWorktreeProvider
     /// durable refs.
     /// </summary>
     void PruneSalvageRefs(string taskId) { }
+
+    /// <summary>
+    /// Part C safe-auto-resolve (issue #274, SSOT §7.2): evaluate whether the drifted set
+    /// <paramref name="safeSet"/> forms a provably-safe trailing suffix of the plan branch that a
+    /// destructive <c>git reset --hard</c> can rewind past — via the pure
+    /// <see cref="SafeSuffixEvaluator"/> over the plan branch's <c>--first-parent</c> trailer history +
+    /// each merge's non-first-parent lineage (the merge-tip caveat). READ-ONLY. Default
+    /// <see cref="SafeSuffixDecision.Nothing"/> for fake/serial providers with no plan branch to rewind
+    /// (the caller then falls back to a sound journal-only reset).
+    /// </summary>
+    SafeSuffixDecision EvaluateSafeSuffix(IntegrationHandle integ, IReadOnlySet<string> safeSet) =>
+        SafeSuffixDecision.Nothing();
+
+    /// <summary>
+    /// Part C safe-auto-resolve (issue #274, SSOT §7.2): DESTRUCTIVELY rewind the plan branch to
+    /// <paramref name="resetTarget"/> (the <see cref="SafeSuffixDecision.ResetTarget"/> a prior
+    /// <see cref="EvaluateSafeSuffix"/> proved safe), physically removing the drifted suffix so the
+    /// re-run forks from a base that no longer carries the stale commits. The discarded commits stay
+    /// recoverable via the branch reflog. Called ONLY at the pre-DAG gate, before any segment worktree is
+    /// forked off the soon-to-be-rewound tip. Default no-op for fake providers.
+    /// </summary>
+    void RewindPlanBranchTo(IntegrationHandle integ, string resetTarget) { }
 }

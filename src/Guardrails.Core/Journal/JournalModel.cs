@@ -43,6 +43,17 @@ public sealed record JournalDocument
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public PlanGuardrailsSection? PlanGuardrails { get; init; }
+
+    /// <summary>
+    /// OPTIONAL durable audit of Part C safe-drift auto-resolutions (SSOT §7/§7.2, issue #274 Part C): one
+    /// entry per rewind — the rewind target commit + per rebuilt task its old→new short
+    /// <c>definitionHash</c>. Appended whether the rewind was prompted-<c>y</c>, flag-authorized
+    /// (<c>--reprocess-drift</c>), or via the manual scoped <c>reset</c>. Additive and
+    /// backward-compatible on the same terms as <see cref="PlanPreflights"/> — absent (not <c>null</c>
+    /// noise) on a plan that never resolved a drift.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Execution.DriftResolution>? DriftResolutions { get; init; }
 }
 
 /// <summary>

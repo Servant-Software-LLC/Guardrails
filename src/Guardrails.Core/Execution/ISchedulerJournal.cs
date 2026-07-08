@@ -59,4 +59,18 @@ public interface ISchedulerJournal
         string taskId, Journal.AttemptRecord attempt, Journal.TaskStatus status, long? mergeSequence = null,
         string? definitionHash = null) =>
         RecordSettle(taskId, status, mergeSequence, definitionHash);
+
+    /// <summary>
+    /// Force a task back to <c>pending</c> (keeping its attempt history), so the next scheduling wave
+    /// re-runs it — the journal half of a Part C safe-drift resolution (issue #274, SSOT §7.2). Default
+    /// no-op for fakes; <see cref="Journal.RunJournal"/> resets the real entry.
+    /// </summary>
+    void ResetTaskToPending(string taskId) { }
+
+    /// <summary>
+    /// Append a Part C drift-resolution record to the durable top-level <c>driftResolutions[]</c> journal
+    /// section (issue #274, SSOT §7/§7.2) — the audit of what a rewind discarded and why. Default no-op
+    /// for fakes; <see cref="Journal.RunJournal"/> persists it.
+    /// </summary>
+    void RecordDriftResolution(DriftResolution resolution) { }
 }

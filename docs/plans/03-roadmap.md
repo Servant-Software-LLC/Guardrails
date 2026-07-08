@@ -80,6 +80,14 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   already-`succeeded` task's definition now HALTS (exit 2) with an itemized `RunReport.DefinitionDrift` —
   old→new hash, best-effort per-file added/removed/modified breakdown, reference `git diff`, and the
   transitive-descendant set — instead of silently reusing the stale segment. **Part C — the safety-check +
-  destructive plan-branch rewind primitive, exposed as manual scoped `reset <folder> <taskId>` AND opt-in
-  run-time auto-resolve of the safe (trailing-suffix) set: DEFERRED to its own design→draft-PR review**
-  (destructive/load-bearing — auto-invalidating a fan-in descendant is unsound, which is why Part A halts).
+  destructive plan-branch rewind primitive: SHIPPED.** One pure, matrix-tested predicate
+  (`SafeSuffixEvaluator`) decides whether the drifted set ∪ its descendants forms a provably-safe trailing
+  suffix of the plan branch's `--first-parent` trailer history (honoring the merge-tip caveat: a fan-in
+  whose merged-in upstreams aren't in the set is refused); when safe, the plan branch is physically rewound
+  (`git reset --hard`, reflog-recoverable) past the stale commits and the set journal-reset to re-run.
+  **Two consumers:** run-time auto-resolve (`driftPolicy` — `"prompt"` default prompts interactively /
+  halts in CI, `"reprocess"` / `--reprocess-drift` auto-resolves, `"halt"` strict) and the manual scoped
+  `reset <folder> <taskId>...` (rewinds a safe set, refuses an unsafe one). **Unsafe drift ALWAYS halts —
+  no flag authorizes an unsound rewind** (auto-invalidating a fan-in descendant off a stale-carrying base
+  is the unsoundness Part A halted on). Auto-resolved runs return the normal exit code + a durable
+  `driftResolutions[]` audit; only a declined/refused drift is the exit-2 `DefinitionDrift` halt.

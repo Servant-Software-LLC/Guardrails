@@ -38,6 +38,11 @@ public sealed class Scheduler
 
     private readonly IAiMergeWorker? _aiMergeWorker;
 
+    // Part C (#274, SSOT §7.2): when true, a Prompt-policy safe drift is treated as pre-authorized (the
+    // CLI already prompted the operator OUTSIDE the live region and got a `y`). Core never prompts
+    // itself, so without this a Prompt-policy safe drift HALTS. Reprocess auto-resolves regardless.
+    private readonly bool _driftPreConfirmed;
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -46,7 +51,8 @@ public sealed class Scheduler
         IRunObserver? observer = null,
         int? maxParallelism = null,
         IReVerifier? reVerifier = null,
-        IAiMergeWorker? aiMergeWorker = null)
+        IAiMergeWorker? aiMergeWorker = null,
+        bool driftPreConfirmed = false)
     {
         _plan = plan;
         _executor = executor;
@@ -55,6 +61,7 @@ public sealed class Scheduler
         _observer = observer ?? IRunObserver.Null;
         _reVerifier = reVerifier;
         _aiMergeWorker = aiMergeWorker;
+        _driftPreConfirmed = driftPreConfirmed;
 
         int requested = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
 
@@ -141,23 +148,57 @@ public sealed class Scheduler
         // drift through.
         HashSet<string> preSettledGreen;
         List<DefinitionDriftReporter.DriftInput> drifted;
+        DriftResolution? driftResolution = null;
         try
         {
             (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords);
 
             if (drifted.Count > 0)
             {
-                // Pre-DAG halt: nothing scheduled, no skip events emitted. The integration worktree stays
-                // attached to the plan branch exactly as a normal resume leaves it (no sweep to run — no
-                // segment worktree was created).
-                return BuildReport(plan, settled, cancelled: false)
-                    with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
+                // Part C (#274, SSOT §7.2): try to AUTO-RESOLVE a provably-safe drift by physically
+                // rewinding the plan branch past the safe suffix (destructive; the floor on any ambiguity
+                // is HALT). An unsafe drift, a strict "halt" policy, or an unconfirmed "prompt" policy all
+                // fall through to the Part A halt below — nothing scheduled, the rich per-file report.
+                driftResolution = TryResolveDrift(plan, graph, drifted, integ);
+
+                if (driftResolution is null)
+                {
+                    return BuildReport(plan, settled, cancelled: false)
+                        with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
+                }
+
+                // Resolved: audit (durable journal section + live observer), then re-derive the
+                // pre-settle-green set now that S is journal-reset to pending AND rewound off the branch —
+                // so the safe suffix schedules and re-runs, and a clean re-detect confirms no drift remains.
+                _journal.RecordDriftResolution(driftResolution);
+                _observer.DriftResolved(driftResolution);
+
+                if (_worktreeProvider is { } wpAfter && integ is { } integAfter)
+                {
+                    planBranchRecords = wpAfter.ReconcileFromPlanBranch(integAfter);
+                }
+
+                (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords);
+                if (drifted.Count > 0)
+                {
+                    // Defensive: a correct rewind clears every drift. If any residual survives, halt
+                    // honestly rather than proceed on an unproven base.
+                    return BuildReport(plan, settled, cancelled: false)
+                        with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
+                }
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
                 with { Abort = BuildDefinitionReadAbort(ex) };
+        }
+        catch (InvalidOperationException ex)
+        {
+            // A git failure during the DESTRUCTIVE Part C rewind (or the read-only history walk) — surface
+            // it as an honest infrastructure abort (exit 1), never a raw stack trace as the headline.
+            return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                with { Abort = BuildAbort(ex) };
         }
 
         // No drift: emit the resume skips for the pre-settled-green candidates (plan order).
@@ -261,7 +302,8 @@ public sealed class Scheduler
             return abortReport;
         }
 
-        RunReport report = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested);
+        RunReport report = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+            with { DriftResolution = driftResolution };
 
         // --- C1 terminal whole-repo integration gate (§3.3/§4a) --------------------------
         // After every task settles green, re-run the run's integration-guardrail set on the
@@ -369,6 +411,134 @@ public sealed class Scheduler
         }
 
         return (preSettledGreen, drifted);
+    }
+
+    /// <summary>
+    /// Part C safe-auto-resolve (issue #274, SSOT §7.2). The drifted set <c>S</c> = the drifted tasks ∪
+    /// their <see cref="DependencyGraph.TransitiveDependentsOf"/> closure (a changed producer can change a
+    /// consumer's inputs). Evaluate whether <c>S</c> forms a provably-safe trailing suffix of the plan
+    /// branch (<see cref="SafeSuffixEvaluator"/> via the provider), then apply the gating:
+    /// <list type="bullet">
+    ///   <item>UNSAFE (Refused) → <c>null</c> (HALT). No policy authorizes an unsound rewind.</item>
+    ///   <item><see cref="DriftPolicy.Halt"/> → <c>null</c> (strict opt-out, the Part A behavior).</item>
+    ///   <item><see cref="DriftPolicy.Reprocess"/> → resolve, no prompt (pre-authorized spend).</item>
+    ///   <item><see cref="DriftPolicy.Prompt"/> → resolve ONLY when <see cref="_driftPreConfirmed"/> (the
+    ///     CLI prompted OUTSIDE the live region and got a <c>y</c>); otherwise <c>null</c> (Core never
+    ///     prompts — a non-interactive / unconfirmed run halts).</item>
+    /// </list>
+    /// When it resolves: DESTRUCTIVELY rewind the plan branch to the safe target (worktree mode; a
+    /// journal-only reset when there is no physical suffix, which is sound in serial mode), journal-reset
+    /// every member of <c>S</c> to <c>pending</c>, and return the audit record. Returns <c>null</c> to
+    /// mean "halt with the Part A report".
+    /// </summary>
+    private DriftResolution? TryResolveDrift(
+        PlanDefinition plan,
+        DependencyGraph graph,
+        List<DefinitionDriftReporter.DriftInput> drifted,
+        IntegrationHandle? integ)
+    {
+        // S = drifted ∪ transitive descendants.
+        var safeSet = new HashSet<string>(StringComparer.Ordinal);
+        foreach (DefinitionDriftReporter.DriftInput d in drifted)
+        {
+            safeSet.Add(d.TaskId);
+            foreach (string dependent in graph.TransitiveDependentsOf(d.TaskId))
+            {
+                safeSet.Add(dependent);
+            }
+        }
+
+        // Safety check against the plan branch. Serial / no-provider → NothingToRewind (a journal-only
+        // reset is sound where there is no branch to carry a stale commit).
+        SafeSuffixDecision decision = _worktreeProvider is { } provider && integ is { } activeInteg
+            ? provider.EvaluateSafeSuffix(activeInteg, safeSet)
+            : SafeSuffixDecision.Nothing();
+
+        // Refuse floor (un-overridable): an unsafe rewind ALWAYS halts, regardless of policy.
+        if (decision.Outcome == SafeSuffixOutcome.Refused)
+        {
+            return null;
+        }
+
+        // Authorization gate (only a provably-safe / nothing-to-rewind drift reaches here).
+        string trigger;
+        switch (_plan.Config.DriftPolicy)
+        {
+            case DriftPolicy.Reprocess:
+                trigger = "reprocess";
+                break;
+            case DriftPolicy.Prompt when _driftPreConfirmed:
+                trigger = "prompt";
+                break;
+            default: // Halt, or an unconfirmed Prompt policy — Core never prompts.
+                return null;
+        }
+
+        // DESTRUCTIVE rewind when there is a physical suffix to remove; discarded commits stay in the
+        // reflog. A NothingToRewind decision skips the git reset — the journal reset below suffices.
+        if (decision is { Outcome: SafeSuffixOutcome.Safe, ResetTarget: { } target }
+            && _worktreeProvider is { } rewindProvider && integ is { } rewindInteg)
+        {
+            rewindProvider.RewindPlanBranchTo(rewindInteg, target);
+        }
+
+        // Journal-reset every member of S so the next scheduling wave re-runs it from the clean base.
+        foreach (string taskId in safeSet)
+        {
+            _journal.ResetTaskToPending(taskId);
+        }
+
+        return new DriftResolution
+        {
+            Trigger = trigger,
+            RewindTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null,
+            Tasks = BuildResolvedTasks(plan, drifted, safeSet)
+        };
+    }
+
+    /// <summary>
+    /// Build the per-task old→new definition-hash audit for a Part C resolution (issue #274): a drifted
+    /// task carries the hash pair the drift check already computed; a rebuilt descendant carries its
+    /// last-recorded hash (or a sentinel when none) → its current on-disk hash. Emitted in plan order.
+    /// </summary>
+    private IReadOnlyList<DriftResolvedTask> BuildResolvedTasks(
+        PlanDefinition plan, List<DefinitionDriftReporter.DriftInput> drifted, IReadOnlySet<string> safeSet)
+    {
+        var driftById = drifted.ToDictionary(d => d.TaskId, StringComparer.Ordinal);
+        var resolved = new List<DriftResolvedTask>();
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (!safeSet.Contains(task.Id))
+            {
+                continue;
+            }
+
+            if (driftById.TryGetValue(task.Id, out DefinitionDriftReporter.DriftInput input))
+            {
+                resolved.Add(new DriftResolvedTask { TaskId = task.Id, OldHash = input.OldHash, NewHash = input.NewHash });
+            }
+            else
+            {
+                // A rebuilt descendant that did not itself drift: report its recorded → current hash. This
+                // runs AFTER the rewind + journal-reset, so a read failure here must NOT throw (which would
+                // abort a run whose branch is already rewound) — the audit degrades to a sentinel instead.
+                string oldHash = _journal.RecordedDefinitionHash(task.Id) ?? "(none recorded)";
+                string newHash;
+                try
+                {
+                    newHash = Journal.TaskDefinitionHash.Compute(task);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    newHash = "(unreadable)";
+                }
+
+                resolved.Add(new DriftResolvedTask { TaskId = task.Id, OldHash = oldHash, NewHash = newHash });
+            }
+        }
+
+        return resolved;
     }
 
     /// <summary>

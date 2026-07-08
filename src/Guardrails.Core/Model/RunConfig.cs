@@ -87,6 +87,17 @@ public sealed record RunConfig
     /// </summary>
     public bool TriageAutoFile { get; init; }
 
+    /// <summary>
+    /// How a resume handles a PROVABLY-SAFE definition drift on an already-<c>succeeded</c> task (SSOT
+    /// §2/§7.2, issue #274 Part C). Default <see cref="Model.DriftPolicy.Prompt"/>: prompt in an
+    /// interactive TTY, halt when non-interactive. <see cref="Model.DriftPolicy.Reprocess"/> (CLI
+    /// <c>--reprocess-drift</c> overrides to this) auto-resolves with no prompt;
+    /// <see cref="Model.DriftPolicy.Halt"/> always halts (the strict Part A behavior). An UNSAFE drift
+    /// always halts regardless. An unrecognized JSON value is a validation error
+    /// (<see cref="Loading.DiagnosticCodes.InvalidDriftPolicy"/>).
+    /// </summary>
+    public DriftPolicy DriftPolicy { get; init; } = DriftPolicy.Prompt;
+
     /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
     public string? DefaultPromptRunner { get; init; }
 

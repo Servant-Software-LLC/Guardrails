@@ -70,6 +70,16 @@ public interface IRunObserver
     /// </summary>
     void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) { }
 
+    /// <summary>
+    /// A Part C safe definition-drift was auto-resolved at the pre-DAG gate (issue #274, SSOT §7.2): the
+    /// plan branch was rewound past the provably-safe drifted suffix and its tasks journal-reset to
+    /// re-run. Surfaced so an operator/live UI sees exactly what the rewind rebuilt, with the same
+    /// per-task old→new hash payload the durable <c>driftResolutions[]</c> journal section records. NOT a
+    /// failure — the run then proceeds and returns the normal exit code. Default no-op so non-CLI
+    /// observers need not handle it.
+    /// </summary>
+    void DriftResolved(DriftResolution resolution) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 
