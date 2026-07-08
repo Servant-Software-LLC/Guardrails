@@ -437,12 +437,25 @@ semantic duplicate (e.g. a duplicate class/member) with **no textual conflict ma
 build gate. The harness does NOT (and cannot generically) detect the semantic duplicate — that is the build
 guardrail's job, and the union-guardrail prevention is authoring-side (§4.3 "Accepted residual"). What the
 harness DOES is **attribution**: the gate-failure diagnosis enumerates every task pair whose `writeScope`s
-overlap and names the shared path(s), so a human immediately sees *"this looks like a merge collision between
-task A and task B on `<file>`"* rather than a bare build error. In the terminal phase the hint is journaled to
-the OPTIONAL `planGuardrails.collisionHint` field (§7) and echoed in the `run` command's terminal-halt block.
-The hint is advisory and structural — derived PURELY from the `writeScope`-overlap topology (never the
-compiler error text / a CS-code), and **added only when two or more `writeScope`s overlap** (nothing is
-appended for a plan with disjoint scopes).
+overlap and names the shared path(s). In the terminal phase the hint is journaled to the OPTIONAL
+`planGuardrails.collisionHint` field (§7) and echoed in the `run` command's terminal-halt block. The hint is
+advisory and structural — derived PURELY from the `writeScope`-overlap topology (never the compiler error
+text / a CS-code), and **added only when two or more `writeScope`s overlap** (nothing is appended for a plan
+with disjoint scopes).
+
+**The hint is HEDGED, not a confident assertion (issue #272 Part 2).** Mere `writeScope` overlap is a WEAK
+signal: a TDD **stub+impl pair overlaps by design** (the impl overwrites the stub) and such overlaps merge
+cleanly the overwhelming majority of the time. The pre-#272 wording led with a confident *"this may be a
+merge collision"*, which sent triage down the wrong path when the merge was in fact clean and the failure
+unrelated (the #272 repro: a Playwright glob + a missing fixture, wrongly blamed on overlap). There is **no
+clean runtime evidence to gate the hint on** — by the time it fires on the merged HEAD, a real duplicate
+carries no conflict marker (a `git diff --check` would have caught one at merge time), and detecting the
+semantic duplicate is out of scope (the build guardrail's job). So the hint is **reframed hedged**: it states
+that overlaps are EXPECTED for a stub+impl pair (a weak structural signal, not evidence a collision occurred),
+names the **reported failure detail as the PRIMARY signal**, and offers the overlapping pairs as a possibility
+to verify only IF that detail looks merge-related. A confident-but-wrong hint is worse than none; a hedged one
+keeps the useful attribution without asserting a usually-wrong cause. (The failure detail it points at is
+itself now the actionable tail — see §7's plan-gate `reason` contract, #272 Part 1.)
 
 ### 3.4 Write-scope check (`writeScope`)
 
@@ -1077,11 +1090,15 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   "planGuardrails": {                    // the TERMINAL <plan>/guardrails/ gate on the merged HEAD (OUTSIDE tasks{})
     "status": "plan-guardrail-failed",  // passed | plan-guardrail-failed
     "planHash": "sha256:…",
-    "failedChecks": [ { "name": "whole-repo-build", "reason": "CS0111 duplicate member from a merge collision" } ],
+    // reason = the TAIL of the failed check's stdout (the #179-style re-emitted failure detail), NOT the
+    // FIRST line (§7 plan-gate reason contract, #272 Part 1) — so npm-ci/dotnet-restore preamble noise
+    // never masquerades as the reason.
+    "failedChecks": [ { "name": "whole-repo-build", "reason": "…\nCS0111 duplicate member 'Launcher.Run'" } ],
     // OPTIONAL #175/#205 merge-collision advisory — present only on failure when ≥2 tasks have
     // OVERLAPPING writeScope on a shared file; names the offending task pair(s) + shared path(s). ABSENT
-    // (never null noise) when the gate passed or no two writeScopes overlap.
-    "collisionHint": "This may be a merge collision: … '07-…' & '09-…' (shared: Launcher.cs)"
+    // (never null noise) when the gate passed or no two writeScopes overlap. HEDGED, not a confident
+    // assertion (§3.4, #272 Part 2): overlap is a WEAK signal, the failure detail is the primary one.
+    "collisionHint": "Overlapping writeScopes exist between these task pairs — EXPECTED for a TDD stub+impl pair … the reported failure detail is the PRIMARY signal … '07-…' & '09-…' (shared: Launcher.cs)"
   }
 }
 ```
@@ -1160,6 +1177,18 @@ them; they are absent, never `null` noise), and the existing `tasks{}` shape is 
   `<plan>/guardrails/` gate evaluated on the merged plan-branch HEAD. `status` is `passed` or
   **`plan-guardrail-failed`** (the terminal gate failed → exit 2). `failedChecks[]` are the failed
   guardrails (`{ "name", "reason" }`, the same shape as a task attempt's `failedGuardrails`).
+
+**Plan-gate `reason` = the TAIL of the check's stdout, not the first line (#272 Part 1, the plan-level
+analogue of #179).** For BOTH plan-phase sections above, a failed check's `reason` carries the **last
+non-empty lines** of the check's stdout (bounded; stderr tail, then `exit code N`, as fallbacks) — the place
+the #179 convention re-emits the ACTUAL failure detail. It is deliberately NOT the FIRST line: a plan gate
+frequently does preamble work that writes to stdout (an `npm ci`, a `dotnet restore`, an `echo`), and the
+pre-#272 first-line extraction surfaced that preamble (`added 464 packages…`) as the reason while hiding the
+real cause. Unlike a task-level guardrail — whose one-line reason is a UI label while its FULL output is
+carried separately into `feedback.md`'s tail (§8) — a plan gate does not retry and composes no feedback, so
+the `reason` is the ONLY operator (and #269 overwatcher) signal and must carry the detail itself. The `run`
+command's terminal-halt block prints a multi-line reason with the continuation lines indented under
+`FAILED: <name> — …`.
 
 **Pre-DAG resume SKIP rule (the B1 fix).** The pre-DAG `planPreflights` phase runs BEFORE the Scheduler
 builds any wave, evaluating `<plan>/preflights/` against the run's STARTING bytes (the integration

@@ -16,10 +16,20 @@ public static class WriteScope
     /// The #175 merge-collision advisory (SSOT §3.3): scan <paramref name="plan"/> for every pair of
     /// tasks whose <c>writeScope</c>s OVERLAP on a shared path, and describe each pair + its shared
     /// file(s). Returns null when no two writeScopes overlap (no collision is possible, so the hint would
-    /// be noise). The hint is attribution ONLY — it does NOT assert a collision OCCURRED, only that these
-    /// tasks COULD have collided on the shared file, which is exactly the structural signal a human needs
-    /// to triage a duplicate-definition build break a textual merge could not catch. Derived PURELY from
-    /// the writeScope-overlap topology (never the compiler error text / a CS-code).
+    /// be noise).
+    /// <para>
+    /// <b>Hedged, not confident (issue #272 Part 2).</b> Mere writeScope overlap is a WEAK signal — a
+    /// stub+impl TDD pair OVERLAPS BY DESIGN (the impl overwrites the stub), and such overlaps merge
+    /// cleanly the overwhelming majority of the time. Firing a confident <i>"this IS a merge collision"</i>
+    /// on every gate failure with overlapping scopes sent real triage down the wrong path when the merge
+    /// was in fact clean and the failure unrelated (the #272 repro: a Playwright glob + a missing fixture,
+    /// wrongly blamed on overlap). The harness cannot detect the semantic duplicate itself (that is the
+    /// build guardrail's job) and, by the time this fires on the merged HEAD, a real duplicate carries NO
+    /// textual conflict marker — so there is no clean runtime evidence to gate on. The hint therefore
+    /// frames the overlap as a POSSIBILITY to verify only if the (now #272-Part-1-fixed) failure detail
+    /// looks merge-related, and names the reported failure detail as the PRIMARY signal — attribution that
+    /// helps when relevant without asserting a cause that is usually wrong.
+    /// </para>
     /// <para>
     /// Shared by BOTH terminal-gate paths so the attribution is identical whichever fires: the legacy
     /// per-task <c>integrationGate</c> sink (<c>Scheduler.WithTerminalGateFailure</c>) and the four-folder
@@ -52,9 +62,12 @@ public static class WriteScope
             return null;
         }
 
-        return "This may be a merge collision: the following task pairs have OVERLAPPING writeScopes on a " +
-               "shared file, so an AI/3-way merge could have combined both contributions into a semantic " +
-               $"duplicate (e.g. a duplicate class/member) that only the build/test gate catches — {string.Join("; ", pairs)}";
+        return "Overlapping writeScopes exist between these task pairs — EXPECTED for a TDD stub+impl pair " +
+               "(the later task overwrites the stub), so this is a WEAK structural signal, NOT evidence that a " +
+               "collision occurred. The reported failure detail is the PRIMARY signal; only if it looks " +
+               "merge-related (a duplicate definition an AI/3-way merge combined from both contributions, with " +
+               "no textual conflict marker) is a merge collision plausible — then verify the merged shared " +
+               $"file(s): {string.Join("; ", pairs)}";
     }
 
     /// <summary>Returns true if <paramref name="path"/> is claimed by at least one glob in <paramref name="scope"/>.</summary>

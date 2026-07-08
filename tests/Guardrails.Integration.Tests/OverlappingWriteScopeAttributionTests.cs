@@ -6,12 +6,15 @@ namespace Guardrails.Integration.Tests;
 
 /// <summary>
 /// Issue #175 — merge-collision ATTRIBUTION, ported (issue #205) onto the FOUR-FOLDER terminal phase
-/// (<see cref="PlanGuardrailPhase"/>, the <c>&lt;plan&gt;/guardrails/</c> folder). When the terminal plan-guardrail
-/// gate fails on the final merged HEAD and two tasks have OVERLAPPING <c>writeScope</c> on a shared file, the
-/// harness enriches the halt with merge-collision suspects — it names those task pairs + the shared path — so a
-/// human immediately sees "this looks like a merge collision on <c>Launcher.cs</c>" instead of a bare build
-/// error (the real plan-0009 CS0101 duplicate-class break a 3-way merge could not catch). The harness does NOT
-/// detect the semantic duplicate itself (that is the build guardrail's job); it surfaces the structural suspects.
+/// (<see cref="PlanGuardrailPhase"/>, the <c>&lt;plan&gt;/guardrails/</c> folder), REFRAMED HEDGED by #272 Part 2.
+/// When the terminal plan-guardrail gate fails on the final merged HEAD and two tasks have OVERLAPPING
+/// <c>writeScope</c> on a shared file, the harness enriches the halt with the overlapping task pairs + shared
+/// path as SUSPECTS a human can verify. #272 Part 2: mere overlap is a WEAK signal (a stub+impl TDD pair
+/// overlaps by design and usually merges cleanly), so the hint is now HEDGED — it names the pairs as a
+/// possibility to check only if the reported failure detail looks merge-related, and points at that failure
+/// detail as the PRIMARY signal — instead of the pre-#272 confident "this IS a merge collision" lead that
+/// sent triage down the wrong path on a clean merge. The harness does NOT detect the semantic duplicate
+/// itself (that is the build guardrail's job); it surfaces the structural suspects, hedged.
 ///
 /// <para>
 /// The pre-#205 fixture pinned this on the LEGACY per-task <c>integrationGate</c> / <c>Scheduler.WithTerminalGateFailure</c>
@@ -196,7 +199,10 @@ public sealed class OverlappingWriteScopeAttributionTests
     public async Task TerminalGateFails_OverlappingWriteScopes_DiagnosisNamesBothTasksAndSharedFile()
     {
         using var repo = new TempGitRepo();
-        // Both impl tasks write Launcher.cs (overlapping writeScope) — the #175 collision shape.
+        // Both impl tasks write Launcher.cs (overlapping writeScope) — the #175 shape. In this linear chain
+        // 02 simply OVERWRITES 01's Launcher.cs, so the shared file merges CLEANLY (no conflict marker, no
+        // duplicate definition) and the terminal failure is UNRELATED (a deliberate RED gate) — the exact
+        // #272 Part 2 "false-lead" scenario, so the hint must be HEDGED, not a confident collision claim.
         string planDir = CreatePlan(repo.RepoPath,
             scopeA: "Launcher.cs", fileA: "Launcher.cs",
             scopeB: "Launcher.cs", fileB: "Launcher.cs");
@@ -210,19 +216,44 @@ public sealed class OverlappingWriteScopeAttributionTests
         Assert.NotNull(doc.PlanGuardrails);
         Assert.Equal(PlanPhaseStatus.PlanGuardrailFailed, doc.PlanGuardrails!.Status);
 
-        // The #205 port: the NEW terminal phase journals the merge-collision hint naming BOTH tasks + the shared file.
+        // Proof the merge was CLEAN: the merged Launcher.cs on the plan branch has NO conflict markers and a
+        // SINGLE class definition — so a confident "this IS a merge collision" would have been a false lead.
+        string merged = TempGitRepo.Git(repo.RepoPath, "show", "guardrails/plan:Launcher.cs");
+        Assert.DoesNotContain("<<<<<<<", merged, StringComparison.Ordinal);
+        Assert.DoesNotContain(">>>>>>>", merged, StringComparison.Ordinal);
+        Assert.Equal(1, CountOccurrences(merged, "class CommanderRestImporter"));
+
+        // The #205 port + #272 Part 2: the hint still NAMES both tasks + the shared file (useful attribution),
+        // but is HEDGED — overlap is EXPECTED for a stub+impl pair, and the reported failure detail is the
+        // PRIMARY signal — NOT the confident "This may be a merge collision" lead that misdirected triage.
         string? hint = doc.PlanGuardrails!.CollisionHint;
         Assert.NotNull(hint);
-        Assert.Contains("merge collision", hint!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("This may be a merge collision", hint!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("EXPECTED", hint!, StringComparison.Ordinal);
+        Assert.Contains("PRIMARY signal", hint!, StringComparison.Ordinal);
         Assert.Contains("01-impl-a", hint!, StringComparison.Ordinal);
         Assert.Contains("02-impl-b", hint!, StringComparison.Ordinal);
         Assert.Contains("Launcher.cs", hint!, StringComparison.Ordinal);
 
-        // ...and RunCommand surfaces the same attribution inline in the console halt block.
-        Assert.Contains("merge collision", output, StringComparison.OrdinalIgnoreCase);
+        // ...and RunCommand surfaces the same hedged attribution inline — never the confident false assertion.
+        Assert.DoesNotContain("This may be a merge collision", output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PRIMARY signal", output, StringComparison.Ordinal);
         Assert.Contains("01-impl-a", output, StringComparison.Ordinal);
         Assert.Contains("02-impl-b", output, StringComparison.Ordinal);
         Assert.Contains("Launcher.cs", output, StringComparison.Ordinal);
+    }
+
+    /// <summary>Count non-overlapping occurrences of <paramref name="token"/> in <paramref name="text"/>.</summary>
+    private static int CountOccurrences(string text, string token)
+    {
+        int count = 0;
+        int idx = 0;
+        while ((idx = text.IndexOf(token, idx, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            idx += token.Length;
+        }
+        return count;
     }
 
     [Fact]
