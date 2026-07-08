@@ -18,6 +18,7 @@ A *plan folder* is generated next to its source markdown plan (`<plan-name>.md` 
 ```
 plan-name/
 ├── guardrails.json              # run configuration (§2)
+├── .gitignore                   # harness-scaffolded on first run — ignores the transient runtime set (§1)
 ├── guardrails.baseline          # OPTIONAL committed breakdown manifest (§11)
 ├── diagram.md                   # OPTIONAL generated DAG diagram — non-authored (§10)
 ├── diagram.html                 # OPTIONAL interactive local viewer — non-authored (§10)
@@ -83,6 +84,21 @@ The per-attempt log tree moves out of `state/` to a top-level `logs/` sibling, *
 `runId`** (`logs/<runId>/<task-id>/attempt-N/`), so logs are findable and a re-run's logs never
 interleave with a prior run's. `state/` holds only harness-owned mutable run state; `logs/` is
 append-only audit. `--fresh` clears `logs/` for the abandoned run.
+
+**Scaffolded `.gitignore` (issue #258).** Because the plan folder mixes committed artifacts with
+transient runtime state in one tree, a routine `git add <plan-folder>/` would otherwise stage the
+runtime state (`run.json` in particular rewrites every run and would churn the repo). At run-init the
+harness therefore scaffolds a **plan-root `.gitignore`** (`StateManager.Initialize` →
+`PlanGitignore`), listing **exactly the `RunReset.Fresh` transient set** — the plan-root `/logs/` tree
+and the `state/` runtime files `/state/run.json`, `/state/state.json`, `/state/merge-conflicts.log`,
+`/state/captured/`. The set spans BOTH scopes (plan root + `state/`), so a single `state/.gitignore`
+could not cover `logs/`; hence one plan-root file with leading-slash-anchored patterns. It is a
+**denylist** (not an allow-nothing-then-whitelist), so every committed artifact — `guardrails.json`,
+`tasks/**`, `preflights/**`, `guardrails/**`, `guardrails.baseline`, `state/seed.json`,
+`state/guardrails-review.json` — stays tracked by default. The scaffold is **non-clobbering** (a
+hand-authored `.gitignore` is left untouched) and idempotent, and fires for every plan including
+hand-authored ones. Relocating runtime state out of the committed folder is a separate, larger
+decision (issue #275) and is deliberately NOT done here.
 
 ---
 

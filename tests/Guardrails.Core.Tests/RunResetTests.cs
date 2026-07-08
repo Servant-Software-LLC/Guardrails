@@ -94,6 +94,20 @@ public sealed class RunResetTests : IDisposable
     }
 
     [Fact]
+    public void Fresh_ScaffoldsPlanRootGitignore()
+    {
+        // --fresh re-seeds through StateManager.Initialize, which scaffolds the plan-root .gitignore
+        // (issue #258). A fresh slate must therefore also (re-)protect the plan folder from committing
+        // transient runtime state, not just clear the old state.
+        RunReset.Fresh(_planDir);
+
+        string gitignore = Path.Combine(_planDir, ".gitignore");
+        Assert.True(File.Exists(gitignore),
+            "--fresh must scaffold the plan-root .gitignore that ignores the transient runtime set (#258)");
+        Assert.Equal(PlanGitignore.Content, File.ReadAllText(gitignore));
+    }
+
+    [Fact]
     public void ResetTask_ClearsThatTasksCapturedSubdir_OnlyItsOwn()
     {
         // A journal must exist with the task for RunReset.Task to act.
