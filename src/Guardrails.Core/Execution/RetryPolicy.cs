@@ -236,15 +236,21 @@ public static class RetryPolicy
     {
         var text = new StringBuilder();
 
-        // A tests-untouched failure means the agent gamed a tests-pass guardrail by editing the authored
-        // tests; the harness restored them, so its work must NOT be offered back for salvage (that would
-        // re-introduce the gamed edits) and its dedicated block below is the authoritative guidance — so
-        // the header stays neutral (no rollback/salvage disposition) for that special case.
-        bool testsUntouchedFailed = results.Any(r => !r.Passed && IsTestsUntouched(r.Name));
+        // A tests-untouched (protected-artifact) failure means the agent gamed a check by editing a
+        // protected upstream file. TaskExecutor already SUPPRESSES the salvage stash AT CREATION for this
+        // case (issue #306 review WEAK-1) — so salvageRef arrives null and nothing is offered — but we
+        // re-derive the signal here as belt-and-suspenders (a caller passing a stale ref must still not
+        // have it advertised) and to gate the dedicated block below. NOTE: the actual guarantee that a
+        // gamed edit can never reach green is the DETERMINISTIC per-attempt re-check (write-scope + this
+        // task's guardrails, re-run on every attempt's FINAL state); this suppression is defense-in-depth
+        // (don't hand back / advertise the gamed patch), not the load-bearing safety property.
+        bool testsUntouchedFailed = results.Any(r => !r.Passed && GuardrailArchetypes.IsProtectedArtifactCheck(r.Name));
         SalvageRef? effectiveSalvage = testsUntouchedFailed ? null : salvageRef;
-        bool headerRollback = !testsUntouchedFailed && fileWritesRolledBack;
 
-        AppendHeader(text, task, attempt, task.Action.Kind, headerRollback, effectiveSalvage);
+        // WEAK-3: the header is mode-aware even on the tests-untouched path — in worktree mode the F2
+        // reset discarded the WHOLE tree (not just the restored test file), so with no salvage offered
+        // this yields the honest "rolled back, re-author" header rather than a false "keep what works".
+        AppendHeader(text, task, attempt, task.Action.Kind, fileWritesRolledBack, effectiveSalvage);
         text.AppendLine("## Failed guardrails");
 
         foreach (GuardrailResult failed in results.Where(r => !r.Passed))
@@ -333,10 +339,6 @@ public static class RetryPolicy
         text.AppendLine();
         text.AppendLine("The ✅ guardrails already pass — do not break them. Fix only the ❌ ones (full detail above).");
     }
-
-    /// <summary>A guardrail whose name marks it as a tests-untouched check (doctrine: <c>NN-tests-untouched</c>).</summary>
-    private static bool IsTestsUntouched(string name) =>
-        name.Contains("untouched", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Compose feedback for an attempt rejected because its state fragment was invalid (SSOT §6.2).
@@ -454,8 +456,8 @@ public static class RetryPolicy
             text.AppendLine("  attempt on top of the clean base. (Or open that patch file to read exactly what changed.)");
         }
 
-        text.AppendLine($"- Pull in ONE file that is correct as-is: `git checkout {salvageRef.RefName} -- <path>`.");
-        text.AppendLine($"- Inspect before adopting: `git show --stat {salvageRef.RefName}` or `git diff <taskBase> {salvageRef.RefName}`.");
+        text.AppendLine($"- Pull in ONE file that is correct as-is: `git checkout \"{salvageRef.RefName}\" -- <path>`.");
+        text.AppendLine($"- Inspect before adopting: `git show --stat \"{salvageRef.RefName}\"` or `git diff <taskBase> \"{salvageRef.RefName}\"`.");
         text.AppendLine("- Re-author, from scratch, only what is INCOMPLETE or wrong — judge each file; do not blindly");
         text.AppendLine("  restore everything.");
 

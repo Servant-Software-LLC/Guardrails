@@ -78,7 +78,7 @@ public sealed class RetryPolicyTests
         // The stash is exposed directly as an applyable patch AND a per-file ref (all/some/none).
         Assert.Contains("## Prior attempt work is salvageable", feedback);
         Assert.Contains("git apply \"/plan/logs/run/10-author-tests/attempt-1/prior-attempt.patch\"", feedback);
-        Assert.Contains("git checkout refs/guardrails/10-author-tests/attempt-1 -- <path>", feedback);
+        Assert.Contains("git checkout \"refs/guardrails/10-author-tests/attempt-1\" -- <path>", feedback);
         // The per-guardrail verdicts tell it exactly what already passes.
         Assert.Contains("- ✅ 01-imports-clean", feedback);
         Assert.Contains("- ✅ 02-tests-fail-on-stubs", feedback);
@@ -108,16 +108,19 @@ public sealed class RetryPolicyTests
         Assert.Contains("- ❌ 02-tests — 1 failed", feedback);
     }
 
-    [Fact]
-    public void GuardrailFailures_TestsUntouched_NeverOffersSalvage_EvenWhenStashed()
+    [Theory]
+    [InlineData("03-tests-untouched")]     // the doctrine archetype name
+    [InlineData("03-test-files-pristine")] // WEAK-1 fragility: the bare "untouched" substring MISSED this
+    public void GuardrailFailures_ProtectedArtifactCheck_NeverAdvertisesSalvage_EvenWhenPassedAStaleRef(string guardrailName)
     {
-        // A tests-untouched failure means the agent gamed the tests; the harness restored them. Salvaging
-        // would re-introduce the gamed edits, so the stash must NOT be offered even if one was captured —
-        // the dedicated "Do NOT edit the test file(s)" block is authoritative.
+        // A protected-artifact (tests-untouched-class) failure means the agent gamed the check by editing
+        // a protected file; salvaging would re-introduce the gamed edits. The feedback must never advertise
+        // the stash even if a caller passes a stale ref (defense-in-depth; TaskExecutor also suppresses it
+        // at creation). Both the doctrine name AND a synonym the old substring missed are covered.
         var results = new List<GuardrailResult>
         {
             new() { Name = "02-tests-pass", Passed = true },
-            new() { Name = "03-tests-untouched", Passed = false, Reason = "Foo.test.ts modified" }
+            new() { Name = guardrailName, Passed = false, Reason = "Foo.test.ts modified" }
         };
         var salvage = new SalvageRef("refs/guardrails/07-impl/attempt-1", " x | 1 +", Attempt: 1, PatchPath: "/p.patch");
 
@@ -128,6 +131,10 @@ public sealed class RetryPolicyTests
         Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
         Assert.DoesNotContain("git apply", feedback);
         Assert.DoesNotContain("was SAVED, not lost", feedback);   // header not switched to salvage wording
+        // WEAK-3: in worktree mode the reset discarded the WHOLE tree, so the header is honestly
+        // rolled-back-and-lost (re-author) — NOT the false persisted "keep what already works".
+        Assert.Contains("rolled back to a clean base and are NOT", feedback);
+        Assert.DoesNotContain("keep what", feedback);
     }
 
     [Fact]
@@ -177,7 +184,7 @@ public sealed class RetryPolicyTests
             Task("12-implement"), attempt: 3, fileWritesRolledBack: true, salvageRef: salvage);
 
         Assert.Contains("git apply \"/plan/logs/run/12-implement/attempt-2/prior-attempt.patch\"", feedback);
-        Assert.Contains("git checkout refs/guardrails/12-implement/attempt-2 -- <path>", feedback);
+        Assert.Contains("git checkout \"refs/guardrails/12-implement/attempt-2\" -- <path>", feedback);
     }
 
     [Fact]
@@ -549,7 +556,7 @@ public sealed class RetryPolicyTests
 
         Assert.Contains("## Prior attempt work is salvageable", feedback);
         Assert.Contains("refs/guardrails/12-implement/attempt-2", feedback);
-        Assert.Contains("git checkout refs/guardrails/12-implement/attempt-2 -- <path>", feedback);
+        Assert.Contains("git checkout \"refs/guardrails/12-implement/attempt-2\" -- <path>", feedback);
         Assert.Contains("src/Foo.cs | 40", feedback);
         Assert.Contains("writeScope", feedback);
         // The rollback disclosure still fires (files WERE rolled back from the working tree) but the

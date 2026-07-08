@@ -856,8 +856,20 @@ public sealed class TaskExecutor : ITaskExecutor
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
             // path) so the retry gets the artifact back + per-guardrail verdicts, not just a summary. The
             // clean reset is still the default base; the agent chooses how much to reuse.
-            (bool fileWritesRolledBack, SalvageRef? salvageRef) =
-                StashIfRollingBack(task, worktree, attemptNumber, isFinal);
+            //
+            // #306 review WEAK-1: EXCEPT when a protected-artifact (tests-untouched-class) guardrail
+            // failed — the attempt gamed a check by editing a protected upstream file, so its work must be
+            // genuinely UNRECOVERABLE via salvage (not merely un-advertised): suppress the stash AT
+            // CREATION so no ref/patch carrying the gamed edit is ever written. This is defense-in-depth;
+            // the deterministic per-attempt re-check on the FINAL state is the real backstop that keeps a
+            // re-introduced gamed edit from ever reaching green (GuardrailArchetypes remarks). Under
+            // failFast a cheaper guardrail may fail first so the protected check never runs — then the
+            // stash IS created, and the re-check remains the guarantee if the edit is later re-introduced.
+            bool fileWritesRolledBack = WorktreeWillReset(worktree, isFinal);
+            bool protectedArtifactGamed = failed.Any(r => GuardrailArchetypes.IsProtectedArtifactCheck(r.Name));
+            SalvageRef? salvageRef = fileWritesRolledBack && !protectedArtifactGamed
+                ? TryStashFailedAttempt(task, worktree, attemptNumber)
+                : null;
             string feedback = RetryPolicy.ForGuardrailFailures(
                 task, attemptNumber, guardrails.Results, fileWritesRolledBack, salvageRef);
             AttemptResult failedResult = _journaler.FailedAttempt(
@@ -996,10 +1008,14 @@ public sealed class TaskExecutor : ITaskExecutor
             string? patchPath = AttemptArtifacts.WriteSalvagePatch(AttemptLogDir(task.Id, attemptNumber), patch);
             return new SalvageRef(refName, diffStat, attemptNumber, patchPath);
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         {
-            // Best-effort: a preservation failure must never fail the attempt or block the existing
-            // rollback — the retry proceeds exactly as it would have before salvage existed.
+            // Best-effort: a preservation failure must NEVER fail the attempt or block the existing
+            // rollback — the retry proceeds exactly as it would have before salvage existed (it just falls
+            // back to the honest "rolled-back-and-lost" feedback). #306 review WEAK-2: the catch matches
+            // GitWorktreeProvider's sibling fault-capture sites — a git-spawn failure (git off PATH, a bad
+            // working dir, ENOMEM) surfaces as Win32Exception, not InvalidOperationException, so catching
+            // only the latter would let it escape and crash the attempt, contradicting this docstring.
             return null;
         }
     }

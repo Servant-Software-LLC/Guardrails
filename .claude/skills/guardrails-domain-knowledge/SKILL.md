@@ -238,12 +238,21 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   scope guard**: salvage now fires for **EVERY non-final worktree failure** -- guardrail-fail, action-fail,
   timeout, max-turns, output-cap, write-scope -- NOT only the two non-logic budget-exhaustion outcomes,
   because the retry agent (informed by the per-guardrail verdicts, below) decides how much to reuse. A
-  genuine no-op attempt (empty diff) is not offered a stash; **fragment-rejection** paths (invalid-fragment
-  / foreign-key) are the one documented exception (they keep the #162 re-author disclosure, not stashed).
-  Gated by `preserveAttemptsForSalvage` (`RunConfig`, default `true`). Salvaged files remain subject to the
-  task's `writeScope` -- the check is retrospective on the FINAL state regardless of how it got there.
-  Pruned on task settle-`succeeded` and on a full `--fresh` reset (a task parked at `needs-human` keeps its
-  refs for human inspection).
+  genuine no-op attempt (empty diff) is not offered a stash. **Two suppress-the-stash exceptions:**
+  (1) **fragment-rejection** paths (invalid-fragment / foreign-key) keep the #162 re-author disclosure,
+  not stashed; (2) a **protected-artifact (tests-untouched-class) guardrail failure** is suppressed AT
+  CREATION (no ref, no patch) so a gamed edit is genuinely unrecoverable via salvage -- keyed off a robust
+  archetype matcher (`GuardrailArchetypes.IsProtectedArtifactCheck`: the `tests-untouched` doctrine +
+  pristine/unchanged/unmodified/immutable/read-only synonyms, NOT a bare `"untouched"` substring). That
+  suppression is DEFENSE-IN-DEPTH only -- the real guarantee that a re-introduced gamed edit can never
+  reach green is the deterministic per-attempt re-check (write-scope + the task's own guardrails, re-run on
+  the FINAL state). Best-effort: a git-spawn fault during salvage (git off PATH -> `Win32Exception`, bad
+  dir) degrades to no-salvage, never crashes the attempt. The `prior-attempt.patch` routes through the same
+  `SegmentStaging` reconstructable-exclusions as the segment commit (#280) -- `node_modules` / `.guardrails-*`
+  never bloat the patch -- via the throwaway index. Gated by `preserveAttemptsForSalvage` (`RunConfig`,
+  default `true`). Salvaged files remain subject to the task's `writeScope` -- the check is retrospective on
+  the FINAL state regardless of how it got there. Pruned on task settle-`succeeded` and on a full `--fresh`
+  reset (a task parked at `needs-human` keeps its refs for human inspection).
 - **Per-guardrail verdicts + honest retry messaging (#306, closes the #167 gap)**: a guardrail-failure
   `feedback.md` carries a "## Prior attempt: guardrail verdicts" ledger -- every guardrail marked ✅ (passed,
   do not break) or ❌ (failed, with its reason) -- so a one-token miss becomes a one-token fix, not a
@@ -567,7 +576,12 @@ BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
   closing the #167 gap where guardrail-fail/action-fail/write-scope headers falsely claimed "keep what
   already works" after a reset. Clean-slate reset to `taskBase` stays the DEFAULT; stash is opt-in for the
   agent. Fragment-rejection paths (invalid-fragment/foreign-key) keep the #162 re-author disclosure and are
-  NOT stashed (documented exception). Serial mode unchanged (writes persist). Code: `TaskExecutor.TryStashFailedAttempt`
-  / `StashIfRollingBack`, `GitWorktreeProvider.DiffAgainstBase`, `AttemptArtifacts.WriteSalvagePatch`,
-  `RetryPolicy` (rollback/salvage-aware `AppendHeader` + `AppendVerdictLedger` + `AppendSalvageSection`),
-  `SalvageRef.PatchPath`.
+  NOT stashed (documented exception). A **protected-artifact (tests-untouched-class) guardrail failure** is
+  also suppressed AT CREATION (no ref/patch — gamed edits unrecoverable via salvage) via robust archetype
+  matching (`GuardrailArchetypes.IsProtectedArtifactCheck`, NOT a bare `"untouched"` substring); this is
+  defense-in-depth — the deterministic per-attempt re-check is the real backstop. Salvage git faults are
+  best-effort (`Win32Exception` included), never crash; the patch excludes `SegmentStaging` reconstructable
+  dirs (#280). Serial mode unchanged (writes persist). Code: `TaskExecutor.TryStashFailedAttempt`
+  / `StashIfRollingBack`, `GuardrailArchetypes`, `GitWorktreeProvider.DiffAgainstBase`,
+  `AttemptArtifacts.WriteSalvagePatch`, `RetryPolicy` (rollback/salvage-aware `AppendHeader` +
+  `AppendVerdictLedger` + `AppendSalvageSection`), `SalvageRef.PatchPath`.

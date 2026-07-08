@@ -23,9 +23,12 @@ namespace Guardrails.Core.Execution;
 /// staying put; per-worktree dependency reconstruction (#259) is complementary.
 /// </para>
 /// <para>
-/// <b>Deliberately NOT applied to <see cref="GitWorktreeProvider.PreserveAttemptToRef"/></b> — that is
-/// a throwaway forensic ref (the #195 retry-salvage snapshot) which is never merged, only inspected by
-/// a human, so it should capture everything.
+/// <b>Also applied to <see cref="GitWorktreeProvider.PreserveAttemptToRef"/></b> (issue #306 review
+/// NIT-2). The #195 retry-salvage snapshot was originally exempt on the grounds that it is only
+/// human-inspected — but #306 makes it an AGENT-APPLYABLE patch (<c>git apply prior-attempt.patch</c>),
+/// so the same reconstructable dirs that must stay out of a segment commit must also stay out of the
+/// salvage patch (patch-bloat + consistency). The snapshot still stages into its own THROWAWAY index
+/// (<c>GIT_INDEX_FILE</c>), so applying the exclusions there never touches the segment's real index.
 /// </para>
 /// </remarks>
 public static class SegmentStaging

@@ -392,11 +392,24 @@ about the failure and decides how much to reuse. So salvage now fires for **guar
 timeout, max-turns, output-cap, and write-scope** — every path where a non-final worktree attempt is
 about to be reset. The clean-slate reset stays the DEFAULT starting point (avoids compounding a corrupt
 partial state); the stash is opt-in for the agent. A genuine no-op attempt (empty diff vs `taskBase`) is
-NOT offered a stash (nothing to salvage). The one documented exception is the **fragment-rejection** paths
-(invalid-fragment / foreign-key, §6.2): they keep their #162 re-author disclosure and are not stashed.
-Preservation is best-effort: a git/IO failure while stashing degrades to no salvage (the feedback falls
-back to the honest "rolled back, not recoverable" wording) rather than failing the attempt or altering
-the unconditional F2 reset.
+NOT offered a stash (nothing to salvage). **Two documented exceptions, both suppressing the stash:**
+(1) the **fragment-rejection** paths (invalid-fragment / foreign-key, §6.2) keep their #162 re-author
+disclosure and are not stashed; (2) a **protected-artifact (tests-untouched-class) guardrail failure** —
+the agent gamed a check by editing a protected upstream file — is suppressed **at creation** (no ref, no
+patch), so the gamed edit is genuinely unrecoverable via salvage, not merely un-advertised. That
+suppression is keyed off a robust archetype name-matcher (the doctrine `tests-untouched` plus its
+pristine/unchanged/unmodified/immutable/read-only synonyms — NOT a bare `"untouched"` substring, which a
+`test-files-pristine` name would slip), and it is **defense-in-depth only**: the load-bearing guarantee
+that a gamed edit can never reach green is the DETERMINISTIC per-attempt re-check — the write-scope check
++ the task's own guardrails re-run on every attempt's FINAL state — which re-fails a re-introduced gamed
+edit regardless of how it got there. Under `failFast` a cheaper guardrail may fail before the protected
+check runs, so the stash is created that attempt; the re-check remains the guarantee.
+Preservation is best-effort: a git/IO failure while stashing (git off PATH → `Win32Exception`, a bad
+working dir, ENOMEM) degrades to no salvage (the feedback falls back to the honest "rolled back, not
+recoverable" wording) rather than failing the attempt or altering the unconditional F2 reset. The
+`prior-attempt.patch` routes through the same reconstructable-exclusion pathspecs as the segment commit
+(§5.3(D)) — `node_modules` / `.guardrails-*` never bloat the agent-applyable patch — but into a throwaway
+index, so the segment's real staged state is untouched.
 
 **Pruning.** A task's salvage refs are bookkeeping for THAT task's own retry loop, not a permanent
 record, so they are pruned in the two places other per-task/per-run git cleanup already happens: (1)
@@ -1859,11 +1872,12 @@ what already works" even though the worktree reset had discarded the writes):
 **Per-guardrail verdict ledger (issue #306).** A guardrail-failure `feedback.md` also carries a "## Prior
 attempt: guardrail verdicts" ledger — every guardrail that ran, marked `✅` (passed, do not break) or `❌`
 (failed, with its one-line reason) — so the retry agent sees exactly how much already passed and makes a
-TARGETED fix (a one-token miss → a one-token fix) instead of re-deriving. Suppressed on the
-tests-untouched sub-path (a gamed tests-pass must not be listed as "do not break", and its stashed work is
-not offered for salvage — that would re-introduce the gamed edits). The concrete failure detail (failed
-guardrail name + reason + output tail, or the offending write-scope paths) is unchanged — a human reads
-the script variant.
+TARGETED fix (a one-token miss → a one-token fix) instead of re-deriving. The ledger is suppressed on the
+protected-artifact (tests-untouched-class) sub-path, whose salvage stash is ALSO suppressed at creation
+(§3.2) so the gamed edit is unrecoverable via salvage — the deterministic per-attempt re-check, not the
+suppression, is what guarantees a re-introduced gamed edit can never reach green. The concrete failure
+detail (failed guardrail name + reason + output tail, or the offending write-scope paths) is unchanged —
+a human reads the script variant.
 
 `transcript.md` (and each `guardrail-<name>.transcript.md`) is a PURE, DETERMINISTIC projection of
 its `*.jsonl` stream (no model in the loop): assistant prose + `● Tool(args)` + truncated `⎿`
