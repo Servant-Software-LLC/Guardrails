@@ -208,6 +208,98 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         return GitIn(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Decision E (SSOT §14.5): commit an EMPTY marker in the integration worktree on the plan branch,
+    /// carrying the <c>Guardrails-Wave:</c> / <c>Guardrails-Wave-Hash:</c> / <c>Guardrails-Run:</c>
+    /// trailer triple. <c>--no-verify</c> for the same reason the task integration commit uses it (issue
+    /// #149): an INTERNAL plumbing commit on the harness-owned plan branch, never gated by a user git hook.
+    /// <c>--allow-empty</c> because the marker adds no tree change — it is a durable anchor, not work.
+    /// </remarks>
+    public string CommitWaveMarker(IntegrationHandle integ, string waveDir, string waveHash, CancellationToken ct)
+    {
+        string msg = $"Guardrails-Wave: {waveDir}\nGuardrails-Wave-Hash: {waveHash}\nGuardrails-Run: {integ.RunId}";
+        GitIn(integ.IntegrationWorktreePath, "commit", "--no-verify", "--allow-empty", "-m", msg);
+        return GitIn(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyDictionary<string, PlanBranchWaveRecord> ReconcileWavesFromPlanBranch(IntegrationHandle integ) =>
+        ParseWaveMarkers(Git("log", "--first-parent", TrailerLogFormat, integ.PlanBranchName));
+
+    /// <summary>
+    /// Read-only query of the plan branch's <c>Guardrails-Wave:</c> marker commits (SSOT §14.5) WITHOUT
+    /// creating an integration worktree — for the wave-scoped reset / dry-run. Degrades to the EMPTY map
+    /// (never throws) when the workspace is not a git repo, git is unavailable, or the plan branch is
+    /// absent. Static so the CLI needs no run-scoped provider.
+    /// </summary>
+    public static IReadOnlyDictionary<string, PlanBranchWaveRecord> ReadPlanBranchWaveMarkers(
+        string repoPath, string planName)
+    {
+        var empty = new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(planName))
+        {
+            return empty;
+        }
+
+        try
+        {
+            var (log, exit) = TryGitIn(repoPath, "log", "--first-parent", TrailerLogFormat, $"guardrails/{planName}");
+            return exit == 0 ? ParseWaveMarkers(log) : empty;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return empty;
+        }
+    }
+
+    /// <summary>
+    /// Parse a <see cref="TrailerLogFormat"/> first-parent log into per-wave <see cref="PlanBranchWaveRecord"/>s
+    /// (marker sha + <c>Guardrails-Wave-Hash:</c>). Newest-first, so the FIRST marker seen for a wave dir
+    /// wins (its most recent completion). Shares the record/unit separators + last-trailer-block discipline
+    /// with the task-trailer parser so a body's own blank lines can never split a record.
+    /// </summary>
+    private static IReadOnlyDictionary<string, PlanBranchWaveRecord> ParseWaveMarkers(string log)
+    {
+        char recordSep = Hashing.HashText.RecordSeparator;
+        char unitSep = Hashing.HashText.UnitSeparator;
+        var waves = new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
+
+        foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int split = record.IndexOf(unitSep);
+            if (split < 0)
+            {
+                continue;
+            }
+
+            string commitSha = record[..split].Trim();
+            string body = record[(split + 1)..];
+
+            string? waveDir = null;
+            string? waveHash = null;
+            foreach (string line in LastTrailerBlockLines(body))
+            {
+                if (line.StartsWith("Guardrails-Wave: ", StringComparison.Ordinal))
+                    waveDir = line["Guardrails-Wave: ".Length..];
+                else if (line.StartsWith("Guardrails-Wave-Hash: ", StringComparison.Ordinal))
+                    waveHash = line["Guardrails-Wave-Hash: ".Length..];
+            }
+
+            if (waveDir is null)
+            {
+                continue;
+            }
+
+            if (!waves.ContainsKey(waveDir))
+            {
+                waves[waveDir] = new PlanBranchWaveRecord(commitSha, waveHash);
+            }
+        }
+
+        return waves;
+    }
+
     /// <summary>
     /// The integration commit message carrying the parseable resume trailers
     /// (<c>Guardrails-Task:</c> / <c>Guardrails-Run:</c>), plus the OPTIONAL third
@@ -697,12 +789,22 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// <summary>
     /// The current tip sha of <paramref name="planBranch"/> (issue #274 Part C compare-and-swap). Static so
     /// the manual scoped reset can read it without a run-scoped provider. Degrades to the empty string when
-    /// the branch does not exist / git is unavailable — a non-git plan folder has no branch to CAS against.
+    /// the branch does not exist / git is unavailable / the workspace directory does not exist — a non-git
+    /// plan folder has no branch to CAS against. The <c>Win32Exception</c> catch covers a workspace path that
+    /// is not a real directory (git cannot even be spawned there), so a serial / synthetic-workspace caller
+    /// (#311 <c>RunReset.Task</c> worktree probe) never crashes — it just reads "no branch".
     /// </summary>
     public static string CurrentPlanBranchTip(string repoPath, string planBranch)
     {
-        var (stdout, exit) = TryGitIn(repoPath, "rev-parse", planBranch);
-        return exit == 0 ? stdout.Trim() : "";
+        try
+        {
+            var (stdout, exit) = TryGitIn(repoPath, "rev-parse", planBranch);
+            return exit == 0 ? stdout.Trim() : "";
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return "";
+        }
     }
 
     /// <inheritdoc />
@@ -774,9 +876,12 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     public static IReadOnlyList<TrailerCommit> GatherFirstParentHistory(string repoPath, string planBranch)
     {
         // A sha → Guardrails-Task: trailer map over EVERY reachable commit (all parents), so a merge's
-        // non-first-parent lineage commits (never on the first-parent chain) can be attributed too.
-        IReadOnlyDictionary<string, string?> taskBySha =
-            ParseShaToTask(GitIn(repoPath, "log", TrailerShaBodyFormat, planBranch));
+        // non-first-parent lineage commits (never on the first-parent chain) can be attributed too. The
+        // SAME log also yields the harness Guardrails-Wave: marker shas (#254 M2b) so the safe-suffix check
+        // can EXEMPT them from its trailer-less REFUSE (they are known bookkeeping, not human hand-fixes).
+        string trailerLog = GitIn(repoPath, "log", TrailerShaBodyFormat, planBranch);
+        IReadOnlyDictionary<string, string?> taskBySha = ParseShaToTask(trailerLog);
+        IReadOnlySet<string> waveMarkerShas = ParseWaveMarkerShas(trailerLog);
 
         // The first-parent spine: sha + its parent shas (space-separated; first is the first parent).
         string fpLog = GitIn(repoPath, "log", "--first-parent", $"--format=%H{Hashing.HashText.UnitSeparator}%P", planBranch);
@@ -805,7 +910,16 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
                 Sha = sha,
                 Task = taskBySha.GetValueOrDefault(sha),
                 ParentSha = firstParent,
-                MergedInTasks = mergedIn
+                MergedInTasks = mergedIn,
+                // A GENUINE Guardrails-Wave: marker is EMPTY (CommitWaveMarker always commits --allow-empty
+                // against a clean integration worktree). Gate the marker exemption on BOTH the trailer AND an
+                // empty tree delta vs its first parent (#311 WEAK-1): a human hand-fix that carries a
+                // Guardrails-Wave: trailer (a `git commit --amend` onto a marker tip, a copy-pasted trailer)
+                // ALWAYS changes files, so it fails the empty-tree gate → NOT classified a marker → falls
+                // through to the trailer-less REFUSE and is preserved, never silently discarded.
+                IsWaveMarker = waveMarkerShas.Contains(sha)
+                    && !string.IsNullOrEmpty(firstParent)
+                    && HasEmptyTreeDelta(repoPath, firstParent, sha)
             });
         }
 
@@ -892,6 +1006,63 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         }
 
         return map;
+    }
+
+    /// <summary>
+    /// True when <paramref name="sha"/> has an EMPTY tree delta vs <paramref name="parent"/> (#311 WEAK-1):
+    /// <c>git diff --quiet &lt;parent&gt; &lt;sha&gt;</c> exits 0 iff the two trees are identical. A genuine
+    /// <c>Guardrails-Wave:</c> marker is always empty (committed <c>--allow-empty</c> against a clean tree);
+    /// a human hand-fix changes files. FAIL-SAFE: any git error (exit ≠ 0/1, or a spawn failure) reads as
+    /// "not empty" → the commit is NOT treated as a marker → it falls through to the trailer-less REFUSE.
+    /// </summary>
+    private static bool HasEmptyTreeDelta(string repoPath, string parent, string sha)
+    {
+        try
+        {
+            var (_, exit) = TryGitIn(repoPath, "diff", "--quiet", parent, sha);
+            return exit == 0;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The set of commit shas whose LAST trailer block carries a <c>Guardrails-Wave:</c> trailer (#254 M2b) —
+    /// the CANDIDATE harness wave-marker commits. Parses the SAME <see cref="TrailerShaBodyFormat"/> log
+    /// <see cref="ParseShaToTask"/> reads, with the identical last-trailer-block discipline, so a body's own
+    /// blank lines can never split a record and a stray mention in prose never counts. The empty-tree gate
+    /// (<see cref="HasEmptyTreeDelta"/>) is applied by <see cref="GatherFirstParentHistory"/> on top of this
+    /// (#311 WEAK-1) so a hand-fix carrying the trailer but changing files is NOT exempted.
+    /// </summary>
+    private static IReadOnlySet<string> ParseWaveMarkerShas(string log)
+    {
+        char recordSep = Hashing.HashText.RecordSeparator;
+        char unitSep = Hashing.HashText.UnitSeparator;
+        var markers = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int split = record.IndexOf(unitSep);
+            if (split < 0)
+            {
+                continue;
+            }
+
+            string sha = record[..split].Trim();
+            string body = record[(split + 1)..];
+            foreach (string line in LastTrailerBlockLines(body))
+            {
+                if (line.StartsWith("Guardrails-Wave: ", StringComparison.Ordinal))
+                {
+                    markers.Add(sha);
+                    break;
+                }
+            }
+        }
+
+        return markers;
     }
 
     /// <summary>

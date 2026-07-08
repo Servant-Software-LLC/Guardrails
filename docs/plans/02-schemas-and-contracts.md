@@ -3009,9 +3009,13 @@ downstream wave is authored later.
 
 ## 14. Multi-wave plans (nested layout) — design of record `10-multi-wave-plans.md`, issue #254
 
-> **Status: PLANNED (design of record `10-multi-wave-plans.md`, in maintainer review).** The v1 skeleton is
-> specified here in present tense (the design-draft convention); the overwatcher-**driven** inter-wave
-> adjustment and bounded auto-heal are **v2 bets** (§14.9) that only need the **seam** defined in v1.
+> **Status: LANDED (v1 skeleton, M2a foundation + M2b execution loop, #254).** The nested layout/loader/
+> validator, wave-qualified identity, `WaveDefinitionHash`, and the journal `waves[]` schema landed in M2a;
+> the **wave-execution loop** (§14.4) — one continuous integration worktree + journal + plan branch across
+> waves, per-wave entry/exit gates, the `Guardrails-Wave:` marker commit, cross-wave resume, wave-level
+> drift, and wave-scoped reset — landed in M2b. `guardrails run` on a waved plan now ACTUALLY RUNS wave by
+> wave behind hard barriers (the M2a honest-halt exit-1 stub is gone). The overwatcher-**driven** inter-wave
+> adjustment and bounded auto-heal remain **v2 bets** (§14.9) that only need the **seam** defined in v1.
 
 **The recursion.** The system is `task ⊂ wave ⊂ plan`. A **wave** is a first-class **completion unit** —
 made of tasks plus its own entry/exit gates — that participates in the SAME resume + drift + reset model as
@@ -3081,15 +3085,30 @@ existing Scheduler** (whose internals — workers, `maxParallelism`, retry, need
 resume pre-pass, integration/settle — are unchanged). Per wave, in strict order:
 
 1. skip if already complete (§14.6);
-2. **[between-wave step]** v1: if the next wave is absent/empty/unreviewed → **honest halt** (exit 2) with
-   JIT-breakdown instructions pointed at the integration worktree (§14.9 v2 plugs the overwatcher in here);
-3. run the wave **entry preflight** (the §7 plan-preflight phase, scoped to the wave; skip-once-per-hash);
+2. **[between-wave step]** v1: if the next wave is **empty/unauthored** (a JIT stub with zero tasks) →
+   **honest halt** (exit 2, `RunReport.WaveHalt` kind `NextWaveUnauthored`) with JIT-breakdown instructions
+   pointed at the integration worktree (§14.9 v2 plugs the overwatcher in here). **v1 note:** the *reviewed*
+   half of the "authored **and** reviewed" checkpoint is the **advisory GR2025 nudge** (SSOT §13, a
+   plan-level warning), **not** a hard halt — consistent with the plan-level review being advisory, never
+   blocking; only an *unauthored* (empty) wave hard-halts. Making unreviewed a per-wave hard gate is a
+   deferred refinement;
+3. run the wave **entry preflight** (the §7 plan-preflight phase, scoped to the wave; skip-once — the
+   entry marker is not re-evaluated once passed, cleared by wave drift/reset);
 4. build the wave's `DependencyGraph` over its own tasks and drain it on the **continuous plan branch** via
-   the existing Scheduler;
-5. **HARD BARRIER** — full drain; any needs-human/blocked halts the run at this wave (later waves never start);
-6. run the wave **exit/terminal gate** (the §3.3 plan-guardrail phase, scoped to the wave); fail → halt;
-7. write the wave-completion marker commit (§14.5) + journal the wave complete;
+   the existing Scheduler (`Scheduler.RunWavedAsync` drives N `DrainAsync` calls that share the ONE
+   integration handle + runId + journal + `settled`/`directoryOwner` accumulators — never a fresh
+   integration/journal per wave);
+5. **HARD BARRIER** — full drain; any needs-human/blocked/failed halts the run at this wave (later waves
+   never start; their tasks are reported `blocked`);
+6. run the wave **exit/terminal gate** (the §3.3 plan-guardrail phase, scoped to the wave); fail → halt
+   (`WaveHalt` kind `ExitGateFailed`);
+7. write the wave-completion `Guardrails-Wave:` marker commit (§14.5) + journal the wave complete;
 8. next wave.
+
+After the last wave the run delivers (mergeOnSuccess) + sweeps exactly as a flat run; there is **no** legacy
+per-task terminal integration gate for a waved plan (the last wave's exit gate is the whole-plan terminal
+soundness boundary, §14.3), and a plan-root `<plan>/guardrails/` (optional-additive) runs once via the CLI
+after the run, unchanged.
 
 The `DependencyGraph`'s existing topological-level accessor is renamed **`Waves()` → `Tiers()`** (a wave
 *contains* tiers) to free the word "wave" for this plan-stage concept.
@@ -3152,17 +3171,40 @@ restricted to fully-`pending` future waves.
   all later waves (they built on it).
 - **`guardrails reset <plan> <wave>`** — wave-scoped rewind: every task in the wave + rewind the plan branch
   to the predecessor wave's marker (user HEAD for wave 1) → re-runs that wave + all downstream waves.
-- **Always-safe-suffix property:** because waves are a strict total order with **no cross-wave fan-in**, a
-  wave-scoped rewind is *always* a safe trailing suffix — the fan-in-descendant unsoundness that forces
-  task-level Part C to sometimes halt cannot arise across waves, so wave-granularity `auto` resolve is
-  unconditionally sound.
+- **Always-safe-suffix property (for pure-harness history):** because waves are a strict total order with
+  **no cross-wave fan-in**, a wave-scoped rewind of *pure-harness* history is *always* a safe trailing
+  suffix — the fan-in-descendant unsoundness that forces task-level Part C to sometimes halt cannot arise
+  across waves. **But a human commit on the plan branch is the exception** (#197 hand-fix / #311 BLOCKER): a
+  rewind must never silently discard unattributed human work. So a wave-scoped rewind **ROUTES THROUGH the
+  same `SafeSuffixEvaluator`** the task path uses (via `IWorktreeProvider.EvaluateSafeSuffix`), made
+  **marker-aware**: a `TrailerCommit.IsWaveMarker` flag EXEMPTS
+  the harness's own `Guardrails-Wave:` marker commits from the evaluator's trailer-less REFUSE, so the check
+  (a) DERIVES the reset target from the live first-parent history — always an ancestor of the tip, no
+  dangling-sha sideways reset — (b) EXEMPTS the markers so the always-safe property holds for pure-harness
+  history, and (c) still REFUSES if a trailer-less **non-marker** commit (a human hand-fix) sits in the
+  removed range. **A genuine `Guardrails-Wave:` marker is an EMPTY commit** (`CommitWaveMarker` commits
+  `--allow-empty` against a clean integration worktree). The `IsWaveMarker` classification therefore gates
+  on **BOTH** the `Guardrails-Wave:` trailer **AND an empty tree delta vs its first parent** (#311 WEAK-1):
+  a Wave-trailered **NON-empty** commit — a human `git commit --amend` onto a marker tip, or a copy-pasted
+  trailer, which by definition changes files — is NOT a marker, so it falls through to the trailer-less
+  REFUSE and is preserved (the marker exemption can never become a silent-discard hole). It reuses the Part C
+  rewind primitive (`RewindPlanBranchTo`), the crash-atomic `RewindIntent` marker (now carrying the wave
+  dirs too, so a crash-replay clears the wave entries — never a dangling `MarkerSha`), and a tip
+  compare-and-swap. On a FLAT plan there are no markers, so the flag is always false and the task-path
+  behaviour is byte-identical.
 
 ### 14.9 Phasing — v1 skeleton vs v2 bets
 
-**v1 (skeleton):** §14.1–§14.8 + the shared autonomy policy + decisions log (§2.1) exercised by wave-level
-drift and the between-wave JIT checkpoint (`prompt`/`halt` paths); per-wave diagrams; per-wave task table
-(an `IRunObserver` `WaveStarted`/`WaveCompleted` concern — no new contract). Between waves = a plain human
-JIT-breakdown/review checkpoint (proceed if the next wave is authored+reviewed, else honest halt). **v2 bets
-(deferred):** overwatcher-**driven** intelligent inter-wave adjustment (`auto`/`prompt` authoring of a
-future wave, gated by `autonomyPolicy`, re-staling that wave's review marker) and **bounded auto-heal** —
-both plug into the v1 between-wave seam and reuse §2.1 verbatim; **gated on #269's own design of record**.
+**v1 (skeleton) — LANDED (M2a + M2b):** §14.1–§14.8 + the shared autonomy policy + decisions log (§2.1)
+exercised by wave-level drift (a `boundary:"wave"` `decisions[]` entry) and the between-wave JIT checkpoint;
+the per-wave task-table concern is the `IRunObserver.WaveStarting`/`WaveFinished` events (no new contract) —
+the live table keeps rendering every wave-qualified task and segments it with a per-wave banner. Between
+waves = a plain human JIT-breakdown checkpoint (proceed if the next wave is authored, else honest halt;
+review is the advisory GR2025 nudge, §14.4 v1 note). Wave-drift `prompt` is confirmed by the CLI before the
+run (a wave-drift probe over the journal), mirroring the task-drift confirm. **Per-wave diagrams** (`graph
+<plan>/<wave>`) are the one v1 nicety **deferred** — `graph <plan>` renders the whole waved DAG (all
+wave-qualified tasks); a per-wave sub-diagram (loading a wave subfolder that has no own `guardrails.json`) is
+follow-up. **v2 bets (deferred):** overwatcher-**driven** intelligent inter-wave adjustment (`auto`/`prompt`
+authoring of a future wave, gated by `autonomyPolicy`, re-staling that wave's review marker) and **bounded
+auto-heal** — both plug into the v1 between-wave seam and reuse §2.1 verbatim; **gated on #269's own design
+of record**.

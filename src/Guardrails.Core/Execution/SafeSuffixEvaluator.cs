@@ -33,6 +33,17 @@ public sealed record TrailerCommit
     /// whose merged-in upstreams are not all in the safe set is NOT safe.
     /// </summary>
     public IReadOnlyList<string?> MergedInTasks { get; init; } = [];
+
+    /// <summary>
+    /// True when this is one of the harness's own <c>Guardrails-Wave:</c> marker commits (SSOT §14.5, #254
+    /// M2b) — an EMPTY bookkeeping commit that carries a <c>Guardrails-Wave:</c> trailer but no
+    /// <c>Guardrails-Task:</c> trailer (so <see cref="Task"/> is null). It is EXEMPT from the trailer-less
+    /// REFUSE: a marker in the rewind range is known harness work belonging to the wave(s) being rewound,
+    /// NOT an unattributed human hand-fix. This is the ONE classification change that lets a wave-scoped
+    /// rewind route through the evaluator (§14.8) while STILL refusing to discard a real trailer-less human
+    /// commit; a FLAT plan has no markers so the flag is always false and the task-path check is unchanged.
+    /// </summary>
+    public bool IsWaveMarker { get; init; }
 }
 
 /// <summary>The three outcomes of the safe-suffix check (issue #274 Part C).</summary>
@@ -160,6 +171,16 @@ public static class SafeSuffixEvaluator
         for (int i = 0; i <= oldest; i++)
         {
             TrailerCommit c = firstParentNewestFirst[i];
+
+            // A harness Guardrails-Wave: marker commit (#254 M2b) is EXEMPT from the trailer-less REFUSE:
+            // it is known bookkeeping belonging to a wave in the rewind range, not unattributed human work.
+            // This is what lets a wave-scoped rewind route through this evaluator (§14.8) while STILL
+            // refusing a real human hand-fix below. A FLAT plan never has markers (flag always false), so
+            // the task-path behaviour is unchanged.
+            if (c.IsWaveMarker)
+            {
+                continue;
+            }
 
             if (c.Task is null)
             {

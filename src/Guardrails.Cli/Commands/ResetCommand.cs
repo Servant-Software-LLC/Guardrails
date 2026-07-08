@@ -57,9 +57,84 @@ public static class ResetCommand
             return ExitCodes.HarnessError;
         }
 
-        return taskIds.Length == 0
-            ? FullReset(probe.Plan.PlanDirectory, yes, io)
-            : ScopedReset(probe.Plan, taskIds, io);
+        if (taskIds.Length == 0)
+        {
+            return FullReset(probe.Plan.PlanDirectory, yes, io);
+        }
+
+        // Wave-scoped reset (SSOT §14.8, #254 M2b): a lone positional that names a WAVE dir (not a task)
+        // rewinds that wave + all downstream waves. A wave-qualified task id (<wave>/<task>) or a flat task
+        // id falls through to the task-scoped ScopedReset.
+        if (taskIds.Length == 1 && probe.Plan.IsWaved &&
+            probe.Plan.Waves.Any(w => string.Equals(w.Dir, taskIds[0], StringComparison.Ordinal)))
+        {
+            return WaveScopedReset(probe.Plan, taskIds[0], io);
+        }
+
+        return ScopedReset(probe.Plan, taskIds, io);
+    }
+
+    /// <summary>
+    /// Part-C-style wave-scoped reset (SSOT §14.8): rewind the named wave + downstream waves off the plan
+    /// branch and journal-reset them. A wave-scoped rewind is a safe trailing suffix for PURE-HARNESS
+    /// history, but it still routes through the marker-aware <c>SafeSuffixEvaluator</c> (#311), so it CAN
+    /// REFUSE — when a trailer-less human hand-fix sits in the removed range — or report a concurrent
+    /// modification. Handles Done / Refused / ConcurrentModification / UnknownWave / NoJournal.
+    /// </summary>
+    private static int WaveScopedReset(Core.Model.PlanDefinition plan, string waveDir, IConsoleIo io)
+    {
+        string folder = Path.GetFileName(
+            plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        RunReset.WaveResetResult result = RunReset.WaveReset(plan, waveDir);
+
+        switch (result.Outcome)
+        {
+            case RunReset.WaveResetOutcome.Done:
+                string waves = string.Join(", ", result.ResetWaves);
+                if (result.RewindTarget is { } target)
+                {
+                    io.Out.WriteLine(
+                        $"Rewound the plan branch to {Short(target)} and reset {result.ResetWaves.Count} wave(s) " +
+                        $"({result.ResetTasks.Count} task(s)) to pending: {waves}.");
+                    io.Out.WriteLine(
+                        "  Discarded commits stay recoverable via git reflog UNTIL a later " +
+                        $"'guardrails run {folder} --fresh' or 'guardrails reset {folder} -y' tears the plan branch down.");
+                }
+                else
+                {
+                    io.Out.WriteLine(
+                        $"Reset {result.ResetWaves.Count} wave(s) ({result.ResetTasks.Count} task(s)) to pending: {waves}.");
+                }
+
+                io.Out.WriteLine("Run 'guardrails run' to re-execute them.");
+                return ExitCodes.Success;
+
+            case RunReset.WaveResetOutcome.Refused:
+                io.Out.WriteLine("REFUSED — the plan branch has an unattributed commit (a human hand-fix?) in the range that");
+                io.Out.WriteLine("rewinding this wave would discard, so it was left untouched (SSOT §14.8, #311):");
+                if (result.Refusal is { } refusal)
+                {
+                    io.Out.WriteLine($"  {refusal}");
+                }
+
+                io.Out.WriteLine($"Resolve the plan branch manually, or use 'guardrails reset {folder} -y' for a full rebuild.");
+                return ExitCodes.TaskFailed;
+
+            case RunReset.WaveResetOutcome.ConcurrentModification:
+                io.Out.WriteLine(
+                    "The plan branch changed while the reset was deciding (a concurrent same-plan run?). " +
+                    "Nothing was changed — re-run this command.");
+                return ExitCodes.HarnessError;
+
+            case RunReset.WaveResetOutcome.UnknownWave:
+                io.Out.WriteLine($"Wave '{result.UnknownWaveDir}' is not a wave in this plan.");
+                return ExitCodes.HarnessError;
+
+            case RunReset.WaveResetOutcome.NoJournal:
+            default:
+                io.Out.WriteLine("No run journal yet — run the plan first before resetting a wave.");
+                return ExitCodes.HarnessError;
+        }
     }
 
     /// <summary>

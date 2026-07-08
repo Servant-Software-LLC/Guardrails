@@ -265,4 +265,66 @@ public sealed class SafeSuffixEvaluatorTests
         Assert.Equal(SafeSuffixOutcome.Safe, SafeSuffixEvaluator.Evaluate(history, S("D", "U")).Outcome);
         Assert.Equal(SafeSuffixOutcome.Refused, SafeSuffixEvaluator.Evaluate(history, S("D")).Outcome);
     }
+
+    // --- marker-aware evaluator (#254 M2b / #311 BLOCKER, NIT-5) -----------------------------------
+
+    /// <summary>A harness <c>Guardrails-Wave:</c> marker commit — trailer-less but flagged, so EXEMPT from the trailer-less REFUSE.</summary>
+    private static TrailerCommit Marker(string sha, string parentSha) =>
+        new() { Sha = sha, Task = null, ParentSha = parentSha, IsWaveMarker = true };
+
+    [Fact]
+    public void WaveMarker_InRemovedRange_IsExempt_Safe()
+    {
+        // A waved plan: wave-1 task w1a (+ marker m1), wave-2 task w2a (+ marker m2). Rewind wave-2 (S={w2a}).
+        // Removed range [m2, w2a]: m2 is a Guardrails-Wave: marker → EXEMPT; w2a ∈ S → SAFE. Target = m1
+        // (predecessor wave marker = parent of the oldest removed commit).
+        var history = new[]
+        {
+            Marker("m2", "w2a"),
+            Ff("w2a", "w2a", "m1"),
+            Marker("m1", "w1a"),
+            Ff("w1a", "w1a", "base"),
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("w2a"));
+
+        Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
+        Assert.Equal("m1", d.ResetTarget);
+    }
+
+    [Fact]
+    public void TrailerlessNonMarker_HumanHandFix_InRemovedRange_Refuses()
+    {
+        // #311 BLOCKER red-bar: a human #197 hand-fix (trailer-less, NOT a marker) sits at the tip. A wave
+        // rewind of wave-2 whose removed range includes it MUST REFUSE — never silently discard the fix.
+        var history = new[]
+        {
+            Ff("C", null, "m2"),   // human hand-fix on the plan branch — no trailer, not a marker
+            Marker("m2", "w2a"),
+            Ff("w2a", "w2a", "m1"),
+            Marker("m1", "w1a"),
+            Ff("w1a", "w1a", "base"),
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("w2a"));
+
+        Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
+    }
+
+    [Fact]
+    public void TaskInCompletedWave_CrossingItsMarker_IsAllowed()  // NIT-5
+    {
+        // A task-scoped reset of a task in a COMPLETED wave: its wave marker m1 is trailer-less and in the
+        // removed suffix. Before the exemption this spuriously REFUSED; now the marker is exempt → SAFE.
+        var history = new[]
+        {
+            Marker("m1", "w1a"),
+            Ff("w1a", "w1a", "base"),
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("w1a"));
+
+        Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
+        Assert.Equal("base", d.ResetTarget);
+    }
 }

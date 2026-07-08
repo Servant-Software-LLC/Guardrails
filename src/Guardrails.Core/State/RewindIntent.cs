@@ -25,6 +25,16 @@ public sealed record RewindIntent
     /// <summary>The full safe set S (drifted ∪ descendants, or the named set ∪ descendants) that was reset to pending.</summary>
     public required IReadOnlyList<string> SafeSet { get; init; }
 
+    /// <summary>
+    /// The wave dir(s) rewound at wave granularity (SSOT §14.6/§14.8, #254 M2b): a WAVE-scoped rewind resets
+    /// both the wave's tasks (in <see cref="SafeSet"/>) AND the wave journal records — two more durable
+    /// effects a crash could split. The crash-replay (<see cref="Replay"/>) resets these wave entries to
+    /// <c>pending</c> too, so a kill between the wave rewind and the wave-journal-resets self-heals and never
+    /// leaves a wave entry <c>Completed</c> with a now-dangling <c>MarkerSha</c> (the sideways-reset window).
+    /// Empty for a task-scoped/flat rewind (backward-compatible — an older marker omits it).
+    /// </summary>
+    public IReadOnlyList<string> Waves { get; init; } = [];
+
     /// <summary>The plan-branch tip immediately before the rewind (the CAS anchor / audit).</summary>
     public string? PreRewindTip { get; init; }
 

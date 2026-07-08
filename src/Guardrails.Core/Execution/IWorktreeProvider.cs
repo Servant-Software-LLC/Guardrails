@@ -10,6 +10,15 @@ namespace Guardrails.Core.Execution;
 public sealed record PlanBranchTaskRecord(string CommitSha, string? DefinitionHash);
 
 /// <summary>
+/// One wave's durable resume facts recovered from a <c>Guardrails-Wave:</c> marker commit on the plan
+/// branch (SSOT §14.5, decision E): the empty marker commit's sha (<see cref="MarkerSha"/> — the
+/// wave-scoped-rewind anchor) and the <c>Guardrails-Wave-Hash:</c> definition hash recorded there
+/// (<see cref="WaveDefinitionHash"/>, null on a marker predating that line). The wave-level analogue of
+/// <see cref="PlanBranchTaskRecord"/>; the backstop that survives <c>run.json</c> loss.
+/// </summary>
+public sealed record PlanBranchWaveRecord(string MarkerSha, string? WaveDefinitionHash);
+
+/// <summary>
 /// Creates and manages git worktrees for parallel plan execution (plan 08 M1 seam).
 /// Implementations are responsible for the physical git operations (M2); this interface
 /// is the seam between the scheduler and the worktree subsystem.
@@ -188,4 +197,26 @@ public interface IWorktreeProvider
     /// forked off the soon-to-be-rewound tip. Default no-op for fake providers.
     /// </summary>
     void RewindPlanBranchTo(IntegrationHandle integ, string resetTarget) { }
+
+    // --- Multi-wave marker commits (SSOT §14.5, decision E, #254 M2b) ---------------------
+
+    /// <summary>
+    /// Write the durable <c>Guardrails-Wave:</c> marker commit (SSOT §14.5, decision E) on the plan
+    /// branch when a wave completes: an EMPTY commit in the integration worktree carrying
+    /// <c>Guardrails-Wave: &lt;waveDir&gt;</c> / <c>Guardrails-Wave-Hash: &lt;waveHash&gt;</c> /
+    /// <c>Guardrails-Run: &lt;runId&gt;</c> — the wave-level analogue of the task integration commit's
+    /// trailer triple, and the Part C wave-scoped-rewind boundary. Returns the marker commit sha. Default
+    /// empty string for fake/serial providers that keep no plan branch.
+    /// </summary>
+    string CommitWaveMarker(IntegrationHandle integ, string waveDir, string waveHash, CancellationToken ct) => "";
+
+    /// <summary>
+    /// Resume reconciliation for waves (SSOT §14.5/§14.6): every wave with a <c>Guardrails-Wave:</c>
+    /// marker commit reachable from the plan-branch tip, keyed by wave dir → its
+    /// <see cref="PlanBranchWaveRecord"/> (marker sha + recorded <c>Guardrails-Wave-Hash:</c>). The
+    /// durable cross-run wave-completion record — the backstop when <c>run.json</c> is lost, and the
+    /// source of the predecessor-wave rewind anchor. Default empty map for fake providers.
+    /// </summary>
+    IReadOnlyDictionary<string, PlanBranchWaveRecord> ReconcileWavesFromPlanBranch(IntegrationHandle integ) =>
+        new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
 }

@@ -40,6 +40,33 @@ public static class PlanCommand
             return ExitCodes.HarnessError;
         }
 
+        // WAVED plan (SSOT §14): a strict total order of waves, each its own task DAG behind a hard
+        // barrier. Print per-wave tiers so the preview reflects the barriers (a single whole-plan DAG would
+        // wrongly interleave later-wave tasks into tier 0, since there are no cross-wave dependsOn edges).
+        if (probe.Plan.IsWaved)
+        {
+            output.WriteLine($"Execution plan (WAVED) — {probe.Plan.Waves.Count} wave(s) in strict order, " +
+                             $"{probe.Plan.Tasks.Count} task(s) total, maxParallelism {probe.Plan.Config.MaxParallelism}");
+            output.WriteLine("Waves run one at a time behind a hard barrier (SSOT §14.4).");
+            output.WriteLine();
+
+            for (int w = 0; w < probe.Plan.Waves.Count; w++)
+            {
+                Core.Model.WaveNode wave = probe.Plan.Waves[w];
+                output.WriteLine($"Wave {w + 1}/{probe.Plan.Waves.Count}: {wave.Dir} — {wave.Tasks.Count} task(s)");
+                if (wave.Tasks.Count == 0)
+                {
+                    output.WriteLine("  (no tasks authored yet — a JIT wave; the run honest-halts here until it is broken down)");
+                    output.WriteLine();
+                    continue;
+                }
+
+                PrintTiers(new DependencyGraph(wave.Tasks).Tiers(), output);
+            }
+
+            return ExitCodes.Success;
+        }
+
         var graph = new DependencyGraph(probe.Plan.Tasks);
         IReadOnlyList<IReadOnlyList<TaskNode>> tiers = graph.Tiers();
 
@@ -47,19 +74,23 @@ public static class PlanCommand
                          $"{tiers.Count} tier(s), maxParallelism {probe.Plan.Config.MaxParallelism}");
         output.WriteLine();
 
+        PrintTiers(tiers, output);
+        return ExitCodes.Success;
+    }
+
+    private static void PrintTiers(IReadOnlyList<IReadOnlyList<TaskNode>> tiers, TextWriter output)
+    {
         for (int i = 0; i < tiers.Count; i++)
         {
-            output.WriteLine($"Tier {i}:");
+            output.WriteLine($"  Tier {i}:");
             foreach (TaskNode task in tiers[i])
             {
                 string kind = task.Action.Kind == ActionKind.Prompt ? "prompt" : "script";
                 string deps = task.DependsOn.Count == 0 ? "" : $"  (after: {string.Join(", ", task.DependsOn)})";
-                output.WriteLine($"  {task.Id,-36} {kind,-7}{deps}");
+                output.WriteLine($"    {task.Id,-40} {kind,-7}{deps}");
             }
 
             output.WriteLine();
         }
-
-        return ExitCodes.Success;
     }
 }

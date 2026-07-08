@@ -81,6 +81,22 @@ public interface IRunObserver
     /// </summary>
     void DecisionRecorded(DecisionEntry entry) { }
 
+    /// <summary>
+    /// A WAVED plan's wave <paramref name="wave"/> (the <paramref name="index"/>-th of
+    /// <paramref name="total"/>, 1-based) is about to run its DAG drain (SSOT §14.4). The harness runs
+    /// waves in strict order behind a hard barrier; this lets the UI retitle/segment the task table per
+    /// wave. Default no-op so non-CLI observers and FLAT plans (never emitted) need not handle it.
+    /// </summary>
+    void WaveStarting(Model.WaveNode wave, int index, int total) { }
+
+    /// <summary>
+    /// A WAVED plan's wave <paramref name="wave"/> finished (SSOT §14.4/§14.6): <paramref name="status"/>
+    /// is <c>completed</c> (drained green + exit gate passed), or a halt state (<c>needs-human</c>/
+    /// <c>blocked</c>) when the barrier stopped the run. <paramref name="skipped"/> is true when the wave
+    /// was already complete on resume and was skipped without running (SSOT §14.6). Default no-op.
+    /// </summary>
+    void WaveFinished(Model.WaveNode wave, Journal.WaveStatus status, bool skipped) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 
