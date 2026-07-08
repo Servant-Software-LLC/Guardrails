@@ -6,16 +6,25 @@ using Guardrails.Core.Model;
 namespace Guardrails.Core.Review;
 
 /// <summary>
-/// The review marker (SSOT §13, issue #79): a small file <c>state/guardrails-review.json</c> that
-/// records a human ran <c>/guardrails-review</c> over the CURRENT plan. It carries a timestamp and
-/// the plan's <see cref="PlanHash"/> at review time, so an EDITED plan reads as un-reviewed again
-/// (the same way the journal's <c>planHash</c> detects a changed plan on resume).
+/// The review marker (SSOT §13, issues #79/#260): a small file <c>state/guardrails-review.json</c> that
+/// records a human ran <c>/guardrails-review</c> over the CURRENT plan. It carries a timestamp and the
+/// plan's <see cref="PlanDefinitionHash"/> at review time — the plan's whole <b>behavioral</b>
+/// definition — so an EDITED plan reads as un-reviewed again.
+///
+/// <para>It keys on the broad <see cref="PlanDefinitionHash"/> (§7.3), NOT the narrow
+/// <see cref="PlanHash"/> (§7): unlike the journal's resume hash, this one covers guardrail, preflight,
+/// and action <b>bodies</b>, so editing a guardrail's logic after review (broadening a grep, dropping an
+/// assertion, <c>exit 0</c>-ing a real check) re-stales the marker and re-raises GR2025 (issue #260) —
+/// bodies are exactly what a review scrutinizes most. The on-disk wire field stays named
+/// <c>planHash</c> for back-compat; a pre-#260 marker simply reads <em>stale</em> once via the natural
+/// hash mismatch (the broader hash differs) and nudges for one re-review.</para>
 ///
 /// <para>It is <b>committed as part of the reviewed plan</b>, alongside the committed task folder and
 /// the review's edits. It is an attestation about the COMMITTED plan content, not about a particular
-/// checkout: because it is <see cref="PlanHash"/>-keyed it <b>self-invalidates the instant any
-/// <c>task.json</c>/<c>guardrails.json</c> changes the plan hash</b> (the review nudge returns), so it
-/// can never falsely vouch for changed content. That self-invalidation is exactly what makes
+/// checkout: because it is <see cref="PlanDefinitionHash"/>-keyed it <b>self-invalidates the instant any
+/// reviewed file — a <c>task.json</c>, <c>guardrails.json</c>, an <c>action.*</c>, or any
+/// guardrail/preflight body or <c>.json</c> sidecar — changes the hash</b> (the review nudge returns),
+/// so it can never falsely vouch for changed content. That self-invalidation is exactly what makes
 /// committing it safe — a stale marker reads as un-reviewed rather than as a false green.</para>
 ///
 /// <para>The harness only READS the marker and computes staleness; the <c>/guardrails-review</c> skill
@@ -54,7 +63,11 @@ public sealed record ReviewMarker
     [JsonPropertyName("reviewedAt")]
     public DateTimeOffset ReviewedAt { get; init; }
 
-    /// <summary>The <see cref="PlanHash"/> (<c>sha256:</c>-prefixed) computed at review time.</summary>
+    /// <summary>
+    /// The <see cref="PlanDefinitionHash"/> (<c>sha256:</c>-prefixed) computed at review time. The wire
+    /// field keeps the historical name <c>planHash</c> for back-compat (§13); the VALUE is the broad
+    /// behavioral-definition hash (§7.3), not the narrow journal <see cref="PlanHash"/>.
+    /// </summary>
     [JsonPropertyName("planHash")]
     public string PlanHash { get; init; } = string.Empty;
 
@@ -86,9 +99,9 @@ public sealed record ReviewMarker
     }
 
     /// <summary>
-    /// Write a marker for <paramref name="plan"/> recording the current <see cref="PlanHash"/> and
-    /// <paramref name="reviewedAt"/>. Provided for completeness/testing — the production writer is the
-    /// <c>/guardrails-review</c> skill. Creates <c>state/</c> if needed.
+    /// Write a marker for <paramref name="plan"/> recording the current <see cref="PlanDefinitionHash"/>
+    /// and <paramref name="reviewedAt"/>. The production writer is <c>guardrails mark-reviewed</c>
+    /// (invoked by the <c>/guardrails-review</c> skill). Creates <c>state/</c> if needed.
     /// </summary>
     public static void Write(PlanDefinition plan, DateTimeOffset reviewedAt)
     {
@@ -98,7 +111,7 @@ public sealed record ReviewMarker
         {
             Version = CurrentVersion,
             ReviewedAt = reviewedAt,
-            PlanHash = Journal.PlanHash.Compute(plan)
+            PlanHash = Journal.PlanDefinitionHash.Compute(plan)
         };
         File.WriteAllText(path, JsonSerializer.Serialize(marker, WriteOptions));
     }
@@ -106,19 +119,20 @@ public sealed record ReviewMarker
     /// <summary>
     /// Deterministically classify the review state of <paramref name="plan"/> against its on-disk
     /// marker: <see cref="ReviewState.Missing"/> when no (parseable) marker exists,
-    /// <see cref="ReviewState.Stale"/> when the marker's <see cref="PlanHash"/> no longer matches the
-    /// plan's current <see cref="PlanHash"/> (the plan's task structure changed since review), and
-    /// <see cref="ReviewState.Reviewed"/> when they match. Pure compare — no model in the loop.
+    /// <see cref="ReviewState.Stale"/> when the marker's recorded hash no longer matches the plan's
+    /// current <see cref="PlanDefinitionHash"/> (any reviewed file — including a guardrail/preflight/
+    /// action body — changed since review), and <see cref="ReviewState.Reviewed"/> when they match.
+    /// Pure compare — no model in the loop.
     /// </summary>
     public static ReviewEvaluation Evaluate(PlanDefinition plan)
     {
         ReviewMarker? marker = Read(plan.PlanDirectory);
         if (marker is null || string.IsNullOrWhiteSpace(marker.PlanHash))
         {
-            return new ReviewEvaluation(ReviewState.Missing, ReviewedHash: null, CurrentHash: Journal.PlanHash.Compute(plan));
+            return new ReviewEvaluation(ReviewState.Missing, ReviewedHash: null, CurrentHash: Journal.PlanDefinitionHash.Compute(plan));
         }
 
-        string current = Journal.PlanHash.Compute(plan);
+        string current = Journal.PlanDefinitionHash.Compute(plan);
         return string.Equals(marker.PlanHash, current, StringComparison.Ordinal)
             ? new ReviewEvaluation(ReviewState.Reviewed, marker.PlanHash, current)
             : new ReviewEvaluation(ReviewState.Stale, marker.PlanHash, current);

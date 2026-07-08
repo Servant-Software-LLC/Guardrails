@@ -6,13 +6,13 @@ namespace Guardrails.Cli.Commands;
 /// <summary>
 /// <c>guardrails mark-reviewed [folder]</c> — record that <c>/guardrails-review</c> ran over the
 /// CURRENT plan by writing the <c>state/guardrails-review.json</c> marker (SSOT §13, issues
-/// #79/#131). The WRITER half of the review nudge: with a fresh marker, <c>validate</c>/<c>run</c>
-/// stop emitting the GR2025 "not reviewed" warning until the plan changes (the marker is
-/// plan-hash-keyed, so an edited plan reads as un-reviewed again). The <c>/guardrails-review</c> skill
-/// invokes this at the end of a review — the skill can't compute the <c>PlanHash</c> itself. The
-/// marker is <b>committed as part of the reviewed plan</b>: it is an attestation about the committed
-/// plan content, planHash-keyed so it self-invalidates on any edit (the nudge returns), and is NOT
-/// wiped by <c>--fresh</c>.
+/// #79/#131/#260). The WRITER half of the review nudge: with a fresh marker, <c>validate</c>/<c>run</c>
+/// stop emitting the GR2025 "not reviewed" warning until the plan changes (the marker is keyed on the
+/// <c>PlanDefinitionHash</c> — the plan's full behavioral definition, guardrail/preflight/action bodies
+/// included — so any edit to that content reads as un-reviewed again). The <c>/guardrails-review</c>
+/// skill invokes this at the end of a review — the skill can't compute the hash itself. The marker is
+/// <b>committed as part of the reviewed plan</b>: it is an attestation about the committed plan content,
+/// self-invalidating on any edit the hash covers (the nudge returns), and is NOT wiped by <c>--fresh</c>.
 /// </summary>
 public static class MarkReviewedCommand
 {
@@ -51,8 +51,9 @@ public static class MarkReviewedCommand
         ReviewMarker.Write(probe.Plan, DateTimeOffset.UtcNow);
         ReviewEvaluation eval = ReviewMarker.Evaluate(probe.Plan);
         io.Out.WriteLine(
-            $"OK: marked reviewed (planHash {ShortHash(eval.CurrentHash)}). " +
-            "The /guardrails-review nudge stays clear until the plan changes.");
+            $"OK: marked reviewed (planDefinitionHash {ShortHash(eval.CurrentHash)} — the plan's full " +
+            "behavioral definition, incl. guardrail/preflight/action bodies). " +
+            "The /guardrails-review nudge stays clear until that content changes.");
         return ExitCodes.Success;
     }
 

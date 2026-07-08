@@ -31,7 +31,7 @@ plan-name/
 │   ├── seed.json                # OPTIONAL committed initial state (§6.1)
 │   ├── state.json               # runtime merged state — harness-owned, gitignored
 │   ├── run.json                 # run journal — harness-owned, gitignored (§7)
-│   ├── guardrails-review.json   # OPTIONAL review marker — COMMITTED, planHash-keyed (§13)
+│   ├── guardrails-review.json   # OPTIONAL review marker — COMMITTED, PlanDefinitionHash-keyed (§7.3, §13)
 │   └── merge-conflicts.log      # harness-owned, gitignored (§6.3)
 ├── logs/
 │   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
@@ -973,7 +973,7 @@ analysis — the default remains that the harness does not mutate the user's che
   trailers and re-skips edited tasks. This teardown fires **only** on the explicit `--fresh` /
   `guardrails reset` (full-reset) path — a normal resume preserves the plan branch and resumes against
   it. It does **NOT** delete `state/guardrails-review.json` — that marker is a committed plan artifact
-  (§13), planHash-keyed so it self-invalidates on any edit, NOT per-run runtime state.
+  (§13), PlanDefinitionHash-keyed (§7.3) so it self-invalidates on any edit, NOT per-run runtime state.
 - The **harness is the single writer** of `state.json`. Child processes never touch it.
 
 ### 6.2 Fragments (snapshot in, fragment out)
@@ -1403,6 +1403,53 @@ command silently switches to that folder and prints one info line
 (`info: resolved plan file → task folder "<folder>"`). When no such sibling folder exists the
 argument is passed through unchanged, so a genuinely bad path still produces the existing
 `GR1001` "Plan folder does not exist" error (issue #16).
+
+### 7.3 `PlanDefinitionHash` — the plan's full behavioral definition (issue #260)
+
+`PlanDefinitionHash` is a **second**, broader plan hash — distinct from the `PlanHash` the journal
+records above — that keys the **review marker** (§13). Where `PlanHash` covers a plan's *structure +
+config* (`guardrails.json` + every `task.json`), `PlanDefinitionHash` covers a plan's *whole behavioral
+definition* — everything a `/guardrails-review` pass actually scrutinizes, including the guardrail,
+preflight, and action **bodies** that `PlanHash` deliberately excludes. It exists **only** to key the
+review attestation; it is NOT a resume key and has NO other consumers. Widening `PlanHash` itself would
+break its load-bearing consumers — the pre-DAG `planPreflights` SKIP and resume mismatch warning (§7)
+key on it, and a body-only edit re-flagging those would false-halt an otherwise-resumable run — hence a
+**separate** hash rather than a broadened `PlanHash`.
+
+**Inputs**, hashed in this fixed order with the same discipline as `PlanHash` (labeled segments,
+`/`-normalized relative paths, newline-normalized bytes, `sha256:` prefix):
+1. `guardrails.json`.
+2. For **each task**, tasks sorted by Id ordinal (folder-name order) — the **shared per-task file-set
+   enumeration**: `task.json`; the resolved action file (`TaskNode.Action.Path`); every file under
+   `tasks/<id>/guardrails/**` (recursive, sorted by `/`-normalized relative path — this is what catches
+   the `.json` metadata sidecars of §4.1); every file under `tasks/<id>/preflights/**` (recursive,
+   sorted).
+3. Every file under `<plan>/guardrails/**` — the terminal-gate folder (§3.3), recursive, sorted.
+4. Every file under `<plan>/preflights/**` — the pre-DAG full-flight-checks folder (§1/§7), recursive,
+   sorted.
+
+**Excludes** `state/` (circular — the review marker it keys is itself written there, §13), the
+generated `diagram.md`/`diagram.html` (§10), `guardrails.baseline` (§11), `logs/`, and `captured/` —
+none are part of the plan's authored behavior.
+
+**Normalization**: newline-only (CRLF/CR → LF), byte-identical to `PlanHash`, so CRLF/LF checkouts hash
+the same.
+
+**The nesting.** `PlanHash` = structure + config (unchanged, keeps its load-bearing pre-DAG/resume
+consumers); `PlanDefinitionHash` = whole-plan behavior, keys the review marker (§13); each
+`TaskDefinitionHash` (§7.2) = one task's behavior. Their inputs nest — `PlanDefinitionHash`'s inputs ⊇
+`PlanHash`'s ⊇ each `TaskDefinitionHash`'s — and the per-task file-set enumeration in step 2 is the
+**same primitive** `TaskDefinitionHash` uses, shared so the two cannot drift.
+
+> **Coordination note (#274 / #281):** This change (#260) introduces BOTH `PlanDefinitionHash` AND the
+> shared per-task file-set enumeration primitive it folds over — implemented as
+> `Guardrails.Core.Journal.TaskDefinitionFiles` (`Enumerate(TaskNode) → (label, absolutePath)` pairs:
+> `task.json` + resolved action + `guardrails/**` + `preflights/**`). §7.2 `TaskDefinitionHash` — a
+> separate per-task hash that **reuses that exact enumerator** — lands with **#274 Part A** (draft PR
+> #281), which edits this same §7 region. Until #281 merges there is no §7.2 on `master`; read every
+> step-2 / nesting reference to §7.2 as *"when #274 Part A lands"*. Because #260 already owns the shared
+> enumerator, #274 simply consumes it (dropping any own copy on rebase) — so the two hashes cannot drift
+> on "what defines a task," and this change is reviewable independently of #281.
 
 ---
 
@@ -2472,33 +2519,41 @@ of an in-flight run is valid and never errors.
 
 `/guardrails-review` records that a human ran the adversarial review pass over the current plan, by
 invoking **`guardrails mark-reviewed <folder>`** (the writer — issue #131; the skill can't compute the
-`PlanHash` itself, so it delegates to the CLI) which writes a **committed** marker under `state/`:
+`PlanDefinitionHash` (§7.3) itself, so it delegates to the CLI) which writes a **committed** marker
+under `state/`:
 
 ```jsonc
 {
   "version": 1,
   "reviewedAt": "2026-06-22T14:03:11Z",   // ISO-8601 UTC, review time
-  "planHash": "sha256:…"                   // PlanHash (§7) computed at review time
+  "planHash": "sha256:…"                   // PlanDefinitionHash (§7.3) at review time — the plan's full behavioral definition (wire name kept for back-compat)
 }
 ```
 
-The `planHash` is the **same `PlanHash`** the journal records (§7) — `guardrails.json` + every
-`task.json`, newline-normalized, task-id-ordered. **Staleness** is a deterministic compare: marker
-absent ⇒ *missing*; `planHash` ≠ the plan's current `PlanHash` ⇒ *stale* (the plan's task structure
-changed since review); equal ⇒ *reviewed*. A present-but-unparseable marker is treated as *missing*
-(never throws). `PlanHash` covers task structure, not guardrail-script bodies — a guardrail-script
-edit does not by itself re-flag a review; this is intentional under the "plan changed" framing.
+The marker keys on **`PlanDefinitionHash`** (§7.3) — the plan's full **behavioral** definition:
+`guardrails.json` + every `task.json` + every resolved `action.*` + every task-level and plan-level
+`guardrails/**` and `preflights/**` file (including `.json` sidecars), newline-normalized,
+deterministically ordered. **Staleness** is a deterministic compare: marker absent ⇒ *missing*;
+recorded hash ≠ the plan's current `PlanDefinitionHash` ⇒ *stale*; equal ⇒ *reviewed*. A
+present-but-unparseable marker is treated as *missing* (never throws). Unlike the narrower `PlanHash`
+(§7, structure + config only), `PlanDefinitionHash` **covers guardrail/preflight/action bodies** — so
+editing a guardrail's logic after review (broadening a grep, dropping an assertion, `exit 0`-ing a
+check) re-stales the marker and re-raises GR2025 (issue #260). Bodies are exactly what a review
+scrutinizes most, so the attestation covers them.
 
 The marker is **committed as part of the reviewed plan**, alongside the committed task folder and the
 review's edits. It is an attestation about the **committed plan content** — not about a particular
-checkout — and because it is `planHash`-keyed it **self-invalidates the instant any `task.json` or
-`guardrails.json` changes the `PlanHash`** (the GR2025 nudge returns), so a committed marker can never
+checkout — and because it is `PlanDefinitionHash`-keyed (§7.3) it **self-invalidates the instant any
+reviewed file — `task.json`, `guardrails.json`, an `action.*`, or any guardrail/preflight body or
+sidecar — changes the `PlanDefinitionHash`** (the GR2025 nudge returns), so a committed marker can never
 falsely vouch for changed content. That self-invalidation is exactly what makes committing it safe and
-correct: it travels with the plan it attests to, and any edit that the `PlanHash` covers reads as
-un-reviewed rather than as a false green. It is therefore **NOT wiped by `--fresh`** (§6.1) — `--fresh`
-clears genuine per-run runtime state (`run.json`, `state.json`, `merge-conflicts.log`, `logs/`,
-`captured/`), not committed plan artifacts. (As above, `PlanHash` covers task structure + config, not
-guardrail-script bodies, so a script-body-only edit does not by itself re-flag the review.)
+correct: it travels with the plan it attests to, and any edit that the `PlanDefinitionHash` covers reads
+as un-reviewed rather than as a false green. It is therefore **NOT wiped by `--fresh`** (§6.1) —
+`--fresh` clears genuine per-run runtime state (`run.json`, `state.json`, `merge-conflicts.log`,
+`logs/`, `captured/`), not committed plan artifacts. **Migration (#260):** because this hash is broader
+than the pre-#260 `PlanHash`, every review marker committed before this change reads *stale* once and
+nudges for re-review. This is correct — those markers vouched under a hash that excluded guardrail
+bodies. Re-running `/guardrails-review` (or `guardrails mark-reviewed`) clears it.
 
 **Surfacing (warn, never block — issue #79):**
 - `guardrails validate` appends **GR2025 (warning)** when the marker is missing or stale, naming the
