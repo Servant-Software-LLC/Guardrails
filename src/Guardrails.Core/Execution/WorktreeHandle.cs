@@ -34,4 +34,14 @@ public sealed class WorktreeHandle
 
     /// <summary>The task id this segment was created for (used for commit trailers in Integrate).</summary>
     public string TaskId { get; init; } = "";
+
+    /// <summary>
+    /// The task's <c>TaskDefinitionHash</c> (SSOT §7.2, issue #274 Part A) the Scheduler stamps here
+    /// immediately BEFORE <see cref="IWorktreeProvider.Integrate"/>, so the integration commit carries the
+    /// <c>Guardrails-Task-Hash:</c> trailer on the FF path (the segment commit that becomes the plan-branch
+    /// commit). Threaded on the mutable handle rather than a new <see cref="IWorktreeProvider.Integrate"/>
+    /// parameter so the many fake providers implementing that interface method keep compiling. Null when
+    /// unavailable — the trailer line is then omitted (backward-compatible).
+    /// </summary>
+    public string? DefinitionHash { get; set; }
 }

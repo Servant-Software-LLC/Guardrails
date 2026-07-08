@@ -12,6 +12,14 @@ public interface ISchedulerJournal
     /// <summary>The journaled status of a task (resume rules already applied on load).</summary>
     Journal.TaskStatus StatusOf(string taskId);
 
+    /// <summary>
+    /// The <c>TaskDefinitionHash</c> recorded at a task's most recent successful settle (SSOT §7.2,
+    /// issue #274 Part A), or null when none was recorded. Drives the resume definition-drift check.
+    /// Default null for fakes that do not model it; <see cref="Journal.RunJournal"/> reads the real
+    /// recorded hash.
+    /// </summary>
+    string? RecordedDefinitionHash(string taskId) => null;
+
     /// <summary>Mark a task blocked because an upstream dependency cannot succeed.</summary>
     void MarkBlocked(string taskId);
 
@@ -35,7 +43,8 @@ public interface ISchedulerJournal
     /// WITHOUT adding an AttemptRecord (the attempt was already recorded by the executor).
     /// Default is a no-op for fakes. <see cref="Journal.RunJournal"/> provides the real impl.
     /// </summary>
-    void RecordSettle(string taskId, Journal.TaskStatus status, long? mergeSequence = null) { }
+    void RecordSettle(
+        string taskId, Journal.TaskStatus status, long? mergeSequence = null, string? definitionHash = null) { }
 
     /// <summary>
     /// Record the SUCCESSFUL settle of a worktree task (issue #196): append <paramref name="attempt"/>
@@ -47,6 +56,7 @@ public interface ISchedulerJournal
     /// provides the real impl that also appends the attempt.
     /// </summary>
     void RecordSettleWithAttempt(
-        string taskId, Journal.AttemptRecord attempt, Journal.TaskStatus status, long? mergeSequence = null) =>
-        RecordSettle(taskId, status, mergeSequence);
+        string taskId, Journal.AttemptRecord attempt, Journal.TaskStatus status, long? mergeSequence = null,
+        string? definitionHash = null) =>
+        RecordSettle(taskId, status, mergeSequence, definitionHash);
 }

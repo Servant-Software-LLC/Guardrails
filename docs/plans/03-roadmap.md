@@ -72,3 +72,14 @@ Each slots into an existing v1 seam — none invalidates the architecture:
    retries (2), "fix don't restart" feedback, full attempt logs.
 5. Schema drift across docs/C#/skills — `02-schemas-and-contracts.md` is the SSOT;
    `validate` is the skill's exit gate; golden round-trip test in CI.
+
+## Post-v1 fast-follows
+
+- **#274 definition-drift (staged).** **Part A — halt-always drift fix (rich report): SHIPPED.** A per-task
+  `TaskDefinitionHash` (SSOT §7.2) stamped at each successful settle and recomputed on resume; an edit to an
+  already-`succeeded` task's definition now HALTS (exit 2) with an itemized `RunReport.DefinitionDrift` —
+  old→new hash, best-effort per-file added/removed/modified breakdown, reference `git diff`, and the
+  transitive-descendant set — instead of silently reusing the stale segment. **Part C — the safety-check +
+  destructive plan-branch rewind primitive, exposed as manual scoped `reset <folder> <taskId>` AND opt-in
+  run-time auto-resolve of the safe (trailing-suffix) set: DEFERRED to its own design→draft-PR review**
+  (destructive/load-bearing — auto-invalidating a fan-in descendant is unsound, which is why Part A halts).

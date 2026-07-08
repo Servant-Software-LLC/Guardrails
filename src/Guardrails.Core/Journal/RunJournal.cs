@@ -100,6 +100,21 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// The <c>TaskDefinitionHash</c> recorded at a task's most recent successful settle (SSOT §7.2,
+    /// issue #274 Part A), or null when none was recorded (a task never settled, or an entry predating
+    /// this field — treated as "unknown, assume unchanged" by the resume drift check).
+    /// </summary>
+    public string? RecordedDefinitionHash(string taskId)
+    {
+        lock (_gate)
+        {
+            return _document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry)
+                ? entry.DefinitionHash
+                : null;
+        }
+    }
+
+    /// <summary>
     /// The run's cumulative journaled cost (SSOT §7), summed across every recorded attempt of
     /// every task via <see cref="JournalCost.Total"/>. Drives the per-run cost cap
     /// (<see cref="Model.RunConfig.MaxCostUsd"/>); the total is cumulative across resumes because it
@@ -164,7 +179,9 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// When <paramref name="mergeSequence"/> is non-null the merge counter is advanced and
     /// the sequence stored on the task (the merge already happened in <see cref="StateManager"/>).
     /// </summary>
-    public void RecordAttempt(string taskId, AttemptRecord attempt, TaskStatus newStatus, long? mergeSequence = null)
+    public void RecordAttempt(
+        string taskId, AttemptRecord attempt, TaskStatus newStatus, long? mergeSequence = null,
+        string? definitionHash = null)
     {
         lock (_gate)
         {
@@ -175,7 +192,10 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             {
                 Status = newStatus,
                 Attempts = attempts,
-                MergeSequence = mergeSequence ?? entry.MergeSequence
+                MergeSequence = mergeSequence ?? entry.MergeSequence,
+                // Stamp the definition hash on success (§7.2); a null preserves any prior hash so a
+                // failed attempt never clears a previously-recorded one.
+                DefinitionHash = definitionHash ?? entry.DefinitionHash
             };
 
             UpdateTask(taskId, updated);
@@ -211,7 +231,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// MergeSequence WITHOUT adding an AttemptRecord. Also advances NextMergeSequence when
     /// mergeSequence is set. Called by the Scheduler under the integration lock (B1 step 3).
     /// </summary>
-    public void RecordSettle(string taskId, TaskStatus status, long? mergeSequence = null)
+    public void RecordSettle(
+        string taskId, TaskStatus status, long? mergeSequence = null, string? definitionHash = null)
     {
         lock (_gate)
         {
@@ -219,7 +240,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             TaskJournalEntry updated = entry with
             {
                 Status = status,
-                MergeSequence = mergeSequence ?? entry.MergeSequence
+                MergeSequence = mergeSequence ?? entry.MergeSequence,
+                DefinitionHash = definitionHash ?? entry.DefinitionHash
             };
             UpdateTask(taskId, updated);
 
@@ -245,7 +267,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// success branches.
     /// </summary>
     public void RecordSettleWithAttempt(
-        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null)
+        string taskId, AttemptRecord attempt, TaskStatus status, long? mergeSequence = null,
+        string? definitionHash = null)
     {
         lock (_gate)
         {
@@ -256,7 +279,8 @@ public sealed class RunJournal : Execution.ISchedulerJournal
             {
                 Status = status,
                 Attempts = attempts,
-                MergeSequence = mergeSequence ?? entry.MergeSequence
+                MergeSequence = mergeSequence ?? entry.MergeSequence,
+                DefinitionHash = definitionHash ?? entry.DefinitionHash
             };
             UpdateTask(taskId, updated);
 

@@ -117,30 +117,65 @@ public sealed class Scheduler
         // Git is the durable resume truth: a kill after the FF/merge commit but before the journal
         // write leaves the task on the plan branch with no journal record — the union below stops it
         // being re-run. Prune this run's stale segment refs first so they can't be mistaken for work.
-        var planBranchSettled = new HashSet<string>(StringComparer.Ordinal);
+        IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords =
+            new Dictionary<string, PlanBranchTaskRecord>(StringComparer.Ordinal);
         if (_worktreeProvider is { } wp && integ is { } activeInteg)
         {
             wp.PruneStaleRunBranches(runId, activeInteg);
-            planBranchSettled.UnionWith(wp.ReconcileFromPlanBranch(activeInteg));
+            planBranchRecords = wp.ReconcileFromPlanBranch(activeInteg);
         }
 
         // --- resume pre-pass: journaled successes + plan-branch trailers are green ----------
-        var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
+        // First determine the pre-settle-green candidates AND detect definition drift (§7.2, #274 Part A):
+        // for EVERY task about to be treated as pre-settled-green, recompute its current
+        // TaskDefinitionHash and compare it to the hash recorded at its last successful settle. A mismatch
+        // on ANY candidate halts the whole run — schedule NOTHING, emit no skip events, return a
+        // DefinitionDrift report — rather than silently reusing the stale cached segment (never runs the
+        // edit) or silently re-running the changed task (unsound for a fan-in descendant, §7.2).
+        // The drift check recomputes each pre-settled task's hash, reading its definition files from
+        // disk (task.json / action / guardrails). That IO can throw — a transient share-lock on Windows
+        // (an editor / antivirus / indexer holding a guardrail or task.json) is the exact hazard. It runs
+        // BEFORE the worker loop, so it is OUTSIDE WorkerLoopAsync's #150 fault capture; wrap it here so a
+        // read failure degrades to an HONEST ABORTED report (exit 1, abort.log) rather than an uncaught
+        // stack trace. It must ABORT, not silently skip the check — silently skipping could let a real
+        // drift through.
+        HashSet<string> preSettledGreen;
+        List<DefinitionDriftReporter.DriftInput> drifted;
+        try
+        {
+            (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords);
+
+            if (drifted.Count > 0)
+            {
+                // Pre-DAG halt: nothing scheduled, no skip events emitted. The integration worktree stays
+                // attached to the plan branch exactly as a normal resume leaves it (no sweep to run — no
+                // segment worktree was created).
+                return BuildReport(plan, settled, cancelled: false)
+                    with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                with { Abort = BuildDefinitionReadAbort(ex) };
+        }
+
+        // No drift: emit the resume skips for the pre-settled-green candidates (plan order).
         foreach (TaskNode task in plan.Tasks)
         {
-            if (_journal.StatusOf(task.Id) == JournalTaskStatus.Succeeded
-                || planBranchSettled.Contains(task.Id))
+            if (!preSettledGreen.Contains(task.Id))
             {
-                preSettledGreen.Add(task.Id);
-                var skipped = new TaskResult
-                {
-                    TaskId = task.Id,
-                    Outcome = TaskOutcome.Skipped,
-                    Summary = "already succeeded (resumed) — skipped"
-                };
-                settled[task.Id] = skipped;
-                _observer.TaskFinished(skipped);
+                continue;
             }
+
+            var skipped = new TaskResult
+            {
+                TaskId = task.Id,
+                Outcome = TaskOutcome.Skipped,
+                Summary = "already succeeded (resumed) — skipped"
+            };
+            settled[task.Id] = skipped;
+            _observer.TaskFinished(skipped);
         }
 
         int remaining = 0;
@@ -291,6 +326,68 @@ public sealed class Scheduler
 
         return report with { MergeOnSuccessOutcome = mergeOutcome, MergeOnSuccessDetail = mergeDetail };
     }
+
+    /// <summary>
+    /// The resume drift pre-pass (§7.2, #274 Part A): determine the pre-settled-green candidates (journal
+    /// <c>Succeeded</c> OR a plan-branch trailer) and, for each one carrying a recorded definition hash,
+    /// recompute the current <see cref="Journal.TaskDefinitionHash"/> and record a drift when they differ.
+    /// A recorded-absent candidate (pre-upgrade) is treated as "unknown — assume unchanged". Reads the
+    /// task's definition files from disk, so its IO is wrapped by the caller's #150 honest-abort guard.
+    /// </summary>
+    private (HashSet<string> PreSettledGreen, List<DefinitionDriftReporter.DriftInput> Drifted)
+        DetectDefinitionDrift(PlanDefinition plan, IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords)
+    {
+        var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
+        var drifted = new List<DefinitionDriftReporter.DriftInput>();
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            bool journalGreen = _journal.StatusOf(task.Id) == JournalTaskStatus.Succeeded;
+            planBranchRecords.TryGetValue(task.Id, out PlanBranchTaskRecord? trailer);
+            if (!journalGreen && trailer is null)
+            {
+                continue;
+            }
+
+            preSettledGreen.Add(task.Id);
+
+            // Recorded hash: prefer the journal's (the primary record); fall back to the plan-branch
+            // trailer (covers a journal-reset resume where only the plan branch survives). Both are
+            // stamped at the same settle, so they agree; either being present enables the check.
+            string? recordedHash = _journal.RecordedDefinitionHash(task.Id) ?? trailer?.DefinitionHash;
+            if (recordedHash is null)
+            {
+                continue;
+            }
+
+            string currentHash = Journal.TaskDefinitionHash.Compute(task);
+            if (!string.Equals(recordedHash, currentHash, StringComparison.Ordinal))
+            {
+                drifted.Add(new DefinitionDriftReporter.DriftInput(
+                    task.Id, recordedHash, currentHash, trailer?.CommitSha));
+            }
+        }
+
+        return (preSettledGreen, drifted);
+    }
+
+    /// <summary>
+    /// The <see cref="RunAbort"/> for a definition-file read failure during the resume drift pre-pass
+    /// (§7.2, #274 Part A): typically a transient file lock (an editor / antivirus / indexer holding a
+    /// guardrail or <c>task.json</c>, common on Windows). Distinct from <see cref="BuildAbort"/> so the
+    /// remedy is specific — and it makes explicit that the drift check ABORTS rather than silently skips,
+    /// so a real definition change can never slip through unseen.
+    /// </summary>
+    private static RunAbort BuildDefinitionReadAbort(Exception fault) => new()
+    {
+        Headline = "The run was aborted: a task definition file could not be read during the resume "
+                 + $"drift check: {fault.Message}",
+        Remedy = "A definition file (task.json / the action / a guardrail) could not be read — often a "
+               + "transient file lock (an editor, antivirus, or indexer holding it, common on Windows). "
+               + "Release it and re-run. The drift check is aborted rather than skipped, so a real "
+               + "definition change can never slip through unseen.",
+        Detail = fault.ToString()
+    };
 
     /// <summary>
     /// Build the <see cref="RunAbort"/> for an infrastructure fault (issue #150): a one-line headline
@@ -484,7 +581,10 @@ public sealed class Scheduler
             }
             else if (!string.IsNullOrEmpty(handle.WorktreePath))
             {
-                // Non-deferred: executor already handled journal; just integrate the segment.
+                // Non-deferred: executor already handled journal; just integrate the segment. Stamp the
+                // definition hash onto the handle so the integration commit still carries the
+                // Guardrails-Task-Hash: trailer (§7.2) — the executor already recorded the journal hash.
+                handle.DefinitionHash = Journal.TaskDefinitionHash.Compute(task);
                 provider.Integrate(handle, integ, CancellationToken.None);
             }
 
@@ -693,6 +793,13 @@ public sealed class Scheduler
         string statePath = Path.Combine(_plan.PlanDirectory, "state", "state.json");
         string preMergeState = File.Exists(statePath) ? File.ReadAllText(statePath) : "{}";
 
+        // §7.2 (#274 Part A): the task's definition hash, stamped onto BOTH the integration commit's
+        // Guardrails-Task-Hash: trailer (via the handle for FF, the CommitStagedMerge param for non-FF)
+        // AND the journal entry (RecordSucceededSettle) — computed once, under the integration lock,
+        // from the current on-disk definition. This is what a later resume compares against.
+        string definitionHash = Journal.TaskDefinitionHash.Compute(task);
+        handle.DefinitionHash = definitionHash;
+
         // B1 step 1: merge fragment into state.json BEFORE the git commit.
         if (result.FragmentPath is { } fp && File.Exists(fp))
         {
@@ -706,7 +813,7 @@ public sealed class Scheduler
         {
             // FF is free — no re-verify needed. Consume one merge sequence.
             long seq = _journal.ReserveMergeSequence();
-            RecordSucceededSettle(task, result, seq);
+            RecordSucceededSettle(task, result, seq, definitionHash);
             return result;
         }
 
@@ -755,10 +862,11 @@ public sealed class Scheduler
 
             if (aiReVerify.Passed)
             {
-                // B2: commit the AI-resolved staged merge with the task trailer BEFORE journaling.
-                provider.CommitStagedMerge(integ, task.Id, ct);
+                // B2: commit the AI-resolved staged merge with the task trailer (incl. the §7.2
+                // Guardrails-Task-Hash: line) BEFORE journaling.
+                provider.CommitStagedMerge(integ, task.Id, ct, definitionHash);
                 long seq = _journal.ReserveMergeSequence();
-                RecordSucceededSettle(task, result, seq);
+                RecordSucceededSettle(task, result, seq, definitionHash);
                 return result;
             }
 
@@ -792,10 +900,11 @@ public sealed class Scheduler
         {
             // B2 step 2: commit the staged non-FF union with the task trailer BEFORE journaling,
             // so the plan branch carries this task's Guardrails-Task: trailer (the FF path commits
-            // implicitly via the FF move; the non-FF path must commit the staged merge explicitly).
-            provider.CommitStagedMerge(integ, task.Id, ct);
+            // implicitly via the FF move; the non-FF path must commit the staged merge explicitly). The
+            // §7.2 Guardrails-Task-Hash: line rides along on the same commit.
+            provider.CommitStagedMerge(integ, task.Id, ct, definitionHash);
             long seq = _journal.ReserveMergeSequence();
-            RecordSucceededSettle(task, result, seq);
+            RecordSucceededSettle(task, result, seq, definitionHash);
             return result;
         }
 
@@ -912,11 +1021,12 @@ public sealed class Scheduler
     /// fake-provider path that never went through <c>ValidateFragmentForSettle</c>) falls back to the
     /// attempt-less <see cref="ISchedulerJournal.RecordSettle"/>, so no path regresses.
     /// </summary>
-    private void RecordSucceededSettle(TaskNode task, TaskResult result, long mergeSequence)
+    private void RecordSucceededSettle(
+        TaskNode task, TaskResult result, long mergeSequence, string? definitionHash = null)
     {
         if (result.PendingAttempt is not { } pending)
         {
-            _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, mergeSequence);
+            _journal.RecordSettle(task.Id, JournalTaskStatus.Succeeded, mergeSequence, definitionHash);
             return;
         }
 
@@ -931,7 +1041,7 @@ public sealed class Scheduler
             LogDir = pending.LogDir,
             Provenance = pending.Provenance
         };
-        _journal.RecordSettleWithAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence);
+        _journal.RecordSettleWithAttempt(task.Id, record, JournalTaskStatus.Succeeded, mergeSequence, definitionHash);
     }
 
     /// <summary>
