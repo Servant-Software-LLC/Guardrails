@@ -117,7 +117,7 @@ decision (issue #275) and is deliberately NOT done here.
   "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/guardrails-worktrees/<hash>/<runId>/
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": false,            // OPTIONAL; if true AND the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here)
-  "driftPolicy": "prompt",            // OPTIONAL; on-resume definition-drift policy (§7.2). "prompt" (DEFAULT): interactive TTY prompts, non-interactive HALTS. "reprocess": auto-resolve a PROVABLY-SAFE drift, no prompt (CLI --reprocess-drift overrides to this). "halt": always halt (strict Part A). Unsafe drift ALWAYS halts regardless. GR2031 if unrecognized
+  "autonomyPolicy": "prompt",         // OPTIONAL; the UNIFIED autonomy knob (§2.1). "prompt" (DEFAULT): interactive TTY prompts, non-interactive HALTS. "auto": apply a SAFE decision with no prompt (CLI --autonomy auto, or the legacy alias --reprocess-drift). "halt": always halt. An UNSAFE/UNSOUND action ALWAYS halts regardless. GR2031 if unrecognized. In M1 the only wired boundary is the on-resume definition-drift gate (§7.2)
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issue #195). Default true. Preserves a rolled-back max-turns/output-cap attempt to a git ref instead of pure discard; set false to disable
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
@@ -176,19 +176,13 @@ decision (issue #275) and is deliberately NOT done here.
   delivery of the plan branch into the user's original branch. **AI-merge is withheld at this
   boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts to `needs-human`
   with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the user's commits.
-- `driftPolicy` (default `"prompt"`) selects how a resume handles **definition drift** on an
-  already-`succeeded` task (§7.2, issue #274 Part C). It is an enum with THREE values:
-  - **`"prompt"` (DEFAULT):** a provably-SAFE drift → in an **interactive TTY**, PROMPT the operator
-    (`y` = rewind + re-run, `N` = halt with `DefinitionDrift` exit 2); in a **non-interactive** context
-    (redirected stdin / CI / an overwatcher) → **HALT** (exit 2), never prompting, never spending unbidden.
-  - **`"reprocess"`** (CLI `--reprocess-drift` overrides to this, exactly as `--merge-on-success`
-    overrides `mergeOnSuccess`): auto-resolve a safe drift with **no prompt** (interactive or not) —
-    pre-authorized spend.
-  - **`"halt"`** (strict opt-out): **always HALT** on any drift — preserves the Part A behavior for
-    CI-strict users.
-  - **Unsafe drift ALWAYS halts (exit 2) regardless of this field** — no value authorizes an unsound
-    rewind; `"reprocess"` / `--reprocess-drift` authorize **spend**, never **soundness**. An unrecognized
-    value is a validation error (**GR2031**).
+- `autonomyPolicy` (default `"prompt"`) is the **unified autonomy knob** governing every prompt/halt/auto
+  decision boundary — the full contract, and the shared `decisions[]` reporting surface it feeds, is
+  **§2.1** below. In M1 the only wired boundary is the on-resume **definition-drift** gate (§7.2); its
+  three values map to that gate as: `"prompt"` (DEFAULT) → interactive confirm, non-interactive HALT;
+  `"auto"` (CLI `--autonomy auto`, or the legacy alias `--reprocess-drift`) → auto-resolve a safe drift
+  with no prompt; `"halt"` → always HALT. An **UNSAFE** drift ALWAYS halts (exit 2) regardless. An
+  unrecognized value is a validation error (**GR2031**).
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
@@ -230,6 +224,44 @@ decision (issue #275) and is deliberately NOT done here.
   Deliberately scoped to non-logic outcomes: a `guardrail-failed` rollback is **never** preserved by
   this flag (the code may be genuinely wrong, so silently carrying it forward is the wrong default).
   Set `false` to disable salvage entirely for a plan.
+
+### 2.1 `autonomyPolicy` — the unified autonomy knob + the shared decisions log (shared foundation, #254/#269/#274)
+
+`autonomyPolicy` is **one** enum governing **every** prompt/halt/auto decision boundary in the harness — a
+single shared field replacing the per-feature knobs that would otherwise multiply (the folded #274 Part C
+`driftPolicy`, the #269 overwatcher, the #254 inter-wave adjustment). It has three values:
+
+- **`prompt`** (default) — at a decision boundary, if stdin is an **interactive TTY** the harness presents
+  the details and asks for approval (apply on approval, halt on decline). If **non-interactive**
+  (`Console.IsInputRedirected`), it does **NOT** block — it **halts honestly** (exit 2) with the same
+  details for out-of-band review. (The `ResetCommand.Confirm`/`IsInputRedirected` discipline.)
+- **`halt`** — never prompt, never auto; always halt (exit 2) for out-of-band human action. Most conservative.
+- **`auto`** ("just handle everything") — apply the decision without prompting **wherever it is SAFE /
+  SANCTIONED**; an UNSAFE / UNSOUND action **still halts regardless of policy**.
+
+**Load-bearing invariant:** `auto` authorizes **SPEND / APPLICATION of a SAFE action, never an UNSOUND
+one.** An unsound boundary (e.g. a task-level fan-in-descendant drift rewind, §7.2) always halts regardless
+of policy. An unrecognized value is a validation error (**GR2031**). CLI `--autonomy <value>` overrides.
+
+**Folding in the #274 Part C `driftPolicy`.** Part C shipped `driftPolicy: "halt" (default) | "reprocess"`
+(never in a NuGet release). Under `autonomyPolicy` it is a **clean rename** (no back-compat shim): old
+`halt` → `halt`; old `reprocess` → `auto`; the new middle value `prompt` becomes the unified **default**
+(changing Part C's effective default from `halt` to `prompt` — non-interactive `prompt` degrades to `halt`,
+so CI drift still halts). `--reprocess-drift` remains as a legacy **alias** for `--autonomy auto`. Part C's
+`GR2031` (invalid `driftPolicy`) and this field's `GR2031` (invalid `autonomyPolicy`) are the **same check
+generalized** — one code, no collision. (The now-invalid literal `"reprocess"` is caught by GR2031.)
+
+**The shared reporting surface — the decisions log.** Every autonomy-policy decision point is recorded in an
+append-only, `boundary`-discriminated `decisions[]` array in `run.json` (§7 — the **canonical durable
+store**, which replaces the pre-fold `driftResolutions[]` section), and rendered **under the live task
+table** (via `IRunObserver.DecisionRecorded`) and in the static log site (§12). Each entry is
+`{ boundary, policy, decision, at, subject, headline, detail }`, where `boundary` distinguishes the
+decision-class: `drift` (#274, task or wave granularity), `wave` (#254 inter-wave / wave completion / wave
+drift), `task` (#269 overwatcher per-task attempts-vs-fix-vs-halt); `decision` is one of `halted` /
+`prompted-approved` / `prompted-declined` / `auto-applied`. **In M1 only the `drift` boundary is emitted**
+(the on-resume definition-drift gate, §7.2); the schema + discriminator already accommodate all three so
+the `wave` (M2) and `task` (M3) boundaries just append. #269's design of record reuses this policy + log
+verbatim.
 
 ## 3. `tasks/<id>/task.json`
 
@@ -1160,7 +1192,23 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     // (never null noise) when the gate passed or no two writeScopes overlap. HEDGED, not a confident
     // assertion (§3.4, #272 Part 2): overlap is a WEAK signal, the failure detail is the primary one.
     "collisionHint": "Overlapping writeScopes exist between these task pairs — EXPECTED for a TDD stub+impl pair … the reported failure detail is the PRIMARY signal … '07-…' & '09-…' (shared: Launcher.cs)"
-  }
+  },
+
+  // OPTIONAL, append-only, UNIFIED autonomy-policy decision log (§2.1 shared reporting surface). Additive:
+  // absent (not null noise) on a run that recorded no decision. The CANONICAL durable store — it replaces
+  // the pre-fold driftResolutions[] section. In M1 only the `drift` boundary is emitted; the `wave` (M2) /
+  // `task` (M3) boundaries append here unchanged.
+  "decisions": [
+    {
+      "boundary": "drift",              // drift | wave | task — the decision-class discriminator (extensible)
+      "policy": "auto",                 // the autonomyPolicy value in force at this boundary
+      "decision": "auto-applied",       // halted | prompted-approved | prompted-declined | auto-applied
+      "at": "2026-07-08T14:03:11Z",
+      "subject": "04-author-codegen-tests, 05-generate-codegen", // the unit(s) the decision concerned
+      "headline": "Definition drift auto-resolved (auto): rewound the plan branch to 9c1f0ab and re-running 2 task(s)",
+      "detail": "04-author-codegen-tests: a6bee1 -> 3f21c9\n05-generate-codegen: (none re -> 88ab04" // e.g. per-task old→new hash
+    }
+  ]
 }
 ```
 
@@ -1554,7 +1602,7 @@ down — so auto-invalidation is unsound; that soundness limit is why Part A hal
 ```
 
 **The remediation paths** named in the halt message:
-- **`guardrails run <folder> --reprocess-drift`** — auto-resolve a **provably-safe** drift: rewind the plan branch past the safe suffix and re-run it (Part C, below). An unsafe drift still halts.
+- **`guardrails run <folder> --autonomy auto`** (or the legacy alias `--reprocess-drift`) — auto-resolve a **provably-safe** drift: rewind the plan branch past the safe suffix and re-run it (Part C, below). An unsafe drift still halts.
 - **`guardrails reset <folder> <taskId>...`** — a **scoped** reset of only the named task(s) + descendants, which rewinds the plan branch when that set is a safe trailing suffix and **refuses** (naming the blocker) otherwise. **Part C — shipped** (this section). The same safety-check + rewind primitive powers both this and the run-time auto-resolve.
 - **`guardrails reset <folder> -y`** — a full correct rebuild; always sound (Part B tears down the plan branch, §6.1).
 
@@ -1609,7 +1657,8 @@ expiry window (destructive, but not unrecoverable).
 **Refuse floor (un-overridable).** Anything the check cannot *prove* safe halts — a non-`S` trailer in the
 removed range, an uncontained merge lineage, **or a commit with no identifiable `Guardrails-Task:` trailer
 at all** (e.g. a human hand-fix commit on the integration branch, §7). No flag turns on an unsound rewind:
-`--reprocess-drift` / `driftPolicy: "reprocess"` authorizes **spend**, never **soundness**. Attribution
+`--autonomy auto` / `autonomyPolicy: "auto"` (and its alias `--reprocess-drift`) authorizes **spend**, never
+**soundness**. Attribution
 reads **only the commit's last trailer block** (git-`interpret-trailers` semantics), so a `Guardrails-Task:`
 line quoted in a hand-fix commit's *prose* is NOT mistaken for attribution — the hand-fix stays
 un-attributed and the rewind refuses it.
@@ -1645,10 +1694,10 @@ so it must be **authorized**):
 
 | Context | Safe drift | Unsafe drift |
 |---|---|---|
-| **`driftPolicy: "prompt"` (DEFAULT), interactive TTY** | print the per-file report, then **PROMPT** (`y/N`, disclosing "rewinds N commit(s) and re-runs M task(s)") at the pre-DAG gate → `y` = auto-resolve, `N` = halt (`DefinitionDrift`, exit 2) | **HALT** always (exit 2) |
-| **`driftPolicy: "prompt"`, non-interactive** (CI / redirected stdin / overwatcher) | **HALT** (exit 2) — never prompts, never spends unbidden | **HALT** always |
-| **`driftPolicy: "reprocess"` / `--reprocess-drift`** (§2) | auto-resolve, **no prompt** (already authorized) | **HALT** always — the flag authorizes **SPEND**, never an **UNSOUND** rewind |
-| **`driftPolicy: "halt"`** (strict opt-out) | **HALT** always — the Part A behavior | **HALT** always |
+| **`autonomyPolicy: "prompt"` (DEFAULT), interactive TTY** | print the per-file report, then **PROMPT** (`y/N`, disclosing "rewinds N commit(s) and re-runs M task(s)") at the pre-DAG gate → `y` = auto-resolve, `N` = halt (`DefinitionDrift`, exit 2) | **HALT** always (exit 2) |
+| **`autonomyPolicy: "prompt"`, non-interactive** (CI / redirected stdin / overwatcher) | **HALT** (exit 2) — never prompts, never spends unbidden | **HALT** always |
+| **`autonomyPolicy: "auto"` / `--autonomy auto` / `--reprocess-drift`** (§2.1) | auto-resolve, **no prompt** (already authorized) | **HALT** always — `auto` authorizes **SPEND**, never an **UNSOUND** rewind |
+| **`autonomyPolicy: "halt"`** (strict opt-out) | **HALT** always — the Part A behavior | **HALT** always |
 
 Interactivity is decided by the existing **`ResetCommand.Confirm` idiom** (`Console.IsInputRedirected` ⇒
 non-interactive ⇒ halt; else prompt). Because the Spectre live table cannot host a `Console.ReadLine`, the
@@ -1656,16 +1705,18 @@ CLI runs a **read-only pre-DAG probe** (before any UI) that does the prompt, the
 `y` to the Scheduler as a pre-confirmation; **Core itself never prompts** — an unconfirmed `"prompt"` run
 in Core halts.
 
-**`DriftResolved` — an observer/journal event, NOT a new terminal bucket.** An auto-resolved run flows
-straight into the normal outcome and returns the **NORMAL** run exit code (`0` green / `2` needs-human,
-§7.1) — a resolved drift is *not* a distinct terminal state. Only a **declined / refused** drift is the
-exit-2 `RunReport.DefinitionDrift` (§7.2 above). To keep an unattended (`--reprocess-drift`) or confirmed
-rewind accountable, the resolution is recorded both ways: an **`IRunObserver.DriftResolved`** signal
-surfaced at the decision point (so an interactive operator sees exactly what a `y` rebuilds) and a durable,
-additive top-level **`driftResolutions[]`** journal section (optional, like `planPreflights` /
-`planGuardrails`, §7) capturing the rewind target commit and, per rebuilt task, its old→new
-`definitionHash`. Every rewind — prompted-`y`, flag-authorized, or via the manual scoped reset — leaves
-this audit trail of *what was discarded and why*.
+**The drift decision — a `decisions[]` entry / observer event, NOT a new terminal bucket.** An
+auto-resolved run flows straight into the normal outcome and returns the **NORMAL** run exit code (`0` green
+/ `2` needs-human, §7.1) — a resolved drift is *not* a distinct terminal state. Only a **declined / refused**
+drift is the exit-2 `RunReport.DefinitionDrift` (§7.2 above). To keep an unattended (`--autonomy auto` /
+`--reprocess-drift`) or confirmed rewind accountable, the resolution is recorded through the **unified
+decisions log** (§2.1): an **`IRunObserver.DecisionRecorded`** signal surfaced at the decision point (so an
+interactive operator sees exactly what a `y` rebuilds) and a `boundary:"drift"` entry appended to the
+durable, additive top-level **`decisions[]`** journal section (optional, like `planPreflights` /
+`planGuardrails`, §7) — its `headline`/`subject`/`detail` capturing the rewind target commit and, per
+rebuilt task, its old→new `definitionHash`. Every rewind — prompted-`y`, `auto`-authorized, or via the
+manual scoped reset — leaves this audit trail of *what was discarded and why*. (`decisions[]` is the
+canonical durable store; it replaces the pre-fold `driftResolutions[]` section.)
 
 **Synthetic-history test matrix** (the destructive primitive's hard gate) proves the check accepts exactly
 the safe sets and the floor is HALT on every ambiguity: **linear** (clean tail ⇒ safe) · **fan-out**

@@ -86,24 +86,18 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
-    public void DriftResolved(DriftResolution resolution)
+    public void DecisionRecorded(DecisionEntry entry)
     {
         lock (_gate)
         {
-            // A provably-safe definition drift was auto-resolved at the pre-DAG gate (issue #274 Part C):
-            // the plan branch was rewound and the safe suffix re-run. Not a failure — say so plainly.
-            string tasks = string.Join(", ", resolution.Tasks.Select(t => t.TaskId));
-            string how = resolution.RewindTarget is { } target
-                ? $"rewound the plan branch to {ShortSha(target)}"
-                : "reset the drifted tasks (no plan-branch rewind needed)";
-            _output.WriteLine(
-                $"[drift auto-resolved] {how} and re-running {resolution.Tasks.Count} task(s) " +
-                $"[{resolution.Trigger}]: {tasks}");
+            // An autonomy-policy decision (SSOT §2.1/§7). In M1 the only boundary is "drift" — a
+            // provably-safe definition drift auto-resolved at the pre-DAG gate. Not a failure — the
+            // pre-rendered headline says what happened; subject names the units.
+            string subject = string.IsNullOrEmpty(entry.Subject) ? "" : $": {entry.Subject}";
+            _output.WriteLine($"[decision:{entry.Boundary}] {entry.Headline}{subject}");
             _output.WriteLine();
         }
     }
-
-    private static string ShortSha(string sha) => sha.Length <= 8 ? sha : sha[..8];
 
     public void PlanHashMismatch(string previousPlanHash)
     {

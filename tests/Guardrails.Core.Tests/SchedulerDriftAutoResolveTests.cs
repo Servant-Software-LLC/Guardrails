@@ -6,12 +6,13 @@ using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// Scheduler-level wiring tests for the Part C safe-auto-resolve gate (issue #274, SSOT §7.2): with the
-/// safe-suffix VERDICT scripted by a fake provider (the pure check is proven exhaustively in
-/// <see cref="SafeSuffixEvaluatorTests"/>), assert the policy gate resolves-vs-halts correctly, that a
-/// resolve rewinds + journal-resets + re-runs the safe set + records the audit, that an UNSAFE drift halts
-/// under EVERY policy, and that a moved plan-branch tip (compare-and-swap) halts rather than rewinds.
-/// TCS-free: the fake executor returns synchronously.
+/// Scheduler-level wiring tests for the Part C safe-auto-resolve gate keyed off the unified
+/// <c>autonomyPolicy</c> (SSOT §2.1/§7.2): with the safe-suffix VERDICT scripted by a fake provider (the
+/// pure check is proven exhaustively in <see cref="SafeSuffixEvaluatorTests"/>), assert the policy gate
+/// resolves-vs-halts correctly, that a resolve rewinds + journal-resets + re-runs the safe set + records a
+/// <c>boundary:"drift"</c> <see cref="DecisionEntry"/> to the unified <c>decisions[]</c> log, that an
+/// UNSAFE drift halts under EVERY policy, and that a moved plan-branch tip (compare-and-swap) halts rather
+/// than rewinds. TCS-free: the fake executor returns synchronously.
 /// </summary>
 public sealed class SchedulerDriftAutoResolveTests
 {
@@ -21,7 +22,7 @@ public sealed class SchedulerDriftAutoResolveTests
         private readonly HashSet<string> _succeeded = new(StringComparer.Ordinal);
 
         public List<string> ResetToPending { get; } = [];
-        public List<DriftResolution> Recorded { get; } = [];
+        public List<DecisionEntry> Recorded { get; } = [];
 
         public void MarkSucceeded(string taskId, string? recordedHash)
         {
@@ -42,7 +43,7 @@ public sealed class SchedulerDriftAutoResolveTests
             ResetToPending.Add(taskId);
         }
 
-        public void RecordDriftResolution(DriftResolution resolution) => Recorded.Add(resolution);
+        public void RecordDecision(DecisionEntry entry) => Recorded.Add(entry);
     }
 
     /// <summary>A fake provider that SCRIPTS the safe-suffix verdict + the current tip and records the rewind, delegating every topology op to <see cref="FakeWorktreeProvider"/>.</summary>
@@ -76,18 +77,18 @@ public sealed class SchedulerDriftAutoResolveTests
 
     private sealed class RecordingObserver : IRunObserver
     {
-        public List<DriftResolution> DriftResolvedCalls { get; } = [];
+        public List<DecisionEntry> DecisionCalls { get; } = [];
         public void TaskStarting(TaskNode task) { }
         public void TaskFinished(TaskResult result) { }
         public void GuardrailFinished(TaskNode task, GuardrailResult result) { }
-        public void DriftResolved(DriftResolution resolution) => DriftResolvedCalls.Add(resolution);
+        public void DecisionRecorded(DecisionEntry entry) => DecisionCalls.Add(entry);
     }
 
-    private static PlanDefinition DriftedLinearPlan(DriftPolicy policy, out TaskNode a, out TaskNode b)
+    private static PlanDefinition DriftedLinearPlan(AutonomyPolicy policy, out TaskNode a, out TaskNode b)
     {
         a = Task("01-a");
         b = Task("02-b", "01-a");
-        return Plan(a, b) with { Config = new RunConfig { Version = 1, DriftPolicy = policy } };
+        return Plan(a, b) with { Config = new RunConfig { Version = 1, AutonomyPolicy = policy } };
     }
 
     private static DriftFakeJournal JournalWithDriftOn01(TaskNode a, TaskNode b)
@@ -114,9 +115,9 @@ public sealed class SchedulerDriftAutoResolveTests
     }
 
     [Fact]
-    public async Task Reprocess_SafeDrift_Rewinds_ReRunsSafeSet_RecordsResolution()
+    public async Task Auto_SafeDrift_Rewinds_ReRunsSafeSet_RecordsDriftDecision()
     {
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Reprocess, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Auto, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(SafeSuffixDecision.Safe("resetsha", removedCommitCount: 2));
 
         var (report, exec, _, jnl, obs) = await RunAsync(plan, JournalWithDriftOn01(a, b), prov, auth: null);
@@ -128,18 +129,22 @@ public sealed class SchedulerDriftAutoResolveTests
         Assert.Contains("01-a", exec.Started);               // re-ran from the clean base
         Assert.Contains("02-b", exec.Started);
 
-        DriftResolution resolution = Assert.Single(jnl.Recorded);
-        Assert.Equal("reprocess", resolution.Trigger);
-        Assert.Equal("resetsha", resolution.RewindTarget);
-        Assert.Equal(["01-a", "02-b"], resolution.Tasks.Select(t => t.TaskId).OrderBy(x => x));
-        Assert.NotNull(report.DriftResolution);
-        Assert.Equal("reprocess", Assert.Single(obs.DriftResolvedCalls).Trigger); // surfaced live
+        // A boundary:"drift" DecisionEntry was recorded to the unified decisions[] log.
+        DecisionEntry entry = Assert.Single(jnl.Recorded);
+        Assert.Equal("drift", entry.Boundary);
+        Assert.Equal("auto", entry.Policy);                  // autonomyPolicy=auto in force
+        Assert.Equal("auto-applied", entry.Decision);
+        Assert.Contains("resetsha", entry.Headline);         // the rewind target propagated
+        Assert.Contains("01-a", entry.Subject);
+        Assert.Contains("02-b", entry.Subject);              // descendant re-run too
+        Assert.NotNull(report.Decision);
+        Assert.Equal("auto-applied", Assert.Single(obs.DecisionCalls).Decision); // surfaced live
     }
 
     [Fact]
     public async Task Halt_SafeDrift_AlwaysHalts_NoRewind()
     {
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Halt, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Halt, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(SafeSuffixDecision.Safe("resetsha", 2));
 
         var (report, exec, _, jnl, _) = await RunAsync(plan, JournalWithDriftOn01(a, b), prov, auth: null);
@@ -156,7 +161,7 @@ public sealed class SchedulerDriftAutoResolveTests
     public async Task Prompt_NotAuthorized_SafeDrift_Halts()
     {
         // Core never prompts; without the CLI's captured authorization a Prompt-policy safe drift HALTS.
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Prompt, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Prompt, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(SafeSuffixDecision.Safe("resetsha", 2));
 
         var (report, exec, _, _, _) = await RunAsync(plan, JournalWithDriftOn01(a, b), prov, auth: null);
@@ -168,10 +173,10 @@ public sealed class SchedulerDriftAutoResolveTests
     }
 
     [Fact]
-    public async Task Prompt_Authorized_MatchingPlan_Resolves_WithPromptTrigger()
+    public async Task Prompt_Authorized_MatchingPlan_Resolves_WithPromptApprovedDecision()
     {
         // Simulates the CLI having prompted OUTSIDE the live region and captured a `y` for THIS plan.
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Prompt, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Prompt, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(SafeSuffixDecision.Safe("resetsha", 2));
 
         var (report, exec, _, jnl, _) = await RunAsync(
@@ -181,7 +186,9 @@ public sealed class SchedulerDriftAutoResolveTests
         Assert.True(report.AllSucceeded);
         Assert.Equal(["resetsha"], prov.RewoundTo);
         Assert.Contains("01-a", exec.Started);
-        Assert.Equal("prompt", Assert.Single(jnl.Recorded).Trigger);
+        DecisionEntry entry = Assert.Single(jnl.Recorded);
+        Assert.Equal("prompt", entry.Policy);
+        Assert.Equal("prompted-approved", entry.Decision);
     }
 
     [Fact]
@@ -190,7 +197,7 @@ public sealed class SchedulerDriftAutoResolveTests
         // The operator approved a DIFFERENT plan (files edited during the blocking prompt) — the captured
         // authorization no longer matches this run's fresh decision, so the harness HALTS rather than
         // rewind a set the human never saw.
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Prompt, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Prompt, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(SafeSuffixDecision.Safe("resetsha", 2));
 
         var (report, exec, _, _, _) = await RunAsync(
@@ -202,12 +209,12 @@ public sealed class SchedulerDriftAutoResolveTests
     }
 
     [Fact]
-    public async Task Reprocess_TipMoved_Halts_CompareAndSwap()
+    public async Task Auto_TipMoved_Halts_CompareAndSwap()
     {
         // A concurrent same-plan session advanced the branch between the decision and the rewind: the
         // scripted decision saw tip "A", but the current tip is "B" → CAS mismatch → HALT (no rewind), so
         // the harness never discards the other session's work.
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Reprocess, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Auto, out TaskNode a, out TaskNode b);
         var decision = SafeSuffixDecision.Safe("resetsha", 2) with { ExpectedTip = "tip-A" };
         var prov = new DriftFakeProvider(decision, currentTip: "tip-B");
 
@@ -221,11 +228,11 @@ public sealed class SchedulerDriftAutoResolveTests
     }
 
     [Fact]
-    public async Task Reprocess_UnsafeDrift_AlwaysHalts_NoRewind_SurfacesRefusal()
+    public async Task Auto_UnsafeDrift_AlwaysHalts_NoRewind_SurfacesRefusal()
     {
         // The un-overridable floor: no policy authorizes an unsound rewind, and the refusal reason + blocker
         // are surfaced so the CLI steers to the full rebuild instead of a re-halting flag.
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Reprocess, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Auto, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(
             SafeSuffixDecision.Refused("uncontained fan-in", blockingTask: "07-upstream"));
 
@@ -244,7 +251,7 @@ public sealed class SchedulerDriftAutoResolveTests
     public async Task Prompt_Authorized_UnsafeDrift_StillHalts()
     {
         // Even an operator `y` cannot authorize an unsafe rewind.
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Prompt, out TaskNode a, out TaskNode b);
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Prompt, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(
             SafeSuffixDecision.Refused("interleaved non-S task", blockingTask: "05-other"));
 
@@ -257,11 +264,11 @@ public sealed class SchedulerDriftAutoResolveTests
     }
 
     [Fact]
-    public async Task Reprocess_NothingToRewind_JournalOnlyReset_NoGitRewind()
+    public async Task Auto_NothingToRewind_JournalOnlyReset_NoGitRewind()
     {
         // No physical suffix to remove (serial / lost plan branch) — journal-only reset is sound; the git
-        // rewind is skipped but the safe set still re-runs and the resolution is recorded (no target).
-        PlanDefinition plan = DriftedLinearPlan(DriftPolicy.Reprocess, out TaskNode a, out TaskNode b);
+        // rewind is skipped but the safe set still re-runs and the decision is recorded (no rewind target).
+        PlanDefinition plan = DriftedLinearPlan(AutonomyPolicy.Auto, out TaskNode a, out TaskNode b);
         var prov = new DriftFakeProvider(SafeSuffixDecision.Nothing());
 
         var (report, exec, _, jnl, _) = await RunAsync(plan, JournalWithDriftOn01(a, b), prov, auth: null);
@@ -270,6 +277,6 @@ public sealed class SchedulerDriftAutoResolveTests
         Assert.True(report.AllSucceeded);
         Assert.Empty(prov.RewoundTo);                        // no git reset
         Assert.Contains("01-a", exec.Started);               // but the set still re-runs
-        Assert.Null(Assert.Single(jnl.Recorded).RewindTarget);
+        Assert.Contains("no plan-branch rewind needed", Assert.Single(jnl.Recorded).Headline);
     }
 }

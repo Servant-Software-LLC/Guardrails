@@ -88,15 +88,15 @@ public sealed record RunConfig
     public bool TriageAutoFile { get; init; }
 
     /// <summary>
-    /// How a resume handles a PROVABLY-SAFE definition drift on an already-<c>succeeded</c> task (SSOT
-    /// §2/§7.2, issue #274 Part C). Default <see cref="Model.DriftPolicy.Prompt"/>: prompt in an
-    /// interactive TTY, halt when non-interactive. <see cref="Model.DriftPolicy.Reprocess"/> (CLI
-    /// <c>--reprocess-drift</c> overrides to this) auto-resolves with no prompt;
-    /// <see cref="Model.DriftPolicy.Halt"/> always halts (the strict Part A behavior). An UNSAFE drift
-    /// always halts regardless. An unrecognized JSON value is a validation error
-    /// (<see cref="Loading.DiagnosticCodes.InvalidDriftPolicy"/>).
+    /// The unified autonomy knob (SSOT §2.1, #254/#269/#274): how the harness handles EVERY prompt/halt/auto
+    /// decision boundary. Default <see cref="Model.AutonomyPolicy.Prompt"/>: prompt in an interactive TTY,
+    /// halt when non-interactive. <see cref="Model.AutonomyPolicy.Auto"/> (CLI <c>--autonomy auto</c>, or the
+    /// legacy alias <c>--reprocess-drift</c>) applies a SAFE decision with no prompt;
+    /// <see cref="Model.AutonomyPolicy.Halt"/> always halts. In M1 the only wired boundary is the resume
+    /// definition-drift gate (§7.2); an UNSAFE drift always halts regardless of this field. An unrecognized
+    /// JSON value is a validation error (<see cref="Loading.DiagnosticCodes.InvalidAutonomyPolicy"/>).
     /// </summary>
-    public DriftPolicy DriftPolicy { get; init; } = DriftPolicy.Prompt;
+    public AutonomyPolicy AutonomyPolicy { get; init; } = AutonomyPolicy.Prompt;
 
     /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
     public string? DefaultPromptRunner { get; init; }

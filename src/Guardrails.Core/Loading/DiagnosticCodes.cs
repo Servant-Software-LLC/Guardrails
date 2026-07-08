@@ -264,12 +264,14 @@ public static class DiagnosticCodes
     // last taken code above, so GR2031 is next free.
 
     /// <summary>
-    /// A <c>driftPolicy</c> value (SSOT §2/§7.2, issue #274 Part C) is present but not one of the three
-    /// recognised values <c>prompt</c> (default), <c>reprocess</c>, or <c>halt</c>. The field selects how
-    /// a resume handles a provably-safe definition drift; an unrecognised value can never map to a policy
-    /// and is always a configuration mistake (a typo, a stale value) that would otherwise silently degrade
-    /// to a default a CI-strict user did not intend. An ERROR: turns a silent-wrong-policy footgun into a
-    /// load-time catch. A <c>null</c>/absent value is fine (means the default, <c>prompt</c>).
+    /// An <c>autonomyPolicy</c> value (SSOT §2.1/§7.2, #254/#269/#274) is present but not one of the three
+    /// recognised values <c>prompt</c> (default), <c>halt</c>, or <c>auto</c>. The field is the unified
+    /// autonomy knob governing every prompt/halt/auto decision boundary; an unrecognised value can never map
+    /// to a policy and is always a configuration mistake (a typo, a stale value — including the pre-fold
+    /// <c>reprocess</c>) that would otherwise silently degrade to a default a CI-strict user did not intend.
+    /// An ERROR: turns a silent-wrong-policy footgun into a load-time catch. A <c>null</c>/absent value is
+    /// fine (means the default, <c>prompt</c>). (Generalised from the #274 Part C <c>driftPolicy</c> check —
+    /// same code, one check.)
     /// </summary>
-    public const string InvalidDriftPolicy = "GR2031";
+    public const string InvalidAutonomyPolicy = "GR2031";
 }

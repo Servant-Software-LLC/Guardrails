@@ -240,19 +240,15 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
-    public void DriftResolved(DriftResolution resolution)
+    public void DecisionRecorded(DecisionEntry entry)
     {
         lock (_gate)
         {
-            // A provably-safe definition drift was auto-resolved at the pre-DAG gate (issue #274 Part C).
-            // Emitted above the live region (like PlanHashMismatch) so the operator sees what was rebuilt.
-            string tasks = string.Join(", ", resolution.Tasks.Select(t => Markup.Escape(t.TaskId)));
-            string how = resolution.RewindTarget is { } target
-                ? $"rewound the plan branch to {Markup.Escape(target.Length <= 8 ? target : target[..8])}"
-                : "reset the drifted tasks (no plan-branch rewind needed)";
-            AnsiConsole.MarkupLine(
-                $"[green]definition drift auto-resolved[/] ([blue]{Markup.Escape(resolution.Trigger)}[/]): " +
-                $"{how} and re-running {resolution.Tasks.Count} task(s): {tasks}");
+            // An autonomy-policy decision (SSOT §2.1/§7). Emitted above the live region (like
+            // PlanHashMismatch) so the operator sees what a decision did — the headline is pre-rendered,
+            // subject names the units. M1 emits only boundary "drift" (a safe drift auto-resolved).
+            string subject = string.IsNullOrEmpty(entry.Subject) ? "" : $": {Markup.Escape(entry.Subject)}";
+            AnsiConsole.MarkupLine($"[green]{Markup.Escape(entry.Headline)}[/]{subject}");
         }
     }
 

@@ -71,14 +71,15 @@ public interface IRunObserver
     void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) { }
 
     /// <summary>
-    /// A Part C safe definition-drift was auto-resolved at the pre-DAG gate (issue #274, SSOT §7.2): the
-    /// plan branch was rewound past the provably-safe drifted suffix and its tasks journal-reset to
-    /// re-run. Surfaced so an operator/live UI sees exactly what the rewind rebuilt, with the same
-    /// per-task old→new hash payload the durable <c>driftResolutions[]</c> journal section records. NOT a
-    /// failure — the run then proceeds and returns the normal exit code. Default no-op so non-CLI
-    /// observers need not handle it.
+    /// An autonomy-policy decision was recorded to the unified <c>decisions[]</c> log (SSOT §2.1/§7): the
+    /// <paramref name="entry"/> carries the <c>boundary</c> (M1 emits only <c>drift</c> — a safe
+    /// definition-drift auto-resolved at the pre-DAG gate, §7.2), the policy in force, how it resolved, and
+    /// a human headline/subject. Surfaced under the live task table and the static log site so an operator
+    /// sees exactly what a decision did — the same payload the durable <c>decisions[]</c> journal section
+    /// records. NOT a failure (an auto-resolved drift then proceeds and returns the normal exit code).
+    /// Default no-op so non-CLI observers need not handle it.
     /// </summary>
-    void DriftResolved(DriftResolution resolution) { }
+    void DecisionRecorded(DecisionEntry entry) { }
 
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();

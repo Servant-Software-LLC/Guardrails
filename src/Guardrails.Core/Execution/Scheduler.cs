@@ -42,7 +42,7 @@ public sealed class Scheduler
     // probe (S + reset target + the plan-branch tip the operator saw). Non-null ONLY on a Prompt-policy
     // run the CLI already confirmed OUTSIDE the live region with a `y`. Core never prompts itself, so
     // without this a Prompt-policy safe drift HALTS. The Scheduler executes the CAPTURED plan (verifying
-    // it still matches + a tip compare-and-swap), never a possibly-diverged recompute. Reprocess
+    // it still matches + a tip compare-and-swap), never a possibly-diverged recompute. autonomyPolicy=auto
     // auto-resolves on its own fresh decision; halt/unconfirmed-prompt halt.
     private readonly DriftAuthorization? _driftAuthorization;
 
@@ -160,7 +160,7 @@ public sealed class Scheduler
         // drift through.
         HashSet<string> preSettledGreen;
         List<DefinitionDriftReporter.DriftInput> drifted;
-        DriftResolution? driftResolution = null;
+        DecisionEntry? driftDecision = null;
         try
         {
             (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords, trailerTracking);
@@ -173,7 +173,7 @@ public sealed class Scheduler
                 // consent-void plan, or a moved tip (CAS) all fall through to the Part A halt below.
                 DriftGateResult gate = TryResolveDrift(plan, graph, drifted, integ);
 
-                if (gate.Resolution is null)
+                if (gate.Decision is null)
                 {
                     // HALT with the rich per-file report — enriched so the CLI can distinguish a
                     // safe-but-unconfirmed halt (offer --reprocess-drift) from an UNSAFE refusal (steer to
@@ -184,13 +184,13 @@ public sealed class Scheduler
                             with { SafeToAutoResolve = gate.SafeToAutoResolve, RewindRefusal = gate.Refusal, RewindBlockingTask = gate.BlockingTask } };
                 }
 
-                driftResolution = gate.Resolution;
+                driftDecision = gate.Decision;
 
-                // Resolved: audit (durable journal section + live observer), then re-derive the
+                // Resolved: audit (durable decisions[] journal section + live observer), then re-derive the
                 // pre-settle-green set now that S is journal-reset to pending AND rewound off the branch —
                 // so the safe suffix schedules and re-runs, and a clean re-detect confirms no drift remains.
-                _journal.RecordDriftResolution(driftResolution);
-                _observer.DriftResolved(driftResolution);
+                _journal.RecordDecision(driftDecision);
+                _observer.DecisionRecorded(driftDecision);
 
                 if (_worktreeProvider is { } wpAfter && integ is { } integAfter)
                 {
@@ -322,7 +322,7 @@ public sealed class Scheduler
         }
 
         RunReport report = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
-            with { DriftResolution = driftResolution };
+            with { Decision = driftDecision };
 
         // --- C1 terminal whole-repo integration gate (§3.3/§4a) --------------------------
         // After every task settles green, re-run the run's integration-guardrail set on the
@@ -448,11 +448,11 @@ public sealed class Scheduler
         return (preSettledGreen, drifted);
     }
 
-    /// <summary>The outcome of the Part C gate: a resolution (rewound + reset) or a halt, with the safe/unsafe distinction the CLI needs to render the right remedy.</summary>
+    /// <summary>The outcome of the Part C gate: a decision (rewound + reset) or a halt, with the safe/unsafe distinction the CLI needs to render the right remedy.</summary>
     private sealed record DriftGateResult(
-        DriftResolution? Resolution, bool SafeToAutoResolve, string? Refusal, string? BlockingTask)
+        DecisionEntry? Decision, bool SafeToAutoResolve, string? Refusal, string? BlockingTask)
     {
-        public static DriftGateResult Resolved(DriftResolution resolution) => new(resolution, true, null, null);
+        public static DriftGateResult Resolved(DecisionEntry decision) => new(decision, true, null, null);
 
         /// <summary>Halt because the rewind is UNSOUND (a non-suffix / uncontained fan-in / trailer-less commit) — no flag authorizes it.</summary>
         public static DriftGateResult Unsafe(string? refusal, string? blockingTask) => new(null, false, refusal, blockingTask);
@@ -468,9 +468,9 @@ public sealed class Scheduler
     /// branch (<see cref="SafeSuffixEvaluator"/> via the provider), then apply the gating:
     /// <list type="bullet">
     ///   <item>UNSAFE (Refused) → HALT (unsafe). No policy authorizes an unsound rewind.</item>
-    ///   <item><see cref="DriftPolicy.Halt"/> → HALT (safe; strict opt-out, the Part A behavior).</item>
-    ///   <item><see cref="DriftPolicy.Reprocess"/> → resolve on this run's own fresh decision (pre-authorized spend).</item>
-    ///   <item><see cref="DriftPolicy.Prompt"/> → resolve ONLY when the CLI captured an operator <c>y</c>
+    ///   <item><see cref="AutonomyPolicy.Halt"/> → HALT (safe; strict opt-out, the Part A behavior).</item>
+    ///   <item><see cref="AutonomyPolicy.Auto"/> → resolve on this run's own fresh decision (pre-authorized spend).</item>
+    ///   <item><see cref="AutonomyPolicy.Prompt"/> → resolve ONLY when the CLI captured an operator <c>y</c>
     ///     (<see cref="_driftAuthorization"/>) AND that captured plan still matches this fresh decision AND
     ///     the branch tip has not moved; otherwise HALT (Core never prompts).</item>
     /// </list>
@@ -510,15 +510,14 @@ public sealed class Scheduler
             return DriftGateResult.Unsafe(decision.Refusal, decision.BlockingTask);
         }
 
-        // Authorization gate (only a provably-safe / nothing-to-rewind drift reaches here).
-        string trigger;
-        switch (_plan.Config.DriftPolicy)
+        // Authorization gate (only a provably-safe / nothing-to-rewind drift reaches here). The switch
+        // decides resolve-vs-halt ONLY; the DecisionEntry is built from _plan.Config.AutonomyPolicy below.
+        switch (_plan.Config.AutonomyPolicy)
         {
-            case DriftPolicy.Reprocess:
-                trigger = "reprocess";
+            case AutonomyPolicy.Auto:
                 break;
 
-            case DriftPolicy.Prompt when _driftAuthorization is { } auth:
+            case AutonomyPolicy.Prompt when _driftAuthorization is { } auth:
                 // Consent integrity: the operator approved a SPECIFIC plan (from the probe's preview). If
                 // files edited during the blocking prompt changed what would be rewound (S / target
                 // diverges), HALT — never rewind a set the human did not see.
@@ -527,7 +526,6 @@ public sealed class Scheduler
                     return DriftGateResult.HaltSafe();
                 }
 
-                trigger = "prompt";
                 break;
 
             default: // Halt policy, or an unconfirmed Prompt policy — Core never prompts.
@@ -581,12 +579,8 @@ public sealed class Scheduler
             State.RewindIntent.Clear(_plan.PlanDirectory);
         }
 
-        return DriftGateResult.Resolved(new DriftResolution
-        {
-            Trigger = trigger,
-            RewindTarget = resetTarget,
-            Tasks = BuildResolvedTasks(plan, drifted, safeSet)
-        });
+        return DriftGateResult.Resolved(DriftDecisions.AutoResolved(
+            _plan.Config.AutonomyPolicy, resetTarget, BuildResolvedTasks(plan, drifted, safeSet)));
     }
 
     /// <summary>
