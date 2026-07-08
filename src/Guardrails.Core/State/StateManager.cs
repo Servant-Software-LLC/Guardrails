@@ -88,6 +88,7 @@ public sealed class StateManager
     internal static readonly IReadOnlySet<string> ReservedMergeKeys =
         new HashSet<string>(StringComparer.Ordinal);
 
+    private readonly string _planDirectory;
     private readonly string _stateDirectory;
     private readonly string _statePath;
     private readonly string _seedPath;
@@ -99,6 +100,7 @@ public sealed class StateManager
     public StateManager(string planDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(planDirectory);
+        _planDirectory = planDirectory;
         _stateDirectory = Path.Combine(planDirectory, "state");
         _statePath = Path.Combine(_stateDirectory, StateFileName);
         _seedPath = Path.Combine(_stateDirectory, SeedFileName);
@@ -112,9 +114,19 @@ public sealed class StateManager
     /// Ensure <c>state.json</c> exists. If missing, create it atomically from
     /// <c>seed.json</c> (if present) else <c>{}</c>. Idempotent — an existing
     /// <c>state.json</c> is left untouched (resume preserves accumulated state).
+    /// Also scaffolds the plan-root <c>.gitignore</c> (issue #258) that keeps transient
+    /// runtime state out of version control — see <see cref="PlanGitignore"/>.
     /// </summary>
     public void Initialize()
     {
+        // Issue #258: scaffold the plan-root .gitignore so a routine `git add <plan-folder>/` cannot
+        // commit transient runtime state (run.json/state.json/logs/... — the RunReset.Fresh set).
+        // This is THE run-init choke point: reached by every run (SchedulerFactory.CreateExecutor),
+        // by `--fresh` (RunReset.Fresh re-seeds through here), and by the direct-Initialize test paths.
+        // Done BEFORE the resume early-return below so a plan first run predating this feature still
+        // gets its ignore file on the next run. Non-clobbering + idempotent (PlanGitignore guards).
+        PlanGitignore.EnsureScaffolded(_planDirectory);
+
         lock (_gate)
         {
             if (File.Exists(_statePath))
