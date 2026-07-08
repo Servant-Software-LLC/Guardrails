@@ -172,6 +172,39 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   fragment, inverted anti-tautology). The mitigation is **authoring, not runtime**: author a
   `scope:"integration"` union-guardrail on the shared file (`plan-breakdown` emits one for overlapping
   scopes; `guardrails-review` flags its absence WEAK). See SSOT section 4.3 "Accepted residual".
+  **Author-time smoke-test gate for SCRIPT guardrails (#302).** When a `.sh`/`.ps1`/`.py` guardrail
+  (a script in ANY of the four folders -- `tasks/<id>/guardrails/`, `tasks/<id>/preflights/`,
+  `<plan>/guardrails/`, `<plan>/preflights/`) is authored or CHANGED and it is
+  RUNNABLE-AT-AUTHOR-TIME, the author MUST smoke-test it by **EXECUTING** it before committing --
+  against **(a) a representative VALID sample** of the checked artifact (expect **exit 0**) AND
+  **(b) a deliberately INVALID one** (expect **non-zero**) -- never defer its first real execution to
+  `guardrails run`, where a broken guardrail script burns the task's WHOLE retry budget to
+  `needs-human`, blocks every downstream task, and masquerades as an implementation bug (the task's own
+  deliverable was valid all along). The two-sided run catches all three script-defect classes at once:
+  a runtime bug of the script's OWN (bash quote-stripping, path handling, a broken `--json` parse --
+  misbehaves on any input); a **false-red no correct implementation can satisfy** (every attempt
+  dead-ends at `needs-human`); and a **toothless** check that passes the invalid sample (a tautology /
+  over-broad check). **RUNNABLE-AT-AUTHOR-TIME** = idempotent (no persistent workspace side effects --
+  a temp dir cleaned via `trap`/`finally` is fine) AND its input is available in-repo or
+  **hand-synthesizable** AND it needs no live external dependency (no server boot, no network, not the
+  full merged HEAD). **Two gotchas the rule encodes:** (1) `bash -n` / `sh -n` (or a `pwsh -NoProfile`
+  parse) is a CHEAP FIRST PASS only -- **necessary, not sufficient**: the motivating bug (a LikeC4
+  single-quote nested inside a bash `-e '...'` block, silently quote-stripped so the throwaway fixture
+  was corrupted on EVERY attempt regardless of the task's output) is *syntactically valid* bash -- only
+  EXECUTING it reveals the corruption. (2) The real input is often the task's **not-yet-authored
+  output**, so "run against the real input" fails module-not-found -- the rule requires a **hand-written
+  representative sample** of the expected artifact. This is the KEY case: a guardrail that RENDERS or
+  EXECUTES the task's own output (into a throwaway workspace, a rendered fixture, an `--input-type`
+  block) is exactly the one whose first real execution is deferred to runtime today, and exactly where
+  its own harness/fixture bugs hide. **Carve-out -- NOT runnable-at-author-time** (needs a live service,
+  the built binary, the full merged HEAD): the gate does NOT apply; run at least the syntax pass, reason
+  explicitly about correctness, and **state in the breakdown/review report that the guardrail could not
+  be author-time-executed and why** -- an honest deferral, never a silent one. **Distinct from #248:**
+  #248 runs the *underlying tool* once to check a guardrail's assumption about that tool's PRINTED
+  output; #302 EXECUTES the guardrail *script itself* against hand-synthesized valid+invalid samples to
+  check the script's OWN correctness -- the motivating bug had no tool-output assumption, so #248's
+  probe did not cover it. Homed here; enforced by `plan-breakdown` (Step 7.0d self-validate) and probed
+  by `guardrails-review`.
 - **State**: snapshot-in / fragment-out. Attempt gets an immutable snapshot
   (`GUARDRAILS_STATE_IN`); action may write a JSON-object fragment (`GUARDRAILS_STATE_OUT`);
   harness (single writer) deep-merges fragments into `state/state.json` in completion order after

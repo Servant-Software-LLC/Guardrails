@@ -43,7 +43,13 @@ specific tool's PRINTED console output (a `Select-String`/regex on a build or te
 tool's summary/error text) rather than just its exit code or a file it wrote — Step 2's
 adversarial pass runs that tool once against the real workspace to check the pattern
 against genuine output (see "Pattern-matching guardrail not verified against real
-output" below). Noting candidates here avoids re-reading every script during the pass.
+output" below). **Also flag every `.sh`/`.ps1`/`.py` guardrail that RENDERS or EXECUTES
+the task's own output** (writes a throwaway workspace / rendered fixture, runs an
+`--input-type`/`-e` block, parses `--json`) — Step 2's adversarial pass EXECUTES those
+against hand-synthesized valid + invalid samples to prove the SCRIPT'S OWN correctness
+(see "Script guardrail not smoke-tested against a valid + invalid sample" below, the
+#302 probe — distinct from the #248 tool-output probe). Noting both candidate sets here
+avoids re-reading every script during the pass.
 
 ### 2. Adversarial pass per task (the heart)
 Role-play a lazy or wrong implementer. Concrete probes (mirror of the catalogue's
@@ -640,6 +646,38 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   `needsHuman`); **WEAK** when it matches today but rests on a fragile, unconfirmed format
   assumption (SDK/framework version, locale, verbosity level) that could silently break later.
 <!-- END ADDED PROBE #248 -->
+<!-- BEGIN ADDED PROBE #302 — script guardrail not smoke-tested against valid + invalid samples -->
+- **Script guardrail not smoke-tested against a valid + invalid sample (#302)**: EXTENDS #248 but is
+  **DISTINCT**. #248 runs the *underlying tool* once to confirm a guardrail's assumption about that
+  tool's PRINTED output; #302 EXECUTES the guardrail **script itself** (`.sh`/`.ps1`/`.py`, in any of
+  the four folders) against hand-synthesized samples to prove the SCRIPT's OWN correctness — does it
+  run at all, PASS a valid artifact, and REJECT an invalid one. The motivating bug had **no**
+  tool-output assumption: a LikeC4 single-quote nested inside a bash `-e '...'` block was silently
+  quote-stripped, corrupting the throwaway fixture on EVERY attempt regardless of the task's output —
+  so #248's "run the tool once" probe did not cover it, and a purely textual read of the script missed
+  it (the quote-stripping is *syntactically valid* bash; only EXECUTION reveals the corruption). For
+  every script guardrail that is **runnable-at-author-time** — idempotent (no persistent workspace side
+  effects; a temp dir cleaned via `trap`/`finally` is fine) AND its input is in-repo or
+  **hand-synthesizable** AND it needs no live external dependency (no server boot, no network, not the
+  full merged HEAD) — do the two-sided execution: `bash -n`/`sh -n` (or a `pwsh -NoProfile` parse) as a
+  cheap FIRST pass, then run it against **(a) a hand-written representative VALID sample** of the checked
+  artifact (expect exit 0) and **(b) a deliberately INVALID one** (expect non-zero). The
+  **highest-value target** is a guardrail that RENDERS or EXECUTES the task's own **not-yet-authored
+  output** (a throwaway workspace, a rendered fixture, an `--input-type` block): its real input does not
+  exist until the task runs, so its first real execution is deferred to runtime today, and that is
+  exactly where its own harness/fixture bugs (bash quoting, path handling, `--json` parsing) hide —
+  hand-synthesize the sample and run it. Severity: **BLOCKER** when the script FAILS the valid sample (a
+  false-red no correct implementation can satisfy → every attempt dead-ends at `needsHuman`, blocking
+  downstream) or PASSES the invalid sample (a toothless / tautological check); **WEAK** when it is
+  runnable-at-author-time but simply was not smoke-tested (a latent script bug the review should close
+  now). **Not runnable-at-author-time** (needs a live service / the built binary / the full merged HEAD)
+  → do NOT block: run the syntax pass, reason about correctness, and note in the report that the
+  guardrail could not be author-time-executed and why (an honest deferral). Scope narrowly — a
+  `Test-Path` / bare exit-code / `git diff` guardrail with no rendering, parsing, or fixture step has
+  little a run would reveal that a read does not; spend the execution budget on the render/execute-the-
+  output scripts. (Doctrine: `guardrails-domain-knowledge` → author-time smoke-test gate; plan-breakdown
+  Step 7.0d adds the matching authoring rule.)
+<!-- END ADDED PROBE #302 -->
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -764,5 +802,6 @@ while a BLOCKER finding remains unaddressed — the marker vouches that the plan
 - [ ] Every producer↔consumer derived-name seam has a consumer-driven integration guardrail on a both-sides-present task that drives the real lookup for EVERY item and asserts 200 + a per-item marker — union-safe, no hard-coded name copy, no sampling (#96).
 <!-- END ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every guardrail that pattern-matches/regexes a tool's PRINTED console output (not just its exit code or a file it wrote) was verified by actually RUNNING that tool once against the real repo/workspace and checking the pattern against the real output — not just reasoning about whether the regex looks plausible; a pattern shown to never match the real output is a BLOCKER (the guardrail fails unconditionally, dead-ending every attempt at `needsHuman`), a fragile-but-currently-matching format assumption is WEAK. Does not apply to exit-code-only / file-existence / diff checks — there is no output-format assumption to verify there (#248).
+- [ ] Every `.sh`/`.ps1`/`.py` guardrail that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was smoke-tested by EXECUTING the guardrail SCRIPT itself against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only; the highest-value target (a guardrail that renders/executes the task's own not-yet-authored output) was run against a synthesized sample. FAILS the valid sample or PASSES the invalid sample = BLOCKER; runnable-but-unrun = WEAK; not-runnable-at-author-time (live service / built binary / merged HEAD) = syntax pass + honest report deferral, never a block. Distinct from #248 (which runs the underlying TOOL, not the guardrail script) (#302).
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
 - [ ] The review was recorded with `guardrails mark-reviewed <folder>` once findings were addressed/declined — clearing the GR2025 nudge (#79/#131); NOT run while a BLOCKER remained open.
