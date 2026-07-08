@@ -56,6 +56,34 @@ internal static class AttemptArtifacts
             JsonSerializer.Serialize(provenance, ResultOptions));
     }
 
+    /// <summary>
+    /// Write <c>scope-clean.log</c> naming the out-of-scope paths a phase-2 scope-clean stripped from
+    /// the segment after the guardrails PASSED (SSOT §3.4, issue #280). A durable, UI-independent trace
+    /// (the #253 "don't silently vanish files" posture): the paths were a passing guardrail's side
+    /// effects (an <c>npm ci</c> / build cache), cleaned so the commit carries exactly the in-scope
+    /// diff — never a failure. No-op when nothing was stripped.
+    /// </summary>
+    public static void WriteScopeCleanNote(string logDir, IReadOnlyList<WriteScopeOffense> stripped)
+    {
+        if (stripped.Count == 0)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(logDir);
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("# phase-2 scope-clean (SSOT §3.4, issue #280)");
+        sb.AppendLine("# These out-of-scope paths were left by a PASSING guardrail (e.g. an `npm ci` /");
+        sb.AppendLine("# build side effect) and were stripped so the segment commit carries exactly the");
+        sb.AppendLine("# in-scope diff. This is NOT a failure — verifiers legitimately produce side effects.");
+        foreach (WriteScopeOffense o in stripped)
+        {
+            sb.Append(o.Status).Append('\t').AppendLine(o.Path);
+        }
+
+        AtomicFile.WriteAllText(Path.Combine(logDir, "scope-clean.log"), sb.ToString());
+    }
+
     /// <summary>Write <c>guardrail-&lt;name&gt;.stdout.log</c> and <c>.stderr.log</c>.</summary>
     public static void WriteGuardrailLogs(string logDir, string guardrailName, ProcessResult result)
     {

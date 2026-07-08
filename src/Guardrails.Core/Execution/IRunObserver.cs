@@ -60,6 +60,16 @@ public interface IRunObserver
     /// </summary>
     void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount) { }
 
+    /// <summary>
+    /// Phase-2 scope-clean (SSOT §3.4, issue #280): after a <c>writeScope</c> task's guardrails PASSED,
+    /// the harness re-computed the out-of-scope changed paths a passing guardrail left as side effects
+    /// (an <c>npm ci</c>, a build cache, a generated <c>dist/</c>) and STRIPPED them from the segment
+    /// before the commit, so the commit carries exactly the in-scope diff. This is NOT a failure — the
+    /// paths are echoed for diagnosability (the #253 "don't silently vanish files" posture), never
+    /// punished. Default no-op so non-CLI observers need not handle it.
+    /// </summary>
+    void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

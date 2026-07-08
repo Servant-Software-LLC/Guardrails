@@ -72,6 +72,20 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped)
+    {
+        lock (_gate)
+        {
+            // A passing guardrail's side effects (an `npm ci`, a build cache) cleaned so the commit
+            // carries exactly the in-scope diff — NOT a failure (issue #280). Name them so a stripped
+            // path is never a silent surprise (the #253 diagnosability posture).
+            string paths = string.Join(", ", stripped.Select(o => $"{o.Status} {o.Path}"));
+            _output.WriteLine(
+                $"  [scope-clean] {task.Id}: stripped {stripped.Count} out-of-scope path(s) left by a " +
+                $"passing guardrail (not a failure): {paths}");
+        }
+    }
+
     public void PlanHashMismatch(string previousPlanHash)
     {
         lock (_gate)

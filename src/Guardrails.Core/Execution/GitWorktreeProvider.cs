@@ -146,11 +146,16 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
         // Stage and commit all changes in the segment (--allow-empty for tasks that only write
         // to GUARDRAILS_STATE_OUT with no file changes in the working tree).
+        // Staging EXCLUDES the reconstructable dep/build set (SSOT §5.3(D), issue #280): a guardrail's
+        // `npm ci` node_modules (at any depth) and the harness's own .guardrails-staging/ /
+        // .guardrails-agent-io/ scaffolding can NEVER be captured into the segment commit, regardless
+        // of .gitignore timing or whether the task declared a writeScope. Stage-exclusion only — the
+        // dirs stay on disk (warm-cache #255).
         // --no-verify (issue #149): this is an INTERNAL plumbing commit in a throwaway segment
         // worktree — machine bookkeeping, never the user's deliverable. A global user git hook
         // (e.g. GitGuardian's pre-commit, which fired offline and crashed the run in the incident)
         // must NOT gate it. User hooks run only on the user-facing merge (MergePlanBranchIntoUserBranch).
-        GitIn(segment.WorktreePath, "add", "-A");
+        SegmentStaging.StageAll(segment.WorktreePath);
         string commitMsg = TrailerMessage(taskId, integ.RunId, segment.DefinitionHash);
         GitIn(segment.WorktreePath, "commit", "--no-verify", "--allow-empty", "-m", commitMsg);
 

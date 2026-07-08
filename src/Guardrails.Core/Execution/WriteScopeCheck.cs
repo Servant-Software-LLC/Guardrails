@@ -39,7 +39,11 @@ public static class WriteScopeCheck
             // Stage the action's writes so new/untracked files surface in the staged diff, then diff
             // the index against taskBase — this captures uncommitted writes (the live pre-commit path)
             // AND already-committed segment work (the committed-segment test path) with one command.
-            RunGit(repoPath, "add", "-A");
+            // Staging EXCLUDES the reconstructable dep/build set (SSOT §5.3(D), issue #280): a
+            // guardrail's `npm ci` node_modules is uniformly invisible to harness git, so it can never
+            // surface here as a spurious out-of-scope violation (e.g. a leftover in a reused
+            // linear-chain worktree), and phase-2 scope-clean (§3.4) never deletes it from disk (#255).
+            SegmentStaging.StageAll(repoPath);
             diffOutput = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
         }
         catch (InvalidOperationException ex)
@@ -85,6 +89,44 @@ public static class WriteScopeCheck
             Passed = offending.Count == 0,
             OffendingPaths = offending
         };
+    }
+
+    /// <summary>
+    /// Phase-2 scope-clean (SSOT §3.4, issue #280): the "verifiers don't produce committed artifacts"
+    /// guarantee. Called AFTER a writeScope task's guardrails PASS and before the segment settle, it
+    /// re-computes the out-of-scope changed paths and REVERTS them — reusing the exact same
+    /// <see cref="Check"/> + <see cref="ScopedRevert"/> as the phase-1 action check. The CRUCIAL
+    /// semantic difference from phase 1: this STRIPS SILENTLY and NEVER fails the attempt. A passing
+    /// guardrail legitimately runs an <c>npm ci</c> / a build as a side effect; those out-of-scope
+    /// artifacts are expected and are cleaned so the commit carries exactly the in-scope diff — never
+    /// punished. Returns the offenses it stripped (empty when nothing was out of scope) so the caller
+    /// can echo them to a log / observer note (the #253 "don't silently vanish files" posture).
+    /// <para>
+    /// The reconstructable dep/build dirs (<see cref="SegmentStaging.ReconstructableExclusions"/>) are
+    /// invisible to <see cref="Check"/>'s staging, so they are NEVER seen here and thus NEVER deleted
+    /// from the worktree — they stay on disk (warm-cache #255) and are kept out of the commit by the
+    /// <see cref="SegmentStaging"/> exclusion at the <see cref="GitWorktreeProvider.Integrate"/> staging
+    /// site instead. Returns <c>[]</c> for a null scope (the off-switch) and for the WS_2 git-error
+    /// sentinel (status <c>?</c>) — phase 2 is best-effort and must not fail the attempt, so a git error
+    /// during the re-check degrades to "nothing stripped" rather than attempting to <c>git rm</c> a
+    /// synthetic marker path.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<WriteScopeOffense> StripOutOfScope(
+        string repoPath, string taskBase, IReadOnlyList<string>? scope)
+    {
+        WriteScopeCheckResult result = Check(repoPath, taskBase, scope);
+
+        // Only revert REAL offending paths — the WS_2 git-error sentinel (status '?') is a synthetic
+        // marker, not a path. Phase 2 does not fail the attempt, so a git error simply strips nothing.
+        var realOffenses = result.OffendingPaths.Where(o => o.Status != '?').ToList();
+        if (realOffenses.Count == 0)
+        {
+            return [];
+        }
+
+        ScopedRevert(repoPath, taskBase, realOffenses);
+        return realOffenses;
     }
 
     /// <summary>
@@ -149,7 +191,10 @@ public static class WriteScopeCheck
     {
         try
         {
-            RunGit(repoPath, "add", "-A");
+            // Same reconstructable-set exclusion as Check (SSOT §5.3(D), issue #280): a guardrail's
+            // node_modules must not be read as an "observable change" that keeps the no-op
+            // short-circuit (#174) from firing.
+            SegmentStaging.StageAll(repoPath);
             string diff = RunGit(repoPath, "diff", "--cached", "--name-status", "--no-renames", taskBase);
             return diff.Split('\n', StringSplitOptions.RemoveEmptyEntries).Any(l => l.Trim().Length > 0);
         }

@@ -486,6 +486,23 @@ agent mistake). An `A` offense also carries a best-effort forensic `Preview` (si
 snippet) captured DURING the check, before the scoped revert deletes the file — otherwise the file
 is simply gone with no trace by the time anyone reads the retry feedback. Both are threaded into
 `RetryPolicy.ForWriteScopeViolation`'s feedback text.
+
+**Two enforcement phases (issue #280).** The scoped revert above is **phase 1**, run on the
+*action's* writes BEFORE the guardrails: an out-of-scope write there is an agent-discipline
+violation, so it **fails the attempt** (retry with feedback; eventual `needs-human`). There is also
+a **phase 2**, run AFTER the guardrails PASS and before the segment settle: the harness re-computes
+the out-of-scope changed paths and runs the **same** `WriteScopeCheck.Check` + `ScopedRevert`, but
+this phase **does NOT fail the attempt**. A passing guardrail is a *verifier*; its filesystem side
+effects (an `npm ci`, a build cache, a generated `dist/`) are **expected** and are stripped so they
+never reach the commit — never punished (a guardrail that runs `npm ci` to smoke-test an import is
+doing its job). The two phases share one revert; they differ only in the verdict — phase 1 fails,
+phase 2 strips silently, echoing the stripped paths to a `scope-clean.log` and an `IRunObserver`
+note (the #253 "don't silently vanish files" posture). **Net guarantee for a writeScope task:** the
+segment commit contains exactly the in-scope diff. Phase 2 is **skipped for a no-writeScope task**
+(its safety net is the unconditional dependency/build-dir staging exclusion, §5.3(D)); that same
+exclusion makes the reconstructable dep dirs (v1: `node_modules` at any depth) invisible to phase 2,
+so they are kept out of the commit at staging time and are **never deleted from the worktree**
+(warm-cache #255 compatible).
 **Absent ⇒ no check** (the off-switch — a task that can't be confidently scoped omits the field and
 is reported as a broad surface, never given a vacuous `**`). **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
@@ -542,8 +559,9 @@ guardrails verify the real `.claude/` artifact and the task goes green unattende
 **The move** runs in the task's segment worktree, after action success, **before the write-scope
 check** (§3.4) and the guardrails — so the changed surface the write-scope check and the guardrails
 see is the real `.claude/` path. The harness deletes the entire `.guardrails-staging/` tree after
-the move and before integration, so staging scaffolding never reaches a commit (a generated
-`.git/info/exclude` entry is a belt-and-braces second line; the user's tracked `.gitignore` is
+the move and before integration, so staging scaffolding never reaches a commit; and as a
+belt-and-braces second line, `.guardrails-staging/` is on the §5.3(D) segment-staging exclusion set,
+so even a failed cleanup can never commit staging scaffolding (the user's tracked `.gitignore` is
 never modified). The move is done by the executor inside the per-task segment worktree (worktree
 isolation), not under the integration lock.
 
@@ -951,6 +969,28 @@ before integration so no scaffolding is committed. In serial shared-workspace mo
 in the user's checkout `.claude/` — the one documented serial trade-off, no broader than the
 existing serial-mode child writes (§7.1). It never writes the integration worktree or the user's
 branch outside the existing `--merge-on-success` delivery.
+
+**(D) Dependency/build-dir exclusion at segment staging (issue #280).** Every harness `git add -A`
+staging site EXCLUDES a curated set of reconstructable dependency/build directories, so they can
+**never** be captured into a segment commit — regardless of `.gitignore` timing or whether the task
+declares a `writeScope`. The v1 set is a single named constant
+(`Guardrails.Core.Execution.SegmentStaging.ReconstructableExclusions`): **`node_modules` at any
+depth**, plus the harness's own **`.guardrails-staging/`** (§3.5) and **`.guardrails-agent-io/`**
+(§9.5). The mechanism is a git pathspec exclude —
+`git add -A -- . :(exclude,glob)**/<name>/**` per excluded name — applied CONSISTENTLY at the three
+sites that stage a segment: `GitWorktreeProvider.Integrate` (the segment commit) and the write-scope
+check's own staging in **both** `WriteScopeCheck.Check` and `WriteScopeCheck.HasFileChanges` (so a
+leftover `node_modules` in a reused linear-chain worktree can never surface as a spurious write-scope
+violation either, and the `.gitignore`-timing fragility that motivated this issue is closed). It is
+the **no-writeScope safety net** — §3.4 phase-2 scope-clean is skipped without a `writeScope` — and
+**defense-in-depth** under the writeScope case (phase 2 never even sees the excluded set). **It is
+STAGE-EXCLUSION, NOT worktree deletion:** the dirs remain on disk (discarded with the segment, or
+left in place for a reused worktree) — the constraint the future warm-cache / worktree-pool work
+(#255) depends on; per-worktree dependency reconstruction (#259) is complementary, not superseded.
+The one throwaway forensic ref `GitWorktreeProvider.PreserveAttemptToRef` (the #195 retry-salvage
+snapshot) deliberately stays on plain `git add -A` — it is never merged, only inspected by a human,
+so it should capture everything. The set is extensible in code; a `guardrails.json`-driven set is
+deferred.
 
 Any new capability that needs the harness to write outside the integration worktree or the opt-in
 end-of-run delivery to the user's branch must be added to this section with its own containment

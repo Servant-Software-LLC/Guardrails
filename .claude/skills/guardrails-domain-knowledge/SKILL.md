@@ -79,10 +79,26 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   - `writeScope: ["src/Foo/"]` (optional) drives the deterministic **write-scope CHECK** (SSOT
     section 3.4): after the action, before the task's own guardrails, the harness computes
     `git diff --name-status <taskBase>..<HEAD>` in the segment worktree and asserts every changed
-    path is in scope. Absent => no check. A violation is a guardrail-class failure (retry with
-    feedback naming the out-of-scope paths; eventual `needs-human`). **Never reverts** -- read-only
-    check only. Renames = paired D+A (both in scope). GR2019 (error): scope entry escapes
-    workspace. GR2020 (warning): vacuous/over-broad scope. TDD triad replacement.
+    path is in scope. Absent => no check. **Two enforcement phases (#280):** **phase 1** runs on the
+    *action's* writes BEFORE the guardrails -- a violation is a guardrail-class failure that
+    scoped-**reverts** the out-of-scope paths (out-of-scope MODIFY/DELETE `git checkout <taskBase> --`,
+    a new file `git rm -f`; in-scope WIP survives) and retries with feedback (eventual `needs-human`);
+    **phase 2** runs AFTER the guardrails PASS, before the segment settle -- it re-runs the SAME
+    Check+ScopedRevert but does **NOT** fail the attempt (a passing guardrail's `npm ci`/build side
+    effects are expected and STRIPPED silently, echoed to `scope-clean.log` + an `IRunObserver` note,
+    never punished). Net: a writeScope task's segment commit contains exactly the in-scope diff. Phase 2
+    is skipped for a no-writeScope task (its safety net is section 5.3(D)). Renames = paired D+A (both in
+    scope). GR2019 (error): scope entry escapes workspace. GR2020 (warning): vacuous/over-broad scope.
+    TDD triad replacement.
+  - **Dependency/build-dir staging exclusion (SSOT section 5.3(D), #280):** EVERY harness `git add -A`
+    site (`GitWorktreeProvider.Integrate` + the write-scope check's staging in both `Check` and
+    `HasFileChanges`) excludes a curated reconstructable set -- v1: **`node_modules` at any depth** +
+    the harness's own `.guardrails-staging/` + `.guardrails-agent-io/` -- via a git pathspec exclude
+    (`SegmentStaging`, a single named constant). So a guardrail's `npm ci` `node_modules` can NEVER be
+    committed regardless of `.gitignore` timing or writeScope, and a leftover `node_modules` in a reused
+    linear-chain worktree never raises a spurious write-scope violation. It is **stage-exclusion, NOT
+    worktree deletion** (the dirs stay on disk -- warm-cache #255 compatible); the one exception is
+    `PreserveAttemptToRef` (#195 salvage ref), left on plain `git add -A` since it is never merged.
   - **The triad (`captureHashes`/`restoreOnRetry`/`exclusive`) and `WorkspaceLock` are REMOVED**
     -- replaced by physical worktree isolation (one task per segment worktree) and `writeScope`.
 - **Worktree isolation**: the workspace must be a git repository top-level (GR2015 error

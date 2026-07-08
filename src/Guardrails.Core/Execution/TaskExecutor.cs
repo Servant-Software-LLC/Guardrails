@@ -875,6 +875,27 @@ public sealed class TaskExecutor : ITaskExecutor
             };
         }
 
+        // --- phase-2 scope-clean (SSOT §3.4, issue #280): the guardrails PASSED. A passing guardrail
+        // may legitimately run `npm ci` / a build as a side effect, leaving out-of-scope artifacts in
+        // the segment AFTER the phase-1 action check already ran. Re-compute and STRIP them (reusing the
+        // same Check + ScopedRevert) so the segment commit carries exactly the in-scope diff. Unlike the
+        // phase-1 action check this NEVER fails the attempt — a verifier's side effects are expected; we
+        // clean, we don't punish. The reconstructable dep/build set is invisible to Check's staging
+        // (SegmentStaging §5.3(D)), so it is never stripped here — those dirs stay on disk (warm-cache
+        // #255) and the SegmentStaging exclusion at the Integrate site keeps them out of the commit.
+        // Guarded exactly like the phase-1 check: only for a declared writeScope on a real git segment.
+        if (task.WriteScope is { } postGuardrailScope && IsRealGitSegment(worktree))
+        {
+            IReadOnlyList<string> scopeGlobs = WithImplicitStagingScope(postGuardrailScope, task.StagingOutputs);
+            IReadOnlyList<WriteScopeOffense> stripped = WriteScopeCheck.StripOutOfScope(
+                worktree.WorktreePath, worktree.TaskBase, scopeGlobs);
+            if (stripped.Count > 0)
+            {
+                AttemptArtifacts.WriteScopeCleanNote(logDir, stripped);
+                _observer.OutOfScopeStripped(task, stripped);
+            }
+        }
+
         // --- merge fragment or defer to Scheduler (worktree mode) -----------------------
         // Worktree mode: the segment is a real directory. Validate the fragment but defer the
         // actual merge + git commit to the Scheduler's B1 settle under the integration lock.
