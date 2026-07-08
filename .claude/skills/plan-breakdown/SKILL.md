@@ -1230,6 +1230,16 @@ Per `references/schemas.md`, exactly:
   names, configuration the tasks read).
 - Scripts: prefer the workspace's native platform; note any interpreter requirement
   beyond the defaults in `guardrails.json: interpreters`.
+- **Every SCRIPT guardrail you write is subject to the Step 7.0d author-time smoke-test (#302)** — when
+  a `.sh`/`.ps1`/`.py` guardrail is runnable at author time (idempotent, its input in-repo or
+  hand-synthesizable, no live dependency), you will EXECUTE it against a VALID and an INVALID sample
+  before finishing. Author scripts to BE smoke-testable: keep them idempotent (a temp dir cleaned via
+  `trap`/`finally`, never a write into the plan folder), and for a guardrail that **renders or executes
+  the task's own not-yet-authored output** (a throwaway workspace, a rendered fixture, an `--input-type`
+  block) know the hand-written representative sample you will feed it. `bash -n`/`sh -n` (or a
+  `pwsh -NoProfile` parse) is a cheap first pass, never the whole check — a bash quote-stripping bug is
+  valid bash that does the wrong thing and only EXECUTION reveals it. (Doctrine:
+  `guardrails-domain-knowledge` → author-time smoke-test gate.)
 
 ## Step 7 — Self-validate and report
 
@@ -1306,6 +1316,34 @@ Per `references/schemas.md`, exactly:
    model) is a self-review finding — loop back to Step 5. Surface a **`guardrails-review` probe** in the
    report: "brownfield plan has a `--filter`-scoped, deduped baseline preflight per area; greenfield states
    why none."
+0d. **Script-guardrail author-time smoke-test — EXECUTE the runnable ones against a valid + invalid
+   sample before finishing (#302).** For every `.sh`/`.ps1`/`.py` guardrail this breakdown GENERATED or
+   CHANGED — in ANY of the four folders (`tasks/<id>/guardrails/`, `tasks/<id>/preflights/`,
+   `<plan>/guardrails/`, `<plan>/preflights/`) — decide **runnable-at-author-time** = idempotent (no
+   persistent workspace side effects; a temp dir torn down via `trap`/`finally` is fine) AND its input is
+   in-repo or **hand-synthesizable** AND it needs no live external dependency (no server boot, no network,
+   not the full merged HEAD). Then:
+   - **Runnable → smoke-test it, two-sided.** Run `bash -n`/`sh -n` (or a `pwsh -NoProfile` parse) FIRST
+     as a cheap syntax pass, then EXECUTE the guardrail against **(a) a hand-written representative VALID
+     sample** of the checked artifact → assert **exit 0**, and **(b) a deliberately INVALID sample** (break
+     the one thing the guardrail exists to catch) → assert **non-zero**. Syntax-lint is
+     necessary-not-sufficient — a bash quote-stripping bug is valid bash that does the wrong thing, only
+     EXECUTION reveals it (#302 gotcha 1). The **highest-value target** is a guardrail that RENDERS or
+     EXECUTES the task's own **not-yet-authored output** (a throwaway workspace, a rendered fixture, an
+     `--input-type` block): its real input does not exist until the task runs, so hand-synthesize the
+     sample (gotcha 2) — this is precisely the guardrail whose first real execution is otherwise deferred
+     to runtime. A guardrail that PASSES the invalid sample has no teeth (fix it); one that FAILS the valid
+     sample is a false-red that would dead-end every attempt at `needsHuman` and block downstream (fix it
+     before it ever runs). Do this in a scratch temp dir; never leave fixtures in the plan folder.
+   - **Not runnable → syntax-pass + explicit deferral.** If it needs a live service / the built binary /
+     the full merged HEAD, run the syntax pass only, reason explicitly about correctness, and **STATE in
+     the report (step 4) that the guardrail could not be author-time-executed and why** — an honest
+     deferral, never a silent one.
+   Distinct from #248 (which runs the *underlying tool* once to confirm a guardrail's assumption about
+   that tool's PRINTED output); here you EXECUTE the guardrail SCRIPT itself against synthesized samples to
+   prove its OWN correctness. Report which script guardrails were author-time-executed (valid + invalid)
+   and which were deferred with the reason. (Doctrine: `guardrails-domain-knowledge` → author-time
+   smoke-test gate; `guardrails-review` re-checks it.)
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
@@ -1319,8 +1357,10 @@ Per `references/schemas.md`, exactly:
    future regeneration can preserve any guardrails the human edits in the meantime (§11).
 4. Emit the **breakdown report**: task table (id, action kind, guardrails with
    archetype numbers, dependsOn), the inserted-task list with justifications, edge
-   justifications, and any flagged non-executable plan content. **Surface every decision
-   the human should confirm** — chief among them any test-framework or E2E-driver choice:
+   justifications, any flagged non-executable plan content, and the **Step 7.0d author-time
+   smoke-test outcome** (which script guardrails were EXECUTED against valid + invalid samples,
+   and which were deferred as not-runnable-at-author-time with the reason, #302). **Surface every
+   decision the human should confirm** — chief among them any test-framework or E2E-driver choice:
    state which was used and why (detected in repo / named in the plan / asked via
    `AskUserQuestion` / left as a needs-human halt). A wrong framework poisons every
    downstream test task, so it must never be buried. **If the plan was UI-facing**, state
@@ -1835,6 +1875,7 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
+- [ ] (#302) Step 7.0d ran: every GENERATED/CHANGED `.sh`/`.ps1`/`.py` guardrail (any of the four folders) that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was EXECUTED against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only, never the whole check; a guardrail that renders/executes the task's own not-yet-authored output was smoke-tested against a synthesized sample; any not-runnable-at-author-time guardrail got the syntax pass + an explicit report deferral (which executed / which deferred and why is in the Step 4 report). Distinct from #248 (which runs the underlying TOOL, not the guardrail script).
 - [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the report's **last line** is a **Markdown link** `[Interactive diagram](<file-uri>)` whose `<file-uri>` is copied verbatim from the `file://` URI on `guardrails graph`'s `Diagram (interactive):` line — #249 makes that URI correct (native drive form, percent-encoded, built by the CLI, never hand-assembled from a shell `pwd`); #256 delivers it host-clickable as a Markdown link, not a raw OSC 8 escape or a bare `file://` path in a code span.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.
