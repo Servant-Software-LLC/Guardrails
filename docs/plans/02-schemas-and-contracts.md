@@ -2071,12 +2071,14 @@ styling, or by the legend's wording.
   written `diagram.md` path, then (unless `--no-html`) a `Diagram (interactive): <link>` line
   for `diagram.html` — a clickable OSC 8 hyperlink built from the absolute path via .NET's
   `Uri` (reusing `RunCommand.Hyperlink`, the same escape shape `guardrails run`'s `Logs` link
-  uses), falling back to the plain absolute path when the terminal cannot render one; exit `0`.
-  Building this link in the CLI (issue #249) — rather than the caller hand-assembling a
-  `file://` URL from a shell `pwd` — is what keeps it correct under Git Bash/MSYS on Windows,
-  whose `pwd` returns the non-resolvable mount form (`/f/...`) instead of the native drive
-  form (`F:/...`) a `file://` URI needs. Front-doors through load/validate first: on any
-  load/validate error, print diagnostics and exit `1`.
+  uses), falling back to the absolute `file://` URI (`new Uri(path).AbsoluteUri` — native-drive,
+  percent-encoded) when the terminal cannot render an OSC 8 link or output is redirected, so the
+  `plan-breakdown` skill (which captures this stdout) can wrap that URI in a Markdown link for
+  markdown-rendering hosts (issue #256); exit `0`. Building this link in the CLI (issue #249) —
+  rather than the caller hand-assembling a `file://` URL from a shell `pwd` — is what keeps it
+  correct under Git Bash/MSYS on Windows, whose `pwd` returns the non-resolvable mount form
+  (`/f/...`) instead of the native drive form (`F:/...`) a `file://` URI needs. Front-doors
+  through load/validate first: on any load/validate error, print diagnostics and exit `1`.
 - `--no-html` — write only `diagram.md`; skip `diagram.html`. Has no effect with `--stdout`.
 - `--stdout` — print the diagram to stdout; write nothing to disk (neither `diagram.md` nor
   `diagram.html`); exit `0`.

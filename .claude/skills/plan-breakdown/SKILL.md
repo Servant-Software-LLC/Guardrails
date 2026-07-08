@@ -1313,8 +1313,8 @@ Per `references/schemas.md`, exactly:
 3. Once validation passes, run `guardrails graph <folder>` to generate
    `<folder>/diagram.md` and its `<folder>/diagram.html` pan/zoom/fullscreen companion (Mermaid
    `flowchart TD` renders of the task/guardrail DAG — generated artifacts, never hand-edited; see
-   `references/schemas.md`). Note the `Diagram (interactive): <link>` line this command prints —
-   you relay it verbatim in Step 7.4 (issue #249). Then run
+   `references/schemas.md`). Note the `Diagram (interactive): <file-uri>` line this command prints —
+   in Step 7.4 you wrap its `file://` URI in a Markdown link (issues #249 + #256). Then run
    `guardrails lock <folder>` to write the committed `guardrails.baseline` BASE manifest, so a
    future regeneration can preserve any guardrails the human edits in the meantime (§11).
 4. Emit the **breakdown report**: task table (id, action kind, guardrails with
@@ -1331,16 +1331,24 @@ Per `references/schemas.md`, exactly:
    failure. Then **embed the generated Mermaid
    block inline** (paste the ```mermaid``` fence from `diagram.md`) so the human sees the
    DAG in chat, and **state the `<folder>/diagram.md` path** explicitly so they can render
-   it in GitHub or VS Code. Finally, as the **last line of the report**, relay the
-   `Diagram (interactive): <link>` line that `guardrails graph` itself printed when you ran
-   it in step 3 — copy it **verbatim** from that command's own output so the reviewer can
-   open the interactive viewer without hunting for it. As of issue #249 the CLI emits this
-   as a ready-to-click **OSC 8 hyperlink** (the same `RunCommand.Hyperlink` escape shape
-   `guardrails run` uses for its `Logs` link), built from its own absolute path via .NET's
-   `Uri` — do **not** hand-assemble a `file://` URL yourself from a shell `pwd`: under Git
-   Bash/MSYS on Windows, `pwd` returns the non-resolvable mount form (`/f/...`) instead of
-   the native drive form (`F:/...`) a `file://` URI needs, which is exactly the bug #249
-   fixed by moving link construction into the CLI.
+   it in GitHub or VS Code. Finally, give the reviewer a one-click link to the interactive
+   viewer as the **last line of the report**, formatted as a **Markdown link**:
+
+       [Interactive diagram](<file-uri>)
+
+   For `<file-uri>`, copy — **verbatim, without re-encoding** — the `file://` URI that
+   `guardrails graph` printed on its `Diagram (interactive): <file-uri>` line in step 3, and
+   wrap it in the `(...)`. Emit the **Markdown link**, never a bare `file://` path in a code
+   span and never the raw CLI line: `/plan-breakdown`'s report is rendered as **Markdown** by
+   the host (e.g. Claude Code's chat UI), which linkifies `[text](uri)` but not an OSC 8 escape
+   or a bare path — so the Markdown form is the only one the reviewer can actually click (#256).
+   URI correctness is the CLI's job, not yours: issue #249 made `guardrails graph` build the URI
+   from .NET's `Uri` (native drive form, percent-encoded — a space becomes `%20`), so you never
+   hand-assemble a `file://` URL from a shell `pwd` (which under Git Bash/MSYS on Windows yields
+   the non-resolvable mount form `/f/...` instead of the native `F:/...` a `file://` URI needs).
+   The two fixes compose: **#249 guarantees the URI is correct; #256 delivers it in a
+   host-clickable form.** (A user who runs `guardrails graph` directly in a raw terminal still
+   gets that command's own ready-to-click **OSC 8 hyperlink** — unchanged.)
 5. Close with, verbatim in spirit:
 
    > **This is a draft.** Review the folder — especially the guardrails — edit,
@@ -1827,7 +1835,7 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 - [ ] `promptRunners` present iff any `.prompt.md` exists.
 - [ ] Every task has a unique minted `stableId` by default (matching `^[a-z0-9][a-z0-9._-]*$`); on a regeneration, continued tasks reuse their prior id.
 - [ ] `guardrails validate` exits 0 (or its absence is loudly reported).
-- [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the `Diagram (interactive): <link>` line `guardrails graph` itself printed for `diagram.html` (a ready-to-click OSC 8 hyperlink, issue #249 — relayed verbatim, never hand-built from a shell `pwd`) printed as the report's last line.
+- [ ] `diagram.md` generated via `guardrails graph` and its path reported (block embedded inline); the report's **last line** is a **Markdown link** `[Interactive diagram](<file-uri>)` whose `<file-uri>` is copied verbatim from the `file://` URI on `guardrails graph`'s `Diagram (interactive):` line — #249 makes that URI correct (native drive form, percent-encoded, built by the CLI, never hand-assembled from a shell `pwd`); #256 delivers it host-clickable as a Markdown link, not a raw OSC 8 escape or a bare `file://` path in a code span.
 - [ ] On fresh generation: `guardrails lock` written (a `guardrails.baseline`). On regeneration: a BASE baseline existed or was established first, and `guardrails merge --apply` succeeded with conflicts resolved beforehand.
 - [ ] Output explicitly presented as a draft for human review.
 <!-- BEGIN ADDED QUALITY-BAR ITEMS (auto-merge friendly) -->

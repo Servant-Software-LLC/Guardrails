@@ -130,23 +130,29 @@ public static partial class GraphCommand
     }
 
     /// <summary>
-    /// Print <c>Diagram (interactive): &lt;link&gt;</c> — the exact line
-    /// <c>.claude/skills/plan-breakdown/SKILL.md</c> Step 7 relays verbatim as the last line of its
-    /// breakdown report (issue #249). Reuses <see cref="RunCommand.Hyperlink"/> (the same OSC 8
-    /// escape shape <c>guardrails run</c>'s "Logs" link and <c>guardrails logs</c>'s static-site
-    /// link already use) rather than hand-building a <c>file://</c> URL here or in the skill.
-    /// Before this fix the skill built that URL itself from a shell <c>pwd</c>, which under Git
-    /// Bash/MSYS on Windows returns the non-resolvable mount form (<c>/f/...</c>) instead of the
-    /// native drive form (<c>F:/...</c>) a <c>file://</c> URI needs; <see cref="RunCommand.Hyperlink"/>
-    /// instead builds the URI from .NET's own <see cref="Uri"/> off the absolute path — correct and
-    /// percent-encoded on every OS, with no shell involved at all. Falls back to the plain absolute
-    /// path (still correct, just not clickable) when the terminal cannot render OSC 8 links or
-    /// output is redirected — the same capability gate <see cref="RunCommand"/>'s own links use.
+    /// Print <c>Diagram (interactive): &lt;link&gt;</c> — the line whose <c>file://</c> URI
+    /// <c>.claude/skills/plan-breakdown/SKILL.md</c> Step 7 wraps in a Markdown link as the last
+    /// line of its breakdown report (issues #249 + #256). In a raw, link-capable terminal this is an OSC 8 hyperlink
+    /// via <see cref="RunCommand.Hyperlink"/> (the same escape shape <c>guardrails run</c>'s "Logs"
+    /// link and <c>guardrails logs</c>'s static-site link already use). When output is redirected or
+    /// the terminal cannot render OSC 8 links — the plan-breakdown skill's case, since it captures
+    /// this stdout — it falls back to the absolute <c>file://</c> URI
+    /// (<c>new Uri(path).AbsoluteUri</c>) rather than the bare path, so the skill can wrap that URI
+    /// in a Markdown link for markdown-rendering hosts (issue #256) without hand-assembling a
+    /// <c>file://</c> URL itself. Building the URI in the CLI from .NET's own <see cref="Uri"/> off
+    /// the absolute path is what keeps it correct and percent-encoded on every OS (the space in a
+    /// path like <c>C:\Dev AI\...</c> becomes <c>%20</c>): before this fix the skill built the URL
+    /// from a shell <c>pwd</c>, which under Git Bash/MSYS on Windows returns the non-resolvable mount
+    /// form (<c>/f/...</c>) instead of the native drive form (<c>F:/...</c>) a <c>file://</c> URI
+    /// needs.
     /// </summary>
     private static void PrintDiagramLink(string diagramHtmlPath, TextWriter output)
     {
         bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
-        output.WriteLine($"Diagram (interactive): {RunCommand.Hyperlink(diagramHtmlPath, linkable)}");
+        string link = linkable
+            ? RunCommand.Hyperlink(diagramHtmlPath, true)
+            : new Uri(diagramHtmlPath).AbsoluteUri;
+        output.WriteLine($"Diagram (interactive): {link}");
     }
 
     /// <summary>
