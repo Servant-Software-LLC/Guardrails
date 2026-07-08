@@ -308,6 +308,19 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   regardless of per-task outcomes.
 - Resume: `succeeded` is terminal (use `guardrails reset` to force);
   `needs-human`/`failed`/`blocked` -> fresh budget; crashed `running` -> `pending`.
+  **Definition-drift halt (#274 Part A):** editing an already-`succeeded` task and re-running no longer
+  silently reuses the stale cached segment (the pre-Part-A bug ran the OLD version -- even under `--fresh`
+  before Part B). On resume, BEFORE the DAG is built, the harness recomputes each pre-settled-green task's
+  `definitionHash` (over its `task.json` + resolved action + `guardrails/**` + `preflights/**`) and
+  compares it to the hash recorded at its last settle (journal + `Guardrails-Task-Hash:` plan-branch commit
+  trailer); a recorded-hash-absent settle (pre-upgrade) assumes unchanged -> match. A **mismatch on ANY
+  pre-settled-green task HALTS the whole run** -- it schedules nothing and returns
+  `RunReport.DefinitionDrift`, **exit 2**, with a per-file "what changed" report (which task drifted,
+  old->new hash, per-file added/removed/modified, a `git diff <oldCommit>..HEAD` command, and the task's
+  transitive-dependent set) -- rather than silently reusing the stale segment or silently auto-rerunning
+  (unsound for a fan-in descendant). Remediate with `guardrails reset <folder> -y` + re-run (full rebuild);
+  a **scoped** `reset <folder> <taskId>` and a run-time auto-resolve of the safe case are **Part C -- not
+  yet shipped**. (SSOT §7.2.)
   **Outcome-agnostic by design (issue #190):** resume does NOT distinguish WHY a task is
   `needs-human` -- a rate-limited/timeout/output-cap halt (self-resolving) and a genuine
   `needsHuman`/permission-wall/exhausted-guardrail halt (needs a human fix first) both reset to
