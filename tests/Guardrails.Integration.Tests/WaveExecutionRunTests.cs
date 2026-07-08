@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
@@ -275,5 +276,78 @@ public sealed class WaveExecutionRunTests
         var (r2, _) = await RunAsync(planDir, repo.RepoPath, repo.WorktreeRoot);
         Assert.True(r2.AllSucceeded, string.Join("; ", r2.Tasks.Select(t => $"{t.TaskId}:{t.Outcome}")));
         Assert.Contains("build.txt", repo.PlanBranchFiles("plan"));
+    }
+
+    // ── #311 remediation red-bars (destructive rewind path) ─────────────────────────────────────
+
+    [Fact]
+    public async Task WaveReset_TrailerlessHumanHandFixInRange_Refuses_DoesNotDiscardIt()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateTwoWavePlan(repo.RepoPath);
+        var (r1, _) = await RunAsync(planDir, repo.RepoPath, repo.WorktreeRoot);
+        Assert.True(r1.AllSucceeded);
+
+        // #197 human hand-fix: a TRAILER-LESS commit committed directly onto the plan branch (appended via
+        // commit-tree/update-ref so no worktree checkout is needed). It carries no Guardrails-Task: trailer
+        // and is NOT a Guardrails-Wave: marker.
+        string tip = repo.PlanBranchTip("plan");
+        string tree = TempGitRepo.Git(repo.RepoPath, "rev-parse", $"{tip}^{{tree}}").Trim();
+        string handFix = TempGitRepo.Git(repo.RepoPath, "commit-tree", tree, "-p", tip, "-m", "human hand-fix (no trailer)").Trim();
+        TempGitRepo.Git(repo.RepoPath, "update-ref", "refs/heads/guardrails/plan", handFix);
+
+        // Wave-scoped reset of wave-2 would discard the hand-fix (it is in the removed range) → REFUSE.
+        RunReset.WaveResetResult reset = RunReset.WaveReset(new PlanLoader().Load(planDir).Plan!, "wave-02-build");
+
+        Assert.Equal(RunReset.WaveResetOutcome.Refused, reset.Outcome);
+        Assert.Equal(handFix, repo.PlanBranchTip("plan")); // nothing was discarded — the hand-fix is intact
+    }
+
+    [Fact]
+    public async Task WaveReset_IgnoresDanglingJournalMarkerSha_RewindsFromLiveHistory()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateTwoWavePlan(repo.RepoPath);
+        var (r1, _) = await RunAsync(planDir, repo.RepoPath, repo.WorktreeRoot);
+        Assert.True(r1.AllSucceeded);
+
+        // Corrupt the journal's recorded wave MarkerSha to a bogus/dangling sha — the BLOCKER-1b hazard.
+        // The rewind must DERIVE its target from the live first-parent history (evaluator), never trust
+        // this stored sha (which would `git reset --hard` to a nonexistent object / sideways).
+        string journalPath = RunJournal.PathFor(planDir);
+        string corrupted = Regex.Replace(
+            File.ReadAllText(journalPath), "\"markerSha\": \"[0-9a-f]+\"",
+            "\"markerSha\": \"0000000000000000000000000000000000000000\"");
+        File.WriteAllText(journalPath, corrupted);
+
+        RunReset.WaveResetResult reset = RunReset.WaveReset(new PlanLoader().Load(planDir).Plan!, "wave-02-build");
+
+        Assert.Equal(RunReset.WaveResetOutcome.Done, reset.Outcome);
+        Assert.Contains("config.txt", repo.PlanBranchFiles("plan"));      // wave-1 preserved (correct target)
+        Assert.DoesNotContain("build.txt", repo.PlanBranchFiles("plan")); // wave-2 rewound (not sideways)
+    }
+
+    [Fact]
+    public async Task WaveReset_IsHeadIndependent_AfterUserSwitchesBranch()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateTwoWavePlan(repo.RepoPath);
+        var (r1, _) = await RunAsync(planDir, repo.RepoPath, repo.WorktreeRoot);
+        Assert.True(r1.AllSucceeded);
+
+        // The user switches to a divergent branch rooted at the FIRST commit (WEAK-2): a merge-base-vs-HEAD
+        // target would compute the wrong base. The rewind must use the plan branch's OWN history instead.
+        string firstCommit = TempGitRepo.Git(repo.RepoPath, "rev-list", "--max-parents=0", "HEAD").Trim();
+        TempGitRepo.Git(repo.RepoPath, "checkout", "-b", "legacy", firstCommit);
+
+        RunReset.WaveResetResult reset = RunReset.WaveReset(new PlanLoader().Load(planDir).Plan!, "wave-01-scaffold");
+
+        Assert.Equal(RunReset.WaveResetOutcome.Done, reset.Outcome);
+        Assert.Equal(["wave-01-scaffold", "wave-02-build"], reset.ResetWaves.ToArray());
+        // Rewound to the plan branch's own base (both wave outputs gone), NOT below it (README.md intact).
+        IReadOnlyList<string> files = repo.PlanBranchFiles("plan");
+        Assert.Contains("README.md", files);
+        Assert.DoesNotContain("config.txt", files);
+        Assert.DoesNotContain("build.txt", files);
     }
 }

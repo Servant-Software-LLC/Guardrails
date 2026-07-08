@@ -268,11 +268,21 @@ public sealed class Scheduler
                     if (!authorized)
                     {
                         return BuildReport(plan, settled, cancelled: false)
-                            with { WaveHalt = BuildWaveDriftHalt(waves, i, wave, rh, currentHash) };
+                            with { WaveHalt = BuildWaveDriftHalt(waves, i, wave, rh, currentHash, unsafeRefusal: null) };
                     }
 
-                    lastDecision = ResolveWaveDrift(plan, waves, i, wave, integ, rh, currentHash,
+                    // The rewind is validated by the marker-aware SafeSuffixEvaluator + a tip CAS (BLOCKER /
+                    // WEAK-4): a human hand-fix (trailer-less NON-marker commit) in the range, or a concurrent
+                    // same-plan session that moved the tip, REFUSES the rewind → HALT rather than discard it.
+                    WaveRewindResult resolved = ResolveWaveDrift(plan, waves, i, wave, integ, rh, currentHash,
                         ref planBranchRecords, ref waveMarkers);
+                    if (resolved.Decision is null)
+                    {
+                        return BuildReport(plan, settled, cancelled: false)
+                            with { WaveHalt = BuildWaveDriftHalt(waves, i, wave, rh, currentHash, unsafeRefusal: resolved.Refusal) };
+                    }
+
+                    lastDecision = resolved.Decision;
                     _journal.RecordDecision(lastDecision);
                     _observer.DecisionRecorded(lastDecision);
                     // fall through — this wave is no longer complete; run it.
@@ -690,17 +700,22 @@ public sealed class Scheduler
         return (result.Passed, result.FailedGuardrails);
     }
 
+    /// <summary>The outcome of a wave-drift rewind: a resolved <see cref="DecisionEntry"/>, or a REFUSE reason (halt).</summary>
+    private sealed record WaveRewindResult(DecisionEntry? Decision, string? Refusal);
+
     /// <summary>
     /// Wave-level drift resolution (SSOT §14.6/§14.8): rewind the plan branch past this wave + all its
-    /// downstream waves (a wave-scoped rewind is ALWAYS a safe trailing suffix — no cross-wave fan-in —
-    /// so it is unconditionally sound, §14.8) and journal-reset them, then refresh the reconciled maps.
-    /// The rewind target is the nearest PREDECESSOR wave's marker sha, or the plan-branch base for the
-    /// first wave. Crash-atomic via <see cref="State.RewindIntent"/>. Returns the <c>wave</c>-boundary
-    /// <see cref="DecisionEntry"/>. Deliberately does NOT route through <see cref="SafeSuffixEvaluator"/>:
-    /// the empty <c>Guardrails-Wave:</c> marker commits carry no task trailer and would trip its (correct)
-    /// trailer-less-commit refusal — the always-safe-suffix property lets the target be computed directly.
+    /// downstream waves and journal-reset them, then refresh the reconciled maps. The rewind ROUTES THROUGH
+    /// the marker-aware <see cref="SafeSuffixEvaluator"/> (via <see cref="IWorktreeProvider.EvaluateSafeSuffix"/>)
+    /// exactly like the task-level Part C path (BLOCKER fix, #311): the evaluator DERIVES the reset target
+    /// from the live first-parent history (always an ancestor of the tip — no dangling-sha sideways reset),
+    /// EXEMPTS the harness's own <c>Guardrails-Wave:</c> markers, and REFUSES if a trailer-less NON-marker
+    /// commit (a human #197 hand-fix) is in the removed range — so the §14.8 "always safe" property holds for
+    /// pure-harness history but a rewind never silently eats a human's fix. A tip compare-and-swap (WEAK-4)
+    /// guards a concurrent same-plan session. Crash-atomic via <see cref="State.RewindIntent"/> (now carrying
+    /// the wave dirs too, BLOCKER-1b). Returns the <c>wave</c>-boundary decision, or a REFUSE reason to halt.
     /// </summary>
-    private DecisionEntry ResolveWaveDrift(
+    private WaveRewindResult ResolveWaveDrift(
         PlanDefinition plan, IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, IntegrationHandle? integ,
         string oldHash, string newHash,
         ref IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords,
@@ -714,18 +729,48 @@ public sealed class Scheduler
 
         List<string> affectedTaskIds = affectedWaves.SelectMany(w => w.Tasks.Select(t => t.Id)).ToList();
         List<string> affectedWaveDirs = affectedWaves.Select(w => w.Dir).ToList();
+        var safeSet = new HashSet<string>(affectedTaskIds, StringComparer.Ordinal);
 
-        string? resetTarget = PredecessorWaveMarker(waves, waveIndex, waveMarkers)
-            ?? (_worktreeProvider is { } wpb && integ is { } integB ? NullIfEmpty(wpb.PlanBranchBase(integB)) : null);
+        // Safe-suffix check against the plan branch (marker-aware). Serial / no provider → NothingToRewind
+        // (a journal-only reset is sound where there is no branch to carry a stale commit).
+        SafeSuffixDecision decision = _worktreeProvider is { } provider && integ is { } activeInteg
+            ? provider.EvaluateSafeSuffix(activeInteg, safeSet)
+            : SafeSuffixDecision.Nothing();
 
-        // Crash-atomic: record the intent (the affected task ids) BEFORE the destructive rewind so a kill
-        // in between is idempotently replayed on resume; clear it only AFTER both effects persist.
-        State.RewindIntent.Write(_plan.PlanDirectory, new State.RewindIntent
+        // Refuse floor (un-overridable, exactly like the task path): a human hand-fix in the range refuses.
+        if (decision.Outcome == SafeSuffixOutcome.Refused)
         {
-            SafeSet = affectedTaskIds.OrderBy(x => x, StringComparer.Ordinal).ToList(),
-            PreRewindTip = null,
-            ResetTarget = resetTarget
-        });
+            return new WaveRewindResult(null, decision.Refusal);
+        }
+
+        string? resetTarget = decision.Outcome == SafeSuffixOutcome.Safe ? decision.ResetTarget : null;
+
+        // Compare-and-swap (WEAK-4): for a real rewind, the tip must still be where the decision saw it, or
+        // a concurrent same-plan session moved it — REFUSE rather than discard its work.
+        if (decision.Outcome == SafeSuffixOutcome.Safe)
+        {
+            string currentTip = _worktreeProvider is { } tp && integ is { } ti ? tp.CurrentPlanBranchTip(ti) : "";
+            if (!string.Equals(currentTip, decision.ExpectedTip ?? "", StringComparison.Ordinal))
+            {
+                return new WaveRewindResult(null,
+                    "the plan branch changed while the wave-drift rewind was deciding (a concurrent same-plan run?) — refusing.");
+            }
+        }
+
+        // Crash-atomic: record the intent (affected task ids AND wave dirs, BLOCKER-1b) BEFORE the
+        // destructive rewind so a kill in between is idempotently replayed on resume; clear only AFTER both
+        // effects persist. The wave dirs ensure the replay clears the wave entries too (no dangling MarkerSha).
+        bool useMarker = decision.Outcome == SafeSuffixOutcome.Safe;
+        if (useMarker)
+        {
+            State.RewindIntent.Write(_plan.PlanDirectory, new State.RewindIntent
+            {
+                SafeSet = affectedTaskIds.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                Waves = affectedWaveDirs,
+                PreRewindTip = decision.ExpectedTip,
+                ResetTarget = resetTarget
+            });
+        }
 
         if (resetTarget is { Length: > 0 } && _worktreeProvider is { } wpr && integ is { } integR)
         {
@@ -741,7 +786,10 @@ public sealed class Scheduler
             }
         }
 
-        State.RewindIntent.Clear(_plan.PlanDirectory);
+        if (useMarker)
+        {
+            State.RewindIntent.Clear(_plan.PlanDirectory);
+        }
 
         // The drifted+downstream commits/markers are gone from the branch — refresh so a subsequent drain
         // does not treat them as pre-settled via a stale trailer.
@@ -751,28 +799,10 @@ public sealed class Scheduler
             waveMarkers = wpf.ReconcileWavesFromPlanBranch(integF);
         }
 
-        return DriftDecisions.WaveDriftResolved(
-            _plan.Config.AutonomyPolicy, wave.Dir, resetTarget, oldHash, newHash, affectedWaveDirs);
-    }
-
-    /// <summary>The nearest predecessor wave's <c>Guardrails-Wave:</c> marker sha (branch trailer or journal), or null when none precedes this wave.</summary>
-    private string? PredecessorWaveMarker(
-        IReadOnlyList<WaveNode> waves, int waveIndex, IReadOnlyDictionary<string, PlanBranchWaveRecord> waveMarkers)
-    {
-        for (int j = waveIndex - 1; j >= 0; j--)
-        {
-            if (waveMarkers.TryGetValue(waves[j].Dir, out PlanBranchWaveRecord? m) && m.MarkerSha.Length > 0)
-            {
-                return m.MarkerSha;
-            }
-
-            if (_journal.WaveEntryOf(waves[j].Dir)?.MarkerSha is { Length: > 0 } js)
-            {
-                return js;
-            }
-        }
-
-        return null;
+        return new WaveRewindResult(
+            DriftDecisions.WaveDriftResolved(
+                _plan.Config.AutonomyPolicy, wave.Dir, resetTarget, oldHash, newHash, affectedWaveDirs),
+            null);
     }
 
     /// <summary>Represent every task in the waves AFTER a halted wave as <c>blocked</c> (SSOT §14.4: later waves never start).</summary>
@@ -799,7 +829,8 @@ public sealed class Scheduler
     }
 
     private WaveHalt BuildWaveDriftHalt(
-        IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, string oldHash, string newHash)
+        IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, string oldHash, string newHash,
+        string? unsafeRefusal)
     {
         var affected = new List<string>();
         for (int j = waveIndex; j < waves.Count; j++)
@@ -810,14 +841,22 @@ public sealed class Scheduler
         string folder = Path.GetFileName(
             _plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
+        // When the rewind was REFUSED as unsound (a human hand-fix / unattributed commit in the range, or a
+        // concurrent tip move — BLOCKER/WEAK-4), steer to the always-sound full rebuild and name WHY; an
+        // auto-resolve flag would just re-refuse. Otherwise (a policy/consent halt) offer --autonomy auto.
+        string detail = unsafeRefusal is { Length: > 0 } refusal
+            ? $"WaveDefinitionHash {ShortHash(oldHash)} -> {ShortHash(newHash)}. Cannot safely rewind this wave: "
+              + $"{refusal} Resolve the plan branch manually, or 'guardrails reset {folder} -y' for a full rebuild."
+            : $"WaveDefinitionHash {ShortHash(oldHash)} -> {ShortHash(newHash)}. Resolving would rewind + "
+              + $"re-run this wave + {affected.Count - 1} downstream wave(s). Re-run with '--autonomy auto' to "
+              + $"rewind + re-run, or 'guardrails reset {folder} {wave.Dir}' to reset it explicitly.";
+
         return new WaveHalt
         {
             WaveDir = wave.Dir,
             Kind = WaveHaltKind.WaveDrift,
             Headline = $"Wave '{wave.Dir}' DRIFTED — its definition changed since it completed (SSOT §14.6).",
-            Detail = $"WaveDefinitionHash {ShortHash(oldHash)} -> {ShortHash(newHash)}. Resolving would rewind + "
-                   + $"re-run this wave + {affected.Count - 1} downstream wave(s). Re-run with '--autonomy auto' to "
-                   + $"rewind + re-run, or 'guardrails reset {folder} {wave.Dir}' to reset it explicitly.",
+            Detail = detail,
             AffectedWaves = affected,
             OldHash = oldHash,
             NewHash = newHash
@@ -859,8 +898,6 @@ public sealed class Scheduler
         var copy = new Dictionary<string, PlanBranchWaveRecord>(map, StringComparer.Ordinal) { [waveDir] = record };
         return copy;
     }
-
-    private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
     /// <summary>Shorten a <c>sha256:</c>-prefixed hash for display.</summary>
     private static string ShortHash(string hash)
@@ -1099,8 +1136,10 @@ public sealed class Scheduler
     /// Replay a surviving rewind-intent marker (issue #274 Part C crash-atomicity): a prior resolution was
     /// killed between the plan-branch rewind and its journal-resets. Idempotently re-reset the whole
     /// recorded set to <c>pending</c> (so a non-drifted descendant whose commit was already discarded
-    /// re-runs, never silently skipped), then clear the marker. Best-effort: a read hiccup leaves the
-    /// general trailer-reconciliation invariant as the safety net.
+    /// re-runs, never silently skipped) — AND, for a WAVE-scoped rewind (#254 M2b, BLOCKER-1b), re-reset the
+    /// recorded wave entries too, so a wave never survives as <c>Completed</c> with a now-dangling
+    /// <c>MarkerSha</c> a later <c>reset --hard</c> could resolve SIDEWAYS. Then clear the marker.
+    /// Best-effort: a read hiccup leaves the general trailer-reconciliation invariant as the safety net.
     /// </summary>
     private void ReplayRewindIntentIfPresent()
     {
@@ -1112,6 +1151,11 @@ public sealed class Scheduler
         foreach (string taskId in intent.SafeSet)
         {
             _journal.ResetTaskToPending(taskId);
+        }
+
+        foreach (string waveDir in intent.Waves)
+        {
+            _journal.ResetWaveToPending(waveDir);
         }
 
         State.RewindIntent.Clear(_plan.PlanDirectory);

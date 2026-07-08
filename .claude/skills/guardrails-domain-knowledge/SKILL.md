@@ -508,13 +508,17 @@ total order driven by the wave folder's numeric prefix.
   ONCE and shared across every wave's drain -- never a fresh integration/journal per wave -- so wave-1's
   records coexist with wave-2's and the plan branch is one continuous branch. Per-wave `waves[]` journal
   record + entry/exit markers mirror `planPreflights`/`planGuardrails`. Wave-scoped `guardrails reset <plan>
-  <wave>` rewinds that wave + downstream (always a safe suffix); runtime wave-drift (a completed wave's hash
-  changed) is halt/prompt/auto per `autonomyPolicy` with a `boundary:"wave"` decision. Both the wave rewind
-  and the wave reset compute the target DIRECTLY (predecessor marker sha / `git merge-base` base) and reuse
-  the Part C rewind primitive + crash-atomic `RewindIntent` -- NOT `SafeSuffixEvaluator` (its trailer-less
-  marker commits would trip the evaluator's REFUSE; the always-safe-suffix property makes the direct target
-  sound). `graph <plan>/<wave>` per-wave sub-diagrams are the one deferred v1 nicety (`graph <plan>` renders
-  the whole waved DAG).
+  <wave>` rewinds that wave + downstream; runtime wave-drift (a completed wave's hash changed) is
+  halt/prompt/auto per `autonomyPolicy` with a `boundary:"wave"` decision. Both the wave rewind and the wave
+  reset ROUTE THROUGH the **marker-aware `SafeSuffixEvaluator`** (a `TrailerCommit.IsWaveMarker` flag EXEMPTS
+  the harness's own `Guardrails-Wave:` marker commits from the trailer-less REFUSE, #311): the evaluator
+  DERIVES the reset target from the live first-parent history (always an ancestor -- no dangling-`MarkerSha`
+  sideways reset), and STILL REFUSES if a trailer-less NON-marker commit (a #197 human hand-fix) is in the
+  removed range -- so the always-safe-suffix property holds for pure-harness history but a rewind never eats
+  a human's fix. Reuses the Part C rewind primitive + a tip CAS + the crash-atomic `RewindIntent` (now
+  carrying the wave dirs, so a crash-replay clears the wave entries). FLAT plans have no markers, so the
+  task-path behaviour is byte-identical. `graph <plan>/<wave>` per-wave sub-diagrams are the one deferred v1
+  nicety (`graph <plan>` renders the whole waved DAG).
 - **STATUS (M2 v1): the FOUNDATION (M2a) + the EXECUTION LOOP (M2b) both LANDED + tested.** M2a: nested-layout
   loader/validator (GR2032-GR2034, GR2022 wave branch), wave-qualified identity (the single-writer key),
   `WaveDefinitionHash`, the journal `waves[]` schema (`WaveStatus`/`WaveJournalEntry` + `MarkerSha`), the
@@ -655,11 +659,15 @@ total order driven by the wave folder's numeric prefix.
   a shared `DrainAsync`, with ONE integration handle + runId + journal + accumulators created once and shared
   across every wave (never per-wave); `RunWavedAsync` = the wave loop + HARD BARRIER + per-wave entry/exit
   gates (via the `IReVerifier` seam) + the `Guardrails-Wave:` marker commit (`IWorktreeProvider.CommitWaveMarker`
-  / `ReconcileWavesFromPlanBranch` / `PlanBranchBase`); cross-wave resume (`EvaluateWaveCompletion` +
-  `RunJournal.WaveEntryOf`/`RecordWaveCompleted`/`ResetWaveToPending` + `MarkerSha`); runtime wave-drift
-  (`boundary:"wave"` `DecisionEntry`, `autonomyPolicy` halt/prompt/auto, direct-target rewind reusing the
-  Part C primitive); wave-scoped reset (`RunReset.WaveReset`, `guardrails reset <plan> <wave>`);
-  `IRunObserver.WaveStarting`/`WaveFinished`; `RunReport.WaveHalt`. The M2a honest-halt exit-1 stub is GONE.
-  Tested: Core `SchedulerWaveExecutionTests` (continuity/barrier/resume/drift/reset with fakes) + Integration
-  `WaveExecutionRunTests` (real git: one continuous branch + both waves' outputs + a marker per wave,
-  materialization entry gate, cross-wave resume, real wave-scoped rewind). Next-free GR code: **GR1010 / GR2035**.
+  / `ReconcileWavesFromPlanBranch`); cross-wave resume (`EvaluateWaveCompletion` +
+  `RunJournal.WaveEntryOf`/`RecordWaveCompleted`/`ResetWaveToPending`); runtime wave-drift (`boundary:"wave"`
+  `DecisionEntry`, `autonomyPolicy` halt/prompt/auto); wave-scoped reset (`RunReset.WaveReset`, `guardrails
+  reset <plan> <wave>`); `IRunObserver.WaveStarting`/`WaveFinished`; `RunReport.WaveHalt`. The M2a honest-halt
+  exit-1 stub is GONE. **#311 remediation:** both the wave rewind AND the wave reset route through the
+  marker-aware `SafeSuffixEvaluator` (`TrailerCommit.IsWaveMarker`) so a rewind never discards a trailer-less
+  human hand-fix, derives an always-ancestor target, CAS-guards a concurrent run, and (via
+  `RewindIntent.Waves`) crash-replays the wave entries. Tested: Core `SchedulerWaveExecutionTests`
+  (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
+  trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
+  materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
+  HEAD-independence). Next-free GR code: **GR1010 / GR2035**.

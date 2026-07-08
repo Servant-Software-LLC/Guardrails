@@ -331,6 +331,42 @@ public sealed class SchedulerWaveExecutionTests
         Assert.Contains(reloaded.Document.Decisions ?? [], d => d.Boundary == "wave");
     }
 
+    // --- 8. Crash-replay clears wave entries (BLOCKER-1b, #311) ----------------------------------
+
+    [Fact]
+    public async Task CrashReplay_RewindIntentWithWaves_ClearsWaveEntry_WaveReprocessed()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-scaffold", "01-config")
+         .Task("wave-02-build", "01-compile");
+        PlanDefinition plan = b.Load().Plan!;
+
+        // Run 1: both waves complete (wave-1 entry recorded Completed with a MarkerSha).
+        RunJournal j1 = RunJournal.LoadOrCreate(plan);
+        await NewScheduler(plan, new WaveFakeExecutor(), j1, new RecordingWorktreeProvider()).RunAsync(plan, Ct);
+        Assert.Equal(WaveStatus.Completed, j1.WaveEntryOf("wave-01-scaffold")!.Status);
+
+        // Simulate a crash BETWEEN a wave rewind and its wave-journal-reset: a RewindIntent survives naming
+        // ONLY wave-1's dir (EMPTY task set) — so ONLY the wave-entry reset (BLOCKER-1b) can re-process it.
+        RewindIntent.Write(plan.PlanDirectory, new RewindIntent
+        {
+            SafeSet = [],
+            Waves = ["wave-01-scaffold"],
+            ResetTarget = null
+        });
+
+        // Resume: the Scheduler's replay resets the wave-1 entry to pending → wave-1 is re-entered (its
+        // tasks are still green so they skip, but its marker is re-committed — proving the entry was reset,
+        // never left dangling-Completed with a stale MarkerSha a later reset could resolve sideways).
+        var provider2 = new RecordingWorktreeProvider();
+        RunJournal j2 = RunJournal.LoadOrCreate(plan);
+        RunReport report = await NewScheduler(plan, new WaveFakeExecutor(), j2, provider2).RunAsync(plan, Ct);
+
+        Assert.True(report.AllSucceeded);
+        Assert.Contains(provider2.WaveMarkerCalls, m => m.WaveDir == "wave-01-scaffold");
+        Assert.Null(RewindIntent.TryRead(plan.PlanDirectory)); // replay cleared the marker
+    }
+
     [Fact]
     public void WaveScopedReset_UnknownWave_ReportsUnknown()
     {

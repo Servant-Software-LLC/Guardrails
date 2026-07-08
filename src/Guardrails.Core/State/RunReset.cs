@@ -71,6 +71,14 @@ public static class RunReset
     /// <c>run</c> re-executes just that task. Also clears that task's captured baseline subdir
     /// (issue #51) so a re-run re-snapshots the file's current bytes rather than reverting to a
     /// stale baseline. Returns false if the task is unknown to the journal (the caller reports it).
+    /// <para>
+    /// WEAK-3 (#311): in WORKTREE mode a journal-only reset is a SILENT NO-OP for resume — the task's
+    /// plan-branch <c>Guardrails-Task:</c> trailer survives, so the resume pre-pass (and, for a waved plan,
+    /// <c>EvaluateWaveCompletion</c>) still reads it green and never re-runs it. So when a plan branch
+    /// exists, DELEGATE to the safe <see cref="ScopedReset"/> (which rewinds the branch too, or safely
+    /// refuses); only fall back to the journal-only reset when there is no plan branch (serial / non-git),
+    /// where the journal is authoritative and the reset genuinely takes effect.
+    /// </para>
     /// </summary>
     public static bool Task(PlanDefinition plan, string taskId)
     {
@@ -85,6 +93,15 @@ public static class RunReset
         if (!journal.Document.Tasks.ContainsKey(taskId))
         {
             return false;
+        }
+
+        // Worktree mode (a plan branch exists) → the branch is the durable resume record, so a journal-only
+        // reset would not take effect. Route through ScopedReset (safe rewind / refuse). Serial / non-git
+        // (no branch) → journal-only, which is authoritative there and unchanged.
+        string planBranch = $"guardrails/{Path.GetFileName(plan.PlanDirectory)}";
+        if (GitWorktreeProvider.CurrentPlanBranchTip(plan.Workspace, planBranch).Length > 0)
+        {
+            return ScopedReset(plan, [taskId]).Outcome == ScopedResetOutcome.Done;
         }
 
         journal.ResetTask(taskId);
@@ -261,6 +278,12 @@ public static class RunReset
         /// <summary>The wave + its downstream waves were reset — the plan branch rewound past them when one exists, else journal-only.</summary>
         Done,
 
+        /// <summary>The removed range holds an unattributed (trailer-less NON-marker) commit — a human hand-fix — so the rewind was REFUSED; the plan branch was left untouched (#311 BLOCKER).</summary>
+        Refused,
+
+        /// <summary>The plan branch moved between the safe-suffix decision and the rewind (a concurrent same-plan session) — aborted without touching the branch (#311 WEAK-4).</summary>
+        ConcurrentModification,
+
         /// <summary>The named wave directory is not a wave in this plan.</summary>
         UnknownWave,
 
@@ -283,19 +306,25 @@ public static class RunReset
         /// <summary>The commit the plan branch was rewound to; null for a journal-only reset (serial / no plan branch).</summary>
         public string? RewindTarget { get; init; }
 
+        /// <summary>The refusal reason, on <see cref="WaveResetOutcome.Refused"/>.</summary>
+        public string? Refusal { get; init; }
+
         /// <summary>The unknown wave dir, on <see cref="WaveResetOutcome.UnknownWave"/>.</summary>
         public string? UnknownWaveDir { get; init; }
     }
 
     /// <summary>
-    /// Wave-scoped reset (SSOT §14.8, #254 M2b): rewind the plan branch past <paramref name="waveDir"/>
-    /// AND every downstream wave (a wave-scoped rewind is ALWAYS a safe trailing suffix — no cross-wave
-    /// fan-in, §14.8 — so it is unconditionally sound, no safe-suffix REFUSE possible) and journal-reset
-    /// every task + the wave records so a later <c>guardrails run</c> re-runs them from a clean base. The
-    /// rewind target is the nearest PREDECESSOR wave's <c>Guardrails-Wave:</c> marker sha, or the plan-branch
-    /// base for the first wave. Crash-atomic via <see cref="RewindIntent"/>. In serial mode / a non-git plan
-    /// folder (no plan branch) it degrades to a sound journal-only reset. Records a <c>wave</c>-boundary
-    /// <see cref="DecisionEntry"/> in the durable <c>decisions[]</c> journal section.
+    /// Wave-scoped reset (SSOT §14.8, #254 M2b): rewind the plan branch past <paramref name="waveDir"/> AND
+    /// every downstream wave, then journal-reset every task + the wave records so a later <c>guardrails run</c>
+    /// re-runs them from a clean base. Like the task-scoped <see cref="ScopedReset"/>, it ROUTES THROUGH the
+    /// marker-aware <see cref="SafeSuffixEvaluator"/> (via <see cref="GitWorktreeProvider.EvaluateSafeSuffix"/>,
+    /// #311 BLOCKER): the evaluator DERIVES the reset target from the live first-parent history (always an
+    /// ancestor — no dangling <c>MarkerSha</c> sideways-reset, BLOCKER-1b), EXEMPTS the harness's own
+    /// <c>Guardrails-Wave:</c> markers, and REFUSES if a trailer-less NON-marker commit (a human #197
+    /// hand-fix) is in the removed range. A tip compare-and-swap guards a concurrent same-plan run (WEAK-4).
+    /// Crash-atomic via <see cref="RewindIntent"/> carrying the wave dirs (BLOCKER-1b). In serial mode / a
+    /// non-git plan folder there is no plan branch, so it degrades to a sound journal-only reset. Records a
+    /// <c>wave</c>-boundary <see cref="DecisionEntry"/>.
     /// </summary>
     public static WaveResetResult WaveReset(PlanDefinition plan, string waveDir)
     {
@@ -325,49 +354,46 @@ public static class RunReset
         RunJournal journal = RunJournal.LoadOrCreate(plan);
         List<WaveNode> affected = plan.Waves.Skip(index).ToList();
         List<string> affectedWaveDirs = affected.Select(w => w.Dir).ToList();
-        List<string> affectedTaskIds = affected.SelectMany(w => w.Tasks.Select(t => t.Id)).ToList();
+        var set = new HashSet<string>(affected.SelectMany(w => w.Tasks.Select(t => t.Id)), StringComparer.Ordinal);
 
         string planName = Path.GetFileName(plan.PlanDirectory);
         string planBranch = $"guardrails/{planName}";
 
-        // Rewind target = the nearest PREDECESSOR wave's marker sha (journal first, then the branch
-        // trailers), else the plan-branch base for the first wave.
-        IReadOnlyDictionary<string, PlanBranchWaveRecord> markers =
-            GitWorktreeProvider.ReadPlanBranchWaveMarkers(plan.Workspace, planName);
-        string? resetTarget = null;
-        for (int j = index - 1; j >= 0 && resetTarget is null; j--)
+        // Safe-suffix check against the plan branch (marker-aware): DERIVES the target from history, EXEMPTS
+        // the wave markers, REFUSES a trailer-less human hand-fix in range. Serial / no branch → Nothing.
+        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(plan.Workspace, planBranch, set);
+
+        // Refuse floor (un-overridable): a human hand-fix / unattributed commit in the range is never discarded.
+        if (decision.Outcome == SafeSuffixOutcome.Refused)
         {
-            string dir = plan.Waves[j].Dir;
-            if (journal.WaveEntryOf(dir)?.MarkerSha is { Length: > 0 } jm)
+            return new WaveResetResult { Outcome = WaveResetOutcome.Refused, Refusal = decision.Refusal };
+        }
+
+        bool willRewind = decision.Outcome == SafeSuffixOutcome.Safe && decision.ResetTarget is not null;
+
+        // Compare-and-swap (WEAK-4): the branch must still be where the decision saw it, else a concurrent
+        // same-plan session moved it — abort WITHOUT touching the branch.
+        if (willRewind)
+        {
+            string currentTip = GitWorktreeProvider.CurrentPlanBranchTip(plan.Workspace, planBranch);
+            if (!string.Equals(currentTip, decision.ExpectedTip, StringComparison.Ordinal))
             {
-                resetTarget = jm;
-            }
-            else if (markers.TryGetValue(dir, out PlanBranchWaveRecord? m) && m.MarkerSha.Length > 0)
-            {
-                resetTarget = m.MarkerSha;
+                return new WaveResetResult { Outcome = WaveResetOutcome.ConcurrentModification };
             }
         }
 
-        string branchTip = GitWorktreeProvider.CurrentPlanBranchTip(plan.Workspace, planBranch);
-        bool hasBranch = branchTip.Length > 0;
-        if (resetTarget is null && hasBranch)
-        {
-            string @base = GitWorktreeProvider.PlanBranchBase(plan.Workspace, planBranch);
-            resetTarget = string.IsNullOrEmpty(@base) ? null : @base;
-        }
-
-        bool willRewind = hasBranch && resetTarget is { Length: > 0 };
-
-        // Crash-atomic destructive section: write the intent BEFORE the rewind, clear it AFTER both effects.
+        // Crash-atomic: write the intent (task ids AND wave dirs, BLOCKER-1b) BEFORE the rewind, clear AFTER.
+        var taskIdsInOrder = affected.SelectMany(w => w.Tasks.Select(t => t.Id)).ToList();
         if (willRewind)
         {
             RewindIntent.Write(plan.PlanDirectory, new RewindIntent
             {
-                SafeSet = affectedTaskIds.OrderBy(x => x, StringComparer.Ordinal).ToList(),
-                PreRewindTip = branchTip,
-                ResetTarget = resetTarget
+                SafeSet = taskIdsInOrder.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                Waves = affectedWaveDirs,
+                PreRewindTip = decision.ExpectedTip,
+                ResetTarget = decision.ResetTarget
             });
-            GitWorktreeProvider.RewindPlanBranch(plan.Workspace, planBranch, resetTarget!);
+            GitWorktreeProvider.RewindPlanBranch(plan.Workspace, planBranch, decision.ResetTarget!);
         }
 
         var resetTasksInOrder = new List<string>();
@@ -383,7 +409,7 @@ public static class RunReset
         }
 
         journal.RecordDecision(DriftDecisions.WaveReset(
-            plan.Config.AutonomyPolicy, waveDir, willRewind ? resetTarget : null, affectedWaveDirs));
+            plan.Config.AutonomyPolicy, waveDir, willRewind ? decision.ResetTarget : null, affectedWaveDirs));
 
         if (willRewind)
         {
@@ -395,7 +421,7 @@ public static class RunReset
             Outcome = WaveResetOutcome.Done,
             ResetWaves = affectedWaveDirs,
             ResetTasks = resetTasksInOrder,
-            RewindTarget = willRewind ? resetTarget : null
+            RewindTarget = willRewind ? decision.ResetTarget : null
         };
     }
 

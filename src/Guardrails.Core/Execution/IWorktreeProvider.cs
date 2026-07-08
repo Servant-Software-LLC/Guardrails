@@ -219,12 +219,4 @@ public interface IWorktreeProvider
     /// </summary>
     IReadOnlyDictionary<string, PlanBranchWaveRecord> ReconcileWavesFromPlanBranch(IntegrationHandle integ) =>
         new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
-
-    /// <summary>
-    /// The plan branch's base commit (SSOT §14.8) — the fork point off the user's branch, i.e. the tip
-    /// before ANY wave integrated. It is the wave-scoped-rewind target when rewinding the FIRST wave (which
-    /// has no predecessor marker to rewind to). Computed as <c>git merge-base &lt;planBranch&gt;
-    /// &lt;originalBranch&gt;</c>. Default empty string for fake/serial providers.
-    /// </summary>
-    string PlanBranchBase(IntegrationHandle integ) => "";
 }

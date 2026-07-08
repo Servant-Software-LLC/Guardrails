@@ -107,6 +107,23 @@ public static class ResetCommand
                 io.Out.WriteLine("Run 'guardrails run' to re-execute them.");
                 return ExitCodes.Success;
 
+            case RunReset.WaveResetOutcome.Refused:
+                io.Out.WriteLine("REFUSED — the plan branch has an unattributed commit (a human hand-fix?) in the range that");
+                io.Out.WriteLine("rewinding this wave would discard, so it was left untouched (SSOT §14.8, #311):");
+                if (result.Refusal is { } refusal)
+                {
+                    io.Out.WriteLine($"  {refusal}");
+                }
+
+                io.Out.WriteLine($"Resolve the plan branch manually, or use 'guardrails reset {folder} -y' for a full rebuild.");
+                return ExitCodes.TaskFailed;
+
+            case RunReset.WaveResetOutcome.ConcurrentModification:
+                io.Out.WriteLine(
+                    "The plan branch changed while the reset was deciding (a concurrent same-plan run?). " +
+                    "Nothing was changed — re-run this command.");
+                return ExitCodes.HarnessError;
+
             case RunReset.WaveResetOutcome.UnknownWave:
                 io.Out.WriteLine($"Wave '{result.UnknownWaveDir}' is not a wave in this plan.");
                 return ExitCodes.HarnessError;

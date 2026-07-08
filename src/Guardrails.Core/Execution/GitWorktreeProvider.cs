@@ -227,23 +227,6 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     public IReadOnlyDictionary<string, PlanBranchWaveRecord> ReconcileWavesFromPlanBranch(IntegrationHandle integ) =>
         ParseWaveMarkers(Git("log", "--first-parent", TrailerLogFormat, integ.PlanBranchName));
 
-    /// <inheritdoc />
-    public string PlanBranchBase(IntegrationHandle integ) => PlanBranchBase(_repoPath, integ.PlanBranchName, integ.OriginalBranch);
-
-    /// <summary>
-    /// The plan branch's base commit (SSOT §14.8): <c>git merge-base &lt;planBranch&gt; &lt;ref&gt;</c> —
-    /// the fork point before any wave integrated, the wave-1 rewind target. Static so the wave-scoped reset
-    /// (no run-scoped provider) shares it; <paramref name="baseRef"/> defaults to <c>HEAD</c> for the reset
-    /// path (the user's checkout). Degrades to the empty string when git is unavailable / the branch is
-    /// absent.
-    /// </summary>
-    public static string PlanBranchBase(string repoPath, string planBranch, string baseRef = "HEAD")
-    {
-        string reference = string.IsNullOrWhiteSpace(baseRef) ? "HEAD" : baseRef;
-        var (stdout, exit) = TryGitIn(repoPath, "merge-base", planBranch, reference);
-        return exit == 0 ? stdout.Trim() : "";
-    }
-
     /// <summary>
     /// Read-only query of the plan branch's <c>Guardrails-Wave:</c> marker commits (SSOT §14.5) WITHOUT
     /// creating an integration worktree — for the wave-scoped reset / dry-run. Degrades to the EMPTY map
@@ -806,12 +789,22 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// <summary>
     /// The current tip sha of <paramref name="planBranch"/> (issue #274 Part C compare-and-swap). Static so
     /// the manual scoped reset can read it without a run-scoped provider. Degrades to the empty string when
-    /// the branch does not exist / git is unavailable — a non-git plan folder has no branch to CAS against.
+    /// the branch does not exist / git is unavailable / the workspace directory does not exist — a non-git
+    /// plan folder has no branch to CAS against. The <c>Win32Exception</c> catch covers a workspace path that
+    /// is not a real directory (git cannot even be spawned there), so a serial / synthetic-workspace caller
+    /// (#311 <c>RunReset.Task</c> worktree probe) never crashes — it just reads "no branch".
     /// </summary>
     public static string CurrentPlanBranchTip(string repoPath, string planBranch)
     {
-        var (stdout, exit) = TryGitIn(repoPath, "rev-parse", planBranch);
-        return exit == 0 ? stdout.Trim() : "";
+        try
+        {
+            var (stdout, exit) = TryGitIn(repoPath, "rev-parse", planBranch);
+            return exit == 0 ? stdout.Trim() : "";
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return "";
+        }
     }
 
     /// <inheritdoc />
@@ -883,9 +876,12 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     public static IReadOnlyList<TrailerCommit> GatherFirstParentHistory(string repoPath, string planBranch)
     {
         // A sha → Guardrails-Task: trailer map over EVERY reachable commit (all parents), so a merge's
-        // non-first-parent lineage commits (never on the first-parent chain) can be attributed too.
-        IReadOnlyDictionary<string, string?> taskBySha =
-            ParseShaToTask(GitIn(repoPath, "log", TrailerShaBodyFormat, planBranch));
+        // non-first-parent lineage commits (never on the first-parent chain) can be attributed too. The
+        // SAME log also yields the harness Guardrails-Wave: marker shas (#254 M2b) so the safe-suffix check
+        // can EXEMPT them from its trailer-less REFUSE (they are known bookkeeping, not human hand-fixes).
+        string trailerLog = GitIn(repoPath, "log", TrailerShaBodyFormat, planBranch);
+        IReadOnlyDictionary<string, string?> taskBySha = ParseShaToTask(trailerLog);
+        IReadOnlySet<string> waveMarkerShas = ParseWaveMarkerShas(trailerLog);
 
         // The first-parent spine: sha + its parent shas (space-separated; first is the first parent).
         string fpLog = GitIn(repoPath, "log", "--first-parent", $"--format=%H{Hashing.HashText.UnitSeparator}%P", planBranch);
@@ -914,7 +910,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
                 Sha = sha,
                 Task = taskBySha.GetValueOrDefault(sha),
                 ParentSha = firstParent,
-                MergedInTasks = mergedIn
+                MergedInTasks = mergedIn,
+                IsWaveMarker = waveMarkerShas.Contains(sha)
             });
         }
 
@@ -1001,6 +998,41 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         }
 
         return map;
+    }
+
+    /// <summary>
+    /// The set of commit shas whose LAST trailer block carries a <c>Guardrails-Wave:</c> trailer (#254 M2b) —
+    /// the harness's own empty wave-marker commits. Parses the SAME <see cref="TrailerShaBodyFormat"/> log
+    /// <see cref="ParseShaToTask"/> reads, with the identical last-trailer-block discipline, so a body's own
+    /// blank lines can never split a record and a stray mention in prose never counts.
+    /// </summary>
+    private static IReadOnlySet<string> ParseWaveMarkerShas(string log)
+    {
+        char recordSep = Hashing.HashText.RecordSeparator;
+        char unitSep = Hashing.HashText.UnitSeparator;
+        var markers = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int split = record.IndexOf(unitSep);
+            if (split < 0)
+            {
+                continue;
+            }
+
+            string sha = record[..split].Trim();
+            string body = record[(split + 1)..];
+            foreach (string line in LastTrailerBlockLines(body))
+            {
+                if (line.StartsWith("Guardrails-Wave: ", StringComparison.Ordinal))
+                {
+                    markers.Add(sha);
+                    break;
+                }
+            }
+        }
+
+        return markers;
     }
 
     /// <summary>

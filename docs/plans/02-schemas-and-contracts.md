@@ -3171,16 +3171,21 @@ restricted to fully-`pending` future waves.
   all later waves (they built on it).
 - **`guardrails reset <plan> <wave>`** — wave-scoped rewind: every task in the wave + rewind the plan branch
   to the predecessor wave's marker (user HEAD for wave 1) → re-runs that wave + all downstream waves.
-- **Always-safe-suffix property:** because waves are a strict total order with **no cross-wave fan-in**, a
-  wave-scoped rewind is *always* a safe trailing suffix — the fan-in-descendant unsoundness that forces
-  task-level Part C to sometimes halt cannot arise across waves, so wave-granularity `auto` resolve is
-  unconditionally sound. **Implementation note:** a wave-scoped rewind computes its target **directly** —
-  the nearest predecessor wave's `Guardrails-Wave:` marker sha, or the plan-branch base (`git merge-base`)
-  for the first wave — and reuses the Part C **rewind primitive** (`RewindPlanBranchTo` + the crash-atomic
-  `RewindIntent` marker + the `git reset --hard`-keeps-reflog recovery), **not** `SafeSuffixEvaluator`
-  itself: the empty `Guardrails-Wave:` marker commits carry no `Guardrails-Task:` trailer and would trip the
-  evaluator's (correct) trailer-less-commit REFUSE, so routing through it would break the always-safe
-  property. The direct target is provably the safe-suffix boundary by construction.
+- **Always-safe-suffix property (for pure-harness history):** because waves are a strict total order with
+  **no cross-wave fan-in**, a wave-scoped rewind of *pure-harness* history is *always* a safe trailing
+  suffix — the fan-in-descendant unsoundness that forces task-level Part C to sometimes halt cannot arise
+  across waves. **But a human commit on the plan branch is the exception** (#197 hand-fix / #311 BLOCKER): a
+  rewind must never silently discard unattributed human work. So a wave-scoped rewind **ROUTES THROUGH the
+  same `SafeSuffixEvaluator`** the task path uses (via `IWorktreeProvider.EvaluateSafeSuffix`), made
+  **marker-aware**: a `TrailerCommit.IsWaveMarker` flag (set for the harness's own `Guardrails-Wave:` marker
+  commits) EXEMPTS them from the evaluator's trailer-less REFUSE, so the check (a) DERIVES the reset target
+  from the live first-parent history — always an ancestor of the tip, no dangling-sha sideways reset — (b)
+  EXEMPTS the markers so the always-safe property holds for pure-harness history, and (c) still REFUSES if a
+  trailer-less **non-marker** commit (a human hand-fix) sits in the removed range. It reuses the Part C
+  rewind primitive (`RewindPlanBranchTo`), the crash-atomic `RewindIntent` marker (now carrying the wave
+  dirs too, so a crash-replay clears the wave entries — never a dangling `MarkerSha`), and a tip
+  compare-and-swap. On a FLAT plan there are no markers, so the flag is always false and the task-path
+  behaviour is byte-identical.
 
 ### 14.9 Phasing — v1 skeleton vs v2 bets
 
