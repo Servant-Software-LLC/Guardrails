@@ -539,6 +539,70 @@ public sealed class WriteScopeCheckTests
         Assert.Equal(content, offense.Preview!.TextPreview); // the ALREADY-CAPTURED result is unaffected
     }
 
+    // -------------------------------------------------------------------------
+    // Issue #280: phase-2 scope-clean (StripOutOfScope) — strips silently, returns what it stripped,
+    // and NEVER touches the reconstructable dep set (invisible to Check's staging).
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Phase-2 scope-clean (SSOT §3.4, issue #280): <see cref="WriteScopeCheck.StripOutOfScope"/>
+    /// reverts an out-of-scope path (a passing guardrail's non-dep side effect), RETURNS what it
+    /// stripped for a log/observer note, and leaves in-scope WIP untouched — the same revert as phase 1,
+    /// but reported, not failed.
+    /// </summary>
+    [Fact]
+    public void StripOutOfScope_RevertsOutOfScopePath_KeepsInScope_AndReturnsStripped()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile("src/Feature.cs", "// base", "add base feature");
+        string taskBase = repo.HeadSha();
+        IReadOnlyList<string> scope = ["src/**"];
+
+        const string inScopeWip = "// in-scope WIP must survive phase-2";
+        repo.CommitFile("src/Feature.cs", inScopeWip, "in-scope edit (survives)");
+        repo.CommitFile("build/out/report.txt", "out-of-scope build artifact", "guardrail side effect");
+
+        IReadOnlyList<WriteScopeOffense> stripped =
+            WriteScopeCheck.StripOutOfScope(repo.RepoPath, taskBase, scope);
+
+        // Returned the stripped offense (diagnosability), reverted it, kept the in-scope WIP.
+        Assert.Contains(stripped,
+            o => o.Path.Replace('\\', '/').EndsWith("build/out/report.txt", StringComparison.OrdinalIgnoreCase));
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "build", "out", "report.txt")),
+            "The out-of-scope artifact must be stripped from the worktree.");
+        Assert.Equal(inScopeWip, repo.ReadFile("src/Feature.cs"));
+    }
+
+    /// <summary>
+    /// The (A)/(B) interplay (issue #280): a reconstructable dep dir (<c>node_modules</c>) a passing
+    /// guardrail left is INVISIBLE to <see cref="WriteScopeCheck.Check"/>'s staging (§5.3(D)), so phase-2
+    /// scope-clean neither reports it NOR deletes it — it stays on disk (warm-cache #255) and is kept out
+    /// of the commit by the staging exclusion at the <c>Integrate</c> site instead.
+    /// </summary>
+    [Fact]
+    public void StripOutOfScope_DoesNotStripOrDeleteNodeModules()
+    {
+        using var repo = new TempGitRepo();
+        string taskBase = repo.HeadSha();
+        IReadOnlyList<string> scope = ["src/**"];
+
+        // An in-scope action write plus a guardrail-created nested node_modules.
+        Directory.CreateDirectory(Path.Combine(repo.RepoPath, "src"));
+        File.WriteAllText(Path.Combine(repo.RepoPath, "src", "Impl.cs"), "// in-scope");
+        string nested = Path.Combine(repo.RepoPath, "dsl", "node_modules", "ajv", "dist", "ajv.js");
+        Directory.CreateDirectory(Path.GetDirectoryName(nested)!);
+        File.WriteAllText(nested, "module.exports={};");
+
+        IReadOnlyList<WriteScopeOffense> stripped =
+            WriteScopeCheck.StripOutOfScope(repo.RepoPath, taskBase, scope);
+
+        // node_modules is never seen as an offense (excluded from staging) → nothing to strip.
+        Assert.Empty(stripped);
+        // …and it is NOT deleted from disk (stage-exclusion, not worktree deletion — #255).
+        Assert.True(File.Exists(nested),
+            "node_modules must remain on disk after phase-2 scope-clean (warm-cache #255).");
+    }
+
     /// <summary>
     /// A modified/deleted (M/D) offense never carries a preview — its taskBase blob is always
     /// separately recoverable via <c>git show</c>, so there is nothing extra to capture.
