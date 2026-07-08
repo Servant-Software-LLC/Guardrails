@@ -134,24 +134,17 @@ public static class RunCommand
             return ExitCodes.HarnessError;
         }
 
-        // Multi-wave EXECUTION is staged (M2 v1, SSOT §14). The waved loader/validator, wave-qualified
-        // identity, WaveDefinitionHash, and the journal waves[] schema all landed and are exercised by
-        // `validate`; but the wave-execution LOOP (a continuous plan branch across waves, per-wave
-        // entry/exit gates, the Guardrails-Wave: marker commit, cross-wave resume, and wave-drift
-        // resolution) requires the Scheduler/journal refactor called out in the design (§14.4, C1/C2) and
-        // lands as its own reviewed slice. Running a waved plan through the flat DAG now would IGNORE the
-        // wave barriers (later-wave tasks would race earlier waves) — silently wrong — so the harness
-        // refuses HONESTLY rather than run it incorrectly (honest-halt, invariant #5).
+        // Multi-wave EXECUTION (M2b, SSOT §14): a WAVED plan runs wave-by-wave behind hard barriers against
+        // ONE continuous integration worktree + journal + plan branch (the Scheduler's RunWavedAsync). The
+        // plan-level Full Flight Checks (<plan>/preflights/) and Terminal Gate (<plan>/guardrails/) below
+        // wrap the whole waved run unchanged; the per-wave entry/exit gates + the barrier live in the
+        // Scheduler. Print a one-line wave banner so an operator sees the shape.
         if (probe.Plan.IsWaved)
         {
             io.Out.WriteLine(
-                $"'{Path.GetFileName(probe.Plan.PlanDirectory)}' is a WAVED plan ({probe.Plan.Waves.Count} wave(s): " +
-                $"{string.Join(", ", probe.Plan.Waves.Select(w => w.Dir))}).");
-            io.Out.WriteLine(
-                "Multi-wave EXECUTION is not yet wired (SSOT §14). The waved plan VALIDATES, but running it " +
-                "would ignore the wave barriers, so the harness refuses rather than run it incorrectly. Use " +
-                "'guardrails validate' to check a waved plan; wave execution lands in the follow-up slice.");
-            return ExitCodes.HarnessError;
+                $"'{Path.GetFileName(probe.Plan.PlanDirectory)}' is a WAVED plan — {probe.Plan.Waves.Count} wave(s) in strict order: " +
+                $"{string.Join(", ", probe.Plan.Waves.Select(w => w.Dir))} (SSOT §14).");
+            io.Out.WriteLine();
         }
 
         // Review-marker nudge (warn, never block — SSOT §13, issue #79): if the plan hasn't been
@@ -264,6 +257,25 @@ public static class RunCommand
             driftAuthorization = authorized; // non-null only on a `y`; carries the CAPTURED plan (S + target + tip)
         }
 
+        // Wave-drift interactive confirm (SSOT §14.6, #254 M2b): a COMPLETED wave whose WaveDefinitionHash
+        // changed since it last completed. Under the default "prompt" policy the Scheduler cannot prompt (it
+        // never touches the console), so — mirroring the task-drift confirm above — the CLI detects it BEFORE
+        // any UI and, in an interactive TTY, asks; a `y` pre-authorizes rewinding that wave (+ downstream),
+        // passed to the Scheduler as the authorized wave-dir set. Non-interactive / declined halts (the
+        // Scheduler renders the authoritative WaveHalt). --autonomy auto resolves without a prompt; halt halts.
+        IReadOnlySet<string>? waveDriftAuthorized = null;
+        if (probe.Plan.IsWaved && probe.Plan.Config.AutonomyPolicy == Core.Model.AutonomyPolicy.Prompt)
+        {
+            (bool declined, IReadOnlySet<string>? authorizedWaves) =
+                ConfirmWaveDriftIfInteractive(probe.Plan, journal, io);
+            if (declined)
+            {
+                return ExitCodes.TaskFailed; // operator answered N — halt without running.
+            }
+
+            waveDriftAuthorized = authorizedWaves;
+        }
+
         // The log server is a companion to the live table: start it only in the interactive path
         // (nobody clicks links in CI / redirected output), and never let a binding failure abort
         // the run — TryStart returns null and prints one warning.
@@ -302,7 +314,7 @@ public static class RunCommand
 
                 await using var liveObserver = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
                 var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
-                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -310,7 +322,7 @@ public static class RunCommand
                     new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
                 siteObserver.WriteInitialIndex();
                 PrintStaticIndexLink(logsRoot, io);
-                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
             }
 
             // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -418,6 +430,15 @@ public static class RunCommand
             io.Out.WriteLine($"  {abort.Remedy}");
             io.Out.WriteLine($"  Full fault detail written to {Path.GetFullPath(Path.Combine(logsRoot, "abort.log"))}");
             return ExitCodes.HarnessError;
+        }
+
+        // Multi-wave halt (SSOT §14, #254 M2b): a WAVED run stopped at a wave boundary — an unauthored next
+        // wave (JIT checkpoint), a wave entry/exit gate failure, or a wave-drift under a halt/unconfirmed
+        // policy. Rendered after the per-task summary (prior waves' tasks show green) and exits 2 (actionable).
+        if (report.WaveHalt is { } waveHalt)
+        {
+            PrintWaveHalt(waveHalt, io);
+            return ExitCodes.TaskFailed;
         }
 
         if (report.Cancelled)
@@ -582,6 +603,96 @@ public static class RunCommand
             ExpectedTip = drift.Decision.ExpectedTip ?? ""
         };
         return (DriftPromptDecision.Confirmed, authorization);
+    }
+
+    /// <summary>
+    /// Wave-drift interactive confirm (SSOT §14.6, #254 M2b), the wave-level analogue of
+    /// <see cref="ConfirmSafeDriftIfInteractive"/>. Detects — from the journal — every COMPLETED wave whose
+    /// current <c>WaveDefinitionHash</c> no longer matches the recorded one, and (in an interactive TTY)
+    /// asks whether to rewind + re-run them. Returns (<c>Declined</c>=true) when the operator answered N
+    /// (halt); otherwise the authorized wave-dir set (null = no drift / non-interactive, let the Scheduler
+    /// halt or auto-resolve per policy). A wave-scoped rewind is ALWAYS a safe trailing suffix (§14.8), so
+    /// no per-wave safety preview is needed.
+    /// </summary>
+    private static (bool Declined, IReadOnlySet<string>? Authorized) ConfirmWaveDriftIfInteractive(
+        Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io)
+    {
+        var drifted = new List<(string Dir, string Old, string New)>();
+        foreach (Core.Model.WaveNode wave in plan.Waves)
+        {
+            if (journal.WaveEntryOf(wave.Dir) is not { Status: WaveStatus.Completed, DefinitionHash: { } recorded })
+            {
+                continue;
+            }
+
+            string current;
+            try { current = WaveDefinitionHash.Compute(wave); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+
+            if (!string.Equals(recorded, current, StringComparison.Ordinal))
+            {
+                drifted.Add((wave.Dir, recorded, current));
+            }
+        }
+
+        if (drifted.Count == 0 || Console.IsInputRedirected)
+        {
+            return (false, null); // no drift, or non-interactive — the Scheduler halts/decides per policy.
+        }
+
+        io.Out.WriteLine();
+        io.Out.WriteLine("WAVE DRIFT — one or more COMPLETED waves changed since they last completed (SSOT §14.6).");
+        foreach ((string dir, string oldH, string newH) in drifted)
+        {
+            io.Out.WriteLine($"  {dir}: {ShortHash(oldH)} -> {ShortHash(newH)}");
+        }
+
+        io.Out.WriteLine("  A 'y' rewinds the harness-owned plan branch past each drifted wave + its downstream waves and re-runs them;");
+        io.Out.WriteLine("  your own checkout is untouched. Discarded commits stay recoverable via git reflog until a later '--fresh'.");
+        io.Out.Write($"Rewind + re-run {drifted.Count} drifted wave(s) (and downstream)? [y/N] ");
+
+        string? answer = Console.ReadLine();
+        bool yes = answer is not null && answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
+        if (!yes)
+        {
+            io.Out.WriteLine("Declined — nothing was changed (wave-drift halt, SSOT §14.6).");
+            return (true, null);
+        }
+
+        return (false, drifted.Select(d => d.Dir).ToHashSet(StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Render a WAVED run's wave-boundary halt (SSOT §14, #254 M2b): the JIT-checkpoint (unauthored next
+    /// wave), a wave entry/exit gate failure, or a wave-drift halt under a halt/unconfirmed-prompt policy.
+    /// Exit 2 (actionable), like the definition-drift halt.
+    /// </summary>
+    private static void PrintWaveHalt(WaveHalt halt, IConsoleIo io)
+    {
+        TextWriter o = io.Out;
+        o.WriteLine();
+        string label = halt.Kind switch
+        {
+            WaveHaltKind.NextWaveUnauthored => "WAVE CHECKPOINT",
+            WaveHaltKind.WaveDrift => "WAVE DRIFT",
+            WaveHaltKind.EntryGateFailed => "WAVE ENTRY GATE FAILED",
+            WaveHaltKind.ExitGateFailed => "WAVE EXIT GATE FAILED",
+            _ => "WAVE HALT"
+        };
+        o.WriteLine($"{label}: {halt.Headline}");
+
+        if (!string.IsNullOrWhiteSpace(halt.Detail))
+        {
+            foreach (string line in halt.Detail.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                o.WriteLine($"  {line}");
+            }
+        }
+
+        foreach (GuardrailResult g in halt.FailedGates)
+        {
+            o.WriteLine($"  FAILED: {g.Name} — {g.Reason ?? "failed"}");
+        }
     }
 
     /// <summary>
@@ -832,10 +943,11 @@ public static class RunCommand
         Core.Model.PlanDefinition plan,
         IRunObserver observer,
         DriftAuthorization? driftAuthorization,
+        IReadOnlySet<string>? waveDriftAuthorized,
         CancellationToken cancellationToken)
     {
         Scheduler scheduler = SchedulerFactory.Create(
-            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization);
+            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized);
         return scheduler.RunAsync(plan, cancellationToken);
     }
 

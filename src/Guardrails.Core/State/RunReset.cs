@@ -255,6 +255,150 @@ public static class RunReset
         };
     }
 
+    /// <summary>The outcome of a wave-scoped reset (SSOT §14.8, #254 M2b).</summary>
+    public enum WaveResetOutcome
+    {
+        /// <summary>The wave + its downstream waves were reset — the plan branch rewound past them when one exists, else journal-only.</summary>
+        Done,
+
+        /// <summary>The named wave directory is not a wave in this plan.</summary>
+        UnknownWave,
+
+        /// <summary>No run journal exists yet (the plan has not been run).</summary>
+        NoJournal
+    }
+
+    /// <summary>The result of <see cref="WaveReset"/> (SSOT §14.8).</summary>
+    public sealed record WaveResetResult
+    {
+        /// <summary>Which outcome applies.</summary>
+        public required WaveResetOutcome Outcome { get; init; }
+
+        /// <summary>The wave dirs reset (the named wave + its downstream waves), in strict order — on <see cref="WaveResetOutcome.Done"/>.</summary>
+        public IReadOnlyList<string> ResetWaves { get; init; } = [];
+
+        /// <summary>The task ids reset across those waves, in plan order — on <see cref="WaveResetOutcome.Done"/>.</summary>
+        public IReadOnlyList<string> ResetTasks { get; init; } = [];
+
+        /// <summary>The commit the plan branch was rewound to; null for a journal-only reset (serial / no plan branch).</summary>
+        public string? RewindTarget { get; init; }
+
+        /// <summary>The unknown wave dir, on <see cref="WaveResetOutcome.UnknownWave"/>.</summary>
+        public string? UnknownWaveDir { get; init; }
+    }
+
+    /// <summary>
+    /// Wave-scoped reset (SSOT §14.8, #254 M2b): rewind the plan branch past <paramref name="waveDir"/>
+    /// AND every downstream wave (a wave-scoped rewind is ALWAYS a safe trailing suffix — no cross-wave
+    /// fan-in, §14.8 — so it is unconditionally sound, no safe-suffix REFUSE possible) and journal-reset
+    /// every task + the wave records so a later <c>guardrails run</c> re-runs them from a clean base. The
+    /// rewind target is the nearest PREDECESSOR wave's <c>Guardrails-Wave:</c> marker sha, or the plan-branch
+    /// base for the first wave. Crash-atomic via <see cref="RewindIntent"/>. In serial mode / a non-git plan
+    /// folder (no plan branch) it degrades to a sound journal-only reset. Records a <c>wave</c>-boundary
+    /// <see cref="DecisionEntry"/> in the durable <c>decisions[]</c> journal section.
+    /// </summary>
+    public static WaveResetResult WaveReset(PlanDefinition plan, string waveDir)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentException.ThrowIfNullOrWhiteSpace(waveDir);
+
+        if (!File.Exists(RunJournal.PathFor(plan.PlanDirectory)))
+        {
+            return new WaveResetResult { Outcome = WaveResetOutcome.NoJournal };
+        }
+
+        int index = -1;
+        for (int i = 0; i < plan.Waves.Count; i++)
+        {
+            if (string.Equals(plan.Waves[i].Dir, waveDir, StringComparison.Ordinal))
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index < 0)
+        {
+            return new WaveResetResult { Outcome = WaveResetOutcome.UnknownWave, UnknownWaveDir = waveDir };
+        }
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        List<WaveNode> affected = plan.Waves.Skip(index).ToList();
+        List<string> affectedWaveDirs = affected.Select(w => w.Dir).ToList();
+        List<string> affectedTaskIds = affected.SelectMany(w => w.Tasks.Select(t => t.Id)).ToList();
+
+        string planName = Path.GetFileName(plan.PlanDirectory);
+        string planBranch = $"guardrails/{planName}";
+
+        // Rewind target = the nearest PREDECESSOR wave's marker sha (journal first, then the branch
+        // trailers), else the plan-branch base for the first wave.
+        IReadOnlyDictionary<string, PlanBranchWaveRecord> markers =
+            GitWorktreeProvider.ReadPlanBranchWaveMarkers(plan.Workspace, planName);
+        string? resetTarget = null;
+        for (int j = index - 1; j >= 0 && resetTarget is null; j--)
+        {
+            string dir = plan.Waves[j].Dir;
+            if (journal.WaveEntryOf(dir)?.MarkerSha is { Length: > 0 } jm)
+            {
+                resetTarget = jm;
+            }
+            else if (markers.TryGetValue(dir, out PlanBranchWaveRecord? m) && m.MarkerSha.Length > 0)
+            {
+                resetTarget = m.MarkerSha;
+            }
+        }
+
+        string branchTip = GitWorktreeProvider.CurrentPlanBranchTip(plan.Workspace, planBranch);
+        bool hasBranch = branchTip.Length > 0;
+        if (resetTarget is null && hasBranch)
+        {
+            string @base = GitWorktreeProvider.PlanBranchBase(plan.Workspace, planBranch);
+            resetTarget = string.IsNullOrEmpty(@base) ? null : @base;
+        }
+
+        bool willRewind = hasBranch && resetTarget is { Length: > 0 };
+
+        // Crash-atomic destructive section: write the intent BEFORE the rewind, clear it AFTER both effects.
+        if (willRewind)
+        {
+            RewindIntent.Write(plan.PlanDirectory, new RewindIntent
+            {
+                SafeSet = affectedTaskIds.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                PreRewindTip = branchTip,
+                ResetTarget = resetTarget
+            });
+            GitWorktreeProvider.RewindPlanBranch(plan.Workspace, planBranch, resetTarget!);
+        }
+
+        var resetTasksInOrder = new List<string>();
+        foreach (WaveNode w in affected)
+        {
+            journal.ResetWaveToPending(w.Dir);
+            foreach (TaskNode t in w.Tasks)
+            {
+                resetTasksInOrder.Add(t.Id);
+                DeleteDirectoryIfExists(Path.Combine(plan.PlanDirectory, "state", "captured", t.Id));
+                journal.ResetTask(t.Id);
+            }
+        }
+
+        journal.RecordDecision(DriftDecisions.WaveReset(
+            plan.Config.AutonomyPolicy, waveDir, willRewind ? resetTarget : null, affectedWaveDirs));
+
+        if (willRewind)
+        {
+            RewindIntent.Clear(plan.PlanDirectory);
+        }
+
+        return new WaveResetResult
+        {
+            Outcome = WaveResetOutcome.Done,
+            ResetWaves = affectedWaveDirs,
+            ResetTasks = resetTasksInOrder,
+            RewindTarget = willRewind ? resetTarget : null
+        };
+    }
+
     /// <summary>Compute a task's current definition hash, degrading to a sentinel on a read failure (audit only, never the gate).</summary>
     private static string SafeComputeHash(TaskNode? task)
     {

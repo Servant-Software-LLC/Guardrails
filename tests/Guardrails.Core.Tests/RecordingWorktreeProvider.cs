@@ -27,12 +27,18 @@ public sealed class RecordingWorktreeProvider : IWorktreeProvider
     public sealed record ReuseCall(string UpstreamPath, string TaskId, int Attempt, string ResultPath, string TaskBase);
     public sealed record ForkCall(string ProducerRecordedSha, string TaskId, int Attempt, string Path);
 
+    public sealed record WaveMarkerCall(string WaveDir, string WaveHash, string MarkerSha);
+
     public ConcurrentQueue<CreateCall> CreateCalls { get; } = [];
     public ConcurrentQueue<ReuseCall> ReuseCalls { get; } = [];
     public ConcurrentQueue<ForkCall> ForkCalls { get; } = [];
     public ConcurrentQueue<string> DiscardedPaths { get; } = [];
     public int PruneOrphansCallCount;
+    public int CreateIntegrationCallCount;
     public ConcurrentBag<string> IntegratedTaskIds { get; } = [];
+
+    /// <summary>Wave marker commits, in the order the scheduler wrote them (SSOT §14.5) — for barrier/ordering assertions.</summary>
+    public ConcurrentQueue<WaveMarkerCall> WaveMarkerCalls { get; } = [];
 
     /// <summary>
     /// Per-task recorded commit sha handed back by <see cref="Integrate"/>. Each settled task gets
@@ -41,8 +47,10 @@ public sealed class RecordingWorktreeProvider : IWorktreeProvider
     /// </summary>
     public static string RecordedShaFor(string taskId) => $"sha-{taskId}";
 
-    public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct) =>
-        new()
+    public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct)
+    {
+        Interlocked.Increment(ref CreateIntegrationCallCount);
+        return new()
         {
             IntegrationWorktreePath = $"integ://{runId}/_integration",
             PlanBranchName = $"guardrails/{planName}",
@@ -50,6 +58,7 @@ public sealed class RecordingWorktreeProvider : IWorktreeProvider
             OriginalHeadSha = "0000000000000000000000000000000000000000",
             RunId = runId
         };
+    }
 
     public WorktreeHandle CreateSegment(string taskId, int attempt, IntegrationHandle integ, CancellationToken ct)
     {
@@ -106,6 +115,13 @@ public sealed class RecordingWorktreeProvider : IWorktreeProvider
         // producerRecordedSha can be matched back to this producer (W-2 unit assertion).
         segment.RecordedCommitSha = RecordedShaFor(taskId);
         return IntegrationResult.FastForward;
+    }
+
+    public string CommitWaveMarker(IntegrationHandle integ, string waveDir, string waveHash, CancellationToken ct)
+    {
+        string sha = $"wave-marker-{waveDir}";
+        WaveMarkerCalls.Enqueue(new WaveMarkerCall(waveDir, waveHash, sha));
+        return sha;
     }
 
     public void Discard(WorktreeHandle handle) => DiscardedPaths.Enqueue(handle.WorktreePath);

@@ -230,6 +230,30 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             $"[blue]transient — {Markup.Escape(reason)} (pause {pauseCount}; no retry burn)[/]");
     }
 
+    public void WaveStarting(WaveNode wave, int index, int total)
+    {
+        lock (_gate)
+        {
+            // Above the live region (like PlanHashMismatch/DecisionRecorded) so it segments the table by
+            // wave without mutating table rows (the #145 in-region-write corruption is avoided).
+            AnsiConsole.MarkupLine(
+                $"[bold]Wave {index}/{total}:[/] {Markup.Escape(wave.Dir)} — {wave.Tasks.Count} task(s)");
+        }
+    }
+
+    public void WaveFinished(WaveNode wave, Core.Journal.WaveStatus status, bool skipped)
+    {
+        lock (_gate)
+        {
+            string verb = skipped
+                ? "[green]already complete — skipped (resume)[/]"
+                : status == Core.Journal.WaveStatus.Completed
+                    ? "[green]completed[/]"
+                    : $"[red]halted ({Markup.Escape(status.ToString().ToLowerInvariant())})[/]";
+            AnsiConsole.MarkupLine($"[bold]Wave {Markup.Escape(wave.Dir)}:[/] {verb}");
+        }
+    }
+
     public void PlanHashMismatch(string previousPlanHash)
     {
         lock (_gate)

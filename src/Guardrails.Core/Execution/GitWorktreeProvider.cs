@@ -208,6 +208,115 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         return GitIn(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Decision E (SSOT §14.5): commit an EMPTY marker in the integration worktree on the plan branch,
+    /// carrying the <c>Guardrails-Wave:</c> / <c>Guardrails-Wave-Hash:</c> / <c>Guardrails-Run:</c>
+    /// trailer triple. <c>--no-verify</c> for the same reason the task integration commit uses it (issue
+    /// #149): an INTERNAL plumbing commit on the harness-owned plan branch, never gated by a user git hook.
+    /// <c>--allow-empty</c> because the marker adds no tree change — it is a durable anchor, not work.
+    /// </remarks>
+    public string CommitWaveMarker(IntegrationHandle integ, string waveDir, string waveHash, CancellationToken ct)
+    {
+        string msg = $"Guardrails-Wave: {waveDir}\nGuardrails-Wave-Hash: {waveHash}\nGuardrails-Run: {integ.RunId}";
+        GitIn(integ.IntegrationWorktreePath, "commit", "--no-verify", "--allow-empty", "-m", msg);
+        return GitIn(integ.IntegrationWorktreePath, "rev-parse", "HEAD").Trim();
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyDictionary<string, PlanBranchWaveRecord> ReconcileWavesFromPlanBranch(IntegrationHandle integ) =>
+        ParseWaveMarkers(Git("log", "--first-parent", TrailerLogFormat, integ.PlanBranchName));
+
+    /// <inheritdoc />
+    public string PlanBranchBase(IntegrationHandle integ) => PlanBranchBase(_repoPath, integ.PlanBranchName, integ.OriginalBranch);
+
+    /// <summary>
+    /// The plan branch's base commit (SSOT §14.8): <c>git merge-base &lt;planBranch&gt; &lt;ref&gt;</c> —
+    /// the fork point before any wave integrated, the wave-1 rewind target. Static so the wave-scoped reset
+    /// (no run-scoped provider) shares it; <paramref name="baseRef"/> defaults to <c>HEAD</c> for the reset
+    /// path (the user's checkout). Degrades to the empty string when git is unavailable / the branch is
+    /// absent.
+    /// </summary>
+    public static string PlanBranchBase(string repoPath, string planBranch, string baseRef = "HEAD")
+    {
+        string reference = string.IsNullOrWhiteSpace(baseRef) ? "HEAD" : baseRef;
+        var (stdout, exit) = TryGitIn(repoPath, "merge-base", planBranch, reference);
+        return exit == 0 ? stdout.Trim() : "";
+    }
+
+    /// <summary>
+    /// Read-only query of the plan branch's <c>Guardrails-Wave:</c> marker commits (SSOT §14.5) WITHOUT
+    /// creating an integration worktree — for the wave-scoped reset / dry-run. Degrades to the EMPTY map
+    /// (never throws) when the workspace is not a git repo, git is unavailable, or the plan branch is
+    /// absent. Static so the CLI needs no run-scoped provider.
+    /// </summary>
+    public static IReadOnlyDictionary<string, PlanBranchWaveRecord> ReadPlanBranchWaveMarkers(
+        string repoPath, string planName)
+    {
+        var empty = new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(planName))
+        {
+            return empty;
+        }
+
+        try
+        {
+            var (log, exit) = TryGitIn(repoPath, "log", "--first-parent", TrailerLogFormat, $"guardrails/{planName}");
+            return exit == 0 ? ParseWaveMarkers(log) : empty;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            return empty;
+        }
+    }
+
+    /// <summary>
+    /// Parse a <see cref="TrailerLogFormat"/> first-parent log into per-wave <see cref="PlanBranchWaveRecord"/>s
+    /// (marker sha + <c>Guardrails-Wave-Hash:</c>). Newest-first, so the FIRST marker seen for a wave dir
+    /// wins (its most recent completion). Shares the record/unit separators + last-trailer-block discipline
+    /// with the task-trailer parser so a body's own blank lines can never split a record.
+    /// </summary>
+    private static IReadOnlyDictionary<string, PlanBranchWaveRecord> ParseWaveMarkers(string log)
+    {
+        char recordSep = Hashing.HashText.RecordSeparator;
+        char unitSep = Hashing.HashText.UnitSeparator;
+        var waves = new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
+
+        foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int split = record.IndexOf(unitSep);
+            if (split < 0)
+            {
+                continue;
+            }
+
+            string commitSha = record[..split].Trim();
+            string body = record[(split + 1)..];
+
+            string? waveDir = null;
+            string? waveHash = null;
+            foreach (string line in LastTrailerBlockLines(body))
+            {
+                if (line.StartsWith("Guardrails-Wave: ", StringComparison.Ordinal))
+                    waveDir = line["Guardrails-Wave: ".Length..];
+                else if (line.StartsWith("Guardrails-Wave-Hash: ", StringComparison.Ordinal))
+                    waveHash = line["Guardrails-Wave-Hash: ".Length..];
+            }
+
+            if (waveDir is null)
+            {
+                continue;
+            }
+
+            if (!waves.ContainsKey(waveDir))
+            {
+                waves[waveDir] = new PlanBranchWaveRecord(commitSha, waveHash);
+            }
+        }
+
+        return waves;
+    }
+
     /// <summary>
     /// The integration commit message carrying the parseable resume trailers
     /// (<c>Guardrails-Task:</c> / <c>Guardrails-Run:</c>), plus the OPTIONAL third

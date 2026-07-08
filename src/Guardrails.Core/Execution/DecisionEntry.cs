@@ -84,6 +84,58 @@ public static class DriftDecisions
         AutonomyPolicy configuredPolicy, string? rewindTarget, IReadOnlyList<DriftResolvedTask> tasks) =>
         Build(AutonomyPolicies.Token(configuredPolicy), "auto-applied", rewindTarget, tasks, manualReset: true);
 
+    /// <summary>
+    /// Wave-level drift auto-resolve (SSOT §14.6, #254 M2b): a COMPLETED wave's <c>WaveDefinitionHash</c>
+    /// drifted on resume; the plan branch was rewound past this wave (+ its downstream waves — a wave-scoped
+    /// rewind is ALWAYS a safe trailing suffix, §14.8) and they were reset to re-run. A <c>wave</c>-boundary
+    /// entry. <paramref name="policy"/> maps <see cref="AutonomyPolicy.Auto"/> ⇒ <c>auto-applied</c>,
+    /// <see cref="AutonomyPolicy.Prompt"/> ⇒ <c>prompted-approved</c>.
+    /// </summary>
+    public static DecisionEntry WaveDriftResolved(
+        AutonomyPolicy policy, string waveDir, string? rewindTarget,
+        string oldHash, string newHash, IReadOnlyList<string> affectedWaves)
+    {
+        string decision = policy == AutonomyPolicy.Prompt ? "prompted-approved" : "auto-applied";
+        return BuildWave(AutonomyPolicies.Token(policy), decision, waveDir, rewindTarget,
+            oldHash, newHash, affectedWaves, manualReset: false);
+    }
+
+    /// <summary>
+    /// The manual wave-scoped reset (<c>guardrails reset &lt;folder&gt; &lt;wave&gt;</c>, SSOT §14.8): an
+    /// operator explicitly rewound the plan branch past a wave + its downstream waves. Recorded as
+    /// <c>auto-applied</c> (applied with no prompt) at the <c>wave</c> boundary.
+    /// </summary>
+    public static DecisionEntry WaveReset(
+        AutonomyPolicy configuredPolicy, string waveDir, string? rewindTarget, IReadOnlyList<string> affectedWaves) =>
+        BuildWave(AutonomyPolicies.Token(configuredPolicy), "auto-applied", waveDir, rewindTarget,
+            oldHash: null, newHash: null, affectedWaves, manualReset: true);
+
+    private static DecisionEntry BuildWave(
+        string policyToken, string decision, string waveDir, string? rewindTarget,
+        string? oldHash, string? newHash, IReadOnlyList<string> affectedWaves, bool manualReset)
+    {
+        string how = rewindTarget is { Length: > 0 } target
+            ? $"rewound the plan branch to {ShortSha(target)}"
+            : "reset the wave (no plan-branch rewind needed)";
+        string lead = manualReset
+            ? "Manual wave-scoped reset"
+            : $"Wave drift auto-resolved ({policyToken})";
+        string hashPart = oldHash is not null && newHash is not null
+            ? $" ({ShortHash(oldHash)} -> {ShortHash(newHash)})"
+            : "";
+        string detail = $"waves reset (this + downstream): {string.Join(", ", affectedWaves)}";
+
+        return new DecisionEntry
+        {
+            Boundary = "wave",
+            Policy = policyToken,
+            Decision = decision,
+            Subject = waveDir,
+            Headline = $"{lead}: {how} and re-running wave '{waveDir}'{hashPart} + {affectedWaves.Count - 1} downstream wave(s)",
+            Detail = detail
+        };
+    }
+
     private static DecisionEntry Build(
         string policyToken, string decision, string? rewindTarget,
         IReadOnlyList<DriftResolvedTask> tasks, bool manualReset)

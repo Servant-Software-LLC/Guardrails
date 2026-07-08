@@ -112,8 +112,14 @@ public sealed record RunReport
     /// <summary>True when the run was cancelled (Ctrl+C) before quiescence.</summary>
     public bool Cancelled { get; init; }
 
-    /// <summary>True when every task is green (succeeded this run or skipped as already-succeeded).</summary>
-    public bool AllSucceeded => Tasks.All(t => t.IsGreen);
+    /// <summary>
+    /// True when every task is green (succeeded this run or skipped as already-succeeded) AND the run did
+    /// not HALT at a run-level boundary. The halt guards matter for a WAVED plan whose halt leaves no
+    /// non-green task in the report — e.g. an unauthored next wave (SSOT §14.4) contributes zero tasks, so
+    /// a plain per-task check would read "all succeeded" for a run that actually stopped. A halted /
+    /// aborted / definition-drifted run is never "all succeeded".
+    /// </summary>
+    public bool AllSucceeded => !HasDefinitionDrift && !HasWaveHalt && !Aborted && Tasks.All(t => t.IsGreen);
 
     /// <summary>True when at least one task failed or was blocked.</summary>
     public bool AnyFailed => Tasks.Any(t => !t.IsGreen);
@@ -170,6 +176,70 @@ public sealed record RunReport
     /// journal section.
     /// </summary>
     public DecisionEntry? Decision { get; init; }
+
+    /// <summary>
+    /// Non-null when a WAVED run HALTED at a wave boundary (SSOT §14, #254 M2b) other than a per-task
+    /// needs-human (which is reported via the ordinary task outcomes + later-wave Blocked entries): the next
+    /// wave is unauthored/empty (the JIT checkpoint, §14.4), a wave's entry or exit gate failed, or a
+    /// completed wave DRIFTED under a <c>halt</c>/unconfirmed-<c>prompt</c> policy (§14.6). The CLI renders
+    /// it and exits <b>2</b> (actionable), like <see cref="DefinitionDrift"/>. When set, treat the run as
+    /// halted regardless of per-task outcomes.
+    /// </summary>
+    public WaveHalt? WaveHalt { get; init; }
+
+    /// <summary>True when the run halted at a wave boundary (see <see cref="WaveHalt"/>).</summary>
+    public bool HasWaveHalt => WaveHalt is not null;
+}
+
+/// <summary>The kind of wave-boundary halt a WAVED run stopped at (SSOT §14, #254 M2b).</summary>
+public enum WaveHaltKind
+{
+    /// <summary>The next wave folder is present but has no authored tasks (or is unauthored) — the human JIT-breakdown checkpoint (§14.4).</summary>
+    NextWaveUnauthored,
+
+    /// <summary>A completed wave's <c>WaveDefinitionHash</c> drifted and the policy did not authorize an auto-resolve (§14.6).</summary>
+    WaveDrift,
+
+    /// <summary>A wave's ENTRY preflight gate failed (§14.3) — the prior wave's outputs were not materialized as expected.</summary>
+    EntryGateFailed,
+
+    /// <summary>A wave's EXIT/terminal gate failed (§14.3) on the merged HEAD-so-far.</summary>
+    ExitGateFailed
+}
+
+/// <summary>
+/// A WAVED run's wave-boundary halt (SSOT §14, #254 M2b) — the wave-level analogue of
+/// <see cref="DefinitionDriftReport"/>/<see cref="RunAbort"/>. Carries what the CLI renders + the exit-2
+/// actionable next step.
+/// </summary>
+public sealed record WaveHalt
+{
+    /// <summary>The wave directory the run halted at (e.g. <c>wave-02-build</c>).</summary>
+    public required string WaveDir { get; init; }
+
+    /// <summary>Which kind of wave-boundary halt this is.</summary>
+    public required WaveHaltKind Kind { get; init; }
+
+    /// <summary>One-line, human-readable headline for the console.</summary>
+    public required string Headline { get; init; }
+
+    /// <summary>Fuller detail / remediation (may be empty).</summary>
+    public string Detail { get; init; } = "";
+
+    /// <summary>The integration worktree path a human breaks the next wave down against (JIT checkpoint, §14.4/decision D); null when N/A.</summary>
+    public string? IntegrationWorktreePath { get; init; }
+
+    /// <summary>For a wave-drift halt: this wave + its downstream waves that would re-run on resolve; empty otherwise.</summary>
+    public IReadOnlyList<string> AffectedWaves { get; init; } = [];
+
+    /// <summary>For a wave-drift halt: the recorded → current <c>WaveDefinitionHash</c>; null otherwise.</summary>
+    public string? OldHash { get; init; }
+
+    /// <summary>For a wave-drift halt: the current <c>WaveDefinitionHash</c>; null otherwise.</summary>
+    public string? NewHash { get; init; }
+
+    /// <summary>For a gate-failure halt: the failing gate checks (name + reason); empty otherwise.</summary>
+    public IReadOnlyList<GuardrailResult> FailedGates { get; init; } = [];
 }
 
 /// <summary>

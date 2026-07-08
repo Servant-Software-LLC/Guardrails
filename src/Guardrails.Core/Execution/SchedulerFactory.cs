@@ -87,7 +87,8 @@ public static class SchedulerFactory
         ProcessRunner processRunner,
         IExecutableProbe probe,
         IRunObserver observer,
-        DriftAuthorization? driftAuthorization = null)
+        DriftAuthorization? driftAuthorization = null,
+        IReadOnlySet<string>? waveDriftAuthorized = null)
     {
         (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer);
 
@@ -141,7 +142,8 @@ public static class SchedulerFactory
             observer: observer,
             reVerifier: reVerifier,
             aiMergeWorker: aiMergeWorker,
-            driftAuthorization: driftAuthorization);
+            driftAuthorization: driftAuthorization,
+            waveDriftAuthorized: waveDriftAuthorized);
     }
 
     /// <summary>

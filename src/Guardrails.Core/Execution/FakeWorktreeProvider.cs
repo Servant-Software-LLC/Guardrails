@@ -53,6 +53,10 @@ public sealed class FakeWorktreeProvider : IWorktreeProvider
     public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct) =>
         IntegrationResult.FastForward;
 
+    /// <summary>Returns a deterministic synthetic marker sha so the journal records a non-null MarkerSha (no git).</summary>
+    public string CommitWaveMarker(IntegrationHandle integ, string waveDir, string waveHash, CancellationToken ct) =>
+        $"fake-wave-marker/{waveDir}";
+
     public void Discard(WorktreeHandle handle) { }
 
     public void PruneOrphans(IReadOnlyCollection<string> liveTaskIds, IntegrationHandle integ) { }

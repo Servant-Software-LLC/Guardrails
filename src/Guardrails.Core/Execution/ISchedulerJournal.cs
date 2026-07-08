@@ -73,4 +73,28 @@ public interface ISchedulerJournal
     /// Default no-op for fakes; <see cref="Journal.RunJournal"/> persists it.
     /// </summary>
     void RecordDecision(DecisionEntry entry) { }
+
+    // --- Multi-wave surface (SSOT §7/§14, #254 M2b) ---------------------------------------
+    // A WAVED plan drives N per-wave DAG drains against ONE continuous journal; the Scheduler reads
+    // a wave's durable completion/phase record and writes its markers through these seams. All default
+    // to the "no wave record" answer so a FLAT-plan fake (which never calls them) is unaffected;
+    // <see cref="Journal.RunJournal"/> reads/writes the real waves[] section.
+
+    /// <summary>The wave's durable journal record (status, definition hash, entry/exit markers, marker sha), or null when the wave has none. Default null for fakes.</summary>
+    Journal.WaveJournalEntry? WaveEntryOf(string waveDir) => null;
+
+    /// <summary>Record the wave ENTRY-preflight phase marker (SSOT §14.6) and set the wave <c>running</c>. Default no-op.</summary>
+    void RecordWaveEntry(string waveDir, Journal.PlanPreflightsSection entry) { }
+
+    /// <summary>Record the wave EXIT/terminal-gate phase marker (SSOT §14.6). Default no-op.</summary>
+    void RecordWaveExit(string waveDir, Journal.PlanGuardrailsSection exit) { }
+
+    /// <summary>Record a wave settling <c>completed</c> (SSOT §14.5): its <c>WaveDefinitionHash</c> + the <c>Guardrails-Wave:</c> marker commit sha. Default no-op.</summary>
+    void RecordWaveCompleted(string waveDir, string definitionHash, string? markerSha) { }
+
+    /// <summary>Set a wave's status (e.g. <c>running</c>/<c>needs-human</c>/<c>blocked</c>) without touching its markers. Default no-op.</summary>
+    void RecordWaveStatus(string waveDir, Journal.WaveStatus status) { }
+
+    /// <summary>Reset a wave to <c>pending</c>, clearing its completion hash, marker sha, and entry/exit markers — the wave half of a wave-drift resolution / wave-scoped reset (SSOT §14.6/§14.8). Default no-op.</summary>
+    void ResetWaveToPending(string waveDir) { }
 }

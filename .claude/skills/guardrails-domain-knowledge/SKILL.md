@@ -497,24 +497,33 @@ total order driven by the wave folder's numeric prefix.
   gets the SAME drift treatment as a task -- halt/prompt/auto per `autonomyPolicy`, a `boundary:"wave"`
   `decisions[]` entry. Drift fires ONLY on already-COMPLETED units; editing an all-`pending` future wave is
   sanctioned forward adjustment, NOT drift (the `isCompleted` predicate is the clean separator).
-- **Wave loop + hard barrier (design intent).** Per wave in strict order: skip if complete (resume); run
-  the wave ENTRY preflight; drain the wave's DAG on the continuous plan branch via the EXISTING Scheduler;
-  HARD BARRIER (full drain -- any needs-human/blocked halts the run, later waves never start); run the wave
-  EXIT gate; write the **`Guardrails-Wave:` / `Guardrails-Wave-Hash:` marker commit** (Decision E) + journal
-  the wave complete; the between-wave step is a plain human JIT checkpoint (honest halt at an
-  absent/empty/unreviewed next wave, pointed at the integration worktree, Decision D). Per-wave `waves[]`
-  journal record + entry/exit phase markers mirror `planPreflights`/`planGuardrails`. Wave-scoped
-  `guardrails reset <plan> <wave>` is always a safe suffix under strict order.
-- **STATUS (M2 v1): the FOUNDATION landed; the EXECUTION LOOP is staged.** Landed + tested: the nested-layout
+- **Wave loop + hard barrier (LANDED, M2b).** `Scheduler.RunWavedAsync` drives, per wave in strict order:
+  skip if complete (resume, + a wave-drift check); the between-wave JIT checkpoint (an empty/unauthored next
+  wave HONEST-HALTS `RunReport.WaveHalt`, pointed at the integration worktree, Decision D); the wave ENTRY
+  preflight (skip-once); drain the wave's DAG on the continuous plan branch via the EXISTING Scheduler
+  worker loop (a shared `DrainAsync`); HARD BARRIER (full drain -- any needs-human/blocked/failed halts the
+  run, later waves never start, their tasks reported `blocked`); the wave EXIT gate; the **`Guardrails-Wave:`
+  / `Guardrails-Wave-Hash:` marker commit** (Decision E) + journal the wave complete. **Continuity is the
+  load-bearing refactor:** ONE integration handle + runId + journal + `settled`/`directoryOwner` are created
+  ONCE and shared across every wave's drain -- never a fresh integration/journal per wave -- so wave-1's
+  records coexist with wave-2's and the plan branch is one continuous branch. Per-wave `waves[]` journal
+  record + entry/exit markers mirror `planPreflights`/`planGuardrails`. Wave-scoped `guardrails reset <plan>
+  <wave>` rewinds that wave + downstream (always a safe suffix); runtime wave-drift (a completed wave's hash
+  changed) is halt/prompt/auto per `autonomyPolicy` with a `boundary:"wave"` decision. Both the wave rewind
+  and the wave reset compute the target DIRECTLY (predecessor marker sha / `git merge-base` base) and reuse
+  the Part C rewind primitive + crash-atomic `RewindIntent` -- NOT `SafeSuffixEvaluator` (its trailer-less
+  marker commits would trip the evaluator's REFUSE; the always-safe-suffix property makes the direct target
+  sound). `graph <plan>/<wave>` per-wave sub-diagrams are the one deferred v1 nicety (`graph <plan>` renders
+  the whole waved DAG).
+- **STATUS (M2 v1): the FOUNDATION (M2a) + the EXECUTION LOOP (M2b) both LANDED + tested.** M2a: nested-layout
   loader/validator (GR2032-GR2034, GR2022 wave branch), wave-qualified identity (the single-writer key),
-  `WaveDefinitionHash`, the journal `waves[]` schema (`WaveStatus`/`WaveJournalEntry`), the
-  `DependencyGraph.Waves()->Tiers()` rename, and a committed waved fixture that validates clean. **DEFERRED
-  (its own reviewed slice):** the wave-execution loop itself -- the continuous plan branch across waves,
-  per-wave gate invocation, the marker commit, cross-wave resume, and runtime wave-drift resolution -- which
-  needs the Scheduler/journal refactor called out in the design (a per-wave sub-plan cannot reuse the
-  plan-scoped journal as-is). Until then **`guardrails run` on a waved plan HONESTLY HALTS** (exit 1) rather
-  than run it as a flat DAG that would ignore the wave barriers; `validate`/`plan`/loader fully support
-  waved plans.
+  `WaveDefinitionHash`, the journal `waves[]` schema (`WaveStatus`/`WaveJournalEntry` + `MarkerSha`), the
+  `DependencyGraph.Waves()->Tiers()` rename, a committed waved fixture that validates clean. M2b: the
+  wave-execution loop -- one continuous integration worktree + journal + plan branch across waves, per-wave
+  entry/exit gate invocation, the `Guardrails-Wave:` marker commit, cross-wave resume, runtime wave-drift
+  resolution, and wave-scoped reset. **`guardrails run` on a waved plan now ACTUALLY RUNS** wave by wave
+  behind hard barriers (the M2a honest-halt exit-1 stub is GONE); `plan` output is wave-aware (per-wave
+  tiers); the live/plain UI segments the task table per wave (`IRunObserver.WaveStarting`/`WaveFinished`).
 
 ## Load-bearing invariants
 
@@ -635,18 +644,22 @@ total order driven by the wave folder's numeric prefix.
   / `StashIfRollingBack`, `GuardrailArchetypes`, `GitWorktreeProvider.DiffAgainstBase`,
   `AttemptArtifacts.WriteSalvagePatch`, `RetryPolicy` (rollback/salvage-aware `AppendHeader` +
   `AppendVerdictLedger` + `AppendSalvageSection`), `SalvageRef.PatchPath`.
-- **M2 multi-wave plans -- v1 FOUNDATION landed; execution loop staged** (#254, branch
-  `feat/m2-wave-skeleton`, SSOT section 14, design `docs/plans/10-multi-wave-plans.md`). See the
-  **Multi-wave plans** section above for the model. Landed + tested (Core 885 / Integration 492 +2 skips,
-  clean Release): nested-layout detection + waved loader/validator (**GR2032** mixed, **GR2033** numbering,
-  **GR2034** cross-wave `dependsOn`, GR2022 wave-aware branch); **wave-qualified identity** (`TaskNode.Id` =
-  `<waveDir>/<folder>`, `TaskNode.WaveDir`, `PlanDefinition.Waves`/`IsWaved`, `WaveNode`) -- the highest-risk
-  single-writer generalization, pinned by a no-collision property test; **`WaveDefinitionHash`**; the journal
-  **`waves[]` schema** (`WaveStatus`, `WaveJournalEntry` reusing the plan-phase section shapes); GR2028
-  per-wave; the `DependencyGraph.Waves()->Tiers()` rename (+ `guardrails plan`/`--dry-run` "Tier" output);
-  committed `waved-example` fixture validates clean. **DEFERRED to a follow-up reviewed slice:** the
-  wave-execution loop (continuous plan branch, per-wave gate invocation, `Guardrails-Wave:` marker commit,
-  cross-wave resume, runtime wave-drift resolution, wave-scoped reset execution) -- it needs the
-  Scheduler/journal refactor to run per-wave against one continuous journal. **`guardrails run` on a waved
-  plan honestly HALTS (exit 1)** until then, never running it as a barrier-less flat DAG. Next-free GR code:
-  **GR1010 / GR2035**.
+- **M2 multi-wave plans -- v1 FOUNDATION (M2a) + EXECUTION LOOP (M2b) both landed** (#254, SSOT section 14).
+  See the **Multi-wave plans** section above for the model. **M2a (foundation):** nested-layout detection +
+  waved loader/validator (**GR2032** mixed, **GR2033** numbering, **GR2034** cross-wave `dependsOn`, GR2022
+  wave-aware branch); **wave-qualified identity** (`TaskNode.Id` = `<waveDir>/<folder>`, `TaskNode.WaveDir`,
+  `PlanDefinition.Waves`/`IsWaved`, `WaveNode`), pinned by a no-collision property test; **`WaveDefinitionHash`**;
+  the journal **`waves[]` schema** (`WaveStatus`, `WaveJournalEntry`); GR2028 per-wave; the
+  `DependencyGraph.Waves()->Tiers()` rename; the committed `waved-example` load/validate fixture. **M2b
+  (execution loop):** the continuity refactor -- `Scheduler.RunAsync` splits into a flat/waved dispatch over
+  a shared `DrainAsync`, with ONE integration handle + runId + journal + accumulators created once and shared
+  across every wave (never per-wave); `RunWavedAsync` = the wave loop + HARD BARRIER + per-wave entry/exit
+  gates (via the `IReVerifier` seam) + the `Guardrails-Wave:` marker commit (`IWorktreeProvider.CommitWaveMarker`
+  / `ReconcileWavesFromPlanBranch` / `PlanBranchBase`); cross-wave resume (`EvaluateWaveCompletion` +
+  `RunJournal.WaveEntryOf`/`RecordWaveCompleted`/`ResetWaveToPending` + `MarkerSha`); runtime wave-drift
+  (`boundary:"wave"` `DecisionEntry`, `autonomyPolicy` halt/prompt/auto, direct-target rewind reusing the
+  Part C primitive); wave-scoped reset (`RunReset.WaveReset`, `guardrails reset <plan> <wave>`);
+  `IRunObserver.WaveStarting`/`WaveFinished`; `RunReport.WaveHalt`. The M2a honest-halt exit-1 stub is GONE.
+  Tested: Core `SchedulerWaveExecutionTests` (continuity/barrier/resume/drift/reset with fakes) + Integration
+  `WaveExecutionRunTests` (real git: one continuous branch + both waves' outputs + a marker per wave,
+  materialization entry gate, cross-wave resume, real wave-scoped rewind). Next-free GR code: **GR1010 / GR2035**.

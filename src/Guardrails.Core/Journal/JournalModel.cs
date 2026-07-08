@@ -90,6 +90,16 @@ public sealed record WaveJournalEntry
     public string? DefinitionHash { get; init; }
 
     /// <summary>
+    /// The plan-branch sha of this wave's <c>Guardrails-Wave:</c> marker commit (SSOT §14.5, decision E),
+    /// stamped when the wave settled Completed. It is the wave-scoped-rewind anchor: rewinding wave N (+
+    /// downstream) resets the plan branch to wave (N-1)'s marker sha. OPTIONAL/additive — absent in serial
+    /// mode (no plan branch) and on an entry predating this field. The durable <c>Guardrails-Wave:</c>
+    /// trailer on the branch is the backstop when the journal is lost (§14.5).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? MarkerSha { get; init; }
+
+    /// <summary>
     /// The wave ENTRY preflight phase marker (SSOT §14.6) — the plan-preflight phase scoped to this wave,
     /// skip-once-per-hash. Reuses <see cref="PlanPreflightsSection"/> (status/planHash/evaluatedAt/checks).
     /// Absent until the entry gate has run for this wave.

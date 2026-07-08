@@ -46,6 +46,12 @@ public sealed class Scheduler
     // auto-resolves on its own fresh decision; halt/unconfirmed-prompt halt.
     private readonly DriftAuthorization? _driftAuthorization;
 
+    // #254 M2b (SSOT §14.6): the wave dirs the CLI already confirmed rewinding for a Prompt-policy run
+    // (an operator `y` OUTSIDE the live region). A wave-scoped rewind is ALWAYS a safe trailing suffix
+    // (§14.8), so — unlike the task-level DriftAuthorization — this needs only the set of authorized wave
+    // dirs. Empty (the default) for auto (resolves on its own) and halt / unconfirmed prompt (halts).
+    private readonly IReadOnlySet<string> _waveDriftAuthorized;
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -55,7 +61,8 @@ public sealed class Scheduler
         int? maxParallelism = null,
         IReVerifier? reVerifier = null,
         IAiMergeWorker? aiMergeWorker = null,
-        DriftAuthorization? driftAuthorization = null)
+        DriftAuthorization? driftAuthorization = null,
+        IReadOnlySet<string>? waveDriftAuthorized = null)
     {
         _plan = plan;
         _executor = executor;
@@ -65,6 +72,7 @@ public sealed class Scheduler
         _reVerifier = reVerifier;
         _aiMergeWorker = aiMergeWorker;
         _driftAuthorization = driftAuthorization;
+        _waveDriftAuthorized = waveDriftAuthorized ?? new HashSet<string>(StringComparer.Ordinal);
 
         int requested = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
 
@@ -89,20 +97,23 @@ public sealed class Scheduler
     /// </summary>
     public async Task<RunReport> RunAsync(PlanDefinition plan, CancellationToken cancellationToken = default)
     {
-        var graph = new DependencyGraph(plan.Tasks);
-        if (graph.FindCycle() is { } cycle)
+        var fullGraph = new DependencyGraph(plan.Tasks);
+        if (fullGraph.FindCycle() is { } cycle)
         {
             // Validation (GR2007) catches this before a run; this guard keeps the
             // scheduler safe when embedded directly.
             throw new InvalidOperationException($"Dependency cycle: {string.Join(" -> ", cycle)}");
         }
 
-        var byId = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        // Shared, CONTINUOUS run state across every wave (SSOT §14): ONE settled map (all waves' task
+        // results coexist in the final report), ONE directoryOwner map for the end-of-run sweep, ONE
+        // runId, ONE integration handle / plan branch, and ONE journal (_journal). A WAVED run drives N
+        // per-wave DAG drains against THIS shared state — it never forks a fresh integration worktree /
+        // runId / journal per wave (the M2a continuity blocker; SSOT §14.4).
         var settled = new Dictionary<string, TaskResult>(StringComparer.Ordinal);
-        var pendingDeps = new Dictionary<string, int>(StringComparer.Ordinal);
-        var channel = Channel.CreateUnbounded<TaskEnvelope>();
+        var directoryOwner = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        // Create the integration handle once for this run (worktree mode only).
+        // Create the ONE integration handle for the whole run (worktree mode only).
         string runId = Guid.NewGuid().ToString("N")[..8];
         IntegrationHandle? integ;
         try
@@ -122,11 +133,9 @@ public sealed class Scheduler
                 with { Abort = BuildAbort(ex) };
         }
 
-        // B1_1/F1 resume pre-pass: a task is already green if the JOURNAL says Succeeded OR it is
-        // already integrated on the PLAN BRANCH (a Guardrails-Task: trailer reachable from the tip).
-        // Git is the durable resume truth: a kill after the FF/merge commit but before the journal
-        // write leaves the task on the plan branch with no journal record — the union below stops it
-        // being re-run. Prune this run's stale segment refs first so they can't be mistaken for work.
+        // Whole-plan resume reconcile — ONCE, before any wave. Prune this run's stale segment refs,
+        // replay a surviving Part C rewind-intent marker (crash-atomicity), then read the plan branch's
+        // Guardrails-Task: trailers (the durable cross-run resume truth). Shared by every wave's drain.
         IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords =
             new Dictionary<string, PlanBranchTaskRecord>(StringComparer.Ordinal);
         bool trailerTracking = _worktreeProvider?.TracksPlanBranchTrailers == true && integ is not null;
@@ -134,209 +143,67 @@ public sealed class Scheduler
         {
             wp.PruneStaleRunBranches(runId, activeInteg);
 
-            // Part C crash-atomicity (#274, SSOT §7.2): if a prior safe-drift resolution was killed BETWEEN
-            // the plan-branch rewind and its per-task journal-resets, a rewind-intent marker survives.
-            // Replay it idempotently — re-reset the whole recorded set to pending so a non-drifted
-            // descendant whose commit was already discarded re-runs (never silently skipped) — then clear
-            // it. Runs BEFORE the reconcile read below so the replayed statuses are seen.
+            // Part C crash-atomicity (#274, SSOT §7.2): replay a rewind-intent marker left by a run killed
+            // BETWEEN a plan-branch rewind and its journal-resets. Runs BEFORE the reconcile read below so
+            // the replayed statuses are seen. Idempotent.
             ReplayRewindIntentIfPresent();
 
             planBranchRecords = wp.ReconcileFromPlanBranch(activeInteg);
         }
 
-        // --- resume pre-pass: journaled successes + plan-branch trailers are green ----------
-        // First determine the pre-settle-green candidates AND detect definition drift (§7.2, #274 Part A):
-        // for EVERY task about to be treated as pre-settled-green, recompute its current
-        // TaskDefinitionHash and compare it to the hash recorded at its last successful settle. A mismatch
-        // on ANY candidate halts the whole run — schedule NOTHING, emit no skip events, return a
-        // DefinitionDrift report — rather than silently reusing the stale cached segment (never runs the
-        // edit) or silently re-running the changed task (unsound for a fan-in descendant, §7.2).
-        // The drift check recomputes each pre-settled task's hash, reading its definition files from
-        // disk (task.json / action / guardrails). That IO can throw — a transient share-lock on Windows
-        // (an editor / antivirus / indexer holding a guardrail or task.json) is the exact hazard. It runs
-        // BEFORE the worker loop, so it is OUTSIDE WorkerLoopAsync's #150 fault capture; wrap it here so a
-        // read failure degrades to an HONEST ABORTED report (exit 1, abort.log) rather than an uncaught
-        // stack trace. It must ABORT, not silently skip the check — silently skipping could let a real
-        // drift through.
-        HashSet<string> preSettledGreen;
-        List<DefinitionDriftReporter.DriftInput> drifted;
-        DecisionEntry? driftDecision = null;
-        try
+        // Dispatch: a WAVED plan runs its waves in strict order behind hard barriers (SSOT §14.4); a
+        // FLAT plan is one drain over all tasks (the pre-M2b behaviour, unchanged).
+        return plan.IsWaved
+            ? await RunWavedAsync(plan, integ, settled, directoryOwner, planBranchRecords, trailerTracking, cancellationToken).ConfigureAwait(false)
+            : await RunFlatAsync(plan, fullGraph, integ, settled, directoryOwner, planBranchRecords, trailerTracking, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A FLAT plan: ONE drain over every task, then the legacy terminal integration gate (§3.3, when no
+    /// plan-level <c>&lt;plan&gt;/guardrails/</c> folder supersedes it) + delivery + cleanup. Byte-for-byte
+    /// the pre-M2b behaviour, now expressed on top of the shared <see cref="DrainAsync"/>.
+    /// </summary>
+    private async Task<RunReport> RunFlatAsync(
+        PlanDefinition plan, DependencyGraph graph, IntegrationHandle? integ,
+        Dictionary<string, TaskResult> settled, Dictionary<string, string> directoryOwner,
+        IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords, bool trailerTracking,
+        CancellationToken cancellationToken)
+    {
+        DrainOutcome drain = await DrainAsync(
+            plan, plan.Tasks, graph, integ, settled, directoryOwner, planBranchRecords, trailerTracking, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (drain.ReadAbort is { } readAbort)
         {
-            (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords, trailerTracking);
-
-            if (drifted.Count > 0)
-            {
-                // Part C (#274, SSOT §7.2): try to AUTO-RESOLVE a provably-safe drift by physically
-                // rewinding the plan branch past the safe suffix (destructive; the floor on any ambiguity
-                // is HALT). An unsafe drift, a strict "halt" policy, an unconfirmed "prompt" policy, a
-                // consent-void plan, or a moved tip (CAS) all fall through to the Part A halt below.
-                DriftGateResult gate = TryResolveDrift(plan, graph, drifted, integ);
-
-                if (gate.Decision is null)
-                {
-                    // HALT with the rich per-file report — enriched so the CLI can distinguish a
-                    // safe-but-unconfirmed halt (offer --reprocess-drift) from an UNSAFE refusal (steer to
-                    // the always-sound full rebuild + name the blocker), instead of leading with a flag
-                    // that would just re-halt.
-                    return BuildReport(plan, settled, cancelled: false)
-                        with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider)
-                            with { SafeToAutoResolve = gate.SafeToAutoResolve, RewindRefusal = gate.Refusal, RewindBlockingTask = gate.BlockingTask } };
-                }
-
-                driftDecision = gate.Decision;
-
-                // Resolved: audit (durable decisions[] journal section + live observer), then re-derive the
-                // pre-settle-green set now that S is journal-reset to pending AND rewound off the branch —
-                // so the safe suffix schedules and re-runs, and a clean re-detect confirms no drift remains.
-                _journal.RecordDecision(driftDecision);
-                _observer.DecisionRecorded(driftDecision);
-
-                if (_worktreeProvider is { } wpAfter && integ is { } integAfter)
-                {
-                    planBranchRecords = wpAfter.ReconcileFromPlanBranch(integAfter);
-                }
-
-                (preSettledGreen, drifted) = DetectDefinitionDrift(plan, planBranchRecords, trailerTracking);
-                if (drifted.Count > 0)
-                {
-                    // Defensive: a correct rewind clears every drift. If any residual survives, halt
-                    // honestly rather than proceed on an unproven base.
-                    return BuildReport(plan, settled, cancelled: false)
-                        with { DefinitionDrift = DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider) };
-                }
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
+            // Pre-schedule read/git abort during the drift check — nothing scheduled, no sweep.
             return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
-                with { Abort = BuildDefinitionReadAbort(ex) };
-        }
-        catch (InvalidOperationException ex)
-        {
-            // A git failure during the DESTRUCTIVE Part C rewind (or the read-only history walk) — surface
-            // it as an honest infrastructure abort (exit 1), never a raw stack trace as the headline.
-            return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
-                with { Abort = BuildAbort(ex) };
+                with { Abort = readAbort };
         }
 
-        // No drift: emit the resume skips for the pre-settled-green candidates (plan order).
-        foreach (TaskNode task in plan.Tasks)
+        if (drain.Drift is { } drift)
         {
-            if (!preSettledGreen.Contains(task.Id))
-            {
-                continue;
-            }
-
-            var skipped = new TaskResult
-            {
-                TaskId = task.Id,
-                Outcome = TaskOutcome.Skipped,
-                Summary = "already succeeded (resumed) — skipped"
-            };
-            settled[task.Id] = skipped;
-            _observer.TaskFinished(skipped);
+            // Pre-schedule definition-drift halt — nothing scheduled, no sweep.
+            return BuildReport(plan, settled, cancelled: false) with { DefinitionDrift = drift };
         }
 
-        int remaining = 0;
-        foreach (TaskNode task in plan.Tasks)
+        if (drain.Faulted)
         {
-            if (preSettledGreen.Contains(task.Id))
-            {
-                continue;
-            }
-
-            remaining++;
-            pendingDeps[task.Id] = task.DependsOn.Count(d => !preSettledGreen.Contains(d));
-        }
-
-        if (remaining == 0)
-        {
-            return BuildReport(plan, settled, cancelled: false);
-        }
-
-        // Pre-create worktree handles only for initially-ready tasks (no pending deps).
-        // Dependent tasks get their handles created LAZILY in OnSettledAsync AFTER the upstream
-        // integration commits advance the plan branch — this is what makes FF possible for
-        // linear chains: task B's segment is forked from task A's integrated HEAD, not from the
-        // original plan-branch HEAD before A ran.
-        var handles = new Dictionary<string, WorktreeHandle>(StringComparer.Ordinal);
-        // DirectoryOwner (plan 08 topology-wiring M0): worktree path → current owning task id.
-        // The single source of truth for "is this directory free to Discard / reuse?". Populated
-        // on every CreateSegment/ForkFromTip; ownership transfers on ReuseSegment (M1). In M0 every
-        // task still owns its own fresh directory, so this map mirrors the fresh-per-task baseline.
-        var directoryOwner = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (TaskNode task in plan.Tasks)
-        {
-            if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
-            {
-                WorktreeHandle handle = _worktreeProvider != null && integ != null
-                    ? _worktreeProvider.CreateSegment(task.Id, attempt: 1, integ, cancellationToken)
-                    : new WorktreeHandle();
-                handles[task.Id] = handle;
-                if (!string.IsNullOrEmpty(handle.WorktreePath))
-                {
-                    directoryOwner[handle.WorktreePath] = task.Id;
-                }
-            }
-        }
-
-        foreach (TaskNode task in plan.Tasks)
-        {
-            if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
-            {
-                channel.Writer.TryWrite(new TaskEnvelope(task, handles[task.Id]));
-            }
-        }
-
-        // --- workers ---------------------------------------------------------------------
-        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining, handles, directoryOwner, integ);
-        int workerCount = Math.Min(_maxParallelism, remaining);
-        Task[] workers = Enumerable.Range(0, workerCount)
-            .Select(_ => Task.Run(() => WorkerLoopAsync(context, runCts), CancellationToken.None))
-            .ToArray();
-
-        await Task.WhenAll(workers).ConfigureAwait(false);
-
-        // Issue #150 — honest halt instead of an unhandled crash. An unexpected infrastructure fault
-        // (a task executor or integration step threw — e.g. an offline GitGuardian pre-commit hook
-        // failing an INTERNAL commit, or git being unavailable) used to RE-THROW here, escaping
-        // unhandled to the CLI as a raw stack-trace headline. Instead, build an ABORTED report that
-        // carries the fault reason, still run the end-of-run cleanup sweep below, and let the CLI
-        // render a one-line diagnostic + remedy (full detail to the logs) and exit non-zero.
-        if (_fault is { } fault)
-        {
-            var abortReport = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
-                with { Abort = BuildAbort(fault) };
-
-            // Clean up this run's still-live worktrees exactly as the success path does, so an aborted
-            // run does not orphan more than the next run's prune pre-pass already reclaims (the
-            // intentional "fix, don't restart" retention of non-green segments still holds).
+            RunReport aborted = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                with { Abort = BuildAbort(_fault!) };
             if (!cancellationToken.IsCancellationRequested)
             {
-                EndOfRunSweep(context, integ);
+                EndOfRunSweep(directoryOwner, settled, integ);
             }
 
-            return abortReport;
+            return aborted;
         }
 
         RunReport report = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
-            with { Decision = driftDecision };
+            with { Decision = drain.Decision };
 
-        // --- C1 terminal whole-repo integration gate (§3.3/§4a) --------------------------
-        // After every task settles green, re-run the run's integration-guardrail set on the
-        // FINAL plan-branch HEAD (via the integration worktree) — the union's whole-repo
-        // soundness boundary that backstops the per-hop FF-integrations a linear chain skipped.
-        // A failing gate flips the run off-green (the sink task, or first task, to needs-human)
-        // so mergeOnSuccess is refused and the report is not certified.
-        //
-        // preflights-impl deliverable 4: REPLACED by the terminal PlanGuardrailPhase (Guardrails.Cli,
-        // SSOT §3.3/§7.1) for any plan that declares a plan-level <plan>/guardrails/ folder — that
-        // phase runs AFTER this method returns, against the SAME merged HEAD, via the same IReVerifier
-        // seam. This legacy per-task integrationGate/scope:"integration" sink-task run is SUPERSEDED
-        // (never both) whenever plan.PlanGuardrails is non-empty; it stays live, unchanged, only for a
-        // plan still on the retired sink-task modelling.
+        // Legacy terminal whole-repo integration gate (§3.3/§4a) — FLAT plans only, and only when the plan
+        // declares no <plan>/guardrails/ folder (the CLI PlanGuardrailPhase supersedes it). A WAVED plan's
+        // terminal soundness boundary is its LAST wave's exit gate (§14.3), so this never runs there.
         if (report.AllSucceeded && _reVerifier != null && integ != null && plan.PlanGuardrails.Count == 0)
         {
             IReadOnlyList<GuardrailDefinition> integrationSet =
@@ -355,37 +222,652 @@ public sealed class Scheduler
             }
         }
 
-        // Deliver the completed plan branch to the user's branch when every task succeeded
-        // and mergeOnSuccess is enabled. AI-merge is withheld: a conflict halts to needs-human
-        // with the plan branch intact (SSOT §5.3).
+        return Finalize(plan, report, integ, directoryOwner, settled, cancellationToken);
+    }
+
+    /// <summary>
+    /// A WAVED plan (SSOT §14.4): run each wave in strict order behind a HARD BARRIER — wave entry
+    /// preflight, then drain the wave's DAG on the CONTINUOUS plan branch, then (full drain) the wave exit
+    /// gate, then the <c>Guardrails-Wave:</c> marker commit + journal-complete. A completed wave is skipped
+    /// on resume (with a wave-drift check, §14.6); an unauthored next wave honest-halts for JIT breakdown
+    /// (§14.4); any needs-human/blocked/failed inside a wave, or a failed gate, HALTS the whole run — later
+    /// waves never start.
+    /// </summary>
+    private async Task<RunReport> RunWavedAsync(
+        PlanDefinition plan, IntegrationHandle? integ,
+        Dictionary<string, TaskResult> settled, Dictionary<string, string> directoryOwner,
+        IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords, bool trailerTracking,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<WaveNode> waves = plan.Waves; // strict total order (loader sorts by numeric prefix)
+
+        // Durable wave-completion anchors from the plan branch (Guardrails-Wave: markers) — the backstop
+        // when run.json is lost, and the source of predecessor-wave rewind targets (SSOT §14.5).
+        IReadOnlyDictionary<string, PlanBranchWaveRecord> waveMarkers =
+            _worktreeProvider is { } wpm && integ is { } integM
+                ? wpm.ReconcileWavesFromPlanBranch(integM)
+                : new Dictionary<string, PlanBranchWaveRecord>(StringComparer.Ordinal);
+
+        DecisionEntry? lastDecision = null;
+
+        for (int i = 0; i < waves.Count; i++)
+        {
+            WaveNode wave = waves[i];
+
+            // 1. Completion + wave-drift (SSOT §14.5/§14.6).
+            (bool complete, string? recordedHash) = EvaluateWaveCompletion(wave, planBranchRecords, waveMarkers);
+            if (complete)
+            {
+                string currentHash = Journal.WaveDefinitionHash.Compute(wave);
+                if (recordedHash is { } rh && !string.Equals(rh, currentHash, StringComparison.Ordinal))
+                {
+                    // WAVE DRIFT: a COMPLETED wave's definition changed. auto (or a prompt the CLI already
+                    // confirmed) rewinds + re-runs; halt / unconfirmed-prompt HALTS (SSOT §14.6).
+                    bool authorized = _plan.Config.AutonomyPolicy == AutonomyPolicy.Auto
+                        || (_plan.Config.AutonomyPolicy == AutonomyPolicy.Prompt && _waveDriftAuthorized.Contains(wave.Dir));
+                    if (!authorized)
+                    {
+                        return BuildReport(plan, settled, cancelled: false)
+                            with { WaveHalt = BuildWaveDriftHalt(waves, i, wave, rh, currentHash) };
+                    }
+
+                    lastDecision = ResolveWaveDrift(plan, waves, i, wave, integ, rh, currentHash,
+                        ref planBranchRecords, ref waveMarkers);
+                    _journal.RecordDecision(lastDecision);
+                    _observer.DecisionRecorded(lastDecision);
+                    // fall through — this wave is no longer complete; run it.
+                }
+                else
+                {
+                    foreach (TaskNode t in wave.Tasks)
+                    {
+                        var s = new TaskResult
+                        {
+                            TaskId = t.Id,
+                            Outcome = TaskOutcome.Skipped,
+                            Summary = "already succeeded (resumed) — skipped"
+                        };
+                        settled[t.Id] = s;
+                        _observer.TaskFinished(s);
+                    }
+
+                    _observer.WaveFinished(wave, Journal.WaveStatus.Completed, skipped: true);
+                    continue;
+                }
+            }
+
+            // 2. Between-wave JIT checkpoint (SSOT §14.4): an unauthored/empty wave honest-halts (exit 2).
+            if (wave.Tasks.Count == 0)
+            {
+                return BuildReport(plan, settled, cancelled: false)
+                    with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ) };
+            }
+
+            _observer.WaveStarting(wave, i + 1, waves.Count);
+
+            // 3. Wave ENTRY preflight (skip-once-per-hash; SSOT §14.3/§14.6).
+            (bool entryPassed, IReadOnlyList<GuardrailResult> entryFailed) =
+                await RunWaveEntryGateAsync(plan, wave, integ, cancellationToken).ConfigureAwait(false);
+            if (!entryPassed)
+            {
+                _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
+                BlockLaterWaves(waves, i, wave, settled);
+                _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+                RunReport entryHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                    with { WaveHalt = BuildGateHalt(wave, WaveHaltKind.EntryGateFailed, entryFailed) };
+                if (!cancellationToken.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+                return entryHalt;
+            }
+
+            // 4. Drain the wave's DAG on the CONTINUOUS plan branch (shared integ / journal / settled).
+            var waveGraph = new DependencyGraph(wave.Tasks);
+            DrainOutcome drain = await DrainAsync(
+                plan, wave.Tasks, waveGraph, integ, settled, directoryOwner, planBranchRecords, trailerTracking, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (drain.ReadAbort is { } readAbort)
+            {
+                return BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested) with { Abort = readAbort };
+            }
+
+            if (drain.Drift is { } taskDrift)
+            {
+                return BuildReport(plan, settled, cancelled: false) with { DefinitionDrift = taskDrift };
+            }
+
+            if (drain.Faulted)
+            {
+                RunReport aborted = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                    with { Abort = BuildAbort(_fault!) };
+                if (!cancellationToken.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+                return aborted;
+            }
+
+            if (drain.Decision is not null)
+            {
+                lastDecision = drain.Decision;
+            }
+
+            // 5. HARD BARRIER (SSOT §14.4): the wave must fully drain green. Any needs-human/blocked/failed
+            // HALTS the whole run here — later waves never start.
+            if (!drain.AllGreen)
+            {
+                _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
+                BlockLaterWaves(waves, i, wave, settled);
+                _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+                RunReport barrierHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                    with { Decision = lastDecision };
+                if (!cancellationToken.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+                return barrierHalt;
+            }
+
+            // 6. Wave EXIT / terminal gate (SSOT §14.3): on the merged HEAD-so-far.
+            (bool exitPassed, IReadOnlyList<GuardrailResult> exitFailed) =
+                await RunWaveExitGateAsync(plan, wave, integ, cancellationToken).ConfigureAwait(false);
+            if (!exitPassed)
+            {
+                _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
+                BlockLaterWaves(waves, i, wave, settled);
+                _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+                RunReport exitHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+                    with { WaveHalt = BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, exitFailed) };
+                if (!cancellationToken.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
+                return exitHalt;
+            }
+
+            // 7. Wave-completion marker commit (decision E) + journal the wave complete (SSOT §14.5).
+            string waveHash = Journal.WaveDefinitionHash.Compute(wave);
+            string? markerSha = _worktreeProvider is { } wpc && integ is { } integC
+                ? wpc.CommitWaveMarker(integC, wave.Dir, waveHash, cancellationToken)
+                : null;
+            _journal.RecordWaveCompleted(wave.Dir, waveHash, markerSha);
+            if (markerSha is { Length: > 0 })
+            {
+                waveMarkers = WithWaveMarker(waveMarkers, wave.Dir, new PlanBranchWaveRecord(markerSha, waveHash));
+            }
+
+            _observer.WaveFinished(wave, Journal.WaveStatus.Completed, skipped: false);
+        }
+
+        // Every wave complete → deliver + sweep. No legacy terminal integ gate: the LAST wave's exit gate
+        // is the whole-plan terminal soundness boundary (§14.3); a plan-root <plan>/guardrails/ is
+        // optional-additive and run by the CLI PlanGuardrailPhase after this returns.
+        RunReport report = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
+            with { Decision = lastDecision };
+        return Finalize(plan, report, integ, directoryOwner, settled, cancellationToken);
+    }
+
+    /// <summary>
+    /// Drain ONE set of tasks (a whole flat plan, or one wave's DAG) against the shared integration
+    /// handle + journal + <paramref name="settled"/>/<paramref name="directoryOwner"/> accumulators: the
+    /// resume pre-pass + task-level definition-drift check (§7.2) for this subset, then the Channel
+    /// scheduler's worker loop (workers, maxParallelism, retry, needs-human/blocked, B1 settle — all
+    /// unchanged). Appends every result to <paramref name="settled"/>. Returns a <see cref="DrainOutcome"/>
+    /// so the caller decides: a drift/abort halt, an infra fault, or whether the subset fully drained green.
+    /// </summary>
+    private async Task<DrainOutcome> DrainAsync(
+        PlanDefinition plan, IReadOnlyList<TaskNode> tasksToRun, DependencyGraph graph, IntegrationHandle? integ,
+        Dictionary<string, TaskResult> settled, Dictionary<string, string> directoryOwner,
+        IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords, bool trailerTracking,
+        CancellationToken cancellationToken)
+    {
+        var byId = tasksToRun.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        var pendingDeps = new Dictionary<string, int>(StringComparer.Ordinal);
+        var channel = Channel.CreateUnbounded<TaskEnvelope>();
+
+        HashSet<string> preSettledGreen;
+        List<DefinitionDriftReporter.DriftInput> drifted;
+        DecisionEntry? driftDecision = null;
+        try
+        {
+            (preSettledGreen, drifted) = DetectDefinitionDrift(tasksToRun, planBranchRecords, trailerTracking);
+
+            if (drifted.Count > 0)
+            {
+                DriftGateResult gate = TryResolveDrift(plan, graph, drifted, integ);
+                if (gate.Decision is null)
+                {
+                    return DrainOutcome.DriftHalt(
+                        DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider)
+                            with { SafeToAutoResolve = gate.SafeToAutoResolve, RewindRefusal = gate.Refusal, RewindBlockingTask = gate.BlockingTask });
+                }
+
+                driftDecision = gate.Decision;
+                _journal.RecordDecision(driftDecision);
+                _observer.DecisionRecorded(driftDecision);
+
+                IReadOnlyDictionary<string, PlanBranchTaskRecord> refreshed = planBranchRecords;
+                if (_worktreeProvider is { } wpAfter && integ is { } integAfter)
+                {
+                    refreshed = wpAfter.ReconcileFromPlanBranch(integAfter);
+                }
+
+                (preSettledGreen, drifted) = DetectDefinitionDrift(tasksToRun, refreshed, trailerTracking);
+                if (drifted.Count > 0)
+                {
+                    return DrainOutcome.DriftHalt(DefinitionDriftReporter.Build(plan, graph, drifted, _worktreeProvider));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return DrainOutcome.Abort(BuildDefinitionReadAbort(ex));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return DrainOutcome.Abort(BuildAbort(ex));
+        }
+
+        // Emit resume skips for the pre-settled-green candidates (in subset order).
+        foreach (TaskNode task in tasksToRun)
+        {
+            if (!preSettledGreen.Contains(task.Id))
+            {
+                continue;
+            }
+
+            var skipped = new TaskResult
+            {
+                TaskId = task.Id,
+                Outcome = TaskOutcome.Skipped,
+                Summary = "already succeeded (resumed) — skipped"
+            };
+            settled[task.Id] = skipped;
+            _observer.TaskFinished(skipped);
+        }
+
+        int remaining = 0;
+        foreach (TaskNode task in tasksToRun)
+        {
+            if (preSettledGreen.Contains(task.Id))
+            {
+                continue;
+            }
+
+            remaining++;
+            pendingDeps[task.Id] = task.DependsOn.Count(d => !preSettledGreen.Contains(d));
+        }
+
+        if (remaining == 0)
+        {
+            return new DrainOutcome { AllGreen = AllGreenFor(tasksToRun, settled), Decision = driftDecision };
+        }
+
+        var handles = new Dictionary<string, WorktreeHandle>(StringComparer.Ordinal);
+        foreach (TaskNode task in tasksToRun)
+        {
+            if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
+            {
+                WorktreeHandle handle = _worktreeProvider != null && integ != null
+                    ? _worktreeProvider.CreateSegment(task.Id, attempt: 1, integ, cancellationToken)
+                    : new WorktreeHandle();
+                handles[task.Id] = handle;
+                if (!string.IsNullOrEmpty(handle.WorktreePath))
+                {
+                    directoryOwner[handle.WorktreePath] = task.Id;
+                }
+            }
+        }
+
+        foreach (TaskNode task in tasksToRun)
+        {
+            if (!preSettledGreen.Contains(task.Id) && pendingDeps[task.Id] == 0)
+            {
+                channel.Writer.TryWrite(new TaskEnvelope(task, handles[task.Id]));
+            }
+        }
+
+        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var context = new RunContext(graph, byId, settled, pendingDeps, channel, remaining, handles, directoryOwner, integ);
+        int workerCount = Math.Min(_maxParallelism, remaining);
+        Task[] workers = Enumerable.Range(0, workerCount)
+            .Select(_ => Task.Run(() => WorkerLoopAsync(context, runCts), CancellationToken.None))
+            .ToArray();
+
+        await Task.WhenAll(workers).ConfigureAwait(false);
+
+        if (_fault is not null)
+        {
+            return DrainOutcome.Fault();
+        }
+
+        return new DrainOutcome { AllGreen = AllGreenFor(tasksToRun, settled), Decision = driftDecision };
+    }
+
+    /// <summary>Deliver (mergeOnSuccess) + end-of-run cleanup sweep — shared by the flat and waved paths.</summary>
+    private RunReport Finalize(
+        PlanDefinition plan, RunReport report, IntegrationHandle? integ,
+        Dictionary<string, string> directoryOwner, IReadOnlyDictionary<string, TaskResult> settled,
+        CancellationToken cancellationToken)
+    {
+        // Deliver the completed plan branch to the user's branch when every task succeeded and
+        // mergeOnSuccess is enabled. AI-merge is withheld: a conflict halts with the plan branch intact.
         MergeOnSuccessResult? mergeOutcome = null;
         string? mergeDetail = null;
         if (report.AllSucceeded && plan.Config.MergeOnSuccess && _worktreeProvider != null && integ != null)
         {
             mergeOutcome = _worktreeProvider.MergePlanBranchIntoUserBranch(integ, cancellationToken);
-            // Issue #150: when the user's git hook rejected the user-facing merge, surface the hook's
-            // stderr so the CLI can show the actual reason (and a remedy) instead of a bare outcome.
             if (mergeOutcome == MergeOnSuccessResult.HookRejected)
             {
                 mergeDetail = _worktreeProvider.LastMergeOnSuccessDetail;
             }
         }
 
-        // --- M2 end-of-run cleanup sweep (closes #126) -----------------------------------
-        // After delivery, Discard every still-live segment/fork worktree directory this run created
-        // (whatever remains owned in DirectoryOwner — the failure path already removed any it freed),
-        // then PruneOrphans to clear the registrations. The integration worktree is reattached to the
-        // plan branch and is NEVER in DirectoryOwner, so the sweep never touches it (design §D / 08 §7).
-        //
-        // Skipped on cancellation: a cancelled run journals in-flight tasks back to pending for
-        // resume, and Discarding here would race the executor's in-flight teardown (design §C). The
-        // next run's PruneStaleRunBranches pre-pass reclaims those directories.
         if (!cancellationToken.IsCancellationRequested)
         {
-            EndOfRunSweep(context, integ);
+            EndOfRunSweep(directoryOwner, settled, integ);
         }
 
         return report with { MergeOnSuccessOutcome = mergeOutcome, MergeOnSuccessDetail = mergeDetail };
+    }
+
+    private static bool AllGreenFor(IReadOnlyList<TaskNode> tasks, IReadOnlyDictionary<string, TaskResult> settled) =>
+        tasks.All(t => settled.TryGetValue(t.Id, out TaskResult? r) && r.IsGreen);
+
+    /// <summary>The outcome of one <see cref="DrainAsync"/>: a halt (drift/abort), an infra fault, or a completed drain.</summary>
+    private sealed record DrainOutcome
+    {
+        /// <summary>True when every task in the drained subset is green (succeeded this run or skipped).</summary>
+        public bool AllGreen { get; init; }
+
+        /// <summary>Non-null on a pre-schedule task-level definition-drift halt (§7.2) — nothing scheduled.</summary>
+        public DefinitionDriftReport? Drift { get; init; }
+
+        /// <summary>Non-null on a pre-schedule read/git abort during the drift check — nothing scheduled (no sweep).</summary>
+        public RunAbort? ReadAbort { get; init; }
+
+        /// <summary>True when a worker loop hit an infra fault (<see cref="_fault"/> is set) — the caller sweeps.</summary>
+        public bool Faulted { get; init; }
+
+        /// <summary>A task-level drift auto-resolution decision recorded this drain (for the summary), or null.</summary>
+        public DecisionEntry? Decision { get; init; }
+
+        public static DrainOutcome DriftHalt(DefinitionDriftReport drift) => new() { Drift = drift };
+        public static DrainOutcome Abort(RunAbort abort) => new() { ReadAbort = abort };
+        public static DrainOutcome Fault() => new() { Faulted = true };
+    }
+
+    // --- wave loop helpers (SSOT §14, #254 M2b) -------------------------------------------
+
+    /// <summary>
+    /// Whether a wave is COMPLETE (SSOT §14.5): every task green (journal <c>succeeded</c> OR a durable
+    /// plan-branch trailer) AND its completion is recorded (journal <c>completed</c> OR a
+    /// <c>Guardrails-Wave:</c> marker). Also returns the recorded <c>WaveDefinitionHash</c> for the
+    /// drift check (null ⇒ "unknown — assume unchanged").
+    /// </summary>
+    private (bool Complete, string? RecordedHash) EvaluateWaveCompletion(
+        WaveNode wave,
+        IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords,
+        IReadOnlyDictionary<string, PlanBranchWaveRecord> waveMarkers)
+    {
+        Journal.WaveJournalEntry? je = _journal.WaveEntryOf(wave.Dir);
+        waveMarkers.TryGetValue(wave.Dir, out PlanBranchWaveRecord? marker);
+
+        bool allTasksGreen = wave.Tasks.Count > 0 && wave.Tasks.All(t =>
+            _journal.StatusOf(t.Id) == JournalTaskStatus.Succeeded || planBranchRecords.ContainsKey(t.Id));
+
+        bool completionRecorded = je?.Status == Journal.WaveStatus.Completed || marker is not null;
+
+        bool complete = allTasksGreen && completionRecorded;
+        string? recordedHash = je?.DefinitionHash ?? marker?.WaveDefinitionHash;
+        return (complete, recordedHash);
+    }
+
+    /// <summary>
+    /// Run a wave's ENTRY preflight gate (SSOT §14.3) against the plan-branch HEAD (= materialized prior
+    /// wave), or the workspace in serial mode. Skip-once: a passed entry marker for this wave is not
+    /// re-evaluated on resume (a negative-baseline entry check runs exactly once; the wave-drift/reset path
+    /// clears the marker so a changed wave re-runs it). Self-records the entry marker + sets the wave
+    /// <c>running</c>. Returns the pass verdict + failing checks.
+    /// </summary>
+    private async Task<(bool Passed, IReadOnlyList<GuardrailResult> Failed)> RunWaveEntryGateAsync(
+        PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct)
+    {
+        if (wave.Preflights.Count == 0)
+        {
+            _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.Running);
+            return (true, []);
+        }
+
+        if (_journal.WaveEntryOf(wave.Dir)?.Entry is { Status: Journal.PlanPhaseStatus.Passed })
+        {
+            _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.Running);
+            return (true, []); // skip-once: already passed this run's journal.
+        }
+
+        string workspace = integ?.IntegrationWorktreePath ?? plan.Workspace;
+        ReVerifyResult result = _reVerifier is not null
+            ? await _reVerifier.ReVerifyAsync(workspace, wave.Preflights, ct).ConfigureAwait(false)
+            : new ReVerifyResult { Passed = true };
+
+        var checks = wave.Preflights.Select(g =>
+        {
+            GuardrailResult? failure = result.FailedGuardrails
+                .FirstOrDefault(f => string.Equals(f.Name, g.Name, StringComparison.Ordinal));
+            return new Journal.PlanPreflightCheck { Name = g.Name, Passed = failure is null, Reason = failure?.Reason };
+        }).ToList();
+
+        _journal.RecordWaveEntry(wave.Dir, new Journal.PlanPreflightsSection
+        {
+            Status = result.Passed ? Journal.PlanPhaseStatus.Passed : Journal.PlanPhaseStatus.PlanPreflightFailed,
+            PlanHash = Journal.PlanHash.Compute(plan),
+            EvaluatedAt = DateTimeOffset.UtcNow,
+            Checks = checks
+        });
+
+        return (result.Passed, result.FailedGuardrails);
+    }
+
+    /// <summary>
+    /// Run a wave's EXIT / terminal gate (SSOT §14.3) on the merged HEAD-so-far — the per-wave analogue of
+    /// the plan-terminal <c>&lt;plan&gt;/guardrails/</c> phase. Always re-evaluated (never skipped). The LAST
+    /// wave's exit gate is the whole-plan terminal soundness boundary. Self-records the exit marker. Returns
+    /// the pass verdict + failing checks.
+    /// </summary>
+    private async Task<(bool Passed, IReadOnlyList<GuardrailResult> Failed)> RunWaveExitGateAsync(
+        PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct)
+    {
+        if (wave.Guardrails.Count == 0)
+        {
+            return (true, []);
+        }
+
+        string workspace = integ?.IntegrationWorktreePath ?? plan.Workspace;
+        ReVerifyResult result = _reVerifier is not null
+            ? await _reVerifier.ReVerifyAsync(workspace, wave.Guardrails, ct).ConfigureAwait(false)
+            : new ReVerifyResult { Passed = true };
+
+        var failed = result.FailedGuardrails
+            .Select(f => new Journal.FailedGuardrail { Name = f.Name, Reason = f.Reason ?? "failed" })
+            .ToList();
+        _journal.RecordWaveExit(wave.Dir, new Journal.PlanGuardrailsSection
+        {
+            Status = result.Passed ? Journal.PlanPhaseStatus.Passed : Journal.PlanPhaseStatus.PlanGuardrailFailed,
+            PlanHash = Journal.PlanHash.Compute(plan),
+            FailedChecks = failed
+        });
+
+        return (result.Passed, result.FailedGuardrails);
+    }
+
+    /// <summary>
+    /// Wave-level drift resolution (SSOT §14.6/§14.8): rewind the plan branch past this wave + all its
+    /// downstream waves (a wave-scoped rewind is ALWAYS a safe trailing suffix — no cross-wave fan-in —
+    /// so it is unconditionally sound, §14.8) and journal-reset them, then refresh the reconciled maps.
+    /// The rewind target is the nearest PREDECESSOR wave's marker sha, or the plan-branch base for the
+    /// first wave. Crash-atomic via <see cref="State.RewindIntent"/>. Returns the <c>wave</c>-boundary
+    /// <see cref="DecisionEntry"/>. Deliberately does NOT route through <see cref="SafeSuffixEvaluator"/>:
+    /// the empty <c>Guardrails-Wave:</c> marker commits carry no task trailer and would trip its (correct)
+    /// trailer-less-commit refusal — the always-safe-suffix property lets the target be computed directly.
+    /// </summary>
+    private DecisionEntry ResolveWaveDrift(
+        PlanDefinition plan, IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, IntegrationHandle? integ,
+        string oldHash, string newHash,
+        ref IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords,
+        ref IReadOnlyDictionary<string, PlanBranchWaveRecord> waveMarkers)
+    {
+        var affectedWaves = new List<WaveNode>();
+        for (int j = waveIndex; j < waves.Count; j++)
+        {
+            affectedWaves.Add(waves[j]);
+        }
+
+        List<string> affectedTaskIds = affectedWaves.SelectMany(w => w.Tasks.Select(t => t.Id)).ToList();
+        List<string> affectedWaveDirs = affectedWaves.Select(w => w.Dir).ToList();
+
+        string? resetTarget = PredecessorWaveMarker(waves, waveIndex, waveMarkers)
+            ?? (_worktreeProvider is { } wpb && integ is { } integB ? NullIfEmpty(wpb.PlanBranchBase(integB)) : null);
+
+        // Crash-atomic: record the intent (the affected task ids) BEFORE the destructive rewind so a kill
+        // in between is idempotently replayed on resume; clear it only AFTER both effects persist.
+        State.RewindIntent.Write(_plan.PlanDirectory, new State.RewindIntent
+        {
+            SafeSet = affectedTaskIds.OrderBy(x => x, StringComparer.Ordinal).ToList(),
+            PreRewindTip = null,
+            ResetTarget = resetTarget
+        });
+
+        if (resetTarget is { Length: > 0 } && _worktreeProvider is { } wpr && integ is { } integR)
+        {
+            wpr.RewindPlanBranchTo(integR, resetTarget);
+        }
+
+        foreach (WaveNode w in affectedWaves)
+        {
+            _journal.ResetWaveToPending(w.Dir);
+            foreach (TaskNode t in w.Tasks)
+            {
+                _journal.ResetTaskToPending(t.Id);
+            }
+        }
+
+        State.RewindIntent.Clear(_plan.PlanDirectory);
+
+        // The drifted+downstream commits/markers are gone from the branch — refresh so a subsequent drain
+        // does not treat them as pre-settled via a stale trailer.
+        if (_worktreeProvider is { } wpf && integ is { } integF)
+        {
+            planBranchRecords = wpf.ReconcileFromPlanBranch(integF);
+            waveMarkers = wpf.ReconcileWavesFromPlanBranch(integF);
+        }
+
+        return DriftDecisions.WaveDriftResolved(
+            _plan.Config.AutonomyPolicy, wave.Dir, resetTarget, oldHash, newHash, affectedWaveDirs);
+    }
+
+    /// <summary>The nearest predecessor wave's <c>Guardrails-Wave:</c> marker sha (branch trailer or journal), or null when none precedes this wave.</summary>
+    private string? PredecessorWaveMarker(
+        IReadOnlyList<WaveNode> waves, int waveIndex, IReadOnlyDictionary<string, PlanBranchWaveRecord> waveMarkers)
+    {
+        for (int j = waveIndex - 1; j >= 0; j--)
+        {
+            if (waveMarkers.TryGetValue(waves[j].Dir, out PlanBranchWaveRecord? m) && m.MarkerSha.Length > 0)
+            {
+                return m.MarkerSha;
+            }
+
+            if (_journal.WaveEntryOf(waves[j].Dir)?.MarkerSha is { Length: > 0 } js)
+            {
+                return js;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Represent every task in the waves AFTER a halted wave as <c>blocked</c> (SSOT §14.4: later waves never start).</summary>
+    private static void BlockLaterWaves(
+        IReadOnlyList<WaveNode> waves, int haltedIndex, WaveNode haltedWave, Dictionary<string, TaskResult> settled)
+    {
+        for (int j = haltedIndex + 1; j < waves.Count; j++)
+        {
+            foreach (TaskNode t in waves[j].Tasks)
+            {
+                if (settled.ContainsKey(t.Id))
+                {
+                    continue;
+                }
+
+                settled[t.Id] = new TaskResult
+                {
+                    TaskId = t.Id,
+                    Outcome = TaskOutcome.Blocked,
+                    Summary = $"not started — halted at wave '{haltedWave.Dir}' barrier (SSOT §14.4)"
+                };
+            }
+        }
+    }
+
+    private WaveHalt BuildWaveDriftHalt(
+        IReadOnlyList<WaveNode> waves, int waveIndex, WaveNode wave, string oldHash, string newHash)
+    {
+        var affected = new List<string>();
+        for (int j = waveIndex; j < waves.Count; j++)
+        {
+            affected.Add(waves[j].Dir);
+        }
+
+        string folder = Path.GetFileName(
+            _plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+        return new WaveHalt
+        {
+            WaveDir = wave.Dir,
+            Kind = WaveHaltKind.WaveDrift,
+            Headline = $"Wave '{wave.Dir}' DRIFTED — its definition changed since it completed (SSOT §14.6).",
+            Detail = $"WaveDefinitionHash {ShortHash(oldHash)} -> {ShortHash(newHash)}. Resolving would rewind + "
+                   + $"re-run this wave + {affected.Count - 1} downstream wave(s). Re-run with '--autonomy auto' to "
+                   + $"rewind + re-run, or 'guardrails reset {folder} {wave.Dir}' to reset it explicitly.",
+            AffectedWaves = affected,
+            OldHash = oldHash,
+            NewHash = newHash
+        };
+    }
+
+    private static WaveHalt BuildUnauthoredWaveHalt(WaveNode wave, IntegrationHandle? integ)
+    {
+        string? worktree = integ?.IntegrationWorktreePath;
+        string at = worktree is not null ? $" at:\n  {worktree}" : "";
+        return new WaveHalt
+        {
+            WaveDir = wave.Dir,
+            Kind = WaveHaltKind.NextWaveUnauthored,
+            Headline = $"Wave '{wave.Dir}' has no authored tasks — halting for JIT breakdown (SSOT §14.4).",
+            Detail = "The prior wave(s) completed and are materialized on the plan branch. Break down + review "
+                   + $"'{wave.Dir}' against the materialized upstream artifacts{at}\nthen re-run 'guardrails run' to continue.",
+            IntegrationWorktreePath = worktree
+        };
+    }
+
+    private static WaveHalt BuildGateHalt(WaveNode wave, WaveHaltKind kind, IReadOnlyList<GuardrailResult> failed)
+    {
+        string gate = kind == WaveHaltKind.EntryGateFailed ? "entry preflight" : "exit gate";
+        string names = failed.Count == 0 ? "(no per-check detail)" : string.Join(", ", failed.Select(f => f.Name));
+        return new WaveHalt
+        {
+            WaveDir = wave.Dir,
+            Kind = kind,
+            Headline = $"Wave '{wave.Dir}' {gate} FAILED: {names}",
+            Detail = string.Join("\n", failed.Select(f => $"{f.Name} — {f.Reason ?? "failed"}")),
+            FailedGates = failed
+        };
+    }
+
+    private static IReadOnlyDictionary<string, PlanBranchWaveRecord> WithWaveMarker(
+        IReadOnlyDictionary<string, PlanBranchWaveRecord> map, string waveDir, PlanBranchWaveRecord record)
+    {
+        var copy = new Dictionary<string, PlanBranchWaveRecord>(map, StringComparer.Ordinal) { [waveDir] = record };
+        return copy;
+    }
+
+    private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>Shorten a <c>sha256:</c>-prefixed hash for display.</summary>
+    private static string ShortHash(string hash)
+    {
+        const string prefix = "sha256:";
+        string body = hash.StartsWith(prefix, StringComparison.Ordinal) ? hash[prefix.Length..] : hash;
+        return body.Length <= 10 ? body : body[..10];
     }
 
     /// <summary>
@@ -397,14 +879,14 @@ public sealed class Scheduler
     /// </summary>
     private (HashSet<string> PreSettledGreen, List<DefinitionDriftReporter.DriftInput> Drifted)
         DetectDefinitionDrift(
-            PlanDefinition plan,
+            IReadOnlyList<TaskNode> tasks,
             IReadOnlyDictionary<string, PlanBranchTaskRecord> planBranchRecords,
             bool trailerTracking)
     {
         var preSettledGreen = new HashSet<string>(StringComparer.Ordinal);
         var drifted = new List<DefinitionDriftReporter.DriftInput>();
 
-        foreach (TaskNode task in plan.Tasks)
+        foreach (TaskNode task in tasks)
         {
             bool journalGreen = _journal.StatusOf(task.Id) == JournalTaskStatus.Succeeded;
             planBranchRecords.TryGetValue(task.Id, out PlanBranchTaskRecord? trailer);
@@ -728,7 +1210,8 @@ public sealed class Scheduler
     /// continues; it must NEVER flip an otherwise-green run off-green (GitWorktreeProvider.Discard
     /// throws on a non-zero git exit, so each call-site swallows).
     /// </summary>
-    private void EndOfRunSweep(RunContext context, IntegrationHandle? integ)
+    private void EndOfRunSweep(
+        Dictionary<string, string> directoryOwner, IReadOnlyDictionary<string, TaskResult> settled, IntegrationHandle? integ)
     {
         if (_worktreeProvider is not { } provider || integ is null)
         {
@@ -740,8 +1223,8 @@ public sealed class Scheduler
         List<KeyValuePair<string, string>> sweepable;
         lock (_gate)
         {
-            sweepable = context.DirectoryOwner
-                .Where(kv => context.Settled.TryGetValue(kv.Value, out TaskResult? r) && r.IsGreen)
+            sweepable = directoryOwner
+                .Where(kv => settled.TryGetValue(kv.Value, out TaskResult? r) && r.IsGreen)
                 .ToList();
         }
 
@@ -759,7 +1242,7 @@ public sealed class Scheduler
             {
                 lock (_gate)
                 {
-                    context.DirectoryOwner.Remove(path);
+                    directoryOwner.Remove(path);
                 }
             }
         }

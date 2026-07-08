@@ -99,6 +99,26 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void WaveStarting(WaveNode wave, int index, int total)
+    {
+        lock (_gate)
+        {
+            _output.WriteLine($"===== Wave {index}/{total}: {wave.Dir} — {wave.Tasks.Count} task(s) =====");
+        }
+    }
+
+    public void WaveFinished(WaveNode wave, Core.Journal.WaveStatus status, bool skipped)
+    {
+        lock (_gate)
+        {
+            string verb = skipped
+                ? "already complete — skipped (resume)"
+                : status == Core.Journal.WaveStatus.Completed ? "completed" : $"halted ({status.ToString().ToLowerInvariant()})";
+            _output.WriteLine($"===== Wave {wave.Dir}: {verb} =====");
+            _output.WriteLine();
+        }
+    }
+
     public void PlanHashMismatch(string previousPlanHash)
     {
         lock (_gate)

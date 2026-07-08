@@ -330,6 +330,106 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    // --- waves[] (SSOT §7/§14, #254 M2b) ----------------------------------------------
+
+    /// <summary>The wave's durable journal record, or null when the waves[] section omits it.</summary>
+    public WaveJournalEntry? WaveEntryOf(string waveDir)
+    {
+        lock (_gate)
+        {
+            return _document.Waves is { } waves && waves.TryGetValue(waveDir, out WaveJournalEntry? entry)
+                ? entry
+                : null;
+        }
+    }
+
+    /// <summary>Record the wave ENTRY-preflight marker (SSOT §14.6) and set the wave <see cref="WaveStatus.Running"/>.</summary>
+    public void RecordWaveEntry(string waveDir, PlanPreflightsSection entry)
+    {
+        lock (_gate)
+        {
+            WaveJournalEntry existing = GetOrCreateWave(waveDir);
+            UpdateWave(waveDir, existing with { Status = WaveStatus.Running, Entry = entry });
+            Persist();
+        }
+    }
+
+    /// <summary>Record the wave EXIT/terminal-gate marker (SSOT §14.6).</summary>
+    public void RecordWaveExit(string waveDir, PlanGuardrailsSection exit)
+    {
+        lock (_gate)
+        {
+            WaveJournalEntry existing = GetOrCreateWave(waveDir);
+            UpdateWave(waveDir, existing with { Exit = exit });
+            Persist();
+        }
+    }
+
+    /// <summary>Record a wave settling <see cref="WaveStatus.Completed"/> with its definition hash + marker commit sha (SSOT §14.5).</summary>
+    public void RecordWaveCompleted(string waveDir, string definitionHash, string? markerSha)
+    {
+        lock (_gate)
+        {
+            WaveJournalEntry existing = GetOrCreateWave(waveDir);
+            UpdateWave(waveDir, existing with
+            {
+                Status = WaveStatus.Completed,
+                DefinitionHash = definitionHash,
+                MarkerSha = markerSha ?? existing.MarkerSha
+            });
+            Persist();
+        }
+    }
+
+    /// <summary>Set a wave's status (SSOT §14.5) without touching its markers/hash.</summary>
+    public void RecordWaveStatus(string waveDir, WaveStatus status)
+    {
+        lock (_gate)
+        {
+            WaveJournalEntry existing = GetOrCreateWave(waveDir);
+            UpdateWave(waveDir, existing with { Status = status });
+            Persist();
+        }
+    }
+
+    /// <summary>
+    /// Reset a wave to <see cref="WaveStatus.Pending"/>, clearing its completion hash, marker sha, and
+    /// entry/exit markers — the wave half of a wave-drift resolution / wave-scoped reset (SSOT §14.6/§14.8).
+    /// The wave's TASKS are reset separately via <see cref="ResetTaskToPending"/>.
+    /// </summary>
+    public void ResetWaveToPending(string waveDir)
+    {
+        lock (_gate)
+        {
+            if (_document.Waves is not { } waves || !waves.ContainsKey(waveDir))
+            {
+                return;
+            }
+
+            UpdateWave(waveDir, new WaveJournalEntry { Status = WaveStatus.Pending });
+            Persist();
+        }
+    }
+
+    private WaveJournalEntry GetOrCreateWave(string waveDir)
+    {
+        if (_document.Waves is { } waves && waves.TryGetValue(waveDir, out WaveJournalEntry? entry))
+        {
+            return entry;
+        }
+
+        return new WaveJournalEntry { Status = WaveStatus.Pending };
+    }
+
+    private void UpdateWave(string waveDir, WaveJournalEntry entry)
+    {
+        var waves = _document.Waves is null
+            ? new Dictionary<string, WaveJournalEntry>(StringComparer.Ordinal)
+            : new Dictionary<string, WaveJournalEntry>(_document.Waves, StringComparer.Ordinal);
+        waves[waveDir] = entry;
+        _document = _document with { Waves = waves };
+    }
+
     // --- internals --------------------------------------------------------------------
 
     private TaskJournalEntry GetOrCreate(string taskId)
