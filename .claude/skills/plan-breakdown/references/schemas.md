@@ -79,6 +79,16 @@ first guardrail are cheap sanity checks.
 Scope `allowedTools` to what the plan's actions genuinely need — `Bash(dotnet *)` for
 a .NET plan, not blanket `Bash`.
 
+**Multi-task plans (≥2 tasks joined by `dependsOn`) should default-include read-only git
+inspection (#252).** Add `Bash(git log*)`, `Bash(git diff*)`, `Bash(git show*)`,
+`Bash(git status*)` to the default alongside the stack-specific entries, so a downstream
+task's action prompt can inspect what an ancestor task already committed instead of
+burning turns on rejected `git log`/`git diff` attempts and falling back to broad
+`Grep`/`Glob` sweeps. Never add **state-mutating** git commands (`restore`, `reset`,
+`checkout`, `push`, `commit`, `stash`) to this default — those stay outside
+`allowedTools`. A single-task plan has nothing yet to inspect — omit the git entries
+there.
+
 ## `tasks/<id>/task.json`
 
 ```jsonc
