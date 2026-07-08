@@ -628,9 +628,11 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             string? currentRun = null;
             string? currentHash = null;
 
-            foreach (string rawLine in body.Split('\n'))
+            // Only the LAST trailer block attributes (git interpret-trailers semantics) — a stray
+            // Guardrails-Task: line in a human hand-fix commit's prose must NOT be read as attribution
+            // (issue #274 Part C NIT). A genuine hand-fix stays un-attributed → the rewind refuses it.
+            foreach (string line in LastTrailerBlockLines(body))
             {
-                string line = rawLine.Trim();
                 if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
                     currentTask = line["Guardrails-Task: ".Length..];
                 else if (line.StartsWith("Guardrails-Run: ", StringComparison.Ordinal))
@@ -683,6 +685,268 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             // to journal-only, never a crash.
             return empty;
         }
+    }
+
+    /// <inheritdoc />
+    public bool TracksPlanBranchTrailers => true;
+
+    /// <inheritdoc />
+    public string CurrentPlanBranchTip(IntegrationHandle integ) =>
+        CurrentPlanBranchTip(_repoPath, integ.PlanBranchName);
+
+    /// <summary>
+    /// The current tip sha of <paramref name="planBranch"/> (issue #274 Part C compare-and-swap). Static so
+    /// the manual scoped reset can read it without a run-scoped provider. Degrades to the empty string when
+    /// the branch does not exist / git is unavailable — a non-git plan folder has no branch to CAS against.
+    /// </summary>
+    public static string CurrentPlanBranchTip(string repoPath, string planBranch)
+    {
+        var (stdout, exit) = TryGitIn(repoPath, "rev-parse", planBranch);
+        return exit == 0 ? stdout.Trim() : "";
+    }
+
+    /// <inheritdoc />
+    public SafeSuffixDecision EvaluateSafeSuffix(IntegrationHandle integ, IReadOnlySet<string> safeSet) =>
+        EvaluateSafeSuffix(_repoPath, integ.PlanBranchName, safeSet);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Reset WITHIN the integration worktree so its working tree (not just the branch ref) matches the
+    /// rewound tip — the integration worktree is checked out on the plan branch and later FFs segments
+    /// onto it, so its tree must agree with the branch. <c>git reset --hard</c> keeps the discarded
+    /// commits in the branch reflog (recoverable), so the rewind is destructive but not unrecoverable.
+    /// </remarks>
+    public void RewindPlanBranchTo(IntegrationHandle integ, string resetTarget) =>
+        GitIn(integ.IntegrationWorktreePath, "reset", "--hard", resetTarget);
+
+    /// <summary>
+    /// Part C (issue #274, SSOT §7.2): build the plan branch's <c>--first-parent</c> trailer history as
+    /// the pure <see cref="SafeSuffixEvaluator"/>'s <see cref="TrailerCommit"/> model and run the check
+    /// for <paramref name="safeSet"/>. Read-only. Static so BOTH the run-time pre-DAG gate (via the
+    /// instance method above) and the manual scoped reset (which has no run-scoped provider) share ONE
+    /// decision path. Degrades to <see cref="SafeSuffixDecision.Nothing"/> when the plan branch does not
+    /// exist / git is unavailable (a non-git plan folder), matching the read-only dry-run posture.
+    /// </summary>
+    public static SafeSuffixDecision EvaluateSafeSuffix(
+        string repoPath, string planBranch, IReadOnlySet<string> safeSet)
+    {
+        IReadOnlyList<TrailerCommit> history;
+        try
+        {
+            history = GatherFirstParentHistory(repoPath, planBranch);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+        {
+            return SafeSuffixDecision.Nothing();
+        }
+
+        return SafeSuffixEvaluator.Evaluate(history, safeSet);
+    }
+
+    /// <summary>
+    /// Part C (issue #274): DESTRUCTIVELY rewind <paramref name="planBranch"/> to
+    /// <paramref name="resetTarget"/>. Static so the manual scoped reset can rewind without a run-scoped
+    /// provider. Resets INSIDE the plan branch's checked-out worktree when one exists (so its tree tracks
+    /// the branch); otherwise force-moves the branch ref. Both keep the discarded commits in the reflog.
+    /// </summary>
+    public static void RewindPlanBranch(string repoPath, string planBranch, string resetTarget)
+    {
+        if (WorktreeForBranch(repoPath, planBranch) is { } wt && Directory.Exists(wt))
+        {
+            GitIn(wt, "reset", "--hard", resetTarget);
+        }
+        else
+        {
+            // No checked-out worktree holds the branch — force-move the ref (also reflog-logged).
+            GitIn(repoPath, "branch", "-f", planBranch, resetTarget);
+        }
+    }
+
+    /// <summary>
+    /// Build the plan branch's <c>--first-parent</c> history (newest-first) as <see cref="TrailerCommit"/>
+    /// records for the pure safe-suffix check (issue #274 Part C). Each first-parent commit carries its
+    /// own <c>Guardrails-Task:</c> trailer (or null), its first-parent sha (the rewind target when it is
+    /// the oldest removed), and — for a merge/union — the tasks reachable via its NON-first-parent
+    /// lineage(s) relative to its own first parent (<c>git rev-list &lt;sha&gt; --not &lt;firstParent&gt;</c>,
+    /// the merge-tip caveat input). The union of the first-parent commits and every merge's lineage set
+    /// is exactly what <c>git reset --hard c_j^</c> discards, so the pure check over this model is sound.
+    /// </summary>
+    public static IReadOnlyList<TrailerCommit> GatherFirstParentHistory(string repoPath, string planBranch)
+    {
+        // A sha → Guardrails-Task: trailer map over EVERY reachable commit (all parents), so a merge's
+        // non-first-parent lineage commits (never on the first-parent chain) can be attributed too.
+        IReadOnlyDictionary<string, string?> taskBySha =
+            ParseShaToTask(GitIn(repoPath, "log", TrailerShaBodyFormat, planBranch));
+
+        // The first-parent spine: sha + its parent shas (space-separated; first is the first parent).
+        string fpLog = GitIn(repoPath, "log", "--first-parent", $"--format=%H{Hashing.HashText.UnitSeparator}%P", planBranch);
+
+        var commits = new List<TrailerCommit>();
+        foreach (string rawLine in fpLog.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string line = rawLine.Trim();
+            int split = line.IndexOf(Hashing.HashText.UnitSeparator);
+            if (split < 0)
+            {
+                continue;
+            }
+
+            string sha = line[..split].Trim();
+            string[] parents = line[(split + 1)..].Trim()
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            string firstParent = parents.Length > 0 ? parents[0] : "";
+
+            IReadOnlyList<string?> mergedIn = parents.Length > 1
+                ? MergedLineageTasks(repoPath, sha, firstParent, taskBySha)
+                : [];
+
+            commits.Add(new TrailerCommit
+            {
+                Sha = sha,
+                Task = taskBySha.GetValueOrDefault(sha),
+                ParentSha = firstParent,
+                MergedInTasks = mergedIn
+            });
+        }
+
+        return commits;
+    }
+
+    /// <summary>
+    /// The tasks reachable from merge commit <paramref name="sha"/> via its NON-first-parent lineage(s),
+    /// back to the merge-base with the retained mainline: <c>git rev-list &lt;sha&gt; --not
+    /// &lt;firstParent&gt;</c> minus <paramref name="sha"/> itself, each mapped to its
+    /// <c>Guardrails-Task:</c> trailer (null when the commit carries none — a trailer-less merged commit,
+    /// which forces a REFUSE). Excluding everything reachable from the first parent (an ancestor of the
+    /// eventual reset target) drops the retained-mainline region, so this is exactly the extra work
+    /// <c>reset --hard</c> would un-integrate through this merge.
+    /// </summary>
+    private static IReadOnlyList<string?> MergedLineageTasks(
+        string repoPath, string sha, string firstParent, IReadOnlyDictionary<string, string?> taskBySha)
+    {
+        if (string.IsNullOrEmpty(firstParent))
+        {
+            return [];
+        }
+
+        var (stdout, exit) = TryGitIn(repoPath, "rev-list", sha, "--not", firstParent);
+        if (exit != 0)
+        {
+            // Could not enumerate the lineage — refuse safely by surfacing an un-attributable entry.
+            return [null];
+        }
+
+        var merged = new List<string?>();
+        foreach (string rawSha in stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string mergedSha = rawSha.Trim();
+            if (mergedSha.Length == 0 || string.Equals(mergedSha, sha, StringComparison.Ordinal))
+            {
+                continue; // the merge commit itself is scored by the first-parent walk, not here.
+            }
+
+            merged.Add(taskBySha.GetValueOrDefault(mergedSha));
+        }
+
+        return merged;
+    }
+
+    /// <summary>The <c>git log</c> pretty-format framing each commit as sha + unit-separator + raw body.</summary>
+    private static string TrailerShaBodyFormat =>
+        $"--format={Hashing.HashText.RecordSeparator}%H{Hashing.HashText.UnitSeparator}%B";
+
+    /// <summary>
+    /// Parse a <see cref="TrailerShaBodyFormat"/> log into a sha → <c>Guardrails-Task:</c> trailer map
+    /// (value null when a commit carries no such trailer). Shares the record/unit separators with
+    /// <see cref="ParseTrailerRecords"/> so a body's own blank lines can never split one commit's record.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string?> ParseShaToTask(string log)
+    {
+        char recordSep = Hashing.HashText.RecordSeparator;
+        char unitSep = Hashing.HashText.UnitSeparator;
+        var map = new Dictionary<string, string?>(StringComparer.Ordinal);
+
+        foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int split = record.IndexOf(unitSep);
+            if (split < 0)
+            {
+                continue;
+            }
+
+            string sha = record[..split].Trim();
+            string body = record[(split + 1)..];
+
+            // Only the LAST trailer block attributes (see ParseTrailerRecords) — a stray Guardrails-Task:
+            // in a human hand-fix's prose stays un-attributed (null) so the rewind refuses it (#274 Part C).
+            string? task = null;
+            foreach (string line in LastTrailerBlockLines(body))
+            {
+                if (line.StartsWith("Guardrails-Task: ", StringComparison.Ordinal))
+                {
+                    task = line["Guardrails-Task: ".Length..];
+                }
+            }
+
+            map[sha] = task;
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// The lines of a commit body's LAST trailer block (approximating <c>git interpret-trailers</c>): the
+    /// final paragraph, returned ONLY when every one of its non-blank lines is trailer-shaped
+    /// (<c>Key: value</c>, key = letters/digits/hyphen). This is what makes a <c>Guardrails-Task:</c>
+    /// occurrence in ordinary prose NOT count as attribution (issue #274 Part C NIT) — a human hand-fix
+    /// commit that merely mentions a trailer keeps its <c>null</c> attribution and is refused by the safe
+    /// rewind. Returns an empty list when the final paragraph is prose (not a trailer block).
+    /// </summary>
+    private static IReadOnlyList<string> LastTrailerBlockLines(string body)
+    {
+        string[] lines = body.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+
+        int end = lines.Length - 1;
+        while (end >= 0 && lines[end].Trim().Length == 0) end--; // skip trailing blanks
+        if (end < 0) return [];
+
+        int start = end;
+        while (start > 0 && lines[start - 1].Trim().Length > 0) start--; // to the top of the final paragraph
+
+        var block = new List<string>(end - start + 1);
+        for (int i = start; i <= end; i++)
+        {
+            string line = lines[i].Trim();
+            if (!IsTrailerLine(line))
+            {
+                return []; // the final paragraph is prose, not a trailer block → no attribution
+            }
+
+            block.Add(line);
+        }
+
+        return block;
+    }
+
+    /// <summary>True when <paramref name="trimmed"/> is a trailer line <c>Key: value</c> (key = letters/digits/hyphen, then <c>": "</c>, then a non-empty value).</summary>
+    private static bool IsTrailerLine(string trimmed)
+    {
+        int colon = trimmed.IndexOf(':');
+        if (colon <= 0 || colon + 1 >= trimmed.Length || trimmed[colon + 1] != ' ')
+        {
+            return false;
+        }
+
+        for (int i = 0; i < colon; i++)
+        {
+            char ch = trimmed[i];
+            if (!char.IsLetterOrDigit(ch) && ch != '-')
+            {
+                return false;
+            }
+        }
+
+        return trimmed.Length > colon + 2; // a non-empty value after ": "
     }
 
     /// <summary>

@@ -240,6 +240,22 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void DriftResolved(DriftResolution resolution)
+    {
+        lock (_gate)
+        {
+            // A provably-safe definition drift was auto-resolved at the pre-DAG gate (issue #274 Part C).
+            // Emitted above the live region (like PlanHashMismatch) so the operator sees what was rebuilt.
+            string tasks = string.Join(", ", resolution.Tasks.Select(t => Markup.Escape(t.TaskId)));
+            string how = resolution.RewindTarget is { } target
+                ? $"rewound the plan branch to {Markup.Escape(target.Length <= 8 ? target : target[..8])}"
+                : "reset the drifted tasks (no plan-branch rewind needed)";
+            AnsiConsole.MarkupLine(
+                $"[green]definition drift auto-resolved[/] ([blue]{Markup.Escape(resolution.Trigger)}[/]): " +
+                $"{how} and re-running {resolution.Tasks.Count} task(s): {tasks}");
+        }
+    }
+
     /// <summary>Stop the live region (the final summary prints after disposal).</summary>
     public async ValueTask DisposeAsync()
     {

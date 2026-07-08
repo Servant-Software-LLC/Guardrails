@@ -75,11 +75,19 @@ public static class SchedulerFactory
     }
 
     /// <summary>Build a ready-to-run scheduler for <paramref name="plan"/>.</summary>
+    /// <param name="driftAuthorization">
+    /// Part C (issue #274, SSOT §7.2): when the plan's <c>driftPolicy</c> is <c>prompt</c> and the CLI has
+    /// already prompted the operator OUTSIDE the live region and got a <c>y</c>, pass the CAPTURED plan
+    /// (safe set + reset target + the plan-branch tip the operator saw) so the pre-DAG gate rewinds exactly
+    /// that (verifying it still matches + a tip compare-and-swap). Null (the default) for <c>reprocess</c>
+    /// (auto-resolves on its own fresh decision) and <c>halt</c> / an unconfirmed <c>prompt</c> (halts).
+    /// </param>
     public static Scheduler Create(
         PlanDefinition plan,
         ProcessRunner processRunner,
         IExecutableProbe probe,
-        IRunObserver observer)
+        IRunObserver observer,
+        DriftAuthorization? driftAuthorization = null)
     {
         (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer);
 
@@ -132,7 +140,8 @@ public static class SchedulerFactory
             worktreeProvider: worktreeProvider,
             observer: observer,
             reVerifier: reVerifier,
-            aiMergeWorker: aiMergeWorker);
+            aiMergeWorker: aiMergeWorker,
+            driftAuthorization: driftAuthorization);
     }
 
     /// <summary>

@@ -51,6 +51,11 @@ public static class RunCommand
             Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess on regardless of guardrails.json."
         };
 
+        var reprocessDriftOption = new Option<bool>("--reprocess-drift")
+        {
+            Description = "On a resume with a PROVABLY-SAFE definition drift, auto-resolve it with no prompt: rewind the plan branch past the safe drifted suffix and re-run it (SSOT §7.2). Forces driftPolicy=reprocess. An UNSAFE drift still halts."
+        };
+
         var revalidateTaskOption = new Option<string?>("--revalidate-task")
         {
             Description = "Re-validate-only (issue #102): run ONLY this task's guardrails against the current workspace, spawning NO agent attempt — for confirming a hand-fix to a needs-human task. On pass the task is marked succeeded; serial mode only."
@@ -69,6 +74,7 @@ public static class RunCommand
         command.Add(noLogServerOption);
         command.Add(logPortOption);
         command.Add(mergeOnSuccessOption);
+        command.Add(reprocessDriftOption);
         command.Add(revalidateTaskOption);
         command.Add(skipReviewCheckOption);
 
@@ -81,6 +87,7 @@ public static class RunCommand
             bool noLogServer = parseResult.GetValue(noLogServerOption);
             int logPort = parseResult.GetValue(logPortOption);
             bool mergeOnSuccess = parseResult.GetValue(mergeOnSuccessOption);
+            bool reprocessDrift = parseResult.GetValue(reprocessDriftOption);
             string? revalidateTask = parseResult.GetValue(revalidateTaskOption);
             bool skipReviewCheck = parseResult.GetValue(skipReviewCheckOption);
 
@@ -103,14 +110,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, reprocessDrift, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, bool reprocessDrift, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -131,6 +138,14 @@ public static class RunCommand
         if (mergeOnSuccess && !probe.Plan.Config.MergeOnSuccess)
         {
             probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MergeOnSuccess = true } } };
+        }
+
+        // --reprocess-drift forces the Part C safe-auto-resolve on (SSOT §7.2 / §2: "CLI --reprocess-drift
+        // overrides to reprocess"). Like --merge-on-success it only augments — it turns a prompt/halt policy
+        // into reprocess for this run, never the other way — so a plan already set to reprocess is unaffected.
+        if (reprocessDrift && probe.Plan.Config.DriftPolicy != Core.Model.DriftPolicy.Reprocess)
+        {
+            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { DriftPolicy = Core.Model.DriftPolicy.Reprocess } } };
         }
 
         if (fresh)
@@ -183,6 +198,26 @@ public static class RunCommand
             return ExitCodes.TaskFailed;
         }
 
+        // Part C interactive drift confirm (SSOT §7.2, issue #274). The default driftPolicy is "prompt":
+        // a PROVABLY-SAFE drift must ask the operator BEFORE the run. The Spectre live table cannot host a
+        // Console.ReadLine, so the prompt happens HERE — before any UI — via the same
+        // Console.IsInputRedirected idiom as ResetCommand.Confirm. A `y` becomes driftPreConfirmed (the
+        // Scheduler then rewinds + re-runs); every other case (no drift, unsafe, non-interactive) falls
+        // through to the Scheduler, which halts or auto-resolves exactly as the policy dictates and renders
+        // the authoritative report. --reprocess-drift / driftPolicy:halt skip the prompt entirely.
+        DriftAuthorization? driftAuthorization = null;
+        if (probe.Plan.Config.DriftPolicy == Core.Model.DriftPolicy.Prompt)
+        {
+            (DriftPromptDecision decision, DriftAuthorization? authorized) =
+                ConfirmSafeDriftIfInteractive(probe.Plan, journal, io);
+            if (decision == DriftPromptDecision.Declined)
+            {
+                return ExitCodes.TaskFailed; // operator answered N — halt without running (they saw the preview).
+            }
+
+            driftAuthorization = authorized; // non-null only on a `y`; carries the CAPTURED plan (S + target + tip)
+        }
+
         // The log server is a companion to the live table: start it only in the interactive path
         // (nobody clicks links in CI / redirected output), and never let a binding failure abort
         // the run — TryStart returns null and prints one warning.
@@ -221,7 +256,7 @@ public static class RunCommand
 
                 await using var liveObserver = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
                 var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
-                report = await ExecuteAsync(probe.Plan, siteObserver, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -229,7 +264,7 @@ public static class RunCommand
                     new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
                 siteObserver.WriteInitialIndex();
                 PrintStaticIndexLink(logsRoot, io);
-                report = await ExecuteAsync(probe.Plan, siteObserver, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, cancellationToken).ConfigureAwait(false);
             }
 
             // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -446,6 +481,85 @@ public static class RunCommand
         }
     }
 
+    /// <summary>The outcome of the pre-live-region Part C drift confirm (issue #274, SSOT §7.2).</summary>
+    private enum DriftPromptDecision
+    {
+        /// <summary>No prompt was shown (no drift, an unsafe drift, or a non-interactive stdin) — proceed and let the Scheduler decide.</summary>
+        NotPrompted,
+
+        /// <summary>The operator answered <c>y</c> — pre-authorize the safe rewind for this run.</summary>
+        Confirmed,
+
+        /// <summary>The operator answered <c>N</c> — halt without running (exit 2).</summary>
+        Declined
+    }
+
+    /// <summary>
+    /// Part C interactive confirm (issue #274, SSOT §7.2): probe for a provably-safe definition drift and,
+    /// ONLY in an interactive TTY, disclose exactly what a <c>y</c> will rebuild and ask. Non-interactive
+    /// stdin (CI / redirected / an overwatcher) is never prompted — it falls through so the Scheduler halts
+    /// under the default policy (never spends unbidden). An unsafe drift is likewise not prompted (no flag
+    /// authorizes an unsound rewind); the Scheduler renders the authoritative refusal report. Interactivity
+    /// uses the same <see cref="Console.IsInputRedirected"/> idiom as <c>ResetCommand.Confirm</c>.
+    /// </summary>
+    private static (DriftPromptDecision Decision, DriftAuthorization? Authorization) ConfirmSafeDriftIfInteractive(
+        Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io)
+    {
+        DefinitionDriftProbe.Result drift = DefinitionDriftProbe.Evaluate(plan, journal);
+        if (!drift.HasDrift || drift.Decision.Outcome == SafeSuffixOutcome.Refused || Console.IsInputRedirected)
+        {
+            return (DriftPromptDecision.NotPrompted, null);
+        }
+
+        PrintDriftPromptPreview(drift, io);
+
+        string ask = drift.Decision.Outcome == SafeSuffixOutcome.Safe
+            ? $"Rewind the plan branch ({drift.Decision.RemovedCommitCount} commit(s)) and re-run {drift.SafeSet.Count} task(s)"
+            : $"Reset and re-run {drift.SafeSet.Count} task(s)";
+        io.Out.Write($"{ask}? [y/N] ");
+
+        string? answer = Console.ReadLine();
+        bool yes = answer is not null && answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
+        if (!yes)
+        {
+            io.Out.WriteLine("Declined — nothing was changed (definition-drift halt, SSOT §7.2).");
+            return (DriftPromptDecision.Declined, null);
+        }
+
+        // Capture EXACTLY what the operator approved (S + reset target + the tip they saw) so the Scheduler
+        // rewinds that, not a plan re-derived from files edited during this blocking prompt, and so a
+        // concurrent same-plan session that moved the branch is caught by the tip compare-and-swap.
+        var authorization = new DriftAuthorization
+        {
+            SafeSet = drift.SafeSet,
+            ResetTarget = drift.Decision.ResetTarget,
+            ExpectedTip = drift.Decision.ExpectedTip ?? ""
+        };
+        return (DriftPromptDecision.Confirmed, authorization);
+    }
+
+    /// <summary>
+    /// Disclose what a <c>y</c> to the Part C drift confirm will rebuild (issue #274, SSOT §7.2): each
+    /// drifted task's old→new short hash and the full re-run set (drifted + descendants), so the operator
+    /// decides with the whole picture. The plan branch is harness-owned and the rewind is reflog-recoverable.
+    /// </summary>
+    private static void PrintDriftPromptPreview(DefinitionDriftProbe.Result drift, IConsoleIo io)
+    {
+        TextWriter output = io.Out;
+        output.WriteLine();
+        output.WriteLine("DEFINITION DRIFT — one or more already-succeeded tasks changed since they last succeeded (SSOT §7.2).");
+        foreach (DefinitionDriftProbe.DriftedEntry d in drift.Drifted)
+        {
+            output.WriteLine($"  {d.TaskId}: {ShortHash(d.OldHash)} -> {ShortHash(d.NewHash)}");
+        }
+
+        output.WriteLine($"  Re-run set (drifted + descendants): {string.Join(", ", drift.SafeSet)}");
+        output.WriteLine(
+            "  A 'y' rewinds the harness-owned plan branch and re-runs that set; your own checkout is untouched.");
+        output.WriteLine(
+            "  Discarded commits stay recoverable via git reflog until a later '--fresh' / 'reset -y' tears the branch down.");
+    }
+
     /// <summary>
     /// Render the definition-drift halt (issue #274 Part A, SSOT §7.2): for each drifted task, its
     /// old → new short definition hash, the best-effort per-file breakdown (added/removed/modified + an
@@ -496,10 +610,35 @@ public static class RunCommand
         }
 
         output.WriteLine();
-        output.WriteLine("Remediation:");
-        output.WriteLine($"  guardrails reset {folder} -y             — full correct rebuild (works today)");
-        output.WriteLine($"  guardrails reset {folder} <taskId>...    — scoped reset of only the drifted task(s)");
-        output.WriteLine("                                             + descendants (Part C — not yet shipped)");
+        if (drift.SafeToAutoResolve)
+        {
+            // The drifted set IS a provably-safe suffix — the halt is a policy/consent choice, so the
+            // auto-resolve flag actually works. Lead with it.
+            output.WriteLine("Remediation (this drift is a PROVABLY-SAFE suffix — auto-resolve is available):");
+            output.WriteLine($"  guardrails run {folder} --reprocess-drift — rewind the plan branch past the safe suffix + re-run");
+            output.WriteLine($"                                              (or re-run interactively to confirm with 'y')");
+            output.WriteLine($"  guardrails reset {folder} <taskId>...     — scoped reset of only the drifted task(s) + descendants");
+            output.WriteLine($"  guardrails reset {folder} -y              — full correct rebuild (always sound)");
+        }
+        else
+        {
+            // The rewind was REFUSED as unsound — --reprocess-drift would just re-halt on the same floor.
+            // Surface WHY and steer straight to the always-sound full rebuild.
+            output.WriteLine("Cannot safely auto-resolve — the drifted set is NOT a safe trailing suffix of the plan branch:");
+            if (drift.RewindRefusal is { Length: > 0 } refusal)
+            {
+                output.WriteLine($"  {refusal}");
+            }
+
+            if (drift.RewindBlockingTask is { Length: > 0 } blocker)
+            {
+                output.WriteLine($"  blocking task: {blocker}");
+            }
+
+            output.WriteLine();
+            output.WriteLine("Remediation (--reprocess-drift would REFUSE the same way — do not use it here):");
+            output.WriteLine($"  guardrails reset {folder} -y — full correct rebuild (always sound; tears the plan branch down)");
+        }
     }
 
     /// <summary>Shorten a <c>sha256:</c>-prefixed hash for display (e.g. <c>sha256:a6bee1…</c>).</summary>
@@ -646,9 +785,11 @@ public static class RunCommand
     private static Task<RunReport> ExecuteAsync(
         Core.Model.PlanDefinition plan,
         IRunObserver observer,
+        DriftAuthorization? driftAuthorization,
         CancellationToken cancellationToken)
     {
-        Scheduler scheduler = SchedulerFactory.Create(plan, new ProcessRunner(), new PathExecutableProbe(), observer);
+        Scheduler scheduler = SchedulerFactory.Create(
+            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization);
         return scheduler.RunAsync(plan, cancellationToken);
     }
 

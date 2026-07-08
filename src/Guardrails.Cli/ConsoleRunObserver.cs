@@ -86,6 +86,25 @@ public sealed class ConsoleRunObserver : IRunObserver
         }
     }
 
+    public void DriftResolved(DriftResolution resolution)
+    {
+        lock (_gate)
+        {
+            // A provably-safe definition drift was auto-resolved at the pre-DAG gate (issue #274 Part C):
+            // the plan branch was rewound and the safe suffix re-run. Not a failure — say so plainly.
+            string tasks = string.Join(", ", resolution.Tasks.Select(t => t.TaskId));
+            string how = resolution.RewindTarget is { } target
+                ? $"rewound the plan branch to {ShortSha(target)}"
+                : "reset the drifted tasks (no plan-branch rewind needed)";
+            _output.WriteLine(
+                $"[drift auto-resolved] {how} and re-running {resolution.Tasks.Count} task(s) " +
+                $"[{resolution.Trigger}]: {tasks}");
+            _output.WriteLine();
+        }
+    }
+
+    private static string ShortSha(string sha) => sha.Length <= 8 ? sha : sha[..8];
+
     public void PlanHashMismatch(string previousPlanHash)
     {
         lock (_gate)

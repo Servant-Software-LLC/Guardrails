@@ -18,6 +18,7 @@ internal sealed class RawRunConfig
     public bool? RunOnCurrentBranch { get; set; }
     public bool? MergeOnSuccess { get; set; }
     public bool? TriageAutoFile { get; set; }
+    public string? DriftPolicy { get; set; }
     public bool? PreserveAttemptsForSalvage { get; set; }
     public Dictionary<string, List<string>>? Interpreters { get; set; }
 

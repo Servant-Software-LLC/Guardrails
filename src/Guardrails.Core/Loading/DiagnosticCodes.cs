@@ -259,4 +259,17 @@ public static class DiagnosticCodes
     /// An ERROR: turns a runtime prompt-invocation failure into a load-time catch.
     /// </summary>
     public const string ModelInvalid = "GR2030";
+
+    // Next-free allocation confirmed at authoring time (issue #274 Part C): GR2030 (ModelInvalid) is the
+    // last taken code above, so GR2031 is next free.
+
+    /// <summary>
+    /// A <c>driftPolicy</c> value (SSOT §2/§7.2, issue #274 Part C) is present but not one of the three
+    /// recognised values <c>prompt</c> (default), <c>reprocess</c>, or <c>halt</c>. The field selects how
+    /// a resume handles a provably-safe definition drift; an unrecognised value can never map to a policy
+    /// and is always a configuration mistake (a typo, a stale value) that would otherwise silently degrade
+    /// to a default a CI-strict user did not intend. An ERROR: turns a silent-wrong-policy footgun into a
+    /// load-time catch. A <c>null</c>/absent value is fine (means the default, <c>prompt</c>).
+    /// </summary>
+    public const string InvalidDriftPolicy = "GR2031";
 }

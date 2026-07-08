@@ -339,9 +339,37 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `RunReport.DefinitionDrift`, **exit 2**, with a per-file "what changed" report (which task drifted,
   old->new hash, per-file added/removed/modified, a `git diff <oldCommit>..HEAD` command, and the task's
   transitive-dependent set) -- rather than silently reusing the stale segment or silently auto-rerunning
-  (unsound for a fan-in descendant). Remediate with `guardrails reset <folder> -y` + re-run (full rebuild);
-  a **scoped** `reset <folder> <taskId>` and a run-time auto-resolve of the safe case are **Part C -- not
-  yet shipped**. (SSOT §7.2.)
+  (unsound for a fan-in descendant off a base still carrying its own stale commit).
+  **Safe-auto-resolve + scoped rewind (#274 Part C -- SHIPPED):** Part A's halt is lifted for a
+  PROVABLY-SAFE subset. `S` = drifted tasks ∪ their `TransitiveDependentsOf` closure. ONE pure,
+  matrix-tested predicate (`SafeSuffixEvaluator`) decides whether `S` forms a safe TRAILING SUFFIX of the
+  plan branch's `--first-parent` `Guardrails-Task:`-trailer history, honoring the **merge-tip caveat**
+  (a fan-in/union commit whose non-first-parent lineage carries a task NOT in `S` is REFUSED -- `git reset
+  --hard` un-integrates that lineage too, but a first-parent walk never sees it). **Floor = HALT, never
+  destroy:** a non-`S` trailer in range, an uncontained merge lineage, OR a trailer-less hand-fix commit in
+  range all refuse. When safe, the harness physically **rewinds the plan branch** (`git reset --hard` to
+  the parent of `S`'s earliest commit -- DESTRUCTIVE on the harness-owned `guardrails/<plan>` branch, never
+  the user's checkout; discarded commits stay reflog-recoverable), journal-resets `S`, and the next wave
+  re-runs it from the clean base -- at the pre-DAG gate, before any segment is forked. **Two consumers, one
+  primitive:** (1) run-time auto-resolve gated by `driftPolicy` (§2, default `"prompt"` = prompt in an
+  interactive TTY / HALT non-interactively; `"reprocess"` or `--reprocess-drift` = auto-resolve no prompt;
+  `"halt"` = strict Part A). (2) manual scoped `guardrails reset <folder> <taskId>...` = the named set ∪
+  descendants; safe ⇒ rewind + reset, unsafe ⇒ REFUSE naming the blocker (use `reset <folder> -y` for the
+  always-sound full rebuild). **Unsafe drift ALWAYS halts under EVERY policy -- no flag authorizes an
+  unsound rewind (spend, not soundness).** An auto-resolved run returns the NORMAL exit code (0/2) + emits
+  `IRunObserver.DriftResolved` and a durable additive top-level `driftResolutions[]` journal section
+  (rewind target + per-task old->new hash); only a declined/refused drift is the exit-2
+  `RunReport.DefinitionDrift`. Serial mode / non-git = no plan branch to carry a stale commit, so both
+  consumers degrade to a sound journal-only reset (no rewind). Unrecognized `driftPolicy` = **GR2031**.
+  **Crash-atomic + CAS:** the rewind + per-task journal-reset are made crash-atomic by a
+  `state/rewind-intent.json` marker (written before `reset --hard`, cleared after both effects persist,
+  replayed idempotently on resume) AND a general resume invariant -- a journal-`succeeded` task whose
+  plan-branch trailer is ABSENT (its commit was rewound off) MUST re-run, never be skipped (closes the lost
+  non-drifted-descendant hole). A **compare-and-swap** on the plan-branch tip guards concurrent same-plan
+  sessions / mid-prompt edits: the Scheduler executes the CLI's CAPTURED authorized plan and re-verifies
+  the tip before rewinding, HALTING (never destroying) on a moved tip or a diverged plan. Attribution reads
+  only a commit's LAST trailer block (git-interpret-trailers), so a `Guardrails-Task:` line in a hand-fix's
+  prose is not mis-attributed. (SSOT §7.2.)
   **Outcome-agnostic by design (issue #190):** resume does NOT distinguish WHY a task is
   `needs-human` -- a rate-limited/timeout/output-cap halt (self-resolving) and a genuine
   `needsHuman`/permission-wall/exhausted-guardrail halt (needs a human fix first) both reset to

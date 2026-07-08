@@ -160,6 +160,15 @@ public sealed record RunReport
 
     /// <summary>True when the run halted on a definition-drift (see <see cref="DefinitionDrift"/>).</summary>
     public bool HasDefinitionDrift => DefinitionDrift is not null;
+
+    /// <summary>
+    /// Non-null when the pre-DAG gate AUTO-RESOLVED a provably-safe definition drift this run (issue #274
+    /// Part C, SSOT §7.2): the plan branch was rewound past the safe drifted suffix and its tasks
+    /// journal-reset to re-run. This is NOT a halt — the run proceeds and returns the normal exit code
+    /// (0 green / 2 needs-human); it carries the audit (rewind target + per-task old→new hash) for the
+    /// end-of-run summary, mirroring the durable <c>driftResolutions[]</c> journal section.
+    /// </summary>
+    public DriftResolution? DriftResolution { get; init; }
 }
 
 /// <summary>
@@ -173,6 +182,23 @@ public sealed record DefinitionDriftReport
 {
     /// <summary>The drifted tasks, in plan order.</summary>
     public required IReadOnlyList<DriftedTask> Tasks { get; init; }
+
+    /// <summary>
+    /// Whether the drift COULD be auto-resolved (issue #274 Part C): <c>true</c> when the drifted set forms
+    /// a provably-safe trailing suffix (so the halt is a policy/consent choice — the operator can re-run
+    /// interactively or with <c>--reprocess-drift</c>); <c>false</c> when the rewind was REFUSED as unsound
+    /// (a non-suffix / uncontained fan-in / trailer-less commit — no flag authorizes it, steer to the full
+    /// <c>reset -y</c> rebuild). Lets the CLI print the RIGHT remediation instead of leading with a flag
+    /// that would just re-halt. Defaults <c>true</c> (the Part A halt, before Part C evaluated safety, is a
+    /// "human decides" halt).
+    /// </summary>
+    public bool SafeToAutoResolve { get; init; } = true;
+
+    /// <summary>When <see cref="SafeToAutoResolve"/> is false, WHY the rewind was refused (the <see cref="SafeSuffixDecision.Refusal"/>); null otherwise.</summary>
+    public string? RewindRefusal { get; init; }
+
+    /// <summary>When <see cref="SafeToAutoResolve"/> is false, the out-of-set task that blocked the rewind (the <see cref="SafeSuffixDecision.BlockingTask"/>); null otherwise.</summary>
+    public string? RewindBlockingTask { get; init; }
 }
 
 /// <summary>One task whose <c>TaskDefinitionHash</c> drifted since its last successful settle (§7.2).</summary>

@@ -307,6 +307,29 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Part C (issue #274, SSOT §7.2): the journal half of a safe-drift resolution — force <paramref name="taskId"/>
+    /// back to <see cref="TaskStatus.Pending"/> so the next wave re-runs it. Delegates to
+    /// <see cref="ResetTask"/> (the ISchedulerJournal seam so the Scheduler can reset without the
+    /// concrete type).
+    /// </summary>
+    public void ResetTaskToPending(string taskId) => ResetTask(taskId);
+
+    /// <summary>
+    /// Part C (issue #274, SSOT §7/§7.2): append <paramref name="resolution"/> to the durable top-level
+    /// <c>driftResolutions[]</c> section and persist. Additive — the section stays absent until the first
+    /// rewind (never <c>null</c> noise).
+    /// </summary>
+    public void RecordDriftResolution(Execution.DriftResolution resolution)
+    {
+        lock (_gate)
+        {
+            var resolutions = new List<Execution.DriftResolution>(_document.DriftResolutions ?? []) { resolution };
+            _document = _document with { DriftResolutions = resolutions };
+            Persist();
+        }
+    }
+
     // --- internals --------------------------------------------------------------------
 
     private TaskJournalEntry GetOrCreate(string taskId)
