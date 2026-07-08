@@ -1196,6 +1196,29 @@ output keeps its full budget), and never (in either mode) when the guardrail out
 attempts (those can still converge). The short-circuit settles the task `needs-human` via the same
 status transition as budget exhaustion; only a non-final attempt takes this path (the final attempt
 already exhausts to `needs-human`).
+
+**Deterministic-script reproduction short-circuit (issue #264) — a SIBLING of the no-op one.** A
+`script` action cannot self-correct between attempts (there is no agent, just fixed bytes), so a
+deterministic script that fails a guardrail-class check reproduces byte-identically every attempt —
+burning the whole retry budget on guaranteed-wasted re-runs before parking `needs-human` (the observed
+`02-vendor-validator` guardrail case and `10-gitignore` write-scope case). The no-op short-circuit above
+does NOT catch this: a script that WROTE FILES is not a no-op (its segment diff is non-empty), so the
+`ActionWasNoOp` half is false and #174 never fires. This sibling fills exactly that gap. It settles
+`needs-human` on the **2nd** guardrail-class-failed attempt when **all** hold: (a) the action is a
+`script`; (b) the run is in **worktree mode** (a real git segment); (c) the action's recorded output —
+`action-stdout.log` + `action-stderr.log` — reproduced **byte-identically** to the previous attempt's;
+AND (d) the guardrail-class failure (a failed guardrail, OR a write-scope violation identified by its
+set of offending paths + git statuses) is **byte-identical** to the previous attempt's. The
+byte-identical **action output** is the load-bearing SAFE trigger: it is positive evidence the script is
+behaving DETERMINISTICALLY, so a re-run is provably pointless. This deliberately preserves the
+flaky/nondeterministic escape hatch — a script that calls a network service, stamps a timestamp, or
+whose guardrail runs a flaky test produces DIFFERENT output (or a different failure) across attempts, so
+condition (c)/(d) fails and it keeps its **full budget** (a retry genuinely might pass). The first
+failure always gets a second attempt (to detect nondeterminism); only the byte-identical *reproduction*
+short-circuits. Scoped to worktree mode because a serial deterministic file-writing script is already a
+no-op under the serial (#182) model above; a serial script that writes a state fragment keeps its full
+budget (the #182 conservative behavior is unchanged). Same `needs-human` transition as budget
+exhaustion.
 - Resume rules (`guardrails run` on an existing journal): `succeeded` → skip;
   `needs-human` / `failed` / `blocked` → `pending` with a fresh retry budget;
   `running` (crashed previous run) → `pending`, attempt numbering continues.
@@ -1380,6 +1403,15 @@ persists its evidence BEFORE the B1 rollback discards the merged bytes (#188): o
 `union-reverify-<guardrail>.stdout.log` per failing integration guardrail (its captured output) plus a
 `feedback.md` describing the collision — the same `feedback.md` the task's needs-human summary points at
 (previously that summary promised a `feedback.md` this path never wrote).
+
+**`feedback.md` header is action-kind aware (issue #264).** The guardrail-failure and write-scope-violation
+`feedback.md` opens with retry guidance chosen by the action kind. A PROMPT action — read by an agent that
+CAN self-correct — gets the agent-oriented header ("Fix the specific problems below. Do NOT start over
+from scratch — keep what already works…"). A `script` action gets a deterministic-action header instead
+("This is a deterministic `script` action — there is no agent to self-correct between attempts…
+the script or its guardrail must be edited to converge"), because re-running unchanged bytes produces the
+identical failure. The concrete failure detail (failed guardrail name + reason + output tail, or the
+offending write-scope paths) is unchanged either way — a human reads the script variant.
 
 `transcript.md` (and each `guardrail-<name>.transcript.md`) is a PURE, DETERMINISTIC projection of
 its `*.jsonl` stream (no model in the loop): assistant prose + `● Tool(args)` + truncated `⎿`

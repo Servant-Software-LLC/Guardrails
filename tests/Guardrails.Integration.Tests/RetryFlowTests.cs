@@ -89,7 +89,9 @@ public sealed class RetryFlowTests
         Assert.True(File.Exists(captured), "attempt 2 did not receive GUARDRAILS_FEEDBACK");
         string feedback = File.ReadAllText(captured);
         Assert.Contains("only 1 run(s) so far; need 2", feedback); // the guardrail's actionable reason
-        Assert.Contains("Do NOT start over", feedback);
+        // 01-flaky is a SCRIPT action, so its guardrail-failure header is the deterministic-script one
+        // (issue #264), not the agent-oriented "Do NOT start over" wording (which is prompt-action only).
+        Assert.Contains("deterministic `script` action", feedback);
 
         // feedback.md persisted in attempt 1's log dir; attempt 2 exists.
         Assert.True(File.Exists(Path.Combine(AttemptDir(plan.PlanDir, "01-flaky", 1), "feedback.md")));

@@ -525,6 +525,16 @@ internal sealed class AttemptJournaler
 /// match across the two attempts before escalating — the loop escalates to needs-human immediately
 /// instead of exhausting the retry budget.
 /// </para>
+/// <para>
+/// #264 (deterministic-script reproduction): the SAME three fields also drive a sibling short-circuit
+/// for a <c>script</c> action that WROTE FILES (so it is not a no-op and #174 never fires) but whose
+/// <see cref="ActionOutputFingerprint"/> reproduced byte-identically across two guardrail-failed
+/// attempts — positive evidence the script is deterministic, so re-running it is provably pointless.
+/// A write-scope violation (a guardrail-class failure raised before the task's own guardrails) sets
+/// <see cref="GuardrailFailureFingerprint"/> to the stable set of offending paths so it participates
+/// too. Scoped to worktree mode; the byte-identical action-output requirement is the
+/// flaky/nondeterministic-script escape hatch.
+/// </para>
 /// </summary>
 internal sealed record AttemptResult(
     TaskResult Result,

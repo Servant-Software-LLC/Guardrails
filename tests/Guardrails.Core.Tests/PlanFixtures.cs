@@ -25,6 +25,25 @@ public static class PlanFixtures
         ]
     };
 
+    /// <summary>A task whose action is a PROMPT (<c>*.prompt.md</c>) rather than a script.</summary>
+    public static TaskNode PromptTask(string id, params string[] dependsOn) => new()
+    {
+        Id = id,
+        Directory = $"/fake/tasks/{id}",
+        Description = $"fixture prompt task {id}",
+        DependsOn = dependsOn,
+        Action = new ActionDefinition { Path = $"/fake/tasks/{id}/action.prompt.md", Kind = ActionKind.Prompt },
+        Guardrails =
+        [
+            new GuardrailDefinition
+            {
+                Name = "01-check",
+                Path = $"/fake/tasks/{id}/guardrails/01-check.sh",
+                Kind = ActionKind.Script
+            }
+        ]
+    };
+
     public static PlanDefinition Plan(params TaskNode[] tasks) => new()
     {
         PlanDirectory = "/fake/plan",

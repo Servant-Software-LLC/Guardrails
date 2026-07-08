@@ -45,6 +45,62 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
+    public void GuardrailFailures_ScriptAction_UsesDeterministicScriptWording_NotAgentWording()
+    {
+        // Issue #264 part 2: a `script` action has NO agent to read this and "fix what failed" — the
+        // agent-oriented "keep what already works / Do NOT start over" header is nonsensical for it.
+        // The feedback must instead say the script (or its guardrail) has to be EDITED to converge.
+        var results = new List<GuardrailResult>
+        {
+            new() { Name = "02-vendored", Passed = false, Reason = "vendored dep is stale" }
+        };
+
+        string feedback = RetryPolicy.ForGuardrailFailures(Task("02-vendor"), attempt: 2, results);
+
+        Assert.Contains("deterministic `script` action", feedback);
+        Assert.Contains("no agent to self-correct", feedback);
+        Assert.Contains("must be", feedback);                              // "the script or its guardrail must be edited"
+        Assert.DoesNotContain("keep what", feedback);                     // agent-oriented header is gone
+        Assert.DoesNotContain("Do NOT start over", feedback);
+        // The concrete failure detail still reaches the reader (a human, here).
+        Assert.Contains("### 02-vendored", feedback);
+        Assert.Contains("vendored dep is stale", feedback);
+    }
+
+    [Fact]
+    public void GuardrailFailures_PromptAction_KeepsAgentOrientedWording()
+    {
+        // Regression guard (#264 must NOT touch prompt-action feedback): a PROMPT action DOES have an
+        // agent that can self-correct, so it keeps the "fix what failed, keep what works" header and
+        // must NOT get the deterministic-script wording.
+        var results = new List<GuardrailResult>
+        {
+            new() { Name = "02-tests", Passed = false, Reason = "3 of 14 tests failed" }
+        };
+
+        string feedback = RetryPolicy.ForGuardrailFailures(PromptTask("07-impl"), attempt: 2, results);
+
+        Assert.Contains("Do NOT start over", feedback);
+        Assert.Contains("keep what", feedback);
+        Assert.DoesNotContain("deterministic `script` action", feedback);
+        Assert.DoesNotContain("no agent to self-correct", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_ScriptAction_UsesDeterministicScriptWording()
+    {
+        // The observed 10-gitignore case is a `script` write-scope violation — its feedback header must
+        // also drop the agent-oriented wording (issue #264).
+        var offenses = new List<WriteScopeOffense> { new() { Path = "outside.txt", Status = 'A' } };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(Task("10-gitignore"), attempt: 2, offenses);
+
+        Assert.Contains("deterministic `script` action", feedback);
+        Assert.DoesNotContain("Do NOT start over", feedback);
+        Assert.Contains("outside.txt", feedback);                          // the concrete offense survives
+    }
+
+    [Fact]
     public void TestsUntouchedFailure_TellsAgentNotToEditTests_AndDropsDoNotBreakLine()
     {
         // issue #51: when tests-untouched fails, the harness has restored the test file to baseline;
