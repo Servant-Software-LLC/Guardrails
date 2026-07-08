@@ -181,6 +181,65 @@ public sealed class WriteScopeCheckTests
     }
 
     // -------------------------------------------------------------------------
+    // Issue #262: a dotfile writeScope must claim its own dotfile edit
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// The exact #262 repro: a task with <c>writeScope: [".gitignore"]</c> that appends lines to the
+    /// workspace-root <c>.gitignore</c> must PASS the check — the single declared scope entry must
+    /// claim the identical diff path. Before the fix, <c>.gitignore</c> normalised to the directory
+    /// glob <c>.gitignore/**</c>, which never matched the FILE <c>.gitignore</c>, so the legitimate
+    /// edit was flagged out-of-scope, reverted, and dead-ended at needs-human after 3 identical
+    /// attempts.
+    /// </summary>
+    [Fact]
+    public void DotfileWriteScope_ClaimsItsOwnDotfileEdit_Issue262()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile(".gitignore", "bin/\nobj/\n", "add base .gitignore");
+        string taskBase = repo.HeadSha();
+
+        // The task declares exactly the dotfile it intends to edit.
+        IReadOnlyList<string> scope = [".gitignore"];
+
+        // The action appends two lines to that same .gitignore — nothing else.
+        repo.CommitFile(".gitignore", "bin/\nobj/\n*.dfd.generated.c4\nnode_modules/\n",
+            "append generated + node_modules to .gitignore");
+
+        var result = WriteScopeCheck.Check(repo.RepoPath, taskBase, scope);
+
+        Assert.True(result.Passed,
+            "A writeScope of ['.gitignore'] must claim an edit to the file '.gitignore' (issue #262)");
+        Assert.Empty(result.OffendingPaths);
+    }
+
+    /// <summary>
+    /// Discrimination guard for the #262 fix: a dotfile writeScope must still FAIL an out-of-scope
+    /// edit to a DIFFERENT file — the literal dotfile arm must not turn the matcher permissive.
+    /// </summary>
+    [Fact]
+    public void DotfileWriteScope_StillFailsUnrelatedOutOfScopeEdit_Issue262()
+    {
+        using var repo = new TempGitRepo();
+        repo.CommitFile(".gitignore", "bin/\n", "add base .gitignore");
+        repo.CommitFile("src/Existing.cs", "// base", "add base source");
+        string taskBase = repo.HeadSha();
+
+        IReadOnlyList<string> scope = [".gitignore"];
+
+        // Edit a file OUTSIDE the declared dotfile scope.
+        repo.CommitFile("src/Existing.cs", "// tampered", "edit an out-of-scope source file");
+
+        var result = WriteScopeCheck.Check(repo.RepoPath, taskBase, scope);
+
+        Assert.False(result.Passed,
+            "A writeScope of ['.gitignore'] must still reject an edit to src/Existing.cs (issue #262)");
+        Assert.Contains(result.OffendingPaths,
+            o => o.Path.Replace('\\', '/').EndsWith("src/Existing.cs", StringComparison.OrdinalIgnoreCase)
+                 && o.Status == 'M');
+    }
+
+    // -------------------------------------------------------------------------
     // Rename: presented as paired D + A (no git -M); both paths must be in scope
     // -------------------------------------------------------------------------
 

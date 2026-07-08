@@ -467,12 +467,23 @@ workspace (**GR2019**, error) and warns on a vacuous/over-broad scope (**GR2020*
 test-author task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES
 the test files, so the check deterministically enforces "the implementation may not write the tests"
 (the replacement for the `captureHashes`/`tests-untouched`/`restoreOnRetry` triad **that this same
-change deletes** — the triad was live on `master`). The matcher (`IsInScope`/`Overlaps`/segment-matcher)
-is specified in full in plan 08 §2.1 (glob grammar, the 27-row truth table) and carries the §2.2
-proof harness (the 27-row table + the two fuzz properties: membership-implies-overlap AND
-`Overlaps`-completeness). It is read-only, so a matcher bug can only false-red or miss-catch ONE
-task's own verdict — never write another task's files; `Overlaps` (the scheduler hint) retains
-cross-task reach and keeps the full fuzz rigor.
+change deletes** — the triad was live on `master`). **Dotfiles (issue #262):** a leading-dot dotfile
+FILE (`.gitignore`, `.npmrc`, `.editorconfig`, `.gitattributes`) is structurally indistinguishable
+from a dotfile DIRECTORY (`.github`) — both are a single leading dot with no interior extension — so
+the bare-directory normalization (`<entry>/**`) would never claim the FILE itself, and a
+`writeScope: [".gitignore"]` editing `.gitignore` was flagged out-of-scope and dead-ended at
+`needs-human`. A bare (no-`*`, no trailing-slash) leading-dot entry therefore also matches its
+**literal path** (exact, `IsInScope`-comparison equality) in ADDITION to the directory expansion: the
+literal arm claims the file when the dotfile is a file, and the `<entry>/**` arm still claims nested
+files when it is a directory. This is inert for a genuine dotfile directory (a bare directory path
+never appears in a file diff) and never over-claims (it demands exact equality — `.gitignore` still
+does NOT match `src/Foo.cs` or `src/.gitignore`). A `*`-bearing entry is unaffected and already
+descends dot-directory segments (`**/*.cs` matches `.github/scripts/foo.cs`). The matcher
+(`IsInScope`/`Overlaps`/segment-matcher) is specified in full in plan 08 §2.1 (glob grammar, the
+27-row truth table) and carries the §2.2 proof harness (the 27-row table + the two fuzz properties:
+membership-implies-overlap AND `Overlaps`-completeness). It is read-only, so a matcher bug can only
+false-red or miss-catch ONE task's own verdict — never write another task's files; `Overlaps` (the
+scheduler hint) retains cross-task reach and keeps the full fuzz rigor.
 
 When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the **post-move**
 surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must

@@ -64,10 +64,38 @@ public static class WriteScope
         string[] pathSegs = path.Split('/');
         foreach (string glob in scope)
         {
+            // #262: a bare (no-'*') entry whose FINAL segment is a leading-dot dotfile — '.gitignore',
+            // '.npmrc', '.editorconfig', '.gitattributes' — is structurally indistinguishable from a
+            // dotfile DIRECTORY like '.github': both are a single leading dot with no interior
+            // extension. Normalize() resolves that ambiguity in favour of DIRECTORY ('<entry>/**'),
+            // which never matches the dotfile FILE itself, so a writeScope of '.gitignore' failed to
+            // claim the file '.gitignore' and every legitimate dotfile edit dead-ended at needs-human.
+            // Match such an entry LITERALLY (exact path equality) in ADDITION to the directory
+            // expansion below: the literal arm claims the file when the dotfile is a file, and the
+            // '<entry>/**' arm still claims nested files when it is a directory. A real file can have
+            // no children, so the extra directory arm is inert (a bare directory path never appears in
+            // a file diff), and the literal arm never over-claims — it demands exact equality.
+            if (MatchesDotfileLiteral(glob, path))
+                return true;
+
             if (MatchPath(Normalize(glob).Split('/'), 0, pathSegs, 0))
                 return true;
         }
         return false;
+    }
+
+    // #262: true when <paramref name="glob"/> is a bare (no-'*', no trailing-slash) entry whose FINAL
+    // segment is a leading-dot dotfile with no interior extension (so Normalize misclassifies it as a
+    // directory), AND <paramref name="path"/> equals it exactly under the matcher's OrdinalIgnoreCase
+    // rule. A dotfile that DOES carry an interior extension ('.env.local') is already normalised as a
+    // file literal by Normalize, so it needs no special arm here.
+    private static bool MatchesDotfileLiteral(string glob, string path)
+    {
+        if (glob.Contains('*') || glob.EndsWith('/')) return false;
+        int lastSlash = glob.LastIndexOf('/');
+        string lastSeg = lastSlash >= 0 ? glob[(lastSlash + 1)..] : glob;
+        if (!lastSeg.StartsWith('.') || HasFileExtension(lastSeg)) return false;
+        return string.Equals(path, glob, Cmp);
     }
 
     /// <summary>Returns true if any path exists that is claimed by both <paramref name="a"/> and <paramref name="b"/>.</summary>
