@@ -68,11 +68,14 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   Both share the same `source-sha256` key. `guardrails graph --check` exits 0 (fresh), 2
   (stale/missing), 1 (load/validate error). See SSOT section 10.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
-  `integrationGate`/`writeScope`/`action`) + one action file + `guardrails/` with >=1 guardrail.
+  `writeScope`/`action`) + one action file + `guardrails/` with >=1 guardrail.
   Zero guardrails = validation error.
-  - `integrationGate: true` (optional, default false) marks the terminal whole-repo integration
-    gate (SSOT section 3.3). Required for any multi-leaf/fan-in plan (GR2017 error if absent);
-    the gate task's guardrails must include >=1 `scope: "integration"` guardrail (GR2018 if not).
+  - `integrationGate: true` as a task kind is **RETIRED** (SSOT section 3.3): the terminal
+    whole-repo integration gate is now the plan-root `<plan>/guardrails/` folder (the Terminal
+    Gate -- see the four-folder bullet above), NOT a sink task. No coexistence window -- a plan
+    that STILL declares `integrationGate: true` is a hard validation error, **GR2029**. The old
+    GR2017 (require exactly one sink) is gone; GR2018's content teeth (a gate must actually re-run
+    >=1 `scope: "integration"` check) are re-homed onto the folder as **GR2028**.
   - `writeScope: ["src/Foo/"]` (optional) drives the deterministic **write-scope CHECK** (SSOT
     section 3.4): after the action, before the task's own guardrails, the harness computes
     `git diff --name-status <taskBase>..<HEAD>` in the segment worktree and asserts every changed
@@ -141,7 +144,8 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   guardrails across the plan (typically the whole-repo build + full test suite). At **every** union
   point (a fan-in or a non-FF plan-branch integration) the harness re-runs, on the merged bytes,
   **the integration set ONLY** -- one set, run uniformly at every union and again on the final merged
-  HEAD by the terminal `integrationGate` sink. There is **no** per-task or per-colliding-sibling
+  HEAD by the terminal `<plan>/guardrails/` folder (the Terminal Gate, SSOT section 3.3). There is
+  **no** per-task or per-colliding-sibling
   guardrail selection at a union in v1: the integration set IS the whole re-verify. (The earlier
   "union task's own set + each colliding sibling's full set + integration set" three-part model was
   **never implemented** -- `ShouldRunAtUnion` had zero callers; SSOT section 4.3 is integration-set-only.)
@@ -192,8 +196,9 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   IMMEDIATELY -- on the **2nd** such attempt, without exhausting the remaining budget -- when **both**
   hold: (a) the action made **no observable change** this attempt (a *genuine no-op*), AND (b) the
   guardrail failure is **byte-identical** to the previous attempt's, which was **also** a no-op. A no-op
-  action cannot fix a guardrail failure it did not cause (e.g. the terminal `integrationGate` no-op
-  against an AI-merge duplicate, #175), and an unchanged failure proves nothing converged -- so a
+  action cannot fix a guardrail failure it did not cause (e.g. a no-op verification task whose guardrail
+  fails on an AI-merge duplicate it never wrote, #175), and an unchanged failure proves nothing
+  converged -- so a
   further attempt has zero probability of differing. **"No observable change" is mode-specific**: in
   **worktree mode** it is exit 0 + no state fragment + no file diff vs `taskBase`; in **serial mode**
   (#182, no `taskBase`) it is exit 0 + no state fragment + the action's **stdout/stderr byte-identical**

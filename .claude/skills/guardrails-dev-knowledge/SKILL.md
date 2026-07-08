@@ -124,7 +124,11 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   (WARNING) = plan missing/stale a `/guardrails-review` marker (#79, SSOT §13) — surfaced
   at the CLI command layer (`PlanValidator.ReviewMarkerDiagnostic`), NOT inside
   `PlanValidator.Validate`. GR2024 (StagingOutputsInvalid) and GR2026 (StaleCoverageToken, the
-  #157 stale-`covers-key-behaviors` warning, SSOT §4.4) are both TAKEN. Next free: GR1010 / GR2027.
+  #157 stale-`covers-key-behaviors` warning, SSOT §4.4) are both TAKEN; **GR2027–GR2030 are now
+  allocated too** — the four-folder/terminal-gate/model block (GR2027 malformed `catches:` in any of
+  the four folders; GR2028 terminal `<plan>/guardrails/` folder missing a real integration-set re-run;
+  GR2029 retired `integrationGate: true` key; GR2030 invalid `model` value — SSOT §3.3/§2). Next free:
+  GR1010 / GR2031.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;
