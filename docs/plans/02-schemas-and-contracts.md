@@ -839,8 +839,11 @@ plan-branch bytes.
 **The atomic settle (state + git + journal as one ordered unit, under the serialize lock).** On
 success, in this FIXED order: (1) deep-merge the task's fragment into `state.json`; (2) `git commit`
 the integration (the FF move for case A, the merge commit for case B) carrying the parseable
-`Guardrails-Task: <taskId>` / `Guardrails-Run: <runId>` trailer — **written on the plain FF'd commit
-as well as on merge commits**, so resume can read FF integrations (§7); (3) consume the
+`Guardrails-Task: <taskId>` / `Guardrails-Run: <runId>` / `Guardrails-Task-Hash: <definitionHash>`
+trailer — **written on the plain FF'd commit as well as on merge commits**, so resume can read FF
+integrations (§7) AND detect whether the task's definition changed since that commit (the
+definition-drift halt, §7.2). The `Guardrails-Task-Hash` line is **omitted when the hash is
+unavailable** (old commits, fake providers) — backward-compatible; (3) consume the
 `mergeSequence` + journal `Succeeded`. The fragment merge precedes the commit so the resume pre-pass
 can never treat a task succeeded-by-commit while its state is missing. Every non-success path is a
 single `git reset --hard preHead` (NOT `merge --abort`, which fails rc=128 on the dirtied-tracked
@@ -1015,6 +1018,10 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     "01-write-greeting-script": {
       "status": "succeeded",        // pending | running | succeeded | needs-human | blocked | failed
       "mergeSequence": 1,
+      "definitionHash": "sha256:…", // task.json + action.* + guardrails/** + preflights/**, stamped at
+                                    // this task's most recent successful settle. Absent on a journal
+                                    // entry predating this field (treated as "unknown — assume
+                                    // unchanged," never forces a halt on upgrade). See §7.2.
       "attempts": [
         {
           "attempt": 1,
@@ -1324,6 +1331,75 @@ command silently switches to that folder and prints one info line
 (`info: resolved plan file → task folder "<folder>"`). When no such sibling folder exists the
 argument is passed through unchanged, so a genuinely bad path still produces the existing
 `GR1001` "Plan folder does not exist" error (issue #16).
+
+### 7.2 Definition-drift halt (issue #274)
+
+Editing an already-`succeeded` task's definition and re-running must not silently reuse the stale cached
+segment. A per-task **`definitionHash`** (§7 wire example above) makes such an edit observable, and on
+resume the harness **halts honestly** — it neither silently reuses the old bytes nor silently re-runs
+the changed task.
+
+**What `definitionHash` covers.** The hash is computed over exactly the files that define one task's
+behavior, in a fixed order: `task.json`; then the resolved **action file** (`TaskNode.Action.Path` — the
+explicit `action.path` when set, else the convention-discovered single `action.*`, §3); then every file
+under `tasks/<id>/guardrails/**` (recursive, sorted by relative path — this already includes each
+deterministic guardrail's `<name>.json` metadata sidecar (§4.1), which lives inside that folder); then
+every file under `tasks/<id>/preflights/**` (recursive, sorted by relative path). It is computed with the
+same discipline as `PlanHash` (§7) — labeled segments, newline-normalized text (so CRLF/LF checkouts hash
+identically), deterministic ordering, `sha256:`-prefixed — but at **task granularity** rather than
+whole-plan.
+
+**Two boundary calls (named, not hand-waved):**
+- **Out of scope — a shared file OUTSIDE the task folder referenced by path in free prose.** If a prompt
+  action names a repo file by path in its instructions, editing that file does NOT change any task's
+  `definitionHash`. No mechanism resolves such free-text path references anywhere in the codebase today;
+  `writeScope` (§3.4), `PlanHash` (§7), and the review marker (§13) all share this identical gap. It is
+  documented here as a **known limitation**, not silently ignored.
+- **Not in the per-task hash, but already covered elsewhere — plan-level `guardrails.json` settings.**
+  `allowedTools`, `maxParallelism`, and `promptRunners.*` are NOT part of any per-task `definitionHash`;
+  they are already inside the whole-plan `PlanHash` (§7), which already sets a plan-hash-mismatch signal
+  on edit. That existing signal is currently **passive** — a mismatch warns loudly but lets the run
+  proceed and reuse — a **narrower instance of the same "warn but reuse" bug class** this section closes
+  at task granularity. Part A does **not** change the pre-existing `PlanHash` signal; the relationship is
+  noted so the two are not confused.
+
+**The `Guardrails-Task-Hash` trailer.** A task's integration commit carries a **third** trailer line,
+`Guardrails-Task-Hash: <definitionHash>`, alongside the existing `Guardrails-Task: <taskId>` /
+`Guardrails-Run: <runId>` (§5.3). Like them it is written on the plain FF'd commit as well as on merge
+commits, so resume can read a task's recorded definition hash straight from the plan branch. It is
+**backward-compatible**: omitted when the hash is unavailable (commits predating this field, fake
+providers).
+
+**The resume pre-pass comparison.** For **every** task the pre-pass is about to mark pre-settled-green —
+whether from the journal (`status == "succeeded"`) OR from the plan-branch `Guardrails-Task-Hash` trailer
+(§6.1) — the harness computes that task's **current** `definitionHash` and compares it to the recorded
+one:
+- **Recorded hash absent** (a journal entry or commit predating this field — i.e. an upgrade): treated as
+  **"unknown — assume unchanged"** → match. Upgrading never forces a re-run storm on an unedited plan.
+- **Match:** resume exactly as today — the task stays green, nothing is scheduled or re-run for it. Zero
+  behavior and zero cost change for the common unedited case.
+- **Mismatch on ANY task:** the harness schedules **nothing** this run. It returns
+  **`RunReport.DefinitionDrift`** — a pre-DAG halt, a sibling of the existing `Abort`/`RunAbort` pattern
+  (§5.3), rendered where `report.Abort` is rendered — with **exit code 2**, the actionable/needs-human
+  bucket (matching the `planPreflights` / `planGuardrails` precedent, §7.1). It is **not** exit 1, which
+  is reserved for genuine infrastructure faults.
+
+**What the halt reports.** `DefinitionDrift` names, for each drifted task, its **old → new short hashes**
+and its **transitive-descendant set** — the full DAG closure
+`DependencyGraph.TransitiveDependentsOf(<taskId>)`. Full closure is the correct and cheap scope: a
+changed producer can change a consumer's inputs; there is no finer per-state-key read contract anywhere
+in the codebase to narrow it; and under the shared-worktree model a descendant already inherited the
+ancestor's bytes as a git ancestor anyway. This set is **reported for the human's decision, not silently
+re-executed** — auto-rerunning a fan-in descendant would fork it from a base that still contains its own
+stale commit as an ancestor (the exact bug, one level down), so auto-invalidation is unsound. That
+soundness limit is **why Part A halts** rather than auto-invalidating.
+
+**The two remediation paths** named in the halt message:
+- **`guardrails reset <folder> -y`** — a full rebuild; works today (after Part B, `reset` tears down the
+  plan branch, §6.1).
+- **`guardrails reset <folder> <taskId>...`** — a future **scoped** reset of only the drifted task(s) and
+  their descendants, valid when the named set proves to be a safe trailing suffix of the plan-branch
+  history. **Planned (Part C, a fast-follow), not yet shipped.**
 
 ---
 
