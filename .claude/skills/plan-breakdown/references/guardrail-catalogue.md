@@ -1279,10 +1279,12 @@ if ($classMatches -gt 1) {
 }
 ```
 
-The harness can only **attribute** this collision at the gate — name the colliding `writeScope` task
-pairs + the shared path on the `needs-human` diagnosis (SSOT §3.3, #175) — it cannot generically detect a
-semantic duplicate (that is the build guardrail's job). The duplicate-definition check is the authoring-
-side **prevention**: it catches the duplicate at the union, before the terminal gate. The deeper fix for
+The harness cannot generically detect a semantic duplicate (that is the build guardrail's job); at the
+terminal gate it can only surface a **HEDGED** structural hint (#272) — it names the colliding `writeScope`
+task pairs + the shared path as a *possibility to verify IF the reported failure detail (the PRIMARY
+signal) looks merge-related*, NOT an assertion a collision occurred, since overlap alone is a **WEAK**
+signal a stub+impl pair produces by design (SSOT §3.3/§3.4, #175/#272). The duplicate-definition check is
+the authoring-side **prevention**: it catches the duplicate at the union, before the terminal gate. The deeper fix for
 the plan-0009 case is the missing DAG edge that trapped the agent into redefining the class at all — see
 the transitive-compilation-dependency rule (plan-breakdown Step 3 / `guardrails-review` §2, #176); the
 duplicate-definition check is the union-side safety net when an overlap is genuinely needed.
