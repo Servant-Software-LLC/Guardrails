@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Loading;
@@ -20,6 +21,20 @@ public sealed class PlanLoader
     private const string PromptExtension = ".prompt.md";
     private const string ActionFilePrefix = "action.";
 
+    /// <summary>
+    /// The wave-directory convention (SSOT §14.1, Open Decision F): <c>wave-</c>, a numeric prefix (group 1,
+    /// load-bearing — drives the strict total order), a hyphen, then a kebab slug (group 2). Anchored.
+    /// </summary>
+    private static readonly Regex WaveDirPattern =
+        new("^wave-([0-9]+)-([a-z0-9-]+)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Plan-root subdirectories that are NOT waves and must not be mistaken for a non-conforming wave dir
+    /// (GR2033). These are the harness/runtime folders that legitimately sit alongside the wave dirs.
+    /// </summary>
+    private static readonly IReadOnlySet<string> KnownPlanRootFolders =
+        new HashSet<string>(StringComparer.Ordinal) { "state", "logs", "guardrails", "preflights", "captured", "tasks" };
+
     /// <summary>Load the plan rooted at <paramref name="planDirectory"/>.</summary>
     public PlanLoadResult Load(string planDirectory)
     {
@@ -39,7 +54,7 @@ public sealed class PlanLoader
             return new PlanLoadResult { Diagnostics = diagnostics };
         }
 
-        IReadOnlyList<TaskNode> tasks = LoadTasks(planDir, diagnostics);
+        LoadTasksOrWaves(planDir, diagnostics, out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves);
 
         // Plan-level preflights/guardrails folders (SSOT §1/§4) sit at the plan ROOT, siblings of
         // tasks/. They reuse the SAME guardrail-file parser as a task's guardrails/ — they differ only
@@ -57,6 +72,7 @@ public sealed class PlanLoader
             PlanDirectory = planDir,
             Config = config,
             Tasks = tasks,
+            Waves = waves,
             Workspace = workspace,
             PlanPreflights = planPreflights,
             PlanGuardrails = planGuardrails
@@ -246,6 +262,282 @@ public sealed class PlanLoader
         };
     }
 
+    // --- layout detection: flat vs waved (SSOT §14.1) ---------------------------------
+
+    /// <summary>
+    /// Detect the plan layout and load its tasks (and waves). A plan is WAVED iff it has NO root
+    /// <c>tasks/</c> AND ≥1 immediate subdirectory matching <see cref="WaveDirPattern"/>; otherwise FLAT
+    /// (SSOT §14.1). MIXED (both a root <c>tasks/</c> and wave dirs) is <see cref="DiagnosticCodes.MixedWaveLayout"/>
+    /// (GR2032) — reported, then loaded as flat so the remaining diagnostics still run (the error blocks the
+    /// run regardless). For a flat plan <paramref name="waves"/> is empty and behaviour is unchanged.
+    /// </summary>
+    private void LoadTasksOrWaves(
+        string planDir, List<Diagnostic> diagnostics,
+        out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves)
+    {
+        bool hasRootTasks = Directory.Exists(Path.Combine(planDir, TasksDirName));
+
+        List<(string Path, string Name)> subdirs = Directory
+            .EnumerateDirectories(planDir)
+            .Select(d => (Path: d, Name: Path.GetFileName(d)))
+            .ToList();
+
+        bool hasWaveDirs = subdirs.Any(s => WaveDirPattern.IsMatch(s.Name));
+
+        if (hasRootTasks && hasWaveDirs)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.MixedWaveLayout, planDir,
+                "Plan has a MIXED layout: both a root 'tasks/' directory and 'wave-*/' subdirectories. A " +
+                "plan is either FLAT (a root 'tasks/') or WAVED (no root 'tasks/', with ordered 'wave-NN-slug/' " +
+                "subdirs) — never both (SSOT §14.1). Remove one layout."));
+            tasks = LoadTasks(planDir, diagnostics); // best-effort so other checks still run; GR2032 blocks the run.
+            waves = [];
+            return;
+        }
+
+        if (!hasWaveDirs)
+        {
+            tasks = LoadTasks(planDir, diagnostics); // FLAT (or neither — LoadTasks reports the missing tasks/).
+            waves = [];
+            return;
+        }
+
+        LoadWaves(planDir, subdirs, diagnostics, out tasks, out waves);
+    }
+
+    /// <summary>
+    /// Load a WAVED plan (SSOT §14). Validates wave numbering (<see cref="DiagnosticCodes.WaveNumbering"/> —
+    /// duplicate <c>NN</c> or a non-conforming sibling dir = error; a numbering gap = warning), loads each
+    /// wave's tasks with WAVE-QUALIFIED ids, then qualifies each task's intra-wave <c>dependsOn</c> and flags
+    /// cross-wave edges (<see cref="DiagnosticCodes.CrossWaveDependency"/>, GR2034). <paramref name="tasks"/>
+    /// is the flattened union of every wave's tasks in strict wave order.
+    /// </summary>
+    private void LoadWaves(
+        string planDir, List<(string Path, string Name)> subdirs, List<Diagnostic> diagnostics,
+        out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves)
+    {
+        // GR2033: a subdirectory alongside the wave dirs that is neither wave-conforming nor a recognised
+        // plan-root folder (a typo'd wave dir like "wave-scaffold" with no number, or a stray "tasks-old/").
+        foreach ((string path, string name) in subdirs)
+        {
+            if (WaveDirPattern.IsMatch(name) || KnownPlanRootFolders.Contains(name) || name.StartsWith('.'))
+            {
+                continue;
+            }
+
+            diagnostics.Add(Error(DiagnosticCodes.WaveNumbering, path,
+                $"Subdirectory '{name}' sits alongside wave directories but does not match the wave-dir " +
+                "pattern '^wave-([0-9]+)-[a-z0-9-]+$' and is not a recognised plan-root folder. Rename it to " +
+                "a conforming 'wave-NN-slug/' or remove it (SSOT §14.1)."));
+        }
+
+        // Parse the conforming wave dirs.
+        var parsed = new List<(string Dir, int Number, string Slug, string Path)>();
+        foreach ((string path, string name) in subdirs)
+        {
+            Match m = WaveDirPattern.Match(name);
+            if (!m.Success)
+            {
+                continue;
+            }
+
+            if (!int.TryParse(m.Groups[1].Value, out int number))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.WaveNumbering, path,
+                    $"Wave directory '{name}' has a numeric prefix that is out of range. Use a small, " +
+                    "unique wave number (SSOT §14.1)."));
+                continue;
+            }
+
+            parsed.Add((name, number, m.Groups[2].Value, path));
+        }
+
+        // GR2033 error: a duplicate wave number makes the strict total order ambiguous.
+        foreach (IGrouping<int, (string Dir, int Number, string Slug, string Path)> grp in
+                 parsed.GroupBy(p => p.Number).Where(g => g.Count() > 1))
+        {
+            string dirs = string.Join(", ", grp.Select(p => p.Dir).OrderBy(d => d, StringComparer.Ordinal));
+            diagnostics.Add(Error(DiagnosticCodes.WaveNumbering, planDir,
+                $"Wave number {grp.Key} is used by more than one wave directory ({dirs}); the numeric prefix " +
+                "drives the strict wave order and must be unique (SSOT §14.1)."));
+        }
+
+        // Strict order: by number, then dir name (ordinal) as a stable tiebreak even on a duplicate number.
+        List<(string Dir, int Number, string Slug, string Path)> ordered =
+            parsed.OrderBy(p => p.Number).ThenBy(p => p.Dir, StringComparer.Ordinal).ToList();
+
+        // GR2033 warning: an internal numbering gap (order stays unambiguous; usually a missing/renamed wave).
+        List<int> distinctNumbers = ordered.Select(p => p.Number).Distinct().OrderBy(n => n).ToList();
+        for (int i = 1; i < distinctNumbers.Count; i++)
+        {
+            if (distinctNumbers[i] != distinctNumbers[i - 1] + 1)
+            {
+                diagnostics.Add(Warning(DiagnosticCodes.WaveNumbering, planDir,
+                    $"Wave numbering has a gap ({distinctNumbers[i - 1]:D2} → {distinctNumbers[i]:D2}); this is " +
+                    "allowed (the order stays unambiguous) but usually indicates a missing or renamed wave (SSOT §14.1)."));
+            }
+        }
+
+        // Load each wave's tasks (wave-qualified ids, authored dependsOn) + its entry/exit gate folders.
+        var waveNodes = new List<WaveNode>();
+        foreach ((string dir, int number, string slug, string path) in ordered)
+        {
+            IReadOnlyList<TaskNode> waveTasks = LoadWaveTasks(path, dir, diagnostics);
+
+            waveNodes.Add(new WaveNode
+            {
+                Dir = dir,
+                Number = number,
+                Slug = slug,
+                Directory = path,
+                Tasks = waveTasks,
+                Preflights = LoadGuardrailsFromFolder(Path.Combine(path, PreflightsDirName), diagnostics, enforceCatches: true),
+                Guardrails = LoadGuardrailsFromFolder(Path.Combine(path, GuardrailsDirName), diagnostics, enforceCatches: true)
+            });
+        }
+
+        // Qualify intra-wave dependsOn + flag cross-wave edges (GR2034). Rebuilds the WaveNodes with the
+        // qualified task edges, then flattens into the whole-plan task list.
+        waves = QualifyWaveDependencies(waveNodes, diagnostics);
+        tasks = waves.SelectMany(w => w.Tasks).ToList();
+
+        if (tasks.Count == 0)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.NoTasks, planDir,
+                "Waved plan has no tasks in any wave; a plan needs at least one task (SSOT §14.1)."));
+        }
+    }
+
+    /// <summary>
+    /// Load one wave's task folders from <c>&lt;waveDir&gt;/tasks/</c> with WAVE-QUALIFIED ids. A wave with
+    /// no <c>tasks/</c> (or an empty one) is a not-yet-authored (JIT) wave — it loads as zero tasks with no
+    /// error (the between-wave runtime checkpoint honest-halts on an unauthored next wave; SSOT §14.4); the
+    /// whole-plan empty check in <see cref="LoadWaves"/> catches a plan with NO tasks anywhere.
+    /// </summary>
+    private IReadOnlyList<TaskNode> LoadWaveTasks(string wavePath, string waveDir, List<Diagnostic> diagnostics)
+    {
+        string tasksDir = Path.Combine(wavePath, TasksDirName);
+        if (!Directory.Exists(tasksDir))
+        {
+            return [];
+        }
+
+        var tasks = new List<TaskNode>();
+        foreach (string taskFolder in Directory
+                     .EnumerateDirectories(tasksDir)
+                     .OrderBy(Path.GetFileName, StringComparer.Ordinal))
+        {
+            TaskNode? task = LoadTask(taskFolder, diagnostics, waveDir);
+            if (task is not null)
+            {
+                tasks.Add(task);
+            }
+        }
+
+        return tasks;
+    }
+
+    /// <summary>
+    /// Qualify each waved task's authored <c>dependsOn</c> (plain sibling names) to the wave-qualified id
+    /// <c>&lt;waveDir&gt;/&lt;name&gt;</c>, and flag cross-wave edges as
+    /// <see cref="DiagnosticCodes.CrossWaveDependency"/> (GR2034, SSOT §14.2). A cross-wave edge — a
+    /// wave-qualified reference to another wave, or a plain name that resolves to a task in a DIFFERENT wave —
+    /// is DROPPED (not added to the qualified list) so it produces no phantom graph edge and no double GR2001.
+    /// An unknown plain name (matching no task anywhere) is qualified to this wave so the validator's GR2001
+    /// unknown-dependency check fires normally.
+    /// </summary>
+    private static IReadOnlyList<WaveNode> QualifyWaveDependencies(
+        IReadOnlyList<WaveNode> waveNodes, List<Diagnostic> diagnostics)
+    {
+        // folderName -> the set of wave dirs that contain a task with that folder name (for cross-wave detection).
+        var folderToWaves = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (WaveNode wave in waveNodes)
+        {
+            foreach (TaskNode task in wave.Tasks)
+            {
+                string folder = FolderNameOf(task);
+                if (!folderToWaves.TryGetValue(folder, out HashSet<string>? set))
+                {
+                    set = new HashSet<string>(StringComparer.Ordinal);
+                    folderToWaves[folder] = set;
+                }
+
+                set.Add(wave.Dir);
+            }
+        }
+
+        var rebuilt = new List<WaveNode>(waveNodes.Count);
+        foreach (WaveNode wave in waveNodes)
+        {
+            var siblings = new HashSet<string>(wave.Tasks.Select(FolderNameOf), StringComparer.Ordinal);
+            var qualifiedTasks = new List<TaskNode>(wave.Tasks.Count);
+
+            foreach (TaskNode task in wave.Tasks)
+            {
+                var qualified = new List<string>();
+                foreach (string authored in task.DependsOn)
+                {
+                    string entry = authored.Trim();
+                    if (entry.StartsWith("./", StringComparison.Ordinal))
+                    {
+                        entry = entry[2..];
+                    }
+
+                    if (entry.Contains('/'))
+                    {
+                        // A wave-qualified reference. Only a SELF-qualified '<thisWave>/<name>' is legal.
+                        string prefix = wave.Dir + "/";
+                        if (entry.StartsWith(prefix, StringComparison.Ordinal) && !entry[prefix.Length..].Contains('/'))
+                        {
+                            qualified.Add(entry); // self-qualified sibling — keep (validator GR2001 if unknown).
+                        }
+                        else
+                        {
+                            diagnostics.Add(Error(DiagnosticCodes.CrossWaveDependency, task.Directory,
+                                $"Task '{task.Id}' dependsOn '{authored}', a cross-wave reference. Cross-wave " +
+                                "ordering is the wave barrier's job, not a task edge — each wave's DAG must be " +
+                                "self-contained (SSOT §14.1/§14.2). dependsOn may only name a sibling in the " +
+                                "SAME wave by its plain folder name."));
+                        }
+
+                        continue;
+                    }
+
+                    if (siblings.Contains(entry))
+                    {
+                        qualified.Add($"{wave.Dir}/{entry}"); // intra-wave sibling — qualify.
+                    }
+                    else if (folderToWaves.TryGetValue(entry, out HashSet<string>? owners) &&
+                             owners.Any(w => !string.Equals(w, wave.Dir, StringComparison.Ordinal)))
+                    {
+                        // A plain name that resolves to a task in another wave — cross-wave (GR2034), drop it.
+                        diagnostics.Add(Error(DiagnosticCodes.CrossWaveDependency, task.Directory,
+                            $"Task '{task.Id}' dependsOn '{authored}', which is not a sibling in this wave but " +
+                            $"names a task in another wave ({string.Join(", ", owners.OrderBy(w => w, StringComparer.Ordinal))}). " +
+                            "Cross-wave ordering is the wave barrier's job, not a task edge (SSOT §14.1/§14.2)."));
+                    }
+                    else
+                    {
+                        // Unknown in this wave and nowhere else — qualify so the validator's GR2001 fires.
+                        qualified.Add($"{wave.Dir}/{entry}");
+                    }
+                }
+
+                qualifiedTasks.Add(task with { DependsOn = qualified });
+            }
+
+            rebuilt.Add(wave with { Tasks = qualifiedTasks });
+        }
+
+        return rebuilt;
+    }
+
+    /// <summary>The task's plain folder name — the segment of a wave-qualified id after the wave dir.</summary>
+    private static string FolderNameOf(TaskNode task) =>
+        task.WaveDir is { } wave && task.Id.StartsWith(wave + "/", StringComparison.Ordinal)
+            ? task.Id[(wave.Length + 1)..]
+            : task.Id;
+
     // --- tasks/* ----------------------------------------------------------------------
 
     private IReadOnlyList<TaskNode> LoadTasks(string planDir, List<Diagnostic> diagnostics)
@@ -285,9 +577,17 @@ public sealed class PlanLoader
         return tasks;
     }
 
-    private TaskNode? LoadTask(string taskFolder, List<Diagnostic> diagnostics)
+    /// <summary>
+    /// Load one task folder. In a FLAT plan <paramref name="waveDir"/> is null and the task id is the
+    /// folder name. In a WAVED plan (SSOT §14.2) <paramref name="waveDir"/> is the owning wave dir and the
+    /// task id is the WAVE-QUALIFIED <c>&lt;waveDir&gt;/&lt;folder&gt;</c>. <c>dependsOn</c> is stored AS
+    /// AUTHORED here (plain sibling names); the caller's <see cref="QualifyWaveDependencies"/> post-pass
+    /// qualifies it intra-wave and flags cross-wave edges (GR2034).
+    /// </summary>
+    private TaskNode? LoadTask(string taskFolder, List<Diagnostic> diagnostics, string? waveDir = null)
     {
-        string taskId = Path.GetFileName(taskFolder);
+        string folderName = Path.GetFileName(taskFolder);
+        string taskId = waveDir is null ? folderName : $"{waveDir}/{folderName}";
         string manifestPath = Path.Combine(taskFolder, TaskManifestName);
 
         if (!File.Exists(manifestPath))
@@ -336,6 +636,7 @@ public sealed class PlanLoader
         return new TaskNode
         {
             Id = taskId,
+            WaveDir = waveDir,
             StableId = string.IsNullOrWhiteSpace(raw.StableId) ? null : raw.StableId.Trim(),
             Directory = taskFolder,
             Description = raw.Description.Trim(),
@@ -784,6 +1085,14 @@ public sealed class PlanLoader
     {
         Code = code,
         Severity = DiagnosticSeverity.Error,
+        Path = path,
+        Message = message
+    };
+
+    private static Diagnostic Warning(string code, string path, string message) => new()
+    {
+        Code = code,
+        Severity = DiagnosticSeverity.Warning,
         Path = path,
         Message = message
     };

@@ -55,6 +55,55 @@ public sealed record JournalDocument
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<Execution.DecisionEntry>? Decisions { get; init; }
+
+    /// <summary>
+    /// OPTIONAL per-wave completion + phase record for a WAVED plan (SSOT §7/§14.5/§14.6), keyed by wave
+    /// dir. Each entry records the wave's completion <see cref="WaveJournalEntry.Status"/>, its
+    /// <c>WaveDefinitionHash</c> at completion (for the wave-drift check on resume, §14.6), and its
+    /// entry/exit phase markers (which mirror <see cref="PlanPreflights"/>/<see cref="PlanGuardrails"/>
+    /// exactly, one instance per wave). Additive and backward-compatible: a FLAT plan OMITS it entirely
+    /// (absent, never <c>null</c> noise), so an older reader ignores it and the <see cref="Tasks"/> shape
+    /// is untouched.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, WaveJournalEntry>? Waves { get; init; }
+}
+
+/// <summary>
+/// One wave's journal record (SSOT §7 <c>waves.&lt;waveDir&gt;</c> / §14.5) — the wave-level analogue of
+/// <see cref="TaskJournalEntry"/>. The entry/exit phase markers reuse the plan-phase section shapes so the
+/// wave gates are byte-identical to the whole-plan phases they mirror (design §14.6 "mirror planPreflights /
+/// planGuardrails exactly").
+/// </summary>
+public sealed record WaveJournalEntry
+{
+    /// <summary>Current wave status (SSOT §14.5).</summary>
+    public required WaveStatus Status { get; init; }
+
+    /// <summary>
+    /// The wave's <c>WaveDefinitionHash</c> (SSOT §7.2/§14.5) stamped when it settled Completed. On resume
+    /// the harness recomputes the current hash and, if it no longer matches, treats a COMPLETED wave as
+    /// drifted (halt/resolve per <c>autonomyPolicy</c>, §14.6). OPTIONAL/additive — an entry predating this
+    /// field omits it (absent ⇒ "unknown — assume unchanged", never forces a re-run storm).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? DefinitionHash { get; init; }
+
+    /// <summary>
+    /// The wave ENTRY preflight phase marker (SSOT §14.6) — the plan-preflight phase scoped to this wave,
+    /// skip-once-per-hash. Reuses <see cref="PlanPreflightsSection"/> (status/planHash/evaluatedAt/checks).
+    /// Absent until the entry gate has run for this wave.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PlanPreflightsSection? Entry { get; init; }
+
+    /// <summary>
+    /// The wave EXIT / terminal gate marker (SSOT §14.6) — the plan-guardrail phase scoped to this wave,
+    /// always re-evaluated on the current HEAD. Reuses <see cref="PlanGuardrailsSection"/>
+    /// (status/planHash/failedChecks). Absent until the exit gate has run for this wave.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PlanGuardrailsSection? Exit { get; init; }
 }
 
 /// <summary>

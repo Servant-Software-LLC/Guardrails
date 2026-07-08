@@ -11,8 +11,25 @@ public sealed record PlanDefinition
     /// <summary>The deserialized run configuration with defaults applied.</summary>
     public required RunConfig Config { get; init; }
 
-    /// <summary>Tasks in folder-name (ordinal) order. Keyed lookups use <see cref="TaskNode.Id"/>.</summary>
+    /// <summary>
+    /// ALL tasks in the plan, in order. For a FLAT plan this is the <c>tasks/</c> folders in folder-name
+    /// (ordinal) order. For a WAVED plan (SSOT §14) it is every wave's tasks FLATTENED in strict wave order
+    /// then task-folder order, each carrying its wave-qualified <see cref="TaskNode.Id"/> — so every
+    /// whole-plan check (unique ids, guardrails present, cross-task state, interpreters) operates over the
+    /// whole plan unchanged. Keyed lookups use <see cref="TaskNode.Id"/>.
+    /// </summary>
     public required IReadOnlyList<TaskNode> Tasks { get; init; }
+
+    /// <summary>
+    /// The plan's waves in strict total order (SSOT §14), or EMPTY for a FLAT plan. When non-empty the plan
+    /// is WAVED (<see cref="IsWaved"/>): its tasks live in <c>&lt;plan&gt;/&lt;waveDir&gt;/tasks/</c> and each
+    /// wave carries its own entry/exit gates. <see cref="Tasks"/> is the flattened union of every wave's
+    /// <see cref="WaveNode.Tasks"/>.
+    /// </summary>
+    public IReadOnlyList<WaveNode> Waves { get; init; } = [];
+
+    /// <summary>True when this is a WAVED plan (has ≥1 wave). Equivalent to <c>Waves.Count &gt; 0</c>.</summary>
+    public bool IsWaved => Waves.Count > 0;
 
     /// <summary>The absolute resolved workspace (cwd for child processes), from <see cref="RunConfig.Workspace"/>.</summary>
     public required string Workspace { get; init; }

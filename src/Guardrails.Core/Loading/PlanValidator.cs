@@ -396,17 +396,30 @@ public sealed class PlanValidator
             return;
         }
 
-        var dependedOn = new HashSet<string>(plan.Tasks.SelectMany(t => t.DependsOn), StringComparer.Ordinal);
-        int leafCount = plan.Tasks.Count(t => !dependedOn.Contains(t.Id));
-        bool hasMultipleLeaves = leafCount >= 2;
-        bool hasFanIn = plan.Tasks.Any(t => t.DependsOn.Count >= 2);
-
-        if (!hasMultipleLeaves && !hasFanIn)
+        // Multi-wave plans (SSOT §3.3/§14.3): GR2028 applies PER WAVE — each multi-leaf/fan-in wave's own
+        // '<wave>/guardrails/' folder must carry ≥1 real integration re-run (the last wave's exit gate is
+        // the whole-plan boundary; the plan-root '<plan>/guardrails/' is optional-additive). A flat plan
+        // keeps the whole-plan check unchanged.
+        if (plan.IsWaved)
         {
-            return; // a single linear chain forms no union — no terminal-gate obligation
+            foreach (WaveNode wave in plan.Waves)
+            {
+                if (RequiresIntegrationGate(wave.Tasks) && !wave.Guardrails.Any(ReRunsIntegrationSet))
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, wave.Directory,
+                        $"Wave '{wave.Dir}' has a parallel topology (≥2 leaf tasks or a fan-in task) but its " +
+                        $"'{wave.Dir}/guardrails/' exit gate carries no deterministic check that re-runs the " +
+                        "integration set. Each such wave's exit gate is a union soundness boundary; an empty " +
+                        "folder — or one holding only a tautological 'exit 0' file — verifies nothing. Add a " +
+                        $"'{wave.Dir}/guardrails/' check that re-runs the whole-repo build / full suite / a " +
+                        "union invariant (SSOT §3.3/§14.3)."));
+                }
+            }
+
+            return;
         }
 
-        if (!plan.PlanGuardrails.Any(ReRunsIntegrationSet))
+        if (RequiresIntegrationGate(plan.Tasks) && !plan.PlanGuardrails.Any(ReRunsIntegrationSet))
         {
             diagnostics.Add(Error(DiagnosticCodes.PlanGuardrailsMissingIntegrationReRun, plan.PlanDirectory,
                 "Plan has a parallel topology (≥2 leaf tasks or a fan-in task) but its terminal " +
@@ -415,6 +428,18 @@ public sealed class PlanValidator
                 "holding only a tautological 'exit 0' file — verifies nothing. Add a '<plan>/guardrails/' " +
                 "check that re-runs the whole-repo build / full suite / a union invariant (SSOT §3.3)."));
         }
+    }
+
+    /// <summary>
+    /// True when a task set forms a UNION that needs a terminal integration re-run (GR2028): ≥2 leaf tasks
+    /// (no dependents within the set) or any fan-in task (≥2 upstreams). A single linear chain forms no
+    /// union and is exempt. Shared by the whole-plan (flat) and per-wave (SSOT §14.3) checks.
+    /// </summary>
+    private static bool RequiresIntegrationGate(IReadOnlyList<TaskNode> tasks)
+    {
+        var dependedOn = new HashSet<string>(tasks.SelectMany(t => t.DependsOn), StringComparer.Ordinal);
+        int leafCount = tasks.Count(t => !dependedOn.Contains(t.Id));
+        return leafCount >= 2 || tasks.Any(t => t.DependsOn.Count >= 2);
     }
 
     /// <summary>
@@ -824,6 +849,17 @@ public sealed class PlanValidator
         var taskIds = new HashSet<string>(plan.Tasks.Select(t => t.Id), StringComparer.Ordinal);
         var seedKeys = ReadSeedTopLevelKeys(plan.PlanDirectory);
 
+        // Wave-aware branch (SSOT §14.2, GR2022): in a waved plan a cross-task state read whose producer is
+        // in an EARLIER wave is satisfied by the wave barrier (the earlier wave provably ran first); a
+        // SAME-wave read still needs the dependsOn ancestor (the existing rule); a LATER-wave read is an
+        // error (not yet produced). Flat plans have no waves → all these maps are empty and the branch is inert.
+        var tasksById = plan.Tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
+        var waveOrdinal = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (int i = 0; i < plan.Waves.Count; i++)
+        {
+            waveOrdinal[plan.Waves[i].Dir] = i;
+        }
+
         foreach (TaskNode task in plan.Tasks)
         {
             IReadOnlySet<string> ancestors = graph.TransitiveDependenciesOf(task.Id);
@@ -865,6 +901,30 @@ public sealed class PlanValidator
                 // satisfiable (the task writes its own namespace).
                 if (!taskIds.Contains(referencedId) || referencedId == task.Id)
                 {
+                    continue;
+                }
+
+                // Wave-aware branch (SSOT §14.2): a cross-WAVE read is governed by the barrier, not a
+                // dependsOn edge (which cannot cross waves, GR2034). An earlier-wave producer is satisfied;
+                // a later-wave producer is a hard error (not yet run when this task reads it).
+                if (task.WaveDir is { } myWave && tasksById.TryGetValue(referencedId, out TaskNode? producer) &&
+                    producer.WaveDir is { } refWave && !string.Equals(refWave, myWave, StringComparison.Ordinal))
+                {
+                    if (waveOrdinal.TryGetValue(refWave, out int refOrd) &&
+                        waveOrdinal.TryGetValue(myWave, out int myOrd) && refOrd < myOrd)
+                    {
+                        continue; // earlier wave — satisfied by the barrier (SSOT §14.2).
+                    }
+
+                    if (!reported.Add(referencedId))
+                    {
+                        continue;
+                    }
+
+                    diagnostics.Add(Error(DiagnosticCodes.CrossTaskStateReferenceWithoutDependency, bodyPath,
+                        $"Task '{task.Id}' reads state key '{referencedId}', produced by a task in a LATER wave " +
+                        $"('{refWave}') that has not run yet when this task runs. A wave never reads a later " +
+                        "wave's output — reorder the producing task into this wave or an earlier one (SSOT §14.2)."));
                     continue;
                 }
 

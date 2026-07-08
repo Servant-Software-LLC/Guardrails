@@ -5,8 +5,24 @@ namespace Guardrails.Core.Model;
 /// </summary>
 public sealed record TaskNode
 {
-    /// <summary>Task id = the task folder name (kebab-case, e.g. "01-write-greeting-script").</summary>
+    /// <summary>
+    /// The task's canonical id. In a FLAT plan this is the task folder name (kebab-case, e.g.
+    /// "01-write-greeting-script"). In a WAVED plan (SSOT §14.2) it is the WAVE-QUALIFIED id
+    /// <c>&lt;waveDir&gt;/&lt;taskFolder&gt;</c> (e.g. "wave-02-provision/01-author-tests"), so two waves
+    /// may each reuse <c>01-</c> numbering without colliding. This id is the journal <c>tasks{}</c> key,
+    /// the <c>Guardrails-Task:</c> trailer value, AND the §6.2 single-writer state-fragment key — a
+    /// fragment's top-level key must equal this exact id (a bare, non-qualified key from another wave is
+    /// rejected as foreign, #164/§14.2).
+    /// </summary>
     public required string Id { get; init; }
+
+    /// <summary>
+    /// The wave directory this task belongs to in a WAVED plan (e.g. "wave-02-provision"), or null for a
+    /// FLAT plan (SSOT §14.2). When non-null, <see cref="Id"/> is <c>{WaveDir}/{folderName}</c>. Used to
+    /// scope <c>dependsOn</c> to the wave (GR2034) and to give the GR2022 cross-wave state-read lint its
+    /// wave-aware branch (earlier-wave read satisfied by the barrier; later-wave read is an error).
+    /// </summary>
+    public string? WaveDir { get; init; }
 
     /// <summary>
     /// Optional stable identity that survives renumbering/slug edits across regenerations

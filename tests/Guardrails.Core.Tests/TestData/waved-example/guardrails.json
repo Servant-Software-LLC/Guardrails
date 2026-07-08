@@ -1,0 +1,8 @@
+{
+  // A minimal WAVED plan (SSOT §14) used to validate the nested-layout path end-to-end.
+  // Two waves in strict order; maxParallelism 1 keeps validation serial (no git workspace required).
+  "version": 1,
+  "maxParallelism": 1,
+  "defaultRetries": 0,
+  "workspace": ".."
+}

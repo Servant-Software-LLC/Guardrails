@@ -33,7 +33,7 @@ public static class RunCommand
 
         var dryRunOption = new Option<bool>("--dry-run")
         {
-            Description = "Validate and preview waves + per-task resolution + resume skips, then exit 0 without running or touching state."
+            Description = "Validate and preview tiers + per-task resolution + resume skips, then exit 0 without running or touching state."
         };
 
         var noLogServerOption = new Option<bool>("--no-log-server")
@@ -131,6 +131,26 @@ public static class RunCommand
         {
             PlanProbe.PrintDiagnostics(probe.Diagnostics, io.Out);
             io.Out.WriteLine("\nValidation failed; nothing was run.");
+            return ExitCodes.HarnessError;
+        }
+
+        // Multi-wave EXECUTION is staged (M2 v1, SSOT §14). The waved loader/validator, wave-qualified
+        // identity, WaveDefinitionHash, and the journal waves[] schema all landed and are exercised by
+        // `validate`; but the wave-execution LOOP (a continuous plan branch across waves, per-wave
+        // entry/exit gates, the Guardrails-Wave: marker commit, cross-wave resume, and wave-drift
+        // resolution) requires the Scheduler/journal refactor called out in the design (§14.4, C1/C2) and
+        // lands as its own reviewed slice. Running a waved plan through the flat DAG now would IGNORE the
+        // wave barriers (later-wave tasks would race earlier waves) — silently wrong — so the harness
+        // refuses HONESTLY rather than run it incorrectly (honest-halt, invariant #5).
+        if (probe.Plan.IsWaved)
+        {
+            io.Out.WriteLine(
+                $"'{Path.GetFileName(probe.Plan.PlanDirectory)}' is a WAVED plan ({probe.Plan.Waves.Count} wave(s): " +
+                $"{string.Join(", ", probe.Plan.Waves.Select(w => w.Dir))}).");
+            io.Out.WriteLine(
+                "Multi-wave EXECUTION is not yet wired (SSOT §14). The waved plan VALIDATES, but running it " +
+                "would ignore the wave barriers, so the harness refuses rather than run it incorrectly. Use " +
+                "'guardrails validate' to check a waved plan; wave execution lands in the follow-up slice.");
             return ExitCodes.HarnessError;
         }
 

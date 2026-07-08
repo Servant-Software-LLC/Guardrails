@@ -62,7 +62,37 @@ public static class JournalJson
         options.Converters.Add(new TaskStatusConverter());
         options.Converters.Add(new AttemptOutcomeConverter());
         options.Converters.Add(new PlanPhaseStatusConverter());
+        options.Converters.Add(new WaveStatusConverter());
         return options;
+    }
+
+    /// <summary>Maps <see cref="WaveStatus"/> to/from the SSOT §7/§14 wave status strings.</summary>
+    private sealed class WaveStatusConverter : JsonConverter<WaveStatus>
+    {
+        public override WaveStatus Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            string? value = reader.GetString();
+            return value switch
+            {
+                "pending" => WaveStatus.Pending,
+                "running" => WaveStatus.Running,
+                "completed" => WaveStatus.Completed,
+                "needs-human" => WaveStatus.NeedsHuman,
+                "blocked" => WaveStatus.Blocked,
+                _ => throw new JsonException($"Unknown wave status '{value}'.")
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, WaveStatus value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value switch
+            {
+                WaveStatus.Pending => "pending",
+                WaveStatus.Running => "running",
+                WaveStatus.Completed => "completed",
+                WaveStatus.NeedsHuman => "needs-human",
+                WaveStatus.Blocked => "blocked",
+                _ => throw new JsonException($"Unhandled wave status '{value}'.")
+            });
     }
 
     /// <summary>Maps <see cref="TaskStatus"/> to/from the SSOT §7 status strings.</summary>
