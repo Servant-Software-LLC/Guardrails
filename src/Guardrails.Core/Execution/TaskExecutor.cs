@@ -663,26 +663,22 @@ public sealed class TaskExecutor : ITaskExecutor
             // the partial work is "preserved on disk"; it discloses the reset and instructs re-authoring.
             // Same signal #162 uses, computed here because this feedback is composed in BOTH modes
             // (unlike the state-rejection path, which only runs in worktree mode).
-            bool fileWritesRolledBack = WorktreeWillReset(worktree, isFinal);
-
-            // #195 retry salvage: for the two NON-LOGIC budget-exhaustion outcomes — max-turns and
-            // output-cap — preserve this about-to-be-rolled-back attempt's full working-tree state to an
-            // inspectable git ref BEFORE the F2 reset discards it, then tell the NEXT attempt's feedback
-            // where to find it. Deliberately excludes timeout (a generic budget signal, not scoped by the
-            // issue) and NEVER runs on the separate guardrail-failure branch below (its own feedback is
-            // ForGuardrailFailures, which this method never calls) — the scope guard is structural: a
-            // guardrail-class failure simply never reaches this call site. No-op (returns null) unless
-            // ALL of: worktree mode, config opt-in, non-final, and a real rollback is about to happen.
-            SalvageRef? salvageRef = fileWritesRolledBack
-                ? TryPreserveForSalvage(task, worktree, attemptNumber, action.FailureKind)
-                : null;
+            // #306 retry salvage: STASH this about-to-be-rolled-back attempt's full working tree to a git
+            // ref + applyable patch BEFORE the F2 reset discards it, then tell the NEXT attempt's feedback
+            // where to find it. #306 supersedes #195's scope guard (which restricted salvage to
+            // max-turns/output-cap): salvage now fires for EVERY non-final worktree failure kind here —
+            // timeout and generic action failures included — because the agent, not the harness, decides
+            // how much to reuse. No-op (null) unless ALL of: worktree mode, config opt-in, non-final, and
+            // the attempt actually changed something.
+            (bool fileWritesRolledBack, SalvageRef? salvageRef) =
+                StashIfRollingBack(task, worktree, attemptNumber, isFinal);
 
             string feedback = action.FailureKind switch
             {
-                PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber, salvageRef),
+                PromptFailureKind.OutputCap => RetryPolicy.ForOutputCapExceeded(task, attemptNumber, salvageRef, fileWritesRolledBack),
                 PromptFailureKind.MaxTurns => RetryPolicy.ForMaxTurnsExceeded(task, attemptNumber, fileWritesRolledBack, salvageRef),
-                PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber, fileWritesRolledBack),
-                _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult())
+                PromptFailureKind.Timeout => RetryPolicy.ForTimeout(task, attemptNumber, fileWritesRolledBack, salvageRef),
+                _ => action.FailureFeedback ?? RetryPolicy.ForActionFailure(task, attemptNumber, action.AsProcessResult(), fileWritesRolledBack, salvageRef)
             };
 
             AttemptOutcome attemptOutcome = action.FailureKind switch
@@ -724,8 +720,11 @@ public sealed class TaskExecutor : ITaskExecutor
             StagingMoveResult moveResult = StagingMover.Move(stagingDir, effectiveWorkspace, stagingEntries);
             if (!moveResult.Succeeded)
             {
+                (bool fileWritesRolledBack, SalvageRef? salvageRef) =
+                    StashIfRollingBack(task, worktree, attemptNumber, isFinal);
                 string feedback = RetryPolicy.ForStagingFailure(
-                    task, attemptNumber, moveResult.FailureReason ?? "the staging move did not complete");
+                    task, attemptNumber, moveResult.FailureReason ?? "the staging move did not complete",
+                    fileWritesRolledBack, salvageRef);
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     AttemptOutcome.GuardrailFailed,
@@ -763,9 +762,11 @@ public sealed class TaskExecutor : ITaskExecutor
 
             if (!writeOutcome.Succeeded)
             {
+                (bool fileWritesRolledBack, SalvageRef? salvageRef) =
+                    StashIfRollingBack(task, worktree, attemptNumber, isFinal);
                 string feedback = writeOutcome.WasRejected
-                    ? RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!)
-                    : RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!);
+                    ? RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef)
+                    : RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef);
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     AttemptOutcome.GuardrailFailed,
@@ -800,8 +801,15 @@ public sealed class TaskExecutor : ITaskExecutor
                 // Scoped revert: restore only the out-of-scope paths to taskBase state.
                 WriteScopeCheck.ScopedRevert(worktree.WorktreePath, worktree.TaskBase, scopeCheck.OffendingPaths);
 
+                // #306: STASH the (now out-of-scope-reverted) attempt so the retry can recover the good
+                // IN-SCOPE work instead of re-authoring — and so the feedback stops falsely claiming the
+                // in-scope changes "are preserved" when the F2 reset is about to discard them too.
+                (bool fileWritesRolledBack, SalvageRef? salvageRef) =
+                    StashIfRollingBack(task, worktree, attemptNumber, isFinal);
+
                 string offendingList = string.Join(", ", scopeCheck.OffendingPaths.Select(o => o.Path));
-                string feedback = RetryPolicy.ForWriteScopeViolation(task, attemptNumber, scopeCheck.OffendingPaths);
+                string feedback = RetryPolicy.ForWriteScopeViolation(
+                    task, attemptNumber, scopeCheck.OffendingPaths, fileWritesRolledBack, salvageRef);
                 AttemptResult scopeFailure = _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     AttemptOutcome.GuardrailFailed,
@@ -845,7 +853,13 @@ public sealed class TaskExecutor : ITaskExecutor
         if (guardrails.AnyFailed)
         {
             IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
-            string feedback = RetryPolicy.ForGuardrailFailures(task, attemptNumber, guardrails.Results);
+            // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
+            // path) so the retry gets the artifact back + per-guardrail verdicts, not just a summary. The
+            // clean reset is still the default base; the agent chooses how much to reuse.
+            (bool fileWritesRolledBack, SalvageRef? salvageRef) =
+                StashIfRollingBack(task, worktree, attemptNumber, isFinal);
+            string feedback = RetryPolicy.ForGuardrailFailures(
+                task, attemptNumber, guardrails.Results, fileWritesRolledBack, salvageRef);
             AttemptResult failedResult = _journaler.FailedAttempt(
                 task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                 guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
@@ -922,26 +936,44 @@ public sealed class TaskExecutor : ITaskExecutor
         !isFinal && IsRealGitSegment(worktree);
 
     /// <summary>
-    /// Retry salvage (issue #195): commit the about-to-be-rolled-back attempt's working tree to
-    /// <c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c> and compute a <c>git diff --stat</c> summary
-    /// against <c>taskBase</c>, so the NEXT attempt's feedback can name it. Scoped to the two NON-LOGIC
-    /// budget-exhaustion outcomes (<see cref="PromptFailureKind.MaxTurns"/> / <see cref="PromptFailureKind.OutputCap"/>)
-    /// — the issue's own scope guard: a <c>guardrail-failed</c> attempt's code may be genuinely WRONG, so
-    /// it is never silently preserved by this path (guardrail failures compose their own feedback
-    /// elsewhere and do not call this method at all). Returns null (no salvage) when
-    /// <see cref="RunConfig.PreserveAttemptsForSalvage"/> is off, the failure kind is not one of the two
-    /// above, or the git operations fail for any reason — salvage is a best-effort convenience, never a
-    /// reason to fail the attempt or change the rollback that already happens unconditionally.
+    /// (bool RolledBack, SalvageRef?) for a failed attempt about to be handed to a feedback composer
+    /// (issue #306). <c>RolledBack</c> is <see cref="WorktreeWillReset"/> — the single failure-kind-agnostic
+    /// signal that this non-final worktree attempt's file writes are about to be discarded by the F2 reset.
+    /// When true, the attempt's work is STASHED to a salvage ref + patch (best-effort) so the retry can
+    /// recover it; when false (serial mode / the final attempt), there is no reset and nothing to stash.
+    /// Called at EVERY failure return site so the composed feedback's rollback/salvage disposition always
+    /// matches what actually happens to the tree.
     /// </summary>
-    private SalvageRef? TryPreserveForSalvage(
-        TaskNode task, WorktreeHandle worktree, int attemptNumber, PromptFailureKind failureKind)
+    private (bool RolledBack, SalvageRef? Salvage) StashIfRollingBack(
+        TaskNode task, WorktreeHandle worktree, int attemptNumber, bool isFinal)
+    {
+        bool rollingBack = WorktreeWillReset(worktree, isFinal);
+        return (rollingBack, rollingBack ? TryStashFailedAttempt(task, worktree, attemptNumber) : null);
+    }
+
+    /// <summary>
+    /// Retry salvage (issues #195 / #306): STASH the about-to-be-rolled-back attempt's full working tree
+    /// to <c>refs/guardrails/&lt;taskId&gt;/attempt-&lt;N&gt;</c> (via <see cref="GitWorktreeProvider.PreserveAttemptToRef"/>,
+    /// a throwaway-index side-channel snapshot — never a real commit on the segment branch), then compute a
+    /// <c>git diff --stat</c> summary and write a directly-applyable full patch into the attempt's log dir,
+    /// so the NEXT attempt's feedback can offer the agent all/some/none of the work.
+    /// <para>
+    /// Issue #306 makes this <b>failure-kind-agnostic</b>: it fires for EVERY non-final worktree failure
+    /// (guardrail-fail, action-fail, timeout, max-turns, output-cap, write-scope, …), superseding #195's
+    /// scope guard that restricted preservation to <c>max-turns</c>/<c>output-cap</c>. The clean-slate reset
+    /// to <c>taskBase</c> remains the DEFAULT starting point (this does NOT resurrect the work on disk); the
+    /// stash is opt-in for the agent, and the per-guardrail verdicts tell it how much already passes. A
+    /// guardrail-failed attempt's code may be partly wrong, but the agent — not the harness — decides how
+    /// much to reuse, exactly the issue's intent.
+    /// </para>
+    /// Returns null (no salvage exposed) when <see cref="RunConfig.PreserveAttemptsForSalvage"/> is off, the
+    /// attempt was a genuine no-op (empty diff vs <c>taskBase</c> — nothing to salvage), or any git/IO step
+    /// fails — salvage is a best-effort convenience, never a reason to fail the attempt or change the F2
+    /// reset that happens unconditionally regardless.
+    /// </summary>
+    private SalvageRef? TryStashFailedAttempt(TaskNode task, WorktreeHandle worktree, int attemptNumber)
     {
         if (!_plan.Config.PreserveAttemptsForSalvage)
-        {
-            return null;
-        }
-
-        if (failureKind is not (PromptFailureKind.MaxTurns or PromptFailureKind.OutputCap))
         {
             return null;
         }
@@ -951,12 +983,23 @@ public sealed class TaskExecutor : ITaskExecutor
         {
             GitWorktreeProvider.PreserveAttemptToRef(worktree.WorktreePath, refName);
             string diffStat = GitWorktreeProvider.DiffStatAgainstBase(worktree.WorktreePath, worktree.TaskBase, refName);
-            return new SalvageRef(refName, diffStat, attemptNumber);
+            string patch = GitWorktreeProvider.DiffAgainstBase(worktree.WorktreePath, worktree.TaskBase, refName);
+
+            // A genuine no-op attempt (nothing changed vs taskBase) has nothing to salvage — do not offer
+            // a misleading "recover your work" section for an empty diff. The (empty) ref is harmless and
+            // pruned on settle/--fresh like any other.
+            if (string.IsNullOrWhiteSpace(diffStat) && string.IsNullOrEmpty(patch))
+            {
+                return null;
+            }
+
+            string? patchPath = AttemptArtifacts.WriteSalvagePatch(AttemptLogDir(task.Id, attemptNumber), patch);
+            return new SalvageRef(refName, diffStat, attemptNumber, patchPath);
         }
         catch (InvalidOperationException)
         {
             // Best-effort: a preservation failure must never fail the attempt or block the existing
-            // rollback — the retry proceeds exactly as it would have before #195.
+            // rollback — the retry proceeds exactly as it would have before salvage existed.
             return null;
         }
     }

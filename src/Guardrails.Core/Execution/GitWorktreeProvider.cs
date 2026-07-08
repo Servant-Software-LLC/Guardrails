@@ -1024,6 +1024,27 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
+    /// A full, applyable unified-diff patch of <paramref name="refName"/> against
+    /// <paramref name="taskBase"/> (issue #306) — the exact bytes a retry agent can <c>git apply</c> from
+    /// the clean segment (which the F2 reset restores to <paramref name="taskBase"/>) to recover ALL of a
+    /// rolled-back attempt's work, or read to cherry-pick by hand. Uses <c>--binary</c> so a binary change
+    /// is still applyable, and <c>--no-color</c> so the patch is never polluted by a user's
+    /// <c>color.diff=always</c> git config. Returns an empty string (never throws) when the ref is missing
+    /// or the diff otherwise fails, so a best-effort feedback composer degrades gracefully.
+    /// </summary>
+    public static string DiffAgainstBase(string worktreePath, string taskBase, string refName)
+    {
+        try
+        {
+            return GitIn(worktreePath, "diff", "--binary", "--no-color", taskBase, refName);
+        }
+        catch (InvalidOperationException)
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
     /// Retry-salvage pruning (issue #195, deliverable 6): delete every preserved salvage ref for
     /// <paramref name="taskId"/> (<c>refs/guardrails/&lt;taskId&gt;/attempt-*</c>) — called on task
     /// settle-succeeded and on a full <c>--fresh</c> reset, alongside the existing stale-branch pruning,

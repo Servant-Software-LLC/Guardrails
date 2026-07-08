@@ -26,7 +26,7 @@ public sealed class RetryPolicyTests
     }
 
     [Fact]
-    public void GuardrailFailures_NameEachFailureWithReason_AndListPassed()
+    public void GuardrailFailures_NameEachFailureWithReason_AndPerGuardrailVerdictLedger()
     {
         var results = new List<GuardrailResult>
         {
@@ -41,7 +41,187 @@ public sealed class RetryPolicyTests
         Assert.Contains("3 of 14 tests failed", feedback);
         Assert.Contains("### 03-lint", feedback);
         Assert.Contains("no reason printed", feedback);
-        Assert.Contains("PASSED (do not break these): 01-build", feedback);
+        // #306 per-guardrail verdict ledger: every guardrail marked pass/fail so the agent knows how
+        // much already passes and can make a targeted fix, not a re-derive.
+        Assert.Contains("## Prior attempt: guardrail verdicts", feedback);
+        Assert.Contains("- ✅ 01-build", feedback);
+        Assert.Contains("- ❌ 02-tests — 3 of 14 tests failed", feedback);
+        Assert.Contains("- ❌ 03-lint — guardrail failed (no reason printed)", feedback);
+        Assert.Contains("do not break them", feedback);
+    }
+
+    // ── #306 incremental retry: stash the failed guardrail attempt + per-guardrail verdicts ──────────
+
+    [Fact]
+    public void GuardrailFailures_WhenRolledBackWithSalvage_HeaderSaysSaved_AndOffersStash()
+    {
+        // #306: a guardrail-failed non-final worktree attempt is now STASHED (superseding #195's
+        // exclusion of the guardrail path). The header must promise recovery (not a false "keep what
+        // already works" while the tree was discarded), and the salvage section must expose the patch +
+        // ref so the agent can pull all/some/none.
+        var results = new List<GuardrailResult>
+        {
+            new() { Name = "01-imports-clean", Passed = true },
+            new() { Name = "02-tests-fail-on-stubs", Passed = true },
+            new() { Name = "03-covers-key-behaviors", Passed = false, Reason = "add a test referencing `ingress`" }
+        };
+        var salvage = new SalvageRef(
+            "refs/guardrails/10-author-tests/attempt-1", " tests/foo.test.ts | 30 +++",
+            Attempt: 1, PatchPath: "/plan/logs/run/10-author-tests/attempt-1/prior-attempt.patch");
+
+        string feedback = RetryPolicy.ForGuardrailFailures(
+            PromptTask("10-author-tests"), attempt: 2, results, fileWritesRolledBack: true, salvageRef: salvage);
+
+        // Header is truthful: work was SAVED, recover it — NOT the bare "keep what already works" claim.
+        Assert.Contains("was SAVED, not lost", feedback);
+        Assert.DoesNotContain("keep what", feedback);
+        // The stash is exposed directly as an applyable patch AND a per-file ref (all/some/none).
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("git apply \"/plan/logs/run/10-author-tests/attempt-1/prior-attempt.patch\"", feedback);
+        Assert.Contains("git checkout refs/guardrails/10-author-tests/attempt-1 -- <path>", feedback);
+        // The per-guardrail verdicts tell it exactly what already passes.
+        Assert.Contains("- ✅ 01-imports-clean", feedback);
+        Assert.Contains("- ✅ 02-tests-fail-on-stubs", feedback);
+        Assert.Contains("- ❌ 03-covers-key-behaviors — add a test referencing `ingress`", feedback);
+    }
+
+    [Fact]
+    public void GuardrailFailures_WhenRolledBackWithoutSalvage_HeaderIsHonestlyNotRecoverable()
+    {
+        // The #167 gap: on the guardrail-fail path, a worktree rollback with NO stash (salvage disabled)
+        // must NOT claim "keep what already works" — it must honestly say the writes are gone.
+        var results = new List<GuardrailResult>
+        {
+            new() { Name = "01-build", Passed = true },
+            new() { Name = "02-tests", Passed = false, Reason = "1 failed" }
+        };
+
+        string feedback = RetryPolicy.ForGuardrailFailures(
+            PromptTask("07-impl"), attempt: 2, results, fileWritesRolledBack: true, salvageRef: null);
+
+        Assert.Contains("rolled back to a clean base and are NOT", feedback);
+        Assert.Contains("Re-author from scratch", feedback);
+        Assert.DoesNotContain("keep what", feedback);            // the false claim is gone
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+        // Verdicts still reach the agent even without a stash.
+        Assert.Contains("- ✅ 01-build", feedback);
+        Assert.Contains("- ❌ 02-tests — 1 failed", feedback);
+    }
+
+    [Fact]
+    public void GuardrailFailures_TestsUntouched_NeverOffersSalvage_EvenWhenStashed()
+    {
+        // A tests-untouched failure means the agent gamed the tests; the harness restored them. Salvaging
+        // would re-introduce the gamed edits, so the stash must NOT be offered even if one was captured —
+        // the dedicated "Do NOT edit the test file(s)" block is authoritative.
+        var results = new List<GuardrailResult>
+        {
+            new() { Name = "02-tests-pass", Passed = true },
+            new() { Name = "03-tests-untouched", Passed = false, Reason = "Foo.test.ts modified" }
+        };
+        var salvage = new SalvageRef("refs/guardrails/07-impl/attempt-1", " x | 1 +", Attempt: 1, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForGuardrailFailures(
+            PromptTask("07-impl"), attempt: 2, results, fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("Do NOT edit the test file", feedback);
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+        Assert.DoesNotContain("git apply", feedback);
+        Assert.DoesNotContain("was SAVED, not lost", feedback);   // header not switched to salvage wording
+    }
+
+    [Fact]
+    public void ActionFailure_WhenRolledBackWithSalvage_OffersStash_AndHeaderSaysSaved()
+    {
+        var action = new ProcessResult
+        {
+            ExitCode = 1, StandardOutput = "", StandardError = "boom", TimedOut = false, Duration = TimeSpan.Zero
+        };
+        var salvage = new SalvageRef("refs/guardrails/05-x/attempt-1", " a.cs | 3 +", Attempt: 1, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForActionFailure(
+            Task("05-x"), attempt: 2, action, fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("exited with code 1", feedback);
+        Assert.Contains("was SAVED, not lost", feedback);
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("git apply \"/p.patch\"", feedback);
+        Assert.DoesNotContain("Do NOT start over", feedback);      // the #167-gap wording is gone here too
+    }
+
+    [Fact]
+    public void Timeout_WhenRolledBackWithSalvage_OffersStash_AndSoftensReAuthor()
+    {
+        // #306 extends salvage to the timeout path (which #195 left out): the reverted work is now
+        // recoverable, so the feedback points at the stash instead of a flat "re-author the files".
+        var salvage = new SalvageRef("refs/guardrails/18-merge/attempt-1", " m.cs | 9 +", Attempt: 1, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForTimeout(
+            Task("18-merge"), attempt: 2, fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("timed out", feedback);
+        Assert.Contains("NOT discarded", feedback);
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+        Assert.Contains("git apply \"/p.patch\"", feedback);
+        Assert.DoesNotContain("preserved in your workspace", feedback); // no false "on disk" claim
+    }
+
+    [Fact]
+    public void SalvageSection_WithPatchPath_OffersGitApply_ForPullAll()
+    {
+        var salvage = new SalvageRef(
+            "refs/guardrails/12-implement/attempt-2", " src/Foo.cs | 40 ++++",
+            Attempt: 2, PatchPath: "/plan/logs/run/12-implement/attempt-2/prior-attempt.patch");
+
+        string feedback = RetryPolicy.ForMaxTurnsExceeded(
+            Task("12-implement"), attempt: 3, fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("git apply \"/plan/logs/run/12-implement/attempt-2/prior-attempt.patch\"", feedback);
+        Assert.Contains("git checkout refs/guardrails/12-implement/attempt-2 -- <path>", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_WorktreeRollback_DropsFalsePreservedClaim_AndOffersStash()
+    {
+        // The in-scope changes are NOT preserved in worktree mode — the whole attempt resets — so the
+        // #167-class "Your in-scope changes are preserved" claim must be replaced by the stash offer.
+        var offenses = new List<WriteScopeOffense> { new() { Path = "outside.txt", Status = 'A' } };
+        var salvage = new SalvageRef("refs/guardrails/04-impl/attempt-1", " src/a.cs | 2 +", Attempt: 1, PatchPath: "/p.patch");
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(
+            PromptTask("04-impl"), attempt: 2, offenses, fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("outside.txt", feedback);
+        Assert.DoesNotContain("in-scope changes are preserved", feedback); // the false claim is gone
+        Assert.Contains("reset to a", feedback);
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+    }
+
+    [Fact]
+    public void WriteScopeViolation_SerialMode_KeepsInScopePreservedClaim()
+    {
+        // Serial mode (no reset): only the out-of-scope paths were reverted; the in-scope work genuinely
+        // persists, so the original accurate claim stays.
+        var offenses = new List<WriteScopeOffense> { new() { Path = "outside.txt", Status = 'A' } };
+
+        string feedback = RetryPolicy.ForWriteScopeViolation(PromptTask("04-impl"), attempt: 2, offenses);
+
+        Assert.Contains("in-scope changes are preserved", feedback);
+        Assert.DoesNotContain("## Prior attempt work is salvageable", feedback);
+    }
+
+    [Fact]
+    public void ForeignKey_WhenRolledBack_HeaderNoLongerContradictsTheReAuthorDisclosure()
+    {
+        // #167/#306 reconciliation: the fragment-rejection header used to say "keep what already works"
+        // while its body said "re-author ALL files" — a self-contradiction. Rolled back ⇒ the header now
+        // agrees (re-author), no false preserved-work claim.
+        string feedback = RetryPolicy.ForForeignKey(
+            Task("04-author-tests"), attempt: 1, ["j9hf6y"], fileWritesRolledBack: true);
+
+        Assert.Contains("## File writes were also rolled back", feedback);
+        Assert.Contains("re-author ALL files", feedback);
+        Assert.DoesNotContain("keep what", feedback);           // header no longer contradicts the body
     }
 
     [Fact]
