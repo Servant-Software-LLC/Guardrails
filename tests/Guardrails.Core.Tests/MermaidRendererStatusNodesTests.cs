@@ -1,4 +1,5 @@
 using Guardrails.Core.Graph;
+using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Tests;
@@ -15,15 +16,15 @@ namespace Guardrails.Core.Tests;
 /// diverges from <c>StatusNodes</c>' (e.g. a renamed prefix or a changed sort) set-equality breaks and
 /// this fails.
 /// <para>
-/// <b>Known limitation (issue #332).</b> This compares two id SETS; it is NOT a 1-to-1 bijection check.
-/// It cannot catch two DISTINCT semantic entities that COLLAPSE onto the same id and dedupe inside a
-/// <see cref="HashSet{T}"/>: (A) a duplicate check <c>Name</c> within one folder (e.g. <c>01-build.ps1</c>
-/// + <c>01-build.sh</c> both → Name "01-build"), which the <c>(taskId, Name)</c>-keyed map holds once; or
-/// (B) a task id equal to another task's derived leaf id (task <c>a</c>'s guardrail → <c>task_a_gr_0</c>
-/// vs a task folder named <c>a-gr-0</c> → container <c>task_a_gr_0</c>), one DOM id shared by two nodes.
-/// Both are load-clean-but-ambiguous shapes; the loader-level duplicate-name/collision diagnostic is
-/// tracked in #332 (not this feature). <see cref="DuplicateCheckName_InOneFolder_CollapsesToOneStatusEntry"/>
-/// characterizes (A) executably.
+/// <b>The two #332 ambiguities this SET-equality test cannot see are now foreclosed upstream.</b> Because
+/// both sides are <see cref="HashSet{T}"/>s, two DISTINCT entities that collapse onto one id still dedupe
+/// here and pass — so the guarantee they never reach a validated plan is enforced elsewhere: (A) a duplicate
+/// check <c>Name</c> within one folder (e.g. <c>01-build.ps1</c> + <c>01-build.sh</c> both → Name "01-build")
+/// is now a load-time validation ERROR (GR2035, proven by
+/// <see cref="DuplicateCheckName_InOneFolder_IsRejectedByValidator"/>); (B) a task id equal to another task's
+/// derived leaf id (task <c>a</c>'s guardrail → <c>task_a_gr_0</c> vs a task folder <c>a-gr-0</c> → container
+/// <c>task_a_gr_0</c>) can no longer emit a duplicate DOM id, because <c>AllocateNodeIdBases</c> reserves the
+/// derived leaf-id namespace (proven by <see cref="TaskIdCollidingWithDerivedLeafId_GetsDistinctStatusIds"/>).
 /// </para>
 /// </summary>
 public sealed class MermaidRendererStatusNodesTests
@@ -87,10 +88,10 @@ public sealed class MermaidRendererStatusNodesTests
         // ...and no StatusNodes entry points at an id the renderer never draws (a dead/typo'd badge).
         Assert.Empty(statusIds.Except(renderedIds));
 
-        // Known limitation (issue #332): this is SET equality, NOT a 1-to-1 bijection — both sides are
-        // HashSets, so two DISTINCT semantic entities that collapse onto the same id (a duplicate check
-        // Name in one folder, or a task-id ↔ leaf-id collision) still dedupe to one element and pass
-        // here. The loader-level duplicate-name/collision diagnostic is #332's own PR, not this feature.
+        // Note (issue #332): this is SET equality, NOT a 1-to-1 bijection — both sides are HashSets, so two
+        // DISTINCT entities that collapse onto one id would still dedupe and pass here. That is why #332 is
+        // foreclosed upstream instead: a duplicate check Name in one folder is a load-time error (GR2035),
+        // and a task-id ↔ leaf-id collision can no longer emit a duplicate DOM id (AllocateNodeIdBases).
     }
 
     [Fact]
@@ -111,26 +112,40 @@ public sealed class MermaidRendererStatusNodesTests
     }
 
     [Fact]
-    public void DuplicateCheckName_InOneFolder_CollapsesToOneStatusEntry()
+    public void DuplicateCheckName_InOneFolder_IsRejectedByValidator()
     {
-        // Characterizes issue #332 Scenario A (executable, not just prose): two checks in ONE folder
-        // that share a Name — the real load-clean case is 01-build.ps1 + 01-build.sh, both →
-        // GuardrailDefinition.Name "01-build" (constructed in-memory here to document StatusNodes'
-        // behavior; the loader-level "loads clean but is ambiguous" fix is tracked in #332). The
-        // (taskId, Name)-keyed map holds a SINGLE "01-build" entry — the second silently overwrites the
-        // first — so one of the two leaf boxes can never be badged, and a failure keyed by Name paints on
-        // whichever leaf won the overwrite. documents #332.
-        var build1 = new GuardrailDefinition { Name = "01-build", Path = "/fake/01-build.ps1", Kind = ActionKind.Script };
-        var build2 = new GuardrailDefinition { Name = "01-build", Path = "/fake/01-build.sh", Kind = ActionKind.Script };
+        // Issue #332 Scenario A, now FIXED (re-pointed from the old characterization test). Two checks in
+        // ONE folder that share a Name — the real load-clean case is 01-build.ps1 + 01-build.sh, both →
+        // GuardrailDefinition.Name "01-build". Such a plan USED to load clean and silently collapse the
+        // (taskId, Name) key on this surface; it is now a hard validation ERROR (GR2035), so a loaded plan
+        // can never present the ambiguity to StatusNodes. This is the executable proof #332 Scenario A is
+        // fixed.
+        var build1 = new GuardrailDefinition { Name = "01-build", Path = "/fake/tasks/01-a/guardrails/01-build.ps1", Kind = ActionKind.Script };
+        var build2 = new GuardrailDefinition { Name = "01-build", Path = "/fake/tasks/01-a/guardrails/01-build.sh", Kind = ActionKind.Script };
         PlanDefinition plan = PlanWith([], [], TaskWith("01-a", [], [build1, build2]));
 
+        IReadOnlyList<Diagnostic> diagnostics = new PlanValidator(FakeExecutableProbe.All).Validate(plan);
+
+        Diagnostic diagnostic = Assert.Single(diagnostics, d => d.Code == DiagnosticCodes.DuplicateCheckName);
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
+    }
+
+    [Fact]
+    public void TaskIdCollidingWithDerivedLeafId_GetsDistinctStatusIds()
+    {
+        // Issue #332 Scenario B, now FIXED: task 'a' (one guardrail) → leaf task_a_gr_0; a task folder
+        // 'a-gr-0' → container task_a_gr_0 pre-fix (one DOM id shared by two nodes). AllocateNodeIdBases now
+        // reserves the derived leaf-id namespace, so the two map to DISTINCT DOM ids on the status surface.
+        PlanDefinition plan = PlanWith([], [],
+            TaskWith("a", [], [Check("01-x")]),
+            TaskWith("a-gr-0", [], [Check("01-y")]));
         DiagramStatusNodes nodes = MermaidRenderer.StatusNodes(plan);
 
-        // Two same-Name guardrails → ONE (taskId, Name) key. The renderer, meanwhile, still emits two
-        // distinct leaf nodes (_gr_0 and _gr_1), so StatusNodes cannot address the second — the collapse
-        // the set-equality test above cannot see.
-        Assert.Single(nodes.TaskGuardrailLeaves, kv => kv.Key.TaskId == "01-a");
-        Assert.True(nodes.TaskGuardrailLeaves.ContainsKey(("01-a", "01-build")));
+        string leafOfA = nodes.TaskGuardrailLeaves[("a", "01-x")];
+        string containerOfAGr0 = nodes.TaskContainers["a-gr-0"];
+
+        Assert.Equal("task_a_gr_0", leafOfA);
+        Assert.NotEqual(leafOfA, containerOfAGr0); // the collision is gone: the container is a bumped, distinct id.
     }
 
     // === id shape + key vocabulary =====================================================

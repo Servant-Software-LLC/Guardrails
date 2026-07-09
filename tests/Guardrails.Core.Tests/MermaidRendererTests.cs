@@ -152,6 +152,61 @@ public sealed class MermaidRendererTests
         Assert.Contains("a.b/c d&quot;e", string.Join("\n", lines));
     }
 
+    [Fact]
+    public void Render_TaskIdCollidingWithAnotherTasksDerivedLeafId_EmitsNoDuplicateDomId()
+    {
+        // Issue #332 Scenario B: task 'a' (one guardrail) draws leaf `task_a_gr_0`; a task folder named
+        // 'a-gr-0' sanitizes to container `task_a_gr_0` — the SAME DOM id twice, pre-fix (corrupting click
+        // targets, edges, and #219 badges). AllocateNodeIdBases now reserves each task's derived leaf-id
+        // namespace, so the colliding container base is bumped to a distinct id.
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(Plan(
+            TaskWith("a", [Guardrail("01-x")]),
+            TaskWith("a-gr-0", [Guardrail("01-y")]))));
+
+        // Task 'a' still owns the guardrail leaf `task_a_gr_0`.
+        Assert.Contains(lines, l => l.StartsWith("task_a_gr_0[", StringComparison.Ordinal)
+                                    && l.EndsWith(":::guardrail", StringComparison.Ordinal));
+        // Task 'a-gr-0' no longer collides onto it: its container is bumped to a distinct id.
+        Assert.DoesNotContain(lines, l => l.StartsWith("subgraph task_a_gr_0[", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("subgraph task_a_gr_0_2[", StringComparison.Ordinal));
+
+        // The crux, order-independent: every emitted DOM id is unique — no id is drawn twice.
+        List<string> ids = RenderedNodeIds(lines);
+        Assert.Equal(ids.Count, ids.Distinct().Count());
+    }
+
+    /// <summary>
+    /// Every emitted DOM id — a container (<c>subgraph &lt;id&gt;[</c>) or a leaf check
+    /// (<c>&lt;id&gt;[label]:::preflight|guardrail</c>) — WITH multiplicity, so a repeated id is detectable
+    /// (a <see cref="Enumerable.Distinct{T}(IEnumerable{T})"/> count mismatch means a duplicate DOM id).
+    /// </summary>
+    private static List<string> RenderedNodeIds(IReadOnlyList<string> lines)
+    {
+        var ids = new List<string>();
+        foreach (string line in lines)
+        {
+            if (line.StartsWith("subgraph ", StringComparison.Ordinal))
+            {
+                int bracket = line.IndexOf('[', StringComparison.Ordinal);
+                if (bracket > "subgraph ".Length)
+                {
+                    ids.Add(line["subgraph ".Length..bracket].Trim());
+                }
+            }
+            else if (line.EndsWith(":::preflight", StringComparison.Ordinal)
+                     || line.EndsWith(":::guardrail", StringComparison.Ordinal))
+            {
+                int bracket = line.IndexOf('[', StringComparison.Ordinal);
+                if (bracket > 0)
+                {
+                    ids.Add(line[..bracket].Trim());
+                }
+            }
+        }
+
+        return ids;
+    }
+
     // === label safety (model-neutral) — green in both models ===========================
 
     [Fact]
