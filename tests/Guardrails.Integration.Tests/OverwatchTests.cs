@@ -413,7 +413,7 @@ public sealed class OverwatchTests
             OverwatchTrigger.NoOpDeadlock, task, planDef, 2, taskLogDir, journal, observer, TestContext.Current.CancellationToken);
 
         // The diagnose spend now advances the run's cumulative cost — so it is BOTH gate-visible and
-        // reported (JournalCost.Total folds OverwatchCostUsd in).
+        // reported (JournalCost.Total folds OverheadCostUsd in, via the renamed shared sink AddOverheadCost).
         Assert.Equal(0.03m, journal.CurrentCostUsd());
         Assert.Equal(0.03m, JournalCost.Total(JournalReader.Read(RunJournal.PathFor(planDef.PlanDirectory))));
     }
@@ -498,6 +498,39 @@ public sealed class OverwatchTests
         Assert.Equal("halted", entry.Decision);
         string jsonl = await File.ReadAllTextAsync(OverwatchJsonl(taskLogDir), TestContext.Current.CancellationToken);
         Assert.Contains("\"trigger\":\"terminal-exhaustion\"", jsonl);
+    }
+
+    // ── #314: terminal-triage prompt spend is charged to the overhead sink ────────────────────────
+
+    /// <summary>
+    /// #314: the terminal needs-human triage's own prompt spend is charged to the run's cumulative cost via
+    /// the shared overhead sink (SSOT §7/§9.2.1) — so it BOTH advances <c>CurrentCostUsd</c> (the maxCostUsd
+    /// gate) AND appears in the reported total (<see cref="JournalCost.Total"/> folds <c>OverheadCostUsd</c>
+    /// in). Before this fix the triage's <c>PromptResult.CostUsd</c> was silently discarded.
+    /// </summary>
+    [Fact]
+    public async Task TerminalTriageCost_IsCharged_AdvancesCurrentCostUsd_AndReportedTotal()
+    {
+        using var plan = new StatePlanBuilder().AddTask("01-x", guardrailBody: StatePlanBuilder.Fail("f"));
+        (PlanDefinition planDef, RunJournal journal, TaskNode task, string taskLogDir) = LoadFirstTask(plan);
+        var observer = new CapturingObserver();
+        var triageRunner = new RecordingRunner("ai-triage")
+        {
+            CannedResultText = """{"diagnosis":"local-repo","analysis":"guardrail is self-contradictory"}""",
+            Cost = 0.07m
+        };
+        var overwatch = new Overwatch(diagnoseRunner: null, new NeedsHumanTriage(triageRunner), AutonomyPolicy.Prompt,
+            new FakeInteraction(OverwatchInteractionResult.NonInteractive));
+
+        Assert.Equal(0m, journal.CurrentCostUsd());
+
+        await overwatch.EvaluateTerminalAsync(
+            task, planDef, taskLogDir, planDef.PlanDirectory, planDef.Workspace, journal, observer,
+            autoFile: false, TestContext.Current.CancellationToken);
+
+        // The triage spend now advances the cumulative cost (gate-visible) and is persisted + reported.
+        Assert.Equal(0.07m, journal.CurrentCostUsd());
+        Assert.Equal(0.07m, JournalCost.Total(JournalReader.Read(RunJournal.PathFor(planDef.PlanDirectory))));
     }
 
     // ── FULL-LOOP: trigger determinism + reconciliation with the deterministic floor ─────────────

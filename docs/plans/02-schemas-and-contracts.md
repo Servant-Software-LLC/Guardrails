@@ -155,12 +155,15 @@ decision (issue #275) and is deliberately NOT done here.
 - `guardrailMode: failFast` stops at the first failing guardrail of a task attempt
   (guardrails are ordered cheapest-first by filename convention); `runAll` runs every
   guardrail and aggregates all failures into one feedback document.
-- `maxCostUsd` caps total spend for the run. When the journal's cumulative cost — the sum of
-  every attempt's `costUsd` (§7) — reaches or exceeds it, the harness stops launching new
-  attempts: each not-yet-launched task settles `needs-human` (reason "cost cap reached") and
-  its transitive dependents `blocked`, via the same halt path as any other needs-human task. An
-  attempt already in flight is never interrupted — the cap gates new launches, not running work.
-  Absent ⇒ no cap. A present non-positive value is a validation error (GR2012).
+- `maxCostUsd` caps total spend for the run. **Every prompt-spend is charged against it** — the
+  journal's cumulative cost (§7) is the sum of every attempt's `costUsd` PLUS the top-level
+  `overheadCostUsd` (the harness-internal prompt spend that is not a task attempt: the overwatcher's
+  diagnose prompts, the AI-merge worker, and the terminal needs-human triage — §9.1/§9.2). When that
+  cumulative cost reaches or exceeds the cap, the harness stops launching new attempts: each
+  not-yet-launched task settles `needs-human` (reason "cost cap reached") and its transitive dependents
+  `blocked`, via the same halt path as any other needs-human task. An attempt already in flight is never
+  interrupted — the cap gates new launches, not running work. Absent ⇒ no cap. A present non-positive
+  value is a validation error (GR2012).
 - `worktreeRoot` overrides where the integration + segment worktrees are created. Each task's child
   processes run with cwd = its segment worktree; the integration worktree (plan branch
   `guardrails/<plan-name>`) is written only by the harness's integration (§5.3).
@@ -1266,11 +1269,13 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     //   "subject": "05-generate-codegen", "headline": "Overwatch halted '05-…' (attempt 2, no-op-deadlock; …" }
   ],
 
-  // OPTIONAL top-level OVERHEAD prompt spend that is NOT a task attempt (§9.2, #269) — the overwatcher's
-  // diagnose prompts (which fire BETWEEN a task's attempts, so charging them as synthetic attempt records
-  // would corrupt attempt numbering). Folded into the run's cumulative cost, so it BOTH counts toward the
-  // maxCostUsd gate AND appears in the reported total. Absent (not null noise) until the first overhead spend.
-  "overwatchCostUsd": 0.0123
+  // OPTIONAL top-level OVERHEAD prompt spend that is NOT a task attempt (§9.1/§9.2, #269/#314) — the THREE
+  // harness-internal prompt-spend sources that fire BETWEEN (or outside) a task's attempts, so charging them
+  // as synthetic attempt records would corrupt attempt numbering: (1) the overwatcher's diagnose prompts
+  // (#269), (2) the AI-merge worker at each union (#314), and (3) the terminal needs-human triage (#314).
+  // Folded into the run's cumulative cost, so it BOTH counts toward the maxCostUsd gate AND appears in the
+  // reported total. Absent (not null noise) until the first overhead spend.
+  "overheadCostUsd": 0.0123
 }
 ```
 
@@ -2119,10 +2124,13 @@ guardrail-verifier concept). **It is a BYTE PRODUCER, never a VERDICT PRODUCER:*
 - **Budget:** 1 retry (2 attempts). Escalate to `needs-human` on markers-left / out-of-bounds /
   re-verify-fail / budget. The AI's exit code is never a verdict.
 
-Its cost is charged against `maxCostUsd` like any prompt attempt. It is configured under
-`promptRunners` as a **reserved merge runner profile** (e.g. `ai-merge`) — a distinct merge profile
-named for what it is (read the conflict, write only `GUARDRAILS_MERGE_OUT`), **not** a
-`guardrailOverrides` block.
+Its cost is charged against `maxCostUsd` like any prompt attempt (#314): each merge-prompt attempt's
+`PromptResult.CostUsd` is routed through the shared overhead sink (top-level `overheadCostUsd`, §7) so it
+BOTH counts toward the cap gate AND appears in the reported total. It is charged immediately after the
+runner returns — BEFORE the deterministic gates read the resolution — so the spend counts regardless of
+pass/fail/retry. It is configured under `promptRunners` as a **reserved merge runner profile** (e.g.
+`ai-merge`) — a distinct merge profile named for what it is (read the conflict, write only
+`GUARDRAILS_MERGE_OUT`), **not** a `guardrailOverrides` block.
 
 ### 9.2 The overwatcher (active AI supervisor, issue #269 — design of record: `docs/plans/11-overwatcher.md`)
 
@@ -2159,10 +2167,11 @@ judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager
 
 It fires **at most ONCE per attempt** (a short-circuit consult takes precedence over the eager consult so
 both never fire the same attempt), and the whole thing is **bounded by `maxCostUsd`**: each diagnose's own
-prompt spend is **journaled** (as the top-level `overwatchCostUsd`, §7 — it is not a task attempt, so
-charging it as a synthetic `AttemptRecord` would corrupt attempt numbering), and it is folded into the
-run's cumulative cost, so once that cumulative cost reaches the cap no further diagnose is spent (the cost
-mitigation for eager — and the diagnose spend therefore also appears in the reported total). It does
+prompt spend is **journaled** (as the top-level `overheadCostUsd`, §7 — the shared overhead sink it uses in
+common with the AI-merge worker and terminal triage, #314 — it is not a task attempt, so charging it as a
+synthetic `AttemptRecord` would corrupt attempt numbering), and it is folded into the run's cumulative cost,
+so once that cumulative cost reaches the cap no further diagnose is spent (the cost mitigation for eager —
+and the diagnose spend therefore also appears in the reported total). It does
 **NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a human ask).
 
 **The mechanical asymmetry — the load-bearing constraint.** Self-healing must NEVER soften a
@@ -2289,6 +2298,10 @@ re-open the task, mark it done, or burn retry budget.
 - A thrown exception or a runner error means "no `feedback.md` was produced"; it is logged and the
   task remains plainly `needs-human`. Triage must **never** block or abort the run — all other
   independent tasks continue normally.
+- Its own prompt spend **is** charged, though (#314): the triage's `PromptResult.CostUsd` is routed
+  through the shared overhead sink (top-level `overheadCostUsd`, §7), charged immediately after the runner
+  returns — BEFORE any parse of the result — so it BOTH counts toward the `maxCostUsd` gate AND appears in
+  the reported total, regardless of whether the triage body parses.
 
 A prompt proposes, a file certifies: only a written `feedback.md` provides the diagnosis; a
 failed/throwing triage is silently skipped.

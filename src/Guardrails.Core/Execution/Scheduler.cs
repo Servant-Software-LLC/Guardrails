@@ -1672,6 +1672,7 @@ public sealed class Scheduler
                     integ.IntegrationWorktreePath,
                     handle.SegmentBranchName,
                     _plan.PlanDirectory,
+                    _journal,
                     ct).ConfigureAwait(false);
 
             if (!aiResolved)

@@ -309,11 +309,15 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     attempt's segment is reset to `taskBase` + cleaned, so the feedback discloses the file-write
     rollback and instructs re-authoring (never the false "partial work preserved" claim). The retry
     clock is EXTENDED (1x -> 1.5x -> 2.25x, capped 4x). (SSOT section 7.)
-- **Per-run cost cap** (`maxCostUsd` in `guardrails.json`, optional decimal USD): when
-  the journal's cumulative cost reaches/exceeds the cap, the scheduler stops launching new
-  attempts -- each not-yet-launched task settles `needs-human` ("cost cap reached") and its
-  transitive dependents `blocked`; an in-flight attempt is never interrupted. Absent => no cap;
-  non-positive cap is a validation error (GR2012). See SSOT section 2.
+- **Per-run cost cap** (`maxCostUsd` in `guardrails.json`, optional decimal USD): **every
+  prompt-spend is charged against it** -- the journal's cumulative cost = sum of every attempt's
+  `costUsd` PLUS the top-level `overheadCostUsd` overhead sink (harness-internal prompt spend that is
+  NOT a task attempt: overwatch-diagnose #269 + AI-merge worker #314 + terminal needs-human triage
+  #314; charged via `RunJournal.AddOverheadCost`, folded into `JournalCost.Total`). When that
+  cumulative cost reaches/exceeds the cap, the scheduler stops launching new attempts -- each
+  not-yet-launched task settles `needs-human` ("cost cap reached") and its transitive dependents
+  `blocked`; an in-flight attempt is never interrupted. Absent => no cap; non-positive cap is a
+  validation error (GR2012). See SSOT section 2.
 - **Integration (A) Fast-forward**: a linear chain's commit where no sibling has advanced the
   plan branch -> `git merge --ff-only`, **no new union, no re-verify** (bytes already passed
   the task's guardrails in the segment worktree). The FF'd commit carries
@@ -756,3 +760,14 @@ total order driven by the wave folder's numeric prefix.
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
   auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code unchanged (GR2035).
+- **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
+  generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
+  `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are
+  unaffected), SSOT §7 `overwatchCostUsd` -> `overheadCostUsd`. It now charges the `PromptResult.CostUsd`
+  of ALL THREE harness-internal prompt-spend sources -- overwatch-diagnose (#269) + the **AI-merge worker**
+  (`AiMergeResolver`, charged per attempt right after the runner returns, before the deterministic gates) +
+  the **terminal needs-human triage** (`NeedsHumanTriage.RunAsync`, charged right after the runner returns,
+  before any parse) -- so all three count toward `maxCostUsd` AND appear in the reported total. Clean rename
+  (M3 shipped `overwatchCostUsd` on master only, never in a NuGet release). The journal is threaded into
+  `IAiMergeWorker.TryResolveAsync` (as `ISchedulerJournal`) and `NeedsHumanTriage.RunAsync` (as
+  `RunJournal`); charging always happens BEFORE the parse/gate so spend counts regardless of outcome.

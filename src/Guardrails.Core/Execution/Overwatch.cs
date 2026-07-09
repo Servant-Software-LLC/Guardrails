@@ -144,8 +144,11 @@ public sealed class Overwatch
         {
             try
             {
+                // The triage's own prompt spend is charged to the run's cumulative cost via the shared
+                // overhead sink INSIDE RunAsync (SSOT §9.2/§7, #314) — the journal is threaded in so that
+                // charge happens BEFORE any parse of the triage result, exactly as the diagnose charge does.
                 feedbackPath = await _terminalTriage
-                    .RunAsync(task, taskLogDir, planDirectory, workspace, ct, autoFile)
+                    .RunAsync(task, taskLogDir, planDirectory, workspace, journal, ct, autoFile)
                     .ConfigureAwait(false);
             }
             catch
@@ -362,11 +365,11 @@ public sealed class Overwatch
 
             PromptResult result = await _diagnoseRunner!.RunAsync(invocation, ct).ConfigureAwait(false);
 
-            // Charge the diagnose spend to the run's cumulative cost (SSOT §9.2, WEAK-1): the spend is REAL
-            // regardless of whether the body parses, so it is charged here — BEFORE the parse — so it BOTH
-            // counts toward the maxCostUsd gate (bounding subsequent eager fires) AND appears in the reported
-            // total. A null CostUsd is a no-op.
-            journal.AddOverwatchCost(result.CostUsd);
+            // Charge the diagnose spend to the run's cumulative cost via the shared overhead sink (SSOT
+            // §9.2, WEAK-1): the spend is REAL regardless of whether the body parses, so it is charged here —
+            // BEFORE the parse — so it BOTH counts toward the maxCostUsd gate (bounding subsequent eager
+            // fires) AND appears in the reported total. A null CostUsd is a no-op.
+            journal.AddOverheadCost(result.CostUsd);
 
             if (!result.Completed || result.IsError || result.ResultText is null)
             {

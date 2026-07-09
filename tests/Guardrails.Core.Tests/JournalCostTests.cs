@@ -54,6 +54,34 @@ public sealed class JournalCostTests
         Assert.Equal(0m, total);
     }
 
+    [Fact]
+    public void OverheadCost_Only_IsFoldedIntoTotal()
+    {
+        // Overhead prompt spend (SSOT §7/§9.1/§9.2, #269/#314 — overwatch-diagnose / AI-merge / triage)
+        // is NOT a task attempt, so it lives in the top-level overheadCostUsd; JournalCost.Total must fold
+        // it in even when no attempt recorded a cost (a deterministic-only plan whose only prompt spend was
+        // an AI-merge or a terminal triage).
+        JournalDocument document = Document(Task("01-script", Attempt(cost: null)))
+            with { OverheadCostUsd = 0.05m };
+
+        Assert.Equal(0.05m, JournalCost.Total(document));
+    }
+
+    [Fact]
+    public void CombinedAttemptAndOverheadCost_AreSummed()
+    {
+        // The maxCostUsd gate reads JournalCost.Total, which must be the COMBINED sum of every attempt's
+        // costUsd PLUS the overhead sink (#314) — so a cap trips on attempt + overhead spend together.
+        JournalDocument document = Document(
+            Task("01-prompt", Attempt(cost: 0.25m), Attempt(cost: 0.10m)),
+            Task("02-script", Attempt(cost: null)),
+            Task("03-prompt", Attempt(cost: 0.40m)))
+            with { OverheadCostUsd = 0.15m };  // overwatch-diagnose + AI-merge + triage overhead
+
+        // 0.25 + 0.10 + 0.40 (attempts) + 0.15 (overhead) = 0.90
+        Assert.Equal(0.90m, JournalCost.Total(document));
+    }
+
     private static AttemptRecord Attempt(decimal? cost) => new()
     {
         Attempt = 1,

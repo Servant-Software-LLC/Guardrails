@@ -16,6 +16,12 @@ public interface IAiMergeWorker
     /// <param name="worktreePath">The integration worktree path where the conflict lives.</param>
     /// <param name="segmentBranch">The segment branch name — used to re-merge on retry after reset.</param>
     /// <param name="planDirectory">The plan directory, passed through to the prompt invocation.</param>
+    /// <param name="journal">
+    /// The run journal, used to charge each merge-prompt attempt's own spend to the run's cumulative cost via
+    /// the shared overhead sink (SSOT §7/§9.1, #314). The charge happens immediately after the runner returns,
+    /// BEFORE the deterministic gates read the resolution — so the spend is counted regardless of whether the
+    /// attempt passes, fails, or is retried — exactly as the overwatcher's diagnose charge does.
+    /// </param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>
     /// <c>true</c> when all conflicted files have been resolved and staged (ready for re-verify).
@@ -26,5 +32,6 @@ public interface IAiMergeWorker
         string worktreePath,
         string segmentBranch,
         string planDirectory,
+        ISchedulerJournal journal,
         CancellationToken ct);
 }
