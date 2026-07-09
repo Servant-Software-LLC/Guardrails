@@ -679,14 +679,29 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.NeedsHuman(task, attemptNumber, startedAt, relativeLogDir, logDir, action, question);
         }
 
-        // --- permission wall early halt (issues #86 / #104) ------------------------------
+        // --- permission wall early halt (issues #86 / #104 / #321) -----------------------
         // Feed this attempt's refused write paths to the cross-attempt tracker, then check whether a
         // wall warrants settling needs-human NOW instead of burning the rest of the budget. A .claude/
         // path is structural (halts on the FIRST hit — the runtime blocks .claude/ writes even under
         // acceptEdits, so no retry clears it, #104); any other path refused across repeated attempts
         // halts on the repeat (#86). Checked here, before success/failure routing, because even a
         // prompt that "completed" while silently unable to write its .claude/ deliverable must escalate.
-        permissionWalls.Observe(action.BlockedWritePaths);
+        //
+        // #321: when THIS attempt ALSO carries a needsHarnessWrite request (§9), DROP the structural
+        // .claude/ paths from what the wall tracker observes — the harness itself is about to perform
+        // that write (below, before guardrails), so a .claude/ refusal the agent hit while probing is
+        // NOT an un-recoverable wall: the verdict is DEFERRED to the harness write + the task's own
+        // guardrails, which fail honestly if the file never lands. This is the honest-halt rationale —
+        // an un-escaped .claude/ wall (no needsHarnessWrite this attempt) STILL halts on the first hit;
+        // an escaped one yields. Every NON-.claude/ path is still observed regardless, so the #86
+        // repeated-path protection is fully intact even when a hatch is present. Whole-branch structural
+        // suppression via IsClaudeDir (not exact-path matching): a blocked path arrives absolute or
+        // repo-relative while the request path is workspace-relative, so a string-equal filter would
+        // silently no-op and re-introduce the halt this fix removes.
+        IReadOnlyList<string> observedWalls = action.HarnessWriteRequest is null
+            ? action.BlockedWritePaths
+            : action.BlockedWritePaths.Where(p => !PermissionWallTracker.IsClaudeDir(p)).ToList();
+        permissionWalls.Observe(observedWalls);
         PermissionWallDecision wall = permissionWalls.ShouldHalt();
         if (wall.Halt)
         {
@@ -809,14 +824,17 @@ public sealed class TaskExecutor : ITaskExecutor
         // write-scope check and guardrails — the .NET harness process itself performs a write the
         // action's own subprocess could never make (a .claude/ path the Claude Code runtime refuses
         // unconditionally, broader than the new-subdirectory-only gap #101 fixed, and unaffected by
-        // dangerouslyDisableSandbox). Prospective validation (workspace-escape ALWAYS; writeScope
-        // membership when declared) runs BEFORE the write, reusing the SAME predicates the
-        // retrospective write-scope check uses below — so the two enforcement points can never drift.
-        // A rejected/failed write is treated as an ACTION FAILURE (skip guardrails, retry with
-        // actionable feedback) — this escape hatch unblocks write MECHANICS only, never verification:
-        // an in-scope write still falls through to the write-scope check (which will also see the
-        // just-written file — expected, not redundant) and the task's own guardrails, exactly as any
-        // other successful action does.
+        // dangerouslyDisableSandbox). #321: this handler is now actually REACHED for a prompt that hit a
+        // .claude/ refusal — the permission-wall early halt above yields to the hatch (drops .claude/
+        // walls from what it observes when a needsHarnessWrite is present), so the escape-hatch write is
+        // no longer pre-empted by the halt. Prospective validation (workspace-escape ALWAYS; the #321
+        // permission-file carve-out ALWAYS; writeScope membership when declared) runs BEFORE the write,
+        // reusing the SAME predicates the retrospective write-scope check uses below — so the two
+        // enforcement points can never drift. A rejected/denied/failed write is treated as an ACTION
+        // FAILURE (skip guardrails, retry with actionable feedback) — this escape hatch unblocks write
+        // MECHANICS only, never verification: an in-scope write still falls through to the write-scope
+        // check (which will also see the just-written file — expected, not redundant) and the task's own
+        // guardrails, exactly as any other successful action does.
         if (action.HarnessWriteRequest is { } harnessWriteRequest)
         {
             HarnessWriteOutcome writeOutcome = HarnessWrite.Validate(
@@ -830,9 +848,14 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 (bool fileWritesRolledBack, SalvageRef? salvageRef) =
                     StashIfRollingBack(task, worktree, attemptNumber, isFinal);
-                string feedback = writeOutcome.WasRejected
-                    ? RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef)
-                    : RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef);
+                // #321: a permission-file DENIAL (a .claude/settings*.json) gets its own actionable
+                // feedback ("a human must author it") distinct from the generic out-of-scope rejection.
+                string feedback = writeOutcome switch
+                {
+                    { IsPolicyDenied: true } => RetryPolicy.ForHarnessWriteDenied(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
+                    { WasRejected: true } => RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
+                    _ => RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef)
+                };
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
                     AttemptOutcome.GuardrailFailed,
@@ -841,9 +864,12 @@ public sealed class TaskExecutor : ITaskExecutor
                         TaskId = task.Id,
                         Outcome = TaskOutcome.GuardrailFailed,
                         ActionExitCode = action.ExitCode,
-                        Summary = writeOutcome.WasRejected
-                            ? $"needsHarnessWrite rejected: {writeOutcome.FailureReason}"
-                            : $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
+                        Summary = writeOutcome switch
+                        {
+                            { IsPolicyDenied: true } => $"needsHarnessWrite denied: {writeOutcome.FailureReason}",
+                            { WasRejected: true } => $"needsHarnessWrite rejected: {writeOutcome.FailureReason}",
+                            _ => $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
+                        }
                     },
                     costUsd: action.CostUsd);
             }

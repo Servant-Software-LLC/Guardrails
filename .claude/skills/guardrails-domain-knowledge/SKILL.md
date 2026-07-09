@@ -456,10 +456,16 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (never subject to Claude Code's tool-permission layer) to write a `.claude/` file the action's own
   subprocess can never write (broader than #101's new-subdirectory-only gap; survives
   `dangerouslyDisableSandbox`). Unlike `needsHuman` it does NOT short-circuit -- guardrails still run
-  afterward. Validated BEFORE the write with two checks reusing existing predicates:
-  `WorkspaceContainment.Escapes` (always) and `WriteScope.IsInScope` (only when the task declares a
-  `writeScope` -- absent means allowed, mirroring section 3.4). Singular per attempt in v1. SSOT
-  section 9.
+  afterward. Validated BEFORE the write with THREE checks: `WorkspaceContainment.Escapes` (always);
+  `WriteScope.IsInScope` (only when the task declares a `writeScope` -- absent means allowed, mirroring
+  section 3.4); and (#321) a **permission-file carve-out** -- `.claude/settings.json` and
+  `.claude/settings.local.json` are DENIED (the harness will not write permission-granting files on an
+  agent's behalf; a human must author them), while all OTHER `.claude/` deliverables
+  (commands/skills/hooks/agents) remain writable. **Halt/hatch interaction (#321):** the permission-wall
+  structural-`.claude/` early halt (section 9.3) now YIELDS when the same attempt also emits
+  `needsHarnessWrite` -- an attempt with NO hatch still halts on the `.claude/` wall, but one that DOES
+  emit `needsHarnessWrite` defers to the harness write + the task's own guardrails, so a
+  probe-first-then-hatch flow completes green. Singular per attempt in v1. SSOT section 9.
 - **The overwatcher (active AI supervisor, #269, SSOT §9.2, design `docs/plans/11-overwatcher.md`)**: an
   **advisory** AI supervisor consulted DURING a run when a task struggles. It **subsumes** the shipped
   one-shot needs-human triage (now the §9.2.1 `TerminalExhaustion` case, invariants preserved verbatim) and

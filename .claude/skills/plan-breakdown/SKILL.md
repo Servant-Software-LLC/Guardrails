@@ -1622,8 +1622,12 @@ refusal survives every workaround (PowerShell, `dangerouslyDisableSandbox`; a co
 `.claude/` deliverable directly therefore hits the wall on attempt 1 and dead-ends the task at
 `needs-human` (SSOT §9.3). The harness ships the escape hatch — `needsHarnessWrite` (#191): the action
 hands the file to the .NET harness process (which is NOT subject to that layer) to write on its behalf.
-The breakdown KNOWS the task's deliverable is under `.claude/`, so it MUST tell the agent to use that
-escape hatch instead of leaving it to discover the wall.
+The breakdown KNOWS the task's deliverable is under `.claude/`, so it MUST tell the agent to go
+STRAIGHT to that escape hatch — emit `needsHarnessWrite` FIRST, WITHOUT a direct-write probe — rather
+than leaving it to discover the wall by writing directly. A direct-write probe wastes a turn and, per
+#321, populates the permission-wall tracker that can pre-empt the hatch (the harness now drops the
+probe's structural `.claude/` path from the wall tracker when the attempt also emits
+`needsHarnessWrite`, but the wasted turn is avoidable by not probing at all).
 
 (The older #101 framing was narrower — "a NEW `.claude/` subdirectory" only — because at the time the
 only observed wall was the new-subdirectory barrier. #191 widened the reality: EXISTING `.claude/`
@@ -1639,11 +1643,21 @@ script.)
 **Rule 1 — ALWAYS: inject the `needsHarnessWrite` instruction into the task's `action.prompt.md`.**
 Add it as an escape-hatch header, parallel to the `needsHuman` header, **verbatim**:
 
-> If a write under `.claude/` is refused by the tool-permission layer, do NOT retry the same write or
-> try workarounds (PowerShell, `dangerouslyDisableSandbox`, etc — all fail identically). Instead write
+> Your primary deliverable is a file under `.claude/`, which a Claude Code subprocess CANNOT write —
+> the tool-permission layer refuses every `.claude/` write unconditionally. Do NOT attempt a direct
+> `Write`/`Edit` to the `.claude/` path: a direct-write probe wastes a turn and populates the
+> harness's permission-wall tracker. Instead, FIRST write
 > `{"needsHarnessWrite": {"path": "<workspace-relative path>", "content": "<full file content>",
-> "reason": "<why>"}}` to the state-out path. The harness will perform the write directly, then your
-> guardrails still run normally against the result.
+> "reason": "<why>"}}` to the state-out path. The harness (which is NOT subject to that layer) performs
+> the write directly, then your guardrails still run normally against the result. If you already
+> attempted a direct write and it was refused, do NOT retry it or try workarounds (PowerShell,
+> `dangerouslyDisableSandbox`) — just emit `needsHarnessWrite` as above.
+
+**Carve-out (#321) — permission files are NOT harness-writable.** `needsHarnessWrite` covers
+command/skill/hook/agent (and `contexts/`) deliverables only. The harness will NOT write
+`.claude/settings.json` or `.claude/settings.local.json` on an agent's behalf — a human must author
+permission-granting settings files. If a task's PRIMARY deliverable IS one of those, do NOT inject
+this header (it cannot complete via `needsHarnessWrite`); route that deliverable to a human instead.
 
 `needsHarnessWrite` is **singular per attempt** (v1): a task producing several `.claude/` files does so
 across attempts, or is split one deliverable per task. Unlike `needsHuman` it does NOT short-circuit —

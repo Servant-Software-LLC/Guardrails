@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
+using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
 
 namespace Guardrails.Integration.Tests;
@@ -19,6 +20,12 @@ namespace Guardrails.Integration.Tests;
 ///     write-scope violation, eventual needs-human on budget exhaustion;</item>
 ///   <item>a path attempting to escape the workspace entirely is rejected regardless of writeScope.</item>
 /// </list>
+/// The #321 tests at the end use a fake <see cref="IPromptRunner"/> instead — the ordering bug only
+/// reproduces with a PROMPT action that reports <c>BlockedWritePaths</c> (a direct-write probe the
+/// permission scanner captured); a script action never populates them. They prove the permission-wall
+/// early halt now YIELDS to the escape hatch (#321), that an un-escaped <c>.claude/</c> wall still
+/// halts, that a non-<c>.claude/</c> repeated wall still halts even with a hatch present (#86 intact),
+/// and that a hatch to <c>.claude/settings.json</c> is denied with an actionable reason (carve-out).
 /// </summary>
 public sealed class HarnessWriteRunTests
 {
@@ -303,5 +310,255 @@ public sealed class HarnessWriteRunTests
         TaskResult task = Assert.Single(report.Tasks);
         Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
         Assert.True(repo.PlanBranchHasPath(planBranch, ".claude/skills/bar/SKILL.md"));
+    }
+
+    // ── #321: prompt-action probe-then-hatch ordering (fake IPromptRunner) ───────────────────────
+
+    /// <summary>
+    /// A fake prompt runner that reproduces the #321 probe-then-hatch flow with no real Claude CLI: it
+    /// writes a caller-chosen fragment to whatever <c>GUARDRAILS_STATE_OUT</c> it is handed (a
+    /// <c>needsHarnessWrite</c> request, or <c>{}</c> = no hatch) AND reports a caller-chosen set of
+    /// <see cref="PromptResult.BlockedWritePaths"/> — the permission-wall paths a real agent's refused
+    /// direct-write PROBE would have populated. <c>Completed</c> + <c>!IsError</c> (a runtime refusal
+    /// under <c>acceptEdits</c> does not make the agent report <c>is_error</c> — the #86/#104/#321
+    /// condition). Only prompt actions trigger the ordering bug; a script action never populates
+    /// <c>BlockedWritePaths</c>, which is why the tests above cannot catch it.
+    /// </summary>
+    private sealed class ProbeThenHatchRunner : IPromptRunner
+    {
+        private readonly string? _harnessWritePath;
+        private readonly string _content;
+        private readonly IReadOnlyList<string> _blockedWritePaths;
+
+        public ProbeThenHatchRunner(
+            string? harnessWritePath, IReadOnlyList<string> blockedWritePaths, string content = "WRITTEN-BY-HARNESS")
+        {
+            _harnessWritePath = harnessWritePath;
+            _blockedWritePaths = blockedWritePaths;
+            _content = content;
+        }
+
+        public int Invocations { get; private set; }
+        public string Name => "fake";
+
+        public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken ct)
+        {
+            Invocations++;
+            string stateOut = invocation.Environment["GUARDRAILS_STATE_OUT"];
+            string json = _harnessWritePath is null
+                ? "{}"
+                : "{ \"needsHarnessWrite\": { \"path\": \"" + _harnessWritePath +
+                  "\", \"content\": \"" + _content + "\", \"reason\": \"the direct .claude/ write was refused\" } }";
+            File.WriteAllText(stateOut, json);
+            return Task.FromResult(new PromptResult
+            {
+                Completed = true,
+                IsError = false,
+                Summary = "fake: probed then optionally requested a harness write",
+                BlockedWritePaths = _blockedWritePaths
+            });
+        }
+    }
+
+    /// <summary>
+    /// A single-task plan whose action is a PROMPT (routed to the fake runner) and whose guardrail is a
+    /// deterministic script asserting <paramref name="guardrailChecksPath"/> exists in the workspace.
+    /// </summary>
+    private static string WriteHarnessWritePromptPlan(
+        string repoPath, string? writeScope, string guardrailChecksPath, int defaultRetries = 0)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks", "01-write", "guardrails"));
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            $$"""
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": {{defaultRetries}},
+              "maxParallelism": 1,
+              "promptRunners": {
+                "default": "fake",
+                "fake": { "command": "fake-claude", "maxTurns": 3 }
+              }
+            }
+            """);
+
+        string taskDir = Path.Combine(planDir, "tasks", "01-write");
+        string writeScopeJson = writeScope is null ? "" : $", \"writeScope\": [{writeScope}]";
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $$"""
+            {
+              "description": "probe .claude/ then request a harness write",
+              "dependsOn": []{{writeScopeJson}}
+            }
+            """);
+
+        File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"),
+            "Author the deliverable under .claude/. Emit needsHarnessWrite for it.\n");
+
+        if (Ps)
+        {
+            string checkedPs = guardrailChecksPath.Replace("/", "\\");
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-exists.ps1"),
+                "if (Test-Path (Join-Path $env:GUARDRAILS_WORKSPACE '" + checkedPs + "')) { exit 0 } else { Write-Output 'missing'; exit 1 }\n");
+        }
+        else
+        {
+            WriteSh(Path.Combine(taskDir, "guardrails", "01-exists.sh"),
+                "#!/usr/bin/env bash\n" +
+                $"if [ -f \"$GUARDRAILS_WORKSPACE/{guardrailChecksPath}\" ]; then exit 0; else echo missing; exit 1; fi\n");
+        }
+
+        return planDir;
+    }
+
+    private static async Task<(RunReport report, string planBranch)> RunWorktreePromptAsync(
+        string planDir, TempGitRepo repo, IPromptRunner runner, CancellationToken ct)
+    {
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        Assert.NotNull(load.Plan);
+        Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
+
+        var stateManager = new StateManager(load.Plan!.PlanDirectory);
+        stateManager.Initialize();
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+        var registry = PromptRunnerRegistry.Build(load.Plan!.Config, _ => runner);
+        var interpreterMap = new InterpreterMap(new PathExecutableProbe(), load.Plan!.Config.Interpreters);
+
+        var executor = new TaskExecutor(
+            load.Plan!, new ProcessRunner(), interpreterMap, stateManager, journal, IRunObserver.Null, registry);
+
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+        var scheduler = new Scheduler(load.Plan!, executor, journal,
+            worktreeProvider: provider, reVerifier: new AlwaysPassReVerifier());
+
+        RunReport report = await scheduler.RunAsync(load.Plan!, ct);
+        return (report, "guardrails/plan");
+    }
+
+    [Fact]
+    public async Task Worktree_PromptProbesClaudeThenHatches_HarnessWritesFile_TaskGoesGreen()
+    {
+        // #321 RED-BAR regression: a PROMPT action probes a direct .claude/ write (captured into
+        // BlockedWritePaths), then emits needsHarnessWrite for that same path. Before the fix the
+        // permission-wall early halt fired on the structural .claude/ path BEFORE the needsHarnessWrite
+        // handler ran, pre-empting the escape-hatch write and dead-ending the task at needs-human. After
+        // the fix the halt YIELDS to the hatch (drops .claude/ walls when a needsHarnessWrite is
+        // present) and the task completes green.
+        using var repo = new TempGitRepo();
+        const string deliverable = ".claude/commands/foo.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable);
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: deliverable, blockedWritePaths: [deliverable]);
+
+        var (report, planBranch) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+        Assert.True(repo.PlanBranchHasPath(planBranch, deliverable),
+            "the harness-written .claude/ file must be committed on the plan branch");
+    }
+
+    [Fact]
+    public async Task Worktree_UnescapedClaudeWall_NoHatch_StillHaltsNeedsHuman()
+    {
+        // The #321 fix must NOT weaken the #104 structural halt: a prompt that hits a .claude/ wall and
+        // does NOT emit needsHarnessWrite this attempt still halts needs-human on the first hit
+        // (permission wall), exactly as before. HarnessWriteRequest is null here, so the wall filter
+        // does not apply and the .claude/ path is observed as structural.
+        using var repo = new TempGitRepo();
+        const string deliverable = ".claude/commands/foo.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable);
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: [deliverable]);
+
+        var (report, planBranch) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.False(task.IsGreen);
+        Assert.Contains(deliverable, task.Summary);
+        Assert.Contains("structural", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+        Assert.False(repo.PlanBranchHasPath(planBranch, deliverable));
+    }
+
+    [Fact]
+    public async Task Worktree_NonClaudeRepeatedWall_WithHatchPresent_StillHalts_Issue86Intact()
+    {
+        // #321 drops ONLY .claude/ structural walls from the tracker when a needsHarnessWrite is
+        // present — every NON-.claude/ path is still observed, so the #86 repeated-path protection is
+        // intact even with a hatch present. The hatch is present every attempt (an OUT-OF-SCOPE target,
+        // so the attempt fails past the wall check); a non-.claude/ wall (src/Sneaky.cs) repeats and
+        // must halt on the SECOND attempt.
+        using var repo = new TempGitRepo();
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: ".claude/commands/foo.md",
+            defaultRetries: 2);
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: "src/OutOfScope.cs", blockedWritePaths: ["src/Sneaky.cs"]);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.Contains("src/Sneaky.cs", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+        // Two attempts recorded — the wall halted on the SECOND (not the first), proving #86 semantics
+        // survive with a hatch present (attempt 1 saw src/Sneaky.cs once and did not halt).
+        Assert.Equal(2, journalAfter.Tasks["01-write"].Attempts.Count);
+        Assert.Equal(2, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_HatchToClaudeSettingsJson_DeniedWithActionableReason()
+    {
+        // Carve-out (#321): needsHarnessWrite to a permission-granting .claude/settings.json is DENIED —
+        // the harness will not write permission-granting files on an agent's behalf. The .claude/ wall
+        // is dropped by the hatch filter so we REACH the handler (proving the carve-out denies it, not
+        // the wall halting), and the feedback names the human-must-author remedy.
+        using var repo = new TempGitRepo();
+        const string settings = ".claude/settings.json";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: settings);
+
+        var runner = new ProbeThenHatchRunner(harnessWritePath: settings, blockedWritePaths: [settings]);
+
+        var (report, planBranch) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.False(task.IsGreen);
+        Assert.Contains("needsHarnessWrite", task.Summary);
+        Assert.Contains("denied", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+
+        // The permission-granting settings file must NEVER be harness-written.
+        Assert.False(repo.PlanBranchHasPath(planBranch, settings),
+            "the harness must refuse to write .claude/settings.json");
+
+        // The feedback carries the actionable, human-must-author remedy.
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        string feedbackPath = Path.Combine(
+            planDir, attempt.LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md");
+        Assert.True(File.Exists(feedbackPath));
+        string feedback = File.ReadAllText(feedbackPath);
+        Assert.Contains("permission-granting files", feedback);
     }
 }
