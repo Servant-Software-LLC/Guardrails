@@ -574,6 +574,56 @@ area) AND the worth-it gate passes* → INSERT one `00-baseline-<area>-tests-gre
 they pass, #179-re-emit form, area-scoped, deduped), `dependsOn: []`, with every work task in that area
 transitively depending on it. GREENFIELD → skip and state why; never a vacuous or whole-suite baseline.
 
+## Wave entry/exit gates — the two boundaries of a wave in a waved plan (#254)
+
+Not a NEW archetype — two EXISTING archetypes relocated to the wave boundary in a waved plan (SKILL.md
+Step 9; SSOT §14.3). A wave is a mini-plan, so its `preflights/`/`guardrails/` are the four-folder model
+one level up. `terminal-gate-of-wave-N == preflight-of-wave-(N+1)`: one boundary, two authored folders.
+
+- **Wave ENTRY gate (`<plan>/<wave>/preflights/`) = the #181 positive-baseline archetype at the wave
+  boundary.** A POSITIVE, assert-**present** check that the concrete artifacts this wave builds on — the
+  real files/symbols/binary the prior wave produced — are materialized and non-empty on the branch
+  before this wave's DAG spends a turn. **Positive-monotone-safe** (never "not yet present" — a segment
+  only grows). Shape (union-safe presence, one actionable line):
+
+  ```powershell
+  # catches: wave-N starting before wave-(N-1)'s outputs are materialized on the branch — the "prior
+  #          wave materialized" entry gate (the #181 positive baseline at the wave boundary, #254).
+  foreach ($rel in @('out/greet.ps1', 'out/config.json')) {      # the real paths the prior wave produced
+      if (-not (Test-Path $rel)) {
+          Write-Output "$rel not materialized on the branch — the prior wave's output is missing; this wave cannot build on it"
+          exit 1
+      }
+      if ([string]::IsNullOrWhiteSpace((Get-Content -Raw -Path $rel))) {
+          Write-Output "$rel is present but empty — the prior wave did not materialize real content"
+          exit 1
+      }
+  }
+  exit 0
+  ```
+
+  For **wave 1** the entry gate is the ordinary plan-start baseline: a brownfield green-start (#181) or a
+  NEGATIVE fresh-start ("the not-yet-produced artifact is absent" = `tests-fail-on-current-code` /
+  `tests-fail-on-stubs`, above — not a new archetype).
+
+- **Wave EXIT gate (`<plan>/<wave>/guardrails/`) = the Terminal-Gate archetype per wave.** **GR2028
+  applies PER WAVE**: a multi-leaf/fan-in wave's exit gate needs ≥1 real integration re-run (a
+  build/suite invocation or a union-safe invariant, NOT `exit 0`). **Carry the union-safe rule (#125 /
+  #165) into every INTERMEDIATE wave's exit gate**: a whole-build/whole-suite check stays **LOCAL** (no
+  `scope` key — it runs once in that wave's exit-gate attempt); a `scope:"integration"` guardrail is a
+  union-safe **CONDITIONAL** invariant ("if contribution X present, verify it", conflict-marker-free),
+  because it re-runs at every union and a terminal-postcondition-as-integration red-halts a correct
+  partial merge. The **LAST** wave's exit gate runs on the fully-merged HEAD, so a whole-suite `tests-pass`
+  LOCAL check belongs there — the same role the flat plan's terminal `<plan>/guardrails/` folder plays. A
+  single-leaf linear wave needs no integration guardrail; a plain LOCAL terminal postcondition is fine.
+  (Union-safe form: "A `scope:"integration"` guardrail MUST be UNION-SAFE", below.)
+
+`catches:`/GR2027 and the author-time smoke-test (#302) apply to these gate scripts like any other — a
+wave entry gate that renders/executes the not-yet-materialized upstream is exactly the #302 high-value
+render/execute target (hand-synthesize a materialized sample + a missing-artifact sample). The
+`examples/waved-hello` demo carries a worked entry gate (`01-scaffold-materialized`) and exit gates
+(`01-scaffold-union-clean` union-safe, `01-greeting-complete` LOCAL terminal).
+
 ## Composition-root wiring — the component is CONSTRUCTED/INJECTED in production (#120)
 
 **The recurring lesson, the highest-impact false-green the skill emits.** A plan adds a

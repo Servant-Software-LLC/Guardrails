@@ -51,6 +51,20 @@ against hand-synthesized valid + invalid samples to prove the SCRIPT'S OWN corre
 #302 probe — distinct from the #248 tool-output probe). Noting both candidate sets here
 avoids re-reading every script during the pass.
 
+**Waved plan? Review wave-by-wave (#254).** A plan is *waved* when it has no root `tasks/` and ≥1
+`wave-NN-<slug>/` subdir (SSOT §14; plan-breakdown Step 9). Each wave is a **mini-plan** — its own
+`preflights/`/`guardrails/`/`tasks/` and its own `PlanDefinitionHash`-keyed review marker. `guardrails
+validate`/`plan`/`graph` are already wave-aware; run them on the whole plan as usual. Then run the
+adversarial pass (§2) **per task WITHIN each wave**, and give **each wave's entry/exit gates the
+four-folder treatment** (§2 "Four-folder gap" probe, applied at wave granularity). Two review modes:
+- **Whole waved plan** — review every authored wave, wave by wave, then `guardrails mark-reviewed
+  <folder>` (or per wave).
+- **A single freshly-authored wave (the JIT flow)** — plan-breakdown's JIT staged mode authors a
+  downstream wave AFTER its upstream ran (against the materialized integration worktree), so you review
+  **just that wave**: `<folder>/wave-NN-<slug>` is a mini-plan folder — run the same adversarial pass on
+  its tasks + entry/exit gates, then `guardrails mark-reviewed <folder>/wave-NN-<slug>`. Do the
+  waved-specific probes below (the "#254 — waved plans" block in §2) in either mode.
+
 ### 2. Adversarial pass per task (the heart)
 Role-play a lazy or wrong implementer. Concrete probes (mirror of the catalogue's
 anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalogue.md`):
@@ -678,6 +692,58 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   output scripts. (Doctrine: `guardrails-domain-knowledge` → author-time smoke-test gate; plan-breakdown
   Step 7.0d adds the matching authoring rule.)
 <!-- END ADDED PROBE #302 -->
+<!-- BEGIN ADDED PROBES #254 — waved plans (nested layout) -->
+- **Cross-wave `dependsOn` edge (#254)**: in a waved plan, `dependsOn` is **intra-wave only** — a task
+  edge naming a task in **another wave** is a hard error (**GR2034**, `validate` catches it). Beyond the
+  lint, flag the **shape** it signals: a wave-2 task that "depends on" a wave-1 artifact should express
+  that dependency as the **wave-2 ENTRY gate** ("the prior wave's outputs materialized") plus the action
+  reading the real path — the wave barrier already orders the stages. A cross-wave edge (or an attempt to
+  fake cross-wave ordering with a duplicated task) is a **BLOCKER**: name the offending edge and the
+  entry-gate rewrite.
+- **Wave-qualified state key (#254 / #164 one level up)**: for every state-writing prompt action in a
+  waved plan, the single top-level fragment key must be the **wave-qualified id `<waveDir>/<taskFolder>`**
+  (e.g. `wave-02-provision/01-author-tests`), NOT the bare folder name and NOT the `stableId`. A bare or
+  wrong-wave key is rejected as foreign on **every** attempt (the #164 loop, one level up) →
+  `needsHuman`. Cross-check the harness-contract header example, the `## Task` fragment example, and the
+  state-output guardrail's index (`$fragment.'wave-02-provision/01-author-tests'.<key>`) — all three must
+  use the same wave-qualified id. A mismatch is a **BLOCKER**.
+- **Missing / wrong-polarity wave ENTRY gate (#254 / #181 at the wave boundary)**: for each wave ≥ 2,
+  confirm `<plan>/<wave>/preflights/` carries a **POSITIVE** "the prior wave's outputs materialized"
+  check — the artifacts this wave builds on (real files/symbols/binary the prior wave produced) are
+  present and non-empty before this wave's DAG runs (the #181 positive-baseline archetype at the wave
+  boundary). It must be **positive-monotone-safe** (assert-**present**, never "not yet present" — a
+  negative "absent" check at a wave-2 entry gate flips false the instant an unrelated file lands, a
+  false-RED). A downstream wave whose tasks plainly build on upstream artifacts but whose entry gate is
+  missing → **WEAK** (the run wastes a turn building against possibly-absent bytes, or misattributes an
+  upstream-materialization failure to this wave's tasks); a **negative-polarity** wave-2+ entry gate →
+  **BLOCKER** (it will false-RED). (Wave 1's entry gate is the ordinary plan-start baseline — a
+  brownfield green-start or a negative fresh-start — reviewed by the §2 baseline probe.)
+- **Wave EXIT gate — GR2028 per wave + intermediate-wave union-safety (#254 / #125 / #165)**: the
+  four-folder gap and union-safe probes (§2) apply to **each wave's** `<plan>/<wave>/guardrails/`:
+  - A **multi-leaf / fan-in** wave whose exit gate is absent, empty, or tautological (`exit 0`) → same
+    **BLOCKER** as the flat terminal-folder probe, but **per wave** (GR2028 applies per wave): the exit
+    gate needs ≥1 real integration re-run (build/suite or a union invariant).
+  - An **INTERMEDIATE** wave's exit gate that marks a **whole-build / whole-suite** check
+    `scope:"integration"` is the **#125 terminal-postcondition anti-pattern** → **BLOCKER**: the
+    integration set re-runs at every union, and a whole build/suite red-halts a correct partial merge.
+    A whole-build/suite check must be **LOCAL** (no `scope`); the wave's `scope:"integration"` guardrail
+    must be a union-safe CONDITIONAL invariant. Only the **LAST** wave's exit gate (which runs on the
+    fully-merged HEAD) is the right home for a whole-suite LOCAL `tests-pass` — the whole-plan terminal
+    boundary. Flag a plan-root `<plan>/guardrails/` that merely DUPLICATES the last wave's exit gate as a
+    NIT (it is optional-additive, not a second terminal gate).
+- **Later-wave prompt references earlier-wave code (#254 / #203)**: apply the "#203/#204 stale
+  line-number / unhedged architecture claim" probe with **wave placement** as the earlier/later
+  discriminator — a wave-2 prompt describing wave-1's not-yet-run output is the canonical case. The
+  stronger fix here is the **JIT staged-breakdown flow** (author the later wave against the materialized
+  integration worktree, so nothing is guessed); if the plan authored a downstream wave up front with
+  guessed paths/line-numbers where JIT was available, flag it **WEAK** and recommend the JIT flow +
+  durable markers + the `maxTurns: 75` companion bump.
+- **JIT stub wave (#254)**: a declared-but-empty `wave-NN-<slug>/` with an empty `tasks/` is **not** a
+  finding — it is the intended JIT staging (the run will honest-halt there, author the wave against the
+  materialized workspace, review it, resume). Do NOT flag an empty downstream wave as "missing tasks";
+  confirm the breakdown report documents the JIT workflow for it. (Only an **authored** wave gets the
+  full adversarial pass; a stub is reviewed when it is later filled.)
+<!-- END ADDED PROBES #254 -->
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -694,6 +760,11 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   with ≥1 real integration-set re-run — see the four-folder gap probe in §2 for the content bar
   (GR2028). The retired `integrationGate: true` sink TASK is a **GR2029 hard error**: a lingering one is
   the BLOCKER, not its absence. A single linear chain with no fan-in needs no terminal folder.
+- **Waved plan — the DAG is PER WAVE (#254).** In a waved plan each wave's `tasks/` is a self-contained
+  DAG; check acyclicity, missing edges, and false edges **within each wave**. Cross-wave ordering is the
+  barrier, not a task edge (a cross-wave `dependsOn` is GR2034 — see the §2 waved probe). "A terminal
+  task aggregates" becomes **per wave**: each multi-leaf/fan-in wave's EXIT gate is its aggregation
+  point, and the LAST wave's exit gate is the whole-plan end.
 
 ### 4. Missing-insertion check
 Re-apply plan-breakdown Step 5: any guardrail referencing an artifact no ancestor
@@ -751,6 +822,13 @@ so the harness's review nudge clears:
 guardrails mark-reviewed <folder>
 ```
 
+**Waved plan (#254):** each wave is a mini-plan with its **own** `PlanDefinitionHash`-keyed review
+marker. When you reviewed the whole plan wave-by-wave, run `guardrails mark-reviewed <folder>`; when you
+reviewed a **single freshly-authored wave** (the JIT flow), run `guardrails mark-reviewed
+<folder>/wave-NN-<slug>` for that wave — it records the marker keyed on that wave's hash, so re-authoring
+or resuming other waves does not falsely mark this one reviewed (and editing this wave's files re-stales
+just its marker). Do not mark a wave reviewed while a BLOCKER in it is open.
+
 This writes the committed, `PlanDefinitionHash`-keyed `state/guardrails-review.json` marker (SSOT §13 /
 §7.3) — the skill can't compute the `PlanDefinitionHash` itself, so it delegates to the CLI. Until the
 plan's behavioral definition changes, `guardrails validate`/`run` stop emitting the GR2025 "not reviewed"
@@ -803,5 +881,7 @@ while a BLOCKER finding remains unaddressed — the marker vouches that the plan
 <!-- END ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every guardrail that pattern-matches/regexes a tool's PRINTED console output (not just its exit code or a file it wrote) was verified by actually RUNNING that tool once against the real repo/workspace and checking the pattern against the real output — not just reasoning about whether the regex looks plausible; a pattern shown to never match the real output is a BLOCKER (the guardrail fails unconditionally, dead-ending every attempt at `needsHuman`), a fragile-but-currently-matching format assumption is WEAK. Does not apply to exit-code-only / file-existence / diff checks — there is no output-format assumption to verify there (#248).
 - [ ] Every `.sh`/`.ps1`/`.py` guardrail that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was smoke-tested by EXECUTING the guardrail SCRIPT itself against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only; the highest-value target (a guardrail that renders/executes the task's own not-yet-authored output) was run against a synthesized sample. FAILS the valid sample or PASSES the invalid sample = BLOCKER; runnable-but-unrun = WEAK; not-runnable-at-author-time (live service / built binary / merged HEAD) = syntax pass + honest report deferral, never a block. Distinct from #248 (which runs the underlying TOOL, not the guardrail script) (#302).
+- [ ] (#254) A waved plan was reviewed WAVE-BY-WAVE (each wave a mini-plan): the §2 adversarial probes ran per task within each wave, and each wave's entry/exit gates got the four-folder treatment. No cross-wave `dependsOn` edge (GR2034 — a wave-2 dependency on a wave-1 artifact is the wave-2 ENTRY gate, not an edge; BLOCKER if present). Every waved-plan prompt's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (header + example + state-output guardrail index agree; a bare/wrong-wave key is a BLOCKER, the #164 loop one level up).
+- [ ] (#254) Each wave ≥ 2 has a POSITIVE, positive-monotone-safe ENTRY gate ("prior wave's outputs materialized"; missing = WEAK, negative-polarity = BLOCKER). Each multi-leaf/fan-in wave's EXIT gate satisfies GR2028 (≥1 real integration re-run); every INTERMEDIATE wave's exit gate keeps whole-build/whole-suite LOCAL and any `scope:"integration"` guardrail union-safe/conditional (a whole-suite marked `scope:"integration"` in an intermediate wave = BLOCKER, #125); only the LAST wave's exit gate carries a whole-suite LOCAL `tests-pass`. A declared-but-empty JIT stub wave is NOT flagged as missing tasks; the JIT workflow for it is documented in the breakdown report.
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
-- [ ] The review was recorded with `guardrails mark-reviewed <folder>` once findings were addressed/declined — clearing the GR2025 nudge (#79/#131); NOT run while a BLOCKER remained open.
+- [ ] The review was recorded with `guardrails mark-reviewed <folder>` once findings were addressed/declined — clearing the GR2025 nudge (#79/#131); NOT run while a BLOCKER remained open. For a waved plan, per-wave (`mark-reviewed <folder>/wave-NN-<slug>`) after a single-wave JIT review, or whole-plan after a wave-by-wave pass (#254).

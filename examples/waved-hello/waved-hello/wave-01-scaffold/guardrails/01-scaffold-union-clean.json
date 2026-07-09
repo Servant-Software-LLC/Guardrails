@@ -1,0 +1,4 @@
+{
+  "description": "Wave-01 exit gate: the scaffold union is non-empty and conflict-marker-free (union-safe integration re-run, GR2028)",
+  "scope": "integration"
+}

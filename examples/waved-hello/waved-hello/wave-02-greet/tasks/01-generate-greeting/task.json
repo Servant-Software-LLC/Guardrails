@@ -1,0 +1,6 @@
+{
+  "description": "Run out/greet.ps1 for the name in out/config.json and save out/greeting.txt",
+  "stableId": "w2a01g",
+  "dependsOn": [],
+  "writeScope": ["out/greeting.txt"]
+}

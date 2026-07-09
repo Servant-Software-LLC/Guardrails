@@ -553,6 +553,44 @@ total order driven by the wave folder's numeric prefix.
   behind hard barriers (the M2a honest-halt exit-1 stub is GONE); `plan` output is wave-aware (per-wave
   tiers); the live/plain UI segments the task table per wave (`IRunObserver.WaveStarting`/`WaveFinished`).
 
+**Authoring waved plans (the BREAK/REVIEW side -- procedures in `plan-breakdown` Step 9 +
+`guardrails-review`; #254).** The execution contract above is the RUN side; authoring adds:
+- **Detection is a layout fork at breakdown time.** `plan-breakdown` emits the nested layout iff the
+  source plan is authored as ordered STAGES whose later stages build on the prior stage's *materialized*
+  artifacts (real file paths/signatures that don't exist until an upstream stage runs). A flat / single-
+  stage plan stays flat -- **do NOT wave for parallelism** (fine-grained parallelism is a task DAG inside
+  ONE wave; a wave barrier destroys cross-wave parallelism -- SSOT §14 C5).
+- **A wave is a mini-plan; author it with the SAME procedure, one level up.** Run the whole breakdown
+  (TDD split, sparsest intra-wave DAG, guardrail selection, generative insertions) *per wave*. The
+  four-folder model applies at wave granularity: `<plan>/<wave>/preflights/` = the wave **ENTRY gate**
+  ("the prior wave's outputs MATERIALIZED" -- the **#181 positive-baseline archetype at the wave
+  boundary**, positive-monotone-safe assert-present) and `<plan>/<wave>/guardrails/` = the wave **EXIT
+  gate** (this wave's terminal postconditions). `terminal-gate-of-wave-N == preflight-of-wave-(N+1)` --
+  one boundary, two authored folders. **GR2028 applies per wave**; every INTERMEDIATE wave's exit gate
+  keeps a whole-build/suite check LOCAL and any `scope:"integration"` guardrail union-safe/conditional
+  (#125/#165 per wave), while the LAST wave's exit gate -- run on the fully-merged HEAD -- is the
+  whole-plan terminal boundary.
+- **JIT staged breakdown -- the key capability.** A downstream wave often can't be broken down up front
+  (its tasks reference artifacts that don't exist until the prior wave runs). So `plan-breakdown` supports
+  authoring wave N+1 **after** wave N executes, **reading the materialized upstream from the integration
+  worktree** (`<worktreeRoot>/<runId>/_integration`, Decision D -- the user's checkout stays read-only).
+  Workflow: break down + review the ready waves; leave a not-yet-designable wave as a declared **stub**
+  (empty `tasks/`); `run` executes to the stub and **honest-halts** (`RunReport.WaveHalt`,
+  `NextWaveUnauthored`) pointing at the integration worktree; author the wave against that materialized
+  workspace; `/guardrails-review` **that single wave** (each wave has its own `PlanDefinitionHash`-keyed
+  review marker); resume. The whole-plan "break down everything up front" path still works when the
+  downstream waves ARE designable up front.
+- **`dependsOn` is intra-wave only (GR2034); the state key is wave-qualified.** A cross-wave dependency is
+  expressed as the downstream wave's entry gate, never a task edge. A prompt action's state fragment must
+  be keyed by the wave-qualified id `<waveDir>/<taskFolder>` (a bare folder-name key is rejected foreign
+  every attempt -- the #164 loop one level up).
+- **Per-wave author-time smoke-test (#302).** Every runnable script guardrail generated in ANY wave's
+  four folders (task-level AND the wave entry/exit gates) is EXECUTED against a valid + invalid sample at
+  author time. A wave entry gate that checks the not-yet-materialized upstream is the high-value
+  render/execute target -- hand-synthesize a materialized + a missing-artifact sample and run it both
+  ways. Worked authoring example: `examples/waved-hello/` (a 2-wave demo that `guardrails validate`s
+  clean) + `plan-breakdown/references/example-breakdown-waved.md`.
+
 ## Load-bearing invariants
 
 1. **Deterministic over prompts** -- prompt-judges are last resort, never alone, and
@@ -578,6 +616,7 @@ total order driven by the wave folder's numeric prefix.
 | Multi-wave plans (nested layout, design of record) | `docs/plans/10-multi-wave-plans.md` (contract in SSOT section 14) |
 | The overwatcher (active AI supervisor, design of record) | `docs/plans/11-overwatcher.md` (contract in SSOT §9.2/§9.2.1) |
 | Golden example (runnable + skill reference) | `examples/hello-guardrails/` |
+| Waved worked example (2 waves, validate-clean) | `examples/waved-hello/` + `plan-breakdown/references/example-breakdown-waved.md` |
 
 ## Status (update as milestones complete)
 
