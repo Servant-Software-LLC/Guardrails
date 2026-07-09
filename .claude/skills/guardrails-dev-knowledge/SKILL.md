@@ -129,7 +129,11 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   the four folders; GR2028 terminal `<plan>/guardrails/` folder missing a real integration-set re-run;
   GR2029 retired `integrationGate: true` key; GR2030 invalid `model` value — SSOT §3.3/§2). **GR2031**
   (InvalidAutonomyPolicy — an unrecognized `autonomyPolicy` value, SSOT §2.1/§7.2; generalized from the
-  #274 Part C `driftPolicy` check in the M1 fold, #254/#269/#274) is TAKEN too. Next free: GR1010 / GR2032.
+  #274 Part C `driftPolicy` check in the M1 fold, #254/#269/#274) is TAKEN too. **GR2032–GR2034** are the
+  multi-wave block (GR2032 mixed flat/waved layout; GR2033 wave numbering; GR2034 cross-wave `dependsOn` —
+  SSOT §14.1). **GR2035** (DuplicateCheckName — two checks in ONE folder sharing a `Name`, e.g.
+  `01-build.ps1`+`01-build.sh` both → Name "01-build"; ERROR, per-folder across all four folders,
+  #332/SSOT §4.5) is TAKEN too. Next free: GR1010 / GR2036.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;

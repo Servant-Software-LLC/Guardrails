@@ -284,12 +284,16 @@ public static class MermaidRenderer
     /// <c>GuardrailResult.Name == GuardrailDefinition.Name</c> and Name is what the renderer sorts and
     /// draws.
     /// <para>
-    /// <b>Known limitation (issue #332).</b> Two DISTINCT checks that share a <c>Name</c> within ONE
-    /// folder (e.g. <c>01-build.ps1</c> + <c>01-build.sh</c>), or a task id that equals another task's
-    /// derived leaf id (<c>task_a_gr_0</c>), COLLAPSE onto a single map key / DOM id here — the second
-    /// silently overwrites the first, so one node is unbadgeable and a badge can land on the wrong box.
-    /// Both are load-clean-but-ambiguous shapes; the loader-level duplicate-name/collision diagnostic is
-    /// tracked in #332, not this surface.
+    /// <b>Both #332 ambiguities are now foreclosed before a plan reaches this surface.</b> (A) Two DISTINCT
+    /// checks sharing a <c>Name</c> within ONE folder (e.g. <c>01-build.ps1</c> + <c>01-build.sh</c>, both →
+    /// Name <c>"01-build"</c>) is a load-time validation ERROR (GR2035, <see cref="Loading.PlanValidator"/>),
+    /// so a validated plan can never present a colliding <c>(taskId, Name)</c> key here. (B) A task id that
+    /// sanitizes to another task's derived leaf id (task <c>a</c>'s guardrail → <c>task_a_gr_0</c> vs a task
+    /// folder <c>a-gr-0</c> → container <c>task_a_gr_0</c>) can no longer emit a duplicate DOM id:
+    /// <see cref="AllocateNodeIdBases"/> reserves each task's derived leaf ids too, so a colliding container
+    /// base is bumped to a distinct one. This surface still keys by <c>(task.Id, check Name)</c> and would
+    /// collapse a same-Name pair if handed an UNVALIDATED in-memory plan — GR2035 is the guarantee that a
+    /// loaded plan never contains one.
     /// </para>
     /// </remarks>
     public static DiagramStatusNodes StatusNodes(PlanDefinition plan)
@@ -667,34 +671,53 @@ public static class MermaidRenderer
 
     /// <summary>
     /// Build the task-id → node-id-base map for <paramref name="tasks"/> (already ordinal),
-    /// guaranteeing distinct bases even when two task ids <see cref="Sanitize"/> to the same
-    /// string (e.g. <c>a.b</c> and <c>a_b</c> both → <c>a_b</c>). The first claimant keeps the
-    /// readable sanitized base; later collisions get a deterministic <c>_2</c>, <c>_3</c>, …
-    /// suffix in ordinal order. Every node/container family for a task (the container itself and
-    /// its preflight/guardrail check nodes) derives from this unique base, so all ids stay
-    /// collision-free. Also used by <see cref="TaskFolderTargets"/> so its JSON side-table is keyed
-    /// by the SAME container id this method produces for <see cref="AppendNodesAndEdges"/>.
+    /// guaranteeing that the WHOLE emitted <c>task_*</c> DOM-id set is injective. Two constraints are
+    /// enforced together:
+    /// <list type="bullet">
+    /// <item>Two task ids that <see cref="Sanitize"/> to the same string (e.g. <c>a.b</c> and <c>a_b</c>
+    /// both → <c>a_b</c>) must get distinct container ids.</item>
+    /// <item>A task's container id <c>task_&lt;base&gt;</c> must never equal ANOTHER task's derived leaf id
+    /// <c>task_&lt;base&gt;_gr_&lt;n&gt;</c> / <c>task_&lt;base&gt;_pf_&lt;n&gt;</c> (issue #332 Scenario B:
+    /// task <c>a</c> with one guardrail draws leaf <c>task_a_gr_0</c>, while a task folder named
+    /// <c>a-gr-0</c> draws container <c>task_a_gr_0</c> — the same DOM id twice, corrupting click targets,
+    /// edges, and #219 status badges).</item>
+    /// </list>
+    /// Both are handled by reserving, per claimed base, the FULL set of <c>task_*</c> ids that base implies
+    /// — the container id AND every derived preflight/guardrail leaf id (see <see cref="ImpliedNodeIds"/>) —
+    /// and rejecting any candidate base whose implied ids would collide with an already-reserved id. A
+    /// rejected base is bumped with the same deterministic <c>_2</c>, <c>_3</c>, … suffix in ordinal order.
+    /// A plan with NO collision (the golden example) reserves each task's <c>Sanitize(id)</c> base exactly
+    /// as before — no bumps — so its ids stay byte-identical and <see cref="GraphSourceHash"/> is unmoved.
+    /// Also used by <see cref="TaskFolderTargets"/> and <see cref="StatusNodes"/> so their id lookups are
+    /// keyed by the SAME ids this method produces for <see cref="AppendNodesAndEdges"/>.
     /// </summary>
     private static IReadOnlyDictionary<string, string> AllocateNodeIdBases(IReadOnlyList<TaskNode> tasks)
     {
         var bases = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // Every emitted DOM id in the task_* namespace reserved so far — each claimed base's container id
+        // task_<base> AND its derived leaf ids task_<base>_pf_<n>/task_<base>_gr_<n>. Reserving the LEAVES
+        // (not only the bases) is what stops a container base from colliding with another task's derived
+        // leaf id (issue #332 Scenario B).
         var taken = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (TaskNode task in tasks)
         {
             string candidate = Sanitize(task.Id);
-            if (!taken.Add(candidate))
+            if (CollidesWithTaken(candidate, task, taken))
             {
                 int suffix = 2;
-                string disambiguated;
-                do
+                while (CollidesWithTaken($"{candidate}_{suffix}", task, taken))
                 {
-                    disambiguated = $"{candidate}_{suffix}";
                     suffix++;
                 }
-                while (!taken.Add(disambiguated));
 
-                candidate = disambiguated;
+                candidate = $"{candidate}_{suffix}";
+            }
+
+            foreach (string id in ImpliedNodeIds(candidate, task))
+            {
+                taken.Add(id);
             }
 
             bases[task.Id] = candidate;
@@ -702,6 +725,33 @@ public static class MermaidRenderer
 
         return bases;
     }
+
+    /// <summary>
+    /// The full set of <c>task_*</c> DOM ids a task emits under node-id base <paramref name="base"/>: its
+    /// container id <c>task_&lt;base&gt;</c> plus every derived preflight/guardrail leaf id — the EXACT ids
+    /// <see cref="AppendTaskContainer"/>/<see cref="AppendCheckNodes"/> and <see cref="StatusNodes"/>
+    /// produce for that base (leaf ordinals run <c>0..Count-1</c>, mirroring <see cref="OrdinalChecks"/>).
+    /// Reserving this whole set per task is what makes <see cref="AllocateNodeIdBases"/> collision-free
+    /// across the container AND leaf namespaces together (issue #332 Scenario B).
+    /// </summary>
+    private static IEnumerable<string> ImpliedNodeIds(string @base, TaskNode task)
+    {
+        yield return $"task_{@base}";
+
+        for (int i = 0; i < task.Preflights.Count; i++)
+        {
+            yield return $"task_{@base}_pf_{i}";
+        }
+
+        for (int i = 0; i < task.Guardrails.Count; i++)
+        {
+            yield return $"task_{@base}_gr_{i}";
+        }
+    }
+
+    /// <summary>True when ANY id <paramref name="base"/> would emit for <paramref name="task"/> is already reserved in <paramref name="taken"/>.</summary>
+    private static bool CollidesWithTaken(string @base, TaskNode task, HashSet<string> taken) =>
+        ImpliedNodeIds(@base, task).Any(taken.Contains);
 
     /// <summary>
     /// Turn an id into a safe Mermaid node-id fragment: every character that is not an ASCII

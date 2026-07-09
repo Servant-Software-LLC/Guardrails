@@ -818,6 +818,35 @@ for a warning:
   heuristic stays silent. The `guardrails-review` "stale coverage" probe (issue #157 §2) is the
   human-judgement complement; the breakdown skill keeps the two in sync at authoring time (§157 §3).
 
+### 4.5 Duplicate check `Name` within one folder (validated, GR2035 — error)
+
+A check's `Name` is its filename with the **final extension dropped** (`PlanLoader.GuardrailName`) — so a
+portable pair like `01-build.ps1` + `01-build.sh` in **one** folder both yield `Name = "01-build"`. The
+loader adds a `GuardrailDefinition` per file, and every harness surface that keys a check by `(taskId, Name)`
+or bare `Name` — the §10.1 live-status badges (`MermaidRenderer.StatusNodes`), the journal's
+`FailedGuardrail.Name`, the resume seed — then **silently collapses** the two distinct checks into one entry:
+the second overwrites the first, one node is unbadgeable, and a guardrail result is misattributed to the wrong
+box (best-effort chrome — never the verdict/exit — but realistic via a portable `.ps1`+`.sh` pair).
+
+`guardrails validate` rejects this as an **ERROR (GR2035)**: within a single folder, two checks may not share
+a `Name`. Checked **per folder** for every folder in the four-folder model — each task's `guardrails/` and
+`preflights/`, each wave's `preflights/` and `guardrails/` (§14.3), and the plan-level `preflights/` and
+`guardrails/`. The message names the folder, the duplicated `Name`, and the colliding files. Comparison is
+**ordinal (case-sensitive)**, matching the keying the collapsing maps actually use: two Names differing only
+by case stay two distinct keys, so that is not a collision. Making `(taskId, Name)` provably unique is also
+what makes the §10.1 status-node mapping a true 1-to-1 for task leaves. **Remedy:** rename one of the
+colliding files so the two Names differ.
+
+**Related — the SVG id namespace (issue #332 Scenario B).** A distinct-but-related collision lives in the
+diagram id space: a task container id is `task_<base>` and its derived leaf ids are
+`task_<base>_gr_<n>`/`task_<base>_pf_<n>`, so a task folder named `a-gr-0` (container `task_a_gr_0`) collides
+with task `a`'s first guardrail leaf (`task_a_gr_0`) — the same DOM id twice, corrupting click targets, edges,
+and the §10.1 badges. This is resolved in the renderer, not by a diagnostic:
+`MermaidRenderer.AllocateNodeIdBases` reserves each task's **derived leaf ids** alongside its container id, so
+a colliding container base is bumped to a distinct one (the same deterministic `_2`/`_3`/… suffix used for
+plain sanitized-id collisions). A plan with no such collision (the golden example) is unaffected — its ids stay
+byte-identical and `source-sha256` is unmoved.
+
 ---
 
 ## 5. Child-process contract
