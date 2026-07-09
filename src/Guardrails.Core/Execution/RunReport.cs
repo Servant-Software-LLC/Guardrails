@@ -140,6 +140,22 @@ public sealed record RunReport
     public string? MergeOnSuccessDetail { get; init; }
 
     /// <summary>
+    /// True when this run drained WHOLLY GREEN (the DAG) but the completed work was NOT delivered to the
+    /// user's branch because <c>mergeOnSuccess</c> resolved <b>false</b> (issue #340). The verified work
+    /// is sitting on the plan branch <c>guardrails/&lt;plan-name&gt;</c>, undelivered — one
+    /// <c>--fresh</c>/<c>reset -y</c> away from destruction. Set by the Scheduler's <c>Finalize</c> ONLY
+    /// when a real, SEPARATE plan branch exists (worktree mode: a worktree provider AND an integration
+    /// handle are present, and the run is not <c>runOnCurrentBranch</c>) so it is HONEST: in serial mode
+    /// there is no plan branch, and in <c>runOnCurrentBranch</c> mode the plan branch IS the user's
+    /// current branch — the work already lives in the user's checkout, nothing is undelivered — so this
+    /// stays false. It is also false whenever delivery actually RAN (that requires <c>mergeOnSuccess</c>
+    /// true, so <see cref="MergeOnSuccessOutcome"/> is then non-null and this false — never both). The CLI
+    /// renders a loud, unmissable warning when this is true AND the terminal gate also passed (the warning
+    /// belongs behind the CLI seam, SSOT §7).
+    /// </summary>
+    public bool WhollyGreenButUndelivered { get; init; }
+
+    /// <summary>
     /// Non-null when the run was ABORTED by an unexpected infrastructure fault (a task executor or an
     /// integration step threw — e.g. an offline git hook failing an INTERNAL commit, or git itself
     /// being unavailable). Rather than propagating an unhandled exception out of the scheduler

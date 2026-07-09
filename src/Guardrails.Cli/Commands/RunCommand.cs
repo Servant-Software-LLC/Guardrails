@@ -397,6 +397,11 @@ public static class RunCommand
                     return ExitCodes.TaskFailed;
                 }
 
+                // Issue #340: a WHOLLY-GREEN run (the DAG green AND the terminal gate passed) whose
+                // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
+                // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
+                RenderUndeliveredWorkWarning(report, planGuardrailsPassed, probe.Plan.PlanDirectory, io.Out);
+
                 return exitCode;
             }
             finally
@@ -902,6 +907,46 @@ public static class RunCommand
         }
 
         return parts.Count == 0 ? "" : $" ({string.Join(" ", parts)})";
+    }
+
+    /// <summary>
+    /// Render the issue #340 loud "work not delivered" warning: a run drained WHOLLY GREEN — the DAG AND
+    /// the terminal gate (<paramref name="terminalGatePassed"/>) — but delivery did NOT happen because
+    /// <c>mergeOnSuccess</c> resolved off (<see cref="RunReport.WhollyGreenButUndelivered"/>). The verified
+    /// work is sitting on the plan branch <c>guardrails/&lt;plan-name&gt;</c>, undelivered — one
+    /// <c>--fresh</c>/<c>reset -y</c> away from destruction. It is rendered as a bannered block so a run
+    /// that did NOT deliver can never read as an ordinary success. No warning fires for a DELIVERED run
+    /// (delivery requires <c>mergeOnSuccess</c> on, which forces the flag false), a non-green run, a
+    /// serial/<c>runOnCurrentBranch</c> run (no separate plan branch ⇒ the flag is false — the work is
+    /// already in the checkout), or a run whose terminal gate FAILED (<paramref name="terminalGatePassed"/>
+    /// false — that path already halts exit 2). Pure (writes only to <paramref name="output"/>) and public
+    /// + unit-tested with a <see cref="StringWriter"/> — the Cli assembly ships no InternalsVisibleTo (same
+    /// rationale as <see cref="Hyperlink"/>).
+    /// </summary>
+    public static void RenderUndeliveredWorkWarning(
+        RunReport report, bool terminalGatePassed, string planDirectory, TextWriter output)
+    {
+        if (!report.WhollyGreenButUndelivered || !terminalGatePassed)
+        {
+            return;
+        }
+
+        string planName = Path.GetFileName(
+            planDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        string planBranch = "guardrails/" + planName;
+        const string rule = "==============================================================================";
+
+        output.WriteLine();
+        output.WriteLine(rule);
+        output.WriteLine("*** WORK NOT DELIVERED ***");
+        output.WriteLine(
+            "mergeOnSuccess is off — this fully-green run's verified work is sitting on branch");
+        output.WriteLine($"'{planBranch}', NOT on your checkout.");
+        output.WriteLine(
+            $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
+        output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
+        output.WriteLine("A later --fresh or 'reset -y' will DESTROY this undelivered work.");
+        output.WriteLine(rule);
     }
 
     /// <summary>

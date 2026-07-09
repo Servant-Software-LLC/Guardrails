@@ -30,6 +30,13 @@ namespace Guardrails.Integration.Tests;
 ///   <item><b>MergeOnSuccess_SkippedWhenRunFails</b> — <c>mergeOnSuccess: true</c> but a task
 ///     fails: merge not attempted; <c>MergeOnSuccessOutcome</c> is null.</item>
 /// </list>
+/// <para>
+/// Issue #340 (green-but-undelivered warning) adds the <see cref="RunReport.WhollyGreenButUndelivered"/>
+/// flag coverage: <b>DefaultOff</b> (worktree mode, mergeOnSuccess off, wholly green) flags it TRUE;
+/// <b>MergeOnSuccess_FF</b> (delivered) and <b>MergeOnSuccess_SkippedWhenRunFails</b> (not green) leave
+/// it FALSE; and <b>SerialMode_GreenRun</b> / <b>RunOnCurrentBranch_GreenRun</b> assert the honesty
+/// guard — no separate plan branch means nothing is undelivered, so the flag stays FALSE.
+/// </para>
 /// </summary>
 public sealed class MergeOnSuccessTests
 {
@@ -357,7 +364,7 @@ public sealed class MergeOnSuccessTests
 
     private static async Task<(RunReport report, RunJournal journal)> RunWithProviderAsync(
         string planDir,
-        IWorktreeProvider worktreeProvider,
+        IWorktreeProvider? worktreeProvider,
         CancellationToken ct = default)
     {
         PlanLoadResult load = new PlanLoader().Load(planDir);
@@ -449,12 +456,16 @@ public sealed class MergeOnSuccessTests
 
             Assert.True(report.AllSucceeded, "DefaultOff: expected all tasks to succeed.");
 
-            // ── COMPILE FAIL on current code: RunReport has no MergeOnSuccessOutcome property ──
             // Default OFF: no merge was attempted, so the outcome is null.
             Assert.Null(report.MergeOnSuccessOutcome);
 
             // The provider's merge method must NOT have been called at all.
             Assert.Equal(0, tracking.MergePlanBranchIntoUserBranchCallCount);
+
+            // Issue #340: this IS the incident case — a wholly-green worktree-mode run (a worktree
+            // provider + integration handle are present) whose work was NOT delivered because
+            // mergeOnSuccess is off. The Scheduler must flag it so the CLI prints the loud warning.
+            Assert.True(report.WhollyGreenButUndelivered);
         }
         finally
         {
@@ -501,8 +512,10 @@ public sealed class MergeOnSuccessTests
             "FF test: expected all tasks to succeed; " +
             string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
 
-        // ── COMPILE FAIL on current code: RunReport has no MergeOnSuccessOutcome property ──
         Assert.Equal(MergeOnSuccessResult.FastForwarded, report.MergeOnSuccessOutcome);
+
+        // Issue #340: delivery actually RAN (mergeOnSuccess on) ⇒ never the undelivered-work case.
+        Assert.False(report.WhollyGreenButUndelivered);
 
         // ── User's branch has advanced beyond the initial HEAD ───────────────────────────────
         string finalHead = repo.HeadSha();
@@ -658,16 +671,141 @@ public sealed class MergeOnSuccessTests
             Assert.False(report.AllSucceeded,
                 "SkippedWhenRunFails: expected at least one task to fail.");
 
-            // ── COMPILE FAIL on current code: RunReport has no MergeOnSuccessOutcome property ──
             // No merge was attempted because the run was not wholly green.
             Assert.Null(report.MergeOnSuccessOutcome);
 
             // The provider's merge method must NOT have been called when the run failed.
             Assert.Equal(0, tracking.MergePlanBranchIntoUserBranchCallCount);
+
+            // Issue #340: a run that is not wholly green is never flagged undelivered (no false warning).
+            Assert.False(report.WhollyGreenButUndelivered);
         }
         finally
         {
             try { Directory.Delete(planDir, recursive: true); } catch { }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 4b (#340) — SERIAL mode (no worktree provider): a wholly-green run is NEVER flagged
+    // undelivered. There is no separate plan branch — the work is already in the shared workspace /
+    // the user's checkout, so warning about "undelivered work on guardrails/<plan>" would be a lie.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #340 honesty gate (serial mode): with NO worktree provider (serial shared-workspace run),
+    /// a wholly-green run leaves <see cref="RunReport.WhollyGreenButUndelivered"/> false — there is no
+    /// plan branch holding undelivered work, so the CLI must NOT print the loud warning.
+    /// </summary>
+    [Fact]
+    public async Task SerialMode_GreenRun_NotFlaggedUndelivered()
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-mos-serial-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(planDir);
+            Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+
+            // maxParallelism: 1 → serial; no worktreeProvider passed to RunWithProviderAsync below.
+            File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+                """
+                {
+                  "version": 1,
+                  "guardrailMode": "failFast",
+                  "workspace": ".",
+                  "defaultRetries": 0,
+                  "maxParallelism": 1
+                }
+                """);
+
+            WriteTrivialGreenTask(planDir, "01-green-task");
+
+            var (report, _) = await RunWithProviderAsync(planDir, worktreeProvider: null, TestContext.Current.CancellationToken);
+
+            Assert.True(report.AllSucceeded, "SerialMode: expected all tasks to succeed.");
+            // No provider ⇒ no plan branch ⇒ nothing is undelivered.
+            Assert.False(report.WhollyGreenButUndelivered);
+        }
+        finally
+        {
+            try { Directory.Delete(planDir, recursive: true); } catch { }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 4c (#340) — runOnCurrentBranch mode: even with a worktree provider, a wholly-green run is
+    // NEVER flagged undelivered. The plan branch IS the user's current branch, so the work already
+    // lives in the user's checkout — nothing is "sitting undelivered" anywhere.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #340 honesty gate (runOnCurrentBranch mode): with a worktree provider present but
+    /// <c>runOnCurrentBranch: true</c>, a wholly-green run leaves
+    /// <see cref="RunReport.WhollyGreenButUndelivered"/> false — the plan branch is the current branch,
+    /// so the work is not undelivered and the CLI must NOT print the loud warning.
+    /// </summary>
+    [Fact]
+    public async Task RunOnCurrentBranch_GreenRun_NotFlaggedUndelivered()
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-mos-oncurrent-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(planDir);
+            Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+
+            // runOnCurrentBranch: true; mergeOnSuccess absent (default false); worktree provider present.
+            File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+                """
+                {
+                  "version": 1,
+                  "guardrailMode": "failFast",
+                  "workspace": ".",
+                  "runOnCurrentBranch": true,
+                  "defaultRetries": 0,
+                  "maxParallelism": 2
+                }
+                """);
+
+            WriteTrivialGreenTask(planDir, "01-green-task");
+
+            var tracking = new TrackingFakeProvider();
+            var (report, _) = await RunWithProviderAsync(planDir, tracking, TestContext.Current.CancellationToken);
+
+            Assert.True(report.AllSucceeded, "RunOnCurrentBranch: expected all tasks to succeed.");
+            // The plan branch IS the current branch ⇒ nothing is undelivered.
+            Assert.False(report.WhollyGreenButUndelivered);
+        }
+        finally
+        {
+            try { Directory.Delete(planDir, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>Write a trivially-green task (exit-0 action + exit-0 guardrail, no git writes), OS-picked flavour.</summary>
+    private static void WriteTrivialGreenTask(string planDir, string taskId)
+    {
+        string taskDir = Path.Combine(planDir, "tasks", taskId);
+        Directory.CreateDirectory(taskDir);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $$"""{"description": "trivial green task {{taskId}}", "dependsOn": []}""");
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(Path.Combine(taskDir, "action.ps1"), "exit 0\n");
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"), "exit 0\n");
+        }
+        else
+        {
+            string ap = Path.Combine(taskDir, "action.sh");
+            File.WriteAllText(ap, "#!/usr/bin/env bash\nexit 0\n");
+            File.SetUnixFileMode(ap,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            string gp = Path.Combine(taskDir, "guardrails", "01-check.sh");
+            File.WriteAllText(gp, "#!/usr/bin/env bash\nexit 0\n");
+            File.SetUnixFileMode(gp,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         }
     }
 

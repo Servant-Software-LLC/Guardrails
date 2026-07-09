@@ -563,12 +563,31 @@ public sealed class Scheduler
             }
         }
 
+        // Issue #340: a wholly-green run whose delivery did NOT happen because mergeOnSuccess resolved OFF
+        // — the verified work is sitting undelivered on the plan branch guardrails/<plan-name>. HONEST:
+        // only a run with a real, SEPARATE plan branch has anything undelivered. A serial run has no
+        // provider/integ (the work is already in the shared workspace); a runOnCurrentBranch run's plan
+        // branch IS the user's current branch (nothing is undelivered). This is the exact symmetric
+        // complement of the delivery guard above (same worktree preconditions, mergeOnSuccess off). The
+        // CLI turns it into a loud end-of-run warning once the terminal gate also passes.
+        bool whollyGreenButUndelivered =
+            report.AllSucceeded
+            && !plan.Config.MergeOnSuccess
+            && _worktreeProvider != null
+            && integ != null
+            && !plan.Config.RunOnCurrentBranch;
+
         if (!cancellationToken.IsCancellationRequested)
         {
             EndOfRunSweep(directoryOwner, settled, integ);
         }
 
-        return report with { MergeOnSuccessOutcome = mergeOutcome, MergeOnSuccessDetail = mergeDetail };
+        return report with
+        {
+            MergeOnSuccessOutcome = mergeOutcome,
+            MergeOnSuccessDetail = mergeDetail,
+            WhollyGreenButUndelivered = whollyGreenButUndelivered
+        };
     }
 
     private static bool AllGreenFor(IReadOnlyList<TaskNode> tasks, IReadOnlyDictionary<string, TaskResult> settled) =>
