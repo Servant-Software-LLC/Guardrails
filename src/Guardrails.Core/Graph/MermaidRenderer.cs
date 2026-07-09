@@ -157,14 +157,18 @@ public static class MermaidRenderer
 
     /// <summary>
     /// The legend text placed OUTSIDE the Mermaid graph (see class remarks, "Legend lives
-    /// outside the Mermaid graph"). States both the colour mapping and the before/after timing —
-    /// a bare category name would not preserve the ordering semantic the removed nested boxes used
-    /// to convey visually. Consumed by <c>GraphCommand</c> (a plain Markdown block placed after the
+    /// outside the Mermaid graph"). States the colour mapping, the before/after timing, AND how to
+    /// read an edge's direction (issue #301) — a bare category name would not preserve the ordering
+    /// semantic the removed nested boxes used to convey visually, and a reader who cannot spot a
+    /// crossing edge's clipped arrowhead needs the "edges point dependency → dependent" rule stated
+    /// in words. Consumed by <c>GraphCommand</c> (a plain Markdown block placed after the
     /// fenced <c>```mermaid```</c> block in <c>diagram.md</c>) and by <see cref="HtmlDiagramRenderer"/>
     /// (rendered into the HTML overlay div for <c>diagram.html</c>). Public because both consumers
     /// live outside this assembly's <c>InternalsVisibleTo</c> set (the CLI project). Deliberately NOT
     /// part of <see cref="Render"/>/<see cref="RenderInteractive"/>'s returned Mermaid source or
-    /// <see cref="SemanticContent"/> — see class remarks.
+    /// <see cref="SemanticContent"/> — see class remarks — so legend wording (including this
+    /// edge-direction line) never moves <see cref="GraphSourceHash"/> and never makes
+    /// <c>graph --check</c> report a plan stale.
     /// </summary>
     public const string LegendMarkdown =
         "**Legend**\n\n"
@@ -172,7 +176,12 @@ public static class MermaidRenderer
         + "(dependency-delivery precondition)\n"
         + "- 🟡 **Guardrail** — verified AFTER the task's action; must pass for the task to finish\n"
         + "- 🟢 Plan-level containers (\"Full Flight Checks\" top, \"Terminal Gate\" bottom) run the "
-        + "same two checks once for the whole plan, at the very start and very end.\n";
+        + "same two checks once for the whole plan, at the very start and very end.\n"
+        + "- ➡️ **Edge direction** — every edge runs in execution order, from a dependency to its "
+        + "dependent: an edge `A → B` means B runs after A (B dependsOn A). A long edge that routes "
+        + "*past* an unrelated box is NOT a dependency on that box — follow the arrowhead to its real "
+        + "target. (In `diagram.html`, a mid-edge arrow marks each edge's direction where a crossing "
+        + "edge passes between boxes.)\n";
 
     // Container fills applied per-container via a `style <id> …` statement (NOT a
     // `class <id> <className>;` statement). In Mermaid 11.4.1 a `class` assignment does NOT reach

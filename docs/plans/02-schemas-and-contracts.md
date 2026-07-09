@@ -2545,14 +2545,20 @@ the structure-only caption (itself after the closing ` ```mermaid ` fence) — G
 sandbox has no overlay-content option, so a plain Markdown block is the only placement that
 reads correctly there; `diagram.html` carries a corner-anchored HTML overlay `<div id="legend">`
 (`position: fixed`), mirroring the existing `#bar`/`#hint` overlay divs. Both state the SAME
-wording: the colour mapping AND the before/after timing/consequence — a bare category name
-would not preserve the ordering semantic the removed nested boxes used to convey visually:
+content: the colour mapping, the before/after timing/consequence, AND how to read an edge's
+direction (issue #301) — a bare category name would not preserve the ordering semantic the removed
+nested boxes used to convey visually, and a reader who cannot spot a crossing edge's clipped
+arrowhead needs the "edges point dependency → dependent" rule stated in words:
 
 - 🟣 **Preflight** — verified BEFORE the task's attempt loop; gates entry (dependency-delivery
   precondition)
 - 🟡 **Guardrail** — verified AFTER the task's action; must pass for the task to finish
 - 🟢 Plan-level containers ("Full Flight Checks" top, "Terminal Gate" bottom) run the same two
   checks once for the whole plan, at the very start and very end.
+- ➡️ **Edge direction** — every edge runs in execution order, from a dependency to its dependent
+  (`A → B` = B dependsOn A); a long edge routing *past* an unrelated box is NOT a dependency on it.
+  (`diagram.html` additionally draws a mid-edge arrow marking each edge's direction — see the
+  mid-edge direction marker paragraph below.)
 
 **The legend is excluded from `source-sha256`** — same treatment as the existing cosmetic
 `classDef` color lines (append-only in `Render`/`RenderInteractive`'s callers, never inside
@@ -2576,6 +2582,21 @@ in 11.4.1 a `class` assignment does not reach a subgraph that is itself an edge 
 every container is one — whereas `style <id>` colours it. `style <id>` also colours an **empty**
 plan-level bracket, which Mermaid renders as a plain node (not a cluster) — so the Full Flight
 Checks / Terminal Gate brackets keep their colour even when their folder is empty.
+
+**Mid-edge direction arrowheads (`diagram.html` only, issue #301).** The `subgraph → subgraph`
+edge above lands each edge's own arrowhead on the TARGET cluster's outer border. On a long edge
+that routes *past* an unrelated sibling box, that head is far from — and invisible along — the
+crossing mid-section a reader's eye follows, so the connector reads as directionless, or is
+misread as a phantom dependency between the two boxes it merely passes between (the DAG and the
+Mermaid source are correct — every edge is `-->` — the failure is purely rendering legibility).
+`diagram.html`'s embedded script therefore runs, AFTER `mermaid.render` resolves (same
+post-render-SVG pattern as the title-band overlay and the wrapped-label fix), an
+`addEdgeDirectionMarkers` pass that appends a small filled arrowhead at each edge path's geometric
+MIDPOINT, rotated to the path's local tangent so it points source→target (dagre builds each path's
+`d` from source to target, so increasing arc length is the dependency direction). It is purely
+additive: it never alters the Mermaid source, the DAG, `source-sha256`, or `diagram.md`, and the
+marker carries `pointer-events: none` so it never intercepts a node / title-band / leaf-source
+click. `diagram.md` (GitHub, no JS) instead relies on the legend's "Edge direction" note above.
 
 **A task container's click target is a POST-RENDER SVG overlay on its title band, NOT a Mermaid
 mechanism at all (issue #211's anchor-node fix superseded; issue #235).** The #210 edge fix above

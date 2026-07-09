@@ -87,6 +87,25 @@ namespace Guardrails.Core.Graph;
 /// with the same healthy gap a never-wrapped label already has, and every already-fits label
 /// (including the whole golden <c>hello-guardrails</c> example) was left byte-for-byte unchanged.
 /// </para>
+/// <para>
+/// <b>Mid-edge direction arrowheads (issue #301).</b> Because the DAG is drawn subgraph→subgraph
+/// (issue #210), Mermaid clips an edge's own arrowhead to the TARGET cluster's OUTER border. On a
+/// long edge that routes <i>past</i> an unrelated sibling box, that head lands far from — and is
+/// invisible along — the crossing mid-section a reader's eye actually follows, so a reviewer sees an
+/// apparently directionless connector in the gap between two boxes and either can't tell which way
+/// the dependency runs or misreads it as a phantom dependency between the two boxes it merely passes
+/// between (the DAG and the Mermaid source are correct — every edge is <c>--&gt;</c> — the failure is
+/// purely rendering legibility). The <c>addEdgeDirectionMarkers</c> function (run AFTER
+/// <c>mermaid.render</c> resolves, like the two fixes above) injects a small filled arrowhead at each
+/// edge path's geometric MIDPOINT, rotated to the path's local tangent so it points source→target —
+/// the direction cue lands exactly where the ambiguity is, independent of the clipped endpoint
+/// marker, and reveals a crossing edge is passing THROUGH (not terminating) between the boxes. It is
+/// purely additive post-render SVG (same pattern as the overlays): it never alters the Mermaid
+/// source, the DAG, the <c>source-sha256</c>, or <c>diagram.md</c> — only the local viewer's
+/// rendering. <c>diagram.md</c> (GitHub, no JS) instead relies on the
+/// <see cref="MermaidRenderer.LegendMarkdown"/> "Edge direction" note that states the
+/// dependency→dependent reading in words.
+/// </para>
 /// </remarks>
 public static class HtmlDiagramRenderer
 {
@@ -177,6 +196,11 @@ public static class HtmlDiagramRenderer
   <div><span class="swatch" style="background:#d4edda;border:1px solid #2e7d32;"></span>
     Plan-level containers ("Full Flight Checks" top, "Terminal Gate" bottom) run the same two
     checks once for the whole plan, at the very start and very end.</div>
+  <div><span class="swatch" style="background:#7fdbff;border:1px solid #3aa0c2;"></span>
+    <b>Edge direction</b> &mdash; edges run in execution order, from a dependency to its dependent
+    (<code>A &rarr; B</code> = B dependsOn A). A cyan mid-edge arrow marks each edge's direction, so a
+    long edge routing PAST an unrelated box is never a dependency on it &mdash; follow the arrow to
+    its real target.</div>
 </div>
 <div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
   Node clicks open source files &mdash; serve via a local HTTP server (e.g.
@@ -357,6 +381,52 @@ function addTaskContainerOverlays(svgEl) {
   }
 }
 
+// Draw a mid-edge direction arrowhead on every DAG edge (issue #301). The DAG is drawn
+// subgraph->subgraph (issue #210), so Mermaid clips an edge's own arrowhead to the TARGET cluster's
+// OUTER border; on a long edge that routes PAST an unrelated sibling box, that head is far from — and
+// invisible along — the crossing mid-section a reader's eye follows, so the connector reads as
+// directionless (or as a phantom dependency between the two boxes it passes between). The endpoint
+// arrowhead is correct but unreadable there; this adds a second, always-visible cue where the
+// ambiguity actually is. Purely additive post-render SVG — never touches the Mermaid source, the DAG,
+// the source-sha256, or diagram.md.
+const EDGE_ARROW_COLOR = '#7fdbff'; // keep in sync with the #legend "Edge direction" swatch
+function addEdgeDirectionMarkers(svgEl) {
+  const ns = 'http://www.w3.org/2000/svg';
+  // Mermaid draws every flowchart edge as a <path class="flowchart-link"> inside <g class="edgePaths">.
+  // Select via both the group and the class so a future class-name shift still resolves the edges.
+  const paths = svgEl.querySelectorAll('g.edgePaths path, path.flowchart-link');
+  const seen = new Set();
+  for (const path of paths) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    let len = 0;
+    try { len = path.getTotalLength(); } catch (e) { continue; }
+    if (!(len > 0)) continue;
+
+    // The midpoint is where a reader's eye lands on a long crossing edge; a short chord around it
+    // gives the local tangent. dagre builds each path's `d` from source to target, so INCREASING arc
+    // length is the dependency direction — no need to know the endpoints' coordinates.
+    const step = Math.min(4, len / 2);
+    const mid = path.getPointAtLength(len / 2);
+    const back = path.getPointAtLength(len / 2 - step);
+    const fwd = path.getPointAtLength(len / 2 + step);
+    const angle = Math.atan2(fwd.y - back.y, fwd.x - back.x) * 180 / Math.PI;
+
+    const marker = document.createElementNS(ns, 'path');
+    marker.setAttribute('d', 'M -5 -6 L 8 0 L -5 6 Z'); // triangle pointing +x before rotation
+    marker.setAttribute('transform', 'translate(' + mid.x + ', ' + mid.y + ') rotate(' + angle + ')');
+    marker.setAttribute('class', 'gr-edge-dir');
+    marker.style.fill = EDGE_ARROW_COLOR;
+    marker.style.stroke = 'none';
+    // Never intercept a click meant for a node, the container title-band overlay, or a leaf source link.
+    marker.setAttribute('pointer-events', 'none');
+
+    // Append inside the edge's own group so it paints above the edge line but below the node boxes
+    // (Mermaid paints edgePaths before nodes) — a mid-edge point is open space, so it never covers a box.
+    (path.parentNode || svgEl).appendChild(marker);
+  }
+}
+
 let pz = null;
 try {
   const { svg } = await mermaid.render('dag', graph);
@@ -366,6 +436,7 @@ try {
   el.setAttribute('height', '100vh');
   fixWrappedClusterLabels(el);
   addTaskContainerOverlays(el);
+  addEdgeDirectionMarkers(el);
   pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });

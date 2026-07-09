@@ -338,4 +338,73 @@ public sealed class HtmlDiagramRendererTests
         Assert.Contains("deltaCenter", html, StringComparison.Ordinal);
         Assert.Contains("label.setAttribute('transform',", html, StringComparison.Ordinal);
     }
+
+    // === mid-edge direction arrowheads (issue #301) ===================================
+    //
+    // The DAG is drawn subgraph->subgraph (issue #210), so Mermaid clips each edge's own arrowhead
+    // to the target cluster's outer border; on a long edge that routes PAST an unrelated sibling box,
+    // that head is invisible along the crossing mid-section a reader's eye follows, so the edge reads
+    // as directionless (or as a phantom dependency between the two boxes it passes between).
+    // addEdgeDirectionMarkers injects a small filled arrowhead at each edge's geometric midpoint,
+    // rotated to the path's local tangent so it points source->target — a second, always-visible
+    // direction cue where the ambiguity actually is. Purely additive post-render SVG; it never alters
+    // the Mermaid source, the DAG, the source-sha256, or diagram.md.
+
+    [Fact]
+    public void Render_DefinesEdgeDirectionMarkerFunction()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("function addEdgeDirectionMarkers(svgEl)", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_EdgeDirectionMarkers_InvokedAfterMermaidRenderResolves()
+    {
+        // The overlay must be applied to the SVG mermaid.render just produced (the definition may
+        // appear earlier in the script — only invocation order matters for correctness).
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        int renderCall = html.IndexOf("await mermaid.render(", StringComparison.Ordinal);
+        Assert.True(renderCall >= 0, "the render call must be present");
+        int invocation = html.IndexOf("addEdgeDirectionMarkers(", renderCall, StringComparison.Ordinal);
+        Assert.True(invocation > renderCall,
+            "the direction markers must be applied AFTER the render call, to the SVG it produced");
+    }
+
+    [Fact]
+    public void Render_EdgeDirectionMarkers_SelectEdgePaths_AndOrientAlongTheLocalTangent()
+    {
+        // The cue must (a) target the edge <path>s Mermaid emits and (b) orient by the path's own
+        // geometry (midpoint + local tangent), not a fixed direction — that is what makes it point
+        // source->target on an arbitrarily-routed crossing edge, independent of the clipped endpoint
+        // arrowhead.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+        string fnBody = EdgeDirectionFunctionBody(html);
+
+        Assert.Contains("g.edgePaths", fnBody, StringComparison.Ordinal);
+        Assert.Contains("getTotalLength()", fnBody, StringComparison.Ordinal);
+        Assert.Contains("getPointAtLength(", fnBody, StringComparison.Ordinal);
+        Assert.Contains("Math.atan2(", fnBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_EdgeDirectionMarkers_DoNotInterceptClicks()
+    {
+        // The marker must never steal a click meant for a node, the container title-band overlay, or
+        // a leaf source link — regression guard for the click affordances (#33/#235).
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+        string fnBody = EdgeDirectionFunctionBody(html);
+
+        Assert.Contains("marker.setAttribute('pointer-events', 'none')", fnBody, StringComparison.Ordinal);
+    }
+
+    private static string EdgeDirectionFunctionBody(string html)
+    {
+        int fnStart = html.IndexOf("function addEdgeDirectionMarkers", StringComparison.Ordinal);
+        Assert.True(fnStart >= 0, "the direction-marker function must be present");
+        int fnEnd = html.IndexOf("\n}\n", fnStart, StringComparison.Ordinal);
+        Assert.True(fnEnd > fnStart, "the direction-marker function must be well-formed");
+        return html[fnStart..fnEnd];
+    }
 }

@@ -472,4 +472,70 @@ public sealed class MermaidRendererTests
         Assert.DoesNotContain('\r', MermaidRenderer.Render(plan));
         Assert.DoesNotContain('\r', MermaidRenderer.SemanticContent(plan));
     }
+
+    // === edge-direction legibility (issue #301) =======================================
+    // A long dependency edge that routes subgraph->subgraph PAST an unrelated sibling box has its
+    // arrowhead clipped at the target cluster border, so mid-route it reads as a directionless
+    // connector (or a phantom dependency between the two boxes it merely passes between). The DAG and
+    // the Mermaid source are correct — every edge is `-->` — the failure is rendering legibility. The
+    // primary fix is a diagram.html mid-edge arrow (see HtmlDiagramRendererTests); the diagram.md
+    // (GitHub/no-JS) remedy is the legend note asserted here.
+
+    [Fact]
+    public void LegendMarkdown_StatesHowToReadAnEdgesDirection()
+    {
+        // The dependency->dependent rule, in words, for the reader who cannot spot a crossing edge's
+        // clipped arrowhead — including the phantom-dependency remedy ("a long edge routing PAST a
+        // box is NOT a dependency on it").
+        string legend = MermaidRenderer.LegendMarkdown;
+
+        Assert.Contains("Edge direction", legend, StringComparison.Ordinal);
+        Assert.Contains("B dependsOn A", legend, StringComparison.Ordinal);
+        Assert.Contains("NOT a dependency", legend, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LegendMarkdown_EdgeDirectionNote_IsNeverPartOfTheHashedSemanticContent()
+    {
+        // Provenance contract (SSOT §10): the #301 legend note lives OUTSIDE SemanticContent, so it
+        // never moves GraphSourceHash / makes `graph --check` flap on legend wording.
+        PlanDefinition plan = Plan(TaskWith("01-a", [Guardrail("01-check")]));
+
+        Assert.DoesNotContain("Edge direction", MermaidRenderer.SemanticContent(plan), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CrossingSiblingEdge_DagUnchanged_AllEdgesArrowed_AndDirectionCuePresentEndToEnd()
+    {
+        // The #301 repro shape: a task depends directly on an EARLIER task, so its edge must route
+        // PAST the intervening siblings (02 -> 05 crosses past 03 and 04). Assert:
+        //   (a) the DAG is unchanged — the crossing edge is emitted as an ARROWED `-->`, and NO edge
+        //       is an arrowless `---`/`~~~` (the issue verified every edge is `-->`), so direction
+        //       stays encoded in the deterministic source;
+        //   (b) both artifacts carry a direction cue: diagram.html the mid-edge arrow overlay,
+        //       diagram.md the legend note.
+        PlanDefinition plan = Plan(
+            TaskWith("01-root", [Guardrail("01-check")]),
+            TaskWith("02-mid-a", [Guardrail("01-check")], "01-root"),
+            TaskWith("03-mid-b", [Guardrail("01-check")], "01-root"),
+            TaskWith("04-mid-c", [Guardrail("01-check")], "01-root"),
+            TaskWith("05-sink", [Guardrail("01-check")], "02-mid-a"));
+
+        IReadOnlyList<string> lines = Lines(MermaidRenderer.Render(plan));
+
+        // (a) DAG semantics unchanged: the crossing edge exists and is arrowed; nothing is arrowless.
+        Assert.Contains("task_02_mid_a --> task_05_sink", lines);
+        IReadOnlyList<string> edges = lines.Where(l => l.Contains("-->", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(edges);
+        Assert.DoesNotContain(lines, l => l.Contains(" --- ", StringComparison.Ordinal)
+                                          || l.Contains("~~~", StringComparison.Ordinal));
+
+        // (b) diagram.html carries the mid-edge direction overlay for this plan...
+        string html = HtmlDiagramRenderer.Render(
+            MermaidRenderer.RenderInteractive(plan), "deadbeef", MermaidRenderer.TaskFolderTargets(plan));
+        Assert.Contains("addEdgeDirectionMarkers(", html, StringComparison.Ordinal);
+
+        // ...and diagram.md's legend states how to read the crossing edge's direction.
+        Assert.Contains("Edge direction", MermaidRenderer.LegendMarkdown, StringComparison.Ordinal);
+    }
 }
