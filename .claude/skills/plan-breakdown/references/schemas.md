@@ -28,6 +28,45 @@ emitted by `guardrails graph`, carrying a `<!-- guardrails:graph … source-sha2
 provenance comment whose hash is the staleness key. It is not plan input and must not
 be hand-edited; the loader/validator ignore it. See SSOT §10 (Diagram artifact).
 
+## Waved plans — nested layout (SSOT §14)
+
+A **waved** plan (a plan of ordered STAGES, each building on the prior stage's materialized output —
+SKILL.md Step 0.8 / Step 9) replaces the plan-root `tasks/` with ordered **wave subfolders**, each a
+self-contained mini-plan. This is an excerpt of SSOT §14 — if they disagree, §14 wins.
+
+```
+plan-name/
+├── guardrails.json                 # ONE shared run config for the whole plan (no per-wave config in v1)
+├── state/seed.json                 # optional; ONE continuous state/journal for the whole run
+├── preflights/  guardrails/        # OPTIONAL plan-root Full Flight Checks / Terminal Gate (additive)
+├── diagram.md                      # OPTIONAL plan-level wave map (generated)
+└── wave-01-<slug>/                 # a wave = a mini-plan folder
+    ├── preflights/                 #   wave ENTRY gate  ("the prior wave's outputs materialized")
+    ├── guardrails/                 #   wave EXIT gate   ("this wave's terminal postconditions")
+    └── tasks/<NN-verb-object>/…    #   the wave's own task DAG (same shape as a flat plan's tasks/)
+    wave-02-<slug>/ …
+```
+
+- **Detection:** a plan is *waved* iff it has **no root `tasks/`** AND ≥1 immediate subdir matching
+  **`^wave-([0-9]+)-[a-z0-9-]+$`**. The numeric `NN` is **load-bearing** — it drives the strict total
+  order (there is no `dependsOnWave` edge). Number contiguously from `01`.
+- **Validation codes (SSOT §14.1):** **GR2032** mixed layout (both a root `tasks/` AND wave dirs);
+  **GR2033** wave numbering (duplicate `NN`, or a non-conforming sibling dir next to wave dirs = error;
+  a numbering **gap** = warning); **GR2034** a cross-wave `dependsOn` edge (`dependsOn` is intra-wave,
+  plain sibling folder names only — cross-wave ordering is the barrier's job).
+- **Wave-qualified identity (SSOT §14.2):** a task's canonical id is **`<waveDir>/<taskFolder>`** (e.g.
+  `wave-02-provision/01-author-tests`). This is the journal key, the resume trailer value, AND the
+  **§6.2 single-writer state-fragment key** — a waved-plan prompt action's fragment MUST be keyed by
+  the wave-qualified id: `{ "wave-02-provision/01-author-tests": { … } }` (a bare `01-author-tests` key
+  is rejected as foreign every attempt). Two waves may reuse `01-` numbering with zero collision.
+- **The wave four-folder scope (SSOT §14.3):** `<plan>/<wave>/preflights/` = the wave ENTRY gate
+  (the prior wave materialized — the #181 positive-baseline archetype at the boundary);
+  `<plan>/<wave>/guardrails/` = the wave EXIT gate (this wave's terminal postconditions; **GR2028
+  per wave** — a multi-leaf/fan-in wave needs ≥1 real integration re-run). The **last wave's exit gate
+  runs on the fully-merged HEAD** and is the whole-plan terminal soundness boundary, so a plan-root
+  `<plan>/guardrails/` is optional-additive. All folders share the ONE guardrail-file parser (a
+  malformed file with no `catches:` is GR2027).
+
 ## `guardrails.json` — minimum to emit
 
 ```jsonc

@@ -1,0 +1,6 @@
+{
+  "description": "Write out/report.md quoting the generated greeting",
+  "stableId": "w2a02r",
+  "dependsOn": ["01-generate-greeting"],
+  "writeScope": ["out/report.md"]
+}

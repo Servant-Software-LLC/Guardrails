@@ -1,0 +1,6 @@
+{
+  "description": "Write out/config.json holding the recipient name to greet (from seeded shared state)",
+  "stableId": "w1a02c",
+  "dependsOn": [],
+  "writeScope": ["out/config.json"]
+}

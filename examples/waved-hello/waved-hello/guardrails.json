@@ -1,0 +1,10 @@
+{
+  // Run configuration — see docs/plans/02-schemas-and-contracts.md §2.
+  // ONE shared run config for the whole WAVED plan; there is no per-wave config in v1 (SSOT §14.1).
+  "version": 1,
+  "maxParallelism": 2,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 600,
+  "guardrailMode": "failFast",
+  "workspace": ".."
+}

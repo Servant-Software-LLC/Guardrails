@@ -32,9 +32,12 @@ and only then does `guardrails run` execute it.
   ladder, and the v2 boundary. **Read when the plan is UI-facing**, alongside the
   `Step 4b / 5c — Two-level UI verification` section below.
 - `references/schemas.md` — exact file formats to emit (excerpt of the SSOT,
-  `docs/plans/02-schemas-and-contracts.md`).
+  `docs/plans/02-schemas-and-contracts.md`), including the **waved nested layout** (§14).
 - `references/example-breakdown.md` — a complete worked breakdown including an
   inserted task, plus a negative example. Read when in doubt about output shape.
+- `references/example-breakdown-waved.md` — the worked WAVED breakdown (2 ordered stages →
+  nested `<plan>/<wave>/…` layout), the JIT staged-breakdown flow, and its closing report.
+  **Read alongside Step 9 whenever the plan is authored as ordered stages.**
 
 ## Step 0 — Preconditions
 
@@ -126,6 +129,20 @@ and only then does `guardrails run` execute it.
    WorksoftMigrator.slnx and have a <ProjectReference> from its consumer before the solution
    build guardrail is meaningful.
    ```
+8. **Decide FLAT vs WAVED (the layout fork) — set `$waved` (#254).** Is the plan authored as
+   **ordered STAGES**, each building on the *materialized artifacts* of the prior stage? The tells:
+   explicit "Wave 0..N" / "Stage 1..N" / "Phase 1..N" headings whose later stages say **"builds on
+   Stage N-1's output"**, reference **real file paths / signatures a prior stage produces**, or are
+   **undesignable up front** because their evidence points at artifacts that don't exist until an
+   upstream stage runs. If yes → `$waved = true`: the breakdown emits the **nested layout** (Step 9),
+   not the flat `tasks/` layout. If the plan is a single stage / a plain feature (no staged milestones
+   whose downstream tasks depend on upstream *materialization*) → `$waved = false`: the flat layout
+   (Steps 1–8), **unchanged**. **Do NOT wave a flat plan** — fine-grained parallelism is a task DAG
+   inside ONE wave, not multiple waves (waves are the COARSE ordering for stages whose downstream
+   tasks can't be authored until the upstream is real; a wave barrier destroys cross-wave parallelism,
+   SSOT §14 C5). When `$waved`, Steps 1–8 still run — **once per wave** — but Step 9 governs the
+   layout, the wave gates, the wave-qualified identity, and the JIT staged-breakdown mode; read it
+   before proceeding.
 
 ## Step 1 — Parse the plan into candidate work items
 
@@ -1849,6 +1866,187 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 >    surfaced (report + honest-halt), never silently scaffolded.
 <!-- END ADDED SECTION #41/#78 -->
 
+<!-- BEGIN ADDED SECTION #254 — waved plans: nested layout + JIT staged breakdown (auto-merge friendly; do not merge into prose above) -->
+## Step 9 — Waved plans: nested layout + JIT staged breakdown (#254)
+
+Fires when Step 0.8 set `$waved = true` (the plan is authored as ordered STAGES, each building on the
+prior stage's *materialized* artifacts). This is **authoring doctrine** — the harness EXECUTION
+contract (wave loop, hard barrier, `WaveDefinitionHash`, cross-wave resume, wave drift) is SSOT §14
+and `guardrails-domain-knowledge`; do NOT restate it. Read `references/example-breakdown-waved.md`
+alongside this step. The one-line mental model: **a wave is a mini-plan; a waved plan is a
+strict-ordered stack of mini-plans sharing one run config, one plan branch, one journal, with a hard
+barrier between each.**
+
+### 9.1 The layout you emit — nested, not flat
+
+Instead of a plan-root `tasks/`, emit ordered **wave subfolders**, each a self-contained mini-plan
+(SSOT §14.1; the excerpt is `references/schemas.md`):
+
+```
+plan-name/
+├── guardrails.json                 # ONE shared run config for the whole plan (no per-wave config)
+├── state/seed.json                 # optional; ONE continuous state/journal for the whole run
+└── wave-01-<slug>/                 # a wave = a mini-plan folder; NN drives strict order
+    ├── preflights/                 #   wave ENTRY gate  ("the prior wave's outputs materialized")
+    ├── guardrails/                 #   wave EXIT gate   ("this wave's terminal postconditions")
+    └── tasks/<NN-verb-object>/…    #   the wave's own task DAG
+    wave-02-<slug>/ …
+```
+
+- **Wave-dir name MUST match `^wave-([0-9]+)-[a-z0-9-]+$`** — `wave-01-scaffold`, `wave-02-provision`.
+  The numeric `NN` is **load-bearing** (unlike the advisory `NN-` on task folders): it drives the
+  strict total order. Number them **contiguously from `01`** (a gap is a `validate` **warning**
+  GR2033; a duplicate `NN`, or any non-conforming sibling dir next to the wave dirs, is an **error**
+  GR2033). There is **no root `tasks/`** in a waved plan (both a root `tasks/` AND wave dirs = **GR2032
+  mixed-layout error**).
+- Each wave gets its own `preflights/` (entry) and `guardrails/` (exit) folder — the four-folder model
+  (SKILL.md Step 4/5) applied at **wave** granularity (§9.2). `guardrails.json`, `state/`, and any
+  plan-root `preflights/`/`guardrails/` stay at the plan root and are shared across all waves.
+- A plan-root `<plan>/guardrails/` (a whole-plan Terminal Gate) is **optional-additive** for a waved
+  plan — the **last wave's exit gate runs on the fully-merged HEAD** and IS the whole-plan terminal
+  soundness boundary (SSOT §14.3). Do NOT emit a plan-root terminal gate that merely duplicates the
+  last wave's exit gate; add one only for a check meaningful *only once everything is done*.
+
+### 9.2 Each wave is a mini-plan — run Steps 1–8 per wave, wire the two wave gates
+
+For each stage, run Steps 1–8 **scoped to that stage's deliverables**, writing into that wave's
+`tasks/`. Everything the flat path does — TDD splitting (Step 2), the sparsest intra-wave DAG (Step 3),
+guardrail selection (Step 4), the generative insertions (Step 5), the folder authoring (Step 6) —
+applies **inside each wave, unchanged**. What's *new* is the two wave-boundary folders:
+
+- **Wave ENTRY gate = `<plan>/<wave>/preflights/` = "the prior wave's outputs MATERIALIZED".** This is
+  the **#181 positive-baseline archetype applied at the wave boundary** (catalogue → "Baseline-green /
+  start-from-green (preflight)"; the wave-boundary case). Author a **POSITIVE** check that the concrete
+  artifacts this wave builds on (files, symbols, a built binary — the real paths the prior wave
+  produced) are **present and real** on the branch before this wave's DAG spends a turn. It is
+  **positive-monotone-safe** (assert-present, never "not yet present" — a segment only grows). For
+  **wave 1** the entry gate is optional and, if present, is the ordinary plan-start baseline: a
+  brownfield green-start (#181) and/or a NEGATIVE "not-yet-produced artifact is absent" fresh-start
+  check (the assert-absent baseline = `tests-fail-on-current-code`/`tests-fail-on-stubs` family, not a
+  new archetype). *`terminal-gate-of-wave-N == preflight-of-wave-(N+1)`* — the same boundary, two
+  authored folders: wave N's exit gate certifies the merged HEAD; wave N+1's entry gate verifies that
+  HEAD carries what it depends on.
+- **Wave EXIT gate = `<plan>/<wave>/guardrails/` = "this wave's terminal postconditions".** This is the
+  Terminal-Gate archetype (Step 4/5) applied per wave. **GR2028 applies PER WAVE**: a **multi-leaf or
+  fan-in** wave's exit gate MUST carry **≥1 real integration re-run** — a genuine build/suite invocation
+  or a **union-safe** invariant (NOT a tautological `exit 0`). A single-leaf linear wave needs no
+  integration guardrail; a plain LOCAL terminal postcondition is fine.
+  - **Carry the #125/#165 union-safe rule into EVERY intermediate wave's exit gate.** A `scope:
+    "integration"` guardrail re-runs at every union; an intermediate wave's exit gate that asserts a
+    **terminal postcondition** ("all tests pass", "the full build is green") as `scope: "integration"`
+    red-halts a correct partial merge. Keep a whole-build / whole-suite check **LOCAL** (no `scope`
+    key — it then runs once, in that wave's exit-gate attempt); make the integration-scoped guardrail a
+    **union-safe CONDITIONAL** invariant ("if contribution X present, verify it"). The LAST wave's exit
+    gate is the one place a whole-suite `tests-pass` LOCAL check belongs (it runs on the fully-merged
+    HEAD) — the exact role the flat plan's terminal `<plan>/guardrails/` folder plays.
+
+### 9.3 Wave-qualified identity, intra-wave `dependsOn`, and the state key
+
+- **`dependsOn` is INTRA-WAVE ONLY.** A task references siblings **within its own wave** by plain
+  folder name. Cross-wave ordering is the **barrier's** job — a `dependsOn` edge naming a task in
+  another wave is a **hard error (GR2034)**. When a wave-2 task consumes a wave-1 artifact, express it
+  as the wave-2 **entry gate** (§9.2, "materialized") + the action prompt reading the real path — never
+  a cross-wave edge. Each wave's DAG is self-contained.
+- **The canonical task id is the wave-qualified `<waveDir>/<taskFolder>`** (e.g.
+  `wave-02-provision/01-author-tests`). This is what the harness uses for the journal key, the resume
+  trailer, and — load-bearing for authoring — the **state single-writer key**. So in a waved plan a
+  prompt action's state fragment must be keyed by the **wave-qualified id**, not the bare folder name:
+
+  ```json
+  { "wave-02-provision/01-author-tests": { "someKey": "someValue" } }
+  ```
+
+  A bare `01-author-tests` key is rejected as **foreign** on every attempt (the #164 failure loop, one
+  level up). When you emit the Step 6 harness-contract header into a waved-plan prompt, substitute the
+  **wave-qualified id** into the `{ "<this-task-folder-name>": { … } }` example and the state-output
+  guardrail's index (`$fragment.'wave-02-provision/01-author-tests'.<key>`) — all three must agree.
+- **Cross-wave state READ** uses the wave-qualified key of the producing task in an EARLIER wave (e.g.
+  `$state['wave-01-scaffold/03-generate']`) and is satisfied by the barrier (GR2022's wave-aware
+  branch) — no `dependsOn` edge, and none is possible (it would be GR2034). A **same-wave** read still
+  needs the intra-wave `dependsOn` ancestor; a **later-wave** read is an error.
+
+### 9.4 The rest of the doctrine, applied per wave (what shifts)
+
+Everything else in this skill still holds — inside each wave. The ones that visibly shift:
+
+- **Per-wave TDD + insertions (Steps 2/5).** Split code deliverables into author-tests + implement
+  **within the wave**; insert wiring/seam/UI/smoke tasks **within the wave** that needs them.
+- **Per-wave baseline (#181).** The brownfield green-start baseline is authored **per wave that touches
+  a brownfield area** — and for wave ≥ 2 it typically merges into the wave ENTRY gate (§9.2), which is
+  already "the prior wave materialized + the area is green". Don't emit a plan-root baseline that
+  duplicates a wave entry gate.
+- **Per-wave author-time smoke-test (#302, Step 7.0d).** EXECUTE every runnable script guardrail you
+  generate in **any** wave's four folders — task-level AND the wave entry/exit gates — against a
+  hand-written valid + invalid sample. A wave entry gate that "checks the prior wave materialized" is
+  exactly the render/execute-the-not-yet-authored-output shape (§7.0d's highest-value target):
+  hand-synthesize a materialized-workspace sample and a missing-artifact sample and run it both ways.
+- **Later-wave task references earlier-wave code → durable markers + `maxTurns: 75` (#203, Step 6 /
+  Step 4a).** A wave-2 prompt describing wave-1's not-yet-run output is the canonical case for the
+  durable-marker + architecture-caveat rule and the fourth turn-expensive archetype — apply BOTH. (The
+  JIT flow in §9.5 is the stronger fix: author wave 2 against the REAL materialized code, so there is
+  nothing to guess.)
+- **`guardrails-patterns.md`, stack detection, `$testFramework`, `$e2eStack`** are resolved ONCE for
+  the plan (Step 0), not per wave.
+
+### 9.5 JIT staged-breakdown mode — break down wave N+1 AFTER wave N runs
+
+The KEY multi-wave capability. A downstream wave often **cannot be fully broken down up front**: its
+tasks reference artifacts (real file paths, signatures, generated types) that **don't exist until the
+prior wave runs**. Guessing them produces stale line-number pointers and unhedged architecture claims
+(#203) — the exact failure the durable-marker rule patches over. The clean fix is to author the wave
+**against the materialized workspace**.
+
+**Two authoring modes — pick per plan:**
+1. **Whole-plan up front (the pre-authored path).** When every downstream wave IS designable up front
+   (the artifacts are named/stable in the plan), break down all waves now. This is the
+   `examples/waved-hello` shape — validate the whole nested folder, review it, run it straight through.
+2. **JIT staged (the incremental path).** When a downstream wave references not-yet-existing artifacts,
+   break down **only the ready waves** now; leave the not-yet-designable wave as a **stub folder** (the
+   `wave-NN-<slug>/` dir with an **empty `tasks/`**) so the strict order and the numbering are declared
+   but its contents are authored later. The harness **halts honestly** at an empty/unauthored next wave
+   (`RunReport.WaveHalt`, `NextWaveUnauthored`, exit 2), pointing at the integration worktree.
+
+**The documented JIT workflow (state it in the Step 7 report when you leave a wave stubbed):**
+
+1. **Break down + review the ready waves.** Author waves `01..K`, `guardrails validate`, then
+   `/guardrails-review` them (§9.6). Leave wave `K+1..N` as stubs (declared dir, empty `tasks/`).
+2. **Run.** `guardrails run <plan>` executes wave 1 … wave K behind the barrier. When it reaches the
+   empty wave `K+1`, it **halts (exit 2)** and prints the **integration worktree path** (the plan's
+   materialized upstream — `<worktreeRoot>/<runId>/_integration`, the `#197` "materialized workspace"
+   location; the user's own checkout stays read-only for the whole run, SSOT §14 Decision D).
+3. **Author wave K+1 against the MATERIALIZED workspace.** Re-invoke `/plan-breakdown` in JIT mode:
+   break down stage `K+1` **reading the integration worktree** — inspect the real files/signatures
+   wave K produced there, so the wave's tasks and guardrails reference bytes that ACTUALLY exist. This
+   removes the guesswork (no stale markers, no hedged claims) that the whole-plan-up-front path can't
+   avoid. Write the result into `wave-K+1-<slug>/tasks/` (+ its entry/exit gates).
+4. **Review the freshly-authored wave.** Run `/guardrails-review <plan>/wave-K+1-<slug>` on JUST that
+   wave (§9.6 supports a single-wave review) — the same adversarial pass, keyed on that wave's own
+   review marker.
+5. **Resume.** `guardrails run <plan>` again — cross-wave resume skips the completed waves and drains
+   the newly-authored wave; repeat from step 2 for each remaining stubbed wave.
+
+**Reading the integration worktree is READ-ONLY input to breakdown** — you inspect it to author
+correct evidence; you never write into it (the harness owns it). The materialized upstream is the
+authority for every path/signature the new wave references.
+
+### 9.6 Validate + report (waved specifics)
+
+- `guardrails validate <plan>` validates the whole waved plan (all authored waves); `guardrails plan
+  <plan>` prints the **wave-aware** preview (waves in strict order, each with its own tiers). Fix to
+  exit 0 as in Step 7.1. `guardrails graph <plan>` renders the whole waved DAG (per-wave sub-diagrams
+  are a deferred v1 nicety — `graph <plan>/<wave>` is follow-up).
+- **`/guardrails-review` reviews wave-by-wave** (each wave is a mini-plan with its own review marker).
+  In the JIT flow you review a **single freshly-authored wave**; in the pre-authored flow you review
+  the whole plan wave-by-wave. Record it with `guardrails mark-reviewed` (whole plan or per wave).
+- **Report additions (Step 7.4):** state that the plan is WAVED and why (the ordered-stages signal);
+  the wave list with each wave's entry gate (what materialized artifacts it asserts) and exit gate
+  (the terminal check, LOCAL vs union-safe `scope:"integration"`); per wave, the ordinary task
+  table; **which waves were authored up front vs left as JIT stubs**, and for each stub the documented
+  JIT workflow (§9.5) so the human knows the run will halt there for the next breakdown. Keep the
+  draft-not-done closing (Step 7.5) unchanged.
+
+<!-- END ADDED SECTION #254 -->
+
 ## Quality bar (verify before declaring done)
 
 - [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
@@ -1885,4 +2083,8 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 - [ ] (#101) Every task whose primary deliverable is a file in a NEW `.claude/` subdirectory has a directory-seed task (writes a `.gitkeep`) or a `## Pre-conditions` note before it, plus a `01-dir-seeded.ps1` guardrail asserting the subdir exists; the seed and affected path reported (Step 5b).
 - [ ] (#87) No emitted task updates ≥2 `.claude/skills/<X>/` directories — multi-skill milestones split into one `NN-update-<skill>-skill` task per directory (each with a directory-narrowed `writeScope`), with golden-example regeneration and round-trip verification as their own downstream tasks `dependsOn` the skill updates (Step 2c).
 - [ ] (#41/#78) `$e2eStack` recorded in Step 0 (playwright | cypress | none); for a UI-producing task, Level A (v1 liveness smoke) is added when a driver exists (else the §9 served-markup guardrail is emitted and the Level-A gap reported), an absent driver is surfaced/honest-halted (never scaffolded), Level B (v2 interaction-flow) is documented and surfaced as a v2 decision (never emitted in v1), and a multi-step-interaction exit criterion covered by only served-markup is flagged under-covered in Step 7 (Step 4b/5c; `references/stacks/ui.md`).
+- [ ] (#254) FLAT vs WAVED decided in Step 0.8: a plan of ordered STAGES whose later stages build on the prior stage's *materialized* artifacts is emitted as the nested `<plan>/<wave-NN-slug>/{preflights,guardrails,tasks}/` layout (wave dirs match `^wave-([0-9]+)-[a-z0-9-]+$`, contiguous NN, no root `tasks/`); a single-stage/flat plan is NOT waved (fine-grained parallelism is a task DAG inside ONE wave). Steps 1–8 ran per wave (Step 9).
+- [ ] (#254) Each wave carries an ENTRY gate (`<plan>/<wave>/preflights/` — a POSITIVE "prior wave's outputs materialized" check, the #181 archetype at the wave boundary, positive-monotone-safe) and, where multi-leaf/fan-in, an EXIT gate (`<plan>/<wave>/guardrails/`) with ≥1 real integration re-run (GR2028 per wave); every intermediate wave's exit gate keeps whole-build/whole-suite checks LOCAL and any `scope:"integration"` guardrail union-safe/conditional (#125/#165 per wave). The last wave's exit gate is the whole-plan terminal boundary (no duplicate plan-root gate).
+- [ ] (#254) `dependsOn` is INTRA-WAVE only — no cross-wave edge (GR2034); a wave-2 dependency on a wave-1 artifact is expressed as the wave-2 entry gate + the action reading the real path. Every waved-plan prompt action's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (not the bare folder name — a bare key is rejected as foreign every attempt); the harness-contract header, the example, and the state-output guardrail's index all use that wave-qualified id.
+- [ ] (#254) JIT staged breakdown: a downstream wave whose tasks reference not-yet-existing artifacts is left as a declared stub (empty `tasks/`), and the Step 7 report documents the workflow (run → honest halt at the empty wave pointing at the integration worktree → author the wave against the MATERIALIZED workspace → `/guardrails-review` that wave → resume). A wave that IS designable up front is authored up front. Every generated waved script guardrail (task-level AND wave entry/exit gates) got the #302 author-time smoke-test (Step 7.0d).
 <!-- END ADDED QUALITY-BAR ITEMS -->
