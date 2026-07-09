@@ -583,6 +583,35 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// Compose feedback for a <c>needsHarnessWrite</c> request DENIED by the permission-file carve-out
+    /// (issue #321, SSOT §9) — the requested path is a permission-granting <c>.claude/settings.json</c>
+    /// / <c>.claude/settings.local.json</c>, which the harness will never write on an agent's behalf.
+    /// Retrying the same path cannot clear it (it is a policy, not a transient failure), so the feedback
+    /// routes the agent to the only real remedy: ask a human, or drop the settings write entirely.
+    /// </summary>
+    public static string ForHarnessWriteDenied(
+        TaskNode task, int attempt, string requestedPath, string reason,
+        bool fileWritesRolledBack = false, SalvageRef? salvageRef = null)
+    {
+        var text = new StringBuilder();
+        AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
+        text.AppendLine("## needsHarnessWrite denied");
+        text.AppendLine();
+        text.AppendLine($"Your `needsHarnessWrite` request for `{requestedPath}` was DENIED before any write happened:");
+        text.AppendLine();
+        text.AppendLine($"> {reason}");
+        text.AppendLine();
+        text.AppendLine("`.claude/settings.json` and `.claude/settings.local.json` grant tool permissions, so the");
+        text.AppendLine("harness will never write them for you — a task must not be able to widen its own permission");
+        text.AppendLine("surface. Retrying the SAME path will keep being denied. Every OTHER `.claude/` deliverable");
+        text.AppendLine("(commands, skills, hooks, agents) IS writable via needsHarnessWrite — only the");
+        text.AppendLine("permission-granting settings files are denied. If this task genuinely needs new permissions,");
+        text.AppendLine("write `{\"needsHuman\": \"<why>\"}` to GUARDRAILS_STATE_OUT so a human can author the settings file.");
+        AppendSalvageSection(text, salvageRef);
+        return text.ToString();
+    }
+
+    /// <summary>
     /// Compose feedback for a <c>needsHarnessWrite</c> request that PASSED validation but whose actual
     /// write failed (disk full, a genuinely unwritable location even for the harness process, etc.) —
     /// treated as an action failure: guardrails are skipped and the retry gets an actionable reason.

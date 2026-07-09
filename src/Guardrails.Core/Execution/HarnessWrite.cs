@@ -120,7 +120,7 @@ public static class HarnessWrite
     /// resume-critical file, but atomicity is free and consistent with every other harness write).
     /// </summary>
     /// <remarks>
-    /// Two INDEPENDENT checks, both load-bearing (a security boundary, SSOT §9):
+    /// Three INDEPENDENT checks, all load-bearing (a security boundary, SSOT §9):
     /// <list type="bullet">
     /// <item><b>Workspace-escape check (always runs, regardless of <c>writeScope</c>).</b> Reuses
     /// <see cref="WorkspaceContainment.Escapes"/> — the same "does this path escape the boundary"
@@ -128,6 +128,12 @@ public static class HarnessWrite
     /// <c>../../etc/passwd</c> or an absolute path is rejected before it is even a writeScope
     /// question. This protects a task with NO declared writeScope too (the segment-worktree
     /// containment is the boundary in that case).</item>
+    /// <item><b>Permission-file carve-out (always runs, issue #321).</b> A request whose path resolves
+    /// to <c>.claude/settings.json</c> or <c>.claude/settings.local.json</c> is DENIED — the harness
+    /// never writes permission-granting files on an agent's behalf (a prompt must not widen its own
+    /// permission surface). Checked before writeScope so declaring <c>.claude/**</c> in scope cannot
+    /// bypass it. NOT a broad <c>.claude/</c> denylist — every other <c>.claude/</c> deliverable stays
+    /// writable.</item>
     /// <item><b>writeScope-membership check (only when the task DECLARES a writeScope).</b> Reuses
     /// <see cref="WriteScope.IsInScope"/> — the SAME scope-matching predicate the POST-HOC
     /// write-scope CHECK (SSOT §3.4) uses, so the two enforcement points can never drift. A task
@@ -156,6 +162,21 @@ public static class HarnessWrite
                 "'..' climb-outs are never allowed, regardless of writeScope");
         }
 
+        // Permission-file carve-out (issue #321): the harness will NEVER write a Claude Code
+        // permission-granting settings file on an agent's behalf. `.claude/settings.json` and
+        // `.claude/settings.local.json` grant tool permissions, so honoring a needsHarnessWrite for one
+        // would let a prompt widen its OWN permission surface — the exact escalation the escape hatch
+        // must not enable. A human must author these. Checked BEFORE the writeScope membership check so
+        // declaring `.claude/**` in scope can never bypass it. NOT a broad `.claude/` denylist: every
+        // other `.claude/` deliverable (commands, skills, hooks, agents) is a reviewed artifact and stays
+        // writable — the safety boundary there is plan-review + opt-in merge-back, not a filename block.
+        if (IsClaudeSettingsFile(normalizedPath))
+        {
+            return HarnessWriteOutcome.Denied(
+                "the harness will not write permission-granting files on an agent's behalf; a human must " +
+                $"author `.claude/settings.json` (or `.claude/settings.local.json`) — requested '{request.Path}'");
+        }
+
         // writeScope-membership check: only when the task declares one. Absent ⇒ allowed (mirrors the
         // retrospective write-scope check's "Absent ⇒ no check", SSOT §3.4 — the segment-worktree
         // containment + the worktree-containment hook are the backstops in that case).
@@ -178,6 +199,40 @@ public static class HarnessWrite
 
         return HarnessWriteOutcome.Ok(normalizedPath);
     }
+
+    /// <summary>
+    /// True when <paramref name="normalizedPath"/> (workspace-relative, forward-slashed) resolves to a
+    /// Claude Code permission-granting settings file — <c>.claude/settings.json</c> or
+    /// <c>.claude/settings.local.json</c> — living directly inside a <c>.claude</c> directory at any
+    /// depth (the standard location is the repo root, but a nested <c>.claude/</c> is matched too). The
+    /// carve-out of issue #321: these files grant tool permissions and are never harness-written on an
+    /// agent's behalf. Matched case-insensitively so a trivial casing variant cannot bypass the block.
+    /// </summary>
+    private static bool IsClaudeSettingsFile(string normalizedPath)
+    {
+        int lastSlash = normalizedPath.LastIndexOf('/');
+        string fileName = lastSlash < 0 ? normalizedPath : normalizedPath[(lastSlash + 1)..];
+
+        bool isSettingsFileName =
+            fileName.Equals("settings.json", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("settings.local.json", StringComparison.OrdinalIgnoreCase);
+        if (!isSettingsFileName)
+        {
+            return false;
+        }
+
+        // The file must sit DIRECTLY inside a `.claude` directory (its immediate parent) — a stray
+        // `settings.json` elsewhere in the tree is not a permission grant and stays writable.
+        if (lastSlash < 0)
+        {
+            return false;
+        }
+
+        string parent = normalizedPath[..lastSlash];
+        int parentSlash = parent.LastIndexOf('/');
+        string parentName = parentSlash < 0 ? parent : parent[(parentSlash + 1)..];
+        return parentName.Equals(".claude", StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 /// <summary>A parsed <c>needsHarnessWrite</c> request (issue #191).</summary>
@@ -199,8 +254,15 @@ public sealed record HarnessWriteOutcome
     /// <summary>True when the write was validated AND performed.</summary>
     public bool Succeeded { get; init; }
 
-    /// <summary>True when the failure was a VALIDATION rejection (out of scope / escapes workspace) rather than an IO failure.</summary>
+    /// <summary>True when the failure was a VALIDATION rejection (out of scope / escapes workspace / policy-denied) rather than an IO failure.</summary>
     public bool WasRejected { get; init; }
+
+    /// <summary>
+    /// True when the rejection was a POLICY DENIAL (issue #321 — a permission-granting
+    /// <c>.claude/settings*.json</c> the harness refuses to write on an agent's behalf) rather than a
+    /// scope/containment rejection. Implies <see cref="WasRejected"/>; drives distinct retry feedback.
+    /// </summary>
+    public bool IsPolicyDenied { get; init; }
 
     /// <summary>The workspace-relative path written, when <see cref="Succeeded"/>.</summary>
     public string? WrittenPath { get; init; }
@@ -212,6 +274,10 @@ public sealed record HarnessWriteOutcome
 
     public static HarnessWriteOutcome Rejected(string reason) =>
         new() { Succeeded = false, WasRejected = true, FailureReason = reason };
+
+    /// <summary>A policy denial (issue #321): a permission-granting settings file the harness will not write.</summary>
+    public static HarnessWriteOutcome Denied(string reason) =>
+        new() { Succeeded = false, WasRejected = true, IsPolicyDenied = true, FailureReason = reason };
 
     public static HarnessWriteOutcome Failed(string reason) =>
         new() { Succeeded = false, WasRejected = false, FailureReason = reason };

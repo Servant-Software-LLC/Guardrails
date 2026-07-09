@@ -2035,23 +2035,43 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   only, never verification — the task's guardrails still run afterward. If a fragment carries BOTH
   `needsHuman` and `needsHarnessWrite`, `needsHuman` wins (checked first; a human-decision halt
   trumps a mechanical write request).
-- **Two load-bearing safety checks, BOTH run BEFORE the write (a security boundary — otherwise any
+- **Three load-bearing safety checks, ALL run BEFORE the write (a security boundary — otherwise any
   task could claim "I'm blocked, please write this for me" and bypass `writeScope` entirely):**
   1. **Workspace-escape check — ALWAYS runs, independent of `writeScope`.** Reuses
      `WorkspaceContainment.Escapes` (the same "does this path escape the boundary" predicate used
      elsewhere). An absolute path or a `../` climb-out is rejected even for a task with NO declared
      `writeScope` — the segment-worktree containment is the boundary in that case.
-  2. **`writeScope`-membership check — only when the task DECLARES a `writeScope`.** Reuses
+  2. **Permission-file carve-out — ALWAYS runs (issue #321).** A request whose path resolves to
+     `.claude/settings.json` or `.claude/settings.local.json` is **DENIED**: the harness will never
+     write a permission-granting settings file on an agent's behalf, because honoring it would let a
+     prompt widen its OWN tool-permission surface (the exact escalation the escape hatch must not
+     enable). A human must author these. Checked BEFORE the `writeScope`-membership check so a task
+     declaring `.claude/**` in scope cannot bypass it. This is **NOT** a broad `.claude/` denylist —
+     every other `.claude/` deliverable (commands, skills, hooks, agents) stays writable via
+     `needsHarnessWrite`; the safety boundary for those is plan-review + opt-in merge-back, not a
+     filename block. Matched case-insensitively (so a casing variant cannot bypass it), on a
+     `settings.json` / `settings.local.json` file living directly inside a `.claude` directory at any
+     depth (the standard location is the repo root).
+  3. **`writeScope`-membership check — only when the task DECLARES a `writeScope`.** Reuses
      `WriteScope.IsInScope` — the SAME scope-matching predicate the post-hoc write-scope CHECK (§3.4)
      uses, so the two enforcement points can never drift. **A task with NO `writeScope` declared
      allows the write unconditionally**, mirroring §3.4's "Absent ⇒ no check" for the retrospective
      check — the segment-worktree containment + the worktree-containment hook (§9.4) are the
      backstops in that case.
-  A rejected request fails the attempt with actionable feedback naming the offending path (retries;
-  eventual `needs-human` on budget exhaustion) — the same shape as an out-of-scope write-scope
-  violation. A request that PASSES validation but whose actual write fails (disk full, a genuinely
+  A rejected/denied request fails the attempt with actionable feedback naming the offending path
+  (retries; eventual `needs-human` on budget exhaustion) — the same shape as an out-of-scope
+  write-scope violation, except the permission-file denial's feedback routes the agent to a human
+  ("the harness will not write permission-granting files on an agent's behalf") rather than to a
+  narrower path. A request that PASSES validation but whose actual write fails (disk full, a genuinely
   unwritable location even for the harness process) is likewise treated as a failed attempt with
   actionable feedback, never a crash.
+- **The escape hatch is honored even after a direct-write PROBE (issue #321).** An agent that probed a
+  direct `.claude/` write first (getting refused, which the permission scanner captures into the
+  attempt's blocked-write paths) and THEN emitted `needsHarnessWrite` is served: the permission-wall
+  early halt (§9.3) drops the structural `.claude/` paths it observes whenever the same attempt carries
+  a `needsHarnessWrite`, so the halt no longer pre-empts the harness write. (The doctrine, Step 5b, now
+  tells the agent to go straight to the hatch and skip the wasteful probe entirely — but a probe-first
+  flow still completes.)
 - **After the write, normal gating resumes.** A successful `needsHarnessWrite` falls through to the
   SAME write-scope CHECK (§3.4, if the task declares one — the harness-written file is now part of
   the segment's git diff too; this is expected, not redundant — the prospective check prevents the
@@ -2332,10 +2352,19 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
 
 **Two halt rules.**
 
-- **Structural `.claude/` path (issue #104).** The Claude Code sub-agent runtime blocks automated
-  writes under `.claude/` **even when `permissionMode` is `acceptEdits`**, so NO number of retries can
-  clear it. One refusal on a `.claude/` path settles `needs-human` on the **FIRST** attempt that hits
-  it — zero retries wasted.
+- **Structural `.claude/` path (issue #104), UNLESS the same attempt escapes via `needsHarnessWrite`
+  (issue #321).** The Claude Code sub-agent runtime blocks automated writes under `.claude/` **even when
+  `permissionMode` is `acceptEdits`**, so NO number of retries can clear it. One refusal on a `.claude/`
+  path settles `needs-human` on the **FIRST** attempt that hits it — zero retries wasted. **The
+  structural rule YIELDS to the escape hatch:** when the SAME attempt also emits a `needsHarnessWrite`
+  fragment (§9), the harness DROPS every `.claude/` path from what the wall tracker observes, because it
+  is itself about to perform that write (before guardrails) — so a `.claude/` refusal the agent hit
+  while *probing* is not an un-recoverable wall; the verdict is deferred to the harness write plus the
+  task's own guardrails, which fail honestly if the file never lands. Only an **un-escaped** `.claude/`
+  wall (an attempt with NO `needsHarnessWrite`) still halts on the first hit. This is why #313's remedy
+  (route the agent to `needsHarnessWrite`) actually works now — before #321 the halt pre-empted the
+  hatch even when the agent followed the instruction. Every NON-`.claude/` path is still observed
+  regardless of a hatch, so the repeated-path rule below is untouched by this yield.
 - **Repeated same path (issue #86).** Any other path refused on **two or more** attempts is a
   structural blocker the agent cannot fix by retrying. The harness halts on the **second** attempt that
   re-hits the SAME path, rather than spending the rest of the budget on the identical wall. A path
@@ -2369,13 +2398,18 @@ write that skipped `stagingOutputs`.
 There are two autonomous fixes. **`needsHarnessWrite` (#191, §9) is the primary one for a prompt
 action:** the action hands the `.claude/` file to the harness process directly (bypassing the
 tool-permission layer), and guardrails still run against the result — `plan-breakdown` injects this
-instruction for any `.claude/` deliverable (Step 5b), so a well-authored breakdown never reaches this
-halt. The alternative is the `task.json` `stagingOutputs` contract (§3.5, issue #130): a task declares
-the `.claude/` deliverable it produces and a staging path the action writes instead, and the harness
-moves the staged output into its real `.claude/` path after the action succeeds and before guardrails
-run. The §9.3 detect-and-halt remains the safety net for a `.claude/`-writing task that used neither;
-its `feedback.md` points at `needsHarnessWrite` first, then `stagingOutputs`, then the session-wide
-`bypassPermissions` fallback (the settings-grant remedy is retired, #273).
+instruction for any `.claude/` deliverable (Step 5b, now "emit `needsHarnessWrite` FIRST, do NOT probe
+with a direct write"), so a well-authored breakdown never reaches this halt. The alternative is the
+`task.json` `stagingOutputs` contract (§3.5, issue #130): a task declares the `.claude/` deliverable it
+produces and a staging path the action writes instead, and the harness moves the staged output into its
+real `.claude/` path after the action succeeds and before guardrails run. **Interaction (issue #321):
+the structural halt fires only for an attempt that emitted NEITHER escape** — an un-escaped `.claude/`
+write. An attempt that emits `needsHarnessWrite` for the refused path is never halted by the structural
+rule (the harness drops the `.claude/` wall it observes and performs the write itself), even if the
+agent *probed* with a direct write first; a `stagingOutputs` task never produces a `.claude/`-path
+refusal to begin with. So the §9.3 detect-and-halt is the safety net for a `.claude/`-writing task that
+used neither mechanism; its `feedback.md` points at `needsHarnessWrite` first, then `stagingOutputs`,
+then the session-wide `bypassPermissions` fallback (the settings-grant remedy is retired, #273).
 
 ### 9.4 Worktree-containment PreToolUse hook + git-stash safety (issues #199 / #192)
 
