@@ -27,7 +27,7 @@ public sealed record GuardrailDefinition
 
     /// <summary>
     /// Optional author-set expected wall-clock duration in seconds (SSOT §4.1, issue #331). When
-    /// present it must be a positive integer (GR2035); a long-running guardrail's progress heartbeat
+    /// present it must be a positive integer (GR2036); a long-running guardrail's progress heartbeat
     /// surfaces it as an "expected ~Xm" hint next to the elapsed time, and flags "over budget" once
     /// elapsed exceeds it by a multiple — turning "is this hung or just slow?" into a glance. Null =
     /// no hint (the heartbeat shows elapsed only). Read-only metadata: it never bounds execution

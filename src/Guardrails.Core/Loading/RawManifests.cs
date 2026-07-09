@@ -117,7 +117,7 @@ internal sealed class RawGuardrailSidecar
     public string? Scope { get; set; }
 
     // Optional author-set expected wall-clock duration in seconds (SSOT §4.1, issue #331). Surfaced
-    // as an "expected ~Xm" hint in the running-guardrail heartbeat; must be > 0 when present (GR2035).
+    // as an "expected ~Xm" hint in the running-guardrail heartbeat; must be > 0 when present (GR2036).
     public int? ExpectedDurationSeconds { get; set; }
 
     [JsonExtensionData]

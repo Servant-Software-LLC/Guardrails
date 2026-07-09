@@ -8,7 +8,7 @@ namespace Guardrails.Core.Tests;
 /// The optional per-guardrail <c>expectedDurationSeconds</c> hint (SSOT §4.1, issue #331): the loader
 /// binds it off the metadata sidecar onto <see cref="GuardrailDefinition.ExpectedDurationSeconds"/>, and
 /// the validator rejects a present-but-non-positive value with <see cref="DiagnosticCodes.ExpectedDurationNonPositive"/>
-/// (GR2035) across all four guardrail-shaped folders. Absent (null) or positive ⇒ no diagnostic. Mirrors
+/// (GR2036) across all four guardrail-shaped folders. Absent (null) or positive ⇒ no diagnostic. Mirrors
 /// <see cref="GuardrailScopeTests"/> (disk sidecar loading) and <see cref="CostCapValidatorTests"/>
 /// (optional-positive validation via <see cref="FakeExecutableProbe"/>).
 /// </summary>
@@ -57,7 +57,7 @@ public sealed class GuardrailExpectedDurationTests : IDisposable
         Assert.Null(g.ExpectedDurationSeconds);
     }
 
-    // ── Validation (GR2035) ───────────────────────────────────────────────────
+    // ── Validation (GR2036) ───────────────────────────────────────────────────
 
     public static TheoryData<int> NonPositive => [0, -1, -900];
 

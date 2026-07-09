@@ -41,6 +41,7 @@ public sealed class PlanValidator
         ValidatePlanGuardrailsIntegrationReRun(plan, diagnostics);
         ValidateGuardrailScopeValues(plan, diagnostics);
         ValidateGuardrailExpectedDurations(plan, diagnostics);
+        ValidateDuplicateCheckNames(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
@@ -806,8 +807,8 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// A guardrail's optional <c>expectedDurationSeconds</c> hint (SSOT §4.1, issue #331) must be a
-    /// positive integer when present (GR2035) — a non-positive value can never be a real duration and
+    /// A guardrail's optional <c>expectedDurationSeconds</c> hint (SSOT §4.1.1, issue #331) must be a
+    /// positive integer when present (GR2036) — a non-positive value can never be a real duration and
     /// would render nonsensically in the running-guardrail heartbeat. Validated across ALL FOUR
     /// guardrail-shaped folders (like <see cref="ValidateGuardrailScopeValues"/>), since the sidecar
     /// (and its hint) can sit next to any guardrail-shaped file. Absent (null) ⇒ no check.
@@ -834,9 +835,67 @@ public sealed class PlanValidator
                 diagnostics.Add(Error(DiagnosticCodes.ExpectedDurationNonPositive, guardrail.Path,
                     $"Guardrail '{guardrail.Name}' ({context}) has expectedDurationSeconds {seconds}, " +
                     "but it must be a positive integer. The field is a read-only progress hint " +
-                    "surfaced in the running-guardrail heartbeat (SSOT §4.1); a zero/negative value " +
+                    "surfaced in the running-guardrail heartbeat (SSOT §4.1.1); a zero/negative value " +
                     "is never a real duration. Remove it or set a positive number of seconds."));
             }
+        }
+    }
+
+    /// <summary>
+    /// Every check within a SINGLE folder must have a unique <see cref="GuardrailDefinition.Name"/>
+    /// (GR2035, SSOT §4.5, issue #332). A guardrail's Name is its filename with the final extension
+    /// dropped (<c>PlanLoader.GuardrailName</c>), so a portable pair like <c>01-build.ps1</c> +
+    /// <c>01-build.sh</c> in one folder both collapse to Name <c>"01-build"</c>. Every surface that keys a
+    /// check by <c>(taskId, Name)</c> or bare Name — the #219 status badges, the journal's
+    /// <c>FailedGuardrail.Name</c>, the resume seed — then silently collapses the two distinct checks into
+    /// one, so a result is misattributed to the wrong node. An ERROR: the ambiguity is knowable at load
+    /// time. Checked per folder for every folder in the four-folder model — each task's <c>guardrails/</c>
+    /// and <c>preflights/</c>, each wave's <c>preflights/</c> and <c>guardrails/</c> (SSOT §14.3), and the
+    /// plan-level <c>preflights/</c> and <c>guardrails/</c>. Comparison is <see cref="StringComparer.Ordinal"/>,
+    /// matching the case-sensitive keying the collapsing maps actually use (a case-only difference in Name
+    /// stays two distinct keys, so it is not a collision).
+    /// </summary>
+    private static void ValidateDuplicateCheckNames(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        // Each list below is exactly ONE folder's worth of checks, so a within-list duplicate Name is a
+        // within-folder collision. plan.Tasks is flattened across waves, so waved TASK folders are covered
+        // by this loop; only the wave-LEVEL folders need the separate wave loop.
+        foreach (TaskNode task in plan.Tasks)
+        {
+            CheckDuplicateCheckNames(task.Guardrails, $"task '{task.Id}' guardrails/", diagnostics);
+            CheckDuplicateCheckNames(task.Preflights, $"task '{task.Id}' preflights/", diagnostics);
+        }
+
+        foreach (WaveNode wave in plan.Waves)
+        {
+            CheckDuplicateCheckNames(wave.Preflights, $"wave '{wave.Dir}' preflights/", diagnostics);
+            CheckDuplicateCheckNames(wave.Guardrails, $"wave '{wave.Dir}' guardrails/", diagnostics);
+        }
+
+        CheckDuplicateCheckNames(plan.PlanPreflights, "<plan>/preflights/", diagnostics);
+        CheckDuplicateCheckNames(plan.PlanGuardrails, "<plan>/guardrails/", diagnostics);
+    }
+
+    private static void CheckDuplicateCheckNames(
+        IReadOnlyList<GuardrailDefinition> checks, string folderContext, List<Diagnostic> diagnostics)
+    {
+        foreach (IGrouping<string, GuardrailDefinition> group in
+                 checks.GroupBy(c => c.Name, StringComparer.Ordinal).Where(g => g.Count() > 1))
+        {
+            // The colliding files share a directory; name it (and the files) so the fix is obvious.
+            List<GuardrailDefinition> colliding = group.ToList();
+            string folderPath = Path.GetDirectoryName(colliding[0].Path) ?? colliding[0].Path;
+            string files = string.Join(", ", colliding
+                .Select(c => Path.GetFileName(c.Path))
+                .OrderBy(f => f, StringComparer.Ordinal));
+
+            diagnostics.Add(Error(DiagnosticCodes.DuplicateCheckName, folderPath,
+                $"Folder {folderContext} has {colliding.Count} checks that share the name '{group.Key}' " +
+                $"(colliding files: {files}). A check's name is its filename without the final extension, so " +
+                "a portable pair like '01-build.ps1' + '01-build.sh' collapses to one name — the harness keys " +
+                "status badges, journal failures, and the resume seed by (task, name), so the second silently " +
+                "overwrites the first and a result is misattributed to the wrong check. Rename one of the " +
+                "colliding files so the names differ (SSOT §4.5)."));
         }
     }
 

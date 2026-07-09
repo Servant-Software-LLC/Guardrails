@@ -10,7 +10,7 @@ namespace Guardrails.Cli.Ui;
 /// runs it emits, every <see cref="IntervalSeconds"/> seconds, a line like
 /// <c>guardrail 03-bats-suite: running (12m30s elapsed, expected ~15m)...</c> so an operator can tell a
 /// slow-but-healthy gate (a real test suite doing I/O) from a genuine hang without OS process-tree
-/// archaeology. When the guardrail's sidecar sets <c>expectedDurationSeconds</c> (§4.1) the line carries an
+/// archaeology. When the guardrail's sidecar sets <c>expectedDurationSeconds</c> (§4.1.1) the line carries an
 /// <c>expected ~Xm</c> hint; once elapsed exceeds it by <see cref="OverBudgetMultiple"/>× it flags
 /// <c>over budget, may be stuck</c> — the structural "is it genuinely stuck?" cue the issue asks for.
 /// <para>

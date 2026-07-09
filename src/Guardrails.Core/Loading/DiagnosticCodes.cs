@@ -310,8 +310,31 @@ public static class DiagnosticCodes
     /// </summary>
     public const string CrossWaveDependency = "GR2034";
 
+    // --- Per-folder check-name uniqueness (#332) --------------------------------------
+    // Historical: as of issue #332, GR2034 (CrossWaveDependency) was the last taken code, so GR2035 was
+    // next-free at that point.
+
     /// <summary>
-    /// A guardrail's optional <c>expectedDurationSeconds</c> metadata (SSOT §4.1, issue #331) is present
+    /// Two checks in the SAME folder share a <c>Name</c> (SSOT §4.5, issue #332). A guardrail's
+    /// <see cref="Model.GuardrailDefinition.Name"/> is its filename with the final extension dropped
+    /// (<c>PlanLoader.GuardrailName</c>), so a portable pair like <c>01-build.ps1</c> + <c>01-build.sh</c>
+    /// in ONE folder both collapse to Name <c>"01-build"</c>. Every surface that keys a check by
+    /// <c>(taskId, Name)</c> or bare <c>Name</c> — the #219 live-status badges, the journal's
+    /// <c>FailedGuardrail.Name</c>, the resume seed — then silently collapses the two distinct checks into
+    /// one entry: the second overwrites the first, one node is unbadgeable, and a result is misattributed
+    /// to the wrong box. An ERROR: the ambiguity is knowable at load time, and rejecting it makes the
+    /// <c>(taskId, Name)</c> key provably unique. Applied per folder to every folder in the four-folder
+    /// model — each task's <c>guardrails/</c> and <c>preflights/</c>, each wave's <c>guardrails/</c> and
+    /// <c>preflights/</c> (SSOT §14.3), and the plan-level <c>preflights/</c> and <c>guardrails/</c>.
+    /// Remedy: rename one of the colliding files so the two Names differ.
+    /// </summary>
+    public const string DuplicateCheckName = "GR2035";
+
+    // Historical: as of issue #331, GR2035 (DuplicateCheckName) was the last taken code, so GR2036 was
+    // next-free at that point.
+
+    /// <summary>
+    /// A guardrail's optional <c>expectedDurationSeconds</c> metadata (SSOT §4.1.1, issue #331) is present
     /// but not a positive integer (zero or negative). The field is a read-only progress hint — the
     /// running-guardrail heartbeat surfaces it as "expected ~Xm" — so a non-positive value can never be a
     /// real duration and would render nonsensically ("expected ~0m"); it is always an authoring mistake. An
@@ -320,8 +343,8 @@ public static class DiagnosticCodes
     /// across all four guardrail-shaped folders (task guardrails/preflights, <c>&lt;plan&gt;/preflights/</c>,
     /// <c>&lt;plan&gt;/guardrails/</c>), like the guardrail <c>scope</c> check (GR2021).
     /// </summary>
-    public const string ExpectedDurationNonPositive = "GR2035";
+    public const string ExpectedDurationNonPositive = "GR2036";
 
-    // CURRENT next-free code: GR2036. GR2035 (ExpectedDurationNonPositive) is the last taken code above.
-    // When allocating a new code, take GR2036 and update this line (issue #320).
+    // CURRENT next-free code: GR2037. GR2036 (ExpectedDurationNonPositive) is the last taken code above.
+    // When allocating a new code, take GR2037 and update this line (issue #320).
 }

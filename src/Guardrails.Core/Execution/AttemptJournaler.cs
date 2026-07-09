@@ -419,6 +419,59 @@ internal sealed class AttemptJournaler
     }
 
     /// <summary>
+    /// #329: the OUTCOME-AWARE structural <c>.claude/</c>-wall halt. #326 settles a NON-converged attempt
+    /// that carries a structural <c>.claude/</c> wall to <c>needs-human</c> on ONE attempt (the #104
+    /// fast-halt). This method preserves that halt DECISION unchanged — one recorded attempt, journal
+    /// status <c>needs-human</c>, no further retries — but journals the TRUE primary outcome and its
+    /// evidence instead of a blanket <see cref="AttemptOutcome.PermissionDenied"/> with an EMPTY
+    /// <c>failedGuardrails[]</c>: a guardrail that genuinely ran and FAILED is recorded as
+    /// <see cref="AttemptOutcome.GuardrailFailed"/> with its <paramref name="failedGuardrails"/> populated.
+    /// The <see cref="TaskResult.Summary"/> and <c>feedback.md</c> LEAD with that cause and disclose the
+    /// <c>.claude/</c> wall as SECONDARY context, so a human is not misdirected into chasing a
+    /// permission/config issue when a real guardrail failed (issue #329). Returns a non-green result
+    /// (<see cref="TaskOutcome.NeedsHuman"/>) so the scheduler blocks dependents, exactly as the
+    /// <see cref="PermissionWall"/> halt did.
+    /// </summary>
+    public AttemptResult StructuralWallHalt(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        ActionRun action,
+        AttemptOutcome primaryOutcome,
+        string summary,
+        string feedback,
+        IReadOnlyList<GuardrailResult> guardrailResults,
+        IReadOnlyList<FailedGuardrail> failedGuardrails)
+    {
+        Directory.CreateDirectory(logDir);
+        AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            ActionExitCode = action.ExitCode,
+            Outcome = primaryOutcome,
+            FailedGuardrails = failedGuardrails,
+            CostUsd = action.CostUsd,
+            LogDir = relativeLogDir
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            ActionExitCode = action.ExitCode,
+            Guardrails = guardrailResults,
+            Summary = summary
+        }, FeedbackPath: null, Outcome: primaryOutcome);
+    }
+
+    /// <summary>
     /// The task-level preflight short-circuit (two-scope preflights F9, SSOT §7): a RED
     /// <c>tasks/&lt;id&gt;/preflights/</c> slot fired BEFORE the attempt loop. Record ONE attempt with the
     /// distinct <see cref="AttemptOutcome.TaskPreflightFailed"/> outcome carrying the failed preflight

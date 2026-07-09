@@ -483,11 +483,18 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   section 3.4); and (#321) a **permission-file carve-out** -- `.claude/settings.json` and
   `.claude/settings.local.json` are DENIED (the harness will not write permission-granting files on an
   agent's behalf; a human must author them), while all OTHER `.claude/` deliverables
-  (commands/skills/hooks/agents) remain writable. **Halt/hatch interaction (#321):** the permission-wall
-  structural-`.claude/` early halt (section 9.3) now YIELDS when the same attempt also emits
-  `needsHarnessWrite` -- an attempt with NO hatch still halts on the `.claude/` wall, but one that DOES
-  emit `needsHarnessWrite` defers to the harness write + the task's own guardrails, so a
-  probe-first-then-hatch flow completes green. Singular per attempt in v1. SSOT section 9.
+  (commands/skills/hooks/agents) remain writable. **Halt/hatch interaction (#321 -> #325 -> #329):** the
+  permission-wall structural-`.claude/` halt (section 9.3) is now OUTCOME-AWARE -- consulted only on an
+  attempt that did NOT converge, so a probe-then-hatch (or a read-source-recovery) attempt whose write
+  lands and whose guardrails pass completes GREEN by the general rule (#325 removed the old #321
+  `.claude/`-drop filter as redundant -- the converged OUTCOME is the authority, source-vs-destination
+  moot). When a non-converged attempt DOES halt, WHAT it reports leads with the true primary cause (#329):
+  a guardrail that genuinely RAN and FAILED is reported `guardrail-failed` with `failedGuardrails[]`
+  populated (the `.claude/` wall carried as SECONDARY context in the summary/`feedback.md`), NOT
+  `permission-denied` with an empty list. Only a wall with no guardrail failure to report -- an
+  action-failed #104 first-attempt wall, or the eager #86 repeat -- stays `permission-denied`. The halt
+  DECISION is unchanged; only the reported outcome/message/`failedGuardrails` differ. Singular per attempt
+  in v1. SSOT section 9 / 9.3.
 - **The overwatcher (active AI supervisor, #269, SSOT §9.2, design `docs/plans/11-overwatcher.md`)**: an
   **advisory** AI supervisor consulted DURING a run when a task struggles. It **subsumes** the shipped
   one-shot needs-human triage (now the §9.2.1 `TerminalExhaustion` case, invariants preserved verbatim) and
@@ -766,9 +773,10 @@ total order driven by the wave folder's numeric prefix.
   (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
-  HEAD-independence). Next-free GR code: **GR1010 / GR2036** (GR2035 = ExpectedDurationNonPositive, the
-  optional guardrail `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1 / §12.1, issue #331 — the
-  long-running-guardrail heartbeat).
+  HEAD-independence). Next-free GR code: **GR1010 / GR2037** (GR2035 = DuplicateCheckName — two checks in one
+  folder sharing a `Name`, #332/SSOT §4.5; GR2036 = ExpectedDurationNonPositive — the optional guardrail
+  `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1 / §12.1, issue #331 — the long-running-guardrail
+  heartbeat).
 - **M3 the overwatcher v1 (diagnose + propose) -- LANDED** (#269, design of record
   `docs/plans/11-overwatcher.md`, contract SSOT §9.2/§9.2.1/§8, #305 decisions baked in). The `Overwatch`
   component (`Guardrails.Core/Execution/Overwatch.cs`) SUBSUMES `NeedsHumanTriage` (now the §9.2.1
@@ -789,8 +797,8 @@ total order driven by the wave folder's numeric prefix.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: GR2036 (GR2035
-  taken by the #331 guardrail `expectedDurationSeconds` progress-hint check).
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: GR2037 (GR2035 =
+  DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331).
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

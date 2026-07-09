@@ -75,7 +75,7 @@ public sealed class GuardrailHeartbeatTests
     [Fact]
     public void FormatLine_NonPositiveExpected_TreatedAsNoHint()
     {
-        // A non-positive value never reaches here in practice (GR2035 rejects it), but defend anyway:
+        // A non-positive value never reaches here in practice (GR2036 rejects it), but defend anyway:
         // fall back to elapsed-only rather than rendering a nonsensical "expected ~0m".
         string line = GuardrailHeartbeat.FormatLine("01-x", TimeSpan.FromSeconds(90), expectedSeconds: 0);
         Assert.Equal("guardrail 01-x: running (1m30s)...", line);

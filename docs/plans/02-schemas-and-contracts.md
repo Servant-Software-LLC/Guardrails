@@ -700,7 +700,7 @@ the running-guardrail heartbeat (§12.1) so a long deterministic gate reads as *
 than *hung*. When present it appears next to the elapsed clock — `guardrail 03-bats-suite: running (12m30s
 elapsed, expected ~15m)...` — and once elapsed exceeds it by a multiple (≥ 3×) the line flags `over budget,
 may be stuck`. Absent ⇒ the heartbeat shows elapsed only. A present-but-non-positive value is a validation
-**ERROR (GR2035)** — it can never be a real duration. The field is **author-settable now**; auto-populating
+**ERROR (GR2036)** — it can never be a real duration. The field is **author-settable now**; auto-populating
 it from the `#302` author-time smoke-test's observed wall-clock is a deferred follow-up.
 
 ### 4.2 Prompt guardrails (`*.prompt.md`)
@@ -829,6 +829,35 @@ for a warning:
   token reused in an unrelated sentence is a possible false negative the other way. When in doubt the
   heuristic stays silent. The `guardrails-review` "stale coverage" probe (issue #157 §2) is the
   human-judgement complement; the breakdown skill keeps the two in sync at authoring time (§157 §3).
+
+### 4.5 Duplicate check `Name` within one folder (validated, GR2035 — error)
+
+A check's `Name` is its filename with the **final extension dropped** (`PlanLoader.GuardrailName`) — so a
+portable pair like `01-build.ps1` + `01-build.sh` in **one** folder both yield `Name = "01-build"`. The
+loader adds a `GuardrailDefinition` per file, and every harness surface that keys a check by `(taskId, Name)`
+or bare `Name` — the §10.1 live-status badges (`MermaidRenderer.StatusNodes`), the journal's
+`FailedGuardrail.Name`, the resume seed — then **silently collapses** the two distinct checks into one entry:
+the second overwrites the first, one node is unbadgeable, and a guardrail result is misattributed to the wrong
+box (best-effort chrome — never the verdict/exit — but realistic via a portable `.ps1`+`.sh` pair).
+
+`guardrails validate` rejects this as an **ERROR (GR2035)**: within a single folder, two checks may not share
+a `Name`. Checked **per folder** for every folder in the four-folder model — each task's `guardrails/` and
+`preflights/`, each wave's `preflights/` and `guardrails/` (§14.3), and the plan-level `preflights/` and
+`guardrails/`. The message names the folder, the duplicated `Name`, and the colliding files. Comparison is
+**ordinal (case-sensitive)**, matching the keying the collapsing maps actually use: two Names differing only
+by case stay two distinct keys, so that is not a collision. Making `(taskId, Name)` provably unique is also
+what makes the §10.1 status-node mapping a true 1-to-1 for task leaves. **Remedy:** rename one of the
+colliding files so the two Names differ.
+
+**Related — the SVG id namespace (issue #332 Scenario B).** A distinct-but-related collision lives in the
+diagram id space: a task container id is `task_<base>` and its derived leaf ids are
+`task_<base>_gr_<n>`/`task_<base>_pf_<n>`, so a task folder named `a-gr-0` (container `task_a_gr_0`) collides
+with task `a`'s first guardrail leaf (`task_a_gr_0`) — the same DOM id twice, corrupting click targets, edges,
+and the §10.1 badges. This is resolved in the renderer, not by a diagnostic:
+`MermaidRenderer.AllocateNodeIdBases` reserves each task's **derived leaf ids** alongside its container id, so
+a colliding container base is bumped to a distinct one (the same deterministic `_2`/`_3`/… suffix used for
+plain sanitized-id collisions). A plan with no such collision (the golden example) is unaffected — its ids stay
+byte-identical and `source-sha256` is unmoved.
 
 ---
 
@@ -1341,6 +1370,20 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     action failed OR the guardrails failed). A CONVERGED attempt (guardrails PASS) goes **GREEN** even
     when a `.claude/` path was reported refused, because the agent recovered (e.g. it read the file with
     the Read tool after a `cp ".claude/…"` was mis-classified as a write) and the deliverable landed.
+
+  **Outcome PRECEDENCE on a non-converged structural halt (issue #329).** `permission-denied` is the
+  reported outcome only when the wall is the honest PRIMARY cause with nothing more specific to report —
+  the eager #86 repeated-wall, or a structural `.claude/` wall on an attempt whose ACTION FAILED (so **no
+  guardrail ran**: the classic #104 first-attempt wall). When the non-convergence is instead a **guardrail
+  that genuinely RAN and FAILED** while a structural `.claude/` wall was also present, the reported outcome
+  is that guardrail failure — `guardrail-failed` with `failedGuardrails[]` populated — NOT
+  `permission-denied` with an empty `failedGuardrails[]`. The halt DECISION is unchanged (still
+  `needs-human` on that one attempt, the #104 fast-halt); only WHAT it reports leads with the true cause,
+  with the `.claude/` wall carried as SECONDARY context in the `feedback.md` + summary (it explains the
+  agent's staging/recovery detour and, when the failure is a missing `.claude/` deliverable, is the likely
+  reason). Reporting `permission-denied` + `failedGuardrails: []` when a guardrail actually ran and failed
+  HID the real cause and misdirected triage (a human reasonably assumed the #325 fix hadn't shipped) — the
+  #329 fix.
 
   The attempt carries this DISTINCT outcome so a human (and §9.2 triage) sees a permission/config issue,
   not a generic `action-failed`.
@@ -2412,7 +2455,7 @@ By default, triage only **drafts** the GH issue (title + body) into `feedback.md
 **nothing** to a remote. Only when `triageAutoFile` is explicitly opted in — gated behind a
 configured GH repo + token — does the harness auto-file the issue. Default is **OFF**.
 
-### 9.3 Permission-wall halt (issues #86 / #104 / #325)
+### 9.3 Permission-wall halt (issues #86 / #104 / #325 / #329)
 
 When the runner REFUSES a write/edit because the target path is not on the granted permission
 allow-list, retrying often cannot clear it — switching tools or re-issuing the same write hits the same
@@ -2421,7 +2464,11 @@ distinct `permission-denied` attempt outcome (§7), instead of spending the rest
 the identical, un-recoverable wall. **The halt is OUTCOME-AWARE (issue #325):** a REPEATED non-`.claude/`
 path halts EAGERLY on the repeat, but a structural `.claude/` path halts only on an attempt that did NOT
 converge — a converged attempt (guardrails pass) is GREEN even when a `.claude/` refusal was reported,
-because the agent recovered and the deliverable landed.
+because the agent recovered and the deliverable landed. **What a non-converged structural halt REPORTS is
+in turn cause-aware (issue #329):** the `permission-denied` outcome is reported only when the wall is the
+honest primary cause (the action failed, so no guardrail ran); a guardrail that genuinely RAN and FAILED
+is reported as `guardrail-failed` with `failedGuardrails[]` populated, with the `.claude/` wall as
+secondary context — see the structural rule below.
 
 **Runner-agnostic signal.** Detecting the concrete refusal is **quarantined in the runner CLASS** (the
 SOLE home of the vendor permission-denial wording, like the §9 failure classifier): for `claude`, the
@@ -2455,6 +2502,20 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
   guardrails pass, the attempt is green. An attempt that does NOT converge with a structural `.claude/`
   wall present halts `needs-human` on that attempt (the #104 fast-halt: the deliverable cannot have
   landed, so no further retry is warranted).
+  - **What that non-converged halt REPORTS is cause-aware (issue #329) — the halt DECISION above is
+    unchanged.** The refusal alone is not evidence the wall is the primary FAILURE, only that a `.claude/`
+    write/reference was refused this attempt. So the reported outcome leads with the true primary cause:
+    - **A guardrail genuinely RAN and FAILED** (the action succeeded but a guardrail did not pass — e.g.
+      the recovered deliverable landed but dropped a required heading, #329's own reported case) → the
+      attempt is reported `guardrail-failed` with `failedGuardrails[]` populated, and the `feedback.md` +
+      summary LEAD with the guardrail failure, carrying the `.claude/` wall as SECONDARY context (it
+      explains the staging/recovery detour and, when the failure is a missing `.claude/` deliverable, is
+      the likely reason). It is NOT reported `permission-denied` with an empty `failedGuardrails[]`, which
+      hid the real cause and misdirected triage (the pre-#329 bug).
+    - **The action itself FAILED** (so **no guardrail ran** — the classic #104 first-attempt wall) → the
+      `.claude/` wall is the honest primary cause and the attempt stays `permission-denied`. A classified
+      action failure with NO `.claude/` wall present already reports its own outcome
+      (`timeout`/`output-cap`/`max-turns`/`action-failed`), unchanged.
 - **Repeated same path (issue #86) — halt EAGER.** A non-`.claude/` path re-refused across attempts is a
   strong un-clearable-wall signal that need NOT wait for the attempt's outcome, so unlike the structural
   rule this halt fires EAGERLY (before the outcome is routed, right after the transient-pause check).
@@ -2914,7 +2975,15 @@ never carries badges.
   (a plain `file://` view refreshes itself — no server; the 3s interval is deliberately longer
   than the log site's 2s, because re-running `mermaid.render` on a big DAG is heavier). The final
   page, written once at run end from the observer's own in-memory map, drops the refresh and shows
-  every node settled — a durable post-mortem.
+  every node settled — a durable post-mortem. **Settle-on-fault (issue #333):** the run-end final
+  writes (this diagram AND the durable log site, §12.3) are guaranteed by an end-of-run `finally`,
+  so an UNEXPECTED throw from the terminal-gate phase (`<plan>/guardrails/`, which runs OUTSIDE the
+  Scheduler and so is not a #150-converted abort) still settles both pages instead of leaving them
+  mid-refresh. Any node still `running` when the final page is written (the Terminal Gate whose
+  phase threw before its badge settled, or a task whose cancel propagated as an
+  `OperationCanceledException` and skipped its settle) renders as an `interrupted` badge, never a
+  frozen (un-animated) spinner. This is best-effort chrome: it never changes the run verdict, exit
+  code, or state, and never masks the original exception (the `finally` re-propagates it).
 - **Node-id surface.** `MermaidRenderer.StatusNodes(plan)` (sibling to `TaskFolderTargets`)
   maps each status-bearing element to its SVG node id: task containers `task_<base>`, task
   guardrail leaves `task_<base>_gr_<ordinal>`, task preflight leaves `task_<base>_pf_<ordinal>`,

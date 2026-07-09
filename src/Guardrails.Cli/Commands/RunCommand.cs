@@ -353,40 +353,65 @@ public static class RunCommand
             // `!report.AllSucceeded ||` short-circuit means EvaluateAsync is never called at all
             // otherwise) — gate the bracketing lines on exactly that, or "Terminal Gate: running..."
             // would misleadingly print for a run that failed before ever reaching this phase.
-            bool hasPlanGuardrails = probe.Plan.PlanGuardrails.Count > 0;
-            bool willEvaluateTerminalGate = report.AllSucceeded && hasPlanGuardrails;
-            if (willEvaluateTerminalGate)
+            // Issue #333: the terminal-gate phase and the two end-of-run final-static writes are wrapped so
+            // that an UNEXPECTED throw from PlanGuardrailPhase.EvaluateAsync (anything that is NOT a
+            // #150-converted abort — it runs OUTSIDE the Scheduler, so an infra fault here propagates raw)
+            // still settles BOTH final pages. Without this, a throw skips WriteFinalStatic + the durable
+            // final log-site write, leaving logs/<runId>/diagram.html <meta refresh>-ing with the Terminal
+            // Gate badge frozen on a spinner and the log index stuck in its during-run (refreshing) state.
+            bool finalSitesSettled = false;
+            try
             {
-                io.Out.WriteLine("Terminal Gate: running...");
-                diagramObserver.PlanGuardrailsStarting(); // bracket-container spinner (issue #219)
-            }
-
-            bool planGuardrailsPassed = !report.AllSucceeded
-                || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, cancellationToken)
-                    .ConfigureAwait(false);
-
-            if (willEvaluateTerminalGate)
-            {
-                diagramObserver.PlanGuardrailsFinished(planGuardrailsPassed); // settle the bracket badge
-                if (planGuardrailsPassed)
+                bool hasPlanGuardrails = probe.Plan.PlanGuardrails.Count > 0;
+                bool willEvaluateTerminalGate = report.AllSucceeded && hasPlanGuardrails;
+                if (willEvaluateTerminalGate)
                 {
-                    io.Out.WriteLine("Terminal Gate: passed.");
+                    io.Out.WriteLine("Terminal Gate: running...");
+                    diagramObserver.PlanGuardrailsStarting(); // bracket-container spinner (issue #219)
+                }
+
+                bool planGuardrailsPassed = !report.AllSucceeded
+                    || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, cancellationToken)
+                        .ConfigureAwait(false);
+
+                if (willEvaluateTerminalGate)
+                {
+                    diagramObserver.PlanGuardrailsFinished(planGuardrailsPassed); // settle the bracket badge
+                    if (planGuardrailsPassed)
+                    {
+                        io.Out.WriteLine("Terminal Gate: passed.");
+                    }
+                }
+
+                // The FINAL, settled live diagram (no meta refresh, no spinner) — the durable post-mortem of
+                // the run, sourced from the observer's own in-memory map, mirroring the durable final log site
+                // Finish writes. Best-effort; never changes the exit code (issue #219, SSOT §10.1).
+                diagramObserver.WriteFinalStatic();
+
+                int exitCode = Finish(report, probe.Plan, runId, io); // also writes the durable final log site
+                finalSitesSettled = true; // both final pages are now settled on the normal path
+
+                if (report.AllSucceeded && !planGuardrailsPassed)
+                {
+                    PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
+                    return ExitCodes.TaskFailed;
+                }
+
+                return exitCode;
+            }
+            finally
+            {
+                // Issue #333: if the terminal-gate phase (or anything else after the run body) threw before
+                // the normal-path settle above completed, still settle BOTH final static pages so the diagram
+                // stops meta-refreshing with a frozen Terminal Gate spinner and the log index leaves its
+                // during-run state. A no-op when the normal path already settled them. In a finally (not a
+                // catch) so the original exception still propagates unchanged — the run verdict, exit code,
+                // and state are untouched (SSOT §10.1: these are best-effort chrome).
+                if (!finalSitesSettled)
+                {
+                    TrySettleFinalSitesAfterFault(diagramObserver, logsRoot, probe.Plan);
                 }
             }
-
-            // The FINAL, settled live diagram (no meta refresh, no spinner) — the durable post-mortem of
-            // the run, sourced from the observer's own in-memory map, mirroring the durable final log site
-            // Finish writes. Best-effort; never changes the exit code (issue #219, SSOT §10.1).
-            diagramObserver.WriteFinalStatic();
-
-            int exitCode = Finish(report, probe.Plan, runId, io);
-            if (report.AllSucceeded && !planGuardrailsPassed)
-            {
-                PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
-                return ExitCodes.TaskFailed;
-            }
-
-            return exitCode;
         }
         finally
         {
@@ -394,6 +419,32 @@ public static class RunCommand
             {
                 await logServer.DisposeAsync().ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// Settle BOTH end-of-run static pages best-effort after a fault interrupted the normal end-of-run path
+    /// (issue #333): the live status diagram (<see cref="OnTheFlyDiagramObserver.WriteFinalStatic"/> — which
+    /// drops the meta-refresh + spinner animation and settles any still-running node to an interrupted badge)
+    /// and the durable, no-refresh log site (<see cref="WriteDurableFinalSite"/>). Invoked from a
+    /// <c>finally</c>, so it MUST NOT throw: a settle-write hiccup (e.g. a corrupt journal) must never
+    /// replace the original, more important exception, so every fault here is swallowed and the pages are
+    /// left as they were. Public because the Cli assembly ships no InternalsVisibleTo (same rationale as
+    /// <see cref="Hyperlink"/>).
+    /// </summary>
+    public static void TrySettleFinalSitesAfterFault(
+        OnTheFlyDiagramObserver diagramObserver, string logsRoot, Core.Model.PlanDefinition plan)
+    {
+        try
+        {
+            diagramObserver.WriteFinalStatic();
+            WriteDurableFinalSite(logsRoot, plan, plan.PlanDirectory);
+        }
+        catch (Exception)
+        {
+            // Best-effort settle inside a finally: swallow ALL so the original exception still propagates
+            // (the individual writes are themselves best-effort; this is the belt-and-braces guarantee that
+            // the settle can never mask the fault that brought us here).
         }
     }
 

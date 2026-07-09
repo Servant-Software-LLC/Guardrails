@@ -70,6 +70,12 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     private const string NeedsHuman = "needs-human";
     private const string Blocked = "blocked";
 
+    // Issue #333: on the FINAL settled page a node still `running` at run end is settled to this token so
+    // it renders a muted "interrupted/unknown" badge instead of a frozen (un-animated) spinner arc. The
+    // overlay JS has no explicit entry for it, so it falls through to the generic muted-circle badge — no
+    // template change, so no committed diagram.html needs regenerating.
+    private const string Interrupted = "interrupted";
+
     private readonly IRunObserver _inner;
     private readonly string _diagramPath;
     private readonly string _interactiveSource;
@@ -126,7 +132,10 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     /// <summary>
     /// Write the FINAL, settled diagram once at run end (no <c>meta refresh</c>, no spinner animation),
     /// from the observer's own in-memory status map — the durable post-mortem of the run (SSOT §10.1).
-    /// Best-effort.
+    /// Any node still <c>running</c> at this point (issue #333 — e.g. the Terminal Gate bracket whose
+    /// phase threw before <see cref="PlanGuardrailsFinished"/> settled it, or a task whose cancellation
+    /// propagated as an <see cref="OperationCanceledException"/> and skipped its settle) is rendered as an
+    /// <c>interrupted</c> badge, never a frozen spinner. Best-effort.
     /// </summary>
     public void WriteFinalStatic() => RenderUnderLock(duringRun: false);
 
@@ -303,6 +312,20 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     private void RenderSnapshotLocked(bool duringRun)
     {
         var snapshot = new Dictionary<string, string>(_statusByNodeId, StringComparer.Ordinal);
+
+        // Issue #333: the FINAL settled page (duringRun == false) must never leave a spinner. Any node
+        // still `running` at run end — the Terminal Gate bracket whose phase threw before its settle ran,
+        // or a task whose cancellation propagated as an OperationCanceledException and skipped its settle —
+        // is mapped to `interrupted` (a muted badge) rather than the frozen, un-animated spinner arc a
+        // `running` token would otherwise draw. The during-run pages keep the live spinner untouched.
+        if (!duringRun)
+        {
+            foreach (string nodeId in snapshot.Where(kv => kv.Value == Running).Select(kv => kv.Key).ToList())
+            {
+                snapshot[nodeId] = Interrupted;
+            }
+        }
+
         TryRender(() => AtomicFile.WriteAllText(
             _diagramPath,
             HtmlDiagramRenderer.Render(_interactiveSource, _sourceHash, _taskFolderTargets, snapshot, duringRun)));
