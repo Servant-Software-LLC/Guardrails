@@ -329,13 +329,18 @@ public sealed class HarnessWriteRunTests
         private readonly string? _harnessWritePath;
         private readonly string _content;
         private readonly IReadOnlyList<string> _blockedWritePaths;
+        private readonly string? _deliverableToWrite;
 
         public ProbeThenHatchRunner(
-            string? harnessWritePath, IReadOnlyList<string> blockedWritePaths, string content = "WRITTEN-BY-HARNESS")
+            string? harnessWritePath,
+            IReadOnlyList<string> blockedWritePaths,
+            string content = "WRITTEN-BY-HARNESS",
+            string? deliverableToWrite = null)
         {
             _harnessWritePath = harnessWritePath;
             _blockedWritePaths = blockedWritePaths;
             _content = content;
+            _deliverableToWrite = deliverableToWrite;
         }
 
         public int Invocations { get; private set; }
@@ -344,6 +349,20 @@ public sealed class HarnessWriteRunTests
         public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken ct)
         {
             Invocations++;
+
+            // #325: model the agent RECOVERING from a .claude/ Bash-classifier refusal in the SAME
+            // attempt — it wrote the deliverable to an in-scope workspace path (via the Read tool /
+            // staging), so the attempt CONVERGES even though a .claude/ path was reported blocked. The
+            // write lands in the segment worktree (cwd == the effective workspace) so the write-scope
+            // check and the guardrail both observe it.
+            if (_deliverableToWrite is not null)
+            {
+                string dest = Path.Combine(
+                    invocation.WorkingDirectory, _deliverableToWrite.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                File.WriteAllText(dest, _content);
+            }
+
             string stateOut = invocation.Environment["GUARDRAILS_STATE_OUT"];
             string json = _harnessWritePath is null
                 ? "{}"
@@ -462,6 +481,76 @@ public sealed class HarnessWriteRunTests
         Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
         Assert.True(repo.PlanBranchHasPath(planBranch, deliverable),
             "the harness-written .claude/ file must be committed on the plan branch");
+    }
+
+    // ── #325: outcome-aware structural .claude/ halt ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Worktree_PromptBashReadsClaude_RecoversStagingOnly_NoHatch_TaskGoesGreen()
+    {
+        // #325 RED-BAR: a task extending an EXISTING .claude/ file runs `cp ".claude/…" <staging>` — the
+        // .claude/ path only as a READ SOURCE. Claude Code's Bash classifier phrases ANY .claude/
+        // reference as a WRITE and refuses it (captured into BlockedWritePaths), but the agent RECOVERS
+        // in the SAME attempt (Read tool → the deliverable lands in-scope) and there is NO
+        // needsHarnessWrite hatch. The deliverable is present, so the guardrail PASSES and the attempt
+        // CONVERGES. Before the fix the early structural halt fired the instant the .claude/ wall was
+        // observed — BEFORE the outcome was known — and dead-ended the converged task at needs-human.
+        // After the fix the structural halt is consulted only on a NON-converged attempt, so a converged
+        // one goes GREEN. Must FAIL today (early halt), pass after.
+        using var repo = new TempGitRepo();
+        const string deliverable = ".claude/commands/x.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable);
+
+        // No hatch (harnessWritePath: null); a .claude/ path reported blocked; the deliverable is written
+        // to that same in-scope .claude/ path (what the staging move would have produced).
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [deliverable], deliverableToWrite: deliverable);
+
+        var (report, planBranch) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+        Assert.True(repo.PlanBranchHasPath(planBranch, deliverable),
+            "the converged .claude/ deliverable must be committed on the plan branch");
+    }
+
+    [Fact]
+    public async Task Worktree_UnrecoverableClaudeDeliverable_StillHaltsNeedsHuman()
+    {
+        // #325 must NOT weaken the #104 fast-halt: a .claude/ wall with NO hatch whose deliverable never
+        // lands (the runner writes NOTHING) makes the guardrail FAIL, so the attempt does NOT converge —
+        // the structural .claude/ halt then fires at the guardrail-failed site, settling needs-human with
+        // "structural" wording. Crucially it halts on the SINGLE recorded attempt even though the budget
+        // is larger (defaultRetries: 2 → budget 3): a further retry cannot clear a .claude/ wall, so the
+        // remaining budget is never burned. This proves the #104 fast-halt survives, now routed through
+        // the guardrail-failed site instead of the removed early halt.
+        using var repo = new TempGitRepo();
+        const string deliverable = ".claude/commands/x.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable, defaultRetries: 2);
+
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [deliverable], deliverableToWrite: null);
+
+        var (report, planBranch) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.False(task.IsGreen);
+        Assert.Contains(deliverable, task.Summary);
+        Assert.Contains("structural", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+        Assert.False(repo.PlanBranchHasPath(planBranch, deliverable));
+
+        // Fast-halt proof: exactly ONE attempt was recorded and the runner ran ONCE, even though the
+        // budget allowed three — the guardrail-failed structural halt did not burn the retries.
+        Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        Assert.Equal(1, runner.Invocations);
     }
 
     [Fact]

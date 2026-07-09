@@ -1317,12 +1317,20 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   budget; only on budget exhaustion did it settle `needs-human` with this outcome ("re-run later"). A
   transient pause that DOES clear is never journaled (observe-only via the `PromptPaused` event).
 - `permission-denied` — the runner refused a write/edit because the path is not on the granted
-  permission allow-list, and the wall is un-retryable (issues #86 / #104, §9.3). The harness settled
-  `needs-human` EARLY — on the FIRST hit for a structural `.claude/` path (the Claude Code sub-agent
-  runtime blocks automated `.claude/` writes even under `acceptEdits`), or on the REPEAT for any other
-  path refused across two or more attempts — instead of burning the remaining retry budget on the
-  identical wall. The attempt carries this DISTINCT outcome so a human (and §9.2 triage) sees a
-  permission/config issue, not a generic `action-failed`.
+  permission allow-list, and the wall is un-retryable (issues #86 / #104 / #325, §9.3). The harness
+  settled `needs-human` instead of burning the remaining retry budget on the identical wall. **The halt
+  is OUTCOME-AWARE — two distinct shapes (§9.3):**
+  - A **REPEATED non-`.claude/` path** (refused across two or more attempts, #86) halts **EAGERLY** on
+    the repeat — a non-`.claude/` path re-refused is a strong un-clearable-wall signal that need not wait
+    for the attempt's outcome.
+  - A **structural `.claude/` path** (#104/#325 — the Claude Code sub-agent runtime blocks automated
+    `.claude/` writes even under `acceptEdits`) halts only on an attempt that did NOT converge (the
+    action failed OR the guardrails failed). A CONVERGED attempt (guardrails PASS) goes **GREEN** even
+    when a `.claude/` path was reported refused, because the agent recovered (e.g. it read the file with
+    the Read tool after a `cp ".claude/…"` was mis-classified as a write) and the deliverable landed.
+
+  The attempt carries this DISTINCT outcome so a human (and §9.2 triage) sees a permission/config issue,
+  not a generic `action-failed`.
 - `task-preflight-failed` — a per-task `tasks/<id>/preflights/` slot failed (the two-scope preflights F9
   split). The task-scoped preflight gate did not pass, so the harness settles the task `needs-human` and
   its transitive cone `blocked` (exit 2) WITHOUT running the action. A per-attempt `outcome` inside
@@ -2121,13 +2129,15 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   narrower path. A request that PASSES validation but whose actual write fails (disk full, a genuinely
   unwritable location even for the harness process) is likewise treated as a failed attempt with
   actionable feedback, never a crash.
-- **The escape hatch is honored even after a direct-write PROBE (issue #321).** An agent that probed a
-  direct `.claude/` write first (getting refused, which the permission scanner captures into the
-  attempt's blocked-write paths) and THEN emitted `needsHarnessWrite` is served: the permission-wall
-  early halt (§9.3) drops the structural `.claude/` paths it observes whenever the same attempt carries
-  a `needsHarnessWrite`, so the halt no longer pre-empts the harness write. (The doctrine, Step 5b, now
-  tells the agent to go straight to the hatch and skip the wasteful probe entirely — but a probe-first
-  flow still completes.)
+- **The escape hatch is honored even after a direct-write PROBE (issues #321 / #325).** An agent that
+  probed a direct `.claude/` write first (getting refused, which the permission scanner captures into
+  the attempt's blocked-write paths) and THEN emitted `needsHarnessWrite` is served, because the
+  permission-wall structural `.claude/` halt is now **outcome-aware** (§9.3): it is consulted only on an
+  attempt that did NOT converge, so a probe-then-hatch attempt whose harness write lands and whose
+  guardrails pass goes GREEN by the general rule — there is no longer any `.claude/`-specific
+  observe-filter tied to the presence of a `needsHarnessWrite` request (that #321 filter was removed as
+  redundant, subsumed by #325). (The doctrine, Step 5b, still tells the agent to go straight to the
+  hatch and skip the wasteful probe entirely — but a probe-first flow still completes.)
 - **After the write, normal gating resumes.** A successful `needsHarnessWrite` falls through to the
   SAME write-scope CHECK (§3.4, if the task declares one — the harness-written file is now part of
   the segment's git diff too; this is expected, not redundant — the prospective check prevents the
@@ -2389,13 +2399,16 @@ By default, triage only **drafts** the GH issue (title + body) into `feedback.md
 **nothing** to a remote. Only when `triageAutoFile` is explicitly opted in — gated behind a
 configured GH repo + token — does the harness auto-file the issue. Default is **OFF**.
 
-### 9.3 Permission-wall early halt (issues #86 / #104)
+### 9.3 Permission-wall halt (issues #86 / #104 / #325)
 
 When the runner REFUSES a write/edit because the target path is not on the granted permission
-allow-list, retrying cannot clear it — switching tools or re-issuing the same write hits the same
-refusal. The harness detects this **permission wall** and settles the task `needs-human` EARLY with
-the distinct `permission-denied` attempt outcome (§7), instead of spending the rest of the retry
-budget on the identical, un-recoverable wall.
+allow-list, retrying often cannot clear it — switching tools or re-issuing the same write hits the same
+refusal. The harness detects this **permission wall** and settles the task `needs-human` with the
+distinct `permission-denied` attempt outcome (§7), instead of spending the rest of the retry budget on
+the identical, un-recoverable wall. **The halt is OUTCOME-AWARE (issue #325):** a REPEATED non-`.claude/`
+path halts EAGERLY on the repeat, but a structural `.claude/` path halts only on an attempt that did NOT
+converge — a converged attempt (guardrails pass) is GREEN even when a `.claude/` refusal was reported,
+because the agent recovered and the deliverable landed.
 
 **Runner-agnostic signal.** Detecting the concrete refusal is **quarantined in the runner CLASS** (the
 SOLE home of the vendor permission-denial wording, like the §9 failure classifier): for `claude`, the
@@ -2408,24 +2421,34 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
 
 **Two halt rules.**
 
-- **Structural `.claude/` path (issue #104), UNLESS the same attempt escapes via `needsHarnessWrite`
-  (issue #321).** The Claude Code sub-agent runtime blocks automated writes under `.claude/` **even when
-  `permissionMode` is `acceptEdits`**, so NO number of retries can clear it. One refusal on a `.claude/`
-  path settles `needs-human` on the **FIRST** attempt that hits it — zero retries wasted. **The
-  structural rule YIELDS to the escape hatch:** when the SAME attempt also emits a `needsHarnessWrite`
-  fragment (§9), the harness DROPS every `.claude/` path from what the wall tracker observes, because it
-  is itself about to perform that write (before guardrails) — so a `.claude/` refusal the agent hit
-  while *probing* is not an un-recoverable wall; the verdict is deferred to the harness write plus the
-  task's own guardrails, which fail honestly if the file never lands. Only an **un-escaped** `.claude/`
-  wall (an attempt with NO `needsHarnessWrite`) still halts on the first hit. This is why #313's remedy
-  (route the agent to `needsHarnessWrite`) actually works now — before #321 the halt pre-empted the
-  hatch even when the agent followed the instruction. Every NON-`.claude/` path is still observed
-  regardless of a hatch, so the repeated-path rule below is untouched by this yield.
-- **Repeated same path (issue #86).** Any other path refused on **two or more** attempts is a
-  structural blocker the agent cannot fix by retrying. The harness halts on the **second** attempt that
-  re-hits the SAME path, rather than spending the rest of the budget on the identical wall. A path
-  refused **once** does NOT halt (the retry is given its chance — a one-off block the retry clears is
-  normal retry behaviour).
+- **Structural `.claude/` path (issues #104 / #325) — halt DEFERRED to the attempt's outcome.** The
+  Claude Code sub-agent runtime blocks automated writes under `.claude/` **even when `permissionMode` is
+  `acceptEdits`**, so a genuinely un-recoverable `.claude/` wall no number of retries can clear must
+  still halt. But the refusal alone is NOT proof the wall is un-recoverable: the wall tracker OBSERVES
+  every refused path (including `.claude/` ones) unconditionally, but the structural halt is **consulted
+  only on an attempt that did NOT converge** — the action failed OR the guardrails failed. When an
+  attempt CONVERGES (guardrails pass) the harness IGNORES the `.claude/` wall and the task goes **GREEN**:
+  the agent recovered in the same attempt and the deliverable demonstrably landed. This is the #325 fix —
+  a task extending an EXISTING `.claude/` file ran `cp ".claude/…" <staging>` with the `.claude/` path as
+  a **READ SOURCE**, the Claude Code Bash classifier phrased ANY `.claude/` reference as a WRITE and
+  refused it, the agent RECOVERED via the Read tool, the deliverable landed, and the guardrails passed —
+  such an attempt must be green, not a structural halt. The **source-vs-destination distinction is moot**:
+  the harness never needs to know whether the `.claude/` path was a read source or a write target,
+  because the attempt's own OUTCOME (did the guardrails pass?) is the authority. Deferring to the outcome
+  also **SUBSUMES the old #321 escape-hatch yield**: a probe-then-`needsHarnessWrite` attempt whose write
+  lands and whose guardrails pass is green by this same general rule, so no `.claude/`-specific
+  observe-filter tied to the presence of a `needsHarnessWrite` is needed (that #321 filter is removed).
+  This is why #313's remedy (route the agent to `needsHarnessWrite`) works — the hatch write lands, the
+  guardrails pass, the attempt is green. An attempt that does NOT converge with a structural `.claude/`
+  wall present halts `needs-human` on that attempt (the #104 fast-halt: the deliverable cannot have
+  landed, so no further retry is warranted).
+- **Repeated same path (issue #86) — halt EAGER.** A non-`.claude/` path re-refused across attempts is a
+  strong un-clearable-wall signal that need NOT wait for the attempt's outcome, so unlike the structural
+  rule this halt fires EAGERLY (before the outcome is routed, right after the transient-pause check).
+  Any non-`.claude/` path refused on **two or more** attempts is a structural blocker the agent cannot
+  fix by retrying. The harness halts on the **second** attempt that re-hits the SAME path, rather than
+  spending the rest of the budget on the identical wall. A path refused **once** does NOT halt (the retry
+  is given its chance — a one-off block the retry clears is normal retry behaviour).
 
 **`feedback.md` — task-level remediation.** The halt writes a `feedback.md` naming the exact blocked
 path(s) and the concrete fix. For a `.claude/` wall the **PRIMARY** remedy is `needsHarnessWrite`
@@ -2458,14 +2481,16 @@ instruction for any `.claude/` deliverable (Step 5b, now "emit `needsHarnessWrit
 with a direct write"), so a well-authored breakdown never reaches this halt. The alternative is the
 `task.json` `stagingOutputs` contract (§3.5, issue #130): a task declares the `.claude/` deliverable it
 produces and a staging path the action writes instead, and the harness moves the staged output into its
-real `.claude/` path after the action succeeds and before guardrails run. **Interaction (issue #321):
-the structural halt fires only for an attempt that emitted NEITHER escape** — an un-escaped `.claude/`
-write. An attempt that emits `needsHarnessWrite` for the refused path is never halted by the structural
-rule (the harness drops the `.claude/` wall it observes and performs the write itself), even if the
-agent *probed* with a direct write first; a `stagingOutputs` task never produces a `.claude/`-path
-refusal to begin with. So the §9.3 detect-and-halt is the safety net for a `.claude/`-writing task that
-used neither mechanism; its `feedback.md` points at `needsHarnessWrite` first, then `stagingOutputs`,
-then the session-wide `bypassPermissions` fallback (the settings-grant remedy is retired, #273).
+real `.claude/` path after the action succeeds and before guardrails run. **Interaction (issues #321 /
+#325): the structural halt fires only for an attempt that did NOT converge.** Both escape hatches are now
+served by the general outcome-aware rule rather than a `.claude/`-specific filter: a `needsHarnessWrite`
+attempt whose write lands and whose guardrails pass is green (its converged outcome is the authority —
+the probe-then-hatch flow #321 originally special-cased needs no observe-filter, which has been removed),
+and a `stagingOutputs` attempt whose moved deliverable passes its guardrails is likewise green. So the
+§9.3 detect-and-halt is the safety net for a `.claude/`-writing task that reached a NON-converged
+outcome (action failed or guardrails failed) with an un-recoverable `.claude/` wall present; its
+`feedback.md` points at `needsHarnessWrite` first, then `stagingOutputs`, then the session-wide
+`bypassPermissions` fallback (the settings-grant remedy is retired, #273).
 
 ### 9.4 Worktree-containment PreToolUse hook + git-stash safety (issues #199 / #192)
 
