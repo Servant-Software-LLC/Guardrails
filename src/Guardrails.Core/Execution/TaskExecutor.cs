@@ -999,9 +999,21 @@ public sealed class TaskExecutor : ITaskExecutor
                     "\n", failedList.Select(g => $"- **{g.Name}** — {g.Reason}"));
                 string wallFeedback = RetryPolicy.ForStructuralWallHalt(
                     task, "A guardrail failed", primaryBody, wall.StructuralPaths);
+                // #339 N1: mirror the canonical guardrail-failed sibling below — a guardrail that TIMED OUT
+                // must record `timeout`, not `guardrail-failed`, even when a .claude/ wall coincided this
+                // attempt. Hard-coding GuardrailFailed dropped the timeout/guardrail-failed distinction the
+                // sibling keeps.
+                // #339 N2 (intended, documented — do NOT re-file): reporting this recovered-wall-then-
+                // guardrail-failed halt as guardrail-failed/timeout (rather than #326's permission-denied)
+                // means the overwatcher's PERMISSION-WALL diagnose-consult (the sole PermissionDenied
+                // consumer, ~line 263) no longer fires for this case. That is correct: this is a genuine
+                // guardrail failure whose wall was RECOVERED (a detour), not a wall failure — the consult is
+                // scoped to real wall halts. The wall is already disclosed as secondary context in the
+                // summary and the feedback, so no diagnosis is lost.
                 return _journaler.StructuralWallHalt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, action,
-                    AttemptOutcome.GuardrailFailed, summary, wallFeedback, guardrails.Results, failedList);
+                    guardrails.TimedOut ? AttemptOutcome.Timeout : AttemptOutcome.GuardrailFailed,
+                    summary, wallFeedback, guardrails.Results, failedList);
             }
 
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
