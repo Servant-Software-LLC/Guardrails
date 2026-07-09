@@ -251,7 +251,9 @@ public sealed class TaskExecutor : ITaskExecutor
 
             // Other terminal outcomes do not retry: cancellation, plus the needs-human escalations that
             // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9) and the
-            // permission-wall early halt (issues #86 / #104), both of which surface as TaskOutcome.NeedsHuman.
+            // permission-wall halt (issues #86 / #104 / #325: an EAGER #86 repeated-path halt, or an
+            // outcome-aware structural .claude/ halt on a non-converged attempt), both of which surface
+            // as TaskOutcome.NeedsHuman.
             if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 // #269 overwatcher: a PERMISSION WALL (a floor boundary that may fire on attempt 1) gets a
@@ -679,34 +681,25 @@ public sealed class TaskExecutor : ITaskExecutor
             return _journaler.NeedsHuman(task, attemptNumber, startedAt, relativeLogDir, logDir, action, question);
         }
 
-        // --- permission wall early halt (issues #86 / #104 / #321) -----------------------
-        // Feed this attempt's refused write paths to the cross-attempt tracker, then check whether a
-        // wall warrants settling needs-human NOW instead of burning the rest of the budget. A .claude/
-        // path is structural (halts on the FIRST hit — the runtime blocks .claude/ writes even under
-        // acceptEdits, so no retry clears it, #104); any other path refused across repeated attempts
-        // halts on the repeat (#86). Checked here, before success/failure routing, because even a
-        // prompt that "completed" while silently unable to write its .claude/ deliverable must escalate.
-        //
-        // #321: when THIS attempt ALSO carries a needsHarnessWrite request (§9), DROP the structural
-        // .claude/ paths from what the wall tracker observes — the harness itself is about to perform
-        // that write (below, before guardrails), so a .claude/ refusal the agent hit while probing is
-        // NOT an un-recoverable wall: the verdict is DEFERRED to the harness write + the task's own
-        // guardrails, which fail honestly if the file never lands. This is the honest-halt rationale —
-        // an un-escaped .claude/ wall (no needsHarnessWrite this attempt) STILL halts on the first hit;
-        // an escaped one yields. Every NON-.claude/ path is still observed regardless, so the #86
-        // repeated-path protection is fully intact even when a hatch is present. Whole-branch structural
-        // suppression via IsClaudeDir (not exact-path matching): a blocked path arrives absolute or
-        // repo-relative while the request path is workspace-relative, so a string-equal filter would
-        // silently no-op and re-introduce the halt this fix removes.
-        IReadOnlyList<string> observedWalls = action.HarnessWriteRequest is null
-            ? action.BlockedWritePaths
-            : action.BlockedWritePaths.Where(p => !PermissionWallTracker.IsClaudeDir(p)).ToList();
-        permissionWalls.Observe(observedWalls);
+        // --- permission wall observation (issues #86 / #104 / #325) ----------------------
+        // Feed this attempt's refused write paths to the cross-attempt tracker UNCONDITIONALLY (the #321
+        // observe-filter that dropped .claude/ paths whenever a needsHarnessWrite was present is GONE —
+        // subsumed by the outcome-aware halt below), then compute the wall verdict ONCE. WHERE that
+        // verdict is consulted is now outcome-aware:
+        //   • #86 REPEATED (below, right after the transient-pause check): a NON-.claude/ path refused
+        //     across ≥2 attempts is a genuine un-clearable wall — halt EAGERLY, without waiting for the
+        //     attempt outcome, because a retry just re-hits the same wall.
+        //   • #104/#325 STRUCTURAL (a .claude/ path): consulted only on an attempt that did NOT converge
+        //     — the action failed OR the guardrails failed (the two sites below). A CONVERGED attempt
+        //     (guardrails pass) goes GREEN regardless of a .claude/ refusal the agent recovered from in
+        //     the same attempt. That is the #325 fix: a task extending an EXISTING .claude/ file ran
+        //     `cp ".claude/…" <staging>` (the .claude/ path a READ SOURCE), the Bash classifier phrased
+        //     it as a WRITE and refused, the agent RECOVERED via the Read tool, the deliverable landed,
+        //     and the guardrails passed — such an attempt must be green, not a structural halt. Deferring
+        //     to the outcome also SUBSUMES the #321 probe-then-hatch escape-hatch yield: a converged
+        //     hatch attempt is green by this same general rule, so no .claude/-specific filter is needed.
+        permissionWalls.Observe(action.BlockedWritePaths);
         PermissionWallDecision wall = permissionWalls.ShouldHalt();
-        if (wall.Halt)
-        {
-            return _journaler.PermissionWall(task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall);
-        }
 
         // --- transient pause (issue #115): a retryable infra condition (429/503/529, overloaded,
         // rate/session/usage limit). Do NOT journal a failed attempt and do NOT consume the retry
@@ -730,8 +723,35 @@ public sealed class TaskExecutor : ITaskExecutor
                 TransientReason: reason);
         }
 
+        // --- #86 EAGER permission-wall halt ---------------------------------------------
+        // A NON-.claude/ path refused across ≥2 attempts (RepeatedPaths) is a strong un-clearable-wall
+        // signal that need not wait for the attempt outcome — settle needs-human NOW instead of burning
+        // the rest of the budget re-hitting the identical wall. Placed AFTER the transient-pause check
+        // so a rate-limited attempt PAUSES and re-runs the SAME attempt rather than halting (a latent
+        // ordering bug the #321 early-halt had, fixed here for free). A structural .claude/ wall is
+        // deliberately NOT halted here — it defers to the two outcome sites below (only a NON-converged
+        // attempt halts on it). Pass a REPEATED-ONLY decision so the feedback/summary wording stays
+        // "repeated" (not "structural") even when a .claude/ read-source wall coexists this attempt.
+        if (wall.RepeatedPaths.Count > 0)
+        {
+            return _journaler.PermissionWall(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                new PermissionWallDecision(true, [], wall.RepeatedPaths));
+        }
+
         if (!action.Succeeded)
         {
+            // #104/#325: an un-converged attempt (the action itself failed) plus a structural .claude/
+            // wall halts needs-human NOW — the .claude/ deliverable cannot have landed and the agent may
+            // be stuck against a wall no retry clears (the #104 fast-halt is preserved via this site).
+            // Behaviorally identical to before for an action-failed attempt: today's early halt already
+            // fired before this point. RepeatedPaths is provably empty here (any repeat halted eagerly
+            // above), so passing the full wall yields structural-only feedback/summary wording.
+            if (wall.HasStructural)
+            {
+                return _journaler.PermissionWall(task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall);
+            }
+
             // Compose signal-specific feedback so a retry CHANGES BEHAVIOR rather than re-hitting the
             // same wall: output-cap (#114) → "write incrementally / split"; timeout (#119) / max-turns
             // (#129) → "go straight at the deliverable, don't re-explore". A genuine error keeps the
@@ -944,6 +964,16 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (guardrails.AnyFailed)
         {
+            // #325: the guardrails failed → the .claude/ deliverable may not have landed → a structural
+            // .claude/ wall halts needs-human now (bounded 1-attempt cost; the #104 fast-halt is intact
+            // via this site — an unrecoverable .claude/ wall whose deliverable never lands still settles
+            // on the single recorded attempt). RepeatedPaths is provably empty here (any repeat halted
+            // eagerly above), so passing the full wall yields structural-only feedback.
+            if (wall.HasStructural)
+            {
+                return _journaler.PermissionWall(task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall);
+            }
+
             IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
             // path) so the retry gets the artifact back + per-guardrail verdicts, not just a summary. The
