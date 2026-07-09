@@ -11,9 +11,17 @@ disagree, the SSOT wins — and this file is due an update.
 plan-name/
 ├── guardrails.json
 ├── state/seed.json              # optional committed initial state
+├── preflights/                  # OPTIONAL plan-level "Full Flight Checks" — run ONCE, before the DAG (§3.3/§4)
+│   ├── 01-<precondition>.ps1     #   guardrail-shaped file (same parser as tasks/<id>/guardrails/)
+│   └── 01-<precondition>.json    #   optional metadata sidecar
+├── guardrails/                  # OPTIONAL plan-level "Terminal Gate" — run ONCE, at run end, on the merged HEAD (§3.3/§4)
+│   ├── 01-<integration-check>.ps1  #   ≥1 real integration-set re-run for a multi-leaf/fan-in plan (GR2028)
+│   └── 01-<integration-check>.json #   optional sidecar (e.g. `"scope": "integration"`)
 └── tasks/<NN-verb-object>/
     ├── task.json
     ├── action.prompt.md | action.ps1 | action.sh | …   # exactly ONE action.* file
+    ├── preflights/              # OPTIONAL task-level JIT dependency-delivery check — run at taskBase, before the action
+    │   └── 01-<dep-delivered>.ps1
     └── guardrails/              # ≥1 guardrail or validation FAILS
         ├── 01-<what-it-proves>.ps1
         ├── 01-<what-it-proves>.json    # optional sidecar: description/args/timeoutSeconds
@@ -22,6 +30,17 @@ plan-name/
 
 Never generate `state/state.json`, `state/run.json`, or `state/logs/` — those are
 harness-owned runtime artifacts (and gitignored).
+
+**Two scopes, four folders (SSOT §1/§3.3).** `preflights/` and `guardrails/` are first-class
+folders at TWO scopes. **Plan-level** `<plan>/preflights/` (the "Full Flight Checks") runs ONCE
+before the DAG against the starting repo; **plan-level** `<plan>/guardrails/` (the "Terminal Gate")
+runs ONCE at run end on the merged plan-branch HEAD — it REPLACES the retired `integrationGate: true`
+sink-task (see `task.json` below). **Task-level** `tasks/<id>/preflights/` is a per-task JIT
+dependency-delivery check run in the task's segment worktree before its action, the sibling of the
+postcondition `tasks/<id>/guardrails/`. All four folders share **one** guardrail-file parser (same
+`NN-name.ps1`/`.sh`/`.py` + optional `.json` sidecar, or `NN-name.prompt.md`; ordinal sort); every
+file MUST open with a `catches:` declaration and a malformed one (no `catches:`) is a hard load error,
+**GR2027**. See SKILL.md Step 4 (four-folder doctrine) and Step 5 (the `<plan>/preflights/` baseline).
 
 `diagram.md` at the plan-folder root is also **generated, not hand-authored** —
 emitted by `guardrails graph`, carrying a `<!-- guardrails:graph … source-sha256=… -->`
@@ -139,11 +158,9 @@ there.
                             // absent ⇒ identity falls back to the folder name (§3);
                             // duplicate ⇒ GR2010; must match ^[a-z0-9][a-z0-9._-]*$ ⇒ GR2011.
   "dependsOn": ["01-other-task"],                                // REQUIRED (may be [])
-  "integrationGate": false, // optional, default false; true marks the terminal whole-repo
-                            // integration gate — the final soundness boundary run once on the
-                            // fully merged plan-branch HEAD (§3.3). ≥2 leaf tasks / any fan-in ⇒
-                            // exactly one true sink (GR2017); the sink needs ≥1 scope:"integration"
-                            // guardrail (GR2018).
+  // NOTE: "integrationGate": true is RETIRED — the terminal gate is now the <plan>/guardrails/
+  //       folder (§3.3), NOT a task kind. Still declaring it is a HARD validation error (GR2029).
+  //       Do NOT add this key to a new task.json.
   "writeScope": ["src/Foo/"], // optional; workspace-relative path prefixes/globs the task may
                             // add/modify/delete/rename — a deterministic READ-ONLY check (§3.4).
                             // ABSENT ⇒ NO check. Renames = paired D+A (both in scope); the check
@@ -162,12 +179,19 @@ the plan ⇒ GR2010; a value not matching `^[a-z0-9][a-z0-9._-]*$` ⇒ GR2011. O
 when the task folder has exactly one `action.*` file (the convention); zero or multiple =
 validation error.
 
-`integrationGate` (optional, default **false**) marks a task as the terminal whole-repo integration
-gate — the final soundness boundary run once on the fully merged plan-branch HEAD after every other
-task succeeds (SSOT §3.3). Its guardrails are exactly the run's integration-guardrail set (all
-`scope: "integration"` guardrails, §4.3). A plan with ≥2 leaf tasks or any fan-in MUST declare
-**exactly one** `integrationGate: true` sink (**GR2017**); the sink MUST carry **at least one**
-`scope: "integration"` guardrail (**GR2018**). A single linear chain with no fan-in may omit it.
+**The terminal integration gate is a FOLDER, not a task (SSOT §3.3).** The `integrationGate: true`
+task kind is **retired** — there is no terminal-sink task. The terminal whole-repo integration gate
+now lives in the plan-root **`<plan>/guardrails/`** folder (a sibling of `tasks/`, evaluated once at
+run end on the fully merged plan-branch HEAD; it re-runs the integration set — typically the whole-repo
+build and full suite — as the whole-repo soundness boundary). A plan that STILL declares
+`integrationGate: true` is a **hard validation error (GR2029)** — there is no coexistence window.
+**GR2017 is gone.** **GR2018's content teeth are re-homed onto the folder as GR2028:** a plan with ≥2
+leaf tasks or any fan-in — in worktree mode (`maxParallelism > 1`) — MUST have a `<plan>/guardrails/`
+folder carrying **≥1 deterministic check that ACTUALLY re-runs the integration set** (a whole-repo
+build / full suite / a union invariant, NOT a tautological `exit 0`). A single linear chain (one leaf,
+no fan-in) forms no union and is exempt. `scope: "integration"` is **unchanged** — it stays the §4.3
+per-union tag (see the guardrail sidecar, below). See SKILL.md Step 4 and `example-breakdown.md` for
+the worked terminal folder.
 
 `writeScope` (optional) is a list of workspace-relative path prefixes/globs declaring the surface a
 task may add/modify/delete/rename. It drives a **deterministic, read-only** harness check (SSOT
