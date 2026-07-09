@@ -116,6 +116,10 @@ internal sealed class RawGuardrailSidecar
     // whole-repo soundness check at an integrationGate sink.
     public string? Scope { get; set; }
 
+    // Optional author-set expected wall-clock duration in seconds (SSOT §4.1, issue #331). Surfaced
+    // as an "expected ~Xm" hint in the running-guardrail heartbeat; must be > 0 when present (GR2035).
+    public int? ExpectedDurationSeconds { get; set; }
+
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
@@ -36,11 +37,17 @@ public static class PlanPreflightPhase
     /// Returns true when scheduling may proceed (passed, skipped, or no preflights declared at all);
     /// false when the run must halt BEFORE any task is scheduled — a failed <c>planPreflights</c>
     /// section (with per-check reasons) has already been journaled by the time this returns.
+    /// <para>
+    /// When <paramref name="heartbeatOut"/> is supplied, a per-guardrail wall-clock heartbeat (issue
+    /// #331) is written to it while each Full Flight Check runs. This phase runs BEFORE the Spectre live
+    /// region is constructed, so plain heartbeat lines are #145-safe. Null ⇒ no heartbeat.
+    /// </para>
     /// </summary>
     public static async Task<bool> EvaluateAsync(
         PlanDefinition plan,
         RunJournal journal,
         ProcessRunner processRunner,
+        TextWriter? heartbeatOut,
         CancellationToken cancellationToken)
     {
         if (plan.PlanPreflights.Count == 0)
@@ -62,10 +69,12 @@ public static class PlanPreflightPhase
         string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken);
 
         var interpreterMap = InterpreterMap.CreateDefault(plan.Config);
-        IReVerifier reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
+        var reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
+
+        using GuardrailHeartbeat? heartbeat = heartbeatOut is null ? null : GuardrailHeartbeat.StartConsole(heartbeatOut);
 
         ReVerifyResult result = await reVerifier
-            .ReVerifyAsync(evalWorkspace, plan.PlanPreflights, cancellationToken)
+            .ReVerifyAsync(evalWorkspace, plan.PlanPreflights, heartbeat, cancellationToken)
             .ConfigureAwait(false);
 
         List<PlanPreflightCheck> checks = plan.PlanPreflights

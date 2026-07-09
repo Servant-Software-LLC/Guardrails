@@ -310,6 +310,18 @@ public static class DiagnosticCodes
     /// </summary>
     public const string CrossWaveDependency = "GR2034";
 
-    // CURRENT next-free code: GR2035. GR2034 (CrossWaveDependency) is the last taken code above.
-    // When allocating a new code, take GR2035 and update this line (issue #320).
+    /// <summary>
+    /// A guardrail's optional <c>expectedDurationSeconds</c> metadata (SSOT §4.1, issue #331) is present
+    /// but not a positive integer (zero or negative). The field is a read-only progress hint — the
+    /// running-guardrail heartbeat surfaces it as "expected ~Xm" — so a non-positive value can never be a
+    /// real duration and would render nonsensically ("expected ~0m"); it is always an authoring mistake. An
+    /// ERROR, mirroring the other optional-positive checks (cf. GR2012 <c>maxCostUsd</c>, GR2023
+    /// <c>maxOutputTokens</c>). A <c>null</c>/absent value is fine (no hint) and is not flagged. Validated
+    /// across all four guardrail-shaped folders (task guardrails/preflights, <c>&lt;plan&gt;/preflights/</c>,
+    /// <c>&lt;plan&gt;/guardrails/</c>), like the guardrail <c>scope</c> check (GR2021).
+    /// </summary>
+    public const string ExpectedDurationNonPositive = "GR2035";
+
+    // CURRENT next-free code: GR2036. GR2035 (ExpectedDurationNonPositive) is the last taken code above.
+    // When allocating a new code, take GR2036 and update this line (issue #320).
 }

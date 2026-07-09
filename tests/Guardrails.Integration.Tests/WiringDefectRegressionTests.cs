@@ -404,7 +404,7 @@ public sealed class WiringDefectRegressionTests
         // merged plan-branch HEAD (worktree mode) after the DAG is wholly green.
         PlanDefinition reloadedPlan = new PlanLoader().Load(planDir).Plan!;
         bool planGuardrailsPassed = await PlanGuardrailPhase.EvaluateAsync(
-            reloadedPlan, new ProcessRunner(), TestContext.Current.CancellationToken);
+            reloadedPlan, new ProcessRunner(), heartbeatOut: null, TestContext.Current.CancellationToken);
 
         Assert.True(planGuardrailsPassed,
             "PlanGuardrailPhase.EvaluateAsync must pass the terminal '<plan>/guardrails/' check on the " +

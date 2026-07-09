@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
@@ -40,10 +41,17 @@ public static class PlanGuardrailPhase
     /// settles green (the gate passed, or no <c>&lt;plan&gt;/guardrails/</c> folder is declared at all);
     /// false when the run must halt — a failed <c>planGuardrails</c> section (with per-check reasons)
     /// has already been journaled by the time this returns.
+    /// <para>
+    /// When <paramref name="heartbeatOut"/> is supplied, a per-guardrail wall-clock heartbeat (issue
+    /// #331) is written to it while each check runs — surfacing liveness for a long terminal gate (a
+    /// full test suite). The terminal phase runs OUTSIDE the Spectre live region (it is disposed before
+    /// this is called), so plain heartbeat lines there are #145-safe. Null ⇒ no heartbeat.
+    /// </para>
     /// </summary>
     public static async Task<bool> EvaluateAsync(
         PlanDefinition plan,
         ProcessRunner processRunner,
+        TextWriter? heartbeatOut,
         CancellationToken cancellationToken)
     {
         if (plan.PlanGuardrails.Count == 0)
@@ -57,10 +65,12 @@ public static class PlanGuardrailPhase
         string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken);
 
         var interpreterMap = InterpreterMap.CreateDefault(plan.Config);
-        IReVerifier reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
+        var reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
+
+        using GuardrailHeartbeat? heartbeat = heartbeatOut is null ? null : GuardrailHeartbeat.StartConsole(heartbeatOut);
 
         ReVerifyResult result = await reVerifier
-            .ReVerifyAsync(evalWorkspace, plan.PlanGuardrails, cancellationToken)
+            .ReVerifyAsync(evalWorkspace, plan.PlanGuardrails, heartbeat, cancellationToken)
             .ConfigureAwait(false);
 
         List<FailedGuardrail> failedChecks = result.FailedGuardrails

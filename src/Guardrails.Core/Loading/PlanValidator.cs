@@ -40,6 +40,7 @@ public sealed class PlanValidator
         ValidateNoLegacyIntegrationGate(plan, diagnostics);
         ValidatePlanGuardrailsIntegrationReRun(plan, diagnostics);
         ValidateGuardrailScopeValues(plan, diagnostics);
+        ValidateGuardrailExpectedDurations(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
@@ -800,6 +801,41 @@ public sealed class PlanValidator
                     $"'{guardrail.Scope}'. The only recognised values are 'integration' and 'local'. " +
                     "An unrecognised value silently degrades to 'local' at runtime, dropping the " +
                     "guardrail from the integration union re-verify set (SSOT §4.3, plan 08 §3)."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A guardrail's optional <c>expectedDurationSeconds</c> hint (SSOT §4.1, issue #331) must be a
+    /// positive integer when present (GR2035) — a non-positive value can never be a real duration and
+    /// would render nonsensically in the running-guardrail heartbeat. Validated across ALL FOUR
+    /// guardrail-shaped folders (like <see cref="ValidateGuardrailScopeValues"/>), since the sidecar
+    /// (and its hint) can sit next to any guardrail-shaped file. Absent (null) ⇒ no check.
+    /// </summary>
+    private static void ValidateGuardrailExpectedDurations(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            CheckGuardrailExpectedDurations(task.Guardrails, $"task '{task.Id}'", diagnostics);
+            CheckGuardrailExpectedDurations(task.Preflights, $"task '{task.Id}' preflights", diagnostics);
+        }
+
+        CheckGuardrailExpectedDurations(plan.PlanPreflights, "<plan>/preflights/", diagnostics);
+        CheckGuardrailExpectedDurations(plan.PlanGuardrails, "<plan>/guardrails/", diagnostics);
+    }
+
+    private static void CheckGuardrailExpectedDurations(
+        IReadOnlyList<GuardrailDefinition> guardrails, string context, List<Diagnostic> diagnostics)
+    {
+        foreach (GuardrailDefinition guardrail in guardrails)
+        {
+            if (guardrail.ExpectedDurationSeconds is { } seconds && seconds <= 0)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.ExpectedDurationNonPositive, guardrail.Path,
+                    $"Guardrail '{guardrail.Name}' ({context}) has expectedDurationSeconds {seconds}, " +
+                    "but it must be a positive integer. The field is a read-only progress hint " +
+                    "surfaced in the running-guardrail heartbeat (SSOT §4.1); a zero/negative value " +
+                    "is never a real duration. Remove it or set a positive number of seconds."));
             }
         }
     }
