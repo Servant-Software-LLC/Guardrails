@@ -128,3 +128,10 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   inter-wave adjustment (#254); folded in the former `driftPolicy`. Prompt-spend from the overwatch diagnose,
   the AI-merge worker, and terminal triage is charged to `maxCostUsd` via the shared `overheadCostUsd` sink
   (#314). SSOT §2.1/§7.
+- **#275 `.guardrails/` folder convention — CLOSED as recommend-only.** Write-escape motive subsumed by
+  #266 (agent `STATE_OUT`/`VERDICT_OUT` staged to `.guardrails-agent-io/`, SSOT §9.5); hygiene motive
+  shipped by #258's plan-root `.gitignore` scaffold (#284). Surviving "give the tool a home" case
+  documented as an *optional* `.guardrails/` home (plan folders + `guardrails-patterns.md`); the
+  `plan-breakdown` default (beside the source `.md`) is unchanged. **Revisit-if-friction:** a real
+  consumer complaint about the default location reopens this as a v2 "default plan home + `guardrails init`
+  + transient-folder consolidation" bet. Design: `docs/plans/14-guardrails-folder-convention.md`.

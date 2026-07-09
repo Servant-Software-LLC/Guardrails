@@ -50,6 +50,12 @@ plan-name/
             └── 02-review.prompt.md        # prompt guardrail with YAML frontmatter (§4.2)
 ```
 
+A repo that prefers one consolidated footprint MAY instead place plan folders under a
+`.guardrails/` directory (the same optional home `guardrails-patterns.md` already documents);
+post-#266 the location does not affect runnability, and the harness-scaffolded `.gitignore` (§1)
+applies wherever the plan folder lives. The `plan-breakdown` default remains beside the source
+`.md` (issue #275, recommend-only — `docs/plans/14-guardrails-folder-convention.md`).
+
 Task ids are their folder names. The `NN-` prefix is a human-scanning hint only;
 `dependsOn` is the truth for ordering.
 

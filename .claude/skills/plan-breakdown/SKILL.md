@@ -41,7 +41,11 @@ and only then does `guardrails run` execute it.
 
 ## Step 0 — Preconditions
 
-1. Resolve the plan path. If the file doesn't exist, stop and say so.
+1. Resolve the plan path. If the file doesn't exist, stop and say so. The `<plan-name>/` task
+   folder is generated **beside the source `.md`** by default; a repo that prefers one consolidated
+   footprint MAY instead keep plan folders under a `.guardrails/` home (the same optional home
+   `guardrails-patterns.md` documents). Post-#266 the location no longer affects runnability, so this
+   is aesthetic — the default stays beside the `.md` (issue #275).
 2. If `<plan-name>/` already exists next to the plan, **never silently clobber** —
    ask: **merge** (default, preserves human guardrail edits), overwrite, or abort. A human
    may have edited that folder. On **merge**, follow the regeneration flow in Step 8.
