@@ -59,6 +59,16 @@ Each slots into an existing v1 seam — none invalidates the architecture:
    (report + honest-halt), never silently scaffolded. *Seam: `$e2eStack` detection in
    `plan-breakdown` Step 0 + a new `interaction-flow` guardrail archetype +
    `references/e2e/<driver>.md`.*
+6. **Overwatcher auto-heal + inter-wave adjustment (#269 / #254 v2).** The overwatcher (shipped v1 =
+   diagnose + propose; post-v1 fast-follows) graduates to (a) an **`auto` tier** that applies its bounded
+   action/budget fixes without prompting — the grant machinery + cumulative retry ceiling already exist
+   behind the non-interactive `IOverwatchInteraction` seam, so this bet is the live-TTY-during-live-region
+   apply UX (the #145 live-region hazard) plus the persistent authoring-defect fix classes — and (b)
+   **overwatcher-driven between-wave adjustment**: on a wave's completion, propose/apply changes to
+   downstream (all-`pending`) waves, gated by the same `autonomyPolicy`. The asymmetry is preserved (never
+   softens a deterministic verdict; a downstream wave is (re)authored through `/plan-breakdown` +
+   `/guardrails-review`, not hand-softened). *Seam: the `IOverwatchInteraction` seam + the between-wave step
+   the wave loop already exposes.*
 
 ## Seeded risk register (uber-report carries these every run)
 
@@ -92,3 +102,27 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   (auto-invalidating a fan-in descendant off a stale-carrying base is the unsoundness Part A halted on).
   Auto-resolved runs return the normal exit code + a `boundary:"drift"` entry in the unified `decisions[]`
   audit (M1 fold, SSOT §2.1); only a declined/refused drift is the exit-2 `DefinitionDrift` halt.
+- **#254 first-class multi-wave plans — SHIPPED (v1).** Nested `<plan>/<wave>/<tasks>` layout (wave-dir
+  regex, contiguous NN; GR2032 mixed / GR2033 numbering / GR2034 cross-wave `dependsOn`); strict-order wave
+  execution with a hard barrier + per-wave entry preflight / exit terminal gate; **wave-qualified identity**
+  (the §6.2 single-writer state key becomes `<waveDir>/<taskFolder>`); `WaveDefinitionHash` (folds the
+  constituent task hashes) + wave-drift resolution via the **marker-aware `SafeSuffixEvaluator`** (exempts
+  the empty `Guardrails-Wave:` marker commits, still refuses a trailer-less human hand-fix in range);
+  continuous plan branch + cross-wave resume; per-wave task table + diagram; `guardrails reset <plan>
+  <wave>`. Authoring: `plan-breakdown` waved output + JIT staged breakdown (author wave N+1 against the
+  materialized upstream), `guardrails-review` per-wave. SSOT §14; design `docs/plans/10-multi-wave-plans.md`.
+  (M1 foundation + M2a/M2b/M4.) *Recursive model: task ⊂ wave ⊂ plan, one `isCompleted?` predicate separating
+  drift from sanctioned forward adjustment. v2 = overwatcher-driven inter-wave adjustment (bet #6).*
+- **#269 overwatcher — SHIPPED (v1: diagnose + propose).** An active, tiered, asymmetric run supervisor that
+  subsumes the §9.2 needs-human triage: on a struggling task (eager — attempt ≥ 2 + typed transitions,
+  once-per-attempt, `maxCostUsd`-bounded) it classifies doomed-vs-retryable + renders a precise diagnosis,
+  and (propose tier) offers a bounded action/budget fix. The **asymmetry** (never softens a deterministic
+  verdict) is enforced by a `TaskDefinitionFiles`-keyed allow/deny classifier + a triple barrier; tiers map
+  onto the unified `autonomyPolicy`; reporting via `decisions[]` (`boundary:"task"`) + a per-task
+  `overwatch.jsonl`. SSOT §9.2; design `docs/plans/11-overwatcher.md`. (M3.) *v2 = auto-heal + inter-wave
+  adjustment (bet #6).*
+- **M1 unified `autonomyPolicy` + `decisions[]` — SHIPPED.** One `prompt`/`halt`/`auto` policy + one
+  `boundary: task|wave|drift` decisions log govern drift-resolution (#274), the overwatcher (#269), and
+  inter-wave adjustment (#254); folded in the former `driftPolicy`. Prompt-spend from the overwatch diagnose,
+  the AI-merge worker, and terminal triage is charged to `maxCostUsd` via the shared `overheadCostUsd` sink
+  (#314). SSOT §2.1/§7.
