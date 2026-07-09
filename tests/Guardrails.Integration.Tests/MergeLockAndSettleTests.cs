@@ -352,6 +352,9 @@ public sealed class MergeLockAndSettleTests
         Directory.CreateDirectory(planDir);
         Directory.CreateDirectory(Path.Combine(planDir, "state"));
 
+        // mergeOnSuccess: false is EXPLICIT — this #134 test asserts the user's MAIN checkout is UNTOUCHED
+        // (HEAD unchanged, the file absent), a NON-delivery assertion. #340 flipped the default to ON, so it
+        // must opt out or the default delivery would FF the file into the user's checkout and break the test.
         File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
             """
             {
@@ -359,7 +362,8 @@ public sealed class MergeLockAndSettleTests
               "guardrailMode": "failFast",
               "workspace": "..",
               "defaultRetries": 0,
-              "maxParallelism": 2
+              "maxParallelism": 2,
+              "mergeOnSuccess": false
             }
             """);
 
@@ -450,6 +454,8 @@ public sealed class MergeLockAndSettleTests
         Directory.CreateDirectory(Path.Combine(planDir, OverrideSubdir));
         File.WriteAllText(Path.Combine(planDir, OverrideSubdir, ".gitkeep"), "");
 
+        // mergeOnSuccess: false is EXPLICIT — this #135 test asserts the user's MAIN checkout is UNTOUCHED
+        // (HEAD unchanged), a NON-delivery assertion. #340 flipped the default to ON, so it opts out.
         File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
             """
             {
@@ -457,7 +463,8 @@ public sealed class MergeLockAndSettleTests
               "guardrailMode": "failFast",
               "workspace": "..",
               "defaultRetries": 0,
-              "maxParallelism": 2
+              "maxParallelism": 2,
+              "mergeOnSuccess": false
             }
             """);
 

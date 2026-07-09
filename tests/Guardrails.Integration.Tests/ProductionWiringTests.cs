@@ -129,6 +129,9 @@ public sealed class ProductionWiringTests
         Directory.CreateDirectory(planDir);
         Directory.CreateDirectory(Path.Combine(planDir, "state"));
 
+        // mergeOnSuccess: false is EXPLICIT (#340 flipped the default to ON): this test proves the factory
+        // wires WORKTREE ISOLATION — the plan branch holds the work and the user's branch is UNCHANGED
+        // during the run — which is a NON-delivery assertion, so it opts out of the now-default delivery.
         File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
             """
             {
@@ -136,7 +139,8 @@ public sealed class ProductionWiringTests
               "guardrailMode": "failFast",
               "workspace": "..",
               "defaultRetries": 0,
-              "maxParallelism": 2
+              "maxParallelism": 2,
+              "mergeOnSuccess": false
             }
             """);
 
@@ -270,7 +274,8 @@ public sealed class ProductionWiringTests
 
         // ── Assertion 3: user branch HEAD unchanged ───────────────────────────────────────────
         // Plan branch isolates all task commits; the user's branch must not advance during the run
-        // (mergeOnSuccess is false in the fixture plan).
+        // (mergeOnSuccess is EXPLICITLY false in the fixture plan — #340 flipped the default to ON, so
+        // this NON-delivery isolation assertion opts out).
         string finalHead = repo.HeadSha();
         Assert.True(initialHead == finalHead,
             "User branch HEAD must be unchanged after a plan-branch-isolated run. " +

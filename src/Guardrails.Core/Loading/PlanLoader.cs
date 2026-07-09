@@ -160,7 +160,12 @@ public sealed class PlanLoader
             Workspace = string.IsNullOrWhiteSpace(raw.Workspace) ? ".." : raw.Workspace,
             WorktreeRoot = string.IsNullOrWhiteSpace(raw.WorktreeRoot) ? null : raw.WorktreeRoot.Trim(),
             RunOnCurrentBranch = raw.RunOnCurrentBranch ?? false,
-            MergeOnSuccess = raw.MergeOnSuccess ?? false,
+            // #340: mergeOnSuccess defaults ON — a wholly-green run delivers by default ("green means
+            // delivered"). The raw value stays nullable (RawManifests.MergeOnSuccess) so an OMITTED key
+            // (→ true default) is distinguishable from an explicit value; the presence is preserved on
+            // MergeOnSuccessExplicit for the CLI's one-time delivered-by-default notice.
+            MergeOnSuccess = raw.MergeOnSuccess ?? true,
+            MergeOnSuccessExplicit = raw.MergeOnSuccess,
             TriageAutoFile = raw.TriageAutoFile ?? false,
             AutonomyPolicy = autonomyPolicy,
             PreserveAttemptsForSalvage = raw.PreserveAttemptsForSalvage ?? true,

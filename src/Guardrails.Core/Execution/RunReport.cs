@@ -140,6 +140,16 @@ public sealed record RunReport
     public string? MergeOnSuccessDetail { get; init; }
 
     /// <summary>
+    /// The user's original branch name a wholly-green run's work was DELIVERED to (issue #340), set by the
+    /// Scheduler's <c>Finalize</c> only when the end-of-run merge-back actually ran and succeeded
+    /// (<see cref="MergeOnSuccessOutcome"/> is <see cref="MergeOnSuccessResult.FastForwarded"/> or
+    /// <see cref="MergeOnSuccessResult.Merged"/>); null otherwise. Purely descriptive — it does NOT change
+    /// the delivery gate or the exit code. The CLI uses it to NAME the branch in the one-time
+    /// "delivered by default" notice printed when delivery fired purely because of the new #340 default.
+    /// </summary>
+    public string? DeliveredToBranch { get; init; }
+
+    /// <summary>
     /// True when this run drained WHOLLY GREEN (the DAG) but the completed work was NOT delivered to the
     /// user's branch because <c>mergeOnSuccess</c> resolved <b>false</b> (issue #340). The verified work
     /// is sitting on the plan branch <c>guardrails/&lt;plan-name&gt;</c>, undelivered — one

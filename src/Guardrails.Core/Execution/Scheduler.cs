@@ -582,10 +582,19 @@ public sealed class Scheduler
             EndOfRunSweep(directoryOwner, settled, integ);
         }
 
+        // #340: NAME the branch a successful delivery landed on (purely descriptive — no gate/exit change),
+        // so the CLI's one-time "delivered by default" notice can name it. Non-null only when delivery
+        // actually ran green (FF or clean merge); null for a halted delivery, a no-delivery run, or serial.
+        string? deliveredToBranch =
+            mergeOutcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
+                ? integ?.OriginalBranch
+                : null;
+
         return report with
         {
             MergeOnSuccessOutcome = mergeOutcome,
             MergeOnSuccessDetail = mergeDetail,
+            DeliveredToBranch = deliveredToBranch,
             WhollyGreenButUndelivered = whollyGreenButUndelivered
         };
     }

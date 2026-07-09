@@ -41,7 +41,9 @@ Each slots into an existing v1 seam — none invalidates the architecture:
    `Succeeded`).*
 2. **CI mode** — `guardrails run --ci` inside GitHub Actions emitting check runs /
    PR-per-task; journal published as a shared artifact. *Seam: an `IProgressSink`
-   implementation + exit-code consumer; no core changes.*
+   implementation + exit-code consumer; no core changes.* When CI mode lands it should set its
+   **effective `mergeOnSuccess` default back to OFF** (a machine owns its own delivery via the
+   check-run / PR-per-task), overriding the #340 default-ON for interactive runs.
 3. **Executable guardrail template library** — the catalogue graduates from docs to
    parameterized templates (`tests-pass --filter X`, `port-answers 8080 /health`)
    that `plan-breakdown` instantiates instead of authoring scripts from scratch;

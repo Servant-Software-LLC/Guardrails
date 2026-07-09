@@ -93,4 +93,56 @@ public sealed class UndeliveredWorkWarningTests
 
         Assert.Contains("'guardrails/my-plan'", rendered);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #340 delivered-by-default notice — the delivered-case complement of the undelivered warning.
+    // Fires ONLY when delivery RAN (DeliveredToBranch non-null) AND it fired purely because of the new
+    // default (no config key, no CLI flag). The two NEVER fire together.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private static RunReport DeliveredReport(string? deliveredToBranch) =>
+        new()
+        {
+            Tasks = [new TaskResult { TaskId = "01-do-thing", Outcome = TaskOutcome.Succeeded, Summary = "ok" }],
+            MergeOnSuccessOutcome = deliveredToBranch is null ? null : MergeOnSuccessResult.FastForwarded,
+            DeliveredToBranch = deliveredToBranch
+        };
+
+    private static string RenderNotice(RunReport report, bool deliveryFromDefaultOnly)
+    {
+        using var writer = new StringWriter();
+        RunCommand.RenderDeliveredByDefaultNotice(report, deliveryFromDefaultOnly, writer);
+        return writer.ToString();
+    }
+
+    [Fact]
+    public void DeliveredByDefault_NamesBranchAndOptOut()
+    {
+        string rendered = RenderNotice(DeliveredReport("feature/dfd"), deliveryFromDefaultOnly: true);
+
+        Assert.Contains("delivered to feature/dfd", rendered);
+        Assert.Contains("mergeOnSuccess now defaults on", rendered);
+        // Both opt-out surfaces are named.
+        Assert.Contains("--no-merge-on-success", rendered);
+        Assert.Contains("\"mergeOnSuccess\": false", rendered);
+    }
+
+    [Fact]
+    public void DeliveredByExplicitOptIn_PrintsNothing()
+    {
+        // Delivery ran, but the user explicitly opted in (config true or --merge-on-success) ⇒ no notice.
+        string rendered = RenderNotice(DeliveredReport("main"), deliveryFromDefaultOnly: false);
+
+        Assert.Equal(string.Empty, rendered);
+    }
+
+    [Fact]
+    public void NoDelivery_PrintsNoDeliveredNotice()
+    {
+        // Delivery did not run (opt-out / serial / non-green ⇒ DeliveredToBranch null) ⇒ no notice even
+        // when nothing else was set.
+        string rendered = RenderNotice(DeliveredReport(deliveredToBranch: null), deliveryFromDefaultOnly: true);
+
+        Assert.Equal(string.Empty, rendered);
+    }
 }

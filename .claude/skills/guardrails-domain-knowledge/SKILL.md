@@ -369,19 +369,26 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
 - **Resume-by-trailer**: the plan-branch's trailer-bearing commits are the durable resume record.
   On resume, stale segment refs (`guardrails/<runId>/*`) are deleted **before** any trailer read
   (W-1: a trailer on a surviving segment ref that never FF'd is not authoritative).
-- **End-of-run delivery**: when the run drains green AND `mergeOnSuccess`/`--merge-on-success` is
-  set, the harness merges the plan branch into the user's original branch. **AI-merge is NOT used
-  here.** A conflict / failed re-verify / dirty user tree halts, plan branch intact. Default OFF.
-  The outcome is a `MergeOnSuccessResult`: `FastForwarded` / `Merged` (delivered, exit 0) or
-  `Conflict` / `DirtyWorkingTree` / `HookRejected` (halted; work is durable on the plan branch, exit 2).
-  **Green-but-undelivered warning (#340):** because the default is OFF, a wholly-green run can deliver
-  NOTHING while the console reads like a delivering run — the verified work sits on `guardrails/<plan-name>`
-  one `--fresh`/`reset -y` from destruction. The Scheduler sets `RunReport.WhollyGreenButUndelivered` (wholly
-  green + `mergeOnSuccess` false + a real separate plan branch — worktree mode, NOT serial/`runOnCurrentBranch`,
-  where the work is already in the user's checkout) and the CLI prints a **loud end-of-run warning** (naming
-  the branch + the destruction risk) when it's true and the terminal gate passed. Exit stays 0 — a safety
-  notice, not a failure. This is the WARNING backstop only; the default is unchanged (a default-flip is a
-  separate decision under architect review).
+- **End-of-run delivery**: when the run drains green AND `mergeOnSuccess` is effective, the harness
+  merges the plan branch into the user's original branch. **AI-merge is NOT used here.** A conflict /
+  failed re-verify / dirty user tree halts, plan branch intact. **Default ON (#340 — "green means
+  delivered").** Opt out with `"mergeOnSuccess": false` or the CLI `--no-merge-on-success`; precedence
+  (highest wins): CLI flag (`--merge-on-success` / `--no-merge-on-success`) → `guardrails.json` →
+  the `true` default; passing BOTH flags is a usage error. Delivery is **idempotent on resume** (a
+  re-drained-green resume re-issues an ff-only merge that git reports "already up to date"). When delivery
+  fires purely because of the default (no config key, no flag), the CLI prints a one-time
+  "delivered to <branch> …" notice naming the branch + the opt-out. The outcome is a `MergeOnSuccessResult`:
+  `FastForwarded` / `Merged` (delivered, exit 0) or `Conflict` / `DirtyWorkingTree` / `HookRejected`
+  (halted; work is durable on the plan branch, exit 2).
+  **Green-but-undelivered warning (#340):** the backstop for the OPT-OUT case. When the user opts OUT
+  (`mergeOnSuccess` resolved false) a wholly-green run can deliver NOTHING while the console reads like a
+  delivering run — the verified work sits on `guardrails/<plan-name>` one `--fresh`/`reset -y` from
+  destruction. The Scheduler sets `RunReport.WhollyGreenButUndelivered` (wholly green + `mergeOnSuccess`
+  false + a real separate plan branch — worktree mode, NOT serial/`runOnCurrentBranch`, where the work is
+  already in the user's checkout) and the CLI prints a **loud end-of-run warning** (naming the branch + the
+  destruction risk) when it's true and the terminal gate passed. Exit stays 0 — a safety notice, not a
+  failure. The warning and the delivered-by-default notice never fire together (one needs delivery off, the
+  other needs it to have run).
 - **Hook policy at the two commit boundaries (#149)** — internal vs user-facing commits are treated
   oppositely:
   - **Internal bookkeeping commits bypass user hooks.** The segment integration commit (`Integrate`,
