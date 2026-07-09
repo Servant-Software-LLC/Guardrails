@@ -117,12 +117,50 @@ public static class HtmlDiagramRenderer
     /// <see cref="MermaidRenderer.TaskFolderTargets"/>) the embedded title-band overlay script uses
     /// to resolve each container's click target (issue #235 — see class remarks).
     /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> NoStatus =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The STATIC plan-root <c>diagram.html</c> overload (issue #33): no live status, no during-run
+    /// refresh. Delegates to the 5-arg <see cref="Render(string, string, IReadOnlyDictionary{string, string}, IReadOnlyDictionary{string, string}, bool)"/>
+    /// with an EMPTY <c>statusByNodeId</c> and <c>duringRun:false</c>, so the badge overlay loop appends
+    /// nothing and no <c>meta refresh</c> is injected. Kept so <c>GraphCommand</c> and the existing tests
+    /// need no change — the plan-root file carries the inert overlay scaffolding but no badges (issue
+    /// #219, SSOT §10.1). ONE template, status-as-data: no two-variant drift.
+    /// </summary>
     public static string Render(
         string mermaidSource, string sourceHash, IReadOnlyDictionary<string, string> taskFolderTargets)
+        => Render(mermaidSource, sourceHash, taskFolderTargets, NoStatus, duringRun: false);
+
+    /// <summary>
+    /// Build the <c>diagram.html</c> document for <paramref name="mermaidSource"/> stamped with
+    /// <paramref name="sourceHash"/>, PLUS the live status overlay (issue #219, SSOT §10.1).
+    /// <paramref name="statusByNodeId"/> maps each status-bearing SVG node id (see
+    /// <see cref="MermaidRenderer.StatusNodes"/>) to a status token (<c>running</c>/<c>passed</c>/
+    /// <c>failed</c>/<c>needs-human</c>/<c>blocked</c>) — a node absent from the map gets no badge —
+    /// and is embedded as a third <c>&lt;script type="application/json" id="node-status"&gt;</c> blob,
+    /// read back by the overlay JS (same verbatim/<c>textContent</c> treatment as the Mermaid source
+    /// and the task-folder targets). <paramref name="duringRun"/> toggles the <c>meta refresh</c> and
+    /// the spinner animation ONLY.
+    /// <para>
+    /// <b>Hash-neutral by construction.</b> <paramref name="sourceHash"/> is computed upstream by
+    /// <see cref="GraphSourceHash"/> over <see cref="MermaidRenderer.SemanticContent"/> and passed IN;
+    /// this method never recomputes it and never feeds <paramref name="statusByNodeId"/> into it. Status
+    /// is pure chrome (a separate <c>&lt;script&gt;</c> blob + JS), so it can never move
+    /// <c>source-sha256</c> or make <c>graph --check</c> report a plan stale.
+    /// </para>
+    /// </summary>
+    public static string Render(
+        string mermaidSource,
+        string sourceHash,
+        IReadOnlyDictionary<string, string> taskFolderTargets,
+        IReadOnlyDictionary<string, string> statusByNodeId,
+        bool duringRun)
     {
         ArgumentNullException.ThrowIfNull(mermaidSource);
         ArgumentException.ThrowIfNullOrEmpty(sourceHash);
         ArgumentNullException.ThrowIfNull(taskFolderTargets);
+        ArgumentNullException.ThrowIfNull(statusByNodeId);
 
         // Newline-normalize so the file is byte-identical across OSes (mirrors the renderer/hash).
         string source = mermaidSource
@@ -135,10 +173,15 @@ public static class HtmlDiagramRenderer
         // JSON sits inside a <script type="application/json"> element, read back via textContent,
         // exactly like the Mermaid source above — but using the unsafe-relaxed encoder keeps a
         // task-id containing e.g. "&" readable in the raw HTML source without changing behavior).
-        string targetsJson = JsonSerializer.Serialize(taskFolderTargets, new JsonSerializerOptions
-        {
-            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        });
+        var jsonOptions = new JsonSerializerOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        string targetsJson = JsonSerializer.Serialize(taskFolderTargets, jsonOptions);
+        string statusJson = JsonSerializer.Serialize(statusByNodeId, jsonOptions);
+
+        // During a run the page re-reads itself on a plain file:// view (no server) and animates the
+        // spinner; the FINAL settled page drops both. The interval is 3s (deliberately longer than the
+        // log site's 2s: re-running mermaid.render on a big DAG is heavier — issue #219 D2 / DA item 4).
+        string refresh = duringRun ? "<meta http-equiv=\"refresh\" content=\"3\">" : "";
+        string duringRunLiteral = duringRun ? "true" : "false";
 
         // Normalize the full output — the template raw-string literal picks up \r\n when the
         // file is checked out with CRLF on Windows; the mermaid source is already normalized above.
@@ -146,6 +189,9 @@ public static class HtmlDiagramRenderer
             .Replace("__SOURCE_SHA256__", sourceHash, StringComparison.Ordinal)
             .Replace("__GRAPH_SOURCE__", source, StringComparison.Ordinal)
             .Replace("__TASK_FOLDER_TARGETS__", targetsJson, StringComparison.Ordinal)
+            .Replace("__NODE_STATUS__", statusJson, StringComparison.Ordinal)
+            .Replace("__DURING_RUN_REFRESH__", refresh, StringComparison.Ordinal)
+            .Replace("__DURING_RUN__", duringRunLiteral, StringComparison.Ordinal)
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace("\r", "\n", StringComparison.Ordinal);
     }
@@ -153,6 +199,9 @@ public static class HtmlDiagramRenderer
     // __SOURCE_SHA256__ is filled with a lowercase-hex hash (no escaping needed). __GRAPH_SOURCE__
     // is filled with the verbatim Mermaid text inside a raw-text <script> element (see remarks).
     // __TASK_FOLDER_TARGETS__ is filled with a JSON object (container id -> folder path).
+    // __NODE_STATUS__ is filled with a JSON object (node id -> status token) for the live overlay
+    // (issue #219). __DURING_RUN_REFRESH__ is the during-run <meta refresh> (empty on the final
+    // page); __DURING_RUN__ is the JS boolean literal that gates the spinner animation.
     private const string Template = """
 <!-- guardrails:graph v1 source-sha256=__SOURCE_SHA256__ -->
 <!doctype html>
@@ -160,6 +209,7 @@ public static class HtmlDiagramRenderer
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+__DURING_RUN_REFRESH__
 <title>Guardrails — task/guardrail DAG</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0b0f14; color: #d6deeb;
@@ -247,12 +297,18 @@ public static class HtmlDiagramRenderer
 
 <script type="text/plain" id="graph-source">__GRAPH_SOURCE__</script>
 <script type="application/json" id="task-folder-targets">__TASK_FOLDER_TARGETS__</script>
+<script type="application/json" id="node-status">__NODE_STATUS__</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
 
 const graph = document.getElementById('graph-source').textContent;
 const taskFolderTargets = JSON.parse(document.getElementById('task-folder-targets').textContent);
+// Live status overlay (issue #219): a node id -> status-token map, embedded exactly like the
+// task-folder targets above. Empty {} on the static plan-root diagram.html (the badge loop then
+// appends nothing). GR_DURING_RUN toggles the spinner animation only.
+const nodeStatus = JSON.parse(document.getElementById('node-status').textContent);
+const GR_DURING_RUN = __DURING_RUN__;
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;
 // the content is the user's own local plan, served from file:// — not untrusted input.
 // maxTextSize raises Mermaid's default 50 000-character source ceiling (issue #108): a large
@@ -464,6 +520,103 @@ function addEdgeDirectionMarkers(svgEl) {
   }
 }
 
+// Live status badges (issue #219). For every node id in the embedded node-status map, resolve its
+// SVG element and append a small inline-SVG badge at the box's upper-right corner: an animated
+// spinner while running, a settled icon once finished (check=passed, X=failed, "?"=needs-human,
+// muted dot=blocked). APPENDED into the node's own group so it rides the svg-pan-zoom viewport
+// transform for FREE — no pan/zoom callback, no per-frame recompute, no drift (the exact class of
+// bug screen-space divs hit). Runs AFTER mermaid.render + the other post-render fixes, mirroring
+// addTaskContainerOverlays/addEdgeDirectionMarkers. All assets are inline SVG — no external image
+// URL, so it is file:// + strict-CSP safe. The during-run page re-derives badges fresh each
+// meta-refresh cycle from the current status JSON, so no incremental patching is needed.
+const GR_STATUS_COLORS = { passed: '#3fb950', failed: '#f85149', 'needs-human': '#d29922',
+                          running: '#58a6ff', blocked: '#6e7681', pending: '#6e7681' };
+// Resolve the SVG element carrying node id `id`. A task/plan container is a `g.cluster` whose own
+// id is exactly the emitted id; a leaf check node is a `g.node` whose id is either the emitted id
+// or (in some mermaid builds) `flowchart-<id>-<counter>`. Node ids are sanitized to [A-Za-z0-9_],
+// so a plain [id="..."] attribute selector needs no escaping.
+function resolveStatusNode(svgEl, id) {
+  const exact = svgEl.querySelector('[id="' + id + '"]');
+  if (exact) return exact;
+  for (const n of svgEl.querySelectorAll('g.node[id]')) {
+    const m = n.id.match(/^flowchart-(.+?)-\d+$/);
+    if (m && m[1] === id) return n;
+  }
+  return null;
+}
+function buildStatusBadge(status, cx, cy) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const g = document.createElementNS(ns, 'g');
+  g.setAttribute('class', 'gr-status-badge');
+  g.setAttribute('transform', 'translate(' + cx + ', ' + cy + ')');
+  // Never intercept a click meant for a node, the container title-band overlay, or a leaf source link.
+  g.setAttribute('pointer-events', 'none');
+
+  const color = GR_STATUS_COLORS[status] || '#6e7681';
+  const bg = document.createElementNS(ns, 'circle');
+  bg.setAttribute('r', '9');
+  bg.style.stroke = '#0b0f14';
+  bg.style.strokeWidth = '1.5';
+
+  if (status === 'running') {
+    bg.style.fill = '#0b0f14';
+    g.appendChild(bg);
+    const arc = document.createElementNS(ns, 'path');
+    arc.setAttribute('d', 'M 0 -5 A 5 5 0 1 1 -5 0'); // 3/4 arc
+    arc.setAttribute('fill', 'none');
+    arc.setAttribute('stroke-linecap', 'round');
+    arc.style.stroke = color;
+    arc.style.strokeWidth = '2';
+    if (GR_DURING_RUN) {
+      const anim = document.createElementNS(ns, 'animateTransform');
+      anim.setAttribute('attributeName', 'transform');
+      anim.setAttribute('type', 'rotate');
+      anim.setAttribute('from', '0 0 0');
+      anim.setAttribute('to', '360 0 0');
+      anim.setAttribute('dur', '0.9s');
+      anim.setAttribute('repeatCount', 'indefinite');
+      arc.appendChild(anim);
+    }
+    g.appendChild(arc);
+    return g;
+  }
+
+  bg.style.fill = color;
+  g.appendChild(bg);
+
+  if (status === 'passed' || status === 'failed') {
+    const mark = document.createElementNS(ns, 'path');
+    mark.setAttribute('fill', 'none');
+    mark.setAttribute('stroke-linecap', 'round');
+    mark.setAttribute('stroke-linejoin', 'round');
+    mark.style.stroke = '#0b0f14';
+    mark.style.strokeWidth = '2';
+    mark.setAttribute('d', status === 'passed' ? 'M -4 0 L -1 3 L 4 -4' : 'M -3 -3 L 3 3 M 3 -3 L -3 3');
+    g.appendChild(mark);
+  } else if (status === 'needs-human') {
+    const t = document.createElementNS(ns, 'text');
+    t.setAttribute('x', '0');
+    t.setAttribute('y', '0');
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'central');
+    t.style.fill = '#0b0f14';
+    t.style.font = 'bold 11px system-ui, sans-serif';
+    t.textContent = '?';
+    g.appendChild(t);
+  }
+  // blocked / any other token: the muted-fill circle alone is the badge.
+  return g;
+}
+function addStatusBadges(svgEl) {
+  for (const id of Object.keys(nodeStatus)) {
+    const el = resolveStatusNode(svgEl, id);
+    if (!el) continue;
+    let box;
+    try { box = el.getBBox(); } catch (e) { continue; }
+    el.appendChild(buildStatusBadge(nodeStatus[id], box.x + box.width, box.y));
+  }
+}
+
 // Client-side find box (issue #220). Substring-match the typed text against every searchable
 // node's id AND its visible label — task containers (task_<base>, plan_preflights, plan_guardrails)
 // and every leaf preflight/guardrail check node — highlighting matches, dimming the rest, and
@@ -566,6 +719,7 @@ try {
   fixWrappedClusterLabels(el);
   addTaskContainerOverlays(el);
   addEdgeDirectionMarkers(el);
+  addStatusBadges(el); // live status overlay (issue #219) — after the layout fixes, before pan-zoom init
   pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });

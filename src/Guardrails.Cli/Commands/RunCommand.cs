@@ -302,27 +302,42 @@ public static class RunCommand
             // wrapped so the site is rewritten after each forwarded event.
             string logsRoot = Path.Combine(probe.Plan.PlanDirectory, "logs", runId);
 
+            // Seed the live status diagram (issue #219, SSOT §10.1) from the freshly-persisted journal so
+            // a resume — and the already-settled Full Flight Checks phase above (which runs before this
+            // observer exists) — shows correct badges from the first frame; a fresh run seeds nothing
+            // (every node pending until an event fires).
+            JournalDocument? diagramSeed = TryReadJournalForSeed(probe.Plan.PlanDirectory);
+
             RunReport report;
+            OnTheFlyDiagramObserver diagramObserver;
             if (live)
             {
-                // Write the initial all-pending index AND print its link BEFORE constructing
-                // LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live region, and any
-                // console write into an active Live region corrupts the table (#145 Bug 1). So the
-                // static-index write + its link must precede the live region.
+                // Write the initial all-pending index + the seeded live diagram AND print their links
+                // BEFORE constructing LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live
+                // region, and any console write into an active Live region corrupts the table (#145 Bug 1).
+                // So both static writes + their links must precede the live region.
                 OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
                 PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
+                OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed);
+                PrintDiagramLink(logsRoot, io);        // live status diagram link at run START
 
                 await using var liveObserver = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
                 var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
-                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
+                // Stack the diagram observer AROUND the log-site observer: it forwards every event down
+                // the chain and re-renders logs/<runId>/diagram.html after each.
+                diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
+                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
             }
             else
             {
                 var siteObserver = new OnTheFlyLogSiteObserver(
                     new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
+                diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
                 siteObserver.WriteInitialIndex();
                 PrintStaticIndexLink(logsRoot, io);
-                report = await ExecuteAsync(probe.Plan, siteObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
+                diagramObserver.WriteInitialDiagram();
+                PrintDiagramLink(logsRoot, io);
+                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
             }
 
             // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -343,16 +358,26 @@ public static class RunCommand
             if (willEvaluateTerminalGate)
             {
                 io.Out.WriteLine("Terminal Gate: running...");
+                diagramObserver.PlanGuardrailsStarting(); // bracket-container spinner (issue #219)
             }
 
             bool planGuardrailsPassed = !report.AllSucceeded
                 || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), cancellationToken)
                     .ConfigureAwait(false);
 
-            if (willEvaluateTerminalGate && planGuardrailsPassed)
+            if (willEvaluateTerminalGate)
             {
-                io.Out.WriteLine("Terminal Gate: passed.");
+                diagramObserver.PlanGuardrailsFinished(planGuardrailsPassed); // settle the bracket badge
+                if (planGuardrailsPassed)
+                {
+                    io.Out.WriteLine("Terminal Gate: passed.");
+                }
             }
+
+            // The FINAL, settled live diagram (no meta refresh, no spinner) — the durable post-mortem of
+            // the run, sourced from the observer's own in-memory map, mirroring the durable final log site
+            // Finish writes. Best-effort; never changes the exit code (issue #219, SSOT §10.1).
+            diagramObserver.WriteFinalStatic();
 
             int exitCode = Finish(report, probe.Plan, runId, io);
             if (report.AllSucceeded && !planGuardrailsPassed)
@@ -937,6 +962,58 @@ public static class RunCommand
 
         bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
         io.Out.WriteLine($"All tasks (static log site): {Hyperlink(indexPath, linkable)}");
+    }
+
+    /// <summary>
+    /// Print a clickable <c>file://</c> link to the run's live status diagram
+    /// (<c>logs/&lt;runId&gt;/diagram.html</c>, issue #219) — the during-run refreshing page at run start,
+    /// the durable settled page at run end. Same OSC 8 / plain-path gate as
+    /// <see cref="PrintStaticIndexLink"/>. No-op when the diagram does not exist (nothing was rendered).
+    /// It is the SAME DAG as the plan-root <c>diagram.html</c> (same <c>source-sha256</c>, same
+    /// click-throughs) — only with the live status overlay (SSOT §10.1).
+    /// </summary>
+    private static void PrintDiagramLink(string logsRoot, IConsoleIo io)
+    {
+        string diagramPath = Path.GetFullPath(Path.Combine(logsRoot, "diagram.html"));
+        if (!File.Exists(diagramPath))
+        {
+            return;
+        }
+
+        bool linkable = !Console.IsOutputRedirected && AnsiConsole.Profile.Capabilities.Links;
+        io.Out.WriteLine($"Live status diagram: {Hyperlink(diagramPath, linkable)}");
+    }
+
+    /// <summary>
+    /// Read the freshly-persisted journal for SEEDING the live status diagram (issue #219) — so a resume
+    /// (and the already-settled pre-DAG Full Flight Checks phase) shows correct badges from the first
+    /// frame. Best-effort: a missing/locked/corrupt journal returns null (the diagram then seeds every
+    /// node pending), never throwing — seeding is a UX nicety and must not affect the run.
+    /// </summary>
+    private static JournalDocument? TryReadJournalForSeed(string planDirectory)
+    {
+        string path = RunJournal.PathFor(planDirectory);
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JournalReader.Read(path);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static Task<RunReport> ExecuteAsync(

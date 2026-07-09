@@ -4,6 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+
 <title>Guardrails — task/guardrail DAG</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0b0f14; color: #d6deeb;
@@ -21,6 +22,35 @@
             font-size: 12px; line-height: 1.5; max-width: 340px; }
   #legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
                     margin-right: 6px; }
+  /* Search overlay (issue #220): a fixed-position find box, mirroring #bar/#legend — purely
+     client-side, no server round-trip, no new dependency. Sits top-center so it never overlaps
+     the top-left #bar or top-right #legend. */
+  #search { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 10;
+            display: flex; gap: 6px; align-items: center; background: #121a24;
+            border: 1px solid #243343; border-radius: 6px; padding: 4px 6px; }
+  #search input { background: #0b0f14; color: #d6deeb; border: 1px solid #243343;
+                  border-radius: 4px; padding: 5px 8px; font-size: 13px; width: 190px; }
+  #search input:focus { outline: none; border-color: #7fdbff; }
+  #search button { background: #121a24; color: #d6deeb; border: 1px solid #243343;
+                   border-radius: 4px; padding: 5px 9px; cursor: pointer; font-size: 13px; }
+  #search button:hover { border-color: #7fdbff; }
+  #search button:disabled { opacity: 0.4; cursor: default; }
+  #search #count { color: #7690a6; font-size: 12px; min-width: 52px; text-align: center;
+                   font-variant-numeric: tabular-nums; }
+  /* Highlight the matching node(s); dim the rest. Pure class toggling on the already-rendered SVG
+     — no Mermaid re-render, so it is instant. A bright outline + glow on a match's own shape
+     (rect for a box, the cluster's background rect for a container), and a lowered opacity on
+     everything that neither matches nor CONTAINS a match (so a matched leaf inside a container is
+     never dimmed by dimming its container). */
+  .gr-search-dim { opacity: 0.18; }
+  .gr-search-match > rect, .gr-search-match > polygon, .gr-search-match > path,
+  .gr-search-match > .basic.label-container, .gr-search-match > circle {
+    stroke: #ffd166 !important; stroke-width: 3px !important;
+    filter: drop-shadow(0 0 5px #ffd166); }
+  .gr-search-current > rect, .gr-search-current > polygon, .gr-search-current > path,
+  .gr-search-current > .basic.label-container, .gr-search-current > circle {
+    stroke: #ff9f1c !important; stroke-width: 4px !important;
+    filter: drop-shadow(0 0 9px #ff9f1c); }
 </style>
 </head>
 <body>
@@ -29,6 +59,13 @@
   <button id="zin">+</button>
   <button id="zout">&minus;</button>
   <button id="fs">Fullscreen</button>
+</div>
+<div id="search">
+  <input id="search-input" type="text" placeholder="Find task / check…"
+         aria-label="Find a task, preflight, or guardrail node" autocomplete="off" spellcheck="false">
+  <span id="count">0 / 0</span>
+  <button id="search-prev" title="Previous match (Shift+Enter)" disabled>&lsaquo;</button>
+  <button id="search-next" title="Next match (Enter)" disabled>&rsaquo;</button>
 </div>
 <div id="stage"></div>
 <div id="legend">
@@ -40,8 +77,14 @@
   <div><span class="swatch" style="background:#d4edda;border:1px solid #2e7d32;"></span>
     Plan-level containers ("Full Flight Checks" top, "Terminal Gate" bottom) run the same two
     checks once for the whole plan, at the very start and very end.</div>
+  <div><span class="swatch" style="background:#7fdbff;border:1px solid #3aa0c2;"></span>
+    <b>Edge direction</b> &mdash; edges run in execution order, from a dependency to its dependent
+    (<code>A &rarr; B</code> = B dependsOn A). A cyan mid-edge arrow marks each edge's direction, so a
+    long edge routing PAST an unrelated box is never a dependency on it &mdash; follow the arrow to
+    its real target.</div>
 </div>
-<div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
+<div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11) &middot;
+  search box (top) finds &amp; centers a node (Enter / Shift+Enter to cycle).
   Node clicks open source files &mdash; serve via a local HTTP server (e.g.
   <code>python -m http.server</code>) for clicks to work; browsers block
   <code>file://&rarr;file://</code> navigation by default.
@@ -362,12 +405,18 @@
   click task_33_implement_needs_human_triage_gr_3 href "tasks/33-implement-needs-human-triage/guardrails/04-tests-untouched.ps1" "04-tests-untouched" _blank
   click plan_guardrails_0 href "guardrails/01-full-suite.ps1" "01-full-suite" _blank</script>
 <script type="application/json" id="task-folder-targets">{"task_01_update_ssot_schema_contract":"tasks/01-update-ssot-schema-contract/","task_02_author_tests_worktree_provider_seam":"tasks/02-author-tests-worktree-provider-seam/","task_03_implement_worktree_provider_seam_and_channel_envelope":"tasks/03-implement-worktree-provider-seam-and-channel-envelope/","task_04_deserialize_scheduler_begin_triad_teardown":"tasks/04-deserialize-scheduler-begin-triad-teardown/","task_05_author_tests_git_worktree_lifecycle":"tasks/05-author-tests-git-worktree-lifecycle/","task_06_implement_git_worktree_provider_and_reuse_topology":"tasks/06-implement-git-worktree-provider-and-reuse-topology/","task_07_author_tests_validation_gates_and_triad_removal":"tasks/07-author-tests-validation-gates-and-triad-removal/","task_08_implement_validation_gates_and_triad_teardown":"tasks/08-implement-validation-gates-and-triad-teardown/","task_09_author_tests_logs_elevation_and_runconfig":"tasks/09-author-tests-logs-elevation-and-runconfig/","task_10_implement_logs_elevation_and_runconfig":"tasks/10-implement-logs-elevation-and-runconfig/","task_11_author_tests_writescope_matcher_truth_table_and_fuzz":"tasks/11-author-tests-writescope-matcher-truth-table-and-fuzz/","task_12_implement_writescope_matcher":"tasks/12-implement-writescope-matcher/","task_13_author_tests_writescope_check":"tasks/13-author-tests-writescope-check/","task_14_implement_writescope_check_and_scoped_revert":"tasks/14-implement-writescope-check-and-scoped-revert/","task_15_author_tests_reverifier_seam":"tasks/15-author-tests-reverifier-seam/","task_16_implement_reverifier_seam":"tasks/16-implement-reverifier-seam/","task_17_author_tests_merge_lock_and_ff_and_union_settle":"tasks/17-author-tests-merge-lock-and-ff-and-union-settle/","task_18_implement_merge_lock_and_ff_and_union_settle":"tasks/18-implement-merge-lock-and-ff-and-union-settle/","task_19_author_tests_resume_and_reset_retry":"tasks/19-author-tests-resume-and-reset-retry/","task_20_implement_resume_reconciliation_and_reset_retry":"tasks/20-implement-resume-reconciliation-and-reset-retry/","task_21_author_tests_merge_on_success":"tasks/21-author-tests-merge-on-success/","task_22_implement_merge_on_success":"tasks/22-implement-merge-on-success/","task_23_author_tests_guardrail_scope_field":"tasks/23-author-tests-guardrail-scope-field/","task_24_implement_guardrail_scope_field":"tasks/24-implement-guardrail-scope-field/","task_25_author_tests_ai_merge_worker":"tasks/25-author-tests-ai-merge-worker/","task_26_implement_ai_merge_worker":"tasks/26-implement-ai-merge-worker/","task_27_update_plan_breakdown_skill":"tasks/27-update-plan-breakdown-skill/","task_28_update_guardrails_review_skill":"tasks/28-update-guardrails-review-skill/","task_29_update_domain_knowledge_skill":"tasks/29-update-domain-knowledge-skill/","task_30_build_solution_gate":"tasks/30-build-solution-gate/","task_32_author_tests_needs_human_triage":"tasks/32-author-tests-needs-human-triage/","task_33_implement_needs_human_triage":"tasks/33-implement-needs-human-triage/"}</script>
+<script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs';
 
 const graph = document.getElementById('graph-source').textContent;
 const taskFolderTargets = JSON.parse(document.getElementById('task-folder-targets').textContent);
+// Live status overlay (issue #219): a node id -> status-token map, embedded exactly like the
+// task-folder targets above. Empty {} on the static plan-root diagram.html (the badge loop then
+// appends nothing). GR_DURING_RUN toggles the spinner animation only.
+const nodeStatus = JSON.parse(document.getElementById('node-status').textContent);
+const GR_DURING_RUN = false;
 // securityLevel 'loose' is required for the `click ... href` directives to open node sources;
 // the content is the user's own local plan, served from file:// — not untrusted input.
 // maxTextSize raises Mermaid's default 50 000-character source ceiling (issue #108): a large
@@ -379,6 +428,104 @@ const taskFolderTargets = JSON.parse(document.getElementById('task-folder-target
 // edges exceeded". Both ceilings must be lifted or a big plan still fails to render.
 mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', maxTextSize: 5000000, maxEdges: 100000, flowchart: { useMaxWidth: false } });
 
+// Widen a wrapped cluster-title's foreignObject so a long kebab-case task name reflows onto
+// FEWER lines instead of overflowing Mermaid's fixed header-strip reservation (issue
+// cluster-label-wrap-overflow). Root cause, confirmed against the bundled mermaid@11.4.1 source
+// (`src/rendering-util/createText.ts`'s `createText(el, text, { width = 200 })` default, which
+// the plain flowchart "rect" cluster shape never overrides): a cluster's title <div> is always
+// wrapped to a hardcoded 200px width regardless of the container's own — usually much wider —
+// computed width, and dagre's LAYOUT PASS reserves header space for the container BEFORE that
+// wrapped height is known, so it never grows to fit more than a couple of lines. A short label
+// fits on one line inside 200px with room to spare (a healthy ~13px gap above the first leaf
+// node, measured); a long name (hyphens are valid soft line-break points) wraps to 2 or more
+// lines, and each line beyond the first prints a full line-height PAST what dagre reserved —
+// landing on top of the first leaf guardrail/preflight box positioned directly below.
+//
+// Two Mermaid config knobs were checked and ruled out first: `flowchart.htmlLabels` only toggles
+// the html-vs-svg-text label renderer (not label width), and 11.4.1 has no documented
+// `flowchart`/theme-variable option for cluster-label wrapping width — 200 is a hardcoded
+// parameter default the cluster-shape renderer never overrides, not a configurable value.
+//
+// The fix instead re-wraps the SAME text into fewer lines post-render: a task container is
+// normally already wider than 200px (dagre sized it to fit its leaf content), so letting the
+// identical label reflow at (up to) the container's own width almost always drops it to one
+// line, which needs LESS height than Mermaid's original wrap — never more. That means this can
+// only ever shrink the label's footprint, never grow it, so no other node/edge/container ever
+// needs to move to make room. Verified headless against 8+ real plans (40+ long task names,
+// container widths from ~230px to ~1100px, wraps from 2 to 3 lines): every case converged to one
+// line with the same healthy negative gap a short, never-wrapped label already has; every
+// already-fits-on-one-line label (including every task in the golden `hello-guardrails` example)
+// was left byte-for-byte unchanged.
+function fixWrappedClusterLabels(svgEl) {
+  const clusters = svgEl.querySelectorAll('g.cluster');
+  for (const cluster of clusters) {
+    const label = cluster.querySelector('.cluster-label');
+    if (!label) continue;
+    const fo = label.querySelector('foreignObject');
+    const div = fo ? fo.querySelector('div') : null;
+    if (!fo || !div) continue;
+
+    const currentWidth = parseFloat(fo.getAttribute('width')) || 0;
+    const currentHeight = parseFloat(fo.getAttribute('height')) || 0;
+    if (currentWidth <= 0 || currentHeight <= 0) continue;
+
+    // scrollWidth/scrollHeight are LOCAL layout-box measurements in the foreignObject's own
+    // SVG-user-unit coordinate system — deliberately NOT the screen-space rect API (see class
+    // remarks): a screen-space read is affected by every ancestor SVG transform (dagre's per-node
+    // translate, the pan-zoom viewport's zoom/pan matrix), so it would be misleading compared
+    // against the foreignObject's own width/height attributes. Measure the label's natural
+    // single-line width by temporarily lifting the wrap constraint Mermaid applied, then restore
+    // it immediately.
+    const savedInline = div.getAttribute('style');
+    div.style.whiteSpace = 'nowrap';
+    div.style.width = 'auto';
+    div.style.maxWidth = 'none';
+    // +2px safety buffer: scrollWidth can round down a hair short of the true subpixel width
+    // needed for one line (observed empirically — re-applying the exact measured value as a
+    // fixed width sometimes still wrapped to 2 lines by a fraction of a pixel).
+    const naturalWidth = div.scrollWidth + 2;
+    div.setAttribute('style', savedInline); // restore Mermaid's original wrapped styling
+
+    if (naturalWidth <= currentWidth) continue; // already fits on one line — untouched
+
+    // Never widen past the cluster's own body (leave a small margin) — the container's leaf
+    // content already determined this width, so the label can use up to it without ever moving
+    // a leaf node, edge, or sibling container. Never NARROWER than Mermaid's original width either
+    // — this only ever grows the box.
+    const clusterBox = cluster.getBBox();
+    const newWidth = Math.min(naturalWidth, Math.max(currentWidth, clusterBox.width - 16));
+
+    div.style.whiteSpace = 'break-spaces';
+    div.style.display = 'table';
+    div.style.width = newWidth + 'px';
+    div.style.maxWidth = newWidth + 'px';
+    const newHeight = div.scrollHeight;
+
+    if (newHeight >= currentHeight) {
+      // Widening did not actually reduce the wrapped height (the cluster is too narrow to fit
+      // even one more character per line) — revert rather than risk an oddly-proportioned label.
+      div.setAttribute('style', savedInline);
+      continue;
+    }
+
+    fo.setAttribute('width', String(newWidth));
+    fo.setAttribute('height', String(newHeight));
+
+    // Mermaid centers the label group on the cluster's horizontal midpoint via
+    // `translate(x - bbox.width / 2, y)`; widening the box without re-centering would shift it
+    // left of center, so shift the existing translate by half the width delta to keep it on the
+    // SAME midpoint. The label's y stays fixed — only its height shrank, so its bottom edge
+    // simply moves UP, further from the first leaf node, never displacing it.
+    const transform = label.getAttribute('transform') || '';
+    const match = transform.match(/translate\(([-\d.eE]+)\s*,\s*([-\d.eE]+)\)/);
+    if (match) {
+      const oldX = parseFloat(match[1]);
+      const deltaCenter = (newWidth - currentWidth) / 2;
+      label.setAttribute('transform', `translate(${oldX - deltaCenter}, ${match[2]})`);
+    }
+  }
+}
+
 // Inject a real clickable overlay on each task container's TITLE/LABEL ROW (issue #232/#233
 // superseded, issue #235). Mermaid never fires a `click` directive on a subgraph/cluster element,
 // and an anchor NODE inside the container gets packed into whatever sliver of space dagre's own
@@ -386,7 +533,10 @@ mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose', 
 // ALWAYS renders a cluster as exactly two children, a background <rect> then a <g
 // class="cluster-label">, with the label in its own reserved header strip above any leaf content —
 // so a full-width band from the cluster's top down to just past the label's bottom edge is empty BY
-// CONSTRUCTION, regardless of how many guardrails/preflights the task has.
+// CONSTRUCTION, regardless of how many guardrails/preflights the task has. Must run AFTER
+// fixWrappedClusterLabels (above): the band height is measured from the label's CURRENT bbox, so
+// a label that fixWrappedClusterLabels already shrank back to one line gets a correspondingly
+// short band, not one sized for its original (possibly multi-line) wrap.
 function addTaskContainerOverlays(svgEl) {
   const ns = 'http://www.w3.org/2000/svg';
   const clusters = svgEl.querySelectorAll('g.cluster');
@@ -432,6 +582,241 @@ function addTaskContainerOverlays(svgEl) {
   }
 }
 
+// Draw a mid-edge direction arrowhead on every DAG edge (issue #301). The DAG is drawn
+// subgraph->subgraph (issue #210), so Mermaid clips an edge's own arrowhead to the TARGET cluster's
+// OUTER border; on a long edge that routes PAST an unrelated sibling box, that head is far from — and
+// invisible along — the crossing mid-section a reader's eye follows, so the connector reads as
+// directionless (or as a phantom dependency between the two boxes it passes between). The endpoint
+// arrowhead is correct but unreadable there; this adds a second, always-visible cue where the
+// ambiguity actually is. Purely additive post-render SVG — never touches the Mermaid source, the DAG,
+// the source-sha256, or diagram.md.
+const EDGE_ARROW_COLOR = '#7fdbff'; // keep in sync with the #legend "Edge direction" swatch
+function addEdgeDirectionMarkers(svgEl) {
+  const ns = 'http://www.w3.org/2000/svg';
+  // Mermaid draws every flowchart edge as a <path class="flowchart-link"> inside <g class="edgePaths">.
+  // Select via both the group and the class so a future class-name shift still resolves the edges.
+  const paths = svgEl.querySelectorAll('g.edgePaths path, path.flowchart-link');
+  const seen = new Set();
+  for (const path of paths) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    let len = 0;
+    try { len = path.getTotalLength(); } catch (e) { continue; }
+    if (!(len > 0)) continue;
+
+    // The midpoint is where a reader's eye lands on a long crossing edge; a short chord around it
+    // gives the local tangent. dagre builds each path's `d` from source to target, so INCREASING arc
+    // length is the dependency direction — no need to know the endpoints' coordinates.
+    const step = Math.min(4, len / 2);
+    const mid = path.getPointAtLength(len / 2);
+    const back = path.getPointAtLength(len / 2 - step);
+    const fwd = path.getPointAtLength(len / 2 + step);
+    const angle = Math.atan2(fwd.y - back.y, fwd.x - back.x) * 180 / Math.PI;
+
+    const marker = document.createElementNS(ns, 'path');
+    marker.setAttribute('d', 'M -5 -6 L 8 0 L -5 6 Z'); // triangle pointing +x before rotation
+    marker.setAttribute('transform', 'translate(' + mid.x + ', ' + mid.y + ') rotate(' + angle + ')');
+    marker.setAttribute('class', 'gr-edge-dir');
+    marker.style.fill = EDGE_ARROW_COLOR;
+    marker.style.stroke = 'none';
+    // Never intercept a click meant for a node, the container title-band overlay, or a leaf source link.
+    marker.setAttribute('pointer-events', 'none');
+
+    // Append inside the edge's own group so it paints above the edge line but below the node boxes
+    // (Mermaid paints edgePaths before nodes) — a mid-edge point is open space, so it never covers a box.
+    (path.parentNode || svgEl).appendChild(marker);
+  }
+}
+
+// Live status badges (issue #219). For every node id in the embedded node-status map, resolve its
+// SVG element and append a small inline-SVG badge at the box's upper-right corner: an animated
+// spinner while running, a settled icon once finished (check=passed, X=failed, "?"=needs-human,
+// muted dot=blocked). APPENDED into the node's own group so it rides the svg-pan-zoom viewport
+// transform for FREE — no pan/zoom callback, no per-frame recompute, no drift (the exact class of
+// bug screen-space divs hit). Runs AFTER mermaid.render + the other post-render fixes, mirroring
+// addTaskContainerOverlays/addEdgeDirectionMarkers. All assets are inline SVG — no external image
+// URL, so it is file:// + strict-CSP safe. The during-run page re-derives badges fresh each
+// meta-refresh cycle from the current status JSON, so no incremental patching is needed.
+const GR_STATUS_COLORS = { passed: '#3fb950', failed: '#f85149', 'needs-human': '#d29922',
+                          running: '#58a6ff', blocked: '#6e7681', pending: '#6e7681' };
+// Resolve the SVG element carrying node id `id`. A task/plan container is a `g.cluster` whose own
+// id is exactly the emitted id; a leaf check node is a `g.node` whose id is either the emitted id
+// or (in some mermaid builds) `flowchart-<id>-<counter>`. Node ids are sanitized to [A-Za-z0-9_],
+// so a plain [id="..."] attribute selector needs no escaping.
+function resolveStatusNode(svgEl, id) {
+  const exact = svgEl.querySelector('[id="' + id + '"]');
+  if (exact) return exact;
+  for (const n of svgEl.querySelectorAll('g.node[id]')) {
+    const m = n.id.match(/^flowchart-(.+?)-\d+$/);
+    if (m && m[1] === id) return n;
+  }
+  return null;
+}
+function buildStatusBadge(status, cx, cy) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const g = document.createElementNS(ns, 'g');
+  g.setAttribute('class', 'gr-status-badge');
+  g.setAttribute('transform', 'translate(' + cx + ', ' + cy + ')');
+  // Never intercept a click meant for a node, the container title-band overlay, or a leaf source link.
+  g.setAttribute('pointer-events', 'none');
+
+  const color = GR_STATUS_COLORS[status] || '#6e7681';
+  const bg = document.createElementNS(ns, 'circle');
+  bg.setAttribute('r', '9');
+  bg.style.stroke = '#0b0f14';
+  bg.style.strokeWidth = '1.5';
+
+  if (status === 'running') {
+    bg.style.fill = '#0b0f14';
+    g.appendChild(bg);
+    const arc = document.createElementNS(ns, 'path');
+    arc.setAttribute('d', 'M 0 -5 A 5 5 0 1 1 -5 0'); // 3/4 arc
+    arc.setAttribute('fill', 'none');
+    arc.setAttribute('stroke-linecap', 'round');
+    arc.style.stroke = color;
+    arc.style.strokeWidth = '2';
+    if (GR_DURING_RUN) {
+      const anim = document.createElementNS(ns, 'animateTransform');
+      anim.setAttribute('attributeName', 'transform');
+      anim.setAttribute('type', 'rotate');
+      anim.setAttribute('from', '0 0 0');
+      anim.setAttribute('to', '360 0 0');
+      anim.setAttribute('dur', '0.9s');
+      anim.setAttribute('repeatCount', 'indefinite');
+      arc.appendChild(anim);
+    }
+    g.appendChild(arc);
+    return g;
+  }
+
+  bg.style.fill = color;
+  g.appendChild(bg);
+
+  if (status === 'passed' || status === 'failed') {
+    const mark = document.createElementNS(ns, 'path');
+    mark.setAttribute('fill', 'none');
+    mark.setAttribute('stroke-linecap', 'round');
+    mark.setAttribute('stroke-linejoin', 'round');
+    mark.style.stroke = '#0b0f14';
+    mark.style.strokeWidth = '2';
+    mark.setAttribute('d', status === 'passed' ? 'M -4 0 L -1 3 L 4 -4' : 'M -3 -3 L 3 3 M 3 -3 L -3 3');
+    g.appendChild(mark);
+  } else if (status === 'needs-human') {
+    const t = document.createElementNS(ns, 'text');
+    t.setAttribute('x', '0');
+    t.setAttribute('y', '0');
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('dominant-baseline', 'central');
+    t.style.fill = '#0b0f14';
+    t.style.font = 'bold 11px system-ui, sans-serif';
+    t.textContent = '?';
+    g.appendChild(t);
+  }
+  // blocked / any other token: the muted-fill circle alone is the badge.
+  return g;
+}
+function addStatusBadges(svgEl) {
+  for (const id of Object.keys(nodeStatus)) {
+    const el = resolveStatusNode(svgEl, id);
+    if (!el) continue;
+    let box;
+    try { box = el.getBBox(); } catch (e) { continue; }
+    el.appendChild(buildStatusBadge(nodeStatus[id], box.x + box.width, box.y));
+  }
+}
+
+// Client-side find box (issue #220). Substring-match the typed text against every searchable
+// node's id AND its visible label — task containers (task_<base>, plan_preflights, plan_guardrails)
+// and every leaf preflight/guardrail check node — highlighting matches, dimming the rest, and
+// panning the current match to the viewport center. Pure post-render DOM work on the SVG
+// mermaid.render produced: no Mermaid re-render (so it is instant), no new dependency (svg-pan-zoom
+// is already loaded), and no bearing on the embedded Mermaid source or its source-sha256 — this is
+// chrome, exactly like #bar/#legend. Panning uses getBoundingClientRect() screen-space math against
+// the live svg-pan-zoom transform, so it stays correct at any current zoom/pan without
+// reconstructing the SVG coordinate transform by hand.
+function setupSearch(svgEl, pz) {
+  const input = document.getElementById('search-input');
+  const countEl = document.getElementById('count');
+  const prevBtn = document.getElementById('search-prev');
+  const nextBtn = document.getElementById('search-next');
+  if (!input) return;
+
+  // Collect the searchable elements once: task containers (g.cluster with an id) and leaf check
+  // nodes (g.node with an id). Each carries a lowercased needle = id + ' ' + visible label text,
+  // so typing a task number (matches the container id `task_08_…`), a task name, a preflight name,
+  // or a guardrail name all resolve — every one is a distinct human-readable string in the SVG.
+  const items = [];
+  for (const g of svgEl.querySelectorAll('g.cluster[id], g.node[id]')) {
+    const label = (g.textContent || '').replace(/\s+/g, ' ').trim();
+    items.push({ el: g, needle: (g.id + ' ' + label).toLowerCase() });
+  }
+
+  let matches = [];
+  let current = -1;
+
+  function clearClasses() {
+    for (const it of items) {
+      it.el.classList.remove('gr-search-dim', 'gr-search-match', 'gr-search-current');
+    }
+  }
+
+  // Pan (leaving zoom under the user's control) so the matched node's center lands at the viewport
+  // center. getBoundingClientRect already reflects the current pan-zoom transform, so the screen-
+  // space delta is exact — the same "jump to it" a browser's Ctrl+F gives, in the diagram's view.
+  function centerOn(el) {
+    if (!pz) return;
+    const svgRect = svgEl.getBoundingClientRect();
+    const nodeRect = el.getBoundingClientRect();
+    if (!nodeRect.width && !nodeRect.height) return;
+    const dx = (svgRect.width / 2) - (nodeRect.left + nodeRect.width / 2 - svgRect.left);
+    const dy = (svgRect.height / 2) - (nodeRect.top + nodeRect.height / 2 - svgRect.top);
+    pz.panBy({ x: dx, y: dy });
+  }
+
+  function setCurrent(i) {
+    if (!matches.length) return;
+    if (current >= 0 && current < matches.length) matches[current].classList.remove('gr-search-current');
+    current = ((i % matches.length) + matches.length) % matches.length; // wrap both directions
+    matches[current].classList.add('gr-search-current');
+    countEl.textContent = (current + 1) + ' / ' + matches.length;
+    centerOn(matches[current]);
+  }
+
+  function apply() {
+    const q = input.value.replace(/\s+/g, ' ').trim().toLowerCase();
+    clearClasses();
+    current = -1;
+    if (!q) {
+      matches = [];
+      countEl.textContent = '0 / 0';
+      prevBtn.disabled = nextBtn.disabled = true;
+      return;
+    }
+    const matchSet = new Set();
+    matches = [];
+    for (const it of items) {
+      if (it.needle.includes(q)) { matchSet.add(it.el); matches.push(it.el); }
+    }
+    // Dim everything that neither matches nor CONTAINS a match, so a matched leaf inside an
+    // unmatched task container is never dimmed by dimming its container.
+    for (const it of items) {
+      if (matchSet.has(it.el)) { it.el.classList.add('gr-search-match'); continue; }
+      let containsMatch = false;
+      for (const m of matches) { if (it.el !== m && it.el.contains(m)) { containsMatch = true; break; } }
+      if (!containsMatch) it.el.classList.add('gr-search-dim');
+    }
+    prevBtn.disabled = nextBtn.disabled = matches.length === 0;
+    if (matches.length) { setCurrent(0); } else { countEl.textContent = '0 / 0'; }
+  }
+
+  input.addEventListener('input', apply);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); if (matches.length) setCurrent(current + (e.shiftKey ? -1 : 1)); }
+  });
+  prevBtn.addEventListener('click', () => { if (matches.length) setCurrent(current - 1); });
+  nextBtn.addEventListener('click', () => { if (matches.length) setCurrent(current + 1); });
+}
+
 let pz = null;
 try {
   const { svg } = await mermaid.render('dag', graph);
@@ -439,10 +824,14 @@ try {
   const el = document.querySelector('#stage svg');
   el.setAttribute('width', '100vw');
   el.setAttribute('height', '100vh');
+  fixWrappedClusterLabels(el);
   addTaskContainerOverlays(el);
+  addEdgeDirectionMarkers(el);
+  addStatusBadges(el); // live status overlay (issue #219) — after the layout fixes, before pan-zoom init
   pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
+  setupSearch(el, pz); // wire the find box to the rendered SVG + pan-zoom instance (issue #220)
 } catch (e) {
   // Surface the actual failure (offline CDN, or a Mermaid limit we have not yet lifted) instead of
   // guessing — a generic "offline?" message sent every big-plan #108 failure down the wrong path.

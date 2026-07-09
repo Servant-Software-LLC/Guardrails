@@ -530,4 +530,134 @@ public sealed class HtmlDiagramRendererTests
         Assert.True(fnEnd > fnStart, "the search function must be well-formed and precede the render block");
         return html[fnStart..fnEnd];
     }
+
+    // === live status overlay (issue #219, SSOT §10.1) ==================================
+    //
+    // The 5-arg Render embeds a node-id -> status-token map as a third `<script id="node-status">`
+    // blob (same verbatim/textContent treatment as the Mermaid source and the task-folder targets)
+    // and appends inline-SVG badges over each node AFTER mermaid.render. `duringRun` toggles the meta
+    // refresh + the spinner animation only. Status is pure chrome — it NEVER touches source-sha256.
+
+    private static readonly IReadOnlyDictionary<string, string> SomeStatus =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["task_01_a"] = "running",
+            ["task_01_a_gr_0"] = "passed",
+            ["plan_guardrails"] = "needs-human",
+        };
+
+    [Fact]
+    public void Render_5Arg_EmbedsNodeStatus_AsJsonBlob()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        Assert.Contains("id=\"node-status\"", html, StringComparison.Ordinal);
+        Assert.Contains("\"task_01_a\"", html, StringComparison.Ordinal);
+        Assert.Contains("\"running\"", html, StringComparison.Ordinal);
+        Assert.Contains("\"passed\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_DefinesBadgeFunction_AndInvokesItAfterMermaidRenderResolves()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        Assert.Contains("function addStatusBadges(svgEl)", html, StringComparison.Ordinal);
+
+        int renderCall = html.IndexOf("await mermaid.render(", StringComparison.Ordinal);
+        Assert.True(renderCall >= 0, "the render call must be present");
+        int invocation = html.IndexOf("addStatusBadges(", renderCall, StringComparison.Ordinal);
+        Assert.True(invocation > renderCall, "the status badges must be applied to the SVG mermaid.render just produced");
+    }
+
+    [Fact]
+    public void Render_BadgeFunction_UsesInlineSvg_NoExternalImageUrl()
+    {
+        // Self-contained assets (file:// + strict-CSP safe): an animateTransform spinner + inline-SVG
+        // paths, positioned from each node's getBBox() upper-right corner. No external image URL.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        Assert.Contains("animateTransform", html, StringComparison.Ordinal);
+        Assert.Contains("getBBox()", html, StringComparison.Ordinal);
+        // A badge must never intercept a node / title-band / leaf-source click.
+        Assert.Contains("'pointer-events', 'none'", html, StringComparison.Ordinal);
+        // No external image reference for the badge assets.
+        Assert.DoesNotContain(".gif", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_DuringRunTrue_InjectsMetaRefresh_AndActiveSpinner()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        Assert.Contains("http-equiv=\"refresh\"", html, StringComparison.Ordinal);
+        Assert.Contains("const GR_DURING_RUN = true;", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_DuringRunFalse_HasNoMetaRefresh_AndInactiveSpinner()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: false);
+
+        Assert.DoesNotContain("http-equiv=\"refresh\"", html, StringComparison.Ordinal);
+        Assert.Contains("const GR_DURING_RUN = false;", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_3ArgOverload_StillWorks_EmptyStatus_NoRefresh()
+    {
+        // The plan-root diagram.html (GraphCommand) path: the 3-arg overload delegates to the 5-arg
+        // with an EMPTY status + duringRun:false — inert overlay scaffolding, no badges, no refresh.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, NoTargets);
+
+        Assert.Contains("id=\"node-status\"", html, StringComparison.Ordinal); // scaffolding present...
+        Assert.Contains(">{}</script>", html, StringComparison.Ordinal);       // ...but empty status
+        Assert.DoesNotContain("http-equiv=\"refresh\"", html, StringComparison.Ordinal);
+        Assert.Contains("const GR_DURING_RUN = false;", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_5Arg_NullStatus_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            HtmlDiagramRenderer.Render(Source, Hash, NoTargets, null!, duringRun: false));
+    }
+
+    [Fact]
+    public void Render_Status_IsHashNeutral_ProvenanceLineUnaffectedByStatus()
+    {
+        // Load-bearing: status is pure chrome. The provenance line (source-sha256) — and thus what
+        // graph --check reads — must be byte-identical regardless of the status map (or duringRun).
+        string firstNoStatus = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, NoTargets, duringRun: false)
+            .Split('\n')[0];
+        string firstWithStatus = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true)
+            .Split('\n')[0];
+
+        Assert.Equal($"<!-- guardrails:graph v1 source-sha256={Hash} -->", firstNoStatus);
+        Assert.Equal(firstNoStatus, firstWithStatus);
+    }
+
+    [Fact]
+    public void Render_Status_IsNotInsideTheEmbeddedGraphSourceScript()
+    {
+        // Like the legend/search chrome, the node-status blob + badge logic must live OUTSIDE the
+        // raw-text <script id="graph-source"> element, so it can never reach what parses that source
+        // (rendering) or hashes it (GraphSourceHash / source-sha256).
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true);
+
+        int scriptStart = html.IndexOf("id=\"graph-source\"", StringComparison.Ordinal);
+        int scriptEnd = html.IndexOf("</script>", scriptStart, StringComparison.Ordinal);
+        string scriptContent = html[scriptStart..scriptEnd];
+
+        Assert.DoesNotContain("node-status", scriptContent, StringComparison.Ordinal);
+        Assert.DoesNotContain("addStatusBadges", scriptContent, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_5Arg_IsDeterministic()
+    {
+        Assert.Equal(
+            HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true),
+            HtmlDiagramRenderer.Render(Source, Hash, OneTarget, SomeStatus, duringRun: true));
+    }
 }

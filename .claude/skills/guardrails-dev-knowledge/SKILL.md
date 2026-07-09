@@ -185,6 +185,21 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   `StringWriter`-backed `StringConsoleIo` and capture from its `OutText`/`ErrorText` —
   **no `Console.SetOut`, no global console state, so the CLI-driving test classes are
   parallel-safe** (there is no `ConsoleCaptureCollection`; do not reintroduce one).
+- **Live status diagram (#219, SSOT §10.1)**: `OnTheFlyDiagramObserver` (in
+  `src/Guardrails.Cli/Ui/`, sibling to `OnTheFlyLogSiteObserver`) is a decorator `IRunObserver`
+  wired in `RunCommand` in BOTH the live and `--no-ui` paths (stacked AROUND the log-site
+  observer), writing `logs/<runId>/diagram.html` — one lock guards map-mutation + atomic write,
+  best-effort. It translates events to SVG node ids via `MermaidRenderer.StatusNodes(plan)` (the
+  status-node surface, sibling to `TaskFolderTargets` — derived from the SAME `AllocateNodeIdBases`
+  + `OrderBy(Name)` ordinal math the emitter uses; a **bijection golden test** guards drift). The
+  plan-level bracket badges are driven by concrete `PlanGuardrailsStarting`/`Finished` methods
+  called from `RunCommand` (NOT `IRunObserver` methods — keep the interface small). `duringRun`
+  toggles the meta refresh + spinner only. **One-time fixture gotcha**: adding the badge scaffolding
+  changed the plan-root `diagram.html` BYTES (a `node-status` script + badge JS) — regenerate every
+  committed `diagram.html` via the real `guardrails graph` command — but NOT its `source-sha256`
+  (status is hash-neutral chrome), so `graph --check` stays 0 (the golden `GraphSourceHash` tests
+  are untouched). One committed `docs/plans/preflights-impl` fixture is an invalid plan (retired
+  `integrationGate`, GR2029) and cannot be regenerated — its `diagram.html` stays stale.
 - **Testing doctrine**: TCS-gated fakes for concurrency (no sleeps); `.ps1` + `.sh`
   fixture flavors OS-picked; plan builders pin `defaultRetries: 0`; prompt-pipeline
   tests use `FakeClaudePlanBuilder` (tokenless); real-claude tests gated behind
