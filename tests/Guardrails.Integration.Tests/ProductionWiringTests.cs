@@ -343,51 +343,52 @@ public sealed class ProductionWiringTests
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Defect #120-class composition-root gap: <see cref="SchedulerFactory.Create"/> never constructed
-    /// a <see cref="NeedsHumanTriage"/>, so the <c>TaskExecutor</c>'s <c>_triage is not null</c> guard
-    /// short-circuited and the advisory needs-human triage (SSOT §9.2) was dead from the CLI.
+    /// Defect #120-class composition-root gap, generalized for #269: <see cref="SchedulerFactory.Create"/>
+    /// must construct the <see cref="Overwatch"/> (which SUBSUMES the shipped needs-human triage as its
+    /// §9.2.1 terminal case), else the <c>TaskExecutor</c>'s <c>_overwatch is not null</c> guard
+    /// short-circuits and BOTH the advisory triage AND the active supervisor are dead from the CLI.
     ///
     /// This drives the REAL production factory and asserts via reflection that the resulting
-    /// Scheduler's <c>TaskExecutor</c> holds a non-null <c>_triage</c> when the plan declares a
+    /// Scheduler's <c>TaskExecutor</c> holds a non-null <c>_overwatch</c> when the plan declares a
     /// <c>promptRunners</c> block — and crucially asserts it is non-null in SERIAL mode
-    /// (<c>maxParallelism = 1</c>) too, proving the triage is wired whenever a runner is available
+    /// (<c>maxParallelism = 1</c>) too, proving the overwatcher is wired whenever a runner is available
     /// rather than being worktree-specific like the AI-merge worker. The contrast case (a script-only
-    /// plan with NO <c>promptRunners</c>) asserts the triage is null — no runner, no advisory triage.
+    /// plan with NO <c>promptRunners</c>) asserts it is null — no runner, no overwatcher.
     /// </summary>
     [Fact]
-    public void Factory_WiresNeedsHumanTriage_WhenRunnerAvailable()
+    public void Factory_WiresOverwatch_WhenRunnerAvailable()
     {
         using var repo = new TempGitRepo();
 
-        // ── Serial mode WITH a prompt runner → non-null triage (NOT worktree-specific) ──────────
+        // ── Serial mode WITH a prompt runner → non-null overwatch (NOT worktree-specific) ───────
         string serialPlanDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 1, folder: "triage-serial-plan");
         PlanLoadResult serialLoad = new PlanLoader().Load(serialPlanDir);
         Assert.NotNull(serialLoad.Plan);
         Assert.False(serialLoad.HasErrors,
-            "Serial-mode triage fixture plan must load cleanly: " + string.Join("\n", serialLoad.Diagnostics));
+            "Serial-mode overwatch fixture plan must load cleanly: " + string.Join("\n", serialLoad.Diagnostics));
 
         Scheduler serialScheduler = SchedulerFactory.Create(
             serialLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
 
-        object? serialTriage = TriageField().GetValue(ExecutorOf(serialScheduler));
-        Assert.NotNull(serialTriage);
-        Assert.IsType<NeedsHumanTriage>(serialTriage);
+        object? serialOverwatch = OverwatchField().GetValue(ExecutorOf(serialScheduler));
+        Assert.NotNull(serialOverwatch);
+        Assert.IsType<Overwatch>(serialOverwatch);
 
-        // ── Worktree mode WITH a prompt runner → non-null triage as well ────────────────────────
+        // ── Worktree mode WITH a prompt runner → non-null overwatch as well ─────────────────────
         string parallelPlanDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 2, folder: "triage-parallel-plan");
         PlanLoadResult parallelLoad = new PlanLoader().Load(parallelPlanDir);
         Assert.NotNull(parallelLoad.Plan);
         Assert.False(parallelLoad.HasErrors,
-            "Worktree-mode triage fixture plan must load cleanly: " + string.Join("\n", parallelLoad.Diagnostics));
+            "Worktree-mode overwatch fixture plan must load cleanly: " + string.Join("\n", parallelLoad.Diagnostics));
 
         Scheduler parallelScheduler = SchedulerFactory.Create(
             parallelLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
 
-        object? parallelTriage = TriageField().GetValue(ExecutorOf(parallelScheduler));
-        Assert.NotNull(parallelTriage);
-        Assert.IsType<NeedsHumanTriage>(parallelTriage);
+        object? parallelOverwatch = OverwatchField().GetValue(ExecutorOf(parallelScheduler));
+        Assert.NotNull(parallelOverwatch);
+        Assert.IsType<Overwatch>(parallelOverwatch);
 
-        // ── Script-only plan (NO promptRunners) → null triage (no runner, no advisory triage) ───
+        // ── Script-only plan (NO promptRunners) → null overwatch (no runner, no supervisor) ─────
         string scriptOnlyPlanDir = CreateFixturePlan(repo.RepoPath);
         PlanLoadResult scriptOnlyLoad = new PlanLoader().Load(scriptOnlyPlanDir);
         Assert.NotNull(scriptOnlyLoad.Plan);
@@ -397,7 +398,7 @@ public sealed class ProductionWiringTests
         Scheduler scriptOnlyScheduler = SchedulerFactory.Create(
             scriptOnlyLoad.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
 
-        Assert.Null(TriageField().GetValue(ExecutorOf(scriptOnlyScheduler)));
+        Assert.Null(OverwatchField().GetValue(ExecutorOf(scriptOnlyScheduler)));
     }
 
     /// <summary>The Scheduler's concrete <see cref="TaskExecutor"/> (stored as <c>ITaskExecutor</c>).</summary>
@@ -412,12 +413,42 @@ public sealed class ProductionWiringTests
         return executor!;
     }
 
-    private static FieldInfo TriageField()
+    private static FieldInfo OverwatchField()
     {
         FieldInfo? field = typeof(TaskExecutor).GetField(
-            "_triage", BindingFlags.Instance | BindingFlags.NonPublic);
+            "_overwatch", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
         return field!;
+    }
+
+    /// <summary>
+    /// NIT-2: the production factory (no interaction argument) must wire the overwatcher's confirmation seam
+    /// to <see cref="IOverwatchInteraction.NonInteractive"/> — the fail-safe that makes v1 grants unreachable
+    /// in production (an approve can never come from a non-interactive seam). This pins the posture so a
+    /// future refactor that silently threads an interactive seam is caught.
+    /// </summary>
+    [Fact]
+    public void Factory_WiresNonInteractiveOverwatchSeam_ByDefault()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 1, folder: "overwatch-seam-plan");
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        Assert.NotNull(load.Plan);
+        Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
+
+        Scheduler scheduler = SchedulerFactory.Create(
+            load.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+
+        object? overwatch = OverwatchField().GetValue(ExecutorOf(scheduler));
+        Assert.NotNull(overwatch);
+
+        FieldInfo? interactionField = typeof(Overwatch).GetField(
+            "_interaction", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(interactionField);
+        object? interaction = interactionField!.GetValue(overwatch);
+
+        // Same singleton the production default resolves to — never an interactive seam.
+        Assert.Same(IOverwatchInteraction.NonInteractive, interaction);
     }
 
     /// <summary>

@@ -330,6 +330,28 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Charge OVERHEAD prompt spend that is not a task attempt (SSOT §7/§9.2, issue #269) — the
+    /// overwatcher's diagnose prompts — to the run's cumulative cost. It is folded into
+    /// <see cref="JournalCost.Total"/> so it BOTH counts toward the <c>maxCostUsd</c> gate (via
+    /// <see cref="CurrentCostUsd"/>) AND appears in the reported total. A null cost is a no-op (an
+    /// unreported prompt cost adds nothing and leaves the section absent); a non-null cost (even $0) is
+    /// accumulated and persisted.
+    /// </summary>
+    public void AddOverwatchCost(decimal? cost)
+    {
+        if (cost is not { } c)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            _document = _document with { OverwatchCostUsd = (_document.OverwatchCostUsd ?? 0m) + c };
+            Persist();
+        }
+    }
+
     // --- waves[] (SSOT §7/§14, #254 M2b) ----------------------------------------------
 
     /// <summary>The wave's durable journal record, or null when the waves[] section omits it.</summary>
