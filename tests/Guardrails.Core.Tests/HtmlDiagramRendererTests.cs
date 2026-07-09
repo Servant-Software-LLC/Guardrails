@@ -407,4 +407,127 @@ public sealed class HtmlDiagramRendererTests
         Assert.True(fnEnd > fnStart, "the direction-marker function must be well-formed");
         return html[fnStart..fnEnd];
     }
+
+    // === client-side search box (issue #220) ===========================================
+    //
+    // A fixed-position find box, overlaid the same way #bar/#legend already sit outside the Mermaid
+    // SVG — purely client-side, no server round-trip, no new dependency (svg-pan-zoom is already
+    // loaded). Typing substring-matches every node's id + visible label (task ids, preflight-check
+    // names, guardrail-check names), highlights matches / dims the rest via pure class toggling on
+    // the rendered SVG (instant — no Mermaid re-render), and pans the current match to the viewport
+    // center. Being chrome (like the legend), it can never affect the embedded Mermaid source or its
+    // source-sha256.
+
+    [Fact]
+    public void Render_IncludesASearchOverlay_WithInputCounterAndPrevNext()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("id=\"search\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"search-input\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"count\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"search-prev\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"search-next\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_DefinesSetupSearchFunction()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        Assert.Contains("function setupSearch(svgEl, pz)", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_Search_InvokedAfterMermaidRenderResolves_WithTheSvgAndPanZoom()
+    {
+        // The search must be wired to the SVG mermaid.render just produced AND the live pan-zoom
+        // instance (it pans to center a match), so it can only be invoked after both exist.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        int renderCall = html.IndexOf("await mermaid.render(", StringComparison.Ordinal);
+        Assert.True(renderCall >= 0, "the render call must be present");
+        int invocation = html.IndexOf("setupSearch(el, pz)", renderCall, StringComparison.Ordinal);
+        Assert.True(invocation > renderCall, "search must be wired AFTER the render + pan-zoom init");
+    }
+
+    [Fact]
+    public void Render_Search_MatchesNodeIdsAndLabels_AcrossContainersAndLeaves()
+    {
+        // The needle is the node id + its visible label text, gathered from BOTH task containers
+        // (g.cluster) and leaf check nodes (g.node) — so a task number, a task name, a preflight
+        // name, or a guardrail name all resolve.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+        string fnBody = SearchFunctionBody(html);
+
+        Assert.Contains("g.cluster[id], g.node[id]", fnBody, StringComparison.Ordinal);
+        Assert.Contains("textContent", fnBody, StringComparison.Ordinal);
+        Assert.Contains(".includes(q)", fnBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_Search_HighlightsMatchesAndDimsTheRest()
+    {
+        // Highlight + dim is pure class toggling (no Mermaid re-render). The dim must skip an
+        // element that CONTAINS a match, so a matched leaf inside a container is never dimmed by
+        // dimming the container.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+        string fnBody = SearchFunctionBody(html);
+
+        Assert.Contains("gr-search-match", fnBody, StringComparison.Ordinal);
+        Assert.Contains("gr-search-dim", fnBody, StringComparison.Ordinal);
+        Assert.Contains(".contains(m)", fnBody, StringComparison.Ordinal);
+        // The highlight/dim CSS classes must be defined in the stylesheet too.
+        Assert.Contains(".gr-search-dim {", html, StringComparison.Ordinal);
+        Assert.Contains(".gr-search-match >", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_Search_PansTheCurrentMatchToCenter_ViaPanBy()
+    {
+        // Pans (leaving zoom to the user) using screen-space getBoundingClientRect math against the
+        // live pan-zoom transform — so it stays correct at any current zoom/pan.
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+        string fnBody = SearchFunctionBody(html);
+
+        Assert.Contains("getBoundingClientRect()", fnBody, StringComparison.Ordinal);
+        Assert.Contains("pz.panBy(", fnBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_Search_CyclesMatchesWithEnterAndShiftEnter()
+    {
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+        string fnBody = SearchFunctionBody(html);
+
+        Assert.Contains("'Enter'", fnBody, StringComparison.Ordinal);
+        Assert.Contains("e.shiftKey", fnBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Render_Search_IsNotInsideTheEmbeddedGraphSourceScript()
+    {
+        // Like the legend, the search chrome must live OUTSIDE the raw-text <script id="graph-source">
+        // element — it is not part of the Mermaid source, so it can never affect what parses that
+        // source (rendering) or hashes it (GraphSourceHash / source-sha256).
+        string html = HtmlDiagramRenderer.Render(Source, Hash, OneTarget);
+
+        int scriptStart = html.IndexOf("id=\"graph-source\"", StringComparison.Ordinal);
+        int scriptEnd = html.IndexOf("</script>", scriptStart, StringComparison.Ordinal);
+        string scriptContent = html[scriptStart..scriptEnd];
+
+        Assert.DoesNotContain("setupSearch", scriptContent, StringComparison.Ordinal);
+        Assert.DoesNotContain("search-input", scriptContent, StringComparison.Ordinal);
+    }
+
+    private static string SearchFunctionBody(string html)
+    {
+        int fnStart = html.IndexOf("function setupSearch", StringComparison.Ordinal);
+        Assert.True(fnStart >= 0, "the search function must be present");
+        // setupSearch is a large function with nested helpers; bound the slice at the sentinel
+        // "\nlet pz = null;" that immediately follows its definition in the template.
+        int fnEnd = html.IndexOf("\nlet pz = null;", fnStart, StringComparison.Ordinal);
+        Assert.True(fnEnd > fnStart, "the search function must be well-formed and precede the render block");
+        return html[fnStart..fnEnd];
+    }
 }
