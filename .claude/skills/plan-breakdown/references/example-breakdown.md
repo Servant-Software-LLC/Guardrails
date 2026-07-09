@@ -1,8 +1,9 @@
 # Worked example — a complete breakdown, end to end
 
 This is the few-shot reference for the plan-breakdown procedure. Input: a small,
-reviewed plan. Output: a 5-task folder — including two **inserted** tasks the plan
-never mentioned: a brownfield positive-baseline (preflight) root (#181) and a TDD test-author task,
+reviewed plan. Output: a **3-task** folder PLUS two inserted, plan-level four-folder artifacts the
+plan never mentioned — a brownfield **positive-baseline preflight** (`<plan>/preflights/`, #181) and a
+**terminal integration gate** (`<plan>/guardrails/`, §3.3) — and one **inserted TDD test-author task**,
 each because a guardrail or doctrine needed it.
 
 ## Input plan (`add-stats-flag.md`)
@@ -24,12 +25,14 @@ each because a guardrail or doctrine needed it.
 The plan modifies `src/Inventory.Cli`, an EXISTING CLI with an existing `tests/Inventory.Tests`
 project. That makes this a **brownfield** plan (`$baselineArea = tests/Inventory.Tests`, ONE touched
 test project). The **worth-it gate passes**: the test project pre-exists, the plan MODIFIES it (not
-creates), the check is cheap/deterministic (a filtered `dotnet test` — a bounded run, not a live-service boot/poll), it is strictly
-narrower than the terminal full-suite gate, and ≥2 work tasks (`01-author-stats-tests`,
-`02-implement-stats-flag`) build on the area. So Step 5 inserts ONE **positive-baseline (preflight)
-ROOT** so the existing tests are confirmed green BEFORE any work runs ("never build on red", #181). (A
-greenfield plan — a new project with no existing tests — would SKIP the baseline and the report would
-state why; the runnable `examples/**` greeting demos are greenfield and correctly carry no baseline.)
+creates), the check is cheap/deterministic (a filtered `dotnet test` — a bounded run, not a
+live-service boot/poll), it is strictly narrower than the terminal full-suite gate, and ≥2 work tasks
+(`01-author-stats-tests`, `02-implement-stats-flag`) build on the area. So Step 5 emits ONE
+**positive-baseline preflight CHECK** in the plan-root `<plan>/preflights/` folder so the existing
+tests are confirmed green BEFORE the DAG runs ("never build on red", #181) — a guardrail-shaped FILE,
+not a no-op ROOT task (the retired model). (A greenfield plan — a new project with no existing tests —
+would SKIP the baseline and the report would state why; the runnable `examples/**` greeting demos are
+greenfield and correctly carry no baseline.)
 
 ## Step 1 — scratch table
 
@@ -56,26 +59,31 @@ Non-executable plan content: none (both items have observable deliverables).
   character than the implementation's (tests), and bundling it would make a doc typo
   burn an expensive implementation retry.
 - Because the plan is brownfield and the worth-it gate passes (Step 0), one **positive-baseline
-  (preflight) ROOT** `00-baseline-inventory-tests-green` is inserted: a TRUE no-op (`exit 0`,
-  writes nothing) action + a guardrail that runs the EXISTING `tests/Inventory.Tests` tests and
-  asserts they pass on the starting code. It is the DAG root (`dependsOn: []`); the test-author
-  task depends on it, so every task transitively does. Its guardrail **filters** to the
-  PRE-EXISTING tests (`--filter "Category!=Stats"`) — NOT a whole-project `dotnet test`, which
-  would hit the #165/#176 compile-coupling trap once the `Stats` tests reference the
-  not-yet-implemented `StatsCommand` — so it never goes red on the about-to-be-authored `Stats`
+  preflight CHECK** `<plan>/preflights/01-baseline-inventory-tests-green.ps1` is emitted: a
+  guardrail-shaped FILE (no task, no action) that runs the EXISTING `tests/Inventory.Tests` tests and
+  asserts they pass on the starting code. The plan-root `preflights/` folder is evaluated ONCE, BEFORE
+  the DAG, against the starting repo — so it implicitly gates every task with no edges to wire. Its
+  check **filters** to the PRE-EXISTING tests (`--filter "Category!=Stats"`) — NOT a whole-project
+  `dotnet test`, which would hit the #165/#176 compile-coupling trap once the `Stats` tests reference
+  the not-yet-implemented `StatsCommand` — so it never goes red on the about-to-be-authored `Stats`
   tests (#181).
-- A terminal **whole-suite green** task closes the DAG (the only place "all tests
-  pass" is allowed). The baseline and the terminal gate are **complementary** — green START
-  on the EXISTING area at the root, green END on EVERYTHING at the sink.
-- Edges: `01-author-tests` depends on `00-baseline-inventory-tests-green` (the baseline root —
-  nothing runs against a red base). `02-implement` depends on `01-author-tests` (guardrail
-  dependency: 02's guardrail runs 01's artifact). `03-update-readme` depends on `02-implement`
-  (semantic: documents real behavior). `04-suite-green` depends on 02 and 03. No
-  prose-order-only edges.
+- A terminal **whole-suite green** gate closes the run in the plan-root `<plan>/guardrails/` folder
+  (the only place "all tests pass" is allowed) — evaluated ONCE, at run end, on the merged HEAD, NOT a
+  task. The baseline and the terminal gate are **complementary** — green START on the EXISTING area
+  before the DAG, green END on EVERYTHING at the merged HEAD.
+- Edges: `01-author-stats-tests` is a DAG root (`dependsOn: []`) — the `<plan>/preflights/` baseline
+  gates it with no edge to author. `02-implement` depends on `01-author-stats-tests` (guardrail
+  dependency: 02's guardrail runs 01's artifact). `03-update-readme` depends on nothing — the plan
+  FULLY specifies the `--stats` output format, so the README's usage example is authored from that
+  spec, not from the running implementation (sparsest DAG — a `03 → 02` edge would be a false edge that
+  needlessly serializes the run). So **`02-implement` and `03-update-readme` are the plan's two
+  leaves**; they integrate at run end, where the terminal `<plan>/guardrails/` folder re-runs the
+  integration set on the merged HEAD. No prose-order-only edges.
 
-Plan said 2 steps; the breakdown emits **5 tasks** (a baseline root, a TDD test-author task,
-the implementation, the README, and the terminal gate). That delta is the skill working as
-designed, not scope creep.
+Plan said 2 steps; the breakdown emits **3 tasks** plus a plan-level baseline preflight and a
+plan-level terminal gate (a TDD test-author task, the implementation, the README, the
+`<plan>/preflights/` baseline, and the `<plan>/guardrails/` terminal gate). That delta is the skill
+working as designed, not scope creep.
 
 ## Steps 5–6 — every generated file
 
@@ -109,42 +117,31 @@ designed, not scope creep.
 }
 ```
 
-The four `Bash(git …*)` entries are READ-ONLY inspection commands (#252) — this plan is a
-5-task chain (`00-baseline` → `01-author-tests` → `02-implement` → `03-update-readme` →
-`04-suite-green`), so `02-implement-stats-flag`'s action prompt may reasonably want to run
-`git diff` / `git log` to see exactly what `01-author-stats-tests` committed (the test file
-and its stub) before extending the stub into real logic — the textbook case the default now
-covers. Note what is deliberately absent: `restore`, `reset`, `checkout`, `push`, `commit`,
-`stash` — every state-mutating git operation stays outside `allowedTools`.
+The four `Bash(git …*)` entries are READ-ONLY inspection commands (#252) — this plan has ≥2 tasks
+joined by `dependsOn` (`01-author-stats-tests` → `02-implement-stats-flag`), so
+`02-implement-stats-flag`'s action prompt may reasonably want to run `git diff` / `git log` to see
+exactly what `01-author-stats-tests` committed (the test file and its stub) before extending the stub
+into real logic — the textbook case the default now covers. Note what is deliberately absent:
+`restore`, `reset`, `checkout`, `push`, `commit`, `stash` — every state-mutating git operation stays
+outside `allowedTools`.
 
-### `tasks/00-baseline-inventory-tests-green/` — **INSERTED TASK** (brownfield positive-baseline / preflight root, #181)
+### `preflights/01-baseline-inventory-tests-green.ps1` — **INSERTED** (brownfield positive-baseline preflight, #181)
 
-`task.json` — the DAG ROOT (`dependsOn: []`). It does no work, so it declares **no `writeScope`**. The
-verification is the guardrail, not the action.
-```jsonc
-{
-  "description": "Baseline: the existing tests in tests/Inventory.Tests pass on the starting code before any work runs - never build on red (#181)",
-  "dependsOn": []
-}
-```
+Under the four-folder model the baseline is a guardrail-shaped **FILE** in the plan-root
+`<plan>/preflights/` folder (the "Full Flight Checks"), evaluated ONCE, BEFORE the DAG, against the
+starting repo — **not** a no-op ROOT task (the retired model). There is no `task.json`, no action, and
+no `dependsOn` to wire: a failing preflight halts the run before any task is scheduled, so every task
+is implicitly gated on it. The file IS the verification.
 
-`action.ps1`
-```powershell
-# A no-op: this task does no work. Its guardrail (the existing area tests pass) is the point - it
-# gates the DAG root on tests/Inventory.Tests being green before any work task runs (#181).
-exit 0
-```
-
-`guardrails/01-baseline-area-tests-pass.ps1` — runs the EXISTING `tests/Inventory.Tests`, **filtered to
-the pre-existing tests** (`Category!=Stats`) so the about-to-be-authored `Stats` tests can never make
-the baseline red, and re-emits the failure detail at the END so a red baseline's WHY reaches the retry
-tail (#179; `stacks/dotnet.md §21`):
+It runs the EXISTING `tests/Inventory.Tests`, **filtered to the pre-existing tests** (`Category!=Stats`)
+so the about-to-be-authored `Stats` tests can never make the baseline red, and re-emits the failure
+detail at the END so a red baseline's WHY reaches the halt feedback (#179; `stacks/dotnet.md §21`):
 ```powershell
 # catches: a brownfield plan building on a RED base - the existing tests in tests/Inventory.Tests are
-#          already failing on the starting code. Asserting them green at the DAG root means a later
+#          already failing on the starting code. Asserting them green BEFORE the DAG means a later
 #          work task's tests-pass failure is attributable to THAT task, not pre-existing breakage, and
 #          the new Stats tests' red is unambiguous (#181). Re-emits the failure DETAIL at the END so a
-#          red baseline's WHY reaches the harness retry tail (#179, §4.2). Filtered to the PRE-EXISTING
+#          red baseline's WHY reaches the halt feedback (#179, §4.2). Filtered to the PRE-EXISTING
 #          tests (Category!=Stats) - it must NOT run the about-to-be-authored Stats tests.
 $out = dotnet test tests/Inventory.Tests --filter "Category!=Stats" --nologo 2>&1
 $out | ForEach-Object { Write-Output $_ }
@@ -153,20 +150,21 @@ if ($LASTEXITCODE -ne 0) {
         Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
         ForEach-Object { $_.Line } | Select-Object -First 40
     Write-Output ""
-    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+    Write-Output "=== Failure details (re-emitted so they land in the halt feedback) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     Write-Output "the existing tests in tests/Inventory.Tests are already failing on the starting code - fix the pre-existing breakage before this plan builds on it (#181)"
     exit 1
 }
 exit 0
 ```
-`guardrails/01-baseline-area-tests-pass.json`:
+`preflights/01-baseline-inventory-tests-green.json`:
 ```jsonc
-{ "description": "Existing area tests pass on the current code (baseline-green root, #181)" }
+{ "description": "Existing area tests pass on the current code (baseline-green preflight, #181)" }
 ```
 
-(No state, no `writeScope`. This is the brownfield baseline-green root; a greenfield plan would omit
-this task entirely and the report would say why.)
+(No task, no action, no `writeScope`. This is the brownfield baseline-green preflight; a greenfield
+plan would omit it entirely and the report would say why. A RED preflight halts the run before the DAG
+— no retry budget is burned, because there is no task.)
 
 ### `tasks/01-author-stats-tests/` — **INSERTED TASK** (behavioral type → tests + minimal stubs)
 
@@ -180,7 +178,7 @@ of fixing the code. No `captureHashes`, no `restoreOnRetry`, no downstream `test
 ```jsonc
 {
   "description": "Author failing unit tests + a minimal StatsCommand stub for the --stats output format (total line + sorted per-category lines)",
-  "dependsOn": ["00-baseline-inventory-tests-green"],
+  "dependsOn": [],
   "writeScope": [
     "tests/Inventory.Tests/StatsCommandTests.cs",
     "src/Inventory.Cli/StatsCommand.cs"
@@ -317,15 +315,19 @@ No `tests-untouched` guardrail is needed. This task's `writeScope` (`src/Invento
 them", enforced by a read-only `git diff` membership test rather than a hash compare. No shared-state
 hash exists to forge, so the cross-task poisoning surface is gone entirely.
 
-### `tasks/03-update-readme/`
+### `tasks/03-update-readme/` — the plan's second leaf
 
-`task.json`
+`task.json` — **`dependsOn: []`**: the plan fully specifies the `--stats` output format, so the
+README's usage example is authored from that spec, independent of the running implementation. A
+`03 → 02` edge would be a false edge that needlessly serializes the run (Step 3, sparsest DAG). This
+makes `02-implement` and `03-update-readme` the plan's **two leaves** — the parallelism whose union at
+run end the terminal `<plan>/guardrails/` folder verifies.
 ```jsonc
-{ "description": "Document --stats in README.md", "dependsOn": ["02-implement-stats-flag"] }
+{ "description": "Document --stats in README.md (from the specified output format)", "dependsOn": [] }
 ```
 
 `action.prompt.md` — harness-contract header, then: document the flag with a usage
-example matching the real output.
+example matching the specified output format.
 
 `guardrails/01-readme-mentions-flag.ps1`
 ```powershell
@@ -342,31 +344,22 @@ if ($readme -notmatch 'total:') {
 exit 0
 ```
 
-### `tasks/04-suite-green/` — terminal integration task
+### `guardrails/` — the terminal integration gate (plan-root FOLDER, §3.3)
 
-`task.json` — sets `integrationGate: true` (SSOT §3.3): this is the run's terminal whole-repo
-integration gate, the lone sink the two leaf tasks (02, 03) fan into. The plan has ≥2 leaf tasks
-and a fan-in, so validation requires **exactly one** `integrationGate: true` sink (GR2017) carrying
-**at least one** `scope: "integration"` guardrail (GR2018) — `01-union-clean` below is that
-guardrail (a **union-safe invariant**, NOT the whole suite). A terminal whole-suite gate is a
-genuinely repo-wide task, so it declares **no `writeScope`**.
-```jsonc
-{
-  "description": "Whole test suite green (terminal gate)",
-  "dependsOn": ["02-implement-stats-flag", "03-update-readme"],
-  "integrationGate": true
-}
-```
+The terminal whole-repo integration gate is the plan-root **`<plan>/guardrails/`** folder — evaluated
+ONCE, at run end, on the merged plan-branch HEAD, **not a task** (the `integrationGate: true` task kind
+is retired; still declaring it is a hard validation error, **GR2029**). There is no `task.json` and no
+`action.*` here — the folder holds guardrail-shaped files evaluated by the terminal phase directly. The
+plan has two leaves (`02-implement`, `03-update-readme`) in worktree mode (`maxParallelism: 4`), so
+**GR2028** (the re-homed GR2018 content teeth) requires this folder to carry **≥1 deterministic check
+that ACTUALLY re-runs the integration set**. It carries **two** files, cheapest-first, with the right
+scopes (#165):
 
-`action.ps1` → `exit 0` (a pure verification task; the guardrails are the point).
-
-The gate carries **two** guardrails, cheapest-first, with the right scopes (#165):
-
-`guardrails/01-union-clean.ps1` — the `scope: "integration"` guardrail GR2018 requires. It is a
-**union-safe conditional invariant** (conflict-marker-free + non-empty), so it passes trivially at
-intermediate unions where a leaf has not integrated yet. It does **NOT** assert "both leaves' work
-is present" (a terminal postcondition that would false-RED at the first union) — it gates on each file
-being present, then verifies it:
+`guardrails/01-union-clean.ps1` — the `scope: "integration"` union invariant (the real integration-set
+re-run that satisfies GR2028). It is a **union-safe conditional invariant** (conflict-marker-free +
+non-empty), so it passes trivially at intermediate unions where a leaf has not integrated yet. It does
+**NOT** assert "both leaves' work is present" (a terminal postcondition that would false-RED at the
+first union) — it gates on each file being present, then verifies it:
 ```powershell
 # catches: a union that left git conflict markers in the merged bytes, or an empty source/doc file —
 # the deterministic verdict on EVERY union's bytes, re-run at each non-FF integration and the terminal HEAD.
@@ -397,8 +390,8 @@ exit 0
 ```
 
 `guardrails/02-full-suite.ps1` — the whole test suite. This is **LOCAL** (no `scope` key): a full
-suite is a **terminal postcondition**, not a union-safe invariant — it runs only here, in the gate's
-own attempt on its segment worktree after both leaves have merged. Marking it `scope: "integration"`
+suite is a **terminal postcondition**, not a union-safe invariant — it runs only here, ONCE, at the
+terminal gate on the merged HEAD after both leaves have merged. Marking it `scope: "integration"`
 would re-run it at every intermediate union and, on any TDD plan, red-halt a correct partial merge
 (#165):
 ```powershell
@@ -428,33 +421,35 @@ exit 0
 
 ## Step 7 — the closing report (what the skill says to the user)
 
-> Breakdown of `add-stats-flag.md` → `add-stats-flag/` — **5 tasks** (plan listed 2):
+> Breakdown of `add-stats-flag.md` → `add-stats-flag/` — **3 tasks** + a plan-level baseline
+> preflight + a plan-level terminal gate (plan listed 2):
 >
 > | Task | Action | Guardrails (archetypes) | dependsOn |
 > |---|---|---|---|
-> | 00-baseline-inventory-tests-green *(INSERTED)* | script (TRUE no-op `exit 0`) | baseline-area-tests-pass (existing `tests/Inventory.Tests`, `--filter "Category!=Stats"`, area-scoped, #179-re-emit) | — |
-> | 01-author-stats-tests *(INSERTED)* | prompt | build-passes (3), tests-fail-on-stubs (8); `writeScope` owns the test file + the `StatsCommand` stub; Scope boundary paragraph | 00 |
+> | 01-author-stats-tests *(INSERTED)* | prompt | build-passes (3), tests-fail-on-stubs (8); `writeScope` owns the test file + the `StatsCommand` stub; Scope boundary paragraph | — (root) |
 > | 02-implement-stats-flag | prompt | build (3), stats-tests-pass (4); `writeScope` targets the stub, EXCLUDES the test file | 01 |
-> | 03-update-readme | prompt | readme-mentions-flag (1) | 02 |
-> | 04-suite-green | script | union-clean (union-safe invariant, `scope: "integration"`) + full-suite (4, terminal-only, **LOCAL**); `integrationGate: true` | 02, 03 |
+> | 03-update-readme | prompt | readme-mentions-flag (1) | — (root, independent leaf) |
 >
-> Inserted: `00-baseline-inventory-tests-green` — this is a **brownfield** plan (it modifies
-> the existing `src/Inventory.Cli` with an existing `tests/Inventory.Tests`) and the worth-it
-> gate passes (the area pre-exists, the plan modifies it, the check is cheap/deterministic,
-> it is narrower than the terminal gate, and ≥2 work tasks build on the area), so one
-> **positive-baseline (preflight) ROOT** confirms the EXISTING area tests pass on the starting
-> code BEFORE any work runs ("never build on red", #181). It is a TRUE no-op (`exit 0`, writes
-> nothing) action gated by one guardrail that runs `tests/Inventory.Tests` **filtered** to the
-> pre-existing tests (`--filter "Category!=Stats"` — NOT a whole-project `dotnet test`, which
-> would false-red on the #165/#176 compile-coupling trap, and so it never goes red on the
-> about-to-be-authored `Stats` tests) and asserts they pass, re-emitting the failure detail at
-> the END (#179) so a red baseline's WHY reaches the retry tail. It is the DAG root
-> (`dependsOn: []`, deduped — one area, one baseline); `01-author-stats-tests` depends on it, so
-> every task transitively does. It is **distinct** from the terminal `04-suite-green` gate:
-> green START on the EXISTING area at the root vs green END on EVERYTHING at the sink. A red
-> baseline composes with the #174/#182 no-op-deadlock short-circuit (BOTH serial and worktree
-> now) — the no-op can't fix pre-existing breakage, so it escalates fast to an actionable
-> `needsHuman`.
+> | Plan-level folder | Files (archetypes) |
+> |---|---|
+> | `preflights/` *(INSERTED, #181)* | baseline-inventory-tests-green (existing `tests/Inventory.Tests`, `--filter "Category!=Stats"`, area-scoped, #179-re-emit) |
+> | `guardrails/` (terminal gate, §3.3) | union-clean (union-safe invariant, `scope: "integration"`, satisfies GR2028) + full-suite (4, terminal-only, **LOCAL**) |
+>
+> Inserted (plan-level, `<plan>/preflights/`): `01-baseline-inventory-tests-green` — this is a
+> **brownfield** plan (it modifies the existing `src/Inventory.Cli` with an existing
+> `tests/Inventory.Tests`) and the worth-it gate passes (the area pre-exists, the plan modifies it, the
+> check is cheap/deterministic, it is narrower than the terminal gate, and ≥2 work tasks build on the
+> area), so one **positive-baseline preflight** confirms the EXISTING area tests pass on the starting
+> code BEFORE the DAG runs ("never build on red", #181). It is a guardrail-shaped FILE in the plan-root
+> `<plan>/preflights/` folder — NOT a no-op ROOT task (the retired model) — evaluated once against the
+> starting repo, so it gates every task with no edges to author. It runs `tests/Inventory.Tests`
+> **filtered** to the pre-existing tests (`--filter "Category!=Stats"` — NOT a whole-project `dotnet
+> test`, which would false-red on the #165/#176 compile-coupling trap, and so it never goes red on the
+> about-to-be-authored `Stats` tests) and asserts they pass, re-emitting the failure detail at the END
+> (#179) so a red baseline's WHY reaches the halt feedback. It is **distinct** from the terminal
+> `<plan>/guardrails/` gate: green START on the EXISTING area before the DAG vs green END on EVERYTHING
+> at the merged HEAD. A RED preflight halts the run before any task is scheduled — a fast, actionable
+> halt, with no retry budget burned (there is no task).
 >
 > Inserted: `01-author-stats-tests` — because 02's strongest guardrail is "Stats tests
 > pass" and those tests didn't exist. `--stats` is behavioral, so this task also writes the
@@ -467,12 +462,13 @@ exit 0
 > `tests/Inventory.Tests/StatsCommandTests.cs` AND `src/Inventory.Cli/StatsCommand.cs`; task
 > 02's scope (`src/Inventory.Cli/`) TARGETS the stub but EXCLUDES the test file, so the
 > harness's read-only write-scope check (SSOT §3.4) fails 02 if its diff edits the tests — no
-> hashing, no `tests-untouched` guardrail. `04-suite-green` is the terminal `integrationGate:
-> true` sink the two leaves fan into. Its GR2018 `scope: "integration"` guardrail is the
-> **union-safe** `01-union-clean` (conflict-marker-free + non-empty, gate-then-verify — safe at
-> every union); the whole-suite `02-full-suite` is **LOCAL** (no `scope`), because a full suite
-> is a terminal postcondition that would red-halt a correct intermediate union if it re-ran there
-> (#165). `guardrails validate add-stats-flag` → OK.
+> hashing, no `tests-untouched` guardrail. The plan's two leaves (`02-implement`, `03-update-readme`)
+> integrate at run end, where the terminal `<plan>/guardrails/` folder re-runs the integration set on
+> the merged HEAD (the `integrationGate: true` task kind is retired — GR2029). Its GR2028
+> `scope: "integration"` guardrail is the **union-safe** `01-union-clean` (conflict-marker-free +
+> non-empty, gate-then-verify — safe at every union); the whole-suite `02-full-suite` is **LOCAL** (no
+> `scope`), because a full suite is a terminal postcondition that would red-halt a correct intermediate
+> union if it re-ran there (#165). `guardrails validate add-stats-flag` → OK.
 >
 > **This is a draft.** Review the folder — especially the guardrails — edit, delete,
 > or add, then run `/guardrails-review add-stats-flag` before executing.
@@ -497,9 +493,9 @@ Violations, by rule:
   says it did — gate question 4.
 - **No inserted test task**, so nothing proves the output format — the deterministic
   evidence the plan offered ("format: one line total: N…") was thrown away.
-- **No positive-baseline (preflight) root** (#181), though the plan is brownfield (it builds on
-  the existing `tests/Inventory.Tests`) — so if the area's existing tests were already red, the
-  one task's guardrail would fail on pre-existing breakage and the failure would be
+- **No positive-baseline preflight** (`<plan>/preflights/`, #181), though the plan is brownfield (it
+  builds on the existing `tests/Inventory.Tests`) — so if the area's existing tests were already red,
+  the one task's guardrail would fail on pre-existing breakage and the failure would be
   misattributed to "implement --stats and update the README."
 - A doc typo retry would re-run the whole implementation — retry-cheapness violated.
 

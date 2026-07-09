@@ -218,12 +218,12 @@ not the token" rule.
   wrap that skeleton in §4.2's capture-then-re-emit form so the assertion/exception text lands in
   the harness retry-feedback tail. (The §4.1 `tests-fail-on-stubs` red check is the INVERSE — a
   NON-zero exit is its success — so it does NOT re-emit; §4.2 says which archetypes do.)
-- **The terminal gate's `scope: "integration"` guardrail (GR2018) is a CONDITIONAL union
-  invariant, not the build/suite (#165).** GR2018 still requires the gate sink to carry ≥1
-  `scope: "integration"` guardrail — make that the union-safe conflict-marker / union-invariant
-  check (the overlapping-writeScope union-guardrail, §10/§17 and the catalogue), written in the
-  **conditional gate-then-verify form** so it passes trivially at unions where a contribution has
-  not landed:
+- **The terminal `<plan>/guardrails/` folder's `scope: "integration"` guardrail (GR2028) is a
+  CONDITIONAL union invariant, not the build/suite (#165).** GR2028 (the re-homed GR2018 content teeth)
+  requires the terminal folder to carry ≥1 real integration-set re-run — make that a union-safe
+  conflict-marker / union-invariant check (the overlapping-writeScope union-guardrail, §10/§17 and the
+  catalogue), written in the **conditional gate-then-verify form** so it passes trivially at unions where
+  a contribution has not landed:
   ```powershell
   # catches: a union that dropped a colliding sibling's hunk or left conflict markers on a shared file.
   # scope:"integration" — union-safe: gate on the file/contribution being present, THEN verify it.
@@ -1433,45 +1433,39 @@ absent from the prompt — that is the point — so a GR2026 warning there would
 Do not weaken or delete the negative assertion to silence GR2026; post-#177 there is nothing to silence.
 <!-- END ADDED SECTION #176 -->
 
-## 21. Baseline-green (preflight) root — the EXISTING area tests pass on the current code (#181)
+## 21. Baseline-green (preflight) file — the EXISTING area tests pass on the current code (#181)
 
 The .NET realization of the catalogue's **baseline-green / start-from-green (preflight)** archetype
 (catalogue → "Baseline-green / start-from-green (preflight)") — the existing-area-tests-green instance,
-the only positive baseline emitted today (the same no-op-root shape extends to build-green / endpoint-up,
-none emitted yet). For a **brownfield** plan (it modifies project(s) that already have tests in the
-touched area, and the worth-it gate passes), SKILL.md Step 5 inserts a ROOT task
-`00-baseline-<area>-tests-green` **per touched test project** (deduped one-per-area): a **TRUE no-op
-`exit 0` action** (writes nothing) + **one guardrail** that runs the EXISTING area tests **via
-`--filter`** and asserts they PASS on the current code — "never build on red." For a **greenfield** plan
+the only positive baseline emitted today (the same preflight-file shape extends to build-green /
+endpoint-up, none emitted yet). For a **brownfield** plan (it modifies project(s) that already have tests
+in the touched area, and the worth-it gate passes), SKILL.md Step 5 emits a guardrail-shaped CHECK FILE
+`<plan>/preflights/01-baseline-<area>-tests-green.ps1` **per touched test project** (deduped
+one-per-area): NOT a task — a plan-root `<plan>/preflights/` file (no `task.json`, no action, no
+`dependsOn`) that runs the EXISTING area tests **via `--filter`** and asserts they PASS on the current
+code — "never build on red." The plan-root `preflights/` folder is evaluated ONCE, before the DAG,
+against the starting repo, so it gates every task with no edges to author. For a **greenfield** plan
 there are no existing area tests; SKIP it (do not author a `dotnet test` over a project with no tests —
 it trivially passes and certifies nothing).
 
-**Scope via `--filter`, NEVER a whole-project `dotnet test` at the root.** A whole-project test at the
-DAG root hits the **#165/#176 compile-coupling trap**: a mid-TDD project does not compile (its test
-project references types later implementation tasks have not produced yet), so the root false-reds with a
+**Scope via `--filter`, NEVER a whole-project `dotnet test` in the preflight.** A whole-project test
+hits the **#165/#176 compile-coupling trap**: a mid-TDD project does not compile (its test project
+references types later implementation tasks have not produced yet), so the preflight false-reds with a
 compile error no work task can fix, dead-ending the run. The `--filter` selects the existing,
 currently-passing tests of the touched area ONLY (excluding any about-to-be-authored category).
 
-`action.ps1` — the verification is the guardrail, not the action:
-
-```powershell
-# A no-op: this task does no work. Its guardrail (the EXISTING area tests pass) is the point - it
-# gates the DAG root on the touched area being green before any work task runs.
-exit 0
-```
-
-`guardrails/01-baseline-area-tests-pass.ps1` — run the EXISTING test project(s) covering the area the
+`preflights/01-baseline-<area>-tests-green.ps1` — run the EXISTING test project(s) covering the area the
 plan modifies and assert they ALL pass. **Scope to the AREA** (the test project, or a `--filter` /
 category over it), NOT the whole suite. It asserts tests PASS (exit 0 is the pass), so it adopts §4.2's
 **capture → emit full log → re-emit failure-signal lines at the END** form so a RED baseline's WHY
-reaches the harness retry-feedback tail (#179):
+reaches the halt feedback (#179):
 
 ```powershell
 # catches: a brownfield plan building on a RED base - the EXISTING tests in the area future tasks will
-#          modify are already failing on the starting code. Asserting them green at the DAG root means a
+#          modify are already failing on the starting code. Asserting them green BEFORE the DAG means a
 #          later work task's tests-pass failure is attributable to THAT task, not pre-existing breakage,
 #          and a new test's red is unambiguous (#181). Re-emits the failure DETAIL at the END so a red
-#          baseline's WHY reaches the harness retry tail, not just `[FAIL] <name>` (#179, §4.2).
+#          baseline's WHY reaches the halt feedback, not just `[FAIL] <name>` (#179, §4.2).
 # Scope to the AREA (the existing test project / a --filter), NOT the whole suite.
 $out = dotnet test tests/Inventory.Tests --filter "Category!=Stats" --nologo 2>&1
 $out | ForEach-Object { Write-Output $_ }                  # full log first (for the attempt's saved output)
@@ -1490,44 +1484,35 @@ if ($LASTEXITCODE -ne 0) {
 exit 0
 ```
 
-`task.json` — the DAG ROOT (`dependsOn: []`); it does no work, so it declares **no `writeScope`**:
+`preflights/01-baseline-<area>-tests-green.json` (optional metadata sidecar):
 
 ```jsonc
 {
-  "description": "Baseline: the existing tests in the touched area (tests/Inventory.Tests) pass on the starting code - never build on red (#181)",
-  "dependsOn": []
-}
-```
-
-`guardrails/01-baseline-area-tests-pass.json`:
-
-```jsonc
-{
-  "description": "Existing area tests pass on the current code (baseline-green root, #181)"
+  "description": "Existing area tests pass on the current code (baseline-green preflight, #181)"
 }
 ```
 
 Notes on the scope and the edges:
 
-- **Existing tests ONLY, before the TDD-red tasks.** The baseline runs at the root on the STARTING
-  state, BEFORE any inserted `author-tests` task adds its intentionally-failing new tests. If
-  `$baselineArea` is a project a later `author-tests` task ALSO adds failing tests into (e.g. it adds a
-  `Category=Stats` test class to `tests/Inventory.Tests`), use a `--filter` that **excludes** the
-  about-to-be-authored category (`--filter "Category!=Stats"` above) so the baseline can never go red on
-  tests that don't exist yet. In worktree mode the root's tree IS the starting state (no new tests), so
-  this is natural — the filter just makes the intent explicit and robust if the baseline is ever re-run
-  on a later tree.
-- **Make every work task transitively depend on it.** Add `00-baseline-<area>-tests-green` to the
-  `dependsOn` of the existing roots (the test-author tasks, any seam tasks, the first implementation
-  tasks); everything downstream reaches it transitively. Nothing runs against a red base.
+- **Existing tests ONLY, before the TDD-red tasks.** The preflight runs against the STARTING state,
+  BEFORE any inserted `author-tests` task adds its intentionally-failing new tests. If `$baselineArea`
+  is a project a later `author-tests` task ALSO adds failing tests into (e.g. it adds a `Category=Stats`
+  test class to `tests/Inventory.Tests`), use a `--filter` that **excludes** the about-to-be-authored
+  category (`--filter "Category!=Stats"` above) so the baseline can never go red on tests that don't
+  exist yet. The pre-DAG phase evaluates it against the starting bytes (no new tests), so this is
+  natural — the filter just makes the intent explicit and robust.
+- **No edges to author — it runs before the DAG.** The `<plan>/preflights/` folder is evaluated once
+  against the starting repo before any wave is built, so every task is implicitly gated on it; you do NOT
+  wire work tasks to it (the retired no-op-root model made every area work task `dependsOn` a root — that
+  scaffolding is gone). Nothing runs against a red base.
 - **It is NOT the terminal gate.** The whole-suite §4 terminal `02-all-tests-pass` (a green END on
-  EVERYTHING at the sink, LOCAL) is complementary — keep both. The baseline is the green START on the
-  EXISTING area at the root.
-- **Composes with #174/#182.** The action is a TRUE no-op (`exit 0`, writes nothing), so a RED baseline
-  short-circuits to `needsHuman` on the 2nd attempt (no-op-deadlock, SSOT §7) — in BOTH serial and
-  worktree mode now (#182), with the actionable re-emitted detail above — the correct fast halt, since a
-  no-op cannot fix pre-existing breakage. (A baseline action that touched a file or wrote a fragment
-  would DEFEAT this short-circuit and burn the full retry budget — keep the action a genuine no-op.)
+  EVERYTHING on the merged HEAD, in the terminal `<plan>/guardrails/` folder, LOCAL) is complementary —
+  keep both. The baseline is the green START on the EXISTING area before the DAG.
+- **A RED preflight halts before the DAG.** A failing `<plan>/preflights/` check stops the run before
+  any task is scheduled (the general Full-Flight-Check semantics), with the actionable re-emitted detail
+  above — no retry budget is burned, because there is no task. (The retired no-op-root model leaned on
+  the #174/#182 no-op-deadlock short-circuit for this fast halt; the preflight folder gets it for free —
+  the short-circuit remains a general §7 rule for any REAL task that no-ops elsewhere, untouched.)
 
 ## WPF structural checks (#11 F5/F6)
 
