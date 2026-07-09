@@ -180,6 +180,10 @@ decision (issue #275) and is deliberately NOT done here.
   delivery of the plan branch into the user's original branch. **AI-merge is withheld at this
   boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts to `needs-human`
   with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the user's commits.
+  Because the default is OFF, a wholly-green run that did NOT deliver prints a **loud green-but-undelivered
+  warning** at run end (`RunReport.WhollyGreenButUndelivered`; §7 "Run end") — the safety backstop so the
+  work sitting undelivered on `guardrails/<plan-name>` is never one `--fresh`/`reset -y` away from silent
+  loss (#340).
 - `autonomyPolicy` (default `"prompt"`) is the **unified autonomy knob** governing every prompt/halt/auto
   decision boundary — the full contract, and the shared `decisions[]` reporting surface it feeds, is
   **§2.1** below. In M1 the only wired boundary is the on-resume **definition-drift** gate (§7.2); its
@@ -1084,6 +1088,27 @@ The non-FF merge commit (`git commit --no-edit`, no `--no-verify`) therefore run
 A wholly-green run whose delivery is HALTED (`Conflict` / `DirtyWorkingTree` / `HookRejected`) exits
 non-zero at the CLI: the work is durable on the plan branch but the user must act. A `FastForwarded` /
 `Merged` delivery, or no `mergeOnSuccess` at all, leaves the green (exit 0) verdict untouched.
+
+**Green-but-undelivered warning (#340) — the safety backstop for the default-OFF posture.** The
+`mergeOnSuccess` default **stays `false`** (delivery is an explicit opt-in; the default-ON flip is a
+separate contract decision, not made here). That default carries a real hazard the incident surfaced: a
+run can drain WHOLLY green — every task succeeded, the terminal gate passed — and yet deliver **nothing**
+to the user's branch, while the console's success output reads **identically** to a run that DID deliver.
+The verified work sits on `guardrails/<plan-name>`, one `--fresh`/`reset -y` away from silent destruction,
+with no signal it is at risk. The backstop is a **loud, unmissable end-of-run warning** (it is NOT a
+default change): the Scheduler sets `RunReport.WhollyGreenButUndelivered` when the run drained wholly
+green (`AllSucceeded`) AND `mergeOnSuccess` resolved **false** AND a **real, separate plan branch exists**
+— i.e. worktree mode (a worktree provider AND an integration handle are present) and NOT
+`runOnCurrentBranch`. It is deliberately **false** in serial mode (no plan branch — the work is already in
+the shared workspace / the user's checkout) and in `runOnCurrentBranch` mode (the plan branch **is** the
+user's current branch), and false whenever delivery actually ran (delivery requires `mergeOnSuccess` on,
+which forces the flag off) — so the harness NEVER warns about "undelivered work" that is in fact already
+on the user's branch. The CLI renders the warning (behind the CLI seam, never in Core) at run end **only**
+when `WhollyGreenButUndelivered` is true AND the terminal gate also passed — a bannered block naming the
+exact plan branch, the command to deliver it (`--merge-on-success`, or a manual merge), and the
+`--fresh`/`reset -y` destruction risk. A green-but-undelivered run is still exit 0 (the warning is a
+safety notice, not a failure); a delivered run, a non-green run, a serial-mode run, and a
+`runOnCurrentBranch` run print no such warning.
 
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**

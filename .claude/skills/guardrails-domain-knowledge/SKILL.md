@@ -374,6 +374,14 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   here.** A conflict / failed re-verify / dirty user tree halts, plan branch intact. Default OFF.
   The outcome is a `MergeOnSuccessResult`: `FastForwarded` / `Merged` (delivered, exit 0) or
   `Conflict` / `DirtyWorkingTree` / `HookRejected` (halted; work is durable on the plan branch, exit 2).
+  **Green-but-undelivered warning (#340):** because the default is OFF, a wholly-green run can deliver
+  NOTHING while the console reads like a delivering run — the verified work sits on `guardrails/<plan-name>`
+  one `--fresh`/`reset -y` from destruction. The Scheduler sets `RunReport.WhollyGreenButUndelivered` (wholly
+  green + `mergeOnSuccess` false + a real separate plan branch — worktree mode, NOT serial/`runOnCurrentBranch`,
+  where the work is already in the user's checkout) and the CLI prints a **loud end-of-run warning** (naming
+  the branch + the destruction risk) when it's true and the terminal gate passed. Exit stays 0 — a safety
+  notice, not a failure. This is the WARNING backstop only; the default is unchanged (a default-flip is a
+  separate decision under architect review).
 - **Hook policy at the two commit boundaries (#149)** — internal vs user-facing commits are treated
   oppositely:
   - **Internal bookkeeping commits bypass user hooks.** The segment integration commit (`Integrate`,
