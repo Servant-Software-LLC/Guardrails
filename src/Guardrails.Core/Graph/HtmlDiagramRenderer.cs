@@ -177,6 +177,35 @@ public static class HtmlDiagramRenderer
             font-size: 12px; line-height: 1.5; max-width: 340px; }
   #legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
                     margin-right: 6px; }
+  /* Search overlay (issue #220): a fixed-position find box, mirroring #bar/#legend — purely
+     client-side, no server round-trip, no new dependency. Sits top-center so it never overlaps
+     the top-left #bar or top-right #legend. */
+  #search { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 10;
+            display: flex; gap: 6px; align-items: center; background: #121a24;
+            border: 1px solid #243343; border-radius: 6px; padding: 4px 6px; }
+  #search input { background: #0b0f14; color: #d6deeb; border: 1px solid #243343;
+                  border-radius: 4px; padding: 5px 8px; font-size: 13px; width: 190px; }
+  #search input:focus { outline: none; border-color: #7fdbff; }
+  #search button { background: #121a24; color: #d6deeb; border: 1px solid #243343;
+                   border-radius: 4px; padding: 5px 9px; cursor: pointer; font-size: 13px; }
+  #search button:hover { border-color: #7fdbff; }
+  #search button:disabled { opacity: 0.4; cursor: default; }
+  #search #count { color: #7690a6; font-size: 12px; min-width: 52px; text-align: center;
+                   font-variant-numeric: tabular-nums; }
+  /* Highlight the matching node(s); dim the rest. Pure class toggling on the already-rendered SVG
+     — no Mermaid re-render, so it is instant. A bright outline + glow on a match's own shape
+     (rect for a box, the cluster's background rect for a container), and a lowered opacity on
+     everything that neither matches nor CONTAINS a match (so a matched leaf inside a container is
+     never dimmed by dimming its container). */
+  .gr-search-dim { opacity: 0.18; }
+  .gr-search-match > rect, .gr-search-match > polygon, .gr-search-match > path,
+  .gr-search-match > .basic.label-container, .gr-search-match > circle {
+    stroke: #ffd166 !important; stroke-width: 3px !important;
+    filter: drop-shadow(0 0 5px #ffd166); }
+  .gr-search-current > rect, .gr-search-current > polygon, .gr-search-current > path,
+  .gr-search-current > .basic.label-container, .gr-search-current > circle {
+    stroke: #ff9f1c !important; stroke-width: 4px !important;
+    filter: drop-shadow(0 0 9px #ff9f1c); }
 </style>
 </head>
 <body>
@@ -185,6 +214,13 @@ public static class HtmlDiagramRenderer
   <button id="zin">+</button>
   <button id="zout">&minus;</button>
   <button id="fs">Fullscreen</button>
+</div>
+<div id="search">
+  <input id="search-input" type="text" placeholder="Find task / check…"
+         aria-label="Find a task, preflight, or guardrail node" autocomplete="off" spellcheck="false">
+  <span id="count">0 / 0</span>
+  <button id="search-prev" title="Previous match (Shift+Enter)" disabled>&lsaquo;</button>
+  <button id="search-next" title="Next match (Enter)" disabled>&rsaquo;</button>
 </div>
 <div id="stage"></div>
 <div id="legend">
@@ -202,7 +238,8 @@ public static class HtmlDiagramRenderer
     long edge routing PAST an unrelated box is never a dependency on it &mdash; follow the arrow to
     its real target.</div>
 </div>
-<div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11).
+<div id="hint">scroll = zoom &middot; drag = pan &middot; Fit resets &middot; Fullscreen (or press F11) &middot;
+  search box (top) finds &amp; centers a node (Enter / Shift+Enter to cycle).
   Node clicks open source files &mdash; serve via a local HTTP server (e.g.
   <code>python -m http.server</code>) for clicks to work; browsers block
   <code>file://&rarr;file://</code> navigation by default.
@@ -427,6 +464,98 @@ function addEdgeDirectionMarkers(svgEl) {
   }
 }
 
+// Client-side find box (issue #220). Substring-match the typed text against every searchable
+// node's id AND its visible label — task containers (task_<base>, plan_preflights, plan_guardrails)
+// and every leaf preflight/guardrail check node — highlighting matches, dimming the rest, and
+// panning the current match to the viewport center. Pure post-render DOM work on the SVG
+// mermaid.render produced: no Mermaid re-render (so it is instant), no new dependency (svg-pan-zoom
+// is already loaded), and no bearing on the embedded Mermaid source or its source-sha256 — this is
+// chrome, exactly like #bar/#legend. Panning uses getBoundingClientRect() screen-space math against
+// the live svg-pan-zoom transform, so it stays correct at any current zoom/pan without
+// reconstructing the SVG coordinate transform by hand.
+function setupSearch(svgEl, pz) {
+  const input = document.getElementById('search-input');
+  const countEl = document.getElementById('count');
+  const prevBtn = document.getElementById('search-prev');
+  const nextBtn = document.getElementById('search-next');
+  if (!input) return;
+
+  // Collect the searchable elements once: task containers (g.cluster with an id) and leaf check
+  // nodes (g.node with an id). Each carries a lowercased needle = id + ' ' + visible label text,
+  // so typing a task number (matches the container id `task_08_…`), a task name, a preflight name,
+  // or a guardrail name all resolve — every one is a distinct human-readable string in the SVG.
+  const items = [];
+  for (const g of svgEl.querySelectorAll('g.cluster[id], g.node[id]')) {
+    const label = (g.textContent || '').replace(/\s+/g, ' ').trim();
+    items.push({ el: g, needle: (g.id + ' ' + label).toLowerCase() });
+  }
+
+  let matches = [];
+  let current = -1;
+
+  function clearClasses() {
+    for (const it of items) {
+      it.el.classList.remove('gr-search-dim', 'gr-search-match', 'gr-search-current');
+    }
+  }
+
+  // Pan (leaving zoom under the user's control) so the matched node's center lands at the viewport
+  // center. getBoundingClientRect already reflects the current pan-zoom transform, so the screen-
+  // space delta is exact — the same "jump to it" a browser's Ctrl+F gives, in the diagram's view.
+  function centerOn(el) {
+    if (!pz) return;
+    const svgRect = svgEl.getBoundingClientRect();
+    const nodeRect = el.getBoundingClientRect();
+    if (!nodeRect.width && !nodeRect.height) return;
+    const dx = (svgRect.width / 2) - (nodeRect.left + nodeRect.width / 2 - svgRect.left);
+    const dy = (svgRect.height / 2) - (nodeRect.top + nodeRect.height / 2 - svgRect.top);
+    pz.panBy({ x: dx, y: dy });
+  }
+
+  function setCurrent(i) {
+    if (!matches.length) return;
+    if (current >= 0 && current < matches.length) matches[current].classList.remove('gr-search-current');
+    current = ((i % matches.length) + matches.length) % matches.length; // wrap both directions
+    matches[current].classList.add('gr-search-current');
+    countEl.textContent = (current + 1) + ' / ' + matches.length;
+    centerOn(matches[current]);
+  }
+
+  function apply() {
+    const q = input.value.replace(/\s+/g, ' ').trim().toLowerCase();
+    clearClasses();
+    current = -1;
+    if (!q) {
+      matches = [];
+      countEl.textContent = '0 / 0';
+      prevBtn.disabled = nextBtn.disabled = true;
+      return;
+    }
+    const matchSet = new Set();
+    matches = [];
+    for (const it of items) {
+      if (it.needle.includes(q)) { matchSet.add(it.el); matches.push(it.el); }
+    }
+    // Dim everything that neither matches nor CONTAINS a match, so a matched leaf inside an
+    // unmatched task container is never dimmed by dimming its container.
+    for (const it of items) {
+      if (matchSet.has(it.el)) { it.el.classList.add('gr-search-match'); continue; }
+      let containsMatch = false;
+      for (const m of matches) { if (it.el !== m && it.el.contains(m)) { containsMatch = true; break; } }
+      if (!containsMatch) it.el.classList.add('gr-search-dim');
+    }
+    prevBtn.disabled = nextBtn.disabled = matches.length === 0;
+    if (matches.length) { setCurrent(0); } else { countEl.textContent = '0 / 0'; }
+  }
+
+  input.addEventListener('input', apply);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); if (matches.length) setCurrent(current + (e.shiftKey ? -1 : 1)); }
+  });
+  prevBtn.addEventListener('click', () => { if (matches.length) setCurrent(current - 1); });
+  nextBtn.addEventListener('click', () => { if (matches.length) setCurrent(current + 1); });
+}
+
 let pz = null;
 try {
   const { svg } = await mermaid.render('dag', graph);
@@ -440,6 +569,7 @@ try {
   pz = svgPanZoom(el, { zoomEnabled: true, controlIconsEnabled: false, fit: true, center: true,
                         minZoom: 0.1, maxZoom: 20, zoomScaleSensitivity: 0.3 });
   window.addEventListener('resize', () => { pz.resize(); pz.fit(); pz.center(); });
+  setupSearch(el, pz); // wire the find box to the rendered SVG + pan-zoom instance (issue #220)
 } catch (e) {
   // Surface the actual failure (offline CDN, or a Mermaid limit we have not yet lifted) instead of
   // guessing — a generic "offline?" message sent every big-plan #108 failure down the wrong path.
