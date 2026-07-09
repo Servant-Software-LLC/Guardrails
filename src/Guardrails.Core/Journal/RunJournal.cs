@@ -115,6 +115,30 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Every task with a recorded settle definition hash, as <c>task id → recorded hash</c> (issue #322,
+    /// SSOT §7.2) — the single-writer provenance the safe-suffix rewind corroborates a commit's
+    /// <c>Guardrails-Task-Hash:</c> trailer against. A never-settled task (no recorded hash) is simply absent,
+    /// so a forged trailer for it corroborates against nothing and is refused. Reads only the journal, never
+    /// a branch trailer (that would be circular).
+    /// </summary>
+    public IReadOnlyDictionary<string, string> RecordedDefinitionHashes()
+    {
+        lock (_gate)
+        {
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, TaskJournalEntry> pair in _document.Tasks)
+            {
+                if (pair.Value.DefinitionHash is { } hash)
+                {
+                    map[pair.Key] = hash;
+                }
+            }
+
+            return map;
+        }
+    }
+
+    /// <summary>
     /// The run's cumulative journaled cost (SSOT §7), summed across every recorded attempt of
     /// every task via <see cref="JournalCost.Total"/>. Drives the per-run cost cap
     /// (<see cref="Model.RunConfig.MaxCostUsd"/>); the total is cumulative across resumes because it

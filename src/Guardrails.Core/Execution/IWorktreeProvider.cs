@@ -181,11 +181,15 @@ public interface IWorktreeProvider
     /// <paramref name="safeSet"/> forms a provably-safe trailing suffix of the plan branch that a
     /// destructive <c>git reset --hard</c> can rewind past — via the pure
     /// <see cref="SafeSuffixEvaluator"/> over the plan branch's <c>--first-parent</c> trailer history +
-    /// each merge's non-first-parent lineage (the merge-tip caveat). READ-ONLY. Default
-    /// <see cref="SafeSuffixDecision.Nothing"/> for fake/serial providers with no plan branch to rewind
-    /// (the caller then falls back to a sound journal-only reset).
+    /// each merge's non-first-parent lineage (the merge-tip caveat). <paramref name="recognizedSettleHashes"/>
+    /// (issue #322) is <c>task id → the harness-recorded settle hash</c> from the run journal — a trailered
+    /// commit in the removed range whose hash the journal never recorded is a copied-trailer hand-fix and is
+    /// REFUSED. READ-ONLY. Default <see cref="SafeSuffixDecision.Nothing"/> for fake/serial providers with no
+    /// plan branch to rewind (the caller then falls back to a sound journal-only reset).
     /// </summary>
-    SafeSuffixDecision EvaluateSafeSuffix(IntegrationHandle integ, IReadOnlySet<string> safeSet) =>
+    SafeSuffixDecision EvaluateSafeSuffix(
+        IntegrationHandle integ, IReadOnlySet<string> safeSet,
+        IReadOnlyDictionary<string, string> recognizedSettleHashes) =>
         SafeSuffixDecision.Nothing();
 
     /// <summary>

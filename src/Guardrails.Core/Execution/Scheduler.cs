@@ -742,9 +742,11 @@ public sealed class Scheduler
         var safeSet = new HashSet<string>(affectedTaskIds, StringComparer.Ordinal);
 
         // Safe-suffix check against the plan branch (marker-aware). Serial / no provider → NothingToRewind
-        // (a journal-only reset is sound where there is no branch to carry a stale commit).
+        // (a journal-only reset is sound where there is no branch to carry a stale commit). The journal-
+        // recorded settle hashes corroborate each removed commit's Guardrails-Task-Hash: trailer (issue
+        // #322) — a copied-trailer #197 hand-fix in the range REFUSES, exactly like the task path.
         SafeSuffixDecision decision = _worktreeProvider is { } provider && integ is { } activeInteg
-            ? provider.EvaluateSafeSuffix(activeInteg, safeSet)
+            ? provider.EvaluateSafeSuffix(activeInteg, safeSet, _journal.RecordedDefinitionHashes())
             : SafeSuffixDecision.Nothing();
 
         // Refuse floor (un-overridable, exactly like the task path): a human hand-fix in the range refuses.
@@ -1027,9 +1029,11 @@ public sealed class Scheduler
         }
 
         // Safety check against the plan branch. Serial / no-provider → NothingToRewind (a journal-only
-        // reset is sound where there is no branch to carry a stale commit).
+        // reset is sound where there is no branch to carry a stale commit). The journal-recorded settle
+        // hashes corroborate each removed commit's Guardrails-Task-Hash: trailer (issue #322) — a commit
+        // carrying a hash the harness never recorded is a copied-trailer #197 hand-fix → REFUSE.
         SafeSuffixDecision decision = _worktreeProvider is { } provider && integ is { } activeInteg
-            ? provider.EvaluateSafeSuffix(activeInteg, safeSet)
+            ? provider.EvaluateSafeSuffix(activeInteg, safeSet, _journal.RecordedDefinitionHashes())
             : SafeSuffixDecision.Nothing();
 
         // Refuse floor (un-overridable): an unsafe rewind ALWAYS halts, regardless of policy. Surface the

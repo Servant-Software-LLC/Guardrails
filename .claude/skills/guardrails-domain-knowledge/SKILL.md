@@ -407,8 +407,18 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   plan branch's `--first-parent` `Guardrails-Task:`-trailer history, honoring the **merge-tip caveat**
   (a fan-in/union commit whose non-first-parent lineage carries a task NOT in `S` is REFUSED -- `git reset
   --hard` un-integrates that lineage too, but a first-parent walk never sees it). **Floor = HALT, never
-  destroy:** a non-`S` trailer in range, an uncontained merge lineage, OR a trailer-less hand-fix commit in
-  range all refuse. When safe, the harness physically **rewinds the plan branch** (`git reset --hard` to
+  destroy:** a non-`S` trailer in range, an uncontained merge lineage, a trailer-less hand-fix commit in
+  range, OR a **copied-trailer hand-fix** (#322, SSOT §7.2 rule 3 -- a task-in-`S` commit in the removed range whose
+  `Guardrails-Task-Hash:` does NOT corroborate the journal's recorded settle hash for that task, in TWO cases:
+  (a) **present-but-uncorroborated**, a hash the harness never recorded at that task's settle, forged OR
+  "correctly" hand-typed; AND (b) **null-hash**, no `Guardrails-Task-Hash:` at all -- a #197
+  copied-`Guardrails-Task:` hand-fix OR a genuinely pre-#274 machine commit predating hash-stamping -- both
+  refusing on ANY branch, INCLUDING an all-null pre-#274 branch (rebuild with `reset <folder> -y`); there is NO
+  null-hash exemption) all refuse. Corroboration reads the JOURNAL (single-writer provenance),
+  never the branch trailer under test (circular), and a genuine modern settle always corroborates (commit hash
+  == journal hash, both stamped at B1 settle; the recorded value does not move through a drift), so the
+  deliberate-definition-edit auto-resolve still resolves Safe. When safe, the
+  harness physically **rewinds the plan branch** (`git reset --hard` to
   the parent of `S`'s earliest commit -- DESTRUCTIVE on the harness-owned `guardrails/<plan>` branch, never
   the user's checkout; discarded commits stay reflog-recoverable), journal-resets `S`, and the next wave
   re-runs it from the clean base -- at the pre-DAG gate, before any segment is forked. **Two consumers, one
@@ -442,9 +452,15 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   **Hand-fixing a merged WORKSPACE file (issue #197):** the user's checkout is read-only for the
   whole run, so a fix to a file an upstream task already wrote+merged must be committed on the
   harness's plan branch (`guardrails/<plan-name>`, at its integration worktree
-  `<worktreeRoot>/<runId>/_integration`) -- NOT the user's own checkout. `CreateSegment` forks every
-  new attempt off a LIVE rev-parse of the plan branch, so the commit is picked up automatically on
-  the next resume. Full steps: SSOT section 7.
+  `<worktreeRoot>/<runId>/_integration`) -- NOT the user's own checkout. **Commit with a PLAIN message
+  and NEVER copy any `Guardrails-*` trailer onto it (#322):** a copied `Guardrails-Task-Hash:` is
+  misclassified as a machine segment and was *silently discarded* by the safe-suffix rewind pre-#322;
+  a "correct" hand-typed hash is worse still -- it makes the drift check skip the task as
+  pre-settled-green (a fake-green settle, violating honest-halts). A **trailer-less** hand-fix is the
+  safe form: the refuse floor *protects* it from being rewound, and `CreateSegment` forks every new
+  attempt off a LIVE rev-parse of the plan branch, so it is picked up automatically on the next resume.
+  There is deliberately **no `guardrails hash` command** -- the trailer-less rule is the answer. Full
+  steps: SSOT section 7.
 - Harness exit codes: 0 green / 1 harness or validation error (incl. a run **aborted** by an
   infrastructure fault, #150) / 2 needs-human or blocked, OR a wholly-green run whose opt-in delivery
   was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /

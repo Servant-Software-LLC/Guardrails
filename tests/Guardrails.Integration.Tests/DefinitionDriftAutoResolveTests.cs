@@ -96,6 +96,23 @@ public sealed class DefinitionDriftAutoResolveTests
     private static string Trailer(string taskId, string hash = "sha256:deadbeef") =>
         $"integrate\n\nGuardrails-Task: {taskId}\nGuardrails-Run: r1\nGuardrails-Task-Hash: {hash}";
 
+    /// <summary>
+    /// A #197 hand-fix commit message that ends with a copied <c>Guardrails-Task:</c> trailer but OMITS the
+    /// <c>Guardrails-Task-Hash:</c> (issue #322 BLOCKER) — the "attributed but no hash" hand-fix that, on a
+    /// hash-stamping branch, is never a genuine machine segment and must be refused.
+    /// </summary>
+    private static string TrailerNoHash(string taskId) =>
+        $"hand-fix\n\nGuardrails-Task: {taskId}\nGuardrails-Run: r1";
+
+    /// <summary>
+    /// A recognized-settle-hashes map (issue #322) corroborating each task's default <see cref="Trailer"/>
+    /// hash — the stand-in for the harness's journal-recorded provenance, so a hand-built plan branch whose
+    /// commits carry the machine <c>Guardrails-Task-Hash:</c> is treated as genuine (not a copied-trailer
+    /// hand-fix). Every commit in the removed range must be corroborated, or the safe rewind refuses.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> Recognized(params string[] tasks) =>
+        tasks.ToDictionary(t => t, _ => "sha256:deadbeef", StringComparer.Ordinal);
+
     // ---------------------------------------------------------------------------------------------
     // 1. The git-backed gatherer + safe-suffix check over hand-built history (deterministic).
     // ---------------------------------------------------------------------------------------------
@@ -119,7 +136,8 @@ public sealed class DefinitionDriftAutoResolveTests
         Assert.Null(history[3].Task); // the base README commit has no trailer
 
         SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(
-            repo.RepoPath, branch, new HashSet<string>(["02-b", "03-c"], StringComparer.Ordinal));
+            repo.RepoPath, branch, new HashSet<string>(["02-b", "03-c"], StringComparer.Ordinal),
+            Recognized("02-b", "03-c"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, decision.Outcome);
         Assert.Equal(sha01, decision.ResetTarget); // parent of the oldest removed commit (02) == 01
@@ -141,12 +159,14 @@ public sealed class DefinitionDriftAutoResolveTests
         TempGitRepo.Git(repo.RepoPath, "merge", "--no-ff", "side", "-m", Trailer("04-d"));
 
         var setWithoutUpstream = new HashSet<string>(["04-d", "01-a"], StringComparer.Ordinal);
-        SafeSuffixDecision refused = GitWorktreeProvider.EvaluateSafeSuffix(repo.RepoPath, branch, setWithoutUpstream);
+        SafeSuffixDecision refused = GitWorktreeProvider.EvaluateSafeSuffix(
+            repo.RepoPath, branch, setWithoutUpstream, Recognized("04-d", "01-a"));
         Assert.Equal(SafeSuffixOutcome.Refused, refused.Outcome); // the merge pulls in 07-upstream, not in S
         Assert.Equal("07-upstream", refused.BlockingTask);
 
         var setWithUpstream = new HashSet<string>(["04-d", "01-a", "07-upstream"], StringComparer.Ordinal);
-        SafeSuffixDecision safe = GitWorktreeProvider.EvaluateSafeSuffix(repo.RepoPath, branch, setWithUpstream);
+        SafeSuffixDecision safe = GitWorktreeProvider.EvaluateSafeSuffix(
+            repo.RepoPath, branch, setWithUpstream, Recognized("04-d", "01-a"));
         Assert.Equal(SafeSuffixOutcome.Safe, safe.Outcome); // now the whole lineage is contained
     }
 
@@ -168,9 +188,10 @@ public sealed class DefinitionDriftAutoResolveTests
         // The mid-body Guardrails-Task: is prose, so the hand-fix commit is un-attributed (null), NOT 01-a.
         Assert.Null(history.Single(c => c.Sha == handFixSha).Task);
 
-        // Rewinding a set that includes 01-a now REFUSES — the trailer-less hand-fix sits inside the range.
+        // Rewinding a set that includes 01-a now REFUSES — the trailer-less hand-fix sits inside the range
+        // (the trailer-less refuse fires before the #322 corroboration, so the recognized map is irrelevant).
         SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(
-            repo.RepoPath, branch, new HashSet<string>(["01-a"], StringComparer.Ordinal));
+            repo.RepoPath, branch, new HashSet<string>(["01-a"], StringComparer.Ordinal), Recognized("01-a"));
         Assert.Equal(SafeSuffixOutcome.Refused, decision.Outcome);
         Assert.Contains("no Guardrails-Task: trailer", decision.Refusal);
     }
@@ -188,7 +209,7 @@ public sealed class DefinitionDriftAutoResolveTests
         string sha03 = TempGitRepo.Git(repo.RepoPath, "rev-parse", "HEAD").Trim();
 
         SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(
-            repo.RepoPath, branch, new HashSet<string>(["03-c"], StringComparer.Ordinal));
+            repo.RepoPath, branch, new HashSet<string>(["03-c"], StringComparer.Ordinal), Recognized("03-c"));
         Assert.Equal(SafeSuffixOutcome.Safe, decision.Outcome);
         Assert.Equal(sha02, decision.ResetTarget);
 
@@ -415,6 +436,113 @@ public sealed class DefinitionDriftAutoResolveTests
         Assert.Equal("03-c", result.BlockingTask);
         // The plan branch was left UNTOUCHED (refuse floor = HALT, never destroy).
         Assert.Equal(tipBefore, TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim());
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 3b. #322 corroboration: a copied-trailer hand-fix (a #197 fix that pasted machine trailers) is
+    //     refused, never silently rewound — because its Guardrails-Task-Hash was never journal-recorded.
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void ScopedReset_CopiedTrailerHandFix_NeverRecordedHash_Refuses_DoesNotDiscard()
+    {
+        // #322: a #197 hand-fix for a task the harness NEVER settled copied a machine Guardrails-Task-Hash:
+        // onto its commit. Pre-#322 a scoped reset treated it as a legit machine segment and REWOUND past it
+        // (discarding the human's fix); now the corroboration against the journal-recorded hashes refuses.
+        using var repo = new TempGitRepo();
+        string planDir = CreateLinearPlan(repo.RepoPath, "");
+        repo.CommitAll("add plan");
+
+        string branch = $"guardrails/{Path.GetFileName(planDir)}";
+        TempGitRepo.Git(repo.RepoPath, "checkout", "-b", branch);
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", Trailer("01-task-a", "sha256:genuine-01"));
+        // The copied-trailer hand-fix for 02, which never settled: a forged Guardrails-Task-Hash:.
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", Trailer("02-task-b", "sha256:forged-by-hand"));
+        string tipBefore = TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim();
+        TempGitRepo.Git(repo.RepoPath, "checkout", repo.OriginalBranch);
+
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        // Journal: 01 genuinely settled WITH its recorded hash; 02 never settled (no recorded hash).
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+        journal.RecordSettle("01-task-a", Guardrails.Core.Journal.TaskStatus.Succeeded, definitionHash: "sha256:genuine-01");
+
+        RunReset.ScopedResetResult result = RunReset.ScopedReset(load.Plan!, ["02-task-b"]);
+
+        Assert.Equal(RunReset.ScopedResetOutcome.Refused, result.Outcome);
+        Assert.Equal("02-task-b", result.BlockingTask);
+        Assert.Contains("never recorded", result.Refusal);
+        // The plan branch was left UNTOUCHED — the hand-fix is preserved (refuse floor = HALT, never destroy).
+        Assert.Equal(tipBefore, TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim());
+    }
+
+    [Fact]
+    public void ScopedReset_NullHashHandFix_OnAllNullBranch_Refuses_DoesNotDiscard()
+    {
+        // #322 residual (re-adversarial): the operator `reset` path on an ALL-NULL branch (zero hashed
+        // commits — e.g. no task has ever successfully settled with a recorded hash). A #197 hand-fix that
+        // ends with `Guardrails-Task: 02` but OMITS the hash used to be exempted here (the dropped
+        // pre-#274 `!branchStampsHashes` carve-out) and was SILENTLY DISCARDED. With the exemption gone, a
+        // null-hash task-in-S commit refuses even when the whole branch is hash-free — halt over destroy.
+        using var repo = new TempGitRepo();
+        string planDir = CreateLinearPlan(repo.RepoPath, "");
+        repo.CommitAll("add plan");
+
+        string branch = $"guardrails/{Path.GetFileName(planDir)}";
+        TempGitRepo.Git(repo.RepoPath, "checkout", "-b", branch);
+        // An ALL-NULL branch: NEITHER commit carries a Guardrails-Task-Hash:.
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", TrailerNoHash("01-task-a"));
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", TrailerNoHash("02-task-b"));
+        string tipBefore = TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim();
+        TempGitRepo.Git(repo.RepoPath, "checkout", repo.OriginalBranch);
+
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        // Journal knows the tasks but recorded NO definition hashes (pre-#274-style) → nothing corroborates.
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+        journal.RecordSettle("01-task-a", Guardrails.Core.Journal.TaskStatus.Succeeded);
+        journal.RecordSettle("02-task-b", Guardrails.Core.Journal.TaskStatus.Succeeded);
+
+        RunReset.ScopedResetResult result = RunReset.ScopedReset(load.Plan!, ["02-task-b"]);
+
+        Assert.Equal(RunReset.ScopedResetOutcome.Refused, result.Outcome);
+        Assert.Equal("02-task-b", result.BlockingTask);
+        // The null-hash hand-fix was NOT discarded — the plan branch is untouched.
+        Assert.Equal(tipBefore, TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim());
+    }
+
+    [Fact]
+    public async Task Resume_CopiedTrailerHandFix_ForNeverSucceededTask_HaltsRefusing_DoesNotDiscard()
+    {
+        // The end-to-end #322 reproduction: a #197 hand-fix for a task the harness never settled sits on the
+        // plan branch with COPIED Guardrails-Task:/Guardrails-Task-Hash: trailers. On resume the drift gate
+        // detects it (journal-silent → falls back to the forged trailer hash) and — pre-#322 — would REWIND
+        // past it, discarding the fix. Now the corroboration refuses: the run HALTS with the educational
+        // refusal and the hand-fix is preserved on the branch. Even autonomy=auto cannot override the floor.
+        using var repo = new TempGitRepo();
+        string planDir = CreateLinearPlan(repo.RepoPath, ",\n  \"autonomyPolicy\": \"auto\"");
+        repo.CommitAll("add plan");
+        CancellationToken ct = TestContext.Current.CancellationToken;
+
+        string branch = $"guardrails/{Path.GetFileName(planDir)}";
+        string h01 = TaskDefinitionHash(planDir, "01-task-a"); // 01's genuine on-disk hash — so 01 never drifts
+        TempGitRepo.Git(repo.RepoPath, "checkout", "-b", branch);
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", Trailer("01-task-a", h01));
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", Trailer("02-task-b", "sha256:forged-by-hand"));
+        string handFixTip = TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim();
+        TempGitRepo.Git(repo.RepoPath, "checkout", repo.OriginalBranch);
+
+        // Journal: 01 genuinely settled (matches branch + on-disk, so it never drifts and is skipped);
+        // 02 never settled — its ONLY branch record is the forged hand-fix (journal-silent for 02).
+        RunJournal journal = RunJournal.LoadOrCreate(new PlanLoader().Load(planDir).Plan!);
+        journal.RecordSettle("01-task-a", Guardrails.Core.Journal.TaskStatus.Succeeded, definitionHash: h01);
+
+        RunReport report = await RunAsync(planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot), ct);
+
+        Assert.NotNull(report.DefinitionDrift);
+        Assert.False(report.DefinitionDrift!.SafeToAutoResolve);          // UNSAFE — the un-overridable floor
+        Assert.Contains("never recorded", report.DefinitionDrift.RewindRefusal!);
+        Assert.Null(report.Decision);                                     // nothing auto-resolved
+        // The hand-fix commit is still the branch tip — the fix was NOT discarded.
+        Assert.Equal(handFixTip, TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim());
     }
 
     // ---------------------------------------------------------------------------------------------

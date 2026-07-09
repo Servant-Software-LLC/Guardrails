@@ -1493,12 +1493,21 @@ must be committed on the harness's integration branch itself. Steps (verified ag
    `<temp>/guardrails-worktrees/<plan-folder-name>-<hash>/`, §1 — overridable via `guardrails.json`'s
    `worktreeRoot`). `git worktree list` output makes this unambiguous: the path ending `.../_integration`
    is it.
-3. **Edit + commit the merged file THERE** — `git -C <integration-worktree-path> add <file>` then
-   `git -C <integration-worktree-path> commit`, or `cd` into that worktree and use plain `git`. This is
-   an ordinary human commit (NOT one of the harness's own internal `--no-verify` plumbing commits,
-   §5.3 "Hook policy") — it runs YOUR local `pre-commit`/`commit-msg` hooks normally, which is fine and
-   expected; it is just worth knowing your fix-commit behaves differently from the harness's own
-   internal commits (which deliberately bypass hooks) so the difference isn't confusing.
+3. **Edit + commit the merged file THERE with a PLAIN message — do NOT add any `Guardrails-*` trailers.**
+   `git -C <integration-worktree-path> add <file>` then `git -C <integration-worktree-path> commit -m
+   "<plain human message>"`, or `cd` into that worktree and use plain `git`. This is an ordinary human
+   commit (NOT one of the harness's own internal `--no-verify` plumbing commits, §5.3 "Hook policy") — it
+   runs YOUR local `pre-commit`/`commit-msg` hooks normally, which is fine and expected. **Never copy a
+   `Guardrails-Task:` / `Guardrails-Task-Hash:` / `Guardrails-Run:` trailer onto your commit (issue #322).**
+   Those trailers are the harness's machine provenance: a hand-copied one is misclassified as a real machine
+   segment (pre-#322 the safe-suffix rewind then *silently discarded* your fix, the #322 incident), and even
+   a "correct" hand-typed `Guardrails-Task-Hash:` is worse — it makes the drift check treat the task as
+   pre-settled-green and **skip its guardrails entirely** (a fake-green settle, violating honest-halts). A
+   **trailer-less** hand-fix is the safe form: the safe-suffix rewind's refuse floor (§7.2, rules 1 + 3)
+   *protects* an un-machine-authored commit from being discarded, and it is picked up automatically on
+   resume because `CreateSegment` forks the next attempt off the plan branch's **live** tip (step 4). There
+   is deliberately **no `guardrails hash` command** — the discoverability answer is this trailer-less rule,
+   not a way to hand-mint a trailer.
 4. **Re-run to resume.** `GitWorktreeProvider.CreateSegment` forks every new segment worktree off a
    **live `git rev-parse` of the plan branch's current tip** at the moment it is created — never a
    cached/stale reference — so the human's commit, once on the integration branch (which IS the plan
@@ -1726,8 +1735,26 @@ rewind* **iff both** hold:
    second parent, or any parent of an octopus union, back to the merge-base with the retained mainline) is
    **also a member of `S`**. `git reset --hard` un-integrates those lineages too, yet a first-parent walk
    never sees their trailers — so a fan-in whose merged-in upstreams are **not** contained in `S` is
-   **NOT** trivially safe, and the check **refuses**. (The union of both rules is exactly the commit set
+   **NOT** trivially safe, and the check **refuses**. (The union of rules 1 + 2 is exactly the commit set
    `git reset --hard c_j^` would discard, so proving both proves every discarded commit belongs to `S`.)
+3. **Trailer corroboration — the copied-trailer caveat (#322, MUST be honored)** — every first-parent
+   commit in the removed range whose task is in `S` must carry a `Guardrails-Task-Hash:` that **corroborates
+   the hash the harness itself recorded** in the run journal at that task's settle (the journal is the
+   single-writer provenance of a settle, invariant #2 — the corroboration reads **only** the journal, never
+   the branch trailer being tested, which would be circular). Anything else **refuses** rather than silently
+   discard the commit: a **present-but-uncorroborated** hash (a #197 hand-fix that *copied* a machine
+   trailer, whether the copied hash is wrong OR a "correct" hand-typed value) **and** a **null hash** (a
+   hand-fix that copied only the `Guardrails-Task:` trailer, OR a genuinely pre-#274 machine commit that
+   predates hash-stamping) BOTH refuse — honest-halt over destroy, since neither can be proven a machine
+   segment. There is **no** null-hash exemption: an all-null (genuinely pre-#274) plan branch also refuses
+   and is rebuilt with `guardrails reset <folder> -y` (that population is effectively nonexistent —
+   hash-stamping shipped in preview.36 and branches are reset/re-cloned frequently — so the former
+   backward-compat carve-out was pure downside, leaving a silent-data-loss residual on the operator reset
+   path). A **genuine** modern settle always corroborates — the commit hash and the journal hash are both
+   stamped at the same B1 settle, and the recorded value does not move through a drift (only the recompute
+   does) — so the legitimate deliberate-definition-edit auto-resolve still resolves `Safe`. **First-parent
+   only:** a forged commit reachable **solely** via a merge's non-first-parent lineage is caught by rule 1's
+   trailer-less refuse but NOT by this hash corroboration (named residual).
 
 When safe: `git reset --hard <parent-of-c_j>` on the plan branch (physically removing exactly `S`'s
 commits and only them), journal-reset every member of `S` to `pending` (§6.1), and the next scheduling
@@ -1744,6 +1771,33 @@ at all** (e.g. a human hand-fix commit on the integration branch, §7). No flag 
 reads **only the commit's last trailer block** (git-`interpret-trailers` semantics), so a `Guardrails-Task:`
 line quoted in a hand-fix commit's *prose* is NOT mistaken for attribution — the hand-fix stays
 un-attributed and the rewind refuses it.
+
+**Trailer present but uncorroborated (#322).** The trailer-less refuse above catches a hand-fix that carries
+*no* machine trailer — but a #197 hand-fix that ends its commit with a `Guardrails-Task:` trailer (copying it
+off a real integration commit, with or without a `Guardrails-Task-Hash:`) *does* look attributed. Rule 3
+(trailer corroboration) closes this: a task-in-`S` commit in the removed range is **refused**, never silently
+rewound, whenever its `Guardrails-Task-Hash:` does not corroborate the journal's recorded settle hash — a
+**null hash** (missing) and a **present-but-uncorroborated** (copied/forged) hash **both** refuse; there is
+**no null-hash exemption** (a genuinely pre-#274 all-null branch also refuses and is rebuilt with `guardrails
+reset <folder> -y` — dropping the carve-out only ADDS halts, never new silent loss, closing the operator-reset
+residual on an all-null branch). A "correct" hand-typed hash is **equally** refused — it is not a helper you
+can supply to make the rewind proceed (typing the right hash would instead make the *drift check* skip the
+task as pre-settled-green, a fake-green settle that violates honest-halts — so there is deliberately **no
+`guardrails hash` command**; the discoverability answer is the trailer-less doctrine of §7). Corroboration
+reads the **journal**, never the branch trailer under test (circular). Residuals, all **halt-not-destroy**
+(acceptable):
+- **Accepted false-refuse — journal-silent-but-branch-has-a-real-hash:** a task that genuinely succeeded *and*
+  drifted but whose journal-recorded hash was lost (a journal-reset resume where only the plan branch
+  survives) is refused; the remedy is the always-sound full rebuild `guardrails reset <folder> -y`. The
+  refusal message names this remedy, the pre-#274 case, and the trailer-less doctrine, so the user is steered
+  correctly whichever it is.
+- **Named residual — first-parent only:** a forged commit reachable solely via a merge's non-first-parent
+  lineage is covered by the trailer-less refuse (rule 1) but not by rule 3.
+- **Named residual — exact-hash copy of the same settled task:** a hand-fix that copies a genuine commit's
+  *exact* `Guardrails-Task-Hash:` for the **same** already-settled task is byte-indistinguishable from a
+  machine segment (same task, same hash) → it corroborates, and if that task later drifts the rewind discards
+  it. Unfixable at the evaluator (no task→sha tracking) and off-doctrine (the user copied all three trailers).
+  The **no-`Guardrails-*`-trailers #197 doctrine** (§7) is the protection.
 
 **Crash-atomicity, compare-and-swap, and resume reconciliation (a contract, not an implementation
 detail).** The rewind (one atomic `git reset --hard` removing the WHOLE suffix) and the per-task
@@ -1806,7 +1860,9 @@ the safe sets and the floor is HALT on every ambiguity: **linear** (clean tail �
 (merged-in upstream contained in `S` ⇒ safe; uncontained ⇒ refuse — the merge-tip caveat) ·
 **interleaved** (an independent non-`S` task integrated inside the tail ⇒ refuse) · **merge-tip / octopus**
 (a union commit in the tail with an uncontained lineage ⇒ refuse) · **trailer-less commit in range** (a
-human hand-fix ⇒ refuse).
+human hand-fix ⇒ refuse) · **copied-trailer hand-fix** (#322: a task-in-`S`
+commit whose `Guardrails-Task-Hash:` does not corroborate the journal ⇒ refuse — a null hash OR an
+uncorroborated hash, on any branch incl. all-null pre-#274; corroborated hash ⇒ safe).
 
 **The manual scoped reset — the second consumer.** `guardrails reset <folder> <taskId>...` extends today's
 **journal-only** per-task reset (`RunReset.Task`) with the **same** safety-check + rewind primitive.
