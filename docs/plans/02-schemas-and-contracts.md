@@ -1738,18 +1738,19 @@ rewind* **iff both** hold:
    **NOT** trivially safe, and the check **refuses**. (The union of rules 1 + 2 is exactly the commit set
    `git reset --hard c_j^` would discard, so proving both proves every discarded commit belongs to `S`.)
 3. **Trailer corroboration — the copied-trailer caveat (#322, MUST be honored)** — every first-parent
-   commit in the removed range whose task is in `S` must carry a `Guardrails-Task-Hash:` the **harness
-   itself recorded** in the run journal at that task's settle (the journal is the single-writer provenance
-   of a settle, invariant #2 — the corroboration reads **only** the journal, never the branch trailer being
-   tested, which would be circular). The check **refuses** rather than silently discard such a commit when
-   it is EITHER (a) **present-but-uncorroborated** — carrying a `Guardrails-Task-Hash:` the journal never
-   recorded (a #197 hand-fix that *copied* a machine trailer, whether the copied hash is wrong OR a "correct"
-   hand-typed value); OR (b) **null-hash on a hash-stamping branch** — carrying no `Guardrails-Task-Hash:`
-   at all, while some commit on the branch's first-parent history DOES carry one. On a modern/post-#274
-   branch `TaskDefinitionHash.Compute` always yields a non-empty hash and every genuine settle stamps it, so
-   a null-hash `Guardrails-Task:` commit is a hand-fix, never a machine segment. The **only** null hash
-   allowed through is one on a branch with **zero** hashes anywhere (genuinely pre-#274 — backward-compatible
-   resume). A **genuine** modern settle always corroborates — the commit hash and the journal hash are both
+   commit in the removed range whose task is in `S` must carry a `Guardrails-Task-Hash:` that **corroborates
+   the hash the harness itself recorded** in the run journal at that task's settle (the journal is the
+   single-writer provenance of a settle, invariant #2 — the corroboration reads **only** the journal, never
+   the branch trailer being tested, which would be circular). Anything else **refuses** rather than silently
+   discard the commit: a **present-but-uncorroborated** hash (a #197 hand-fix that *copied* a machine
+   trailer, whether the copied hash is wrong OR a "correct" hand-typed value) **and** a **null hash** (a
+   hand-fix that copied only the `Guardrails-Task:` trailer, OR a genuinely pre-#274 machine commit that
+   predates hash-stamping) BOTH refuse — honest-halt over destroy, since neither can be proven a machine
+   segment. There is **no** null-hash exemption: an all-null (genuinely pre-#274) plan branch also refuses
+   and is rebuilt with `guardrails reset <folder> -y` (that population is effectively nonexistent —
+   hash-stamping shipped in preview.36 and branches are reset/re-cloned frequently — so the former
+   backward-compat carve-out was pure downside, leaving a silent-data-loss residual on the operator reset
+   path). A **genuine** modern settle always corroborates — the commit hash and the journal hash are both
    stamped at the same B1 settle, and the recorded value does not move through a drift (only the recompute
    does) — so the legitimate deliberate-definition-edit auto-resolve still resolves `Safe`. **First-parent
    only:** a forged commit reachable **solely** via a merge's non-first-parent lineage is caught by rule 1's
@@ -1775,23 +1776,21 @@ un-attributed and the rewind refuses it.
 *no* machine trailer — but a #197 hand-fix that ends its commit with a `Guardrails-Task:` trailer (copying it
 off a real integration commit, with or without a `Guardrails-Task-Hash:`) *does* look attributed. Rule 3
 (trailer corroboration) closes this: a task-in-`S` commit in the removed range is **refused**, never silently
-rewound, when its `Guardrails-Task-Hash:` is either **absent on a hash-stamping branch** (a modern branch
-always stamps a hash, so a null-hash `Guardrails-Task:` commit is a hand-fix — this is the branch a real run
-produces, so it is the dominant case) or **present but uncorroborated** (a copied/forged value). A "correct"
-hand-typed hash is **equally** refused — it is not a helper you can supply to make the rewind proceed (typing
-the right hash would instead make the *drift check* skip the task as pre-settled-green, a fake-green settle
-that violates honest-halts — so there is deliberately **no `guardrails hash` command**; the discoverability
-answer is the trailer-less doctrine of §7). Corroboration reads the **journal**, never the branch trailer under
-test (circular). Three residuals, all **halt-not-destroy** (acceptable):
+rewound, whenever its `Guardrails-Task-Hash:` does not corroborate the journal's recorded settle hash — a
+**null hash** (missing) and a **present-but-uncorroborated** (copied/forged) hash **both** refuse; there is
+**no null-hash exemption** (a genuinely pre-#274 all-null branch also refuses and is rebuilt with `guardrails
+reset <folder> -y` — dropping the carve-out only ADDS halts, never new silent loss, closing the operator-reset
+residual on an all-null branch). A "correct" hand-typed hash is **equally** refused — it is not a helper you
+can supply to make the rewind proceed (typing the right hash would instead make the *drift check* skip the
+task as pre-settled-green, a fake-green settle that violates honest-halts — so there is deliberately **no
+`guardrails hash` command**; the discoverability answer is the trailer-less doctrine of §7). Corroboration
+reads the **journal**, never the branch trailer under test (circular). Residuals, all **halt-not-destroy**
+(acceptable):
 - **Accepted false-refuse — journal-silent-but-branch-has-a-real-hash:** a task that genuinely succeeded *and*
   drifted but whose journal-recorded hash was lost (a journal-reset resume where only the plan branch
   survives) is refused; the remedy is the always-sound full rebuild `guardrails reset <folder> -y`. The
-  refusal message names both this remedy and the trailer-less doctrine, so the user is steered correctly
-  either way.
-- **Accepted false-refuse — mixed pre-#274 branch:** a plan branch that started pre-#274 (null-hash commits)
-  and later received a hashed commit across a harness upgrade reads as hash-stamping, so a genuine remaining
-  pre-#274 null-hash commit in `S` would false-refuse. Extremely narrow (a branch surviving the #274
-  boundary); remedy `reset <folder> -y`.
+  refusal message names this remedy, the pre-#274 case, and the trailer-less doctrine, so the user is steered
+  correctly whichever it is.
 - **Named residual — first-parent only:** a forged commit reachable solely via a merge's non-first-parent
   lineage is covered by the trailer-less refuse (rule 1) but not by rule 3.
 - **Named residual — exact-hash copy of the same settled task:** a hand-fix that copies a genuine commit's
@@ -1862,9 +1861,8 @@ the safe sets and the floor is HALT on every ambiguity: **linear** (clean tail �
 **interleaved** (an independent non-`S` task integrated inside the tail ⇒ refuse) · **merge-tip / octopus**
 (a union commit in the tail with an uncontained lineage ⇒ refuse) · **trailer-less commit in range** (a
 human hand-fix ⇒ refuse) · **copied-trailer hand-fix** (#322: a task-in-`S`
-commit whose `Guardrails-Task-Hash:` the journal never recorded ⇒ refuse; a null-hash `Guardrails-Task:`
-commit on a hash-stamping branch ⇒ refuse; corroborated hash ⇒ safe; null-hash commit on an all-null
-pre-#274 branch ⇒ safe/unchanged).
+commit whose `Guardrails-Task-Hash:` does not corroborate the journal ⇒ refuse — a null hash OR an
+uncorroborated hash, on any branch incl. all-null pre-#274; corroborated hash ⇒ safe).
 
 **The manual scoped reset — the second consumer.** `guardrails reset <folder> <taskId>...` extends today's
 **journal-only** per-task reset (`RunReset.Task`) with the **same** safety-check + rewind primitive.

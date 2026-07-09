@@ -140,11 +140,11 @@ public sealed record SafeSuffixDecision
 /// member of <c>S</c>. The union of both rules is exactly the commit set <c>git reset --hard c_j^</c>
 /// would discard, so proving both proves every discarded commit belongs to <c>S</c>.</item>
 /// <item><b>Trailer corroboration (issue #322)</b> — every first-parent commit in that range whose task
-/// is in <c>S</c> must carry a <c>Guardrails-Task-Hash:</c> the HARNESS recorded in the run journal at that
-/// task's settle. It is REFUSED when the hash is present-but-uncorroborated (a copied/forged value) OR
-/// absent on a <b>hash-stamping branch</b> (any commit on the history carries a hash ⇒ modern/post-#274 ⇒
-/// a null-hash <c>Guardrails-Task:</c> commit is a hand-fix, never a machine segment). Only a null hash on
-/// a branch with ZERO hashes anywhere (genuinely pre-#274) is allowed through. This is first-parent only;
+/// is in <c>S</c> must carry a <c>Guardrails-Task-Hash:</c> that corroborates the hash the HARNESS recorded
+/// in the run journal at that task's settle. Anything else is REFUSED: a present-but-uncorroborated hash (a
+/// copied/forged value) OR a null hash (a #197 hand-fix that copied only the <c>Guardrails-Task:</c> trailer,
+/// or a genuinely pre-#274 machine commit predating hash-stamping) — honest-halt over destroy, since neither
+/// can be proven a machine segment. A genuine modern settle always corroborates. This is first-parent only;
 /// a forged commit reachable solely via a merge's non-first-parent lineage is still covered by the
 /// trailer-less refuse but not the hash corroboration.</item>
 /// </list>
@@ -199,21 +199,6 @@ public static class SafeSuffixEvaluator
             return Tag(SafeSuffixDecision.Nothing());
         }
 
-        // #322 discriminator: does this branch stamp Guardrails-Task-Hash: at all? A modern (post-#274)
-        // branch does — TaskDefinitionHash.Compute always yields a non-empty hash and every genuine settle
-        // stamps one — so on such a branch a task-in-S commit with NO hash is a hand-fix, never a machine
-        // segment. Only a branch with ZERO hashes anywhere is genuinely pre-#274, where a null hash is
-        // expected and must be allowed through (backward-compatible resume).
-        bool branchStampsHashes = false;
-        foreach (TrailerCommit any in firstParentNewestFirst)
-        {
-            if (any.DefinitionHash is not null)
-            {
-                branchStampsHashes = true;
-                break;
-            }
-        }
-
         // 2. Every commit in [0 .. oldest] must be attributable to a task IN S (first-parent closure),
         //    and every merge commit's non-first-parent lineage must also be entirely within S
         //    (merge-lineage closure). Their union is exactly what `git reset --hard c_j^` discards.
@@ -246,34 +231,29 @@ public static class SafeSuffixEvaluator
                     c.Task));
             }
 
-            // #322: a task-in-S commit that the harness did not machine-author is a hand-authored / forged
-            // commit — a #197 hand-fix — and is REFUSED, never silently rewound past. TWO ways it fails
-            // corroboration against the journal-recorded settle hashes (the single-writer provenance,
-            // invariant #2):
-            //   (a) it carries NO Guardrails-Task-Hash: at all, yet the branch DOES stamp hashes — on a
-            //       modern/post-#274 branch every genuine settle stamps a non-empty hash, so a null-hash
-            //       Guardrails-Task: commit here is a hand-fix (or a pre-#274 leftover), never a machine
-            //       segment; or
-            //   (b) it carries a Guardrails-Task-Hash the harness never recorded (a copied/forged value —
-            //       whether the copied hash is wrong OR a "correct" hand-typed one).
-            // The ONLY null hash allowed through is one on a branch with ZERO hashes anywhere (genuinely
-            // pre-#274 — backward-compatible resume). Corroboration reads the JOURNAL (recognized), never the
-            // branch trailer under test (circular). A GENUINE modern settle ALWAYS corroborates: the commit
-            // hash and the journal hash are both stamped at the same B1 settle, and the recorded value does
-            // not move through a drift (only the recompute does), so the deliberate-definition-edit
-            // auto-resolve still reaches Safe.
+            // #322: a task-in-S commit is REFUSED, never silently rewound past, UNLESS its
+            // Guardrails-Task-Hash corroborates the hash the HARNESS recorded in the run journal at that
+            // task's settle (the single-writer provenance, invariant #2). A NULL hash (a #197 hand-fix that
+            // copied only the Guardrails-Task: trailer, OR a genuinely pre-#274 machine commit that predates
+            // hash-stamping) and a PRESENT-BUT-UNCORROBORATED hash (a copied/forged value — wrong OR a
+            // "correct" hand-typed one) BOTH fail corroboration and BOTH refuse: honest-halt over destroy,
+            // since neither can be proven to be a machine segment. Corroboration reads the JOURNAL
+            // (recognized), never the branch trailer under test (circular). A GENUINE modern settle ALWAYS
+            // corroborates — the commit hash and the journal hash are both stamped at the same B1 settle, and
+            // the recorded value does not move through a drift (only the recompute does) — so the
+            // deliberate-definition-edit auto-resolve still reaches Safe.
             bool corroborated = c.DefinitionHash is { } commitHash
                 && recognized.TryGetValue(c.Task, out string? recordedHash)
                 && string.Equals(recordedHash, commitHash, StringComparison.Ordinal);
-            bool exemptPre274NullHash = c.DefinitionHash is null && !branchStampsHashes;
-            if (!corroborated && !exemptPre274NullHash)
+            if (!corroborated)
             {
                 return Tag(SafeSuffixDecision.Refused(
-                    $"commit {Short(c.Sha)} attributes task '{c.Task}' but its Guardrails-Task-Hash is one " +
-                    "the harness never recorded (missing on a hash-stamping branch, or a copied/hand-authored " +
-                    "value) — refusing to discard it. If this is a hand-authored #197 fix, re-commit it " +
-                    "WITHOUT any Guardrails-* trailers (SSOT §7); if the task genuinely settled but its " +
-                    "journal record was lost, run 'guardrails reset <folder> -y' to rebuild it.",
+                    $"commit {Short(c.Sha)} attributes task '{c.Task}' but its Guardrails-Task-Hash is " +
+                    "missing or one the harness never recorded (a copied/hand-authored value) — refusing to " +
+                    "discard it. If this is a hand-authored #197 fix, re-commit it WITHOUT any Guardrails-* " +
+                    "trailers (SSOT §7); if the task genuinely settled but its journal record was lost — or " +
+                    "this is a genuinely pre-#274 plan branch that predates definition-hash stamping — run " +
+                    "'guardrails reset <folder> -y' to rebuild it.",
                     c.Task));
             }
 

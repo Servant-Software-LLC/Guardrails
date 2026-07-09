@@ -7,21 +7,55 @@ namespace Guardrails.Core.Tests;
 /// GATE for the destructive plan-branch rewind primitive, authored standalone over hand-built
 /// <see cref="TrailerCommit"/> histories (no git). Each case proves the pure check accepts EXACTLY the
 /// provably-safe trailing suffixes and refuses on every ambiguity (a non-suffix / interleaved task, an
-/// uncontained merge lineage, a trailer-less hand-fix). The floor is HALT, never destroy.
+/// uncontained merge lineage, a trailer-less hand-fix, an uncorroborated/null #322 hand-fix hash). The
+/// floor is HALT, never destroy.
 /// </summary>
 public sealed class SafeSuffixEvaluatorTests
 {
     // --- builders (newest-first, mirroring `git log --first-parent`) --------------------------------
 
-    /// <summary>A plain fast-forward (single-parent) integration commit carrying task <paramref name="task"/>.</summary>
+    /// <summary>
+    /// A plain fast-forward (single-parent) GENUINE machine integration commit for <paramref name="task"/>:
+    /// it carries the deterministic settle hash a real post-#274 segment stamps (<see cref="HashOf"/>), so
+    /// the topology cases model a real hash-stamping branch. A trailer-less commit (null task) stays
+    /// null-hash. Evaluate topology cases via <see cref="EvaluateMachine"/> (corroborates every such commit).
+    /// </summary>
     private static TrailerCommit Ff(string sha, string? task, string parentSha) =>
-        new() { Sha = sha, Task = task, ParentSha = parentSha };
+        new() { Sha = sha, Task = task, ParentSha = parentSha, DefinitionHash = HashOf(task) };
 
-    /// <summary>A merge/union commit carrying task <paramref name="task"/> whose non-first-parent lineage(s) carry <paramref name="mergedIn"/>.</summary>
+    /// <summary>A merge/union GENUINE machine commit for <paramref name="task"/> whose non-first-parent lineage(s) carry <paramref name="mergedIn"/>.</summary>
     private static TrailerCommit Merge(string sha, string? task, string parentSha, params string?[] mergedIn) =>
-        new() { Sha = sha, Task = task, ParentSha = parentSha, MergedInTasks = mergedIn };
+        new() { Sha = sha, Task = task, ParentSha = parentSha, MergedInTasks = mergedIn, DefinitionHash = HashOf(task) };
+
+    /// <summary>The deterministic settle hash a synthetic machine commit carries for its task (null for a trailer-less commit) — a genuine post-#274 segment always stamps a non-empty hash.</summary>
+    private static string? HashOf(string? task) => task is null ? null : $"sha256:{task}";
 
     private static IReadOnlySet<string> S(params string[] tasks) => new HashSet<string>(tasks, StringComparer.Ordinal);
+
+    /// <summary>
+    /// Evaluate treating every hashed commit in <paramref name="history"/> as a GENUINE machine settle
+    /// (its journal-recorded hash == the stamped commit hash) — the realistic hash-stamping-branch shape,
+    /// so the topology cases exercise the suffix/merge/marker logic, not #322 corroboration. The #322 tests
+    /// below instead call <see cref="SafeSuffixEvaluator.Evaluate"/> directly with an explicit map so a
+    /// null/forged hash is uncorroborated.
+    /// </summary>
+    private static SafeSuffixDecision EvaluateMachine(IReadOnlyList<TrailerCommit> history, IReadOnlySet<string> safeSet) =>
+        SafeSuffixEvaluator.Evaluate(history, safeSet, CorroborateAll(history));
+
+    /// <summary>The recognized-settle-hashes map corroborating every hashed first-parent commit in <paramref name="history"/> (task → its stamped hash).</summary>
+    private static IReadOnlyDictionary<string, string> CorroborateAll(IReadOnlyList<TrailerCommit> history)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (TrailerCommit c in history)
+        {
+            if (c.Task is { } t && c.DefinitionHash is { } h)
+            {
+                map[t] = h;
+            }
+        }
+
+        return map;
+    }
 
     // --- linear ------------------------------------------------------------------------------------
 
@@ -36,7 +70,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("c1", "t1", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t2", "t3"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("t2", "t3"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("c1", d.ResetTarget); // parent of the OLDEST removed commit (c2), not HEAD's parent
@@ -53,7 +87,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("c1", "t1", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t3"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("t3"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("c2", d.ResetTarget);
@@ -70,7 +104,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("c1", "t1", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t1", "t2", "t3"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("t1", "t2", "t3"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("base", d.ResetTarget);
@@ -91,7 +125,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("c1", "t1", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t2"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("t2"));
 
         Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
         Assert.Equal("t3", d.BlockingTask);
@@ -111,7 +145,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("cP", "P", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("P", "A", "B"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("P", "A", "B"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("base", d.ResetTarget);
@@ -130,7 +164,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("cP", "P", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("P", "A"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("P", "A"));
 
         Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
         Assert.Equal("B", d.BlockingTask);
@@ -149,7 +183,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("cX", "X", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("D", "U"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("D", "U"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("cX", d.ResetTarget);
@@ -168,7 +202,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("cX", "X", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("D"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("D"));
 
         Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
         Assert.Equal("U", d.BlockingTask);
@@ -187,7 +221,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("cbase", "root", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("M", "A", "root"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("M", "A", "root"));
 
         Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
         Assert.Equal("Q", d.BlockingTask);
@@ -206,7 +240,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("c1", "t1", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t1", "t3"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("t1", "t3"));
 
         Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
         Assert.Null(d.BlockingTask);
@@ -223,7 +257,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("cX", "X", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("D"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("D"));
 
         Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
         Assert.Contains("no Guardrails-Task: trailer", d.Refusal);
@@ -236,7 +270,7 @@ public sealed class SafeSuffixEvaluatorTests
     {
         var history = new[] { Ff("c1", "t1", "base") };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t99-never-integrated"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("t99-never-integrated"));
 
         Assert.Equal(SafeSuffixOutcome.NothingToRewind, d.Outcome);
     }
@@ -244,7 +278,7 @@ public sealed class SafeSuffixEvaluatorTests
     [Fact]
     public void EmptyHistory_NothingToRewind()
     {
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate([], S("anything"));
+        SafeSuffixDecision d = EvaluateMachine([], S("anything"));
         Assert.Equal(SafeSuffixOutcome.NothingToRewind, d.Outcome);
     }
 
@@ -262,8 +296,8 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("cX", "X", "base"),
         };
 
-        Assert.Equal(SafeSuffixOutcome.Safe, SafeSuffixEvaluator.Evaluate(history, S("D", "U")).Outcome);
-        Assert.Equal(SafeSuffixOutcome.Refused, SafeSuffixEvaluator.Evaluate(history, S("D")).Outcome);
+        Assert.Equal(SafeSuffixOutcome.Safe, EvaluateMachine(history, S("D", "U")).Outcome);
+        Assert.Equal(SafeSuffixOutcome.Refused, EvaluateMachine(history, S("D")).Outcome);
     }
 
     // --- marker-aware evaluator (#254 M2b / #311 BLOCKER, NIT-5) -----------------------------------
@@ -286,7 +320,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("w1a", "w1a", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("w2a"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("w2a"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("m1", d.ResetTarget);
@@ -306,7 +340,7 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("w1a", "w1a", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("w2a"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("w2a"));
 
         Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
     }
@@ -322,15 +356,15 @@ public sealed class SafeSuffixEvaluatorTests
             Ff("w1a", "w1a", "base"),
         };
 
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("w1a"));
+        SafeSuffixDecision d = EvaluateMachine(history, S("w1a"));
 
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("base", d.ResetTarget);
     }
 
-    // --- trailer corroboration (#322): a copied-trailer hand-fix whose hash the harness never recorded ---
+    // --- trailer corroboration (#322): a copied-trailer / null-hash hand-fix the harness never recorded ---
 
-    /// <summary>A fast-forward commit that ALSO carries a <c>Guardrails-Task-Hash:</c> trailer (issue #322).</summary>
+    /// <summary>A fast-forward commit with an EXPLICIT <c>Guardrails-Task-Hash:</c> trailer (or null) — for the #322 cases that pin an uncorroborated / missing hash.</summary>
     private static TrailerCommit FfH(string sha, string? task, string parentSha, string? hash) =>
         new() { Sha = sha, Task = task, ParentSha = parentSha, DefinitionHash = hash };
 
@@ -378,18 +412,18 @@ public sealed class SafeSuffixEvaluatorTests
     }
 
     [Fact]
-    public void NullHash_HandFix_OnHashStampingBranch_Refuses()  // #322 BLOCKER red-bar (fails vs the null-hash-exempt code)
+    public void NullHash_HandFix_OnHashStampingBranch_Refuses()  // #322: a null-hash hand-fix refuses (with other hashes present)
     {
-        // A #197 hand-fix ended its commit with `Guardrails-Task: t2` but OMITTED the hash. On a modern
-        // (hash-stamping) branch — one where SOME commit carries a hash — a null-hash Guardrails-Task:
-        // commit is never a genuine machine segment (every real settle stamps a non-empty hash), so it is
-        // a hand-fix and MUST be refused. The first refuse floor exempted a null hash unconditionally, so
-        // this fell through to Safe and the fix was silently discarded (the collateral-drift class: t1
-        // drifts, its dependent t2 ∈ S, and a no-hash hand-fix attributed to t2 rides the legit t1 rewind).
+        // A #197 hand-fix ended its commit with `Guardrails-Task: t2` but OMITTED the hash, on a branch that
+        // also carries genuine hashed commits. A null-hash Guardrails-Task: commit is never a proven machine
+        // segment, so it is refused — the collateral-drift class: t1 drifts, its dependent t2 ∈ S, and a
+        // no-hash hand-fix attributed to t2 would otherwise ride the legit t1 rewind. (A null hash always
+        // refuses regardless of what else is on the branch, see NullHash_TaskInSet_AlwaysRefuses; this case
+        // keeps the mixed-hash history for completeness.)
         var history = new[]
         {
-            Ff("c2", "t2", "c1"),                 // null-hash hand-fix for t2 (in S)
-            FfH("c1", "t1", "base", "sha256:h1"), // a genuine hashed commit ⇒ the branch stamps hashes
+            FfH("c2", "t2", "c1", null),          // null-hash hand-fix for t2 (in S)
+            FfH("c1", "t1", "base", "sha256:h1"), // a genuine hashed commit also present
         };
 
         SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(
@@ -415,21 +449,23 @@ public sealed class SafeSuffixEvaluatorTests
     }
 
     [Fact]
-    public void NullHash_Pre274Commit_BackwardCompat_Unchanged()  // backward compat
+    public void NullHash_TaskInSet_AlwaysRefuses()  // #322: the pre-#274 null-hash exemption dropped (only ADDS halts)
     {
-        // A pre-#274 commit carries no Guardrails-Task-Hash: trailer (DefinitionHash null) — the
-        // corroboration is inert on it, so the check behaves EXACTLY as before (a safe suffix ⇒ Safe), even
-        // against an EMPTY recognized map.
-        var history = new[]
+        // A null-hash Guardrails-Task: commit for a task in S — a #197 hand-fix that copied only the
+        // Guardrails-Task: trailer, OR a genuinely pre-#274 machine commit — can never be proven a machine
+        // segment, so it REFUSES even on an ALL-NULL branch (no other hashes anywhere), exactly as it does
+        // when other hashes are present. The former `!branchStampsHashes` exemption (which let this through
+        // to Safe) was pure downside — it protected a nonexistent population while leaving a silent-data-loss
+        // residual on the operator reset path.
+        var allNull = new[]
         {
-            Ff("c2", "t2", "c1"),   // null DefinitionHash (pre-#274)
-            Ff("c1", "t1", "base"),
+            FfH("c2", "t2", "c1", null),   // null DefinitionHash, task in S, on an all-null branch
+            FfH("c1", "t1", "base", null),
         };
-
-        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t2"), Recognized());
-
-        Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
-        Assert.Equal("c1", d.ResetTarget);
+        SafeSuffixDecision onAllNull = SafeSuffixEvaluator.Evaluate(allNull, S("t2"), Recognized());
+        Assert.Equal(SafeSuffixOutcome.Refused, onAllNull.Outcome);
+        Assert.Equal("t2", onAllNull.BlockingTask);
+        Assert.Contains("never recorded", onAllNull.Refusal);
     }
 
     [Fact]

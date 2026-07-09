@@ -408,13 +408,13 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (a fan-in/union commit whose non-first-parent lineage carries a task NOT in `S` is REFUSED -- `git reset
   --hard` un-integrates that lineage too, but a first-parent walk never sees it). **Floor = HALT, never
   destroy:** a non-`S` trailer in range, an uncontained merge lineage, a trailer-less hand-fix commit in
-  range, OR a **copied-trailer hand-fix** (#322, SSOT §7.2 rule 3 -- a task-in-`S` commit in the removed range
-  refuses in TWO cases: (a) **present-but-uncorroborated**, a `Guardrails-Task-Hash:` the harness never
-  recorded in the run journal at that task's settle, forged OR "correctly" hand-typed; AND (b) **null-hash on a
-  hash-stamping branch**, no `Guardrails-Task-Hash:` at all while some first-parent commit on the branch carries
-  one -- a modern/post-#274 settle always stamps a non-empty hash, so a null-hash `Guardrails-Task:` commit is a
-  hand-fix, the DOMINANT case) all refuse; the ONLY null hash let through is one on an all-null (genuinely
-  pre-#274) branch -- backward-compatible resume. Corroboration reads the JOURNAL (single-writer provenance),
+  range, OR a **copied-trailer hand-fix** (#322, SSOT §7.2 rule 3 -- a task-in-`S` commit in the removed range whose
+  `Guardrails-Task-Hash:` does NOT corroborate the journal's recorded settle hash for that task, in TWO cases:
+  (a) **present-but-uncorroborated**, a hash the harness never recorded at that task's settle, forged OR
+  "correctly" hand-typed; AND (b) **null-hash**, no `Guardrails-Task-Hash:` at all -- a #197
+  copied-`Guardrails-Task:` hand-fix OR a genuinely pre-#274 machine commit predating hash-stamping -- both
+  refusing on ANY branch, INCLUDING an all-null pre-#274 branch (rebuild with `reset <folder> -y`); there is NO
+  null-hash exemption) all refuse. Corroboration reads the JOURNAL (single-writer provenance),
   never the branch trailer under test (circular), and a genuine modern settle always corroborates (commit hash
   == journal hash, both stamped at B1 settle; the recorded value does not move through a drift), so the
   deliberate-definition-edit auto-resolve still resolves Safe. When safe, the
