@@ -20,6 +20,16 @@ public interface ISchedulerJournal
     /// </summary>
     string? RecordedDefinitionHash(string taskId) => null;
 
+    /// <summary>
+    /// Every task the harness recorded a definition hash for at its settle, as <c>task id → recorded hash</c>
+    /// (issue #322, SSOT §7.2). This is the single-writer provenance the safe-suffix rewind corroborates a
+    /// commit's <c>Guardrails-Task-Hash:</c> trailer against — a trailered commit whose hash is NOT here is a
+    /// copied-trailer hand-fix and is refused. Default empty for fakes; <see cref="Journal.RunJournal"/>
+    /// returns the real recorded hashes.
+    /// </summary>
+    IReadOnlyDictionary<string, string> RecordedDefinitionHashes() =>
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>Mark a task blocked because an upstream dependency cannot succeed.</summary>
     void MarkBlocked(string taskId);
 

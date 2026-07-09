@@ -201,7 +201,10 @@ public static class RunReset
 
         string planName = Path.GetFileName(plan.PlanDirectory);
         string planBranch = $"guardrails/{planName}";
-        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(plan.Workspace, planBranch, set);
+        // #322: corroborate each removed commit's Guardrails-Task-Hash: trailer against the journal-recorded
+        // settle hashes — a copied-trailer #197 hand-fix in the range REFUSES rather than being discarded.
+        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(
+            plan.Workspace, planBranch, set, journal.RecordedDefinitionHashes());
 
         // Refuse floor: an unsafe rewind is never performed — the plan branch is left untouched.
         if (decision.Outcome == SafeSuffixOutcome.Refused)
@@ -369,7 +372,10 @@ public static class RunReset
 
         // Safe-suffix check against the plan branch (marker-aware): DERIVES the target from history, EXEMPTS
         // the wave markers, REFUSES a trailer-less human hand-fix in range. Serial / no branch → Nothing.
-        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(plan.Workspace, planBranch, set);
+        // #322: also corroborate each removed commit's Guardrails-Task-Hash: against the journal-recorded
+        // settle hashes so a copied-trailer #197 hand-fix in the range REFUSES.
+        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(
+            plan.Workspace, planBranch, set, journal.RecordedDefinitionHashes());
 
         // Refuse floor (un-overridable): a human hand-fix / unattributed commit in the range is never discarded.
         if (decision.Outcome == SafeSuffixOutcome.Refused)

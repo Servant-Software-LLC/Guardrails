@@ -95,8 +95,10 @@ internal static class DefinitionDriftProbe
             }
         }
 
-        SafeSuffixDecision decision =
-            GitWorktreeProvider.EvaluateSafeSuffix(plan.Workspace, $"guardrails/{planName}", safeSet);
+        // #322: corroborate each removed commit's Guardrails-Task-Hash: against the journal-recorded settle
+        // hashes — mirrors the Scheduler's own gate so the probe's preview never diverges from the run.
+        SafeSuffixDecision decision = GitWorktreeProvider.EvaluateSafeSuffix(
+            plan.Workspace, $"guardrails/{planName}", safeSet, journal.RecordedDefinitionHashes());
 
         IReadOnlyList<string> safeSetOrdered =
             plan.Tasks.Where(t => safeSet.Contains(t.Id)).Select(t => t.Id).ToList();

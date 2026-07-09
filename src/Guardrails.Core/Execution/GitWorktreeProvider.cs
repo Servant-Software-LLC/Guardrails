@@ -808,8 +808,10 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <inheritdoc />
-    public SafeSuffixDecision EvaluateSafeSuffix(IntegrationHandle integ, IReadOnlySet<string> safeSet) =>
-        EvaluateSafeSuffix(_repoPath, integ.PlanBranchName, safeSet);
+    public SafeSuffixDecision EvaluateSafeSuffix(
+        IntegrationHandle integ, IReadOnlySet<string> safeSet,
+        IReadOnlyDictionary<string, string> recognizedSettleHashes) =>
+        EvaluateSafeSuffix(_repoPath, integ.PlanBranchName, safeSet, recognizedSettleHashes);
 
     /// <inheritdoc />
     /// <remarks>
@@ -828,9 +830,13 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// instance method above) and the manual scoped reset (which has no run-scoped provider) share ONE
     /// decision path. Degrades to <see cref="SafeSuffixDecision.Nothing"/> when the plan branch does not
     /// exist / git is unavailable (a non-git plan folder), matching the read-only dry-run posture.
+    /// <paramref name="recognizedSettleHashes"/> (issue #322) is <c>task id → the journal-recorded settle
+    /// hash</c>; a commit in the removed range whose <c>Guardrails-Task-Hash:</c> is not one of these is a
+    /// copied-trailer hand-fix and is REFUSED (see <see cref="SafeSuffixEvaluator.Evaluate"/>).
     /// </summary>
     public static SafeSuffixDecision EvaluateSafeSuffix(
-        string repoPath, string planBranch, IReadOnlySet<string> safeSet)
+        string repoPath, string planBranch, IReadOnlySet<string> safeSet,
+        IReadOnlyDictionary<string, string> recognizedSettleHashes)
     {
         IReadOnlyList<TrailerCommit> history;
         try
@@ -842,7 +848,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             return SafeSuffixDecision.Nothing();
         }
 
-        return SafeSuffixEvaluator.Evaluate(history, safeSet);
+        return SafeSuffixEvaluator.Evaluate(history, safeSet, recognizedSettleHashes);
     }
 
     /// <summary>
@@ -881,6 +887,7 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // can EXEMPT them from its trailer-less REFUSE (they are known bookkeeping, not human hand-fixes).
         string trailerLog = GitIn(repoPath, "log", TrailerShaBodyFormat, planBranch);
         IReadOnlyDictionary<string, string?> taskBySha = ParseShaToTask(trailerLog);
+        IReadOnlyDictionary<string, string?> hashBySha = ParseShaToHash(trailerLog);
         IReadOnlySet<string> waveMarkerShas = ParseWaveMarkerShas(trailerLog);
 
         // The first-parent spine: sha + its parent shas (space-separated; first is the first parent).
@@ -909,6 +916,9 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             {
                 Sha = sha,
                 Task = taskBySha.GetValueOrDefault(sha),
+                // #322: the commit's OWN Guardrails-Task-Hash: trailer (null on a pre-#274 commit) — the
+                // uncorroborated-trailer REFUSE compares it against the harness's journal-recorded hash.
+                DefinitionHash = hashBySha.GetValueOrDefault(sha),
                 ParentSha = firstParent,
                 MergedInTasks = mergedIn,
                 // A GENUINE Guardrails-Wave: marker is EMPTY (CommitWaveMarker always commits --allow-empty
@@ -1003,6 +1013,45 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             }
 
             map[sha] = task;
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// Parse a <see cref="TrailerShaBodyFormat"/> log into a sha → <c>Guardrails-Task-Hash:</c> trailer map
+    /// (value null when a commit carries no such trailer). The hash half of <see cref="ParseShaToTask"/>,
+    /// sharing the same record/unit separators and the same LAST-trailer-block discipline so a body's own
+    /// blank lines never split a record and a stray hash mention in prose is not read as a trailer (issue
+    /// #322). Feeds <see cref="TrailerCommit.DefinitionHash"/> for the uncorroborated-trailer REFUSE.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string?> ParseShaToHash(string log)
+    {
+        char recordSep = Hashing.HashText.RecordSeparator;
+        char unitSep = Hashing.HashText.UnitSeparator;
+        var map = new Dictionary<string, string?>(StringComparer.Ordinal);
+
+        foreach (string record in log.Split(recordSep, StringSplitOptions.RemoveEmptyEntries))
+        {
+            int split = record.IndexOf(unitSep);
+            if (split < 0)
+            {
+                continue;
+            }
+
+            string sha = record[..split].Trim();
+            string body = record[(split + 1)..];
+
+            string? hash = null;
+            foreach (string line in LastTrailerBlockLines(body))
+            {
+                if (line.StartsWith("Guardrails-Task-Hash: ", StringComparison.Ordinal))
+                {
+                    hash = line["Guardrails-Task-Hash: ".Length..];
+                }
+            }
+
+            map[sha] = hash;
         }
 
         return map;

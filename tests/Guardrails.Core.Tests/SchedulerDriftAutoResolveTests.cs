@@ -52,7 +52,9 @@ public sealed class SchedulerDriftAutoResolveTests
         private readonly FakeWorktreeProvider _inner = new();
         public List<string> RewoundTo { get; } = [];
 
-        public SafeSuffixDecision EvaluateSafeSuffix(IntegrationHandle integ, IReadOnlySet<string> safeSet) => decision;
+        public SafeSuffixDecision EvaluateSafeSuffix(
+            IntegrationHandle integ, IReadOnlySet<string> safeSet,
+            IReadOnlyDictionary<string, string> recognizedSettleHashes) => decision;
         public string CurrentPlanBranchTip(IntegrationHandle integ) => currentTip;
         public void RewindPlanBranchTo(IntegrationHandle integ, string resetTarget) => RewoundTo.Add(resetTarget);
         // TracksPlanBranchTrailers stays false (default) — no crash-marker write to a fake plan dir, and the

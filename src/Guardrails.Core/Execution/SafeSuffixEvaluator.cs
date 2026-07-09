@@ -44,6 +44,18 @@ public sealed record TrailerCommit
     /// commit; a FLAT plan has no markers so the flag is always false and the task-path check is unchanged.
     /// </summary>
     public bool IsWaveMarker { get; init; }
+
+    /// <summary>
+    /// This commit's own <c>Guardrails-Task-Hash:</c> trailer value (issue #322), or <c>null</c> when the
+    /// commit carries none — a pre-#274 commit predating that trailer line, or a fake/synthetic history.
+    /// A data-only fact the git gatherer fills (mirroring <see cref="IsWaveMarker"/>), consumed by the
+    /// uncorroborated-trailer REFUSE. When non-null it MUST equal the hash the harness recorded in the run
+    /// journal for <see cref="Task"/> at its settle (the journal is the single-writer provenance of a
+    /// settle, invariant #2). An absent/differing recorded hash means the trailer was hand-authored — a
+    /// #197 hand-fix that copied a machine trailer, whether the copied hash is wrong OR a "correct" typed
+    /// value — so the safe rewind REFUSES rather than silently discard it.
+    /// </summary>
+    public string? DefinitionHash { get; init; }
 }
 
 /// <summary>The three outcomes of the safe-suffix check (issue #274 Part C).</summary>
@@ -52,7 +64,7 @@ public enum SafeSuffixOutcome
     /// <summary>The safe set forms a provably-safe trailing suffix; <see cref="SafeSuffixDecision.ResetTarget"/> is the rewind target.</summary>
     Safe,
 
-    /// <summary>The rewind is not provably sound (non-suffix, uncontained merge lineage, or a trailer-less commit in range) — HALT.</summary>
+    /// <summary>The rewind is not provably sound (non-suffix, uncontained merge lineage, a trailer-less commit in range, or a trailered commit whose hash the harness never recorded — a copied-trailer hand-fix, #322) — HALT.</summary>
     Refused,
 
     /// <summary>No member of the safe set has an integration commit on the plan branch — there is nothing to physically rewind (journal-only reset suffices, sound in serial mode / a lost plan branch).</summary>
@@ -127,20 +139,40 @@ public sealed record SafeSuffixDecision
 /// every task on its non-first-parent lineage(s) (<see cref="TrailerCommit.MergedInTasks"/>) is also a
 /// member of <c>S</c>. The union of both rules is exactly the commit set <c>git reset --hard c_j^</c>
 /// would discard, so proving both proves every discarded commit belongs to <c>S</c>.</item>
+/// <item><b>Trailer corroboration (issue #322)</b> — every first-parent commit in that range whose
+/// <c>Guardrails-Task-Hash:</c> is non-null must carry a hash the HARNESS recorded in the run journal at
+/// that task's settle. A trailered commit whose hash the journal never recorded is a hand-authored /
+/// forged trailer (a #197 hand-fix that copied machine trailers) and is REFUSED. This is first-parent
+/// only; a forged-hash commit reachable solely via a merge's non-first-parent lineage is still covered by
+/// the trailer-less refuse but not the hash corroboration.</item>
 /// </list>
 /// </summary>
 public static class SafeSuffixEvaluator
 {
+    private static readonly IReadOnlyDictionary<string, string> NoRecognizedHashes =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>
     /// Evaluate whether <paramref name="safeSet"/> is a provably-safe trailing suffix of
     /// <paramref name="firstParentNewestFirst"/> (the plan branch's <c>--first-parent</c> history,
     /// newest-first). See the type summary for the rule.
+    ///
+    /// <para><paramref name="recognizedSettleHashes"/> (issue #322) is <c>task id → the
+    /// <c>Guardrails-Task-Hash:</c> the HARNESS recorded in the run journal</c> at that task's settle — the
+    /// single-writer provenance record (invariant #2). A commit in the removed range that carries a
+    /// <c>Guardrails-Task-Hash:</c> the journal never recorded is a hand-authored / forged trailer (a #197
+    /// hand-fix that copied machine trailers) and is REFUSED, never silently rewound. Corroboration reads
+    /// ONLY this journal map — never the branch trailer being tested (that would be circular). Null / omitted
+    /// means "no journal consulted": the check is inert (only pre-#274 null-hash commits and pure suffix
+    /// tests take that path), so backward compatibility holds.</para>
     /// </summary>
     public static SafeSuffixDecision Evaluate(
-        IReadOnlyList<TrailerCommit> firstParentNewestFirst, IReadOnlySet<string> safeSet)
+        IReadOnlyList<TrailerCommit> firstParentNewestFirst, IReadOnlySet<string> safeSet,
+        IReadOnlyDictionary<string, string>? recognizedSettleHashes = null)
     {
         ArgumentNullException.ThrowIfNull(firstParentNewestFirst);
         ArgumentNullException.ThrowIfNull(safeSet);
+        IReadOnlyDictionary<string, string> recognized = recognizedSettleHashes ?? NoRecognizedHashes;
 
         // The CAS anchor: the plan-branch HEAD this decision is computed against (empty for no history).
         string expectedTip = firstParentNewestFirst.Count > 0 ? firstParentNewestFirst[0].Sha : "";
@@ -194,6 +226,27 @@ public static class SafeSuffixEvaluator
                 return Tag(SafeSuffixDecision.Refused(
                     $"commit {Short(c.Sha)} integrates '{c.Task}', which is not in the safe set — refusing " +
                     "(rewinding would discard a task that did not drift; the drifted set is not a trailing suffix).",
+                    c.Task));
+            }
+
+            // #322: a commit attributed to a task in S whose Guardrails-Task-Hash the harness never recorded
+            // in the run journal (the single-writer provenance of a settle, invariant #2) is a hand-authored
+            // /forged commit — a #197 hand-fix that COPIED a machine trailer (whether the copied hash is
+            // wrong OR a "correct" typed value). REFUSE, never silently rewind past a human's un-machine-
+            // authored commit. Gated on a NON-NULL commit hash so a pre-#274 (null-hash) commit keeps its
+            // prior behaviour (backward compat). Corroboration reads the JOURNAL (recognized), never the
+            // branch trailer under test — that would be circular. A GENUINE settle ALWAYS corroborates: the
+            // commit hash and the journal hash are both stamped at the same B1 settle, and the recorded value
+            // does not move through a drift (only the recompute does), so a legitimate deliberate-definition-
+            // edit auto-resolve still reaches Safe.
+            if (c.DefinitionHash is { } commitHash &&
+                !(recognized.TryGetValue(c.Task, out string? recordedHash)
+                  && string.Equals(recordedHash, commitHash, StringComparison.Ordinal)))
+            {
+                return Tag(SafeSuffixDecision.Refused(
+                    $"commit {Short(c.Sha)} attributes task '{c.Task}' but its Guardrails-Task-Hash is one " +
+                    "the harness never recorded (a hand-authored #197 fix with copied trailers?) — refusing " +
+                    "to discard it. Re-commit a #197 hand-fix WITHOUT Guardrails-* trailers (SSOT §7).",
                     c.Task));
             }
 

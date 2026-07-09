@@ -327,4 +327,106 @@ public sealed class SafeSuffixEvaluatorTests
         Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
         Assert.Equal("base", d.ResetTarget);
     }
+
+    // --- trailer corroboration (#322): a copied-trailer hand-fix whose hash the harness never recorded ---
+
+    /// <summary>A fast-forward commit that ALSO carries a <c>Guardrails-Task-Hash:</c> trailer (issue #322).</summary>
+    private static TrailerCommit FfH(string sha, string? task, string parentSha, string? hash) =>
+        new() { Sha = sha, Task = task, ParentSha = parentSha, DefinitionHash = hash };
+
+    /// <summary>A recognized-settle-hashes map: <c>task id → the hash the harness recorded in the journal</c>.</summary>
+    private static IReadOnlyDictionary<string, string> Recognized(params (string Task, string Hash)[] entries) =>
+        entries.ToDictionary(e => e.Task, e => e.Hash, StringComparer.Ordinal);
+
+    [Fact]
+    public void CorroboratedHash_MatchesJournalRecord_Safe()  // regression guard: deliberate edit still resolves
+    {
+        // A genuinely-succeeded, then deliberately-edited task: its integration commit's Guardrails-Task-Hash
+        // equals the hash the harness recorded at settle. The recompute drifts, but the RECORDED value never
+        // moves — so the commit corroborates and the safe rewind still resolves (the legit auto-resolve).
+        var history = new[]
+        {
+            FfH("c2", "t2", "c1", "sha256:h2"),
+            FfH("c1", "t1", "base", "sha256:h1"),
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(
+            history, S("t2"), Recognized(("t1", "sha256:h1"), ("t2", "sha256:h2")));
+
+        Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
+        Assert.Equal("c1", d.ResetTarget);
+    }
+
+    [Fact]
+    public void UncorroboratedHash_CopiedTrailerHandFix_Refuses()  // #322 red-bar (fails vs pre-#322 code)
+    {
+        // A #197 hand-fix for a NEVER-SUCCEEDED task copied a machine Guardrails-Task-Hash: onto its commit;
+        // the harness never recorded that hash (t2 absent from the recognized map). Pre-#322 the rewind
+        // treated the commit as a legit machine segment and DISCARDED it; now it REFUSES and names it.
+        var history = new[]
+        {
+            FfH("c2", "t2", "c1", "sha256:forged"),
+            FfH("c1", "t1", "base", "sha256:h1"),
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(
+            history, S("t2"), Recognized(("t1", "sha256:h1"))); // t2 never recorded by the harness
+
+        Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
+        Assert.Equal("t2", d.BlockingTask);
+        Assert.Contains("never recorded", d.Refusal);
+    }
+
+    [Fact]
+    public void UncorroboratedHash_JournalSilentButBranchHasRealHash_Refuses()  // accepted false-refuse
+    {
+        // A genuinely-succeeded task that ALSO drifted, but whose journal-recorded hash was lost (a
+        // journal-reset resume where only the plan branch survives). The branch carries a REAL hash the
+        // now-silent journal can't corroborate → REFUSE — the documented accepted false-refuse (remedy: reset -y).
+        var history = new[] { FfH("c1", "t1", "base", "sha256:real") };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t1"), Recognized()); // journal silent
+
+        Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
+        Assert.Contains("never recorded", d.Refusal);
+    }
+
+    [Fact]
+    public void NullHash_Pre274Commit_BackwardCompat_Unchanged()  // backward compat
+    {
+        // A pre-#274 commit carries no Guardrails-Task-Hash: trailer (DefinitionHash null) — the
+        // corroboration is inert on it, so the check behaves EXACTLY as before (a safe suffix ⇒ Safe), even
+        // against an EMPTY recognized map.
+        var history = new[]
+        {
+            Ff("c2", "t2", "c1"),   // null DefinitionHash (pre-#274)
+            Ff("c1", "t1", "base"),
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(history, S("t2"), Recognized());
+
+        Assert.Equal(SafeSuffixOutcome.Safe, d.Outcome);
+        Assert.Equal("c1", d.ResetTarget);
+    }
+
+    [Fact]
+    public void UncorroboratedHash_InInteriorOfRemovedRange_Refuses_NamesIt()
+    {
+        // A mix: the tip corroborates but a DEEPER commit in the removed range carries an uncorroborated
+        // (copied) hash — the whole range is checked, so the refuse fires on it and names it.
+        var history = new[]
+        {
+            FfH("c3", "t3", "c2", "sha256:h3"),
+            FfH("c2", "t2", "c1", "sha256:forged"),  // copied-trailer hand-fix in the interior
+            FfH("c1", "t1", "base", "sha256:h1"),
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(
+            history, S("t1", "t2", "t3"),
+            Recognized(("t1", "sha256:h1"), ("t3", "sha256:h3"))); // t2 uncorroborated
+
+        Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
+        Assert.Equal("t2", d.BlockingTask);
+        Assert.Contains("never recorded", d.Refusal);
+    }
 }
