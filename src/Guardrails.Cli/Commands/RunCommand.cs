@@ -48,7 +48,12 @@ public static class RunCommand
 
         var mergeOnSuccessOption = new Option<bool>("--merge-on-success")
         {
-            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess on regardless of guardrails.json."
+            Description = "On a wholly-green run, merge the plan branch into your original branch at run end (SSOT §5.3). Forces mergeOnSuccess ON regardless of guardrails.json (delivery is now the DEFAULT — this only matters to override a config 'mergeOnSuccess: false')."
+        };
+
+        var noMergeOnSuccessOption = new Option<bool>("--no-merge-on-success")
+        {
+            Description = "Suppress the end-of-run delivery: leave the wholly-green work on the plan branch guardrails/<plan-name> for manual review/merge. Forces mergeOnSuccess OFF regardless of guardrails.json (#340). Contradictory with --merge-on-success."
         };
 
         var autonomyOption = new Option<string?>("--autonomy")
@@ -79,6 +84,7 @@ public static class RunCommand
         command.Add(noLogServerOption);
         command.Add(logPortOption);
         command.Add(mergeOnSuccessOption);
+        command.Add(noMergeOnSuccessOption);
         command.Add(autonomyOption);
         command.Add(reprocessDriftOption);
         command.Add(revalidateTaskOption);
@@ -93,10 +99,23 @@ public static class RunCommand
             bool noLogServer = parseResult.GetValue(noLogServerOption);
             int logPort = parseResult.GetValue(logPortOption);
             bool mergeOnSuccess = parseResult.GetValue(mergeOnSuccessOption);
+            bool noMergeOnSuccess = parseResult.GetValue(noMergeOnSuccessOption);
             string? autonomy = parseResult.GetValue(autonomyOption);
             bool reprocessDrift = parseResult.GetValue(reprocessDriftOption);
             string? revalidateTask = parseResult.GetValue(revalidateTaskOption);
             bool skipReviewCheck = parseResult.GetValue(skipReviewCheckOption);
+
+            // #340 delivery tri-state: --merge-on-success forces ON, --no-merge-on-success forces OFF,
+            // neither leaves it to guardrails.json (which itself now defaults ON). Passing BOTH is a
+            // contradictory usage error. The resolved override is null (no flag → use config/default),
+            // true, or false; precedence is CLI flag → guardrails.json → the true default.
+            if (mergeOnSuccess && noMergeOnSuccess)
+            {
+                io.Out.WriteLine("--merge-on-success and --no-merge-on-success are contradictory; pass at most one.");
+                return ExitCodes.HarnessError;
+            }
+
+            bool? mergeOnSuccessOverride = mergeOnSuccess ? true : noMergeOnSuccess ? false : null;
 
             // Re-validate-only (issue #102) is a single-task verification, not a run: it spawns no
             // agent attempt and ignores the run-shaped flags. Reject the combinations that would
@@ -117,14 +136,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccess, autonomy, reprocessDrift, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool mergeOnSuccess, string? autonomy, bool reprocessDrift, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -152,12 +171,18 @@ public static class RunCommand
         // unless --skip-review-check. Reuses the same deterministic evaluation as `validate`.
         WarnIfUnreviewed(probe.Plan, skipReviewCheck, io);
 
-        // --merge-on-success forces end-of-run delivery on (SSOT §5.3 / §2: "CLI --merge-on-success
-        // overrides"). The flag only augments — it can turn the config value on, never off — so a
-        // plan that already set mergeOnSuccess: true is unaffected.
-        if (mergeOnSuccess && !probe.Plan.Config.MergeOnSuccess)
+        // #340 delivery tri-state (SSOT §2/§5.3, precedence: CLI flag → guardrails.json → the true
+        // default). --merge-on-success forces ON, --no-merge-on-success forces OFF; neither leaves the
+        // config-resolved value (which itself now defaults ON). Whether the effective value came PURELY
+        // from the default (no flag AND no config key) is captured HERE, before the override is applied,
+        // so the end-of-run notice can distinguish "delivered because of the new default" from an explicit
+        // opt-in — the config's raw key-presence lives on MergeOnSuccessExplicit (null = omitted).
+        bool deliveryFromDefaultOnly =
+            mergeOnSuccessOverride is null && probe.Plan.Config.MergeOnSuccessExplicit is null;
+
+        if (mergeOnSuccessOverride is { } mergeForced && probe.Plan.Config.MergeOnSuccess != mergeForced)
         {
-            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MergeOnSuccess = true } } };
+            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MergeOnSuccess = mergeForced } } };
         }
 
         // --autonomy <value> sets the unified autonomy policy for this run (SSOT §2.1), overriding
@@ -401,6 +426,12 @@ public static class RunCommand
                 // verified work was NOT delivered — mergeOnSuccess resolved off — must be impossible to
                 // miss. The plan branch alone carries the work, one --fresh/reset -y away from destruction.
                 RenderUndeliveredWorkWarning(report, planGuardrailsPassed, probe.Plan.PlanDirectory, io.Out);
+
+                // Issue #340 complement: when delivery fired PURELY because of the new default (neither the
+                // config key nor a CLI flag was set), print a one-time notice naming the branch + the opt-out,
+                // so the breaking default is observable/self-documenting rather than a silent surprise. Never
+                // fires together with the undelivered warning (that requires delivery OFF; this requires it ran).
+                RenderDeliveredByDefaultNotice(report, deliveryFromDefaultOnly, io.Out);
 
                 return exitCode;
             }
@@ -947,6 +978,33 @@ public static class RunCommand
         output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
         output.WriteLine("A later --fresh or 'reset -y' will DESTROY this undelivered work.");
         output.WriteLine(rule);
+    }
+
+    /// <summary>
+    /// Render the issue #340 one-time "delivered by default" notice: a single line, printed at run end
+    /// ONLY when the end-of-run delivery actually RAN and succeeded (<see cref="RunReport.DeliveredToBranch"/>
+    /// is non-null — an FF or clean merge) AND it fired PURELY because of the new default
+    /// (<paramref name="deliveryFromDefaultOnly"/> — neither the <c>mergeOnSuccess</c> config key nor a CLI
+    /// flag was set). This makes the breaking default change observable and self-documenting: it names the
+    /// branch the work landed on and the two opt-out surfaces. It is the delivered-case complement of
+    /// <see cref="RenderUndeliveredWorkWarning"/> and the two NEVER fire together (that warning requires
+    /// delivery OFF; this requires delivery to have run). Silent for an explicit opt-in (config <c>true</c>
+    /// or <c>--merge-on-success</c>), for any run that did not deliver (opt-out, serial, non-green), and for a
+    /// halted delivery. Pure (writes only to <paramref name="output"/>) and public + unit-tested with a
+    /// <see cref="StringWriter"/> — the Cli assembly ships no InternalsVisibleTo (same rationale as
+    /// <see cref="Hyperlink"/>).
+    /// </summary>
+    public static void RenderDeliveredByDefaultNotice(
+        RunReport report, bool deliveryFromDefaultOnly, TextWriter output)
+    {
+        if (!deliveryFromDefaultOnly || report.DeliveredToBranch is not { Length: > 0 } branch)
+        {
+            return;
+        }
+
+        output.WriteLine(
+            $"delivered to {branch} (mergeOnSuccess now defaults on; pass --no-merge-on-success or set "
+            + "\"mergeOnSuccess\": false to opt out)");
     }
 
     /// <summary>

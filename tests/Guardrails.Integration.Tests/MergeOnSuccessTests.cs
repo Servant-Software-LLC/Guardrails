@@ -18,24 +18,32 @@ namespace Guardrails.Integration.Tests;
 /// WILL NOT compile against current code. That compile failure IS the red-bar signal.
 /// Do NOT implement the hook here; tests only, in this one file.
 ///
-/// Four scenarios (SSOT §5.3 / plan 08 §5):
+/// Core scenarios (SSOT §5.3 / plan 08 §5), re-baselined for the #340 default flip (OFF → ON):
 /// <list type="bullet">
-///   <item><b>DefaultOff_LeavesUserBranchAtOriginalHead</b> — <c>mergeOnSuccess</c> absent (default
-///     false): no merge attempted; <c>MergeOnSuccessOutcome</c> is null; provider not called.</item>
+///   <item><b>DefaultOn_OmittedKey_DeliversAndNotFlaggedUndelivered</b> — <c>mergeOnSuccess</c> absent
+///     (now default TRUE): the merge-back IS attempted and delivers; <c>MergeOnSuccessOutcome</c> non-null;
+///     not flagged undelivered.</item>
+///   <item><b>MergeOnSuccessFalse_OptOut_NotDeliveredAndFlaggedUndelivered</b> — explicit
+///     <c>mergeOnSuccess: false</c>: no merge attempted; the run IS flagged undelivered (the #344 warning
+///     fires only for the opt-out).</item>
 ///   <item><b>MergeOnSuccess_FF_AdvancesUserBranchToTip</b> — <c>mergeOnSuccess: true</c>, no
 ///     concurrent user advance: FF-merge; no merge commit; user HEAD at plan tip.</item>
 ///   <item><b>MergeOnSuccess_ConflictingAdvance_NeedsHuman_PlanBranchIntact</b> — <c>mergeOnSuccess:
 ///     true</c>, user branch advanced mid-run with a conflicting commit: AI-merge withheld;
 ///     <c>Conflict</c> outcome; plan branch intact; user branch untouched by the harness.</item>
-///   <item><b>MergeOnSuccess_SkippedWhenRunFails</b> — <c>mergeOnSuccess: true</c> but a task
-///     fails: merge not attempted; <c>MergeOnSuccessOutcome</c> is null.</item>
+///   <item><b>MergeOnSuccess_SkippedWhenRunFails</b> — a task fails: merge not attempted;
+///     <c>MergeOnSuccessOutcome</c> is null.</item>
 /// </list>
 /// <para>
-/// Issue #340 (green-but-undelivered warning) adds the <see cref="RunReport.WhollyGreenButUndelivered"/>
-/// flag coverage: <b>DefaultOff</b> (worktree mode, mergeOnSuccess off, wholly green) flags it TRUE;
-/// <b>MergeOnSuccess_FF</b> (delivered) and <b>MergeOnSuccess_SkippedWhenRunFails</b> (not green) leave
-/// it FALSE; and <b>SerialMode_GreenRun</b> / <b>RunOnCurrentBranch_GreenRun</b> assert the honesty
-/// guard — no separate plan branch means nothing is undelivered, so the flag stays FALSE.
+/// Issue #340 flip coverage: the <see cref="RunReport.WhollyGreenButUndelivered"/> flag is TRUE for the
+/// <b>opt-out</b> cases that strand work on a separate plan branch (<b>MergeOnSuccessFalse_OptOut</b>, and —
+/// #345 review 1c — <b>RunOnCurrentBranch_OptOut_StrandsWork_FlagsUndelivered</b>, since runOnCurrentBranch is
+/// an unwired stub); FALSE for a delivered run (<b>DefaultOn_OmittedKey</b>, <b>MergeOnSuccess_FF</b>,
+/// <b>RunOnCurrentBranch_DefaultOn_DeliversToCheckout</b>), a non-green run (<b>SkippedWhenRunFails</b>), and
+/// SERIAL mode (<b>SerialMode_GreenRun</b> = no provider / no plan branch — the only genuine suppression).
+/// CLI precedence + idempotency: <b>Cli_MergeOnSuccessFlag_OverridesConfigFalse</b>,
+/// <b>Cli_NoMergeOnSuccessFlag_SuppressesDefaultDelivery</b>, <b>Cli_BothMergeFlags_IsUsageError</b>,
+/// <b>Resume_AlreadyDelivered_ReDeliversIdempotently</b>.
 /// </para>
 /// </summary>
 public sealed class MergeOnSuccessTests
@@ -273,23 +281,29 @@ public sealed class MergeOnSuccessTests
     /// </summary>
     private static string CreatePlanInRepo(
         string repoPath,
-        bool mergeOnSuccess,
+        bool? mergeOnSuccess,
         string taskFile = "src/app.cs",
         string taskFileContent = "class App {}",
-        bool guardrailFails = false)
+        bool guardrailFails = false,
+        bool runOnCurrentBranch = false)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(planDir);
         Directory.CreateDirectory(Path.Combine(planDir, "state"));
         Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
 
+        // null → OMIT the key entirely (exercise the #340 default-ON); true/false → set it explicitly.
+        string mergeLine = mergeOnSuccess is { } m
+            ? $"\n  \"mergeOnSuccess\": {(m ? "true" : "false")},"
+            : "";
+        string runOnCurrentLine = runOnCurrentBranch ? "\n  \"runOnCurrentBranch\": true," : "";
+
         File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
             $$"""
             {
               "version": 1,
               "guardrailMode": "failFast",
-              "workspace": "..",
-              "mergeOnSuccess": {{(mergeOnSuccess ? "true" : "false")}},
+              "workspace": "..",{{mergeLine}}{{runOnCurrentLine}}
               "defaultRetries": 0,
               "maxParallelism": 2
             }
@@ -394,28 +408,27 @@ public sealed class MergeOnSuccessTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // Test 1 — default OFF: no merge attempted when mergeOnSuccess is absent
+    // Test 1 — default ON (#340): an OMITTED mergeOnSuccess key now DELIVERS by default
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Plan 08 §5.3 default-OFF gate: when <c>mergeOnSuccess</c> is absent from
-    /// <c>guardrails.json</c> (defaults to false), a wholly-green run leaves the plan branch
-    /// intact for the user to review — no end-of-run merge is attempted.
-    ///
-    /// <c>report.MergeOnSuccessOutcome</c> does not exist on the current <see cref="RunReport"/>
-    /// — referencing it here IS the compile-fail red-bar signal. After task 22 implements the
-    /// feature this property will be null when no merge is attempted (default OFF).
+    /// #340 default-ON delivery: when <c>mergeOnSuccess</c> is absent from <c>guardrails.json</c> it now
+    /// defaults to <b>true</b> ("green means delivered"), so a wholly-green worktree-mode run DELIVERS the
+    /// plan branch into the user's original branch at run end. The provider's merge-back IS invoked
+    /// (outcome non-null), and because delivery ran the run is NOT flagged
+    /// <see cref="RunReport.WhollyGreenButUndelivered"/>. Re-baselined from the old
+    /// <c>DefaultOff_LeavesUserBranchAtOriginalHead</c> — the default flipped OFF→ON in #340.
     /// </summary>
     [Fact]
-    public async Task DefaultOff_LeavesUserBranchAtOriginalHead()
+    public async Task DefaultOn_OmittedKey_DeliversAndNotFlaggedUndelivered()
     {
-        string planDir = Path.Combine(Path.GetTempPath(), "gr-mos-off-" + Guid.NewGuid().ToString("N"));
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-mos-on-" + Guid.NewGuid().ToString("N"));
         try
         {
             Directory.CreateDirectory(planDir);
             Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
 
-            // No mergeOnSuccess key → defaults to false.
+            // No mergeOnSuccess key → now defaults to TRUE (#340). Delivery fires by default.
             File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
                 """
                 {
@@ -427,44 +440,78 @@ public sealed class MergeOnSuccessTests
                 }
                 """);
 
-            string taskDir = Path.Combine(planDir, "tasks", "01-green-task");
-            Directory.CreateDirectory(taskDir);
-            Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
-            File.WriteAllText(Path.Combine(taskDir, "task.json"),
-                """{"description": "default-off test task", "dependsOn": []}""");
-            if (OperatingSystem.IsWindows())
-            {
-                File.WriteAllText(Path.Combine(taskDir, "action.ps1"), "exit 0\n");
-                File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-check.ps1"), "exit 0\n");
-            }
-            else
-            {
-                string ap = Path.Combine(taskDir, "action.sh");
-                File.WriteAllText(ap, "#!/usr/bin/env bash\nexit 0\n");
-                File.SetUnixFileMode(ap,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                    UnixFileMode.GroupRead | UnixFileMode.OtherRead);
-                string gp = Path.Combine(taskDir, "guardrails", "01-check.sh");
-                File.WriteAllText(gp, "#!/usr/bin/env bash\nexit 0\n");
-                File.SetUnixFileMode(gp,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                    UnixFileMode.GroupRead | UnixFileMode.OtherRead);
-            }
+            WriteTrivialGreenTask(planDir, "01-green-task");
 
             var tracking = new TrackingFakeProvider();
             var (report, _) = await RunWithProviderAsync(planDir, tracking, TestContext.Current.CancellationToken);
 
-            Assert.True(report.AllSucceeded, "DefaultOff: expected all tasks to succeed.");
+            Assert.True(report.AllSucceeded, "DefaultOn: expected all tasks to succeed.");
 
-            // Default OFF: no merge was attempted, so the outcome is null.
+            // Default ON: the merge-back WAS attempted exactly once and succeeded (the fake FF's).
+            Assert.Equal(1, tracking.MergePlanBranchIntoUserBranchCallCount);
+            Assert.Equal(MergeOnSuccessResult.FastForwarded, report.MergeOnSuccessOutcome);
+            // The report names the branch delivery landed on (the fake's OriginalBranch = "main"), so the
+            // CLI's one-time delivered-by-default notice can name it.
+            Assert.Equal("main", report.DeliveredToBranch);
+
+            // Delivery actually RAN ⇒ never the undelivered-work case (the #344 warning must NOT fire).
+            Assert.False(report.WhollyGreenButUndelivered);
+        }
+        finally
+        {
+            try { Directory.Delete(planDir, recursive: true); } catch { }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 1b (#340) — explicit OPT-OUT: mergeOnSuccess:false leaves the work on the plan branch
+    // and REVIVES the loud green-but-undelivered warning (the #344 backstop).
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// #340 opt-out: an EXPLICIT <c>"mergeOnSuccess": false</c> suppresses the now-default delivery — no
+    /// merge-back is attempted (outcome null), and the wholly-green worktree-mode run is flagged
+    /// <see cref="RunReport.WhollyGreenButUndelivered"/> so the CLI prints the loud warning. This is the
+    /// case the old <c>DefaultOff_…</c> test covered implicitly; with the default flipped it must now be
+    /// requested explicitly. Proves the #344 warning still composes — it fires precisely when the user
+    /// opted OUT.
+    /// </summary>
+    [Fact]
+    public async Task MergeOnSuccessFalse_OptOut_NotDeliveredAndFlaggedUndelivered()
+    {
+        string planDir = Path.Combine(Path.GetTempPath(), "gr-mos-optout-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(planDir);
+            Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+
+            // Explicit opt-out — leave the verified work on the plan branch for manual review.
+            File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+                """
+                {
+                  "version": 1,
+                  "guardrailMode": "failFast",
+                  "workspace": ".",
+                  "mergeOnSuccess": false,
+                  "defaultRetries": 0,
+                  "maxParallelism": 2
+                }
+                """);
+
+            WriteTrivialGreenTask(planDir, "01-green-task");
+
+            var tracking = new TrackingFakeProvider();
+            var (report, _) = await RunWithProviderAsync(planDir, tracking, TestContext.Current.CancellationToken);
+
+            Assert.True(report.AllSucceeded, "OptOut: expected all tasks to succeed.");
+
+            // Opt-out: no merge-back was attempted, so the outcome is null and no branch is named.
             Assert.Null(report.MergeOnSuccessOutcome);
-
-            // The provider's merge method must NOT have been called at all.
             Assert.Equal(0, tracking.MergePlanBranchIntoUserBranchCallCount);
+            Assert.Null(report.DeliveredToBranch);
 
-            // Issue #340: this IS the incident case — a wholly-green worktree-mode run (a worktree
-            // provider + integration handle are present) whose work was NOT delivered because
-            // mergeOnSuccess is off. The Scheduler must flag it so the CLI prints the loud warning.
+            // The incident case: wholly-green worktree-mode run whose work was NOT delivered ⇒ the loud
+            // #340/#344 warning MUST fire.
             Assert.True(report.WhollyGreenButUndelivered);
         }
         finally
@@ -707,6 +754,9 @@ public sealed class MergeOnSuccessTests
             Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
 
             // maxParallelism: 1 → serial; no worktreeProvider passed to RunWithProviderAsync below.
+            // mergeOnSuccess is OMITTED — it now defaults ON (#340), but serial mode has NO worktree
+            // provider / plan branch, so the delivery gate (provider != null && integ != null) short-circuits:
+            // #340 mechanism-confirm — serial mode attempts NO merge-back even with delivery default-on.
             File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
                 """
                 {
@@ -723,7 +773,8 @@ public sealed class MergeOnSuccessTests
             var (report, _) = await RunWithProviderAsync(planDir, worktreeProvider: null, TestContext.Current.CancellationToken);
 
             Assert.True(report.AllSucceeded, "SerialMode: expected all tasks to succeed.");
-            // No provider ⇒ no plan branch ⇒ nothing is undelivered.
+            // No provider ⇒ no plan branch ⇒ no delivery attempted ⇒ nothing is undelivered.
+            Assert.Null(report.MergeOnSuccessOutcome);
             Assert.False(report.WhollyGreenButUndelivered);
         }
         finally
@@ -733,52 +784,86 @@ public sealed class MergeOnSuccessTests
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────
-    // Test 4c (#340) — runOnCurrentBranch mode: even with a worktree provider, a wholly-green run is
-    // NEVER flagged undelivered. The plan branch IS the user's current branch, so the work already
-    // lives in the user's checkout — nothing is "sitting undelivered" anywhere.
+    // Test 4c (#340 / #345 review 1b) — runOnCurrentBranch is an UNWIRED STUB, so a real-git worktree
+    // run there behaves like an ordinary worktree run: a SEPARATE guardrails/<plan> branch is forked,
+    // and default-ON delivery is a REAL fast-forward onto the user's checkout (NOT a self-merge/no-op).
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Issue #340 honesty gate (runOnCurrentBranch mode): with a worktree provider present but
-    /// <c>runOnCurrentBranch: true</c>, a wholly-green run leaves
-    /// <see cref="RunReport.WhollyGreenButUndelivered"/> false — the plan branch is the current branch,
-    /// so the work is not undelivered and the CLI must NOT print the loud warning.
+    /// #345 review, finding 1b (default-ON case): with <c>runOnCurrentBranch: true</c> and
+    /// <c>mergeOnSuccess</c> OMITTED (default ON), a wholly-green real-git worktree run DELIVERS — because
+    /// runOnCurrentBranch is an unwired stub, the harness still forks a separate <c>guardrails/plan</c> branch
+    /// and the default-ON merge-back fast-forwards it onto the user's branch. Asserts delivery actually
+    /// happened (outcome FastForwarded, <see cref="RunReport.DeliveredToBranch"/> set, HEAD moved, the
+    /// deliverable file lands in the user's checkout) and that the run is NOT flagged undelivered.
     /// </summary>
     [Fact]
-    public async Task RunOnCurrentBranch_GreenRun_NotFlaggedUndelivered()
+    public async Task RunOnCurrentBranch_DefaultOn_DeliversToCheckout_NotFlaggedUndelivered()
     {
-        string planDir = Path.Combine(Path.GetTempPath(), "gr-mos-oncurrent-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            Directory.CreateDirectory(planDir);
-            Directory.CreateDirectory(Path.Combine(planDir, "tasks"));
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+        string originalBranch = repo.CurrentBranch();
 
-            // runOnCurrentBranch: true; mergeOnSuccess absent (default false); worktree provider present.
-            File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
-                """
-                {
-                  "version": 1,
-                  "guardrailMode": "failFast",
-                  "workspace": ".",
-                  "runOnCurrentBranch": true,
-                  "defaultRetries": 0,
-                  "maxParallelism": 2
-                }
-                """);
+        // runOnCurrentBranch: true; mergeOnSuccess OMITTED → default ON. Real git worktree provider.
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null, runOnCurrentBranch: true,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
 
-            WriteTrivialGreenTask(planDir, "01-green-task");
+        var (report, _) = await RunWithProviderAsync(planDir, provider, TestContext.Current.CancellationToken);
 
-            var tracking = new TrackingFakeProvider();
-            var (report, _) = await RunWithProviderAsync(planDir, tracking, TestContext.Current.CancellationToken);
+        Assert.True(report.AllSucceeded,
+            "RunOnCurrentBranch default-on: expected all tasks to succeed; " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
 
-            Assert.True(report.AllSucceeded, "RunOnCurrentBranch: expected all tasks to succeed.");
-            // The plan branch IS the current branch ⇒ nothing is undelivered.
-            Assert.False(report.WhollyGreenButUndelivered);
-        }
-        finally
-        {
-            try { Directory.Delete(planDir, recursive: true); } catch { }
-        }
+        // Delivery RAN (the stub does not skip it): FF onto the user's branch, HEAD moved.
+        Assert.Equal(MergeOnSuccessResult.FastForwarded, report.MergeOnSuccessOutcome);
+        Assert.Equal(originalBranch, report.DeliveredToBranch);
+        Assert.NotEqual(initialHead, repo.HeadSha());
+        // The deliverable is now in the user's MAIN checkout (delivery is real, not a no-op).
+        Assert.True(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")),
+            "#345 1b: default-ON delivery under runOnCurrentBranch must land the file in the user's checkout.");
+        Assert.Equal(originalBranch, repo.CurrentBranch());
+        // Delivery ran ⇒ never the undelivered-work case.
+        Assert.False(report.WhollyGreenButUndelivered);
+    }
+
+    /// <summary>
+    /// #345 review, finding 1b + 1c (opt-out case — closes the silent-stranding hole): with
+    /// <c>runOnCurrentBranch: true</c> AND <c>mergeOnSuccess: false</c> (opt-out), a wholly-green real-git
+    /// worktree run does NOT deliver — and because runOnCurrentBranch is an unwired stub the work is stranded
+    /// on the SEPARATE <c>guardrails/plan</c> branch with nothing on the user's checkout. The Scheduler MUST
+    /// flag <see cref="RunReport.WhollyGreenButUndelivered"/> (the warning now fires — previously suppressed
+    /// by the false <c>!RunOnCurrentBranch</c> premise, the exact #340 incident uncovered).
+    /// </summary>
+    [Fact]
+    public async Task RunOnCurrentBranch_OptOut_StrandsWork_FlagsUndelivered()
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+
+        // runOnCurrentBranch: true; mergeOnSuccess EXPLICIT false (opt-out). Real git worktree provider.
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: false, runOnCurrentBranch: true,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, _) = await RunWithProviderAsync(planDir, provider, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "RunOnCurrentBranch opt-out: expected all tasks to succeed; " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        // Opt-out ⇒ no delivery; the work is stranded on the separate plan branch, user HEAD unchanged.
+        Assert.Null(report.MergeOnSuccessOutcome);
+        Assert.Null(report.DeliveredToBranch);
+        Assert.Equal(initialHead, repo.HeadSha());
+        Assert.False(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")),
+            "#345 1c: opt-out must leave the deliverable on the plan branch, NOT in the user's checkout.");
+
+        // The load-bearing fix: the warning MUST fire — a separate plan branch DOES hold undelivered work.
+        Assert.True(report.WhollyGreenButUndelivered,
+            "#345 1c: runOnCurrentBranch + opt-out strands work on a separate plan branch ⇒ MUST flag undelivered.");
     }
 
     /// <summary>Write a trivially-green task (exit-0 action + exit-0 guardrail, no git writes), OS-picked flavour.</summary>
@@ -816,20 +901,21 @@ public sealed class MergeOnSuccessTests
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// F11a: <c>guardrails run --merge-on-success</c> forces end-of-run delivery on. The plan's
-    /// <c>guardrails.json</c> has <c>mergeOnSuccess: false</c> (absent default), so without the flag
-    /// the user's branch would stay at its original HEAD; WITH the flag a wholly-green run
-    /// fast-forwards the user's branch to the plan tip — proving the flag (not the config) drove the
-    /// delivery. Mirrors <see cref="MergeOnSuccess_FF_AdvancesUserBranchToTip"/> but through the CLI.
+    /// F11a: <c>guardrails run --merge-on-success</c> forces end-of-run delivery on even against a config
+    /// that EXPLICITLY opted out. The plan's <c>guardrails.json</c> sets <c>mergeOnSuccess: false</c>, so
+    /// without the flag the user's branch would stay at its original HEAD; WITH the flag (CLI precedence:
+    /// flag beats config, #340) a wholly-green run fast-forwards the user's branch to the plan tip — proving
+    /// the flag (not the config) drove the delivery. Mirrors <see cref="MergeOnSuccess_FF_AdvancesUserBranchToTip"/>
+    /// but through the CLI.
     /// </summary>
     [Fact]
-    public async Task Cli_MergeOnSuccessFlag_DeliversToUserBranch_WhenConfigDefaultOff()
+    public async Task Cli_MergeOnSuccessFlag_OverridesConfigFalse_DeliversToUserBranch()
     {
         using var repo = new TempGitRepo();
         string initialHead = repo.HeadSha();
         string originalBranch = repo.CurrentBranch();
 
-        // mergeOnSuccess defaults to false in the JSON — only the CLI flag turns delivery on.
+        // Config explicitly opts OUT (mergeOnSuccess: false) — only the CLI flag turns delivery back on.
         string planDir = CreatePlanInRepo(
             repo.RepoPath, mergeOnSuccess: false,
             taskFile: "src/app.cs", taskFileContent: "class App {}");
@@ -846,13 +932,127 @@ public sealed class MergeOnSuccessTests
         Assert.Equal(originalBranch, repo.CurrentBranch());
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 5b (#340) — the CLI --no-merge-on-success flag SUPPRESSES the now-default delivery, even
+    // when guardrails.json omits the key (default ON). Drives the REAL `run` command.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// #340 opt-out flag through the CLI: with <c>mergeOnSuccess</c> OMITTED (default ON) a wholly-green run
+    /// would normally deliver; <c>--no-merge-on-success</c> suppresses it, so the user's branch stays at its
+    /// original HEAD. The run is still green (exit 0 — the loud green-but-undelivered warning is a safety
+    /// notice, not a failure). Proves CLI precedence: the flag beats the true default.
+    /// </summary>
+    [Fact]
+    public async Task Cli_NoMergeOnSuccessFlag_SuppressesDefaultDelivery()
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+        string originalBranch = repo.CurrentBranch();
+
+        // mergeOnSuccess OMITTED → default ON. The flag must turn it back off.
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        int exitCode = await InvokeCliAsync("run", planDir, "--no-merge-on-success", "--no-ui", "--no-log-server");
+
+        // Green-but-undelivered is still exit 0 (the warning is a safety notice, not a failure).
+        Assert.Equal(ExitCodes.Success, exitCode);
+
+        // No delivery: the user's branch is UNCHANGED at its original HEAD (work stayed on the plan branch).
+        Assert.Equal(initialHead, repo.HeadSha());
+        Assert.Equal(originalBranch, repo.CurrentBranch());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 5c (#340) — passing BOTH --merge-on-success and --no-merge-on-success is a usage error.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// #340 contradictory-flags guard: <c>--merge-on-success</c> and <c>--no-merge-on-success</c> together
+    /// are a usage error — the CLI exits <see cref="ExitCodes.HarnessError"/> with an explanatory message
+    /// and runs NOTHING (the user's branch is untouched).
+    /// </summary>
+    [Fact]
+    public async Task Cli_BothMergeFlags_IsUsageError()
+    {
+        using var repo = new TempGitRepo();
+        string initialHead = repo.HeadSha();
+
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        var io = new StringConsoleIo();
+        int exitCode = await InvokeCliAsync(io,
+            "run", planDir, "--merge-on-success", "--no-merge-on-success", "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.HarnessError, exitCode);
+        Assert.Contains("contradictory", io.OutText, StringComparison.OrdinalIgnoreCase);
+        // Nothing ran — the user's branch is untouched (no plan branch delivery).
+        Assert.Equal(initialHead, repo.HeadSha());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // Test 5d (#340) — delivery is IDEMPOTENT on resume: a resumed run that already delivered
+    // re-drains green and re-fires delivery, which git reports "already up to date" — no double-merge,
+    // no error, HEAD unchanged. (Design mechanism-confirm.)
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// #340 resume idempotency: a first wholly-green run delivers (default ON) via FF. A second run RESUMES
+    /// from the persisted journal — every task is already succeeded, so the DAG re-drains green and the
+    /// end-of-run delivery re-fires. Because the user's branch is already at the plan tip, the ff-only merge
+    /// is "already up to date": the outcome is again <see cref="MergeOnSuccessResult.FastForwarded"/> (no
+    /// throw), HEAD is unchanged from the first delivery, and no merge commit is introduced.
+    /// </summary>
+    [Fact]
+    public async Task Resume_AlreadyDelivered_ReDeliversIdempotently()
+    {
+        using var repo = new TempGitRepo();
+        string originalBranch = repo.CurrentBranch();
+        string initialHead = repo.HeadSha();
+
+        // mergeOnSuccess OMITTED → default ON (#340).
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        // ── Run 1: fresh provider, delivers via FF ────────────────────────────────────────────
+        var (report1, _) = await RunWithProviderAsync(
+            planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            TestContext.Current.CancellationToken);
+        Assert.True(report1.AllSucceeded,
+            "Resume run 1 must succeed; " + string.Join(", ", report1.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+        Assert.Equal(MergeOnSuccessResult.FastForwarded, report1.MergeOnSuccessOutcome);
+        string headAfterFirstDelivery = repo.HeadSha();
+        Assert.NotEqual(initialHead, headAfterFirstDelivery); // delivered
+
+        // ── Run 2: RESUME (journal persisted) — re-drains green, re-fires delivery idempotently ──
+        var (report2, _) = await RunWithProviderAsync(
+            planDir, new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            TestContext.Current.CancellationToken);
+        Assert.True(report2.AllSucceeded, "Resume run 2 must stay green (all tasks already succeeded).");
+
+        // Idempotent re-delivery: "already up to date" FF, never a double-merge or error.
+        Assert.Equal(MergeOnSuccessResult.FastForwarded, report2.MergeOnSuccessOutcome);
+        Assert.False(report2.WhollyGreenButUndelivered);
+        Assert.Equal(headAfterFirstDelivery, repo.HeadSha()); // HEAD unchanged — no double-merge
+        Assert.Empty(TempGitRepo.Git(repo.RepoPath, "log", "--merges", "--format=%H").Trim());
+        Assert.Equal(originalBranch, repo.CurrentBranch());
+    }
+
     /// <summary>
     /// Drive the real <c>run</c> command pipeline. Output goes to a discarded
     /// <see cref="StringConsoleIo"/> so nothing touches the process-global console (parallel-safe).
     /// </summary>
-    private static async Task<int> InvokeCliAsync(params string[] args)
+    private static Task<int> InvokeCliAsync(params string[] args) =>
+        InvokeCliAsync(new StringConsoleIo(), args);
+
+    /// <summary>Overload that drives the <c>run</c> command through a caller-supplied <see cref="StringConsoleIo"/> so a test can assert the console output.</summary>
+    private static async Task<int> InvokeCliAsync(StringConsoleIo io, params string[] args)
     {
-        var io = new StringConsoleIo();
         var root = new RootCommand("merge-on-success cli test root");
         root.Add(RunCommand.Create(io));
         return await root.Parse(args).InvokeAsync();

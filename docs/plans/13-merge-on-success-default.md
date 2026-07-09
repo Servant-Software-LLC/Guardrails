@@ -150,16 +150,20 @@ the user's branch.
   run already FF'd should treat "already up to date" as delivered (no error). Flag for the harness
   developer to verify; likely already a git no-op.
 
-- **Worktree mode vs serial/shared-workspace mode (mode-dependent meaning — verify, don't
-  assert).** The flip is meaningful wherever the **plan branch is the delivery target** (worktree
-  mode, the default). In **serial shared-workspace** mode, task writes already land in the user's
-  checkout (§3.5/§5.3), so a merge-back may be a **no-op** (the work is already there). Under
-  **`runOnCurrentBranch: true`**, the plan branch **is** the current branch, so "merge plan branch
-  into the user's original branch" is a self-merge / already-up-to-date — again a likely **no-op**.
-  Design intent: **one default, ON, everywhere**; where there is nothing to deliver, delivery is a
-  harmless no-op. The exact no-op semantics under `runOnCurrentBranch`/serial are a **mechanism
-  question for the harness developer to confirm** — this doc deliberately does not assert a wrong
-  mechanism.
+- **Worktree mode vs serial/shared-workspace mode (mode-dependent meaning).** The flip is meaningful
+  wherever the **plan branch is the delivery target** (worktree mode, the default). In **serial
+  shared-workspace** mode there is no plan branch (`integ == null`): task writes already land in the
+  user's checkout (§3.5/§5.3), so delivery is genuinely skipped — a true no-op. **CORRECTION (#345
+  review, finding 1a):** `runOnCurrentBranch` is **NOT** a no-op. It is currently an **unwired stub**
+  — read only by the loader / `RunConfig` and the green-but-undelivered warning path; **NOT** wired into
+  `GitWorktreeProvider`. So a worktree-mode run with `runOnCurrentBranch: true` still forks a
+  **separate** `guardrails/<plan>` branch, and default-ON delivery is a **real fast-forward** that moves
+  the user's HEAD and writes the deliverable into their checkout (NOT a self-merge, NOT a no-op). The
+  safety there is the same **clean-FF-or-halt-loud** contract as any worktree run — not the harmless
+  no-op this doc originally (wrongly) assumed. Design intent stands — **one default, ON, everywhere** —
+  but "harmless because nothing to deliver" holds only for serial mode; under `runOnCurrentBranch` the
+  work IS delivered (correctly). Follow-up: when `runOnCurrentBranch` is actually wired to deliver onto
+  the current branch, the delivery/warning can be short-circuited by delivery-target == current-branch.
 
 - **CI / `--ci` consumers.** A machine consumer that manages its own delivery (v2 bet #2's
   check-run / PR-per-task) will want delivery OFF. `--ci` does **not exist in v1** (YAGNI: no
@@ -317,10 +321,14 @@ symptom (user might miss it); the flip fixes the cause (green ≠ delivered) and
 that serves **unattended** runs, which can't act on a warning until a human returns. Recorded, with
 the rebuttal, in "Rejected alternatives."
 
-**Third counter — mode-dependent meaning.** Under `runOnCurrentBranch` / serial-shared-workspace the
-flip may be a no-op. Rather than special-case the default per mode (more surprising), keep one
-ON default and let delivery be a harmless no-op where there's nothing to deliver — with the exact
-no-op semantics flagged as a mechanism-confirm for the harness developer, not asserted here.
+**Third counter — mode-dependent meaning.** Keep one ON default rather than special-casing the default
+per mode (more surprising). In **serial** shared-workspace mode delivery is genuinely skipped (no plan
+branch, `integ == null`) — a true no-op. **CORRECTION (#345 review, finding 1a):** the earlier claim that
+`runOnCurrentBranch` is *also* a harmless no-op was **wrong** — `runOnCurrentBranch` is an unwired stub, so
+that mode still forks a separate `guardrails/<plan>` branch and default-ON delivery is a real fast-forward
+onto the user's branch (clean-FF-or-halt-loud, the same safety as any worktree run). Correspondingly the
+green-but-undelivered warning is **not** suppressed for `runOnCurrentBranch` (an opt-out run there really
+does strand work on the separate branch — the #340 incident).
 
 **Residual risk accepted:** default-ON turns some prior exit-0 runs into exit-2 halts for scripted
 consumers (item 2 above). Accepted and messaged; it is the honest signal, and the opt-out is

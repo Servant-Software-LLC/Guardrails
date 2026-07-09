@@ -74,10 +74,26 @@ public sealed record RunConfig
     public bool RunOnCurrentBranch { get; init; }
 
     /// <summary>
-    /// When true, the harness auto-merges each segment worktree back on success (SSOT §5.3).
-    /// Default false. Field exists for the model contract; the loader does not yet read it from JSON (M2).
+    /// When true (the DEFAULT, #340 — "green means delivered"), a wholly-green run delivers the plan
+    /// branch <c>guardrails/&lt;plan-name&gt;</c> into the user's original branch at run end (SSOT §5.3 / §2).
+    /// The merge-back is FF-when-possible, else a real merge whose deterministic re-verify must pass;
+    /// <b>AI-merge is withheld at this boundary</b> — a conflict / failed re-verify / dirty user tree halts
+    /// (exit 2) with the plan branch intact (a merge, not a move, so the branch survives). Opt out with
+    /// <c>"mergeOnSuccess": false</c> or the CLI <c>--no-merge-on-success</c>. The default flipped ON because
+    /// the merge-back is already non-destructive and halts loudly on any obstacle, so delivering by default
+    /// aligns the success signal with reality without the risks the old OFF default guarded against.
     /// </summary>
-    public bool MergeOnSuccess { get; init; }
+    public bool MergeOnSuccess { get; init; } = true;
+
+    /// <summary>
+    /// The RAW <c>mergeOnSuccess</c> value exactly as it appeared in <c>guardrails.json</c> (SSOT §2):
+    /// <c>null</c> when the key was OMITTED (so the effective <see cref="MergeOnSuccess"/> came from the
+    /// #340 <c>true</c> default), or <c>true</c>/<c>false</c> when explicitly set. Not a JSON field of its
+    /// own — it preserves the raw manifest's nullability so the CLI can distinguish "omitted → defaulted on"
+    /// from an explicit value and print the one-time "delivered by default" notice ONLY in the former case.
+    /// The RESOLVED behavior is always <see cref="MergeOnSuccess"/>.
+    /// </summary>
+    public bool? MergeOnSuccessExplicit { get; init; }
 
     /// <summary>
     /// Opt-in auto-file of the needs-human triage GH issue (SSOT §9, plan 08 Decision 8). Default

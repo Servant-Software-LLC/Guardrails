@@ -71,14 +71,29 @@ public sealed class LogsAndRunConfigTests : IDisposable
     }
 
     [Fact]
-    public void MergeOnSuccess_DefaultsFalse_WhenAbsentFromConfig()
+    public void MergeOnSuccess_DefaultsTrue_WhenAbsentFromConfig()
     {
-        // §2/§5.3: mergeOnSuccess defaults to false (no automatic merge unless explicitly opted in).
-        // COMPILE FAILURE: RunConfig.MergeOnSuccess does not yet exist.
+        // §2/§5.3 (#340): mergeOnSuccess defaults to TRUE — a wholly-green run delivers by default
+        // ("green means delivered"). An OMITTED key resolves the true default AND leaves the raw-nullable
+        // MergeOnSuccessExplicit null, so the CLI can distinguish "defaulted on" from an explicit value.
         PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan("""{ "version": 1 }"""));
         Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
 
+        Assert.True(result.Plan!.Config.MergeOnSuccess);
+        Assert.Null(result.Plan!.Config.MergeOnSuccessExplicit);
+    }
+
+    [Fact]
+    public void MergeOnSuccess_RoundTrips_WhenFalse()
+    {
+        // The explicit opt-out (§2/§5.3, #340): "mergeOnSuccess": false resolves false — distinguishable
+        // from an omitted key (which now defaults true) via the preserved raw-nullable MergeOnSuccessExplicit.
+        const string json = """{ "version": 1, "mergeOnSuccess": false }""";
+        PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan(json));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
         Assert.False(result.Plan!.Config.MergeOnSuccess);
+        Assert.Equal(false, result.Plan!.Config.MergeOnSuccessExplicit);
     }
 
     [Fact]
@@ -113,6 +128,9 @@ public sealed class LogsAndRunConfigTests : IDisposable
         Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
 
         Assert.True(result.Plan!.Config.MergeOnSuccess);
+        // An EXPLICIT true is preserved on the raw-nullable so the CLI treats it as an opt-in (no
+        // "delivered by default" notice), distinct from an omitted key.
+        Assert.Equal(true, result.Plan!.Config.MergeOnSuccessExplicit);
     }
 
     [Fact]

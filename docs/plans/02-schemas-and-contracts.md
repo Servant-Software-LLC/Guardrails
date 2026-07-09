@@ -76,10 +76,14 @@ FRESH code — the old plan-07 draft cited `GR2013`, which is **taken on `master
 outside the workspace** — default `<temp>/guardrails-worktrees/<workspace-hash>/<runId>/`,
 overridable via `guardrails.json: worktreeRoot`. Worktrees + the plan branch are runtime state
 (wiped by `--fresh`, pruned on resume; the integration worktree is reattached, not pruned). The
-user's own working tree and branch are **read-only for the entire run**; the only optional write to
-the user's branch is `--merge-on-success` (§5.3). A `runOnCurrentBranch` opt-in makes the plan
-branch the current branch but still integrates via a harness-owned worktree, never the user's live
-checkout.
+user's own working tree and branch are **read-only for the entire run**; the only write to the user's
+branch is the end-of-run delivery (`mergeOnSuccess`, **ON by default — #340**; opt out with
+`--no-merge-on-success` / `"mergeOnSuccess": false`) (§5.3). A `runOnCurrentBranch` opt-in is *intended* to
+make the plan branch the current branch (still integrated via a harness-owned worktree, never the user's
+live checkout), but is currently an **unwired stub** (#345 review): the loader reads it and the
+green-but-undelivered warning honors it, but `GitWorktreeProvider` still forks a separate
+`guardrails/<plan>` branch, so today it behaves like an ordinary worktree run (default-ON delivery
+fast-forwards that separate branch onto the user's branch — see §5.3).
 
 The per-attempt log tree moves out of `state/` to a top-level `logs/` sibling, **divided by
 `runId`** (`logs/<runId>/<task-id>/attempt-N/`), so logs are findable and a re-run's logs never
@@ -117,7 +121,7 @@ decision (issue #275) and is deliberately NOT done here.
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
   "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/guardrails-worktrees/<hash>/<runId>/
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
-  "mergeOnSuccess": false,            // OPTIONAL; if true AND the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here)
+  "mergeOnSuccess": true,             // OPTIONAL; DEFAULT true (#340). When the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here). Set false (or pass --no-merge-on-success) to leave the work on the plan branch for manual review
   "autonomyPolicy": "prompt",         // OPTIONAL; the UNIFIED autonomy knob (§2.1). "prompt" (DEFAULT): interactive TTY prompts, non-interactive HALTS. "auto": apply a SAFE decision with no prompt (CLI --autonomy auto, or the legacy alias --reprocess-drift). "halt": always halt. An UNSAFE/UNSOUND action ALWAYS halts regardless. GR2031 if unrecognized. In M1 the only wired boundary is the on-resume definition-drift gate (§7.2)
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issues #195/#306). Default true. Stashes ANY rolled-back non-final worktree attempt to a git ref + applyable patch (exposed to the retry) instead of pure discard; set false to disable
@@ -176,14 +180,23 @@ decision (issue #275) and is deliberately NOT done here.
   end-of-run integration merges back into the current branch and a dirty tree invites merge
   complications. **GR2016** (warning): a deep `worktreeRoot` + deep source tree risks exceeding
   Windows MAX_PATH (260 chars); document `core.longpaths` as the mitigation.
-- `mergeOnSuccess` (default `false`; CLI `--merge-on-success` overrides) opts into end-of-run
-  delivery of the plan branch into the user's original branch. **AI-merge is withheld at this
-  boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts to `needs-human`
-  with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the user's commits.
-  Because the default is OFF, a wholly-green run that did NOT deliver prints a **loud green-but-undelivered
-  warning** at run end (`RunReport.WhollyGreenButUndelivered`; §7 "Run end") — the safety backstop so the
-  work sitting undelivered on `guardrails/<plan-name>` is never one `--fresh`/`reset -y` away from silent
-  loss (#340).
+- `mergeOnSuccess` (**default `true`, #340**) delivers the plan branch into the user's original
+  branch at run end when the whole run goes green — so **"green" means "delivered."** **AI-merge is
+  withheld at this boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts
+  (exit 2) with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the
+  user's commits. **Opt out** with `"mergeOnSuccess": false` or the CLI `--no-merge-on-success` to
+  leave the verified work on the plan branch for manual review/merge. **CLI precedence** (highest
+  wins): `--merge-on-success` / `--no-merge-on-success` (a nullable override) → `guardrails.json`
+  `mergeOnSuccess` → the `true` default; passing both flags is a usage error. When delivery fires
+  purely because of the default (no config key, no flag), the CLI prints a one-time notice naming the
+  branch and the opt-out. *Rationale:* the merge-back is already non-destructive (FF-or-clean-merge,
+  re-verified, AI-merge withheld, halts loudly on any obstacle, and is a merge not a move so the plan
+  branch survives), so delivering by default aligns the success signal with reality without the risks
+  the old OFF default guarded against. A future CI mode (roadmap bet #2) that owns its own delivery
+  should set its effective default back to OFF. When the user OPTS OUT (delivery resolved off), a
+  wholly-green worktree-mode run instead prints the **loud green-but-undelivered warning** at run end
+  (`RunReport.WhollyGreenButUndelivered`; §7 "Run end") — the backstop so verified work left on
+  `guardrails/<plan-name>` is never one `--fresh`/`reset -y` away from silent loss.
 - `autonomyPolicy` (default `"prompt"`) is the **unified autonomy knob** governing every prompt/halt/auto
   decision boundary — the full contract, and the shared `decisions[]` reporting surface it feeds, is
   **§2.1** below. In M1 the only wired boundary is the on-resume **definition-drift** gate (§7.2); its
@@ -1061,14 +1074,30 @@ regardless of per-task outcomes.
 in its segment worktree (keeping every upstream/sibling commit; `taskBase ≠ preHead`), not a
 discard-and-recreate.
 
-**Run end (opt-in delivery).** When the run drains wholly green AND `mergeOnSuccess`/
-`--merge-on-success` is set, the harness merges the plan branch into the user's original branch
-(ff-only when possible, else a real merge whose re-verify must pass). **AI-merge is NOT used here.**
-A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch intact — never a
-force-overwrite. Default OFF leaves the plan branch for the user to review and merge. The merge-back
-outcome is reported as `MergeOnSuccessResult` (`FastForwarded` / `Merged` / `Conflict` /
-`DirtyWorkingTree` / `HookRejected`); a dirty user working tree is refused **before any git merge runs**
-(the harness never runs git over uncommitted user work) and returns `DirtyWorkingTree`.
+**Run end (delivery, ON by default — #340).** When the run drains wholly green AND `mergeOnSuccess`
+is effective (the `true` default, or explicitly via config / `--merge-on-success`; suppressed by
+`--no-merge-on-success` / `"mergeOnSuccess": false`), the harness merges the plan branch into the
+user's original branch (ff-only when possible, else a real merge whose re-verify must pass). **AI-merge
+is NOT used here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
+intact — never a force-overwrite. Opting out (`false` / `--no-merge-on-success`) leaves the plan branch
+for the user to review and merge. The merge-back outcome is reported as `MergeOnSuccessResult`
+(`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected`); a dirty user working
+tree is refused **before any git merge runs** (the harness never runs git over uncommitted user work)
+and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that re-drains green
+after a prior run already delivered re-issues an ff-only merge that git reports "Already up to date"
+(→ `FastForwarded`, exit 0) — never a double-merge or error.
+
+> **BREAKING DEFAULT (#340, no CHANGELOG in-repo — recorded here + in `docs/plans/13-merge-on-success-default.md`).**
+> `mergeOnSuccess` flipped from **OFF → ON**: on upgrade, an existing plan that OMITS the key now delivers to
+> the user's branch on a wholly-green run instead of leaving the work on `guardrails/<plan-name>`. Two
+> consequences to message: (1) **exit-code surface** — default-ON converts some prior **exit-0** green runs
+> into **exit-2** halts (`DirtyWorkingTree` when the user kept editing, `Conflict`, or `HookRejected` at
+> delivery); a scripted/CI consumer keying on exit 0 must now explicitly set `"mergeOnSuccess": false` (or
+> pass `--no-merge-on-success`) to keep the old leave-it-on-the-plan-branch behavior. (2) **Bounded blast
+> radius** — delivery is a **merge, not a move**, so `guardrails/<plan>` survives; a surprised user recovers
+> by `git reset` on their branch (plan branch intact) or by checking out the plan branch, and the one-time
+> delivered-by-default notice makes the change observable. At the current `1.0.0-preview.N` pre-1.0 cadence
+> a loud-noted breaking default is acceptable.
 
 **The user-facing merge KEEPS the user's git hooks (#149).** This is the deliberate complement to the
 internal-commit isolation above: when the verified plan branch lands on the user's real branch, their
@@ -1089,26 +1118,31 @@ A wholly-green run whose delivery is HALTED (`Conflict` / `DirtyWorkingTree` / `
 non-zero at the CLI: the work is durable on the plan branch but the user must act. A `FastForwarded` /
 `Merged` delivery, or no `mergeOnSuccess` at all, leaves the green (exit 0) verdict untouched.
 
-**Green-but-undelivered warning (#340) — the safety backstop for the default-OFF posture.** The
-`mergeOnSuccess` default **stays `false`** (delivery is an explicit opt-in; the default-ON flip is a
-separate contract decision, not made here). That default carries a real hazard the incident surfaced: a
-run can drain WHOLLY green — every task succeeded, the terminal gate passed — and yet deliver **nothing**
-to the user's branch, while the console's success output reads **identically** to a run that DID deliver.
-The verified work sits on `guardrails/<plan-name>`, one `--fresh`/`reset -y` away from silent destruction,
-with no signal it is at risk. The backstop is a **loud, unmissable end-of-run warning** (it is NOT a
-default change): the Scheduler sets `RunReport.WhollyGreenButUndelivered` when the run drained wholly
-green (`AllSucceeded`) AND `mergeOnSuccess` resolved **false** AND a **real, separate plan branch exists**
-— i.e. worktree mode (a worktree provider AND an integration handle are present) and NOT
-`runOnCurrentBranch`. It is deliberately **false** in serial mode (no plan branch — the work is already in
-the shared workspace / the user's checkout) and in `runOnCurrentBranch` mode (the plan branch **is** the
-user's current branch), and false whenever delivery actually ran (delivery requires `mergeOnSuccess` on,
-which forces the flag off) — so the harness NEVER warns about "undelivered work" that is in fact already
-on the user's branch. The CLI renders the warning (behind the CLI seam, never in Core) at run end **only**
-when `WhollyGreenButUndelivered` is true AND the terminal gate also passed — a bannered block naming the
-exact plan branch, the command to deliver it (`--merge-on-success`, or a manual merge), and the
-`--fresh`/`reset -y` destruction risk. A green-but-undelivered run is still exit 0 (the warning is a
-safety notice, not a failure); a delivered run, a non-green run, a serial-mode run, and a
-`runOnCurrentBranch` run print no such warning.
+**Green-but-undelivered warning (#340) — the safety backstop for the OPT-OUT posture.** With delivery
+now **ON by default** (`mergeOnSuccess` defaults `true`, per the flip above), a wholly-green run normally
+delivers and prints the one-time delivered-by-default notice (§2). But a user who **opts out** —
+`"mergeOnSuccess": false` or `--no-merge-on-success` — reintroduces the hazard the incident surfaced: the
+run drains WHOLLY green — every task succeeded, the terminal gate passed — and yet delivers **nothing** to
+the user's branch, while the console's success output reads **identically** to a run that DID deliver. The
+verified work sits on `guardrails/<plan-name>`, one `--fresh`/`reset -y` away from silent destruction, with
+no signal it is at risk. The backstop is a **loud, unmissable end-of-run warning**: the Scheduler sets
+`RunReport.WhollyGreenButUndelivered` when the run drained wholly green (`AllSucceeded`) AND
+`mergeOnSuccess` resolved **false** (the opt-out) AND a **real, separate plan branch exists** — i.e.
+worktree mode (a worktree provider AND an integration handle are present). It is deliberately **false** in
+serial mode (no plan branch — `integ == null`, the work is already in the shared workspace / the user's
+checkout), and false whenever delivery actually ran (delivery requires `mergeOnSuccess` on, so this warning
+and the delivered-by-default notice never coincide). It is **NOT** suppressed for `runOnCurrentBranch`
+(#345 review, finding 1c): `runOnCurrentBranch` is currently an **unwired stub** (read only by the loader /
+`RunConfig` and this warning path; NOT wired into `GitWorktreeProvider`), so a worktree-mode opt-out run
+still creates a **separate** `guardrails/<plan>` branch and genuinely STRANDS verified work there — the
+warning MUST fire, or that combination silently re-creates the exact #340 incident. (Follow-up: when
+`runOnCurrentBranch` is actually wired to deliver onto the current branch, re-add a guard keyed on
+delivery-target == current-branch, not on the stub flag.) The CLI renders the warning (behind the CLI seam,
+never in Core) at run end **only** when `WhollyGreenButUndelivered` is true AND the terminal gate also
+passed — a bannered block naming the exact plan branch, the command to deliver it (`--merge-on-success`, or
+a manual merge), and the `--fresh`/`reset -y` destruction risk. A green-but-undelivered run is still exit 0
+(the warning is a safety notice, not a failure); a delivered run, a non-green run, and a serial-mode run
+print no such warning.
 
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
@@ -1669,7 +1703,7 @@ drift was **not** auto-resolved: the pre-pass scheduled nothing and returned `Ru
 A Part C **auto-resolved** drift is NOT this code — it rewinds, re-runs the safe suffix, and returns the
 **normal** run exit code, `0` green / `2` needs-human, never a drift-specific one), OR the terminal `planGuardrails`
 gate failed on the merged HEAD (§3.3/§7.1 above — durable on the plan branch; re-fires on resume or via
-`--revalidate-task plan:guardrails`), OR every task passed but the opt-in end-of-run delivery to the
+`--revalidate-task plan:guardrails`), OR every task passed but the end-of-run delivery to the
 user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or `HookRejected` `MergeOnSuccessResult`
 — the work is durable on the plan branch, the user must finish the merge); for `graph --check`: the
 diagram is stale or missing (the "regenerate" signal); for `lock --check`: the folder has drifted from
