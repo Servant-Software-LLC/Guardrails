@@ -283,6 +283,14 @@ public static class MermaidRenderer
     /// id). The observer keys events by <c>(task.Id, check Name)</c> because
     /// <c>GuardrailResult.Name == GuardrailDefinition.Name</c> and Name is what the renderer sorts and
     /// draws.
+    /// <para>
+    /// <b>Known limitation (issue #332).</b> Two DISTINCT checks that share a <c>Name</c> within ONE
+    /// folder (e.g. <c>01-build.ps1</c> + <c>01-build.sh</c>), or a task id that equals another task's
+    /// derived leaf id (<c>task_a_gr_0</c>), COLLAPSE onto a single map key / DOM id here — the second
+    /// silently overwrites the first, so one node is unbadgeable and a badge can land on the wrong box.
+    /// Both are load-clean-but-ambiguous shapes; the loader-level duplicate-name/collision diagnostic is
+    /// tracked in #332, not this surface.
+    /// </para>
     /// </remarks>
     public static DiagramStatusNodes StatusNodes(PlanDefinition plan)
     {

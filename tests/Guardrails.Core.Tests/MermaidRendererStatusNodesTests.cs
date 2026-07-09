@@ -7,11 +7,24 @@ namespace Guardrails.Core.Tests;
 /// Unit tests for <see cref="MermaidRenderer.StatusNodes"/> + <see cref="DiagramStatusNodes"/> (issue
 /// #219, SSOT §10.1): the node-id surface the live status overlay uses to translate the observer's
 /// SEMANTIC events (<c>task.Id</c>, <c>GuardrailResult.Name</c>) into the EXACT SVG node ids the
-/// renderer emits. The load-bearing test is <see cref="StatusNodes_IsInBijection_WithEveryRenderedContainerAndLeafSvgId"/>:
-/// a golden BIJECTION between <c>StatusNodes</c> and the ids the renderer actually draws, in BOTH
-/// directions — the same anti-drift discipline <c>GraphSourceHashTests</c> applies to
-/// <c>SemanticContent</c>. If the emitter's ordinal/id math ever diverges from <c>StatusNodes</c>' the
-/// bijection breaks and this fails.
+/// renderer emits. The load-bearing test is <see cref="StatusNodeIds_SetEqual_RenderedNodeIds"/>: it
+/// asserts SET EQUALITY between the id SET <c>StatusNodes</c> claims and the id SET the renderer
+/// actually draws — no StatusNodes entry points at an id the renderer never draws, and no rendered
+/// container/leaf id lacks a StatusNodes entry — the same anti-drift discipline
+/// <c>GraphSourceHashTests</c> applies to <c>SemanticContent</c>. If the emitter's ordinal/id math ever
+/// diverges from <c>StatusNodes</c>' (e.g. a renamed prefix or a changed sort) set-equality breaks and
+/// this fails.
+/// <para>
+/// <b>Known limitation (issue #332).</b> This compares two id SETS; it is NOT a 1-to-1 bijection check.
+/// It cannot catch two DISTINCT semantic entities that COLLAPSE onto the same id and dedupe inside a
+/// <see cref="HashSet{T}"/>: (A) a duplicate check <c>Name</c> within one folder (e.g. <c>01-build.ps1</c>
+/// + <c>01-build.sh</c> both → Name "01-build"), which the <c>(taskId, Name)</c>-keyed map holds once; or
+/// (B) a task id equal to another task's derived leaf id (task <c>a</c>'s guardrail → <c>task_a_gr_0</c>
+/// vs a task folder named <c>a-gr-0</c> → container <c>task_a_gr_0</c>), one DOM id shared by two nodes.
+/// Both are load-clean-but-ambiguous shapes; the loader-level duplicate-name/collision diagnostic is
+/// tracked in #332 (not this feature). <see cref="DuplicateCheckName_InOneFolder_CollapsesToOneStatusEntry"/>
+/// characterizes (A) executably.
+/// </para>
 /// </summary>
 public sealed class MermaidRendererStatusNodesTests
 {
@@ -57,10 +70,10 @@ public sealed class MermaidRendererStatusNodesTests
         TaskWith("01-a", [Check("01-dep-delivered")], [Check("01-build"), Check("02-test")]),
         TaskWith("02-b", [], [Check("01-check")], "01-a"));
 
-    // === the anti-drift bijection golden test ==========================================
+    // === the anti-drift set-equality golden test =======================================
 
     [Fact]
-    public void StatusNodes_IsInBijection_WithEveryRenderedContainerAndLeafSvgId()
+    public void StatusNodeIds_SetEqual_RenderedNodeIds()
     {
         PlanDefinition plan = FullPlan();
         DiagramStatusNodes nodes = MermaidRenderer.StatusNodes(plan);
@@ -68,14 +81,20 @@ public sealed class MermaidRendererStatusNodesTests
         HashSet<string> statusIds = AllStatusIds(nodes);
         HashSet<string> renderedIds = ExtractRenderedNodeIds(MermaidRenderer.Render(plan));
 
-        // No rendered container/leaf id lacks a StatusNodes entry (the observer could never badge it)...
+        // SET EQUALITY (the two set-difference directions): no rendered container/leaf id lacks a
+        // StatusNodes entry (the observer could never badge it)...
         Assert.Empty(renderedIds.Except(statusIds));
         // ...and no StatusNodes entry points at an id the renderer never draws (a dead/typo'd badge).
         Assert.Empty(statusIds.Except(renderedIds));
+
+        // Known limitation (issue #332): this is SET equality, NOT a 1-to-1 bijection — both sides are
+        // HashSets, so two DISTINCT semantic entities that collapse onto the same id (a duplicate check
+        // Name in one folder, or a task-id ↔ leaf-id collision) still dedupe to one element and pass
+        // here. The loader-level duplicate-name/collision diagnostic is #332's own PR, not this feature.
     }
 
     [Fact]
-    public void StatusNodes_Bijection_HoldsForAPlanWithEmptyPlanLevelFolders()
+    public void StatusNodeIds_SetEqual_RenderedNodeIds_ForEmptyPlanLevelFolders()
     {
         // The two plan-level bracket containers are ALWAYS emitted (structural brackets), even with no
         // plan-level checks — so their container ids must still be present in both sets.
@@ -89,6 +108,29 @@ public sealed class MermaidRendererStatusNodesTests
         Assert.Contains("plan_guardrails", renderedIds);
         Assert.Empty(renderedIds.Except(statusIds));
         Assert.Empty(statusIds.Except(renderedIds));
+    }
+
+    [Fact]
+    public void DuplicateCheckName_InOneFolder_CollapsesToOneStatusEntry()
+    {
+        // Characterizes issue #332 Scenario A (executable, not just prose): two checks in ONE folder
+        // that share a Name — the real load-clean case is 01-build.ps1 + 01-build.sh, both →
+        // GuardrailDefinition.Name "01-build" (constructed in-memory here to document StatusNodes'
+        // behavior; the loader-level "loads clean but is ambiguous" fix is tracked in #332). The
+        // (taskId, Name)-keyed map holds a SINGLE "01-build" entry — the second silently overwrites the
+        // first — so one of the two leaf boxes can never be badged, and a failure keyed by Name paints on
+        // whichever leaf won the overwrite. documents #332.
+        var build1 = new GuardrailDefinition { Name = "01-build", Path = "/fake/01-build.ps1", Kind = ActionKind.Script };
+        var build2 = new GuardrailDefinition { Name = "01-build", Path = "/fake/01-build.sh", Kind = ActionKind.Script };
+        PlanDefinition plan = PlanWith([], [], TaskWith("01-a", [], [build1, build2]));
+
+        DiagramStatusNodes nodes = MermaidRenderer.StatusNodes(plan);
+
+        // Two same-Name guardrails → ONE (taskId, Name) key. The renderer, meanwhile, still emits two
+        // distinct leaf nodes (_gr_0 and _gr_1), so StatusNodes cannot address the second — the collapse
+        // the set-equality test above cannot see.
+        Assert.Single(nodes.TaskGuardrailLeaves, kv => kv.Key.TaskId == "01-a");
+        Assert.True(nodes.TaskGuardrailLeaves.ContainsKey(("01-a", "01-build")));
     }
 
     // === id shape + key vocabulary =====================================================
