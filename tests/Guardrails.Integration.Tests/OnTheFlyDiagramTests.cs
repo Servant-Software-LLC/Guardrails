@@ -163,6 +163,54 @@ public sealed class OnTheFlyDiagramTests
     }
 
     [Fact]
+    public void Seed_FailedTaskPreflight_PaintsPreflightLeaf_NotAGuardrailLeaf()
+    {
+        // #338: a task whose LAST attempt on a resumed run is a task-preflight-failed (§7) — the failed
+        // check is a PREFLIGHT (01-ready), NOT a guardrail (01-build). The seed must paint the `_pf_` leaf.
+        // Before the fix the seed consulted ONLY TaskGuardrailLeaves keyed by Name, so a failed preflight
+        // painted NOTHING (its name matches no guardrail leaf) — the pf leaf was silently left pending.
+        using var temp = new TempLogs();
+        PlanDefinition plan = Plan(
+            TaskWithChecks("01-a", preflightNames: ["01-ready"], guardrailNames: ["01-build"]));
+
+        JournalDocument journal = SeedNeedsHumanJournal("01-a", AttemptOutcome.TaskPreflightFailed, "01-ready");
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journal);
+        observer.WriteInitialDiagram();
+
+        string html = temp.ReadDiagram();
+        Assert.Equal("needs-human", Status(html, "task_01_a"));   // the container
+        Assert.Equal("failed", Status(html, "task_01_a_pf_0"));   // the PREFLIGHT leaf — now painted (#338)
+        Assert.Null(Status(html, "task_01_a_gr_0"));              // the guardrail leaf stays pending
+    }
+
+    [Fact]
+    public void Seed_SameNamePreflightAndGuardrail_FailedKindPaintsItsOwnLeaf_NotTheOther()
+    {
+        // #338 × #332: a same-Name preflight + guardrail is legal in ONE task (separate `_pf_`/`_gr_`
+        // namespaces). A failed check named "01-check" must paint ONLY the leaf of its own KIND — keyed by
+        // the attempt Outcome, never by Name alone (which would collapse the two identically-named leaves).
+        using var temp = new TempLogs();
+        PlanDefinition plan = Plan(
+            TaskWithChecks("01-a", preflightNames: ["01-check"], guardrailNames: ["01-check"]));
+
+        // (1) The PREFLIGHT failed → only the `_pf_` leaf is painted (pre-#338 this painted the `_gr_` leaf).
+        JournalDocument preflightJournal = SeedNeedsHumanJournal("01-a", AttemptOutcome.TaskPreflightFailed, "01-check");
+        var pfObserver = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, preflightJournal);
+        pfObserver.WriteInitialDiagram();
+        string pfHtml = temp.ReadDiagram();
+        Assert.Equal("failed", Status(pfHtml, "task_01_a_pf_0"));
+        Assert.Null(Status(pfHtml, "task_01_a_gr_0"));
+
+        // (2) A GUARDRAIL failed → only the `_gr_` leaf is painted (its own kind, unchanged).
+        JournalDocument guardrailJournal = SeedNeedsHumanJournal("01-a", AttemptOutcome.GuardrailFailed, "01-check");
+        var grObserver = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, guardrailJournal);
+        grObserver.WriteInitialDiagram();
+        string grHtml = temp.ReadDiagram();
+        Assert.Equal("failed", Status(grHtml, "task_01_a_gr_0"));
+        Assert.Null(Status(grHtml, "task_01_a_pf_0"));
+    }
+
+    [Fact]
     public async Task ConcurrentEvents_ProduceAWellFormedAtomicDiagram_EveryTaskSettled()
     {
         using var temp = new TempLogs();
@@ -279,6 +327,51 @@ public sealed class OnTheFlyDiagramTests
         Guardrails = guardrailNames
             .Select(n => new GuardrailDefinition { Name = n, Path = $"/fake/{n}.ps1", Kind = ActionKind.Script })
             .ToList(),
+    };
+
+    /// <summary>A task carrying both task-level PREFLIGHT checks (the `_pf_` leaves) and guardrails (`_gr_`).</summary>
+    private static TaskNode TaskWithChecks(string id, string[] preflightNames, string[] guardrailNames) => new()
+    {
+        Id = id,
+        Directory = $"/fake/tasks/{id}",
+        Description = "task " + id,
+        Action = new ActionDefinition { Path = "action.ps1", Kind = ActionKind.Script },
+        Preflights = preflightNames
+            .Select(n => new GuardrailDefinition { Name = n, Path = $"/fake/preflights/{n}.ps1", Kind = ActionKind.Script })
+            .ToList(),
+        Guardrails = guardrailNames
+            .Select(n => new GuardrailDefinition { Name = n, Path = $"/fake/{n}.ps1", Kind = ActionKind.Script })
+            .ToList(),
+    };
+
+    /// <summary>
+    /// A resumed journal with one needs-human task whose single recorded attempt failed with
+    /// <paramref name="outcome"/> and one failed check named <paramref name="failedCheckName"/> — the seed
+    /// input for the #338 preflight-vs-guardrail leaf-painting tests.
+    /// </summary>
+    private static JournalDocument SeedNeedsHumanJournal(string taskId, AttemptOutcome outcome, string failedCheckName) => new()
+    {
+        RunId = TempLogs.RunId,
+        PlanHash = "sha256:deadbeef",
+        Tasks = new Dictionary<string, TaskJournalEntry>
+        {
+            [taskId] = new()
+            {
+                Status = Core.Journal.TaskStatus.NeedsHuman,
+                Attempts =
+                [
+                    new AttemptRecord
+                    {
+                        Attempt = 1,
+                        StartedAt = DateTimeOffset.UtcNow,
+                        EndedAt = DateTimeOffset.UtcNow,
+                        Outcome = outcome,
+                        LogDir = $"logs/x/{taskId}/attempt-1",
+                        FailedGuardrails = [new FailedGuardrail { Name = failedCheckName, Reason = "failed" }],
+                    },
+                ],
+            },
+        },
     };
 
     private static PlanDefinition Plan(params TaskNode[] tasks) => new()

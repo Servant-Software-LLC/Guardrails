@@ -391,7 +391,7 @@ public sealed class HarnessWriteRunTests
     /// </summary>
     private static string WriteHarnessWritePromptPlan(
         string repoPath, string? writeScope, string guardrailChecksPath, int defaultRetries = 0,
-        string? requiredToken = null)
+        string? requiredToken = null, bool guardrailTimesOut = false)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(Path.Combine(planDir, "tasks", "01-write", "guardrails"));
@@ -414,11 +414,15 @@ public sealed class HarnessWriteRunTests
 
         string taskDir = Path.Combine(planDir, "tasks", "01-write");
         string writeScopeJson = writeScope is null ? "" : $", \"writeScope\": [{writeScope}]";
+        // #339 N1: a short whole-attempt timeout so the sleeping 02-timeout guardrail below is KILLED
+        // (guardrails.TimedOut) rather than run to completion. The fast fake action and the trivial
+        // 01-exists check finish well under it; only the deliberate sleeper trips it.
+        string timeoutJson = guardrailTimesOut ? ", \"timeoutSeconds\": 3" : "";
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
             $$"""
             {
               "description": "probe .claude/ then request a harness write",
-              "dependsOn": []{{writeScopeJson}}
+              "dependsOn": []{{writeScopeJson}}{{timeoutJson}}
             }
             """);
 
@@ -457,6 +461,24 @@ public sealed class HarnessWriteRunTests
                     "#!/usr/bin/env bash\n" +
                     $"if grep -q '{requiredToken}' \"$GUARDRAILS_WORKSPACE/{guardrailChecksPath}\" 2>/dev/null; " +
                     $"then exit 0; else echo 'missing required content: {requiredToken}'; exit 1; fi\n");
+            }
+        }
+
+        // #339 N1: an OPTIONAL second guardrail (ordinal 02, runs after 01-exists passes) that SLEEPS past
+        // the short task timeout so it is KILLED — models a guardrail that TIMES OUT while a recovered
+        // .claude/ wall coincided in the same attempt. It exits 0 if it ever finished, so the ONLY way it
+        // fails is the timeout kill (guardrails.TimedOut).
+        if (guardrailTimesOut)
+        {
+            if (Ps)
+            {
+                File.WriteAllText(Path.Combine(taskDir, "guardrails", "02-timeout.ps1"),
+                    "Start-Sleep -Seconds 60\nexit 0\n");
+            }
+            else
+            {
+                WriteSh(Path.Combine(taskDir, "guardrails", "02-timeout.sh"),
+                    "#!/usr/bin/env bash\nsleep 60\nexit 0\n");
             }
         }
 
@@ -641,6 +663,51 @@ public sealed class HarnessWriteRunTests
         Assert.Contains(requiredToken, failed.Reason);
 
         // Fast-halt preserved: one attempt, runner ran once (the .claude/ wall is unclearable).
+        Assert.Equal(1, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_RecoversClaudeWall_GuardrailTimesOut_ReportsTimeout_NotGuardrailFailed()
+    {
+        // #339 N1: a guardrail that TIMES OUT while a .claude/ wall was hit + RECOVERED in the SAME attempt
+        // must record the attempt outcome `timeout`, not `guardrail-failed`. The #329 structural-wall halt
+        // site previously HARD-CODED GuardrailFailed, dropping the `guardrails.TimedOut ? Timeout :
+        // GuardrailFailed` distinction its canonical guardrail-failed sibling keeps. The halt DECISION is
+        // unchanged — needs-human on ONE attempt (fast-halt), the .claude/ wall disclosed as secondary
+        // context — only the RECORDED outcome differs (guardrail-failed → timeout). Must FAIL before the
+        // N1 fix (would report guardrail-failed), pass after.
+        using var repo = new TempGitRepo();
+        const string deliverable = ".claude/commands/traverse-repo.md";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable, defaultRetries: 2,
+            guardrailTimesOut: true);
+
+        // The deliverable LANDS (recovers from the wall → 01-exists passes); the .claude/ path is reported
+        // blocked (the read-source detour); then 02-timeout sleeps past the 3s task timeout and is killed.
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [deliverable], deliverableToWrite: deliverable);
+
+        var (report, _) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.False(task.IsGreen);
+        Assert.Contains("guardrail(s) failed", task.Summary);
+        Assert.Contains("02-timeout", task.Summary);
+        Assert.Contains(deliverable, task.Summary);            // the .claude/ wall path, secondary context
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+
+        // #339 N1: the recorded attempt outcome is `timeout` (NOT guardrail-failed) — a timed-out guardrail
+        // keeps its timeout classification even at the structural-wall halt site.
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        Assert.Equal(AttemptOutcome.Timeout, attempt.Outcome);
+        FailedGuardrail failed = Assert.Single(attempt.FailedGuardrails);
+        Assert.Equal("02-timeout", failed.Name);
+
+        // Fast-halt preserved: one attempt, runner ran once even with budget 3 (a wall no retry clears).
         Assert.Equal(1, runner.Invocations);
     }
 

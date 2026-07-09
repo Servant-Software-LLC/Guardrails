@@ -368,9 +368,21 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
                     AttemptRecord? last = entry.Attempts.Count > 0 ? entry.Attempts[^1] : null;
                     if (last is not null)
                     {
+                        // #338: route each failed check to the leaf map for its KIND, not by Name alone. A
+                        // task-preflight-failed attempt (§7) records its failed PREFLIGHT check names in
+                        // FailedGuardrails — those belong on the `_pf_` leaves; every other failing outcome
+                        // records GUARDRAIL names → the `_gr_` leaves. The attempt's own Outcome is the
+                        // honest kind signal (no Name-guessing). Keying by Name against only
+                        // TaskGuardrailLeaves would (a) never paint a failed preflight leaf on the seed, and
+                        // (b) since #332 makes a same-Name preflight + guardrail legal in one task (separate
+                        // `_pf_`/`_gr_` namespaces), mis-paint the GUARDRAIL leaf for a failed preflight.
+                        IReadOnlyDictionary<(string TaskId, string CheckName), string> leaves =
+                            last.Outcome == AttemptOutcome.TaskPreflightFailed
+                                ? nodes.TaskPreflightLeaves
+                                : nodes.TaskGuardrailLeaves;
                         foreach (FailedGuardrail fg in last.FailedGuardrails)
                         {
-                            if (nodes.TaskGuardrailLeaves.TryGetValue((task.Id, fg.Name), out string? leaf))
+                            if (leaves.TryGetValue((task.Id, fg.Name), out string? leaf))
                             {
                                 map[leaf] = Failed;
                             }
