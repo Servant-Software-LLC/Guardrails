@@ -42,7 +42,8 @@ public static class SchedulerFactory
         PlanDefinition plan,
         ProcessRunner processRunner,
         IExecutableProbe probe,
-        IRunObserver observer)
+        IRunObserver observer,
+        IOverwatchInteraction? overwatchInteraction = null)
     {
         var stateManager = new StateManager(plan.PlanDirectory);
         stateManager.Initialize();
@@ -56,21 +57,28 @@ public static class SchedulerFactory
         var interpreterMap = new InterpreterMap(probe, plan.Config.Interpreters);
         PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
 
-        // Plan 08 §9.2 / defect #120-class: the needs-human triage is the advisory step that fires
-        // ONCE when a task exhausts its retry budget (in BOTH serial and worktree mode), writing the
-        // task-level feedback.md with a tool-vs-local diagnosis. Without it constructed here the
-        // TaskExecutor's `_triage is not null` guard short-circuits and the feature is dead from the
-        // CLI. Build it over the triage-profile prompt runner resolved from the plan's `promptRunners`;
-        // a script-only plan that declares NO prompt runner leaves it null — no advisory triage, never
-        // a crash. It is NOT worktree-specific, so wire it unconditionally whenever a runner exists.
-        NeedsHumanTriage? triage = null;
+        // #269 overwatcher (SSOT §9.2, doc 11): the active AI supervisor that SUBSUMES the shipped
+        // one-shot needs-human triage (now its §9.2.1 terminal-exhaustion case) and adds the eager /
+        // short-circuit / permission-wall triggers. The diagnose core is ON by default: it fires whenever
+        // an overwatch-capable prompt runner resolves — the reserved `overwatch` profile for the eager/
+        // short-circuit diagnose, the reserved `ai-triage` profile for the terminal case (each resolved
+        // with fallback to the default/sole runner). A script-only plan that declares NO prompt runner at
+        // all leaves the whole component null — no overwatcher, never a crash. The interaction seam defaults
+        // to non-interactive (honest halt): the v1 production posture (mid-run TTY confirm is a v2 UX bet).
+        Overwatch? overwatch = null;
+        IPromptRunner? diagnoseRunner = ResolveOverwatchRunner(registry);
         IPromptRunner? triageRunner = ResolveTriageRunner(registry);
-        if (triageRunner is not null)
+        if (diagnoseRunner is not null || triageRunner is not null)
         {
-            triage = new NeedsHumanTriage(triageRunner, plan.Config.TriageAutoFile);
+            NeedsHumanTriage? triage = triageRunner is not null
+                ? new NeedsHumanTriage(triageRunner, plan.Config.TriageAutoFile)
+                : null;
+            overwatch = new Overwatch(
+                diagnoseRunner, triage, plan.Config.AutonomyPolicy,
+                overwatchInteraction ?? IOverwatchInteraction.NonInteractive);
         }
 
-        var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, triage);
+        var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, overwatch);
         return (executor, journal);
     }
 
@@ -88,9 +96,10 @@ public static class SchedulerFactory
         IExecutableProbe probe,
         IRunObserver observer,
         DriftAuthorization? driftAuthorization = null,
-        IReadOnlySet<string>? waveDriftAuthorized = null)
+        IReadOnlySet<string>? waveDriftAuthorized = null,
+        IOverwatchInteraction? overwatchInteraction = null)
     {
-        (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer);
+        (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer, overwatchInteraction);
 
         // The re-verifier (attempt-decoupled guardrail runner) is wired UNCONDITIONALLY — non-null in
         // BOTH serial and worktree mode. Its only caller today (the per-union re-verify) fires only in
@@ -161,6 +170,19 @@ public static class SchedulerFactory
     /// plan that only configured <c>claude</c> still gets advisory triage on exhaustion.
     /// </summary>
     private const string TriageRunnerProfile = "ai-triage";
+
+    /// <summary>
+    /// The reserved <c>promptRunners</c> profile name for the #269 overwatcher's eager/short-circuit
+    /// diagnose prompt (doc 11 §2/§7: "reserve an <c>overwatch</c> profile alongside <c>ai-merge</c>/
+    /// <c>ai-triage</c>"). When a plan declares it, the diagnose uses exactly that profile; otherwise it
+    /// falls back to the default/sole runner so a plan that only configured <c>claude</c> still gets the
+    /// diagnose core ON by default (#305 Decision B). Null only when the plan declares no prompt runner.
+    /// </summary>
+    private const string OverwatchRunnerProfile = "overwatch";
+
+    /// <summary>Resolve the runner the overwatcher's diagnose prompt drives: the reserved <c>overwatch</c> profile, else the default/sole runner, else null.</summary>
+    private static IPromptRunner? ResolveOverwatchRunner(PromptRunnerRegistry registry) =>
+        ResolveReservedRunner(registry, OverwatchRunnerProfile);
 
     /// <summary>
     /// Resolve the <see cref="IPromptRunner"/> the AI-merge worker should drive: the reserved

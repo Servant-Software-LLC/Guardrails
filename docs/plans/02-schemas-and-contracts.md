@@ -1646,6 +1646,15 @@ git recovery. This set is **reported for the human's decision, not silently re-e
 a fan-in descendant would fork it from a base still carrying its own stale commit — the exact bug one level
 down — so auto-invalidation is unsound; that soundness limit is why Part A halts).
 
+**Disjoint from the overwatcher — by task state (#269, §9.2).** Definition-drift detects an *unintended*
+edit to an **already-`succeeded`** task, *cross-run, at resume*. An overwatcher edit is a *sanctioned*
+change to a **still-failing** task, *in-run, inside its live retry loop*. The two are **disjoint by task
+state**: a task is either succeeded (drift's domain — the overwatcher will not touch it) or failing (the
+overwatcher's domain — drift does not apply). Because any overwatcher change lands *before* the task
+settles, a later resume sees a **matching** `definitionHash` — no false drift-halt on the overwatcher's
+own sanctioned change. This mirrors the wave-level `isCompleted` predicate (§14.7): drift ⟺ the changed
+unit was already completed; the overwatcher only ever changes not-yet-completed units.
+
 ```jsonc
 {
   "taskId": "04-author-codegen-tests",
@@ -1899,6 +1908,19 @@ persists its evidence BEFORE the B1 rollback discards the merged bytes (#188): o
 `feedback.md` describing the collision — the same `feedback.md` the task's needs-human summary points at
 (previously that summary promised a `feedback.md` this path never wrote).
 
+Also at the **task** level, the **overwatcher** (§9.2, #269) writes:
+
+- `overwatch.jsonl` — an **append-only** per-task detail stream, one compact JSON object per overwatcher
+  fire (the overwatcher may fire MULTIPLE times per task, unlike the single terminal `triage.json`). Each
+  record carries `{ at, trigger, attempt, policy, decision, classification?, diagnosis?, fixes[], applied?,
+  headline }` where each entry in `fixes[]` is a proposed fix op + the **authority class** the mechanical
+  classifier assigned it (`{ kind, authority, target? }`). This is the multi-fire *detail*; the durable
+  *audit* is the shared top-level `decisions[]` (`boundary:"task"`, §2.1/§7). An advisory no-action (no
+  runner, cost cap hit, malformed/errored proposal) writes nothing.
+- `feedback.md` / `triage.json` — the terminal-exhaustion case (§9.2.1), unchanged.
+- `overwatch-guidance.md` — written only when a granted guidance injection could not be appended to the
+  failed attempt's `feedback.md`; the fallback carrier of the sanctioned ephemeral guidance.
+
 **`feedback.md` header is action-kind AND rollback/salvage aware (issues #264 / #167 / #306).** The
 `feedback.md` opens with retry guidance chosen first by action kind, then — for a PROMPT action — by what
 actually happened to the attempt's on-disk work, so the header can NEVER claim preserved work the harness
@@ -2094,21 +2116,119 @@ Its cost is charged against `maxCostUsd` like any prompt attempt. It is configur
 named for what it is (read the conflict, write only `GUARDRAILS_MERGE_OUT`), **not** a
 `guardrailOverrides` block.
 
-### 9.2 AI triage on needs-human (plan 08 §9, PO #7 / Decision 8)
+### 9.2 The overwatcher (active AI supervisor, issue #269 — design of record: `docs/plans/11-overwatcher.md`)
 
-When a task exhausts its retry budget and transitions to `needs-human`, the harness optionally
-runs a **one-shot advisory triage step** to classify the root cause. It is a **constrained prompt
-action behind the existing `IPromptRunner` seam** (the same seam as `claude` and the AI-merge
-worker), invoked under a **distinct `ai-triage` prompt profile** in `promptRunners` — not a
-`guardrailOverrides` block. `NeedsHumanTriage` is the class that owns the step.
+The **overwatcher** is an active, tiered, **asymmetric** AI supervisor the harness consults *during* a
+run when a task struggles. At a struggle boundary it reasons **"will more attempts help, or is this
+structurally doomed?"** and produces a precise diagnosis plus a decision — but it is **always advisory**:
+it can grant an adjusted attempt (coupled to a *sanctioned change*) or halt honestly, and it can
+**never** mark a task succeeded, merge a fragment, or soften a deterministic guardrail's verdict.
+`Overwatch` is the class that owns it; it is wired unconditionally whenever an overwatch-capable prompt
+runner resolves (serial AND worktree mode), exactly like the AI-merge worker's composition-root wiring.
+
+**It SUBSUMES the shipped one-shot triage (§9.2.1).** The terminal `needs-human` triage becomes ONE
+trigger case of the overwatcher (`TerminalExhaustion`), delegating to the composed `NeedsHumanTriage`
+so its `feedback.md`/`triage.json` + advisory-never-gates invariants are preserved **verbatim**. The new
+eager/short-circuit/permission-wall triggers run a diagnose prompt and classify each proposed fix.
+
+**v1 = diagnose + propose.** Bounded auto-heal (silent `auto`-tier application + persistent
+authoring-defect fixes) and the inter-wave role are **v2 bets** — v1 leaves the seams but does not build
+them (design doc §10).
+
+**Prompt profile.** The eager/short-circuit diagnose is a constrained prompt behind the existing
+`IPromptRunner` seam under a **reserved `overwatch` profile** in `promptRunners` (alongside `ai-merge` /
+`ai-triage`), resolved with fallback to the default/sole runner. The terminal case still uses `ai-triage`.
+
+**Triggers — deterministic, EAGER, at most once per attempt (#305 Decision C).** The harness (never the
+judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager `attempt ≥ 2`** trigger:
+
+- **eager** — a task reaches **attempt ≥ 2** with a retryable failure and budget remaining (`EagerAttempt`);
+- the **no-op-deadlock (#174/#182)** or **deterministic-`script` (#264)** short-circuit about to fire;
+- the **permission-wall** early halt (§9.3 / #266) — may fire even on attempt 1;
+- the **write-scope-violation loop** and **max-turns** exhaustion (both are guardrail-class failures at
+  attempt ≥ 2, so they are covered by the eager trigger);
+- **terminal exhaustion → `needs-human`** (§9.2.1).
+
+It fires **at most ONCE per attempt** (a short-circuit consult takes precedence over the eager consult so
+both never fire the same attempt), and the whole thing is **bounded by `maxCostUsd`** — once the task's
+cumulative journaled cost reaches the cap, no further diagnose is spent (the cost mitigation for eager).
+It does **NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a human ask).
+
+**The mechanical asymmetry — the load-bearing constraint.** Self-healing must NEVER soften a
+deterministic guardrail's verdict, so the overwatcher's fix authority is **asymmetric**, and the
+asymmetry is **mechanical, not vibes** — a pure classifier (`OverwatchFixClassifier`) the harness applies
+to every proposed fix op by a **path/field-membership test against the same "what defines a task's
+verdict" notion `TaskDefinitionFiles` / `PlanDefinitionHash` (§7.3) fold over**:
+
+- **DENYLIST — the verdict surface — FORBIDDEN to auto-apply at every tier (including `auto`):** any
+  guardrail/preflight **body** (the four folders — task-level, plan-level, and per-wave `guardrails/` +
+  `preflights/`) and the `task.json` verdict-driving fields `writeScope`, `scope`, `dependsOn`,
+  `integrationGate`. A denylist op may only be emitted as a **proposal** requiring **(a)** human approval
+  **AND (b)** a `/guardrails-review` re-run; applying it changes `PlanDefinitionHash`, which **re-stales
+  the review marker** (`state/guardrails-review.json`, §7.3/§13 — the #260 trust anchor). Narrowing a
+  `writeScope` *hides* a §3.4 violation; widening *changes* the checked surface — both are the verdict
+  surface.
+- **ALLOWLIST — the action/budget layer:** ephemeral **guidance injection** into the next attempt's
+  composed prompt (via `PromptComposer`'s feedback channel) and runtime `maxTurns`/`retries`/
+  `timeoutSeconds` overrides (like #94 escalates, no authored-file mutation). In v1 these are **proposed**
+  (prompt tier), not silently auto-applied (the v2 `auto` bet).
+- **DEFAULT (unclassified) → propose-only** — a closed allowlist (fail-safe): it is impossible to
+  auto-apply an unclassified op. (A persistent `action.prompt.md` edit is Default in v1 — a v2 allowlist bet.)
+
+**Tiers mapped onto the shared `autonomyPolicy` (§2.1) — NO new policy field.** The `diagnose` core is
+present under **all** values (classify doomed-vs-retryable + render a precise diagnosis; never gates):
+
+| `autonomyPolicy` | overwatcher behavior at a struggle boundary |
+|---|---|
+| **`halt`** | diagnose + **always halt**; propose nothing, apply nothing. |
+| **`prompt`** (default) | diagnose + on a TTY propose the sanctioned **allowlist** lever (guidance/budget) and apply on approve; **non-interactive → honest halt** (`Console.IsInputRedirected`). |
+| **`auto`** | **v1 DEGRADES to `prompt`** (propose, honest-halt non-interactive). Silent auto-application of the overwatcher's own fixes is **v2 bet #6**. A denylist op always routes to human regardless. |
+
+The eager (non-floor) trigger is purely **advisory** when it cannot grant — it never gates a task the
+deterministic policy would keep retrying; it may only *enrich* the next attempt with a sanctioned change.
+The floor boundaries (short-circuit / permission-wall / exhaustion) halt when there is no sanctioned change.
+
+**"No sanctioned change ⇒ no grant ⇒ honest halt."** The overwatcher may NOT grant "keep trying,
+unchanged." A granted retry ALWAYS applies a sanctioned change (guidance/budget) that materially alters
+the next attempt. This is the exact reconciliation with #174/#264: the deterministic short-circuits
+remain the **floor** (they always fire); the overwatcher only un-halts one by injecting a genuine change,
+so "no observable change + byte-identical failure" no longer describes the next attempt. In v1 production
+(non-interactive), no grant ever happens — the floor stands and the overwatcher makes halts *earlier and
+richer*, never softer.
+
+**Reporting — the shared `decisions[]` + a per-task `overwatch.jsonl`.** Each overwatcher fire appends a
+`decisions[]` entry with **`boundary: "task"`** (reusing the M1 `DecisionEntry` / `IRunObserver.DecisionRecorded`,
+§2.1/§7) — the durable audit — and appends a record to the append-only per-task
+`logs/<runId>/<task-id>/overwatch.jsonl` (§8) — the multi-fire detail (trigger, classification, each
+proposed fix op + the authority class the classifier assigned it, and what was applied). An **advisory
+no-action** (no runner, cost cap hit, or a malformed/errored/absent proposal) records **nothing** —
+silently skipped, deterministic policy stands.
+
+**Advisory — gates nothing (verdict from files).** A malformed/absent/errored diagnose = no action; the
+deterministic policy stands, exactly as §9.2.1. `PromptResult.IsError` and the runner exit code are never
+a verdict; a thrown diagnose never aborts the run — all independent tasks continue.
+
+**Reconciliations.** The deterministic floor (#94/#264/#174, §9.3) stays the floor. The overwatcher is
+disjoint from the definition-drift halt (§7.2) **by task state**: the overwatcher acts on a **failing**
+task *in-run*; drift-halt acts on an **already-`succeeded`** task *at resume* — a task is one or the other,
+never both (an overwatcher edit lands before settle, so a later resume sees a matching hash, no false drift).
+
+---
+
+#### 9.2.1 Terminal-exhaustion case: AI triage on needs-human (plan 08 §9, PO #7 / Decision 8)
+
+The `TerminalExhaustion` trigger IS the shipped one-shot advisory triage — subsumed by the overwatcher,
+its invariants preserved verbatim. When a task exhausts its retry budget and transitions to `needs-human`,
+the overwatcher delegates to `NeedsHumanTriage` (the `ai-triage` profile) to classify the root cause, and
+records the halt to `decisions[]` (`boundary:"task"`) + `overwatch.jsonl`.
 
 **Trigger — exhaustion only.**
 
-- Triage fires **ONCE** on the **terminal exhaustion transition** (all retry budget consumed by
-  action/guardrail failures across every attempt).
+- The terminal triage fires **ONCE** on the **terminal exhaustion transition** (all retry budget consumed
+  by action/guardrail failures across every attempt).
 - It does **NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a
   human ask — the question is already posed; additional triage is redundant and would race).
-- It does **NOT** fire mid-retry (between attempts while budget remains).
+- It does **NOT** fire mid-retry (between attempts while budget remains — that is the eager trigger's job).
 
 **Diagnosis — tool-vs-local.**
 

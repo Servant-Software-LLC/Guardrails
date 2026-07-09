@@ -456,6 +456,30 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `WorkspaceContainment.Escapes` (always) and `WriteScope.IsInScope` (only when the task declares a
   `writeScope` -- absent means allowed, mirroring section 3.4). Singular per attempt in v1. SSOT
   section 9.
+- **The overwatcher (active AI supervisor, #269, SSOT §9.2, design `docs/plans/11-overwatcher.md`)**: an
+  **advisory** AI supervisor consulted DURING a run when a task struggles. It **subsumes** the shipped
+  one-shot needs-human triage (now the §9.2.1 `TerminalExhaustion` case, invariants preserved verbatim) and
+  adds EAGER triggers (#305 Decision C): it engages at **`attempt ≥ 2`** plus the typed transitions
+  (no-op-deadlock #174/#264, permission-wall, terminal exhaustion), fires **at most once per attempt**, and
+  is **bounded by `maxCostUsd`**. The diagnose core is ON by default (fires whenever an overwatch-capable
+  prompt runner resolves — the reserved **`overwatch`** profile with fallback; a script-only plan gets none)
+  and **never gates** — it classifies doomed-vs-retryable + renders a precise diagnosis. **The mechanical
+  asymmetry (`OverwatchFixClassifier`, load-bearing):** a PURE classifier over the same guardrail/preflight
+  folders + `task.json` verdict fields that `TaskDefinitionFiles`/`PlanDefinitionHash` fold over decides each
+  proposed fix's authority — **DENYLIST** (the verdict surface: any guardrail/preflight body OR `writeScope`/
+  `scope`/`dependsOn`/`integrationGate`) is propose-only at EVERY tier (applying it re-stales the #260 review
+  marker via `PlanDefinitionHash`); **ALLOWLIST** (ephemeral guidance injection + `maxTurns`/`retries`/
+  `timeoutSeconds` overrides) is the action/budget layer; **DEFAULT** (unclassified, incl. `action.prompt.md`
+  edits in v1) is propose-only (closed allowlist). Tiers map onto the shared `autonomyPolicy` (NO new field):
+  `halt` = diagnose+always-halt; `prompt` (default) = diagnose + TTY-propose the allowlist lever
+  (non-interactive → honest halt); `auto` **degrades to `prompt` in v1** (silent auto-apply is v2). **"No
+  sanctioned change ⇒ no grant ⇒ honest halt"**: it may never grant "keep trying, unchanged" — a granted
+  retry ALWAYS applies a sanctioned change (guidance/budget), which is exactly how it can un-halt the #174/
+  #264 floor (the deterministic short-circuits stay the FLOOR). **Disjoint from the drift-halt by task
+  state** (§7.2): overwatcher acts on FAILING tasks in-run; drift-halt on already-`succeeded` tasks at
+  resume. **Reporting:** a `boundary:"task"` `decisions[]` entry (durable audit) + an append-only per-task
+  `logs/<runId>/<task-id>/overwatch.jsonl` (multi-fire detail). v2 bets: silent `auto`-tier auto-heal +
+  persistent authoring-defect fixes + the inter-wave role.
 
 ## The four-stage workflow
 
@@ -552,6 +576,7 @@ total order driven by the wave folder's numeric prefix.
 | Milestones, exit criteria, v2 bets, risk register | `docs/plans/03-roadmap.md` |
 | Founding plan (history) | `docs/plans/00-initial-plan.md` |
 | Multi-wave plans (nested layout, design of record) | `docs/plans/10-multi-wave-plans.md` (contract in SSOT section 14) |
+| The overwatcher (active AI supervisor, design of record) | `docs/plans/11-overwatcher.md` (contract in SSOT §9.2/§9.2.1) |
 | Golden example (runnable + skill reference) | `examples/hello-guardrails/` |
 
 ## Status (update as milestones complete)
@@ -671,3 +696,24 @@ total order driven by the wave folder's numeric prefix.
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
   HEAD-independence). Next-free GR code: **GR1010 / GR2035**.
+- **M3 the overwatcher v1 (diagnose + propose) -- LANDED** (#269, design of record
+  `docs/plans/11-overwatcher.md`, contract SSOT §9.2/§9.2.1/§8, #305 decisions baked in). The `Overwatch`
+  component (`Guardrails.Core/Execution/Overwatch.cs`) SUBSUMES `NeedsHumanTriage` (now the §9.2.1
+  `TerminalExhaustion` case, all invariants preserved) and adds EAGER triggers -- fires at `attempt >= 2`
+  plus the typed transitions (no-op-deadlock #174/#264, permission-wall, terminal exhaustion), **at most
+  once per attempt**, **bounded by `maxCostUsd`**. Diagnose core ON by default (reserved **`overwatch`**
+  prompt profile with fallback; script-only plan gets none). The load-bearing **mechanical asymmetry**
+  (`OverwatchFixClassifier`, pure, over the guardrail/preflight folders + `writeScope`/`scope`/`dependsOn`/
+  `integrationGate` verdict fields that `TaskDefinitionFiles`/`PlanDefinitionHash` fold over): DENYLIST
+  (verdict surface) = propose-only at every tier + re-stales the #260 review marker; ALLOWLIST (guidance
+  injection + `maxTurns`/`retries`/`timeoutSeconds`) = the action/budget layer, proposed in v1; DEFAULT
+  (incl. `action.prompt.md` edits in v1) = propose-only. Tiers map onto `autonomyPolicy` (no new field):
+  `halt`/`prompt`(default TTY-propose, non-interactive honest-halt)/`auto`(degrades to prompt in v1). **"No
+  sanctioned change => no grant => honest halt"** reconciles it with the #174/#264 FLOOR (which stays the
+  floor). Reporting: `boundary:"task"` `decisions[]` + append-only per-task `overwatch.jsonl`. Disjoint from
+  drift-halt by task state. `TaskExecutor` takes `Overwatch? overwatch` (was `NeedsHumanTriage? triage`);
+  the CLI-side interaction seam (`IOverwatchInteraction`) defaults to non-interactive honest-halt in v1
+  (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
+  Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
+  reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code unchanged (GR2035).

@@ -192,7 +192,7 @@ public sealed class RateLimitResumeJournalTests
 
         var executor = new TaskExecutor(
             load.Plan!, new ProcessRunner(), interpreterMap, stateManager, journal, IRunObserver.Null, registry,
-            triage: null,
+            overwatch: null,
             // Instant delay — the backoff/pause budget is exercised but never actually sleeps.
             transientDelay: (_, _) => Task.CompletedTask);
 

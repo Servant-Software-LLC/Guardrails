@@ -198,7 +198,7 @@ public sealed class PromptRunnerReliabilityTests
 
             var executor = new TaskExecutor(
                 load.Plan!, new ProcessRunner(), interpreterMap, stateManager, journal, observer, registry,
-                triage: null,
+                overwatch: null,
                 // Instant delay — the backoff is exercised but never actually sleeps (TCS-style gate).
                 transientDelay: (_, _) => Task.CompletedTask);
 

@@ -90,12 +90,17 @@ public sealed class NeedsHumanTriageTests
         var interpreterMap = new InterpreterMap(
             new PathExecutableProbe(), load.Plan!.Config.Interpreters);
 
-        // The triage parameter is the not-yet-existing addition to TaskExecutor — referencing
-        // it here is the compile-coupling that proves this test file drives the implementation.
+        // #269: the terminal needs-human triage is now the §9.2.1 case of the Overwatch component. These
+        // tests exercise exactly that terminal case, so wrap the triage in an Overwatch with NO diagnose
+        // runner — the eager/short-circuit triggers are then a no-op (no runner), preserving byte-identical
+        // terminal-triage behavior (one call, at exhaustion). The eager diagnose is covered by OverwatchTests.
+        Overwatch? overwatch = triage is null
+            ? null
+            : new Overwatch(diagnoseRunner: null, terminalTriage: triage, policy: Core.Model.AutonomyPolicy.Prompt);
         var executor = new TaskExecutor(
             load.Plan!, new ProcessRunner(), interpreterMap,
             stateManager, journal, IRunObserver.Null, registry,
-            triage: triage);
+            overwatch: overwatch);
 
         var scheduler = new Scheduler(
             load.Plan!, executor, journal, observer: IRunObserver.Null);

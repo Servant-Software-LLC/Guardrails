@@ -35,7 +35,7 @@ public sealed class TaskExecutor : ITaskExecutor
     private readonly AttemptJournaler _journaler;
     private readonly DependencyGraph _graph;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
-    private readonly NeedsHumanTriage? _triage;
+    private readonly Overwatch? _overwatch;
     private readonly Func<TimeSpan, CancellationToken, Task> _transientDelay;
 
     public TaskExecutor(
@@ -46,14 +46,14 @@ public sealed class TaskExecutor : ITaskExecutor
         RunJournal journal,
         IRunObserver observer,
         PromptRunnerRegistry? promptRunners = null,
-        NeedsHumanTriage? triage = null,
+        Overwatch? overwatch = null,
         Func<TimeSpan, CancellationToken, Task>? transientDelay = null)
     {
         _plan = plan;
         _stateManager = stateManager;
         _journal = journal;
         _observer = observer;
-        _triage = triage;
+        _overwatch = overwatch;
         // Injected so concurrency tests gate the transient backoff deterministically (no real sleeps);
         // production waits with Task.Delay (issue #115).
         _transientDelay = transientDelay ?? Task.Delay;
@@ -162,6 +162,10 @@ public sealed class TaskExecutor : ITaskExecutor
             bool isFinal = attemptIndex == budget;
             _observer.AttemptStarting(task, attemptIndex, budget);
 
+            // #269 overwatcher: fires AT MOST ONCE per attempt (Decision C). A short-circuit consult
+            // (a floor boundary) takes precedence over the eager consult so both never fire the same attempt.
+            bool overwatchConsulted = false;
+
             // Inner pause loop: re-run the SAME attempt across transient pauses without consuming the
             // retry budget. attemptNumber is re-read each time (NextAttemptNumber is pure until an
             // attempt is actually recorded), so a paused retry reuses the same attempt-N log dir.
@@ -247,6 +251,21 @@ public sealed class TaskExecutor : ITaskExecutor
             // permission-wall early halt (issues #86 / #104), both of which surface as TaskOutcome.NeedsHuman.
             if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
+                // #269 overwatcher: a PERMISSION WALL (a floor boundary that may fire on attempt 1) gets a
+                // diagnose-only consult that ENRICHES the halt (never grants — a wall needs a config/
+                // permission change, not a guidance/budget lever). An AGENT-emitted needsHuman is left
+                // untouched: the human is already being asked, exactly as the terminal triage skips it.
+                if (attempt.Outcome == AttemptOutcome.PermissionDenied && _overwatch is not null)
+                {
+                    OverwatchDecision wallDecision = await _overwatch.EvaluateAsync(
+                        OverwatchTrigger.PermissionWall, task, _plan, attemptIndex, TaskLevelLogDir(task.Id),
+                        _journal, _observer, cancellationToken).ConfigureAwait(false);
+                    if (wallDecision.RichHaltSummary is { } wallRich)
+                    {
+                        return attempt.Result with { Summary = $"{attempt.Result.Summary} — {wallRich}" };
+                    }
+                }
+
                 return attempt.Result;
             }
 
@@ -303,22 +322,64 @@ public sealed class TaskExecutor : ITaskExecutor
 
             if (!isFinal && guardrailFailureReproduced && (noOpDeadlock || deterministicScriptReproduced))
             {
-                _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+                // #269 overwatcher (a FLOOR boundary): the deterministic short-circuit is about to fire. The
+                // overwatcher may UN-HALT it ONLY by applying a SANCTIONED change (guidance/budget) that makes
+                // the next attempt materially different — so #174/#264's "no observable change + byte-identical
+                // failure" no longer describes it. With NO sanctioned change (the default, and always
+                // non-interactive/`halt`) the floor stands and the task halts, now with a richer diagnosis.
+                OverwatchTrigger scTrigger = noOpDeadlock ? OverwatchTrigger.NoOpDeadlock : OverwatchTrigger.DeterministicScript;
+                OverwatchDecision scDecision = _overwatch is not null
+                    ? await _overwatch.EvaluateAsync(
+                        scTrigger, task, _plan, attemptIndex, TaskLevelLogDir(task.Id), _journal, _observer, cancellationToken)
+                        .ConfigureAwait(false)
+                    : OverwatchDecision.NoAction;
+                overwatchConsulted = true;
 
-                // A no-op deadlock keeps its established wording (it did LITERALLY nothing); a script
-                // that DID work but reproduced identically (#264) gets the deterministic-script wording.
-                // When both hold (a no-op script), the more specific no-op message wins.
-                string why = noOpDeadlock
-                    ? "action is a no-op and the guardrail failure is unchanged; retrying will not " +
-                      "help, escalating to needs-human"
-                    : "the script action reproduced byte-identical output and the guardrail failure is " +
-                      "unchanged; retrying will not help, escalating to needs-human";
-
-                return last with
+                if (scDecision.Kind == OverwatchDecisionKind.Grant)
                 {
-                    Outcome = TaskOutcome.NeedsHuman,
-                    Summary = $"{last.Summary} — {why} (after {attemptIndex} identical attempt(s))"
-                };
+                    // Un-halt: apply the sanctioned change and FALL THROUGH to the normal carry-forward + F2
+                    // reset + next attempt. The floor did not fire because its precondition (a byte-identical
+                    // no-op) will no longer hold once the injected guidance/budget lands.
+                    ApplyOverwatchGrant(scDecision, ref feedbackPath, ref budget, task);
+                }
+                else
+                {
+                    _journal.RecordSettle(task.Id, JournalTaskStatus.NeedsHuman, null);
+
+                    // A no-op deadlock keeps its established wording (it did LITERALLY nothing); a script
+                    // that DID work but reproduced identically (#264) gets the deterministic-script wording.
+                    // When both hold (a no-op script), the more specific no-op message wins.
+                    string why = noOpDeadlock
+                        ? "action is a no-op and the guardrail failure is unchanged; retrying will not " +
+                          "help, escalating to needs-human"
+                        : "the script action reproduced byte-identical output and the guardrail failure is " +
+                          "unchanged; retrying will not help, escalating to needs-human";
+                    string richSuffix = scDecision.RichHaltSummary is { } r ? $"; {r}" : "";
+
+                    return last with
+                    {
+                        Outcome = TaskOutcome.NeedsHuman,
+                        Summary = $"{last.Summary} — {why}{richSuffix} (after {attemptIndex} identical attempt(s))"
+                    };
+                }
+            }
+
+            // #269 overwatcher EAGER trigger (Decision C): a NON-final failing attempt at attempt ≥ 2 that
+            // did NOT hit a floor boundary this attempt. This is the advisory core — it NEVER gates a task the
+            // deterministic policy would keep retrying (a non-grant outcome is advisory, the loop continues);
+            // it may only ENRICH the next attempt with a sanctioned allowlist change (guidance/budget). Fires
+            // at most once per attempt (skipped when the short-circuit already consulted).
+            if (!overwatchConsulted && _overwatch is not null && !isFinal && attemptIndex >= 2)
+            {
+                OverwatchDecision eager = await _overwatch.EvaluateAsync(
+                    OverwatchTrigger.EagerAttempt, task, _plan, attemptIndex, TaskLevelLogDir(task.Id),
+                    _journal, _observer, cancellationToken).ConfigureAwait(false);
+                overwatchConsulted = true;
+
+                if (eager.Kind == OverwatchDecisionKind.Grant)
+                {
+                    ApplyOverwatchGrant(eager, ref feedbackPath, ref budget, task);
+                }
             }
 
             // Carry this attempt's no-op + fingerprint signals forward for the next iteration's
@@ -352,21 +413,23 @@ public sealed class TaskExecutor : ITaskExecutor
             }
         }
 
-        // Budget exhausted → needs-human via exhaustion. Run advisory triage (plan 08 §9).
+        // Budget exhausted → needs-human via exhaustion. This is the §9.2.1 TERMINAL case of the overwatcher
+        // — it subsumes the shipped advisory triage (plan 08 §9): the overwatcher delegates to the composed
+        // NeedsHumanTriage (unchanged feedback.md/triage.json) and records the halt to decisions[] +
+        // overwatch.jsonl. Advisory: EvaluateTerminalAsync swallows a thrown/errored triage internally.
         string? triageFeedbackPath = null;
-        if (_triage is not null)
+        if (_overwatch is not null)
         {
             try
             {
-                string taskLogDir = TaskLevelLogDir(task.Id);
-                triageFeedbackPath = await _triage.RunAsync(
-                    task, taskLogDir, _plan.PlanDirectory, _plan.Workspace, cancellationToken,
-                    autoFile: _plan.Config.TriageAutoFile)
+                triageFeedbackPath = await _overwatch.EvaluateTerminalAsync(
+                    task, _plan, TaskLevelLogDir(task.Id), _plan.PlanDirectory, _plan.Workspace,
+                    _journal, _observer, _plan.Config.TriageAutoFile, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch
             {
-                // Triage is advisory — exceptions must never abort the run or change the verdict.
+                // Overwatch/triage is advisory — exceptions must never abort the run or change the verdict.
             }
         }
 
@@ -1174,6 +1237,63 @@ public sealed class TaskExecutor : ITaskExecutor
     }
 
     private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>
+    /// Apply a #269 overwatcher GRANT (the ALLOWLIST action layer, doc 11 §3.2/§5): inject the sanctioned
+    /// ephemeral guidance into the NEXT attempt (appended to the failed attempt's <c>feedback.md</c>, which
+    /// the next attempt already reads via <c>GUARDRAILS_FEEDBACK</c>) and extend the retry budget by the
+    /// sanctioned, already-clamped extra attempts. Touches NO authored file, no <c>PlanDefinitionHash</c>,
+    /// no review marker — the safest levers, and the only ones the overwatcher may apply in v1.
+    /// </summary>
+    private void ApplyOverwatchGrant(OverwatchDecision grant, ref string? feedbackPath, ref int budget, TaskNode task)
+    {
+        if (!string.IsNullOrEmpty(grant.GuidanceInjection))
+        {
+            feedbackPath = InjectOverwatchGuidance(feedbackPath, grant.GuidanceInjection!, task);
+        }
+
+        if (grant.ExtraRetries > 0)
+        {
+            budget += grant.ExtraRetries;
+        }
+    }
+
+    /// <summary>
+    /// Append a <c>## Overwatch guidance</c> section to the failed attempt's <c>feedback.md</c> (so the next
+    /// attempt sees it inlined by <see cref="Prompts.PromptComposer"/>), or write a fresh guidance file into
+    /// the task-level log dir when there is no feedback file. Best-effort — a write hiccup falls back to the
+    /// existing feedback path (the grant then reduces to a budget bump, never a crash).
+    /// </summary>
+    private string InjectOverwatchGuidance(string? feedbackPath, string guidance, TaskNode task)
+    {
+        string section = $"\n\n## Overwatch guidance\n\n{guidance.Trim()}\n";
+
+        if (feedbackPath is { } path && File.Exists(path))
+        {
+            try
+            {
+                File.AppendAllText(path, section, new UTF8Encoding(false));
+                return path;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Fall through to a fresh file.
+            }
+        }
+
+        string taskLogDir = TaskLevelLogDir(task.Id);
+        try
+        {
+            Directory.CreateDirectory(taskLogDir);
+            string fresh = Path.Combine(taskLogDir, "overwatch-guidance.md");
+            File.WriteAllText(fresh, $"# Overwatch guidance{section}", new UTF8Encoding(false));
+            return fresh;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return feedbackPath ?? "";
+        }
+    }
 
     // --- log paths -----------------------------------------------------------------------
 
