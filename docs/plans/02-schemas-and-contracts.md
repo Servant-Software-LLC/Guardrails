@@ -687,9 +687,21 @@ retry feedback ("greeting.txt missing 'Hello'" beats "FAIL").
 {
   "description": "Solution builds clean",
   "args": ["--configuration", "Release"],
-  "timeoutSeconds": 600
+  "timeoutSeconds": 600,
+  "expectedDurationSeconds": 900   // optional progress hint (§4.1.1) — NOT a bound (that is timeoutSeconds)
 }
 ```
+
+#### 4.1.1 `expectedDurationSeconds` — the run-progress hint (issue #331)
+
+An **optional** positive integer: the author's rough expected wall-clock duration for this guardrail. It
+**never bounds execution** (that is `timeoutSeconds`) — it is a **read-only hint** the harness surfaces in
+the running-guardrail heartbeat (§12.1) so a long deterministic gate reads as *slow-but-on-track* rather
+than *hung*. When present it appears next to the elapsed clock — `guardrail 03-bats-suite: running (12m30s
+elapsed, expected ~15m)...` — and once elapsed exceeds it by a multiple (≥ 3×) the line flags `over budget,
+may be stuck`. Absent ⇒ the heartbeat shows elapsed only. A present-but-non-positive value is a validation
+**ERROR (GR2036)** — it can never be a real duration. The field is **author-settable now**; auto-populating
+it from the `#302` author-time smoke-test's observed wall-clock is a deferred follow-up.
 
 ### 4.2 Prompt guardrails (`*.prompt.md`)
 
@@ -3266,6 +3278,23 @@ clickable `file://` link to this static "all tasks" index at **start and end**, 
 URL. A finished task's terminal `logs` link (the live table's post-mortem link) targets that task's
 **static page** `logs/<runId>/<task-id>/index.html` — a rendered HTML page — not the log directory
 (issue #141 item 1). Site writes are best-effort: a render hiccup never changes the run's exit code.
+
+**Long-running-guardrail heartbeat (issue #331).** The pre-DAG **Full Flight Checks**
+(`<plan>/preflights/`, §7) and the terminal **Terminal Gate** (`<plan>/guardrails/`, §3.3) can each run a
+guardrail that is *supposed* to be slow — a real whole-repo build / full test suite doing genuine I/O. So
+while such a phase runs, the harness emits a periodic **wall-clock liveness line** per guardrail —
+`guardrail 03-bats-suite: running (4m32s)...`, every `IntervalSeconds` (15s) — so an operator can tell a
+healthy-but-slow gate from a hang **without OS process-tree archaeology**. A guardrail finishing inside one
+interval emits nothing. When the guardrail's sidecar sets `expectedDurationSeconds` (§4.1.1) the line
+carries the hint — `running (12m30s elapsed, expected ~15m)...` — and once elapsed reaches `OverBudgetMultiple`
+(3×) the hint it flags `over budget, may be stuck`. Both plan-level phases run **outside** the Spectre
+`AnsiConsole.Live` region (the pre-DAG phase before it is constructed, the terminal phase after it is
+disposed), so the heartbeat writes plain `TextWriter` lines that **cannot** corrupt an active live table
+(#145). The heartbeat is driven off the attempt-decoupled re-verify seam's per-guardrail progress callbacks
+(`IReVerifyProgress`) and is Core-UI-free. *Deferred follow-ups (issue #331):* extending the live tailing
+server to expose the terminal-gate phase as its own tailable entry; auto-populating `expectedDurationSeconds`
+from the `#302` smoke-test; and a `.live` stdout tee for the running guardrail. Task-level guardrails retain
+the live progress table's existing per-task elapsed clock as their liveness signal.
 
 | Flag | Default | Meaning |
 |---|---|---|

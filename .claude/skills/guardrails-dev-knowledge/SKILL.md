@@ -133,7 +133,8 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   multi-wave block (GR2032 mixed flat/waved layout; GR2033 wave numbering; GR2034 cross-wave `dependsOn` —
   SSOT §14.1). **GR2035** (DuplicateCheckName — two checks in ONE folder sharing a `Name`, e.g.
   `01-build.ps1`+`01-build.sh` both → Name "01-build"; ERROR, per-folder across all four folders,
-  #332/SSOT §4.5) is TAKEN too. Next free: GR1010 / GR2036.
+  #332/SSOT §4.5) and **GR2036** (ExpectedDurationNonPositive — a guardrail sidecar's optional
+  `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1, issue #331) are TAKEN too. Next free: GR1010 / GR2037.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;

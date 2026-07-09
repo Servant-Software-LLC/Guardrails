@@ -160,7 +160,7 @@ public static class Revalidate
         output.WriteLine(
             "Revalidating 'plan:guardrails' — running the terminal <plan>/guardrails/ checks against the current merged HEAD (no agent attempt).\n");
 
-        bool passed = await PlanGuardrailPhase.EvaluateAsync(plan, new ProcessRunner(), cancellationToken).ConfigureAwait(false);
+        bool passed = await PlanGuardrailPhase.EvaluateAsync(plan, new ProcessRunner(), output, cancellationToken).ConfigureAwait(false);
 
         if (passed)
         {
@@ -191,7 +191,7 @@ public static class Revalidate
             "Revalidating 'plan:preflights' — running the pre-DAG <plan>/preflights/ checks (no agent attempt).\n");
 
         RunJournal journal = RunJournal.LoadOrCreate(plan);
-        bool passed = await PlanPreflightPhase.EvaluateAsync(plan, journal, new ProcessRunner(), cancellationToken).ConfigureAwait(false);
+        bool passed = await PlanPreflightPhase.EvaluateAsync(plan, journal, new ProcessRunner(), output, cancellationToken).ConfigureAwait(false);
 
         if (passed)
         {

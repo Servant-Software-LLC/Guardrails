@@ -159,6 +159,46 @@ public sealed class ReVerifierSeamTests : IDisposable
     }
 
     // =========================================================================
+    // Issue #331: the optional IReVerifyProgress seam announces each guardrail as it STARTS and
+    // COMPLETES — start→complete PAIRED even when the guardrail fails (the finally) — in plan order.
+    // This is the Core signal the CLI turns into a wall-clock heartbeat for a long plan-level gate.
+    // =========================================================================
+
+    [Fact]
+    public async Task ReVerify_WithProgress_AnnouncesEachGuardrail_StartThenComplete_InOrder()
+    {
+        // Two passing checks bracketing a FAILING one. Every guardrail must be announced start→complete
+        // in plan order — including the failing one, proving GuardrailCompleted fires from the finally
+        // regardless of verdict (the heartbeat has to stop the clock when a guardrail ends, pass or fail).
+        var verifier = new GuardrailReVerifier(new ProcessRunner(), new InterpreterMap(new PathExecutableProbe()));
+        GuardrailDefinition pass1 = WriteGuardrailScript("01-pass", MakePassScript());
+        GuardrailDefinition fail  = WriteGuardrailScript("02-fail", MakeFailScript("boom"));
+        GuardrailDefinition pass2 = WriteGuardrailScript("03-pass", MakePassScript());
+        var spy = new RecordingProgress();
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot, [pass1, fail, pass2], spy, TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            [
+                "start:01-pass", "complete:01-pass",
+                "start:02-fail", "complete:02-fail",
+                "start:03-pass", "complete:03-pass",
+            ],
+            spy.Events);
+        Assert.False(result.Passed); // the failing check keeps the aggregate red (progress never changes the verdict)
+    }
+
+    /// <summary>Records the ordered start/complete announcements for the #331 progress-seam test.</summary>
+    private sealed class RecordingProgress : IReVerifyProgress
+    {
+        private readonly List<string> _events = [];
+        public IReadOnlyList<string> Events => _events;
+        public void GuardrailStarting(GuardrailDefinition guardrail) => _events.Add($"start:{guardrail.Name}");
+        public void GuardrailCompleted(GuardrailDefinition guardrail) => _events.Add($"complete:{guardrail.Name}");
+    }
+
+    // =========================================================================
     // Attempt-decoupled: GUARDRAILS_ACTION_* env vars must NOT be injected
     // The scenarios-present guardrail greps for the exact method name below.
     // =========================================================================

@@ -959,6 +959,7 @@ public sealed class PlanLoader
             Description = sidecar.Description,
             Args = sidecar.Args ?? [],
             TimeoutSeconds = sidecar.TimeoutSeconds,
+            ExpectedDurationSeconds = sidecar.ExpectedDurationSeconds,
             Scope = string.IsNullOrWhiteSpace(sidecar.Scope) ? null : sidecar.Scope.Trim().ToLowerInvariant()
         };
     }

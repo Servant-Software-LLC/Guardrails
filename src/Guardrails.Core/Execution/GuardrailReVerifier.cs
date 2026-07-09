@@ -19,9 +19,22 @@ public sealed class GuardrailReVerifier : IReVerifier
         _scriptRunner = new ScriptUnitRunner(processRunner, interpreterMap);
     }
 
+    public Task<ReVerifyResult> ReVerifyAsync(
+        string worktreePath,
+        IReadOnlyList<GuardrailDefinition> guardrails,
+        CancellationToken cancellationToken = default)
+        => ReVerifyAsync(worktreePath, guardrails, progress: null, cancellationToken);
+
+    /// <summary>
+    /// Re-verify with an optional per-guardrail liveness sink (issue #331). Identical to the interface
+    /// method but announces each guardrail to <paramref name="progress"/> as it starts/completes so a
+    /// long-running plan-level gate (§3.3 terminal gate, §7 pre-DAG preflights) can surface a wall-clock
+    /// heartbeat. <paramref name="progress"/> null ⇒ no announcements (the interface path).
+    /// </summary>
     public async Task<ReVerifyResult> ReVerifyAsync(
         string worktreePath,
         IReadOnlyList<GuardrailDefinition> guardrails,
+        IReVerifyProgress? progress,
         CancellationToken cancellationToken = default)
     {
         var failed = new List<GuardrailResult>();
@@ -42,27 +55,35 @@ public sealed class GuardrailReVerifier : IReVerifier
 
         foreach (GuardrailDefinition guardrail in guardrails)
         {
-            ProcessResult result = await _scriptRunner.RunAsync(
-                guardrail.Path,
-                guardrail.Args,
-                worktreePath,
-                env,
-                TimeSpan.FromSeconds(guardrail.TimeoutSeconds ?? DefaultTimeoutSeconds),
-                cancellationToken).ConfigureAwait(false);
-
-            if (!result.Succeeded)
+            progress?.GuardrailStarting(guardrail);
+            try
             {
-                // #272 Part 1: a plan-level gate's reason is the ONLY operator signal (no retry, no
-                // feedback.md tail), so it must carry the ACTUAL failure detail — the TAIL of stdout, where
-                // the #179 convention re-emits it — not the FIRST line, which is a guardrail's preamble
-                // noise (npm ci / dotnet restore / an echo). GuardrailFailureReason.Tail does exactly that.
-                string reason = result.TimedOut
-                    ? "guardrail timed out"
-                    : GuardrailFailureReason.Tail(result.StandardOutput)
-                      ?? GuardrailFailureReason.Tail(result.StandardError)
-                      ?? $"exit code {result.ExitCode}";
+                ProcessResult result = await _scriptRunner.RunAsync(
+                    guardrail.Path,
+                    guardrail.Args,
+                    worktreePath,
+                    env,
+                    TimeSpan.FromSeconds(guardrail.TimeoutSeconds ?? DefaultTimeoutSeconds),
+                    cancellationToken).ConfigureAwait(false);
 
-                failed.Add(new GuardrailResult { Name = guardrail.Name, Passed = false, Reason = reason });
+                if (!result.Succeeded)
+                {
+                    // #272 Part 1: a plan-level gate's reason is the ONLY operator signal (no retry, no
+                    // feedback.md tail), so it must carry the ACTUAL failure detail — the TAIL of stdout, where
+                    // the #179 convention re-emits it — not the FIRST line, which is a guardrail's preamble
+                    // noise (npm ci / dotnet restore / an echo). GuardrailFailureReason.Tail does exactly that.
+                    string reason = result.TimedOut
+                        ? "guardrail timed out"
+                        : GuardrailFailureReason.Tail(result.StandardOutput)
+                          ?? GuardrailFailureReason.Tail(result.StandardError)
+                          ?? $"exit code {result.ExitCode}";
+
+                    failed.Add(new GuardrailResult { Name = guardrail.Name, Passed = false, Reason = reason });
+                }
+            }
+            finally
+            {
+                progress?.GuardrailCompleted(guardrail);
             }
         }
 

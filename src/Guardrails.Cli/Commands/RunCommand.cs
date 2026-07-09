@@ -220,7 +220,7 @@ public static class RunCommand
         }
 
         bool preflightsPassed = await PlanPreflightPhase
-            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), cancellationToken)
+            .EvaluateAsync(probe.Plan, journal, new ProcessRunner(), io.Out, cancellationToken)
             .ConfigureAwait(false);
 
         if (hasPlanPreflights && preflightsPassed)
@@ -371,7 +371,7 @@ public static class RunCommand
                 }
 
                 bool planGuardrailsPassed = !report.AllSucceeded
-                    || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), cancellationToken)
+                    || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, cancellationToken)
                         .ConfigureAwait(false);
 
                 if (willEvaluateTerminalGate)
