@@ -87,7 +87,7 @@ public sealed class Overwatch
             return OverwatchDecision.NoAction;
         }
 
-        OverwatchProposal? proposal = await RunDiagnoseAsync(trigger, task, plan, attempt, taskLogDir, ct)
+        OverwatchProposal? proposal = await RunDiagnoseAsync(trigger, task, plan, attempt, taskLogDir, journal, ct)
             .ConfigureAwait(false);
 
         // Advisory-never-gates: a malformed/absent/errored proposal = no action; verdict from files.
@@ -340,6 +340,7 @@ public sealed class Overwatch
         PlanDefinition plan,
         int attempt,
         string taskLogDir,
+        RunJournal journal,
         CancellationToken ct)
     {
         try
@@ -360,6 +361,13 @@ public sealed class Overwatch
             };
 
             PromptResult result = await _diagnoseRunner!.RunAsync(invocation, ct).ConfigureAwait(false);
+
+            // Charge the diagnose spend to the run's cumulative cost (SSOT §9.2, WEAK-1): the spend is REAL
+            // regardless of whether the body parses, so it is charged here — BEFORE the parse — so it BOTH
+            // counts toward the maxCostUsd gate (bounding subsequent eager fires) AND appears in the reported
+            // total. A null CostUsd is a no-op.
+            journal.AddOverwatchCost(result.CostUsd);
+
             if (!result.Completed || result.IsError || result.ResultText is null)
             {
                 return null;

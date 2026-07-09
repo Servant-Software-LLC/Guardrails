@@ -126,6 +126,9 @@ public sealed class TaskExecutor : ITaskExecutor
         _journal.MarkRunning(task.Id);
 
         int budget = 1 + (task.Retries ?? _plan.Config.DefaultRetries);
+        // #269 WEAK-2: the cumulative extra attempts every overwatcher grant combined has added to `budget`,
+        // hard-capped at MaxCumulativeGrantedRetries so repeated grants can never grow the budget without limit.
+        int grantedRetriesTotal = 0;
         string? feedbackPath = null;
         TaskResult last = null!;
 
@@ -340,7 +343,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     // Un-halt: apply the sanctioned change and FALL THROUGH to the normal carry-forward + F2
                     // reset + next attempt. The floor did not fire because its precondition (a byte-identical
                     // no-op) will no longer hold once the injected guidance/budget lands.
-                    ApplyOverwatchGrant(scDecision, ref feedbackPath, ref budget, task);
+                    ApplyOverwatchGrant(scDecision, ref feedbackPath, ref budget, ref grantedRetriesTotal, task);
                 }
                 else
                 {
@@ -378,7 +381,7 @@ public sealed class TaskExecutor : ITaskExecutor
 
                 if (eager.Kind == OverwatchDecisionKind.Grant)
                 {
-                    ApplyOverwatchGrant(eager, ref feedbackPath, ref budget, task);
+                    ApplyOverwatchGrant(eager, ref feedbackPath, ref budget, ref grantedRetriesTotal, task);
                 }
             }
 
@@ -1239,13 +1242,25 @@ public sealed class TaskExecutor : ITaskExecutor
     private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
     /// <summary>
+    /// The HARD CUMULATIVE ceiling on the extra attempts ALL overwatcher grants combined may add to a single
+    /// task's budget (doc 11 §5 "bounded by the retry budget ceiling"). The per-grant clamp
+    /// (<see cref="Overwatch"/>) bounds ONE grant; this bounds the sum across every grant a task receives, so
+    /// repeated grants (a future grant-capable seam — v2 <c>auto</c> or a mid-run TTY) can never grow the
+    /// budget without limit even if every one is approved.
+    /// </summary>
+    private const int MaxCumulativeGrantedRetries = 4;
+
+    /// <summary>
     /// Apply a #269 overwatcher GRANT (the ALLOWLIST action layer, doc 11 §3.2/§5): inject the sanctioned
     /// ephemeral guidance into the NEXT attempt (appended to the failed attempt's <c>feedback.md</c>, which
     /// the next attempt already reads via <c>GUARDRAILS_FEEDBACK</c>) and extend the retry budget by the
-    /// sanctioned, already-clamped extra attempts. Touches NO authored file, no <c>PlanDefinitionHash</c>,
-    /// no review marker — the safest levers, and the only ones the overwatcher may apply in v1.
+    /// sanctioned extra attempts — clamped to the per-task CUMULATIVE ceiling
+    /// (<see cref="MaxCumulativeGrantedRetries"/>) so repeated grants can never grow the budget past it.
+    /// Touches NO authored file, no <c>PlanDefinitionHash</c>, no review marker — the safest levers, and the
+    /// only ones the overwatcher may apply in v1.
     /// </summary>
-    private void ApplyOverwatchGrant(OverwatchDecision grant, ref string? feedbackPath, ref int budget, TaskNode task)
+    private void ApplyOverwatchGrant(
+        OverwatchDecision grant, ref string? feedbackPath, ref int budget, ref int grantedRetriesTotal, TaskNode task)
     {
         if (!string.IsNullOrEmpty(grant.GuidanceInjection))
         {
@@ -1254,7 +1269,10 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (grant.ExtraRetries > 0)
         {
-            budget += grant.ExtraRetries;
+            int remaining = Math.Max(0, MaxCumulativeGrantedRetries - grantedRetriesTotal);
+            int allowed = Math.Min(grant.ExtraRetries, remaining);
+            budget += allowed;
+            grantedRetriesTotal += allowed;
         }
     }
 

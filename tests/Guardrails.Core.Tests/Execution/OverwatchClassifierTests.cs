@@ -194,6 +194,35 @@ public sealed class OverwatchClassifierTests
         Assert.Equal(OverwatchAuthorityClass.Denylist, c);
     }
 
+    [Theory]
+    [InlineData("GUARDRAILS")]
+    [InlineData("Guardrails")]
+    [InlineData("PREFLIGHTS")]
+    public void FileEdit_CaseVariantVerdictFolder_IsDenylist(string folder)
+    {
+        // NIT-1: on a case-insensitive filesystem a case-variant folder resolves to the real verdict
+        // surface, so it MUST classify as denylist; even on a case-sensitive filesystem over-classifying a
+        // case-variant path as denylist is the SAFE direction (never under-classify the verdict surface).
+        OverwatchAuthorityClass c = Classify(new OverwatchFixOp
+        {
+            Kind = OverwatchFixKind.FileEdit,
+            TargetPath = Path.Combine(TaskDir, folder, "01-check.ps1")
+        });
+        Assert.Equal(OverwatchAuthorityClass.Denylist, c);
+    }
+
+    [Fact]
+    public void FileEdit_SimilarlyNamedNonVerdictFolder_IsDefault()
+    {
+        // The segment-boundary prefix keeps `guardrailsHelpers/` from matching the `guardrails/` folder.
+        OverwatchAuthorityClass c = Classify(new OverwatchFixOp
+        {
+            Kind = OverwatchFixKind.FileEdit,
+            TargetPath = Path.Combine(TaskDir, "guardrailsHelpers", "util.cs")
+        });
+        Assert.Equal(OverwatchAuthorityClass.Default, c);
+    }
+
     [Fact]
     public void FileEdit_ActionPromptBody_IsDefault_NotAllowlistInV1()
     {

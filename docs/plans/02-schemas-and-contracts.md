@@ -1262,7 +1262,15 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
       "headline": "Definition drift auto-resolved (auto): rewound the plan branch to 9c1f0ab and re-running 2 task(s)",
       "detail": "04-author-codegen-tests: a6bee1 -> 3f21c9\n05-generate-codegen: (none re -> 88ab04" // e.g. per-task old→new hash
     }
-  ]
+    // a `task`-boundary entry (§9.2, #269): { "boundary": "task", "policy": "prompt", "decision": "halted",
+    //   "subject": "05-generate-codegen", "headline": "Overwatch halted '05-…' (attempt 2, no-op-deadlock; …" }
+  ],
+
+  // OPTIONAL top-level OVERHEAD prompt spend that is NOT a task attempt (§9.2, #269) — the overwatcher's
+  // diagnose prompts (which fire BETWEEN a task's attempts, so charging them as synthetic attempt records
+  // would corrupt attempt numbering). Folded into the run's cumulative cost, so it BOTH counts toward the
+  // maxCostUsd gate AND appears in the reported total. Absent (not null noise) until the first overhead spend.
+  "overwatchCostUsd": 0.0123
 }
 ```
 
@@ -2150,9 +2158,12 @@ judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager
 - **terminal exhaustion → `needs-human`** (§9.2.1).
 
 It fires **at most ONCE per attempt** (a short-circuit consult takes precedence over the eager consult so
-both never fire the same attempt), and the whole thing is **bounded by `maxCostUsd`** — once the task's
-cumulative journaled cost reaches the cap, no further diagnose is spent (the cost mitigation for eager).
-It does **NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a human ask).
+both never fire the same attempt), and the whole thing is **bounded by `maxCostUsd`**: each diagnose's own
+prompt spend is **journaled** (as the top-level `overwatchCostUsd`, §7 — it is not a task attempt, so
+charging it as a synthetic `AttemptRecord` would corrupt attempt numbering), and it is folded into the
+run's cumulative cost, so once that cumulative cost reaches the cap no further diagnose is spent (the cost
+mitigation for eager — and the diagnose spend therefore also appears in the reported total). It does
+**NOT** fire when the agent itself emitted `{"needsHuman": "..."}` (that is already a human ask).
 
 **The mechanical asymmetry — the load-bearing constraint.** Self-healing must NEVER soften a
 deterministic guardrail's verdict, so the overwatcher's fix authority is **asymmetric**, and the

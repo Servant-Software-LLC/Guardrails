@@ -135,8 +135,10 @@ transitions the harness already classifies with a distinct outcome:
 
 It fires **at most ONCE per attempt** (a short-circuit consult takes precedence over the eager consult so
 both never fire the same attempt), **never** multiple times within an attempt, and the whole thing is
-**bounded by `maxCostUsd`** — once the task's cumulative journaled cost reaches the cap, no further
-diagnose is spent (the cost mitigation for eager). It does not fire on an agent-emitted `needsHuman`.
+**bounded by `maxCostUsd`** — each diagnose's own prompt spend is journaled (the top-level
+`overwatchCostUsd`, SSOT §7) and folded into the run's cumulative cost, so once that cost reaches the cap
+no further diagnose is spent, and the diagnose spend also shows up in the reported total (the cost
+mitigation for eager). It does not fire on an agent-emitted `needsHuman`.
 
 ## 5. Decision authority — and "no sanctioned change ⇒ no grant"
 
@@ -154,8 +156,11 @@ domain, and it always halts. This is the exact reconciliation with #174/#264 (§
 fires precisely when "no observable change + byte-identical failure" holds, and the only way the
 overwatcher un-halts is by injecting a genuine change that makes the next attempt materially different.
 
-All grants are bounded by the existing hard caps (#94's escalation cap, `maxCostUsd`, the retry budget
-ceiling). The overwatcher can never exceed them.
+All grants are bounded by the existing hard caps (#94's escalation cap, `maxCostUsd`) and a **hard
+cumulative per-task granted-retry ceiling** (`TaskExecutor.MaxCumulativeGrantedRetries`): a per-grant clamp
+bounds one grant, and the cumulative ceiling bounds the SUM across every grant a task receives, so repeated
+grants can never grow the budget without limit even if every one is approved (WEAK-2). The overwatcher can
+never exceed them.
 
 ## 6. Tiers mapped onto the shared `autonomyPolicy` (§2.1)
 

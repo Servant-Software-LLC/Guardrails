@@ -35,6 +35,7 @@ public sealed class OverwatchTests
         public string? CannedResultText { get; set; }
         public bool ShouldThrow { get; set; }
         public bool ShouldReturnError { get; set; }
+        public decimal? Cost { get; set; }
 
         public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken)
         {
@@ -46,6 +47,7 @@ public sealed class OverwatchTests
                 Completed = !ShouldReturnError,
                 IsError = ShouldReturnError,
                 ResultText = ShouldReturnError ? null : CannedResultText,
+                CostUsd = Cost,
                 Summary = "fake"
             });
         }
@@ -394,6 +396,49 @@ public sealed class OverwatchTests
         Assert.Empty(runner.Calls);          // the diagnose prompt was never spent — bounded by maxCostUsd
     }
 
+    // ── WEAK-1: diagnose spend is journaled → counts toward the cap AND the reported total ────────
+
+    [Fact]
+    public async Task DiagnoseCost_IsJournaled_AdvancesCurrentCostUsd()
+    {
+        using var plan = new StatePlanBuilder().AddTask("01-x", guardrailBody: StatePlanBuilder.Fail("f"));
+        (PlanDefinition planDef, RunJournal journal, TaskNode task, string taskLogDir) = LoadFirstTask(plan);
+        var observer = new CapturingObserver();
+        var runner = new RecordingRunner("overwatch") { CannedResultText = GuidanceProposal(), Cost = 0.03m };
+        Overwatch overwatch = BuildOverwatch(runner, AutonomyPolicy.Prompt, OverwatchInteractionResult.NonInteractive);
+
+        Assert.Equal(0m, journal.CurrentCostUsd());
+
+        await overwatch.EvaluateAsync(
+            OverwatchTrigger.NoOpDeadlock, task, planDef, 2, taskLogDir, journal, observer, TestContext.Current.CancellationToken);
+
+        // The diagnose spend now advances the run's cumulative cost — so it is BOTH gate-visible and
+        // reported (JournalCost.Total folds OverwatchCostUsd in).
+        Assert.Equal(0.03m, journal.CurrentCostUsd());
+        Assert.Equal(0.03m, JournalCost.Total(JournalReader.Read(RunJournal.PathFor(planDef.PlanDirectory))));
+    }
+
+    [Fact]
+    public async Task DiagnoseCost_CountsTowardCap_SkipsTheNextDiagnose()
+    {
+        // maxCostUsd is above zero cost initially, so the FIRST diagnose runs and reports a cost that reaches
+        // the cap; the SECOND fire is then skipped because the journaled diagnose spend tripped the cap.
+        using var plan = new StatePlanBuilder().AddTask("01-x", guardrailBody: StatePlanBuilder.Fail("f"));
+        (PlanDefinition planDef, RunJournal journal, TaskNode task, string taskLogDir) = LoadFirstTask(plan, maxCostUsd: 0.50m);
+        var observer = new CapturingObserver();
+        var runner = new RecordingRunner("overwatch") { CannedResultText = GuidanceProposal(), Cost = 0.60m };
+        Overwatch overwatch = BuildOverwatch(runner, AutonomyPolicy.Prompt, OverwatchInteractionResult.NonInteractive);
+
+        await overwatch.EvaluateAsync(
+            OverwatchTrigger.EagerAttempt, task, planDef, 2, taskLogDir, journal, observer, TestContext.Current.CancellationToken);
+        Assert.Single(runner.Calls);                          // first diagnose ran (cost 0 < cap 0.50 at entry)
+        Assert.True(journal.CurrentCostUsd() >= 0.50m);       // its spend was journaled and reached the cap
+
+        await overwatch.EvaluateAsync(
+            OverwatchTrigger.EagerAttempt, task, planDef, 3, taskLogDir, journal, observer, TestContext.Current.CancellationToken);
+        Assert.Single(runner.Calls);                          // second diagnose SKIPPED — bounded by maxCostUsd
+    }
+
     // ── REPORTING: decisions[] boundary "task" + overwatch.jsonl ─────────────────────────────────
 
     [Fact]
@@ -568,6 +613,27 @@ public sealed class OverwatchTests
         Assert.Equal(JournalTaskStatus.NeedsHuman, JournalStatus(plan.PlanDir, "01-noop"));
         Assert.True(AttemptCount(plan.PlanDir, "01-noop") > 2,
             "an approved sanctioned change must un-halt the #174/#264 short-circuit and run past attempt 2");
+    }
+
+    [Fact]
+    public async Task ApprovedBudgetGrants_CannotGrowBudgetPastTheCumulativeCeiling()
+    {
+        // WEAK-2: every approved grant proposes a BUDGET bump (retries:2). Without a cumulative ceiling this
+        // would never terminate (each attempt grants +2 while the index advances +1). With the hard cumulative
+        // ceiling (MaxCumulativeGrantedRetries = 4), the total attempts settle at the ORIGINAL budget (3) +
+        // the ceiling (4) = 7 — repeated grants can never grow the budget without limit. That this test
+        // TERMINATES is itself the proof the ceiling holds.
+        using var plan = new StatePlanBuilder(defaultRetries: 2)   // original budget = 3
+            .AddTask("01-noop", guardrailBody: StatePlanBuilder.Fail("always"));
+
+        var diagnose = new RecordingRunner("overwatch") { CannedResultText = BudgetProposal() };
+        var overwatch = new Overwatch(diagnose, terminalTriage: null, AutonomyPolicy.Prompt,
+            new FakeInteraction(OverwatchInteractionResult.Apply));
+
+        RunReport report = await RunWithOverwatchAsync(plan.PlanDir, overwatch, TestContext.Current.CancellationToken);
+
+        Assert.Equal(JournalTaskStatus.NeedsHuman, JournalStatus(plan.PlanDir, "01-noop"));
+        Assert.Equal(3 + 4, AttemptCount(plan.PlanDir, "01-noop"));  // original budget + cumulative ceiling, no more
     }
 
     [Fact]

@@ -160,7 +160,17 @@ public static class OverwatchFixClassifier
         }
     }
 
-    /// <summary>True when <paramref name="candidate"/> is the folder itself or a descendant of it (path-segment aware, OS-appropriate casing).</summary>
+    /// <summary>
+    /// True when <paramref name="candidate"/> is the folder itself or a descendant of it (path-segment
+    /// aware). The comparison is **always case-insensitive** (NIT-1): on a case-insensitive filesystem
+    /// (Windows, macOS's default HFS+/APFS) <c>tasks/x/GUARDRAILS/g.ps1</c> resolves to a real guardrail
+    /// body, so it MUST classify as the verdict surface; and even on a case-sensitive filesystem
+    /// over-classifying a case-variant path as denylist is the SAFE direction — the asymmetry must never
+    /// UNDER-classify the verdict surface (the segment-boundary prefix keeps `guardrailsHelpers/…` from
+    /// matching `guardrails/`). Known v2 limitation: <see cref="Path.GetFullPath"/> does NOT resolve
+    /// symlinks, so a symlink pointing INTO a guardrails/preflights folder is not caught here (v1-inert —
+    /// there is no apply path for a denylist op; harden with link resolution when the v2 apply seam lands).
+    /// </summary>
     private static bool IsWithin(string candidate, string folder)
     {
         string normalizedFolder = Path.GetFullPath(folder)
@@ -168,9 +178,7 @@ public static class OverwatchFixClassifier
         string normalizedCandidate = Path.GetFullPath(candidate)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-        StringComparison comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
+        const StringComparison comparison = StringComparison.OrdinalIgnoreCase;
 
         if (string.Equals(normalizedCandidate, normalizedFolder, comparison))
         {

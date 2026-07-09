@@ -422,6 +422,36 @@ public sealed class ProductionWiringTests
     }
 
     /// <summary>
+    /// NIT-2: the production factory (no interaction argument) must wire the overwatcher's confirmation seam
+    /// to <see cref="IOverwatchInteraction.NonInteractive"/> — the fail-safe that makes v1 grants unreachable
+    /// in production (an approve can never come from a non-interactive seam). This pins the posture so a
+    /// future refactor that silently threads an interactive seam is caught.
+    /// </summary>
+    [Fact]
+    public void Factory_WiresNonInteractiveOverwatchSeam_ByDefault()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateMergeRunnerPlan(repo.RepoPath, maxParallelism: 1, folder: "overwatch-seam-plan");
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        Assert.NotNull(load.Plan);
+        Assert.False(load.HasErrors, string.Join("\n", load.Diagnostics));
+
+        Scheduler scheduler = SchedulerFactory.Create(
+            load.Plan!, new ProcessRunner(), new PathExecutableProbe(), IRunObserver.Null);
+
+        object? overwatch = OverwatchField().GetValue(ExecutorOf(scheduler));
+        Assert.NotNull(overwatch);
+
+        FieldInfo? interactionField = typeof(Overwatch).GetField(
+            "_interaction", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(interactionField);
+        object? interaction = interactionField!.GetValue(overwatch);
+
+        // Same singleton the production default resolves to — never an interactive seam.
+        Assert.Same(IOverwatchInteraction.NonInteractive, interaction);
+    }
+
+    /// <summary>
     /// A single-task plan committed in <paramref name="repoPath"/> that declares a
     /// <c>promptRunners</c> block, so <see cref="SchedulerFactory"/> can resolve a merge-profile
     /// runner. The task body is irrelevant — this test inspects wiring, it does not run the plan.
