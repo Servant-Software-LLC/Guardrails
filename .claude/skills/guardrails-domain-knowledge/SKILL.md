@@ -483,11 +483,18 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   section 3.4); and (#321) a **permission-file carve-out** -- `.claude/settings.json` and
   `.claude/settings.local.json` are DENIED (the harness will not write permission-granting files on an
   agent's behalf; a human must author them), while all OTHER `.claude/` deliverables
-  (commands/skills/hooks/agents) remain writable. **Halt/hatch interaction (#321):** the permission-wall
-  structural-`.claude/` early halt (section 9.3) now YIELDS when the same attempt also emits
-  `needsHarnessWrite` -- an attempt with NO hatch still halts on the `.claude/` wall, but one that DOES
-  emit `needsHarnessWrite` defers to the harness write + the task's own guardrails, so a
-  probe-first-then-hatch flow completes green. Singular per attempt in v1. SSOT section 9.
+  (commands/skills/hooks/agents) remain writable. **Halt/hatch interaction (#321 -> #325 -> #329):** the
+  permission-wall structural-`.claude/` halt (section 9.3) is now OUTCOME-AWARE -- consulted only on an
+  attempt that did NOT converge, so a probe-then-hatch (or a read-source-recovery) attempt whose write
+  lands and whose guardrails pass completes GREEN by the general rule (#325 removed the old #321
+  `.claude/`-drop filter as redundant -- the converged OUTCOME is the authority, source-vs-destination
+  moot). When a non-converged attempt DOES halt, WHAT it reports leads with the true primary cause (#329):
+  a guardrail that genuinely RAN and FAILED is reported `guardrail-failed` with `failedGuardrails[]`
+  populated (the `.claude/` wall carried as SECONDARY context in the summary/`feedback.md`), NOT
+  `permission-denied` with an empty list. Only a wall with no guardrail failure to report -- an
+  action-failed #104 first-attempt wall, or the eager #86 repeat -- stays `permission-denied`. The halt
+  DECISION is unchanged; only the reported outcome/message/`failedGuardrails` differ. Singular per attempt
+  in v1. SSOT section 9 / 9.3.
 - **The overwatcher (active AI supervisor, #269, SSOT §9.2, design `docs/plans/11-overwatcher.md`)**: an
   **advisory** AI supervisor consulted DURING a run when a task struggles. It **subsumes** the shipped
   one-shot needs-human triage (now the §9.2.1 `TerminalExhaustion` case, invariants preserved verbatim) and

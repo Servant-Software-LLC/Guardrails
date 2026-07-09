@@ -698,6 +698,11 @@ public sealed class TaskExecutor : ITaskExecutor
         //     and the guardrails passed — such an attempt must be green, not a structural halt. Deferring
         //     to the outcome also SUBSUMES the #321 probe-then-hatch escape-hatch yield: a converged
         //     hatch attempt is green by this same general rule, so no .claude/-specific filter is needed.
+        //     #329 REFINES what a non-converged structural halt REPORTS (never WHEN it halts): the
+        //     guardrail-failed site reports the true `guardrail-failed` outcome + failedGuardrails[] (with
+        //     the .claude/ wall as secondary context), because a guardrail genuinely ran and failed; only
+        //     the action-failed site (no guardrail reached — the pure #104 first-attempt wall) still
+        //     reports `permission-denied`.
         permissionWalls.Observe(action.BlockedWritePaths);
         PermissionWallDecision wall = permissionWalls.ShouldHalt();
 
@@ -741,12 +746,15 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (!action.Succeeded)
         {
-            // #104/#325: an un-converged attempt (the action itself failed) plus a structural .claude/
-            // wall halts needs-human NOW — the .claude/ deliverable cannot have landed and the agent may
-            // be stuck against a wall no retry clears (the #104 fast-halt is preserved via this site).
-            // Behaviorally identical to before for an action-failed attempt: today's early halt already
-            // fired before this point. RepeatedPaths is provably empty here (any repeat halted eagerly
-            // above), so passing the full wall yields structural-only feedback/summary wording.
+            // #104/#325: an un-converged attempt (the action itself FAILED, so NO guardrail ran) plus a
+            // structural .claude/ wall halts needs-human NOW — the .claude/ deliverable cannot have landed
+            // and the agent may be stuck against a wall no retry clears (the #104 fast-halt is preserved
+            // via this site). This is the PURE permission-wall case #329 deliberately LEAVES as
+            // `permission-denied`: no guardrail failure is being hidden (none ran), and the reported
+            // `.claude/` wall IS the honest primary cause — the classic #104 first-attempt wall. (#329
+            // changes only the GUARDRAIL-failed site below, where a guardrail did run and fail.)
+            // RepeatedPaths is provably empty here (any repeat halted eagerly above), so passing the full
+            // wall yields structural-only feedback/summary wording.
             if (wall.HasStructural)
             {
                 return _journaler.PermissionWall(task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall);
@@ -964,17 +972,38 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (guardrails.AnyFailed)
         {
-            // #325: the guardrails failed → the .claude/ deliverable may not have landed → a structural
-            // .claude/ wall halts needs-human now (bounded 1-attempt cost; the #104 fast-halt is intact
-            // via this site — an unrecoverable .claude/ wall whose deliverable never lands still settles
-            // on the single recorded attempt). RepeatedPaths is provably empty here (any repeat halted
-            // eagerly above), so passing the full wall yields structural-only feedback.
+            IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
+
+            // #325/#329: the guardrails failed AND a structural .claude/ wall is present. #326 halts this
+            // needs-human on ONE attempt (bounded 1-attempt cost — the #104 fast-halt: a .claude/ wall no
+            // retry clears means an unrecoverable .claude/ deliverable never lands, so the remaining budget
+            // is never burned). PRESERVE that halt DECISION exactly — but #326 REPORTED the halt as
+            // `permission-denied` with an EMPTY failedGuardrails[], hiding that a guardrail genuinely ran
+            // and failed and misdirecting triage (#329: the human reasonably assumes the #325 fix didn't
+            // ship). Report the TRUE primary cause instead: outcome `guardrail-failed` with
+            // failedGuardrails[] populated, the .claude/ wall disclosed as SECONDARY context (it explains
+            // the staging/recovery detour and, when the failure is a MISSING .claude/ deliverable, is the
+            // likely reason). RepeatedPaths is provably empty here (any repeat halted eagerly above), so
+            // wall.StructuralPaths carries the whole wall.
             if (wall.HasStructural)
             {
-                return _journaler.PermissionWall(task, attemptNumber, startedAt, relativeLogDir, logDir, action, wall);
+                IReadOnlyList<FailedGuardrail> failedList = failed
+                    .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
+                    .ToList();
+                string failedNames = string.Join(", ", failed.Select(g => g.Name));
+                string wallPaths = string.Join(", ", wall.StructuralPaths);
+                string summary =
+                    $"guardrail(s) failed: {failedNames} — needs human; a .claude/ write was blocked this " +
+                    $"attempt ({wallPaths}), which may be why (see feedback)";
+                string primaryBody = string.Join(
+                    "\n", failedList.Select(g => $"- **{g.Name}** — {g.Reason}"));
+                string wallFeedback = RetryPolicy.ForStructuralWallHalt(
+                    task, "A guardrail failed", primaryBody, wall.StructuralPaths);
+                return _journaler.StructuralWallHalt(
+                    task, attemptNumber, startedAt, relativeLogDir, logDir, action,
+                    AttemptOutcome.GuardrailFailed, summary, wallFeedback, guardrails.Results, failedList);
             }
 
-            IReadOnlyList<GuardrailResult> failed = guardrails.Results.Where(g => !g.Passed).ToList();
             // #306: STASH the guardrail-failed attempt (superseding #195's exclusion of the guardrail
             // path) so the retry gets the artifact back + per-guardrail verdicts, not just a summary. The
             // clean reset is still the default base; the agent chooses how much to reuse.
