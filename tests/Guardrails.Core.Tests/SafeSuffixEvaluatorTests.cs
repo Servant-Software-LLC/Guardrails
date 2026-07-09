@@ -378,6 +378,29 @@ public sealed class SafeSuffixEvaluatorTests
     }
 
     [Fact]
+    public void NullHash_HandFix_OnHashStampingBranch_Refuses()  // #322 BLOCKER red-bar (fails vs the null-hash-exempt code)
+    {
+        // A #197 hand-fix ended its commit with `Guardrails-Task: t2` but OMITTED the hash. On a modern
+        // (hash-stamping) branch — one where SOME commit carries a hash — a null-hash Guardrails-Task:
+        // commit is never a genuine machine segment (every real settle stamps a non-empty hash), so it is
+        // a hand-fix and MUST be refused. The first refuse floor exempted a null hash unconditionally, so
+        // this fell through to Safe and the fix was silently discarded (the collateral-drift class: t1
+        // drifts, its dependent t2 ∈ S, and a no-hash hand-fix attributed to t2 rides the legit t1 rewind).
+        var history = new[]
+        {
+            Ff("c2", "t2", "c1"),                 // null-hash hand-fix for t2 (in S)
+            FfH("c1", "t1", "base", "sha256:h1"), // a genuine hashed commit ⇒ the branch stamps hashes
+        };
+
+        SafeSuffixDecision d = SafeSuffixEvaluator.Evaluate(
+            history, S("t1", "t2"), Recognized(("t1", "sha256:h1")));
+
+        Assert.Equal(SafeSuffixOutcome.Refused, d.Outcome);
+        Assert.Equal("t2", d.BlockingTask);
+        Assert.Contains("never recorded", d.Refusal);
+    }
+
+    [Fact]
     public void UncorroboratedHash_JournalSilentButBranchHasRealHash_Refuses()  // accepted false-refuse
     {
         // A genuinely-succeeded task that ALSO drifted, but whose journal-recorded hash was lost (a

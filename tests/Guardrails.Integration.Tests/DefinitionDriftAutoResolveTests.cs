@@ -97,6 +97,14 @@ public sealed class DefinitionDriftAutoResolveTests
         $"integrate\n\nGuardrails-Task: {taskId}\nGuardrails-Run: r1\nGuardrails-Task-Hash: {hash}";
 
     /// <summary>
+    /// A #197 hand-fix commit message that ends with a copied <c>Guardrails-Task:</c> trailer but OMITS the
+    /// <c>Guardrails-Task-Hash:</c> (issue #322 BLOCKER) — the "attributed but no hash" hand-fix that, on a
+    /// hash-stamping branch, is never a genuine machine segment and must be refused.
+    /// </summary>
+    private static string TrailerNoHash(string taskId) =>
+        $"hand-fix\n\nGuardrails-Task: {taskId}\nGuardrails-Run: r1";
+
+    /// <summary>
     /// A recognized-settle-hashes map (issue #322) corroborating each task's default <see cref="Trailer"/>
     /// hash — the stand-in for the harness's journal-recorded provenance, so a hand-built plan branch whose
     /// commits carry the machine <c>Guardrails-Task-Hash:</c> is treated as genuine (not a copied-trailer
@@ -464,6 +472,35 @@ public sealed class DefinitionDriftAutoResolveTests
         Assert.Equal("02-task-b", result.BlockingTask);
         Assert.Contains("never recorded", result.Refusal);
         // The plan branch was left UNTOUCHED — the hand-fix is preserved (refuse floor = HALT, never destroy).
+        Assert.Equal(tipBefore, TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim());
+    }
+
+    [Fact]
+    public void ScopedReset_NullHashHandFix_OnHashStampingBranch_Refuses_DoesNotDiscard()
+    {
+        // #322 BLOCKER: a #197 hand-fix that ends with `Guardrails-Task: 02` but OMITS the hash. On a modern
+        // hash-stamping branch (01's commit carries a real hash) a null-hash Guardrails-Task: commit is never
+        // a genuine machine segment — it is a hand-fix — so the scoped reset must REFUSE, not rewind past it.
+        using var repo = new TempGitRepo();
+        string planDir = CreateLinearPlan(repo.RepoPath, "");
+        repo.CommitAll("add plan");
+
+        string branch = $"guardrails/{Path.GetFileName(planDir)}";
+        TempGitRepo.Git(repo.RepoPath, "checkout", "-b", branch);
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", Trailer("01-task-a", "sha256:genuine-01"));
+        TempGitRepo.Git(repo.RepoPath, "commit", "--allow-empty", "-m", TrailerNoHash("02-task-b")); // no hash
+        string tipBefore = TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim();
+        TempGitRepo.Git(repo.RepoPath, "checkout", repo.OriginalBranch);
+
+        PlanLoadResult load = new PlanLoader().Load(planDir);
+        RunJournal journal = RunJournal.LoadOrCreate(load.Plan!);
+        journal.RecordSettle("01-task-a", Guardrails.Core.Journal.TaskStatus.Succeeded, definitionHash: "sha256:genuine-01");
+
+        RunReset.ScopedResetResult result = RunReset.ScopedReset(load.Plan!, ["02-task-b"]);
+
+        Assert.Equal(RunReset.ScopedResetOutcome.Refused, result.Outcome);
+        Assert.Equal("02-task-b", result.BlockingTask);
+        // The hand-fix (null-hash but attributed) was NOT discarded.
         Assert.Equal(tipBefore, TempGitRepo.Git(repo.RepoPath, "rev-parse", branch).Trim());
     }
 
