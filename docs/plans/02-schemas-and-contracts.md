@@ -2902,7 +2902,15 @@ never carries badges.
   (a plain `file://` view refreshes itself — no server; the 3s interval is deliberately longer
   than the log site's 2s, because re-running `mermaid.render` on a big DAG is heavier). The final
   page, written once at run end from the observer's own in-memory map, drops the refresh and shows
-  every node settled — a durable post-mortem.
+  every node settled — a durable post-mortem. **Settle-on-fault (issue #333):** the run-end final
+  writes (this diagram AND the durable log site, §12.3) are guaranteed by an end-of-run `finally`,
+  so an UNEXPECTED throw from the terminal-gate phase (`<plan>/guardrails/`, which runs OUTSIDE the
+  Scheduler and so is not a #150-converted abort) still settles both pages instead of leaving them
+  mid-refresh. Any node still `running` when the final page is written (the Terminal Gate whose
+  phase threw before its badge settled, or a task whose cancel propagated as an
+  `OperationCanceledException` and skipped its settle) renders as an `interrupted` badge, never a
+  frozen (un-animated) spinner. This is best-effort chrome: it never changes the run verdict, exit
+  code, or state, and never masks the original exception (the `finally` re-propagates it).
 - **Node-id surface.** `MermaidRenderer.StatusNodes(plan)` (sibling to `TaskFolderTargets`)
   maps each status-bearing element to its SVG node id: task containers `task_<base>`, task
   guardrail leaves `task_<base>_gr_<ordinal>`, task preflight leaves `task_<base>_pf_<ordinal>`,

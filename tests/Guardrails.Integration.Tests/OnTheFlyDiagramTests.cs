@@ -90,6 +90,35 @@ public sealed class OnTheFlyDiagramTests
     }
 
     [Fact]
+    public void FinalStatic_SettlesStillRunningNodes_AsInterrupted_NotAFrozenSpinner()
+    {
+        using var temp = new TempLogs();
+        PlanDefinition plan = PlanWithGates(
+            planPreflights: [],
+            planGuardrails: ["01-full-suite"],
+            TaskWith("01-a", "01-check"));
+        var observer = new OnTheFlyDiagramObserver(IRunObserver.Null, temp.LogsRoot, plan, journalForSeed: null);
+
+        // Simulate the issue #333 fault shape: a task is left running (its cancel propagated as an
+        // OperationCanceledException, skipping its settle) AND the Terminal Gate bracket was flipped to
+        // running but its phase THREW before PlanGuardrailsFinished could settle the badge.
+        observer.TaskStarting(plan.Tasks[0]);
+        observer.PlanGuardrailsStarting();
+        Assert.Equal("running", Status(temp.ReadDiagram(), "task_01_a"));      // during-run: live spinner
+        Assert.Equal("running", Status(temp.ReadDiagram(), "plan_guardrails")); // during-run: live spinner
+
+        // The final settled page (what the finally settles after a throw) must drop the refresh AND leave
+        // no spinner: every still-running node becomes an `interrupted` badge, not a frozen spinner.
+        observer.WriteFinalStatic();
+        string dFinal = temp.ReadDiagram();
+        Assert.DoesNotContain("http-equiv=\"refresh\"", dFinal);
+        Assert.Equal("interrupted", Status(dFinal, "task_01_a"));
+        Assert.Equal("interrupted", Status(dFinal, "plan_guardrails"));
+        // No node is left as a `running` token on the durable page (that would render a frozen spinner).
+        Assert.DoesNotContain("running", StatusJson(dFinal));
+    }
+
+    [Fact]
     public void Seed_FromJournal_ShowsResumedTasksSettled_WithoutAnyEvents()
     {
         using var temp = new TempLogs();
