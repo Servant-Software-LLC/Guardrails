@@ -244,8 +244,8 @@ public static class DiagnosticCodes
     /// </summary>
     public const string RetiredIntegrationGateKey = "GR2029";
 
-    // Next-free allocation confirmed at authoring time (issue #200): GR2029 (RetiredIntegrationGateKey)
-    // is the last taken code above, so GR2030 is next free.
+    // Historical: as of issue #200, GR2029 (RetiredIntegrationGateKey) was the last taken code, so GR2030
+    // was next-free at that point. (Current next-free is at the END of this file — issue #320.)
 
     /// <summary>
     /// A <c>model</c> value (SSOT §2/§3, issue #200) is present but empty, whitespace-only, or contains
@@ -260,8 +260,8 @@ public static class DiagnosticCodes
     /// </summary>
     public const string ModelInvalid = "GR2030";
 
-    // Next-free allocation confirmed at authoring time (issue #274 Part C): GR2030 (ModelInvalid) is the
-    // last taken code above, so GR2031 is next free.
+    // Historical: as of issue #274 Part C, GR2030 (ModelInvalid) was the last taken code, so GR2031 was
+    // next-free at that point.
 
     /// <summary>
     /// An <c>autonomyPolicy</c> value (SSOT §2.1/§7.2, #254/#269/#274) is present but not one of the three
@@ -309,4 +309,7 @@ public static class DiagnosticCodes
     /// task in a different wave is an ERROR.
     /// </summary>
     public const string CrossWaveDependency = "GR2034";
+
+    // CURRENT next-free code: GR2035. GR2034 (CrossWaveDependency) is the last taken code above.
+    // When allocating a new code, take GR2035 and update this line (issue #320).
 }

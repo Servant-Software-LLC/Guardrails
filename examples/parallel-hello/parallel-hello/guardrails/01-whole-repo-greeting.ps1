@@ -4,7 +4,7 @@
 #
 # This is the run's integration-guardrail set (scope:"integration"). The harness re-runs it
 # on the merged bytes at EVERY union point (each non-FF integration / fan-in) AND on the final
-# merged HEAD at the terminal integrationGate. It therefore MUST assert only invariants that
+# merged HEAD at the terminal <plan>/guardrails/ gate. It therefore MUST assert only invariants that
 # hold at every union — including an intermediate union where only a SUBSET of tasks has
 # integrated so far. It must NOT require a downstream artifact (e.g. greeting.txt) that a later
 # task produces; that terminal-only assertion lives in this task's local guardrail (02-*).
