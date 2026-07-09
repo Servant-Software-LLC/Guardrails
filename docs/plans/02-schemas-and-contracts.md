@@ -36,7 +36,8 @@ plan-name/
 ├── logs/
 │   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
 │   ├── <runId>/<task-id>/index.html   # static per-task log page — non-authored (§12.2/§12.3)
-│   └── <runId>/index.html       # static log-site index — written on the fly during a run + by --export (§12.3)
+│   ├── <runId>/index.html       # static log-site index — written on the fly during a run + by --export (§12.3)
+│   └── <runId>/diagram.html     # live status overlay on the DAG — written on the fly during a run (§10.1); non-authored, --fresh-cleared
 └── tasks/
     └── <NN-verb-object>/        # task id = folder name, kebab-case, NN = topological hint
         ├── task.json            # task manifest (§3)
@@ -2882,6 +2883,45 @@ styling, or by the legend's wording.
   first and exits `1`, never reaching the freshness check.
 - `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
   formats).
+
+### 10.1 Live status overlay (`logs/<runId>/diagram.html`, issue #219)
+
+During a run the harness writes a live status companion to the DAG at
+`logs/<runId>/diagram.html` — NOT the plan-root `diagram.html` (a tracked artifact the run
+must not modify; the user's checkout is read-only for the run, §5). It is gitignored runtime
+state, `--fresh`-cleared, excluded from `guardrails.baseline`, and never inspected by
+`graph --check`. The plan-root `diagram.html` stays the canonical static `graph` artifact and
+never carries badges.
+
+- **Mechanism.** A decorator `IRunObserver` (`OnTheFlyDiagramObserver`, sibling to the log
+  site's `OnTheFlyLogSiteObserver`) forwards every event and, under one lock, re-renders the
+  page from an in-memory node-id → status map. Atomic write; best-effort (a render failure
+  never flips an outcome or aborts the run). Wired in both the live and `--no-ui` paths, stacked
+  around the log-site observer. A clickable `file://` link to it is printed at run start.
+- **During-run vs final.** The during-run page carries `<meta http-equiv="refresh" content="3">`
+  (a plain `file://` view refreshes itself — no server; the 3s interval is deliberately longer
+  than the log site's 2s, because re-running `mermaid.render` on a big DAG is heavier). The final
+  page, written once at run end from the observer's own in-memory map, drops the refresh and shows
+  every node settled — a durable post-mortem.
+- **Node-id surface.** `MermaidRenderer.StatusNodes(plan)` (sibling to `TaskFolderTargets`)
+  maps each status-bearing element to its SVG node id: task containers `task_<base>`, task
+  guardrail leaves `task_<base>_gr_<ordinal>`, task preflight leaves `task_<base>_pf_<ordinal>`,
+  and the plan-level bracket leaves under `plan_preflights` / `plan_guardrails`. Ids are derived
+  from the SAME `AllocateNodeIdBases` + `OrderBy(Name)` ordinal logic the renderer emits, so the
+  keys line up with the SVG exactly (a bijection test guards drift). The observer keys events by
+  `(task.Id, check Name)` since `GuardrailResult.Name == GuardrailDefinition.Name`.
+- **Badges.** Appended inline-SVG elements inside the `svg-pan-zoom` viewport (like the
+  title-band and edge-direction overlays), so they ride the pan/zoom transform without a
+  callback: an animated inline-SVG spinner while in-flight, a settled inline-SVG icon
+  (check / X / "?") once finished. No external image URL (file:// + strict-CSP safe).
+- **Hash-neutral.** Status is chrome: `HtmlDiagramRenderer.Render(..., statusByNodeId,
+  duringRun)` embeds it as a separate `<script id="node-status">` blob; it never touches the
+  Mermaid source or `SemanticContent`, so `source-sha256` is unchanged by construction and
+  `graph --check` never reports stale. (Adding the badge scaffolding changed the plan-root
+  `diagram.html` bytes once — a one-time fixture regeneration — but not its `source-sha256`.)
+- **v1 granularity.** Task containers + task guardrail leaves are per-leaf live; task-preflight
+  and plan-level checks show container-level status (no per-check event yet — per-leaf badges
+  are a follow-on).
 
 ---
 

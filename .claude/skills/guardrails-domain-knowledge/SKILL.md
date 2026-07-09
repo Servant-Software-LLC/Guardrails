@@ -67,6 +67,12 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     Node clicks require a local HTTP server -- browsers block file://->file:// by default.
   Both share the same `source-sha256` key. `guardrails graph --check` exits 0 (fresh), 2
   (stale/missing), 1 (load/validate error). See SSOT section 10.
+  - **Live status overlay (issue #219, a THIRD companion):** during a run the harness writes
+    `logs/<runId>/diagram.html` -- the SAME DAG with per-node status badges (a spinner while
+    in-flight, a settled check / X / "?" once finished). It is gitignored runtime state,
+    `--fresh`-cleared, separate from the static plan-root `diagram.html` (a tracked artifact the
+    run never touches). Same `source-sha256`; status is **hash-neutral chrome**. See SSOT
+    section 10.1.
 - **Task** = `task.json` (`description`, `dependsOn`, optional `retries`/`timeoutSeconds`/
   `writeScope`/`action`) + one action file + `guardrails/` with >=1 guardrail.
   Zero guardrails = validation error.

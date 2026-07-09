@@ -267,6 +267,76 @@ public static class MermaidRenderer
     }
 
     /// <summary>
+    /// The node-id surface the live status overlay needs (issue #219, SSOT §10.1): every
+    /// status-bearing element mapped to the EXACT SVG node id the renderer emits, so the
+    /// <c>OnTheFlyDiagramObserver</c> can translate its semantic events (<c>task.Id</c>,
+    /// <c>GuardrailResult.Name</c>) into the DOM ids the overlay JS decorates. The direct analogue of
+    /// <see cref="TaskFolderTargets"/>. Pure: no I/O.
+    /// </summary>
+    /// <remarks>
+    /// <b>DRY / anti-drift (load-bearing).</b> The ids are derived from the SAME
+    /// <see cref="AllocateNodeIdBases"/> (task container base) and the SAME <see cref="OrdinalChecks"/>
+    /// ordinal iteration (<c>OrderBy(c =&gt; c.Name, Ordinal)</c>) that <see cref="AppendCheckNodes"/> /
+    /// <see cref="AppendNodesAndEdges"/> use to EMIT the nodes — never a second copy of the ordinal
+    /// math — so every key lines up with the SVG exactly. A bijection golden test guards the two
+    /// directions (no rendered id without a status-node entry, no status-node entry without a rendered
+    /// id). The observer keys events by <c>(task.Id, check Name)</c> because
+    /// <c>GuardrailResult.Name == GuardrailDefinition.Name</c> and Name is what the renderer sorts and
+    /// draws.
+    /// </remarks>
+    public static DiagramStatusNodes StatusNodes(PlanDefinition plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        // Ordinal task order + the SAME injective node-id bases the emitter uses.
+        List<TaskNode> tasks = plan.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal).ToList();
+        IReadOnlyDictionary<string, string> nodeIdBase = AllocateNodeIdBases(tasks);
+
+        var taskContainers = new Dictionary<string, string>(StringComparer.Ordinal);
+        var taskGuardrailLeaves = new Dictionary<(string, string), string>();
+        var taskPreflightLeaves = new Dictionary<(string, string), string>();
+
+        foreach (TaskNode task in tasks)
+        {
+            string containerId = $"task_{nodeIdBase[task.Id]}";
+            taskContainers[task.Id] = containerId;
+
+            // Preflight leaf ids: task_<base>_pf_<ordinal>; guardrail leaf ids: task_<base>_gr_<ordinal>
+            // — the exact prefixes AppendTaskContainer passes to AppendCheckNodes.
+            foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(task.Preflights))
+            {
+                taskPreflightLeaves[(task.Id, check.Name)] = $"{containerId}_pf_{ordinal}";
+            }
+
+            foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(task.Guardrails))
+            {
+                taskGuardrailLeaves[(task.Id, check.Name)] = $"{containerId}_gr_{ordinal}";
+            }
+        }
+
+        var planPreflightLeaves = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(plan.PlanPreflights))
+        {
+            planPreflightLeaves[check.Name] = $"{PlanPreflightsId}_{ordinal}";
+        }
+
+        var planGuardrailLeaves = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(plan.PlanGuardrails))
+        {
+            planGuardrailLeaves[check.Name] = $"{PlanGuardrailsId}_{ordinal}";
+        }
+
+        return new DiagramStatusNodes
+        {
+            TaskContainers = taskContainers,
+            TaskGuardrailLeaves = taskGuardrailLeaves,
+            TaskPreflightLeaves = taskPreflightLeaves,
+            PlanPreflightLeaves = planPreflightLeaves,
+            PlanGuardrailLeaves = planGuardrailLeaves,
+        };
+    }
+
+    /// <summary>
     /// The cosmetic <c>classDef</c> lines (colors) for the LEAF check nodes — preflight check
     /// and guardrail check — which reference them inline via <c>:::preflight</c>/<c>:::guardrail</c>.
     /// The task-container and plan-level-container fills are applied per-container by a
@@ -429,10 +499,27 @@ public static class MermaidRenderer
         IReadOnlyList<GuardrailDefinition> checks,
         string checkClass)
     {
+        foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(checks))
+        {
+            AppendLf(sb, $"{indent}{nodeIdPrefix}_{ordinal}[{Quote(check.Name)}]:::{checkClass}");
+        }
+    }
+
+    /// <summary>
+    /// The SINGLE source of the check-node ordinal iteration: <paramref name="checks"/> sorted ordinal
+    /// by <see cref="GuardrailDefinition.Name"/> (for input-order independence), paired with their
+    /// 0-based ordinal. Shared by <see cref="AppendCheckNodes"/> (node emission),
+    /// <see cref="AppendCheckClicks"/> (click emission), AND <see cref="StatusNodes"/> (the live-status
+    /// node-id surface) so the ordinal that becomes the <c>_gr_&lt;n&gt;</c>/<c>_pf_&lt;n&gt;</c> suffix is
+    /// computed in exactly ONE place — there is no second copy of the ordinal math to drift.
+    /// </summary>
+    private static IEnumerable<(int Ordinal, GuardrailDefinition Check)> OrdinalChecks(
+        IReadOnlyList<GuardrailDefinition> checks)
+    {
         int ordinal = 0;
         foreach (GuardrailDefinition check in checks.OrderBy(c => c.Name, StringComparer.Ordinal))
         {
-            AppendLf(sb, $"{indent}{nodeIdPrefix}_{ordinal}[{Quote(check.Name)}]:::{checkClass}");
+            yield return (ordinal, check);
             ordinal++;
         }
     }
@@ -528,13 +615,11 @@ public static class MermaidRenderer
         string nodeIdPrefix,
         StringBuilder sb)
     {
-        int ordinal = 0;
-        foreach (GuardrailDefinition check in checks.OrderBy(c => c.Name, StringComparer.Ordinal))
+        foreach ((int ordinal, GuardrailDefinition check) in OrdinalChecks(checks))
         {
             string checkPath = ToPlanRelative(plan.PlanDirectory, check.Path);
             string tooltipText = string.IsNullOrWhiteSpace(check.Description) ? check.Name : check.Description!;
             AppendLf(sb, $"  click {nodeIdPrefix}_{ordinal} href \"{checkPath}\" \"{ClickTooltip(tooltipText)}\" _blank");
-            ordinal++;
         }
     }
 
@@ -653,4 +738,37 @@ public static class MermaidRenderer
 
         return "\"" + escaped + "\"";
     }
+}
+
+/// <summary>
+/// The node-id surface for the live status overlay (issue #219, SSOT §10.1), produced by
+/// <see cref="MermaidRenderer.StatusNodes"/>. Each map carries the EXACT SVG node id the renderer
+/// emits for a status-bearing element, so the <c>OnTheFlyDiagramObserver</c> can translate its
+/// semantic run events into the DOM ids the overlay JS decorates. The keys mirror the observer's
+/// event vocabulary: task containers by <c>task.Id</c>, task check leaves by
+/// <c>(task.Id, check Name)</c> (because <c>GuardrailResult.Name == GuardrailDefinition.Name</c>),
+/// and plan-level check leaves by check Name.
+/// </summary>
+public sealed record DiagramStatusNodes
+{
+    /// <summary><c>task.Id</c> → the task container id <c>task_&lt;base&gt;</c>.</summary>
+    public required IReadOnlyDictionary<string, string> TaskContainers { get; init; }
+
+    /// <summary><c>(task.Id, guardrail Name)</c> → the leaf id <c>task_&lt;base&gt;_gr_&lt;ordinal&gt;</c>.</summary>
+    public required IReadOnlyDictionary<(string TaskId, string CheckName), string> TaskGuardrailLeaves { get; init; }
+
+    /// <summary><c>(task.Id, preflight Name)</c> → the leaf id <c>task_&lt;base&gt;_pf_&lt;ordinal&gt;</c>.</summary>
+    public required IReadOnlyDictionary<(string TaskId, string CheckName), string> TaskPreflightLeaves { get; init; }
+
+    /// <summary>plan-preflight Name → the leaf id <c>plan_preflights_&lt;ordinal&gt;</c>.</summary>
+    public required IReadOnlyDictionary<string, string> PlanPreflightLeaves { get; init; }
+
+    /// <summary>plan-guardrail Name → the leaf id <c>plan_guardrails_&lt;ordinal&gt;</c>.</summary>
+    public required IReadOnlyDictionary<string, string> PlanGuardrailLeaves { get; init; }
+
+    /// <summary>The plan-level "Full Flight Checks" bracket container id (for its container-level badge).</summary>
+    public string PlanPreflightsContainerId => "plan_preflights";
+
+    /// <summary>The plan-level "Terminal Gate" bracket container id (for its container-level badge).</summary>
+    public string PlanGuardrailsContainerId => "plan_guardrails";
 }
