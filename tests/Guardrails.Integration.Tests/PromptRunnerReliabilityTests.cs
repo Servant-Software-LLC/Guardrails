@@ -487,8 +487,9 @@ public sealed class PromptRunnerReliabilityTests
     public async Task ClaudeDirWall_WritesTaskLevelFeedback_NamingThePathAndRemediation()
     {
         // The needs-human message must point a human at WHAT is blocked and HOW to fix it: the .claude/
-        // path, the acceptEdits restriction, and the concrete remediations (grant Write(.claude/**) or
-        // re-target to a staging path).
+        // path, the acceptEdits restriction, and the CURRENT remedies — needsHarnessWrite (#191) as the
+        // primary autonomous fix, a staging path, and the session-wide bypassPermissions fallback — with
+        // the old Write(.claude/**) settings grant named only to mark it RETIRED (#273, no longer works).
         var runner = new SequencingRunner(Blocked(".claude/agents/reviewer.md"));
 
         (RunReport report, TaskJournalEntry entry, _) =
@@ -505,7 +506,9 @@ public sealed class PromptRunnerReliabilityTests
             string feedback = File.ReadAllText(feedbackPath);
             Assert.Contains(".claude/agents/reviewer.md", feedback);
             Assert.Contains("acceptEdits", feedback);
-            Assert.Contains("Write(.claude/**)", feedback);
+            Assert.Contains("needsHarnessWrite", feedback);                            // #191 primary remedy leads
+            Assert.Contains("bypassPermissions", feedback);                            // session-wide fallback named
+            Assert.Contains("Write(.claude/**)", feedback);                            // named only to mark it retired (#273)
             Assert.Contains("staging", feedback, StringComparison.OrdinalIgnoreCase);
         }
         finally
