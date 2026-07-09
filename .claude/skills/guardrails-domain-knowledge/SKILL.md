@@ -384,11 +384,14 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (`mergeOnSuccess` resolved false) a wholly-green run can deliver NOTHING while the console reads like a
   delivering run — the verified work sits on `guardrails/<plan-name>` one `--fresh`/`reset -y` from
   destruction. The Scheduler sets `RunReport.WhollyGreenButUndelivered` (wholly green + `mergeOnSuccess`
-  false + a real separate plan branch — worktree mode, NOT serial/`runOnCurrentBranch`, where the work is
-  already in the user's checkout) and the CLI prints a **loud end-of-run warning** (naming the branch + the
-  destruction risk) when it's true and the terminal gate passed. Exit stays 0 — a safety notice, not a
-  failure. The warning and the delivered-by-default notice never fire together (one needs delivery off, the
-  other needs it to have run).
+  false + a real separate plan branch — worktree mode, i.e. `integ != null`; suppressed in SERIAL mode
+  only, where there is no plan branch). It is **NOT** suppressed for `runOnCurrentBranch` (#345): that flag
+  is an **unwired stub** (loader/warning-path only, NOT wired into `GitWorktreeProvider`), so a worktree-mode
+  opt-out run there still forks a separate `guardrails/<plan>` branch and genuinely strands work — the
+  warning must fire (else the exact #340 incident, uncovered). The CLI prints a **loud end-of-run warning**
+  (naming the branch + the destruction risk) when it's true and the terminal gate passed. Exit stays 0 — a
+  safety notice, not a failure. The warning and the delivered-by-default notice never fire together (one
+  needs delivery off, the other needs it to have run).
 - **Hook policy at the two commit boundaries (#149)** — internal vs user-facing commits are treated
   oppositely:
   - **Internal bookkeeping commits bypass user hooks.** The segment integration commit (`Integrate`,

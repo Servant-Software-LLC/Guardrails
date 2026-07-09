@@ -566,16 +566,23 @@ public sealed class Scheduler
         // Issue #340: a wholly-green run whose delivery did NOT happen because mergeOnSuccess resolved OFF
         // — the verified work is sitting undelivered on the plan branch guardrails/<plan-name>. HONEST:
         // only a run with a real, SEPARATE plan branch has anything undelivered. A serial run has no
-        // provider/integ (the work is already in the shared workspace); a runOnCurrentBranch run's plan
-        // branch IS the user's current branch (nothing is undelivered). This is the exact symmetric
-        // complement of the delivery guard above (same worktree preconditions, mergeOnSuccess off). The
-        // CLI turns it into a loud end-of-run warning once the terminal gate also passes.
+        // provider/integ (the work is already in the shared workspace) — the `integ != null` guard
+        // suppresses the warning there. This is the symmetric complement of the delivery guard above
+        // (same worktree preconditions, mergeOnSuccess off). The CLI turns it into a loud end-of-run
+        // warning once the terminal gate also passes.
+        //
+        // #345 review (finding 1c): the warning is NOT suppressed for runOnCurrentBranch. runOnCurrentBranch
+        // is currently an UNWIRED STUB (read only by PlanLoader/RunConfig + this warning path; NOT wired into
+        // GitWorktreeProvider), so a worktree-mode run still creates a SEPARATE guardrails/<plan> branch — an
+        // opt-out run therefore genuinely STRANDS verified work on that branch with nothing on the user's
+        // checkout, the exact #340 incident. Warning on it is correct. #340 follow-up: when runOnCurrentBranch
+        // is actually wired to deliver onto the current branch, re-add a guard keyed on delivery-target ==
+        // current-branch (nothing undelivered because it IS the current branch), NOT on the stub flag.
         bool whollyGreenButUndelivered =
             report.AllSucceeded
             && !plan.Config.MergeOnSuccess
             && _worktreeProvider != null
-            && integ != null
-            && !plan.Config.RunOnCurrentBranch;
+            && integ != null;
 
         if (!cancellationToken.IsCancellationRequested)
         {

@@ -78,9 +78,12 @@ overridable via `guardrails.json: worktreeRoot`. Worktrees + the plan branch are
 (wiped by `--fresh`, pruned on resume; the integration worktree is reattached, not pruned). The
 user's own working tree and branch are **read-only for the entire run**; the only write to the user's
 branch is the end-of-run delivery (`mergeOnSuccess`, **ON by default — #340**; opt out with
-`--no-merge-on-success` / `"mergeOnSuccess": false`) (§5.3). A `runOnCurrentBranch` opt-in makes the plan
-branch the current branch but still integrates via a harness-owned worktree, never the user's live
-checkout.
+`--no-merge-on-success` / `"mergeOnSuccess": false`) (§5.3). A `runOnCurrentBranch` opt-in is *intended* to
+make the plan branch the current branch (still integrated via a harness-owned worktree, never the user's
+live checkout), but is currently an **unwired stub** (#345 review): the loader reads it and the
+green-but-undelivered warning honors it, but `GitWorktreeProvider` still forks a separate
+`guardrails/<plan>` branch, so today it behaves like an ordinary worktree run (default-ON delivery
+fast-forwards that separate branch onto the user's branch — see §5.3).
 
 The per-attempt log tree moves out of `state/` to a top-level `logs/` sibling, **divided by
 `runId`** (`logs/<runId>/<task-id>/attempt-N/`), so logs are findable and a re-run's logs never
@@ -1125,17 +1128,21 @@ verified work sits on `guardrails/<plan-name>`, one `--fresh`/`reset -y` away fr
 no signal it is at risk. The backstop is a **loud, unmissable end-of-run warning**: the Scheduler sets
 `RunReport.WhollyGreenButUndelivered` when the run drained wholly green (`AllSucceeded`) AND
 `mergeOnSuccess` resolved **false** (the opt-out) AND a **real, separate plan branch exists** — i.e.
-worktree mode (a worktree provider AND an integration handle are present) and NOT `runOnCurrentBranch`. It
-is deliberately **false** in serial mode (no plan branch — the work is already in the shared workspace /
-the user's checkout) and in `runOnCurrentBranch` mode (the plan branch **is** the user's current branch),
-and false whenever delivery actually ran (delivery requires `mergeOnSuccess` on, so this warning and the
-delivered-by-default notice never coincide) — so the harness NEVER warns about "undelivered work" that is
-in fact already on the user's branch. The CLI renders the warning (behind the CLI seam, never in Core) at
-run end **only** when `WhollyGreenButUndelivered` is true AND the terminal gate also passed — a bannered
-block naming the exact plan branch, the command to deliver it (`--merge-on-success`, or a manual merge),
-and the `--fresh`/`reset -y` destruction risk. A green-but-undelivered run is still exit 0 (the warning is
-a safety notice, not a failure); a delivered run, a non-green run, a serial-mode run, and a
-`runOnCurrentBranch` run print no such warning.
+worktree mode (a worktree provider AND an integration handle are present). It is deliberately **false** in
+serial mode (no plan branch — `integ == null`, the work is already in the shared workspace / the user's
+checkout), and false whenever delivery actually ran (delivery requires `mergeOnSuccess` on, so this warning
+and the delivered-by-default notice never coincide). It is **NOT** suppressed for `runOnCurrentBranch`
+(#345 review, finding 1c): `runOnCurrentBranch` is currently an **unwired stub** (read only by the loader /
+`RunConfig` and this warning path; NOT wired into `GitWorktreeProvider`), so a worktree-mode opt-out run
+still creates a **separate** `guardrails/<plan>` branch and genuinely STRANDS verified work there — the
+warning MUST fire, or that combination silently re-creates the exact #340 incident. (Follow-up: when
+`runOnCurrentBranch` is actually wired to deliver onto the current branch, re-add a guard keyed on
+delivery-target == current-branch, not on the stub flag.) The CLI renders the warning (behind the CLI seam,
+never in Core) at run end **only** when `WhollyGreenButUndelivered` is true AND the terminal gate also
+passed — a bannered block naming the exact plan branch, the command to deliver it (`--merge-on-success`, or
+a manual merge), and the `--fresh`/`reset -y` destruction risk. A green-but-undelivered run is still exit 0
+(the warning is a safety notice, not a failure); a delivered run, a non-green run, and a serial-mode run
+print no such warning.
 
 **(C) Staging move (§3.5).** When a task declares `stagingOutputs`, the harness moves the
 action's staged files into their real `.claude/` paths **inside that task's own segment worktree**
