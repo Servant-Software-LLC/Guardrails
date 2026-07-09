@@ -17,6 +17,7 @@ public sealed class AiMergeWorker : IAiMergeWorker
         string worktreePath,
         string segmentBranch,
         string planDirectory,
+        ISchedulerJournal journal,
         CancellationToken ct)
-        => _resolver.TryResolveAsync(worktreePath, segmentBranch, planDirectory, ct);
+        => _resolver.TryResolveAsync(worktreePath, segmentBranch, planDirectory, journal, ct);
 }

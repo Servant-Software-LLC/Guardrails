@@ -136,9 +136,10 @@ transitions the harness already classifies with a distinct outcome:
 It fires **at most ONCE per attempt** (a short-circuit consult takes precedence over the eager consult so
 both never fire the same attempt), **never** multiple times within an attempt, and the whole thing is
 **bounded by `maxCostUsd`** — each diagnose's own prompt spend is journaled (the top-level
-`overwatchCostUsd`, SSOT §7) and folded into the run's cumulative cost, so once that cost reaches the cap
-no further diagnose is spent, and the diagnose spend also shows up in the reported total (the cost
-mitigation for eager). It does not fire on an agent-emitted `needsHuman`.
+`overheadCostUsd`, SSOT §7 — the shared overhead sink, since #314 also covering the AI-merge worker and the
+terminal triage) and folded into the run's cumulative cost, so once that cost reaches the cap no further
+diagnose is spent, and the diagnose spend also shows up in the reported total (the cost mitigation for
+eager). It does not fire on an agent-emitted `needsHuman`.
 
 ## 5. Decision authority — and "no sanctioned change ⇒ no grant"
 

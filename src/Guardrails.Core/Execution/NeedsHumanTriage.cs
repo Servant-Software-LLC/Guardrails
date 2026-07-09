@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 
@@ -44,6 +45,12 @@ public sealed class NeedsHumanTriage
     /// output (runner error or no result text).
     /// Callers MUST catch all exceptions — this is advisory and must not abort the run.
     /// </summary>
+    /// <param name="journal">
+    /// The run journal, used to charge the triage's own prompt spend to the run's cumulative cost via the
+    /// shared overhead sink (SSOT §7/§9.2, #314). The charge happens immediately after the runner returns,
+    /// BEFORE any parse of the result — so the spend is counted regardless of whether the triage body parses
+    /// or a later write fails — exactly as the overwatcher's diagnose charge does.
+    /// </param>
     /// <param name="autoFile">
     /// Effective auto-file flag for THIS run, flowed from <see cref="Model.RunConfig.TriageAutoFile"/>
     /// (SSOT §9, Decision 8). Null (the default) falls back to the constructor's value, so existing
@@ -54,6 +61,7 @@ public sealed class NeedsHumanTriage
         string taskLogDir,
         string planDirectory,
         string workspace,
+        RunJournal journal,
         CancellationToken ct,
         bool? autoFile = null)
     {
@@ -75,6 +83,12 @@ public sealed class NeedsHumanTriage
         };
 
         PromptResult result = await _runner.RunAsync(invocation, ct).ConfigureAwait(false);
+
+        // Charge the triage spend to the run's cumulative cost via the shared overhead sink (SSOT §7/§9.2,
+        // #314): the spend is REAL regardless of whether the body parses (or a later write fails), so it is
+        // charged here — BEFORE the parse — so it BOTH counts toward the maxCostUsd gate AND appears in the
+        // reported total. A null CostUsd is a no-op.
+        journal.AddOverheadCost(result.CostUsd);
 
         if (!result.Completed || result.IsError || result.ResultText is null)
             return null;

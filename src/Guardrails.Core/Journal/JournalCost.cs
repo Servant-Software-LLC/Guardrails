@@ -34,10 +34,11 @@ public static class JournalCost
             }
         }
 
-        // Overhead prompt spend that is not a task attempt (SSOT §9.2, #269) — the overwatcher's diagnose
-        // prompts — is folded in here so the reported total AND the maxCostUsd gate (via
-        // RunJournal.CurrentCostUsd) both see it. A recorded overhead cost (even $0) makes the total non-null.
-        if (document.OverwatchCostUsd is { } overhead)
+        // Overhead prompt spend that is not a task attempt (SSOT §9.2, #269/#314) — the overwatcher's
+        // diagnose prompts, the AI-merge worker, and the terminal needs-human triage — is folded in here so
+        // the reported total AND the maxCostUsd gate (via RunJournal.CurrentCostUsd) both see it. A recorded
+        // overhead cost (even $0) makes the total non-null.
+        if (document.OverheadCostUsd is { } overhead)
         {
             sum += overhead;
             any = true;

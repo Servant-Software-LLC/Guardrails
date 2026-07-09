@@ -69,15 +69,17 @@ public sealed record JournalDocument
     public IReadOnlyDictionary<string, WaveJournalEntry>? Waves { get; init; }
 
     /// <summary>
-    /// OPTIONAL cumulative OVERHEAD prompt spend (SSOT §7/§9.2, issue #269) that is NOT a task attempt —
-    /// currently the overwatcher's diagnose prompts (which fire BETWEEN a task's attempts, so charging them
-    /// as synthetic <see cref="AttemptRecord"/>s would corrupt attempt numbering). It is folded into the
-    /// run's cumulative cost by <see cref="JournalCost.Total"/> so it BOTH counts toward the
-    /// <c>maxCostUsd</c> gate (<see cref="RunJournal.CurrentCostUsd"/>) AND appears in the reported total.
-    /// Additive and backward-compatible: absent (not <c>null</c> noise) until the first overhead spend.
+    /// OPTIONAL cumulative OVERHEAD prompt spend (SSOT §7/§9.2, issues #269/#314) that is NOT a task
+    /// attempt — the three harness-internal prompt-spend sources that fire BETWEEN (or outside) a task's
+    /// attempts, so charging them as synthetic <see cref="AttemptRecord"/>s would corrupt attempt
+    /// numbering: (1) the overwatcher's diagnose prompts (#269), (2) the AI-merge worker at each union
+    /// (#314), and (3) the terminal needs-human triage (#314). It is folded into the run's cumulative cost
+    /// by <see cref="JournalCost.Total"/> so it BOTH counts toward the <c>maxCostUsd</c> gate
+    /// (<see cref="RunJournal.CurrentCostUsd"/>) AND appears in the reported total. Additive and
+    /// backward-compatible: absent (not <c>null</c> noise) until the first overhead spend.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public decimal? OverwatchCostUsd { get; init; }
+    public decimal? OverheadCostUsd { get; init; }
 }
 
 /// <summary>

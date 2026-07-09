@@ -38,6 +38,7 @@ internal sealed class AiMergeResolver
         string worktreePath,
         string segmentBranch,
         string planDirectory,
+        ISchedulerJournal journal,
         CancellationToken ct)
     {
         string preMergeHead = GitIn(worktreePath, "rev-parse", "HEAD").Trim();
@@ -50,7 +51,7 @@ internal sealed class AiMergeResolver
                 TryGitIn(worktreePath, "merge", "--no-commit", "--no-ff", segmentBranch);
             }
 
-            bool ok = await AttemptAsync(worktreePath, planDirectory, ct).ConfigureAwait(false);
+            bool ok = await AttemptAsync(worktreePath, planDirectory, journal, ct).ConfigureAwait(false);
             if (ok) return true;
 
             // Failure path: reset worktree to pre-merge HEAD, remove untracked files.
@@ -62,7 +63,8 @@ internal sealed class AiMergeResolver
         return false;
     }
 
-    private async Task<bool> AttemptAsync(string worktreePath, string planDirectory, CancellationToken ct)
+    private async Task<bool> AttemptAsync(
+        string worktreePath, string planDirectory, ISchedulerJournal journal, CancellationToken ct)
     {
         // Gate (ii) baseline: git status --porcelain before the runner so we can compare afterward.
         string statusBefore = GitIn(worktreePath, "status", "--porcelain");
@@ -128,8 +130,14 @@ internal sealed class AiMergeResolver
                 StreamLogPath    = Path.Combine(tmpDir, "ai-merge-stream.jsonl"),
             };
 
-            // PromptResult.IsError is NEVER the verdict (SSOT §9.1) — ignore the result entirely.
-            await _runner.RunAsync(invocation, ct).ConfigureAwait(false);
+            // PromptResult.IsError is NEVER the verdict (SSOT §9.1) — the deterministic gates below are.
+            PromptResult result = await _runner.RunAsync(invocation, ct).ConfigureAwait(false);
+
+            // Charge the merge-prompt spend to the run's cumulative cost via the shared overhead sink (SSOT
+            // §7/§9.1, #314): the spend is REAL regardless of the gate verdict (pass/fail/retry), so it is
+            // charged here — BEFORE the gates read GUARDRAILS_MERGE_OUT — so it BOTH counts toward the
+            // maxCostUsd gate AND appears in the reported total. A null CostUsd is a no-op.
+            journal.AddOverheadCost(result.CostUsd);
 
             if (!File.Exists(outPath)) return false;
             string mergedContent = File.ReadAllText(outPath);

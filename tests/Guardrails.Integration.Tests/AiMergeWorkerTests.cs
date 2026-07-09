@@ -121,9 +121,14 @@ public sealed class AiMergeWorkerTests
     private sealed class CannedResolutionRunner : IPromptRunner
     {
         private readonly string _mergedContent;
+        private readonly decimal? _costUsd;
         public List<PromptInvocation> Calls { get; } = new();
 
-        public CannedResolutionRunner(string mergedContent) => _mergedContent = mergedContent;
+        public CannedResolutionRunner(string mergedContent, decimal? costUsd = null)
+        {
+            _mergedContent = mergedContent;
+            _costUsd = costUsd;
+        }
 
         public string Name => "ai-merge-canned";
 
@@ -150,6 +155,7 @@ public sealed class AiMergeWorkerTests
             {
                 Completed = true,
                 IsError = true,
+                CostUsd = _costUsd,
                 Summary = "ai-merge-canned: IsError=true proves it is never the verdict"
             });
         }
@@ -598,6 +604,47 @@ public sealed class AiMergeWorkerTests
         // Merge-env contract was enforced (asserted inside CannedResolutionRunner.RunAsync)
         Assert.True(runner.Calls.Count > 0,
             "The AI merge worker must have called the prompt runner for the non-FF conflict.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+    // (i-b) #314: the AI-merge worker's prompt spend is charged to the overhead sink
+    // ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// #314: the AI-merge worker's own prompt spend is charged to the run's cumulative cost via the shared
+    /// overhead sink (SSOT §7/§9.1) — so it BOTH advances <c>CurrentCostUsd</c> (the maxCostUsd gate) AND
+    /// appears in the reported total (<see cref="JournalCost.Total"/> folds <c>OverheadCostUsd</c> in).
+    /// Before this fix the merge worker's <c>PromptResult.CostUsd</c> was silently discarded. The task
+    /// actions/guardrails are deterministic scripts (no cost), so the entire journaled total is the single
+    /// AI-merge invocation's cost.
+    /// </summary>
+    [Fact]
+    public async Task AiMergeCost_IsCharged_AdvancesCurrentCostUsd_AndReportedTotal()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreateConflictPlan(repo.RepoPath);
+
+        // One non-FF union → exactly one merge-prompt invocation carrying a $0.05 cost.
+        var runner = new CannedResolutionRunner(
+            mergedContent: "class Shared { static string Get() => \"FuncA+FuncB\"; }",
+            costUsd: 0.05m);
+        var spyReVerifier = new SpyReVerifier { AlwaysPass = true };
+
+        var aiMergeWorker = new AiMergeWorker(runner);
+        var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
+
+        var (report, journal) = await RunWithAiMergeAsync(
+            planDir, provider, aiMergeWorker, spyReVerifier,
+            TestContext.Current.CancellationToken);
+
+        // The union settled (clean resolution + passing re-verify) and the merge ran exactly once.
+        Assert.True(report.AllSucceeded,
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+        Assert.Single(runner.Calls);
+
+        // The merge-prompt spend advanced the cumulative cost (gate-visible) and is persisted + reported.
+        Assert.Equal(0.05m, journal.CurrentCostUsd());
+        Assert.Equal(0.05m, JournalCost.Total(JournalReader.Read(RunJournal.PathFor(planDir))));
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────────

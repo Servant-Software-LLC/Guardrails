@@ -24,6 +24,15 @@ public interface ISchedulerJournal
     void MarkBlocked(string taskId);
 
     /// <summary>
+    /// Charge OVERHEAD prompt spend that is NOT a task attempt (SSOT §7/§9.2, issues #269/#314) — the
+    /// overwatcher's diagnose prompts, the AI-merge worker, and the terminal needs-human triage — to the
+    /// run's cumulative cost, so it BOTH counts toward the <c>maxCostUsd</c> gate (<see cref="CurrentCostUsd"/>)
+    /// AND appears in the reported total. A null cost is a no-op. Default no-op for fakes that do not model
+    /// cost; <see cref="Journal.RunJournal"/> accumulates and persists it.
+    /// </summary>
+    void AddOverheadCost(decimal? cost) { }
+
+    /// <summary>
     /// The run's cumulative journaled cost in USD, used to enforce the per-run cost cap
     /// (<see cref="Model.RunConfig.MaxCostUsd"/>). Defaults to 0 — a journal that records no cost
     /// never trips a cap, so existing implementations need not change; <see cref="Journal.RunJournal"/>
