@@ -615,7 +615,8 @@ commit) is unchanged and still fully gated.
 A task whose deliverable lives under `.claude/` cannot write it directly: the Claude Code
 sub-agent runtime blocks automated writes under `.claude/` **by path pattern**, even under
 `permissionMode: acceptEdits`, in the user's checkout AND in a segment worktree (issues
-#104/#85, §9.3). `stagingOutputs` is the **autonomous fix**: the action writes its deliverable to
+#104/#85, §9.3). `stagingOutputs` is one **autonomous fix** (the other, and the primary one for a
+prompt action, is `needsHarnessWrite` — §9): the action writes its deliverable to
 a harness-managed staging dir the runtime permits, and the harness — running with full host
 permissions, outside the sub-agent sandbox — **moves** the staged outputs into their real
 `.claude/` paths **after the action succeeds and before the task's guardrails run**, so the
@@ -2342,12 +2343,19 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
   normal retry behaviour).
 
 **`feedback.md` — task-level remediation.** The halt writes a `feedback.md` naming the exact blocked
-path(s) and the concrete fix: for a `.claude/` wall, grant `Write(.claude/**)` (and `Edit(.claude/**)`)
-in the project's `.claude/settings.json` allow-list, **or** re-target the task to write its deliverable
-to a staging path OUTSIDE `.claude/` and move it into place with a follow-up script step (which the
-harness runs with full permissions); for any other repeated path, confirm the runner's `permissionMode`
-/ `allowedTools` and the `.claude/settings.json` allow-list cover the path, then re-run (the harness
-resumes from here).
+path(s) and the concrete fix. For a `.claude/` wall the **PRIMARY** remedy is `needsHarnessWrite`
+(#191, §9): re-author the task's action prompt to hand the file to the harness process (which is not
+subject to the tool-permission layer) via a `{"needsHarnessWrite": {"path","content","reason"}}`
+fragment instead of writing `.claude/` directly — `plan-breakdown` now injects this instruction for any
+`.claude/` deliverable (Step 5b). The autonomous alternative is `stagingOutputs` (§3.5): write the
+deliverable to a staging path OUTSIDE `.claude/` and let the harness move it into place. A session-wide
+fallback is re-running with `--permission-mode bypassPermissions` (disables ALL permission enforcement
+for the run, not a scoped grant — surface it only with that warning). The **RETIRED** remedy — a
+committed `.claude/settings.json` with a `Write(.claude/**)` / `Edit(.claude/**)` grant — **no longer
+works** against current Claude Code: the `.claude/` block is unconditional regardless of the allow-list
+(issue #273), so the `feedback.md` no longer recommends it. For any other repeated (non-`.claude/`)
+path, confirm the runner's `permissionMode` / `allowedTools` and the `.claude/settings.json` allow-list
+cover the path (which DOES still work outside `.claude/`), then re-run (the harness resumes from here).
 
 **Residual (honest scope).** This is a **detect-and-halt-honestly** mitigation: it ends the #86/#104
 retry-budget waste and lands the human on an actionable diagnosis on the first (structural) or second
@@ -2358,14 +2366,16 @@ targets are never `.claude/`-nested from the sub-agent's point of view, regardle
 folder itself lives (§9.5) — so this halt rule's remaining scope is exactly a task-declared `.claude/`
 write that skipped `stagingOutputs`.
 
-The full autonomous fix is the `task.json` `stagingOutputs` contract (§3.5, issue #130): a task
-declares the `.claude/` deliverable it produces and a staging path the action writes instead, and
-the harness moves the staged output into its real `.claude/` path after the action succeeds and
-before guardrails run — so the task completes unattended. The §9.3 detect-and-halt remains the
-safety net for a `.claude/`-writing task that did **not** declare `stagingOutputs`; its
-`feedback.md` now points at `stagingOutputs` as the fix. The breakdown-time emission of
-`stagingOutputs` for `.claude/`-targeted tasks (Option C) is a `plan-breakdown` skill change,
-tracked separately.
+There are two autonomous fixes. **`needsHarnessWrite` (#191, §9) is the primary one for a prompt
+action:** the action hands the `.claude/` file to the harness process directly (bypassing the
+tool-permission layer), and guardrails still run against the result — `plan-breakdown` injects this
+instruction for any `.claude/` deliverable (Step 5b), so a well-authored breakdown never reaches this
+halt. The alternative is the `task.json` `stagingOutputs` contract (§3.5, issue #130): a task declares
+the `.claude/` deliverable it produces and a staging path the action writes instead, and the harness
+moves the staged output into its real `.claude/` path after the action succeeds and before guardrails
+run. The §9.3 detect-and-halt remains the safety net for a `.claude/`-writing task that used neither;
+its `feedback.md` points at `needsHarnessWrite` first, then `stagingOutputs`, then the session-wide
+`bypassPermissions` fallback (the settings-grant remedy is retired, #273).
 
 ### 9.4 Worktree-containment PreToolUse hook + git-stash safety (issues #199 / #192)
 

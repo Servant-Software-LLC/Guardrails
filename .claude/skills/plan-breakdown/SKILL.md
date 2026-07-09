@@ -1612,61 +1612,83 @@ non-compiling fixture fails loudly rather than silently breaking every downstrea
 the fixture (or the injected directive) and which tasks reuse it in Step 7.
 <!-- END ADDED SECTION #116 -->
 
-<!-- BEGIN ADDED SECTION #101 — new-.claude/-subdirectory deliverable detection + seeding (auto-merge friendly; do not merge into prose above) -->
-## Step 5b — Detect a deliverable in a NEW `.claude/` subdirectory and seed it (#101)
+<!-- BEGIN ADDED SECTION #101 — .claude/-deliverable detection: inject needsHarnessWrite + seed a new subdirectory (auto-merge friendly; do not merge into prose above) -->
+## Step 5b — Detect a `.claude/` deliverable: inject the `needsHarnessWrite` escape hatch, and seed a new subdirectory (#101 / #191)
 
-Claude Code's `acceptEdits` permission mode (the breakdown's default runner profile, schemas.md)
-auto-approves writes to **existing** paths but **blocks creating a new subdirectory under `.claude/`**
-without explicit interactive confirmation. In headless harness execution there is no human to
-confirm, so an agent writing `.claude/skills/<new>/SKILL.md` into a not-yet-existing directory
-correctly self-blocks with `{"needsHuman": "..."}` and the run halts (#101). The breakdown KNEW the
-task was creating a new `.claude/` deliverable and should have removed the barrier before the run —
-this is the directory analogue of the artifact-ancestry rule (a guardrail referencing a file no
-ancestor produces is a missing inserted task; here the missing prerequisite is a *directory*).
+A task's action runs as a Claude Code subprocess, whose tool-permission layer **refuses every write
+under `.claude/` unconditionally** — a NEW *or* EXISTING file, `acceptEdits` notwithstanding — and the
+refusal survives every workaround (PowerShell, `dangerouslyDisableSandbox`; a committed
+`.claude/settings.json` grant no longer works either, per #273). A prompt action that writes its
+`.claude/` deliverable directly therefore hits the wall on attempt 1 and dead-ends the task at
+`needs-human` (SSOT §9.3). The harness ships the escape hatch — `needsHarnessWrite` (#191): the action
+hands the file to the .NET harness process (which is NOT subject to that layer) to write on its behalf.
+The breakdown KNOWS the task's deliverable is under `.claude/`, so it MUST tell the agent to use that
+escape hatch instead of leaving it to discover the wall.
 
-**When this fires.** A task's **primary deliverable is a file inside `.claude/`** — `.claude/skills/`,
-`.claude/commands/`, `.claude/hooks/`, `.claude/agents/`, `.claude/contexts/` — **AND** the target
-subdirectory does not already exist in the workspace. Check existence at breakdown time
-(`Test-Path .claude/skills/<name>/`): an EXISTING subdirectory needs nothing (`acceptEdits` approves
-writes into it); only a NEW subdirectory trips the barrier.
+(The older #101 framing was narrower — "a NEW `.claude/` subdirectory" only — because at the time the
+only observed wall was the new-subdirectory barrier. #191 widened the reality: EXISTING `.claude/`
+files are refused too. The trigger below is widened to match #191's actual scope.)
 
-**The rule — seed the directory, or warn, before the write task.** Choose one:
-1. **Insert a directory-seed task** immediately before the writing task: `NN-seed-<name>-dir` whose
-   action writes a `.gitkeep` to the target path (e.g. `.claude/skills/survey-eval/.gitkeep`), making
-   the directory "existing" so `acceptEdits` approves the subsequent `SKILL.md` write. The writing
-   task `dependsOn` it. Prefer this for an unattended run — it removes the barrier deterministically
-   rather than relying on a human pre-step. **The seed task MUST be a SCRIPT action**
-   (`action.ps1`/`action.sh` running `New-Item -ItemType Directory` + a `.gitkeep` write), never a
-   prompt action: a script the harness runs directly is NOT subject to Claude Code's `acceptEdits`
-   tool-permission barrier, so it creates the new `.claude/` subdir headlessly — whereas a *prompt*
-   seed task would hit the exact same barrier it is meant to remove. (It is a script, so it carries
-   no `maxTurns`.)
-2. **Add a `## Pre-conditions` note** to the writing task's action prompt, stating that the caller
-   must pre-create the target directory (a committed `.gitkeep`) before the harness run. Use this only
-   when a seed task is undesirable (e.g. the human explicitly owns the directory creation).
+**When this fires.** A task whose **primary deliverable is a file inside `.claude/`** —
+`.claude/skills/`, `.claude/commands/`, `.claude/hooks/`, `.claude/agents/`, `.claude/contexts/` —
+**and whose action is a PROMPT** (a `.prompt.md`). NEW or EXISTING file, NEW or EXISTING subdirectory.
+(A SCRIPT action writing `.claude/` is exempt — the harness runs a script directly, not through the
+tool-permission layer, so it never hits the wall; that is exactly why the seed task in Rule 2 is a
+script.)
 
-**Guardrail.** Give the writing task (or the seed task) a `01-dir-seeded.ps1` guardrail asserting the
-target subdirectory exists **before** the write is attempted, so the barrier surfaces as a readable
-guardrail failure rather than a cryptic mid-run `needsHuman`:
+**Rule 1 — ALWAYS: inject the `needsHarnessWrite` instruction into the task's `action.prompt.md`.**
+Add it as an escape-hatch header, parallel to the `needsHuman` header, **verbatim**:
+
+> If a write under `.claude/` is refused by the tool-permission layer, do NOT retry the same write or
+> try workarounds (PowerShell, `dangerouslyDisableSandbox`, etc — all fail identically). Instead write
+> `{"needsHarnessWrite": {"path": "<workspace-relative path>", "content": "<full file content>",
+> "reason": "<why>"}}` to the state-out path. The harness will perform the write directly, then your
+> guardrails still run normally against the result.
+
+`needsHarnessWrite` is **singular per attempt** (v1): a task producing several `.claude/` files does so
+across attempts, or is split one deliverable per task. Unlike `needsHuman` it does NOT short-circuit —
+the guardrails still run against the harness-written result — so the task's normal `guardrails/`
+(file-exists, content checks) stay exactly as they would for any deliverable. (`stagingOutputs`, SSOT
+§3.5, is an alternative mechanism the harness also honours; prefer `needsHarnessWrite` — it needs no
+extra `task.json` contract and the guardrails verify the real `.claude/` path directly.)
+
+**Rule 2 — ONLY for a brand-new subdirectory: also seed the directory (the #101 mechanism, kept).**
+When the target subdirectory does not yet exist (`Test-Path .claude/skills/<name>/` is false at
+breakdown time), insert a directory-seed task immediately before the writing task: `NN-seed-<name>-dir`
+whose action writes a `.gitkeep` to the target path (e.g. `.claude/skills/survey-eval/.gitkeep`). The
+writing task `dependsOn` it. **The seed task MUST be a SCRIPT action** (`action.ps1`/`action.sh`
+running `New-Item -ItemType Directory` + a `.gitkeep` write), never a prompt action: a script is not
+subject to the tool-permission layer, so it creates the new `.claude/` subdir headlessly — whereas a
+prompt seed would hit the same wall it is meant to remove. (It is a script, so it carries no
+`maxTurns`.) This deterministic seed is cheap insurance kept alongside `needsHarnessWrite`: it keeps
+the directory present for the writing task's own tooling and gives the guardrail below a readable
+precondition to assert. An EXISTING subdirectory needs no seed. (When a seed task is undesirable
+because a human explicitly owns the directory creation, substitute a `## Pre-conditions` note on the
+writing task's prompt instead.)
+
+**Guardrail (seed task).** Give the seed task a `01-dir-seeded.ps1` guardrail asserting the target
+subdirectory exists, so a missing seed surfaces as a readable guardrail failure rather than a cryptic
+mid-run halt:
 
 ```powershell
-# catches: a task that writes into a NEW .claude/ subdirectory the harness's acceptEdits mode
-#          cannot create headlessly - the dir was never seeded, so the write self-blocks to
-#          needsHuman. Assert the target subdir EXISTS before the SKILL.md write is attempted.
+# catches: a task that writes into a NEW .claude/ subdirectory that was never seeded - a prompt
+#          action's tool-permission layer cannot create it headlessly. Assert the target subdir
+#          EXISTS before the SKILL.md write is attempted.
 $dir = ".claude/skills/survey-eval"
 if (-not (Test-Path $dir -PathType Container)) {
-    Write-Output "$dir does not exist - seed it (a committed .gitkeep) before the harness run; acceptEdits cannot create a new .claude/ subdir headlessly"
+    Write-Output "$dir does not exist - seed it (a committed .gitkeep) before the harness run; the tool-permission layer cannot create a new .claude/ subdir headlessly"
     exit 1
 }
 exit 0
 ```
 
-Scope the guardrail to the one target subdirectory the task owns. Report the seed task (or the
-pre-condition note) and the affected `.claude/` path in Step 7.
+Scope the guardrail to the one target subdirectory the task owns. Report the injected
+`needsHarnessWrite` instruction, the seed task (or the pre-condition note), and the affected `.claude/`
+path in Step 7.
 
-> **Harness relation (NOT a breakdown change).** Issue #104 is the harness-side counterpart (whether
-> the runner can be granted the write up front). The breakdown owns only the **detection + seeding**
-> doctrine above; do not edit `src/**`.
+> **Harness relation (NOT a breakdown change).** The harness side is the `needsHarnessWrite` mechanism
+> (#191, SSOT §9) and the permission-wall detect-and-halt (#104, SSOT §9.3). The breakdown owns only
+> the **detection + instruction-injection + seeding** doctrine above; do not edit `src/**`.
 <!-- END ADDED SECTION #101 -->
 
 <!-- BEGIN ADDED SECTION #87 — one skill directory per task (auto-merge friendly; do not merge into prose above) -->
@@ -2080,7 +2102,7 @@ authority for every path/signature the new wave references.
 <!-- BEGIN ADDED QUALITY-BAR ITEMS (auto-merge friendly) -->
 - [ ] (#94/#204) Every turn-expensive prompt task (integration/smoke/e2e + in-process harness, unfamiliar-SDK discovery, terminal aggregation/wiring, OR integrates with/extends/describes a same-plan sibling's not-yet-landed implementation) carries a per-task `maxTurns: 75` override (`task.json action.maxTurns` or prompt frontmatter); other prompt tasks left at the default; a shared-harness task inserted when ≥2 tasks need the same unfamiliar-SDK setup; the bumps + insertion reported (Step 4a). (#203) A task referencing an earlier-wave sibling's code also gets durable-marker + architecture-caveat prompt text (Step 6) — the two are companion fixes for the same situation, not independent bullets.
 - [ ] (#116) Every author-tests task that builds a real git repo reuses a Windows-safe shared `TempGitRepo` fixture (strips read-only before delete, recreates `git rm`/`git mv`-pruned dirs, rolls back via `git reset --hard`, normalizes `core.autocrlf`) OR carries the Windows-Git portability directive; the fixture is authored once and reused, not re-discovered per task (Step 5a; `stacks/dotnet.md §11`).
-- [ ] (#101) Every task whose primary deliverable is a file in a NEW `.claude/` subdirectory has a directory-seed task (writes a `.gitkeep`) or a `## Pre-conditions` note before it, plus a `01-dir-seeded.ps1` guardrail asserting the subdir exists; the seed and affected path reported (Step 5b).
+- [ ] (#101 / #191) Every PROMPT task whose primary deliverable is a file under `.claude/` (NEW or EXISTING file) carries the verbatim `needsHarnessWrite` escape-hatch instruction in its `action.prompt.md`; AND when the target subdirectory is NEW, it also has a directory-seed SCRIPT task (writes a `.gitkeep`) or a `## Pre-conditions` note before it, plus a `01-dir-seeded.ps1` guardrail asserting the subdir exists; the injected instruction, seed, and affected path reported (Step 5b). (SCRIPT actions writing `.claude/` are exempt.)
 - [ ] (#87) No emitted task updates ≥2 `.claude/skills/<X>/` directories — multi-skill milestones split into one `NN-update-<skill>-skill` task per directory (each with a directory-narrowed `writeScope`), with golden-example regeneration and round-trip verification as their own downstream tasks `dependsOn` the skill updates (Step 2c).
 - [ ] (#41/#78) `$e2eStack` recorded in Step 0 (playwright | cypress | none); for a UI-producing task, Level A (v1 liveness smoke) is added when a driver exists (else the §9 served-markup guardrail is emitted and the Level-A gap reported), an absent driver is surfaced/honest-halted (never scaffolded), Level B (v2 interaction-flow) is documented and surfaced as a v2 decision (never emitted in v1), and a multi-step-interaction exit criterion covered by only served-markup is flagged under-covered in Step 7 (Step 4b/5c; `references/stacks/ui.md`).
 - [ ] (#254) FLAT vs WAVED decided in Step 0.8: a plan of ordered STAGES whose later stages build on the prior stage's *materialized* artifacts is emitted as the nested `<plan>/<wave-NN-slug>/{preflights,guardrails,tasks}/` layout (wave dirs match `^wave-([0-9]+)-[a-z0-9-]+$`, contiguous NN, no root `tasks/`); a single-stage/flat plan is NOT waved (fine-grained parallelism is a task DAG inside ONE wave). Steps 1–8 ran per wave (Step 9).

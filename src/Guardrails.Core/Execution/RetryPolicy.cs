@@ -650,8 +650,11 @@ public static class RetryPolicy
     /// This is NOT a retry-input (the task is settling <c>needs-human</c>) — it is the human's
     /// remediation note, so it names the exact blocked path(s) and the concrete fixes. A
     /// <c>.claude/</c> wall (<paramref name="structuralPaths"/>) is called out as a known structural
-    /// restriction with its specific remediations; any other repeated path
-    /// (<paramref name="repeatedPaths"/>) is named as an un-retryable wall.
+    /// restriction whose PRIMARY remedy is the <c>needsHarnessWrite</c> escape hatch (#191); the old
+    /// <c>.claude/settings.json</c> <c>Write(.claude/**)</c> grant is called out as RETIRED (#273 — it
+    /// no longer works), with <c>stagingOutputs</c> and a session-wide <c>bypassPermissions</c> as
+    /// alternatives. Any other repeated path (<paramref name="repeatedPaths"/>) is named as an
+    /// un-retryable wall (a settings grant still works for non-<c>.claude/</c> paths).
     /// </summary>
     public static string ForPermissionWall(
         TaskNode task,
@@ -680,14 +683,28 @@ public static class RetryPolicy
 
             text.AppendLine();
             text.AppendLine("The Claude Code sub-agent runtime blocks automated writes under `.claude/` even when");
-            text.AppendLine("`permissionMode` is `acceptEdits`. No amount of retrying will let the agent write there.");
-            text.AppendLine("To make this task completable autonomously, do ONE of:");
+            text.AppendLine("`permissionMode` is `acceptEdits`. No amount of retrying — and no per-path settings");
+            text.AppendLine("grant — will let a prompt action write there directly. To make this task completable");
+            text.AppendLine("autonomously, do ONE of:");
             text.AppendLine();
-            text.AppendLine("1. Grant the write explicitly — add a rule like `Write(.claude/**)` (and `Edit(.claude/**)`)");
-            text.AppendLine("   to the project's `.claude/settings.json` allow-list before re-running.");
-            text.AppendLine("2. Re-target the task to write its deliverable to a path OUTSIDE `.claude/` (e.g. a");
-            text.AppendLine("   staging directory under the plan folder), then move it into `.claude/` by hand or with");
-            text.AppendLine("   a follow-up script step the harness runs with full permissions.");
+            text.AppendLine("1. (Primary) Hand the write to the harness via `needsHarnessWrite` (issue #191). The");
+            text.AppendLine("   action prompt should NOT write the `.claude/` file directly — instead write");
+            text.AppendLine("   `{\"needsHarnessWrite\": {\"path\": \"<workspace-relative path>\", \"content\": \"<full");
+            text.AppendLine("   file content>\", \"reason\": \"<why>\"}}` to the state-out path. The .NET harness");
+            text.AppendLine("   process — not subject to the tool-permission layer — performs the write, then your");
+            text.AppendLine("   guardrails still run against the result. `/plan-breakdown` now injects this");
+            text.AppendLine("   instruction into any task whose deliverable is under `.claude/`; re-author this");
+            text.AppendLine("   task's action prompt to use it and re-run.");
+            text.AppendLine("2. Re-target the task to write its deliverable to a staging path OUTSIDE `.claude/`,");
+            text.AppendLine("   then move it into place with a follow-up script step the harness runs with full");
+            text.AppendLine("   permissions (the `stagingOutputs` contract, SSOT §3.5).");
+            text.AppendLine("3. As a last resort, re-run the whole session with `--permission-mode bypassPermissions`.");
+            text.AppendLine("   This disables ALL permission enforcement for the run (a session-wide bypass, not a");
+            text.AppendLine("   scoped grant) — use it only if you accept that.");
+            text.AppendLine();
+            text.AppendLine("The old remedy — committing a `.claude/settings.json` with a `Write(.claude/**)` /");
+            text.AppendLine("`Edit(.claude/**)` grant — NO LONGER WORKS against current Claude Code: the `.claude/`");
+            text.AppendLine("block is unconditional regardless of the allow-list (issue #273). Do not rely on it.");
             text.AppendLine();
         }
 
