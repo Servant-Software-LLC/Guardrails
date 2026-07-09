@@ -121,6 +121,14 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   onto the unified `autonomyPolicy`; reporting via `decisions[]` (`boundary:"task"`) + a per-task
   `overwatch.jsonl`. SSOT §9.2; design `docs/plans/11-overwatcher.md`. (M3.) *v2 = auto-heal + inter-wave
   adjustment (bet #6).*
+- **#201 model tiering — design of record `docs/plans/13-model-tiering.md` (DRAFT, pre-build).** Route each
+  prompt attempt to a difficulty-appropriate (provider, model, effort): `promptRunners` generalized with
+  `kind`/`effort`/`routing` (#224), static `easy|medium|hard` tags (#225), deterministic attempt-launch
+  resolution (#226) + advisory budget probes (#227), an escalation ladder drawing from the SAME retry pool
+  (#228), review + accounting (#229/#230), and threshold/steering decisions under the shared `autonomyPolicy`
+  (`boundary:"routing"`, #231). Three sequential stage briefs (`model-tiering-{foundation,consumers,
+  dynamic-behavior}.md`) are the plan-of-record under the DoR; GR2037–GR2043 reserved; #223 (local
+  `openai-compat` runner) fills the `kind` seam independently. Builds only after the DoR's #106 review.
 - **M1 unified `autonomyPolicy` + `decisions[]` — SHIPPED.** One `prompt`/`halt`/`auto` policy + one
   `boundary: task|wave|drift` decisions log govern drift-resolution (#274), the overwatcher (#269), and
   inter-wave adjustment (#254); folded in the former `driftPolicy`. Prompt-spend from the overwatch diagnose,
