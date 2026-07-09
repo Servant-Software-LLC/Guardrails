@@ -757,6 +757,56 @@ public static class RetryPolicy
     }
 
     /// <summary>
+    /// #329: feedback for the OUTCOME-AWARE structural <c>.claude/</c>-wall halt (needs-human). #326
+    /// settles a NON-converged attempt that carries a structural <c>.claude/</c> wall to
+    /// <c>needs-human</c> on ONE attempt (the #104 fast-halt). When the non-convergence has a
+    /// genuinely-observed, more-specific cause — a guardrail that actually ran and FAILED — that cause
+    /// LEADS the feedback (<paramref name="primaryHeading"/> / <paramref name="primaryBody"/>) and the
+    /// <c>.claude/</c> wall the agent hit is disclosed as SECONDARY context. The wall is real (a
+    /// <c>.claude/</c> write/reference WAS refused this attempt) but is NOT necessarily the cause: the
+    /// Claude Code Bash classifier phrases even a <c>.claude/</c> READ source (a <c>cp</c>/<c>cat</c>) as a
+    /// write, and the agent may have recovered from it — so surfacing the wall as the PRIMARY outcome (as
+    /// #326 did, with an empty <c>failedGuardrails[]</c>) hid the real failure and misdirected triage into
+    /// chasing a permission/config issue that did not exist (issue #329).
+    /// </summary>
+    public static string ForStructuralWallHalt(
+        TaskNode task,
+        string primaryHeading,
+        string primaryBody,
+        IReadOnlyList<string> structuralPaths)
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"# Task '{task.Id}' needs a human");
+        text.AppendLine();
+        text.AppendLine($"Task: {task.Description}");
+        text.AppendLine();
+        text.AppendLine($"## {primaryHeading}");
+        text.AppendLine();
+        text.AppendLine(primaryBody.TrimEnd());
+        text.AppendLine();
+        text.AppendLine("The harness settled this task `needs-human` on this attempt: a structural `.claude/`");
+        text.AppendLine("wall was also present (below), which no retry can clear, so the remaining retry budget");
+        text.AppendLine("was not burned. Fix the primary cause above, then re-run.");
+        text.AppendLine();
+        text.AppendLine("## Secondary context — a `.claude/` write was blocked this attempt");
+        text.AppendLine();
+        foreach (string path in structuralPaths)
+        {
+            text.AppendLine($"- `{path}`");
+        }
+
+        text.AppendLine();
+        text.AppendLine("The Claude Code runtime refused an automated write/reference to the `.claude/` path(s)");
+        text.AppendLine("above — it classifies ANY `.claude/` reference (even a Bash `cp`/`cat` READ source) as a");
+        text.AppendLine("write. This is recorded as CONTEXT, not the primary cause: the agent may have recovered");
+        text.AppendLine("from it (e.g. re-read the file with the Read tool). If the primary failure above is a");
+        text.AppendLine("MISSING or under-populated `.claude/` deliverable, this wall is the likely reason — hand");
+        text.AppendLine("the write to the harness via `needsHarnessWrite` (issue #191) or the `stagingOutputs`");
+        text.AppendLine("contract (SSOT §3.5). Otherwise the wall was an incidental detour; fix the primary cause.");
+        return text.ToString();
+    }
+
+    /// <summary>
     /// True when <paramref name="output"/> carries more than the one-line <paramref name="reason"/>
     /// already shown — i.e. it is non-empty and not just the reason line repeated.
     /// </summary>

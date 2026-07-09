@@ -1330,6 +1330,20 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     when a `.claude/` path was reported refused, because the agent recovered (e.g. it read the file with
     the Read tool after a `cp ".claude/…"` was mis-classified as a write) and the deliverable landed.
 
+  **Outcome PRECEDENCE on a non-converged structural halt (issue #329).** `permission-denied` is the
+  reported outcome only when the wall is the honest PRIMARY cause with nothing more specific to report —
+  the eager #86 repeated-wall, or a structural `.claude/` wall on an attempt whose ACTION FAILED (so **no
+  guardrail ran**: the classic #104 first-attempt wall). When the non-convergence is instead a **guardrail
+  that genuinely RAN and FAILED** while a structural `.claude/` wall was also present, the reported outcome
+  is that guardrail failure — `guardrail-failed` with `failedGuardrails[]` populated — NOT
+  `permission-denied` with an empty `failedGuardrails[]`. The halt DECISION is unchanged (still
+  `needs-human` on that one attempt, the #104 fast-halt); only WHAT it reports leads with the true cause,
+  with the `.claude/` wall carried as SECONDARY context in the `feedback.md` + summary (it explains the
+  agent's staging/recovery detour and, when the failure is a missing `.claude/` deliverable, is the likely
+  reason). Reporting `permission-denied` + `failedGuardrails: []` when a guardrail actually ran and failed
+  HID the real cause and misdirected triage (a human reasonably assumed the #325 fix hadn't shipped) — the
+  #329 fix.
+
   The attempt carries this DISTINCT outcome so a human (and §9.2 triage) sees a permission/config issue,
   not a generic `action-failed`.
 - `task-preflight-failed` — a per-task `tasks/<id>/preflights/` slot failed (the two-scope preflights F9
@@ -2400,7 +2414,7 @@ By default, triage only **drafts** the GH issue (title + body) into `feedback.md
 **nothing** to a remote. Only when `triageAutoFile` is explicitly opted in — gated behind a
 configured GH repo + token — does the harness auto-file the issue. Default is **OFF**.
 
-### 9.3 Permission-wall halt (issues #86 / #104 / #325)
+### 9.3 Permission-wall halt (issues #86 / #104 / #325 / #329)
 
 When the runner REFUSES a write/edit because the target path is not on the granted permission
 allow-list, retrying often cannot clear it — switching tools or re-issuing the same write hits the same
@@ -2409,7 +2423,11 @@ distinct `permission-denied` attempt outcome (§7), instead of spending the rest
 the identical, un-recoverable wall. **The halt is OUTCOME-AWARE (issue #325):** a REPEATED non-`.claude/`
 path halts EAGERLY on the repeat, but a structural `.claude/` path halts only on an attempt that did NOT
 converge — a converged attempt (guardrails pass) is GREEN even when a `.claude/` refusal was reported,
-because the agent recovered and the deliverable landed.
+because the agent recovered and the deliverable landed. **What a non-converged structural halt REPORTS is
+in turn cause-aware (issue #329):** the `permission-denied` outcome is reported only when the wall is the
+honest primary cause (the action failed, so no guardrail ran); a guardrail that genuinely RAN and FAILED
+is reported as `guardrail-failed` with `failedGuardrails[]` populated, with the `.claude/` wall as
+secondary context — see the structural rule below.
 
 **Runner-agnostic signal.** Detecting the concrete refusal is **quarantined in the runner CLASS** (the
 SOLE home of the vendor permission-denial wording, like the §9 failure classifier): for `claude`, the
@@ -2443,6 +2461,20 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
   guardrails pass, the attempt is green. An attempt that does NOT converge with a structural `.claude/`
   wall present halts `needs-human` on that attempt (the #104 fast-halt: the deliverable cannot have
   landed, so no further retry is warranted).
+  - **What that non-converged halt REPORTS is cause-aware (issue #329) — the halt DECISION above is
+    unchanged.** The refusal alone is not evidence the wall is the primary FAILURE, only that a `.claude/`
+    write/reference was refused this attempt. So the reported outcome leads with the true primary cause:
+    - **A guardrail genuinely RAN and FAILED** (the action succeeded but a guardrail did not pass — e.g.
+      the recovered deliverable landed but dropped a required heading, #329's own reported case) → the
+      attempt is reported `guardrail-failed` with `failedGuardrails[]` populated, and the `feedback.md` +
+      summary LEAD with the guardrail failure, carrying the `.claude/` wall as SECONDARY context (it
+      explains the staging/recovery detour and, when the failure is a missing `.claude/` deliverable, is
+      the likely reason). It is NOT reported `permission-denied` with an empty `failedGuardrails[]`, which
+      hid the real cause and misdirected triage (the pre-#329 bug).
+    - **The action itself FAILED** (so **no guardrail ran** — the classic #104 first-attempt wall) → the
+      `.claude/` wall is the honest primary cause and the attempt stays `permission-denied`. A classified
+      action failure with NO `.claude/` wall present already reports its own outcome
+      (`timeout`/`output-cap`/`max-turns`/`action-failed`), unchanged.
 - **Repeated same path (issue #86) — halt EAGER.** A non-`.claude/` path re-refused across attempts is a
   strong un-clearable-wall signal that need NOT wait for the attempt's outcome, so unlike the structural
   rule this halt fires EAGERLY (before the outcome is routed, right after the transient-pause check).

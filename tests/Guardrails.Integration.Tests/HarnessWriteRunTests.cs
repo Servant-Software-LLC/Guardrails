@@ -330,17 +330,20 @@ public sealed class HarnessWriteRunTests
         private readonly string _content;
         private readonly IReadOnlyList<string> _blockedWritePaths;
         private readonly string? _deliverableToWrite;
+        private readonly bool _actionSucceeds;
 
         public ProbeThenHatchRunner(
             string? harnessWritePath,
             IReadOnlyList<string> blockedWritePaths,
             string content = "WRITTEN-BY-HARNESS",
-            string? deliverableToWrite = null)
+            string? deliverableToWrite = null,
+            bool actionSucceeds = true)
         {
             _harnessWritePath = harnessWritePath;
             _blockedWritePaths = blockedWritePaths;
             _content = content;
             _deliverableToWrite = deliverableToWrite;
+            _actionSucceeds = actionSucceeds;
         }
 
         public int Invocations { get; private set; }
@@ -369,10 +372,13 @@ public sealed class HarnessWriteRunTests
                 : "{ \"needsHarnessWrite\": { \"path\": \"" + _harnessWritePath +
                   "\", \"content\": \"" + _content + "\", \"reason\": \"the direct .claude/ write was refused\" } }";
             File.WriteAllText(stateOut, json);
+            // #329: actionSucceeds=false models the ACTION itself failing (the agent could not complete)
+            // while a .claude/ wall was reported — NO guardrail then runs, the pure #104 permission-wall.
             return Task.FromResult(new PromptResult
             {
                 Completed = true,
-                IsError = false,
+                IsError = !_actionSucceeds,
+                FailureKind = _actionSucceeds ? PromptFailureKind.None : PromptFailureKind.Error,
                 Summary = "fake: probed then optionally requested a harness write",
                 BlockedWritePaths = _blockedWritePaths
             });
@@ -384,7 +390,8 @@ public sealed class HarnessWriteRunTests
     /// deterministic script asserting <paramref name="guardrailChecksPath"/> exists in the workspace.
     /// </summary>
     private static string WriteHarnessWritePromptPlan(
-        string repoPath, string? writeScope, string guardrailChecksPath, int defaultRetries = 0)
+        string repoPath, string? writeScope, string guardrailChecksPath, int defaultRetries = 0,
+        string? requiredToken = null)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(Path.Combine(planDir, "tasks", "01-write", "guardrails"));
@@ -429,6 +436,28 @@ public sealed class HarnessWriteRunTests
             WriteSh(Path.Combine(taskDir, "guardrails", "01-exists.sh"),
                 "#!/usr/bin/env bash\n" +
                 $"if [ -f \"$GUARDRAILS_WORKSPACE/{guardrailChecksPath}\" ]; then exit 0; else echo missing; exit 1; fi\n");
+        }
+
+        // #329: an OPTIONAL second, CONTENT guardrail (ordinal 02, runs after 01-exists passes) — models
+        // the real #329 case where the .claude/ deliverable LANDED (the agent recovered from the wall) but
+        // a required fence/heading was dropped, so a guardrail UNRELATED to the wall genuinely fails.
+        if (requiredToken is not null)
+        {
+            if (Ps)
+            {
+                string checkedPs = guardrailChecksPath.Replace("/", "\\");
+                File.WriteAllText(Path.Combine(taskDir, "guardrails", "02-content.ps1"),
+                    "$p = Join-Path $env:GUARDRAILS_WORKSPACE '" + checkedPs + "'\n" +
+                    "if ((Test-Path $p) -and ((Get-Content $p -Raw) -match '" + requiredToken + "')) { exit 0 } " +
+                    "else { Write-Output 'missing required content: " + requiredToken + "'; exit 1 }\n");
+            }
+            else
+            {
+                WriteSh(Path.Combine(taskDir, "guardrails", "02-content.sh"),
+                    "#!/usr/bin/env bash\n" +
+                    $"if grep -q '{requiredToken}' \"$GUARDRAILS_WORKSPACE/{guardrailChecksPath}\" 2>/dev/null; " +
+                    $"then exit 0; else echo 'missing required content: {requiredToken}'; exit 1; fi\n");
+            }
         }
 
         return planDir;
@@ -517,15 +546,19 @@ public sealed class HarnessWriteRunTests
     }
 
     [Fact]
-    public async Task Worktree_UnrecoverableClaudeDeliverable_StillHaltsNeedsHuman()
+    public async Task Worktree_UnrecoverableClaudeDeliverable_HaltsNeedsHuman_ReportsGuardrailFailed()
     {
         // #325 must NOT weaken the #104 fast-halt: a .claude/ wall with NO hatch whose deliverable never
         // lands (the runner writes NOTHING) makes the guardrail FAIL, so the attempt does NOT converge —
-        // the structural .claude/ halt then fires at the guardrail-failed site, settling needs-human with
-        // "structural" wording. Crucially it halts on the SINGLE recorded attempt even though the budget
-        // is larger (defaultRetries: 2 → budget 3): a further retry cannot clear a .claude/ wall, so the
-        // remaining budget is never burned. This proves the #104 fast-halt survives, now routed through
-        // the guardrail-failed site instead of the removed early halt.
+        // the structural .claude/ halt fires at the guardrail-failed site, settling needs-human. Crucially
+        // it halts on the SINGLE recorded attempt even though the budget is larger (defaultRetries: 2 →
+        // budget 3): a further retry cannot clear a .claude/ wall, so the remaining budget is never burned
+        // (the #104 fast-halt survives).
+        //
+        // #329: the REPORTED outcome must now name the TRUE primary cause — a guardrail genuinely ran and
+        // FAILED — not `permission-denied` with an empty failedGuardrails[]. So the attempt outcome is
+        // `guardrail-failed`, failedGuardrails[] names the failing guardrail (01-exists), and the summary
+        // LEADS with the guardrail failure while still disclosing the .claude/ wall as secondary context.
         using var repo = new TempGitRepo();
         const string deliverable = ".claude/commands/x.md";
         string planDir = WriteHarnessWritePromptPlan(
@@ -540,32 +573,94 @@ public sealed class HarnessWriteRunTests
         TaskResult task = Assert.Single(report.Tasks);
         Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
         Assert.False(task.IsGreen);
+        // Summary leads with the guardrail failure and still mentions the .claude/ wall (secondary).
+        Assert.Contains("guardrail(s) failed", task.Summary);
+        Assert.Contains("01-exists", task.Summary);
         Assert.Contains(deliverable, task.Summary);
-        Assert.Contains("structural", task.Summary);
+        Assert.DoesNotContain("structural", task.Summary);
 
         JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
         Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
         Assert.False(repo.PlanBranchHasPath(planBranch, deliverable));
 
-        // Fast-halt proof: exactly ONE attempt was recorded and the runner ran ONCE, even though the
-        // budget allowed three — the guardrail-failed structural halt did not burn the retries.
-        Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        // #329: the single recorded attempt reports `guardrail-failed` (NOT `permission-denied`) with a
+        // NON-EMPTY failedGuardrails[] naming the guardrail that ran and failed.
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        Assert.Equal(AttemptOutcome.GuardrailFailed, attempt.Outcome);
+        FailedGuardrail failed = Assert.Single(attempt.FailedGuardrails);
+        Assert.Equal("01-exists", failed.Name);
+
+        // Fast-halt proof: exactly ONE attempt and the runner ran ONCE, even though the budget allowed
+        // three — the guardrail-failed structural halt did not burn the retries (#104 preserved).
         Assert.Equal(1, runner.Invocations);
     }
 
     [Fact]
-    public async Task Worktree_UnescapedClaudeWall_NoHatch_StillHaltsNeedsHuman()
+    public async Task Worktree_RecoversClaudeWall_UnrelatedGuardrailFails_ReportsGuardrailFailed()
     {
-        // The #321 fix must NOT weaken the #104 structural halt: a prompt that hits a .claude/ wall and
-        // does NOT emit needsHarnessWrite this attempt still halts needs-human on the first hit
-        // (permission wall), exactly as before. HarnessWriteRequest is null here, so the wall filter
-        // does not apply and the .claude/ path is observed as structural.
+        // #329 RED-BAR (faithful to the reported case, task 03b): a task extending an EXISTING .claude/
+        // file hits the Bash-classifier .claude/ wall on a READ-source `cp`, RECOVERS in the same attempt
+        // (writes the deliverable via the Read tool → 01-exists PASSES), but the transcribed content DROPS
+        // a required fence, so a DIFFERENT, unrelated CONTENT guardrail (02-content) genuinely FAILS. The
+        // wall is incidental — the real bug is the guardrail failure. Before #329 the harness reported
+        // `permission-denied` + failedGuardrails: [] (hiding that 02-content ran and failed, misdirecting
+        // triage into "the #325 fix didn't ship"). After #329 the attempt reports `guardrail-failed`,
+        // failedGuardrails[] names 02-content, and the summary leads with it. Must FAIL today (would report
+        // permission-denied / empty failedGuardrails), pass after.
+        using var repo = new TempGitRepo();
+        const string deliverable = ".claude/commands/traverse-repo.md";
+        const string requiredToken = "REQUIRED-FENCE";
+        string planDir = WriteHarnessWritePromptPlan(
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable, defaultRetries: 2,
+            requiredToken: requiredToken);
+
+        // The deliverable LANDS (recovers from the wall) but its content LACKS the required fence, so
+        // 01-exists passes and 02-content fails. The .claude/ path is reported blocked (the read-source
+        // detour). content default "WRITTEN-BY-HARNESS" does not contain REQUIRED-FENCE.
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [deliverable], deliverableToWrite: deliverable);
+
+        var (report, planBranch) = await RunWorktreePromptAsync(
+            planDir, repo, runner, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
+        Assert.False(task.IsGreen);
+        Assert.Contains("guardrail(s) failed", task.Summary);
+        Assert.Contains("02-content", task.Summary);
+        Assert.Contains(deliverable, task.Summary);            // the .claude/ wall path, secondary context
+        Assert.DoesNotContain("permission", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        Assert.Equal(AttemptOutcome.GuardrailFailed, attempt.Outcome);       // NOT PermissionDenied
+        FailedGuardrail failed = Assert.Single(attempt.FailedGuardrails);
+        Assert.Equal("02-content", failed.Name);                             // the UNRELATED guardrail
+        Assert.Contains(requiredToken, failed.Reason);
+
+        // Fast-halt preserved: one attempt, runner ran once (the .claude/ wall is unclearable).
+        Assert.Equal(1, runner.Invocations);
+    }
+
+    [Fact]
+    public async Task Worktree_ActionFailsWithClaudeWall_NoGuardrailRuns_StillReportsPermissionDenied()
+    {
+        // #329 companion (proves NO over-correction): the PURE permission-wall case must STAY
+        // `permission-denied`. Here the ACTION itself FAILS (the agent could not complete) while a .claude/
+        // wall was reported — so NO guardrail runs (guardrails are skipped on action failure). There is no
+        // guardrail failure being hidden, and the .claude/ wall IS the honest primary cause (the classic
+        // #104 first-attempt wall). The attempt must therefore report `permission-denied` with an EMPTY
+        // failedGuardrails[], exactly as #326 did — #329 changed only the guardrail-failed site.
         using var repo = new TempGitRepo();
         const string deliverable = ".claude/commands/foo.md";
         string planDir = WriteHarnessWritePromptPlan(
-            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable);
+            repo.RepoPath, writeScope: "\".claude/**\"", guardrailChecksPath: deliverable, defaultRetries: 2);
 
-        var runner = new ProbeThenHatchRunner(harnessWritePath: null, blockedWritePaths: [deliverable]);
+        var runner = new ProbeThenHatchRunner(
+            harnessWritePath: null, blockedWritePaths: [deliverable], deliverableToWrite: null,
+            actionSucceeds: false);
 
         var (report, planBranch) = await RunWorktreePromptAsync(
             planDir, repo, runner, TestContext.Current.CancellationToken);
@@ -574,11 +669,18 @@ public sealed class HarnessWriteRunTests
         Assert.Equal(TaskOutcome.NeedsHuman, task.Outcome);
         Assert.False(task.IsGreen);
         Assert.Contains(deliverable, task.Summary);
-        Assert.Contains("structural", task.Summary);
+        Assert.Contains("structural", task.Summary);          // permission-wall wording, unchanged
 
         JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
         Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
         Assert.False(repo.PlanBranchHasPath(planBranch, deliverable));
+
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        Assert.Equal(AttemptOutcome.PermissionDenied, attempt.Outcome);     // unchanged: pure wall
+        Assert.Empty(attempt.FailedGuardrails);                             // no guardrail ran
+
+        // Fast-halt preserved: one attempt, runner ran once even with budget 3.
+        Assert.Equal(1, runner.Invocations);
     }
 
     [Fact]
