@@ -889,6 +889,55 @@ a colliding container base is bumped to a distinct one (the same deterministic `
 plain sanitized-id collisions). A plan with no such collision (the golden example) is unaffected — its ids stay
 byte-identical and `source-sha256` is unmoved.
 
+### 4.6 Banned guardrail-script patterns (validated, GR2037 — error)
+
+Correct SKILL.md/catalogue text does **not** guarantee an LLM applies it every generation: a fresh
+`/plan-breakdown` (reading correct, unedited doctrine) regressed the #187 conflict-marker fix to its old
+unanchored spelling anyway (issue #346). A fixed-spelling catalogue lesson is therefore ALSO enforced
+**deterministically** by a data-driven banned-pattern registry that `guardrails validate` scans every
+generated guardrail's own source text against — the mirror of the presence-checks elsewhere in §4: a
+**negative** ban (a script must NOT contain a known-bad regex construction).
+
+**The registry file.** One authored file, `.claude/skills/plan-breakdown/references/banned-guardrail-patterns.json`
+(beside the catalogue, so the doctrine side can cite it), embedded into `Guardrails.Core` via an
+`<EmbeddedResource>` `Link` so the validator loads it with zero runtime path discovery (robust for the packed
+global tool) — **one source, no drift**. It is `{ "version": 1, "patterns": [ … ] }`; each entry:
+
+| Field | Meaning |
+|---|---|
+| `id` | the catalogue lesson this enforces (e.g. `#73`, `#187a`) — cited in the diagnostic |
+| `badPattern` | a regex matching the KNOWN-BAD construction in a guardrail's own source text |
+| `reason` | one line: why the construction is wrong (cited in the diagnostic) |
+| `goodPatternHint` | the correct replacement (surfaced in the GR2037 fix message) |
+| `mustMatch` | array of fixtures the `badPattern` MUST catch (the quality bar) |
+| `mustNotMatch` | array of fixtures the `badPattern` must NOT catch (the false-positive guard) |
+
+**The scan.** `PlanValidator` iterates every **script** guardrail across the four folders at all three scopes
+(task `guardrails/`+`preflights/`, wave `guardrails/`+`preflights/`, plan `guardrails/`+`preflights/`), reads
+its body, **strips whole-line comments first** (reusing `StripCommentLines` — this is itself the #97 lesson, so a
+`catches:`/header comment that merely DESCRIBES a banned construction cannot false-fire), then tests each entry's
+`badPattern` (`Regex.IsMatch`, culture-invariant, bounded match timeout) against the stripped body. It emits
+**one GR2037 ERROR per (guardrail, matching entry)**, citing the entry `id` + `reason` + `goodPatternHint` + the
+file path. Prompt guardrails (prose, not a regex construction) and script *actions* are **out of scope** in v1.
+The registry is injected into `PlanValidator` through a default-loading ctor mirroring the `IExecutableProbe`
+injection, so the scan is unit-testable with a synthetic registry.
+
+**Quality bar — the meta-test (a malformed entry cannot ship).** Every entry carries its own inline
+`mustMatch`/`mustNotMatch` fixtures; a meta-test compiles every `badPattern` (proving it is a valid regex),
+asserts it matches ALL its `mustMatch` fixtures and NONE of its `mustNotMatch` fixtures. A deterministic gate
+that false-halts correct work would violate invariant #1's spirit — the fixture bar is non-negotiable, and the
+fixtures live *in the registry* so a new lesson is a single self-documenting, self-testing object.
+
+**Seed set (honest cut) + honest limits.** Seeded with exactly two entries: `#73` (the hollow-assertion
+`Assert.*(Moved|Written|Count|Entities)` AVOID construction — an exact literal, highest confidence) and `#187a`
+(the unanchored / bare-`=======` conflict-marker construction — the exact #346 regression). `#175` (positive/
+required lesson — wrong polarity), `#97`/`#98` (structural absence-of-comment-strip, not a banned substring),
+and `#112` (FP-prone) are deliberately **excluded** (design-of-record `15-guardrail-script-lint.md` §B.6).
+Because it matches regex TEXT inside guardrail source, the registry is **defense-in-depth against accidental
+regression of a known-bad spelling**, not a proof — a determined respelling can evade a given `badPattern`. It
+**complements**, and does not replace, the #302 author-time smoke-test and the adversarial `/guardrails-review`
+pass. Growing coverage is a JSON entry + two fixtures, never new harness C#.
+
 ---
 
 ## 5. Child-process contract

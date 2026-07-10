@@ -16,7 +16,10 @@ if (-not (Test-Path $outDir)) {
 
 foreach ($file in Get-ChildItem -Path $outDir -Recurse -File) {
     $content = Get-Content -Raw -Path $file.FullName
-    if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+    # Line-anchored ours/theirs markers only (a real conflict writes both at column 0); no bare
+    # '=======' — unanchored it false-fires on a '====' banner / setext header / ASCII table (#187,
+    # GR2037). Matches examples/parallel-hello's reference union-invariant shape.
+    if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
         Write-Output ($file.FullName + " contains unresolved git conflict markers")
         exit 1
     }

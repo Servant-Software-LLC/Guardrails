@@ -345,6 +345,25 @@ public static class DiagnosticCodes
     /// </summary>
     public const string ExpectedDurationNonPositive = "GR2036";
 
-    // CURRENT next-free code: GR2037. GR2036 (ExpectedDurationNonPositive) is the last taken code above.
-    // When allocating a new code, take GR2037 and update this line (issue #320).
+    // Historical: as of issue #346, GR2036 (ExpectedDurationNonPositive) was the last taken code, so
+    // GR2037 was next-free at that point.
+
+    /// <summary>
+    /// A generated guardrail SCRIPT contains a KNOWN-BAD regex construction listed in the data-driven
+    /// banned-pattern registry (SSOT §4.6, issue #346). <c>guardrails validate</c> scans every
+    /// four-folder script guardrail's comment-stripped body (task <c>guardrails/</c>+<c>preflights/</c>,
+    /// wave <c>guardrails/</c>+<c>preflights/</c>, plan <c>guardrails/</c>+<c>preflights/</c>) against
+    /// each registry entry's <c>badPattern</c> and emits ONE GR2037 per match, citing the entry
+    /// <c>id</c> + <c>reason</c> + <c>goodPatternHint</c>. Seeded with <c>#73</c> (the hollow-assertion
+    /// AVOID construction) and <c>#187a</c> (the unanchored / bare-<c>=======</c> conflict-marker
+    /// construction — the exact #346 regression). An ERROR: correct SKILL.md text does not guarantee an
+    /// LLM applies it every generation, so a fixed-spelling catalogue lesson is enforced
+    /// deterministically here — complementing, not replacing, the #302 smoke-test and
+    /// <c>/guardrails-review</c>. The comment-strip-before-scan is itself the #97 lesson: a
+    /// <c>catches:</c>/header comment that DESCRIBES the banned construction must not false-fire.
+    /// </summary>
+    public const string BannedGuardrailPattern = "GR2037";
+
+    // CURRENT next-free code: GR2038. GR2037 (BannedGuardrailPattern) is the last taken code above.
+    // When allocating a new code, take GR2038 and update this line (issue #320).
 }

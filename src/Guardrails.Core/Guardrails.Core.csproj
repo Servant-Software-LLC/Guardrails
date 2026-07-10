@@ -11,6 +11,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The banned-guardrail-pattern registry (SSOT §4.6, issue #346) is authored ONCE beside the
+         catalogue and embedded here so PlanValidator loads it with zero runtime path discovery. The
+         LogicalName pins the manifest resource id (BannedPatternRegistry.ResourceName) regardless of
+         the source file's on-disk path. Forward slashes keep the Include cross-platform. One authored
+         file, no drift. -->
+    <EmbeddedResource Include="../../.claude/skills/plan-breakdown/references/banned-guardrail-patterns.json">
+      <Link>Resources/banned-guardrail-patterns.json</Link>
+      <LogicalName>Guardrails.Core.Resources.banned-guardrail-patterns.json</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Tests pin internal contracts (e.g. ClaudePromptRunner flag spelling). -->
     <InternalsVisibleTo Include="Guardrails.Core.Tests" />
     <InternalsVisibleTo Include="Guardrails.Integration.Tests" />

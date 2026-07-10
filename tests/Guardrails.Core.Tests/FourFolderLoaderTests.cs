@@ -252,7 +252,7 @@ public sealed class FourFolderLoaderTests : IDisposable
             if (-not (Test-Path $out)) { exit 0 }
             foreach ($f in Get-ChildItem -Path $out -Filter *.txt -File) {
                 $content = Get-Content -Raw -Path $f.FullName
-                if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+                if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
                     Write-Output ($f.Name + " contains git conflict markers")
                     exit 1
                 }

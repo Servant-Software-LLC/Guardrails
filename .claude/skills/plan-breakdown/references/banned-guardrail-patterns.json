@@ -1,0 +1,67 @@
+{
+  // Banned guardrail-script patterns (SSOT §4.6, issue #346, GR2037).
+  //
+  // A data-driven registry of KNOWN-BAD regex constructions that a generated guardrail
+  // script must NOT contain. `guardrails validate` scans every four-folder SCRIPT guardrail's
+  // comment-stripped body against each entry's `badPattern` and emits ONE GR2037 error per
+  // match, citing the entry `id` + `reason` + `goodPatternHint`.
+  //
+  // This is the SINGLE authored source: it lives beside the catalogue (so the doctrine side can
+  // cite it) AND is embedded into Guardrails.Core via an <EmbeddedResource> Link (so the
+  // validator loads it with zero runtime path discovery). One file, no drift.
+  //
+  // Quality bar (meta-tested — a malformed entry cannot ship): every entry carries inline
+  // `mustMatch` fixtures the `badPattern` MUST catch and `mustNotMatch` fixtures it must NOT
+  // catch. The meta-test compiles every `badPattern` (proving it is a valid regex), asserts it
+  // matches ALL its `mustMatch` fixtures, and asserts it matches NONE of its `mustNotMatch`.
+  //
+  // Honest scope: matching regex TEXT inside guardrail source is defense-in-depth against
+  // *accidental regression of a known-bad spelling*, not a proof — a determined respelling can
+  // evade a given `badPattern`. It COMPLEMENTS the #302 author-time smoke-test and the
+  // adversarial `/guardrails-review` pass; it does not replace them. Seeded small + honestly
+  // (#73 + #187a) — grow it by adding a JSON object with two fixtures, not harness C#.
+  "version": 1,
+  "patterns": [
+    {
+      "id": "#73",
+      // The hollow-assertion AVOID construction from the catalogue's #73 section: a guardrail
+      // that greps a test file for the mere PRESENCE of an assertion keyword on a quantity token
+      // (`Assert.*(Moved|Written|Count|Entities)`) passes on `Assert.Equal(0, x.Count)` — a
+      // zero-quantity result reports green. The distinctive banned token is the 4-way
+      // quantity-token alternation used as a keyword-presence match.
+      "badPattern": "Assert.*\\(Moved\\|Written\\|Count\\|Entities\\)",
+      "reason": "hollow assertion: an 'Assert.*(Moved|Written|Count|Entities)' keyword-presence match passes on 'Assert.Equal(0, x.Count)' — a zero-quantity result reports green (catalogue #73).",
+      "goodPatternHint": "require a STRICTLY-POSITIVE value, not the presence of an assertion keyword: '(>\\s*0|>=\\s*1|NotEmpty\\s*\\(|True\\s*\\([^)]*Count\\s*>\\s*0)' (or read the runner's recorded moved-count and assert > 0).",
+      "mustMatch": [
+        "if ($src -match 'Assert.*\\([^)]*(Moved|Written|Count|Entities)') { exit 0 }",
+        "if ! grep -Eq 'Assert.*\\([^)]*(Moved|Written|Count|Entities)' \"$test\"; then exit 1; fi"
+      ],
+      "mustNotMatch": [
+        "if ($src -notmatch '(>\\s*0|>=\\s*1|NotEmpty\\s*\\(|True\\s*\\([^)]*Count\\s*>\\s*0)') { exit 1 }",
+        "if ($src -notmatch 'Assert.*Count\\s*>\\s*0') { exit 1 }"
+      ]
+    },
+    {
+      "id": "#187a",
+      // The unanchored / retired conflict-marker construction (the exact #346 regression). A
+      // ours/theirs marker scan with NO line-start '^' anchor false-fires on a whitespace-preceded
+      // marker (the '(^|[[:space:]])' incident form), a raw '<<<<<<<' / grep -Eq '<<<<<<<', etc.;
+      // the bare '=======' middle marker collides with '====' banners / setext underlines and was
+      // retired by #187. GOOD form: line-anchored ours/theirs only, '(?m)^<<<<<<<' / '(?m)^>>>>>>>'.
+      // Rule: a 7-char '<' or '>' run NOT immediately preceded by '^' (unanchored), OR any '======='.
+      "badPattern": "(?<!\\^)<{7}|(?<!\\^)>{7}|={7}",
+      "reason": "unanchored/retired conflict-marker check: a '<<<<<<<'/'>>>>>>>' scan with no line-start '^' anchor false-fires on a whitespace-preceded marker (the '(^|[[:space:]])' #346-incident form), and the bare '=======' middle marker collides with '====' banners / setext underlines (retired by #187).",
+      "goodPatternHint": "anchor the ours/theirs tokens to line start and drop the bare '=======': '(?m)^<<<<<<<' / '(?m)^>>>>>>>' (POSIX: grep -E '^<<<<<<<').",
+      "mustMatch": [
+        "grep -Eq '(^|[[:space:]])(<<<<<<<|>>>>>>>)' \"$rel\"",
+        "if ($content -match '<<<<<<<' -or $content -match '>>>>>>>') { exit 1 }",
+        "grep -Eq '<<<<<<<' \"$file\" && exit 1",
+        "if ($content -match '=======') { exit 1 }"
+      ],
+      "mustNotMatch": [
+        "if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') { exit 1 }",
+        "if ($count -le 0) { Write-Output 'no output'; exit 1 }"
+      ]
+    }
+  ]
+}

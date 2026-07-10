@@ -21,7 +21,9 @@ foreach ($rel in $shared) {
         Write-Output "$rel is empty on the merged bytes - the union dropped its content"
         exit 1
     }
-    if ($content -match '<<<<<<<' -or $content -match '=======' -or $content -match '>>>>>>>') {
+    # Line-anchored ours/theirs markers only; no bare '=======' (unanchored it false-fires on a
+    # '====' banner / setext header — retired by #187, banned by GR2037).
+    if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') {
         Write-Output "$rel contains git conflict markers - the union did not cleanly integrate the overlapping writeScopes"
         exit 1
     }
