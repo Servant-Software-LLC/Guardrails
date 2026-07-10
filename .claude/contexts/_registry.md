@@ -7,6 +7,7 @@ Each line: `- [Topic-Path](relative/path/) — one-line description`
 - [Guardrails/Build](Guardrails/Build/) — Full M1–M7 harness build, skill authoring, dogfood plan, and NuGet release pipeline
 - [Guardrails/Model-Tiering-Epic](Guardrails/Model-Tiering-Epic/) — Model-tiering & provider-management epic (#201): sub-issue breakdown, sequential wave plans, diagram.html live-status/search features, and OSS-extraction verdict
 - [Guardrails/Preflights-Two-Scope](Guardrails/Preflights-Two-Scope/) — Two-scope preflights/guardrails feature plan-breakdown and execution on feat/preflights-two-scope
+- [Guardrails/Verifier-Infrastructure](Guardrails/Verifier-Infrastructure/) — Guardrail-strength / verifier arc: pilot-seat model-provenance dogfood (#349), specialized-guardrail-library (#350), verifier-store handoff enabler (#351)
 
 ## Uber-Report
 
