@@ -355,8 +355,10 @@ public static class DiagnosticCodes
     /// wave <c>guardrails/</c>+<c>preflights/</c>, plan <c>guardrails/</c>+<c>preflights/</c>) against
     /// each registry entry's <c>badPattern</c> and emits ONE GR2037 per match, citing the entry
     /// <c>id</c> + <c>reason</c> + <c>goodPatternHint</c>. Seeded with <c>#73</c> (the hollow-assertion
-    /// AVOID construction) and <c>#187a</c> (the unanchored / bare-<c>=======</c> conflict-marker
-    /// construction — the exact #346 regression). An ERROR: correct SKILL.md text does not guarantee an
+    /// AVOID construction) and <c>#187a</c> (the unanchored <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c>/
+    /// <c>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c> conflict-marker construction — the exact #346 regression;
+    /// the bare <c>=======</c> was the design's deferred #187b and is NOT banned, to avoid a
+    /// setext-underline / banner false-positive). An ERROR: correct SKILL.md text does not guarantee an
     /// LLM applies it every generation, so a fixed-spelling catalogue lesson is enforced
     /// deterministically here — complementing, not replacing, the #302 smoke-test and
     /// <c>/guardrails-review</c>. The comment-strip-before-scan is itself the #97 lesson: a

@@ -1293,10 +1293,11 @@ Gold standard when the file is under git: `git diff --check` reports conflict ma
 > **Also enforced deterministically (GR2037, #346).** Because correct doctrine text here does not
 > guarantee an LLM applies it every generation (a fresh breakdown regressed this exact fix to the old
 > unanchored spelling), `guardrails validate` mechanically **rejects** the unanchored `<<<<<<<`/`>>>>>>>`
-> forms and the bare `=======` via the banned-pattern registry
+> forms (a 7-char ours/theirs run not line-anchored) via the banned-pattern registry
 > (`references/banned-guardrail-patterns.json`, entry `#187a`; SSOT §4.6). It **complements** — does not
 > replace — the #302 author-time smoke-test and the `/guardrails-review` adversarial pass; author the
-> line-anchored form and it never fires.
+> line-anchored form and it never fires. (The bare `=======` is retired from the good form by doctrine
+> but is deliberately NOT banned by GR2037 — a `={7}` ban would false-fire on a setext underline / banner.)
 
 The **unconditional** form (`if ($content -notmatch "test-commander-rest") { exit 1 }`) is the bug: it
 fails at the intermediate union BEFORE the REST task has run, red-halting a healthy partial merge. The

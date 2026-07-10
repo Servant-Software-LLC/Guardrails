@@ -112,17 +112,20 @@ public sealed class BannedPatternRegistryTests : IDisposable
     }
 
     [Fact]
-    public void BareEqualsMiddleMarker_FiresGr2037_Citing187a()
+    public void SetextUnderlineOrBannerCheck_IsClean_NoGr2037()
     {
-        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-union",
+        // The deferred '={7}' term is correctly ABSENT from #187a (review BLOCKER): a legitimate
+        // markdown-setext-underline / banner check that greps for a bare '=======' must NOT be
+        // rejected — banning it added no coverage of the actual #346 incident and was pure FP surface.
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-setext",
             """
-            $content = Get-Content -Raw $file
-            if ($content -match '=======') { exit 1 }
+            $doc = Get-Content -Raw $file
+            if ($doc -notmatch '(?m)^=======') { Write-Output 'missing setext underline'; exit 1 }
             exit 0
             """);
 
-        Diagnostic diagnostic = AssertSingleGr2037(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)));
-        Assert.Contains("#187a", diagnostic.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)),
+            d => d.Code == DiagnosticCodes.BannedGuardrailPattern);
     }
 
     [Fact]
@@ -164,6 +167,23 @@ public sealed class BannedPatternRegistryTests : IDisposable
             """
             $src = Get-Content -Raw $test
             if ($src -notmatch '(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)') { exit 1 }
+            exit 0
+            """);
+
+        Assert.DoesNotContain(ValidateEmbedded(PlanWithTaskGuardrail(guardrail)),
+            d => d.Code == DiagnosticCodes.BannedGuardrailPattern);
+    }
+
+    [Fact]
+    public void HollowShapeButRequiresPositivity_IsClean_NoGr2037()
+    {
+        // The review's #73 WEAK FP: an Assert-on-quantity construct that ALSO requires positivity
+        // ('.*>\s*0' inside the SAME quoted regex) IS sufficient, not hollow — the trailing negative
+        // lookahead keeps it clean.
+        GuardrailDefinition guardrail = WriteScript("tasks/01-a/guardrails", "01-moved-positive",
+            """
+            $src = Get-Content -Raw $test
+            if ($src -notmatch 'Assert.*(Moved|Written|Count|Entities).*>\s*0') { exit 1 }
             exit 0
             """);
 
@@ -242,7 +262,7 @@ public sealed class BannedPatternRegistryTests : IDisposable
     public void PlanLevelPreflight_IsScanned_FiresGr2037()
     {
         GuardrailDefinition preflight = WriteScript("preflights", "01-baseline",
-            "if ($content -match '=======') { exit 1 }");
+            "if ($content -match '<<<<<<<') { exit 1 }");
         PlanDefinition plan = BasePlan() with
         {
             Tasks = [SimpleTask("01-a")],

@@ -28,9 +28,12 @@
       // that greps a test file for the mere PRESENCE of an assertion keyword on a quantity token
       // (`Assert.*(Moved|Written|Count|Entities)`) passes on `Assert.Equal(0, x.Count)` — a
       // zero-quantity result reports green. The distinctive banned token is the 4-way
-      // quantity-token alternation used as a keyword-presence match.
-      "badPattern": "Assert.*\\(Moved\\|Written\\|Count\\|Entities\\)",
-      "reason": "hollow assertion: an 'Assert.*(Moved|Written|Count|Entities)' keyword-presence match passes on 'Assert.Equal(0, x.Count)' — a zero-quantity result reports green (catalogue #73).",
+      // quantity-token alternation used as a keyword-presence match. The trailing negative lookahead
+      // does NOT fire when a positivity check follows the construct WITHIN THE SAME quoted regex on
+      // the same line (a '>' comparison, 'NotEmpty', or 'True(...)') — that form (e.g.
+      // 'Assert.*(...Count...).*>\s*0') IS sufficient, so it is not hollow.
+      "badPattern": "Assert.*\\(Moved\\|Written\\|Count\\|Entities\\)(?![^'\"\\r\\n]*(>|NotEmpty|True))",
+      "reason": "hollow assertion: an 'Assert.*(Moved|Written|Count|Entities)' keyword-presence match with no positivity check passes on 'Assert.Equal(0, x.Count)' — a zero-quantity result reports green (catalogue #73).",
       "goodPatternHint": "require a STRICTLY-POSITIVE value, not the presence of an assertion keyword: '(>\\s*0|>=\\s*1|NotEmpty\\s*\\(|True\\s*\\([^)]*Count\\s*>\\s*0)' (or read the runner's recorded moved-count and assert > 0).",
       "mustMatch": [
         "if ($src -match 'Assert.*\\([^)]*(Moved|Written|Count|Entities)') { exit 0 }",
@@ -38,29 +41,37 @@
       ],
       "mustNotMatch": [
         "if ($src -notmatch '(>\\s*0|>=\\s*1|NotEmpty\\s*\\(|True\\s*\\([^)]*Count\\s*>\\s*0)') { exit 1 }",
-        "if ($src -notmatch 'Assert.*Count\\s*>\\s*0') { exit 1 }"
+        "if ($src -notmatch 'Assert.*Count\\s*>\\s*0') { exit 1 }",
+        "if ($src -notmatch 'Assert.*(Moved|Written|Count|Entities).*>\\s*0') { exit 1 }"
       ]
     },
     {
       "id": "#187a",
-      // The unanchored / retired conflict-marker construction (the exact #346 regression). A
-      // ours/theirs marker scan with NO line-start '^' anchor false-fires on a whitespace-preceded
-      // marker (the '(^|[[:space:]])' incident form), a raw '<<<<<<<' / grep -Eq '<<<<<<<', etc.;
-      // the bare '=======' middle marker collides with '====' banners / setext underlines and was
-      // retired by #187. GOOD form: line-anchored ours/theirs only, '(?m)^<<<<<<<' / '(?m)^>>>>>>>'.
-      // Rule: a 7-char '<' or '>' run NOT immediately preceded by '^' (unanchored), OR any '======='.
-      "badPattern": "(?<!\\^)<{7}|(?<!\\^)>{7}|={7}",
-      "reason": "unanchored/retired conflict-marker check: a '<<<<<<<'/'>>>>>>>' scan with no line-start '^' anchor false-fires on a whitespace-preceded marker (the '(^|[[:space:]])' #346-incident form), and the bare '=======' middle marker collides with '====' banners / setext underlines (retired by #187).",
-      "goodPatternHint": "anchor the ours/theirs tokens to line start and drop the bare '=======': '(?m)^<<<<<<<' / '(?m)^>>>>>>>' (POSIX: grep -E '^<<<<<<<').",
+      // The unanchored ours/theirs conflict-marker construction (the exact #346 regression). A
+      // '<<<<<<<'/'>>>>>>>' marker scan with NO line-start '^' anchor false-fires on a
+      // whitespace-preceded marker (the '(^|[[:space:]])' incident form), a raw '<<<<<<<' /
+      // grep -Eq '<<<<<<<', etc. GOOD form: line-anchored ours/theirs, '(?m)^<<<<<<<' / '(?m)^>>>>>>>'.
+      // Rule: a 7-char '<' or '>' run NOT immediately preceded by '^'.
+      //
+      // NOTE — the bare '=======' middle marker is NOT banned here. #187 retires it from the DOCTRINE
+      // (drop it from the good form), but a '={7}' ban was the design-of-record's explicitly-DEFERRED
+      // "#187b" and adds no coverage of the actual #346 incident (which had no '======='); it would
+      // false-fire on a legitimate markdown-setext-underline / banner check. The mustNotMatch fixtures
+      // below PIN that '======='-based checks stay clean. Accepted residual limit: a rare INLINE
+      // (trailing) comment on a non-comment line that literally spells 7+ '<'/'>' would still trip.
+      "badPattern": "(?<!\\^)<{7}|(?<!\\^)>{7}",
+      "reason": "unanchored conflict-marker check: a '<<<<<<<'/'>>>>>>>' scan with no line-start '^' anchor false-fires on a whitespace-preceded marker (the '(^|[[:space:]])' #346-incident form) — it matches the token anywhere on a line. (Accepted residual: a rare inline-comment mention of 7+ literal '<'/'>' on a non-comment line.)",
+      "goodPatternHint": "anchor the ours/theirs tokens to line start: '(?m)^<<<<<<<' / '(?m)^>>>>>>>' (POSIX: grep -E '^<<<<<<<'). Both markers write at column 0, so the anchor is false-positive-free.",
       "mustMatch": [
         "grep -Eq '(^|[[:space:]])(<<<<<<<|>>>>>>>)' \"$rel\"",
         "if ($content -match '<<<<<<<' -or $content -match '>>>>>>>') { exit 1 }",
-        "grep -Eq '<<<<<<<' \"$file\" && exit 1",
-        "if ($content -match '=======') { exit 1 }"
+        "grep -Eq '<<<<<<<' \"$file\" && exit 1"
       ],
       "mustNotMatch": [
         "if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') { exit 1 }",
-        "if ($count -le 0) { Write-Output 'no output'; exit 1 }"
+        "if ($count -le 0) { Write-Output 'no output'; exit 1 }",
+        "if ($doc -notmatch '(?m)^=======') { exit 1 }",
+        "if ($report -notmatch '=======') { exit 1 }"
       ]
     }
   ]

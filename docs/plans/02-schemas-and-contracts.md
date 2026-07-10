@@ -929,12 +929,20 @@ that false-halts correct work would violate invariant #1's spirit — the fixtur
 fixtures live *in the registry* so a new lesson is a single self-documenting, self-testing object.
 
 **Seed set (honest cut) + honest limits.** Seeded with exactly two entries: `#73` (the hollow-assertion
-`Assert.*(Moved|Written|Count|Entities)` AVOID construction — an exact literal, highest confidence) and `#187a`
-(the unanchored / bare-`=======` conflict-marker construction — the exact #346 regression). `#175` (positive/
-required lesson — wrong polarity), `#97`/`#98` (structural absence-of-comment-strip, not a banned substring),
-and `#112` (FP-prone) are deliberately **excluded** (design-of-record `15-guardrail-script-lint.md` §B.6).
-Because it matches regex TEXT inside guardrail source, the registry is **defense-in-depth against accidental
-regression of a known-bad spelling**, not a proof — a determined respelling can evade a given `badPattern`. It
+`Assert.*(Moved|Written|Count|Entities)` AVOID construction — with a trailing negative lookahead so a construct
+that ALSO requires positivity, e.g. `…(Count).*>\s*0`, is *not* flagged) and `#187a` (the unanchored
+`<<<<<<<`/`>>>>>>>` conflict-marker construction — the exact #346 regression: a 7-char ours/theirs run NOT
+line-anchored). `#175` (positive/required lesson — wrong polarity), `#97`/`#98` (structural
+absence-of-comment-strip, not a banned substring), and `#112` (FP-prone) are deliberately **excluded**
+(design-of-record `15-guardrail-script-lint.md` §B.6). **The bare `=======` middle marker is NOT banned** — a
+`={7}` ban was the design's explicitly-DEFERRED "#187b"; it adds no coverage of the #346 incident (which had no
+`=======`) while false-firing on a legitimate markdown-setext-underline / banner check, so it was dropped and
+`#187a`'s `mustNotMatch` fixtures pin that a `=======`-based check stays clean. **Accepted residual:** the only
+false-positive left for `#187a` is the rare INLINE (trailing) comment on a non-comment line literally spelling 7+
+`<`/`>` (whole-line comments are stripped first); for `#73`, a hollow-shaped assertion whose positivity lives
+outside the matched quoted regex. Because it matches regex TEXT inside guardrail source, the registry is
+**defense-in-depth against accidental regression of a known-bad spelling**, not a proof — a determined respelling
+can evade a given `badPattern`. It
 **complements**, and does not replace, the #302 author-time smoke-test and the adversarial `/guardrails-review`
 pass. Growing coverage is a JSON entry + two fixtures, never new harness C#.
 
