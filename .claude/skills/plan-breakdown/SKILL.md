@@ -379,11 +379,12 @@ optional:
   invariant guardrail (GR2028, the re-homed GR2018 content teeth).** GR2028 requires the terminal
   folder to carry at least one real integration-set re-run; when that re-run is a union invariant it is
   the **conditional union invariant**,
-  NOT the build/suite. It asserts something true of any valid intermediate union — "every
-  produced file present is non-empty and conflict-marker-free", "every contribution PRESENT
-  in the union is intact" — so it passes trivially BEFORE a contributing task has run. Its
-  content checks MUST be **UNION-SAFE = CONDITIONAL**: `IF contribution X is present, verify
-  it's real`, never `REQUIRE X present`. The conditional pattern (the `parallel-hello`
+  NOT the build/suite. It asserts something true of any valid intermediate union — the
+  GR2028-crediting core is **"every produced file present is non-empty and conflict-marker-free"**;
+  "every contribution PRESENT in the union is intact" is the *additive* contribution-present tightening
+  layered on top (not GR2028-satisfying on its own, #343 — see below) — so it passes trivially BEFORE a
+  contributing task has run. Its content checks MUST be **UNION-SAFE = CONDITIONAL**: `IF contribution X
+  is present, verify it's real`, never `REQUIRE X present`. The conditional pattern (the `parallel-hello`
   template; `examples/parallel-hello/.../01-whole-repo-greeting.ps1`):
 
   ```powershell
@@ -407,9 +408,17 @@ optional:
   A contribution-present check uses the same conditional shape — `if ($content -match
   "<token>") { if ($content -notmatch '<real-construct>') { $failures += "<token> present
   only as comment — construct missing" } }` — so it false-passes (correctly) before the
-  contributing task has run, and tightens once that task's hunk lands. The
-  overlapping-writeScope union-guardrail (next bullet, #132) IS this integration-scoped
-  guardrail — make THAT, not the build/suite, the terminal folder's union invariant satisfying GR2028.
+  contributing task has run, and tightens once that task's hunk lands. **But a
+  contribution-present check does NOT satisfy GR2028 on its own — it is ADDITIVE, layered on top
+  of the union-soundness proof, never the sole content of the terminal gate (#343).** GR2028 is
+  credited only by a **conflict-marker-freedom check** (the line-anchored `<<<<<<<`/`>>>>>>>` scan
+  above) **or** a recognized whole-repo build/test/suite invocation — these are ungameable,
+  whereas a content grep is vacuous exactly where the terminal gate matters most: the union-safe
+  CONDITIONAL form can never FAIL when a merge DROPPED a contribution entirely (the gate goes
+  false → pass), so it certifies nothing about union soundness by itself. The
+  overlapping-writeScope union-guardrail (next bullet, #132) satisfies GR2028 **because it ALSO
+  carries the conflict-marker-freedom check** — its contribution-present checks are the additive
+  tightening layered on top, not the GR2028-satisfying content.
 - **Overlapping writeScopes → author a `scope:"integration"` union-guardrail on the shared file
   (#132).** When ≥2 tasks have OVERLAPPING `writeScope`s on a shared file (colliding siblings the
   AI-merge unions), emit one `scope:"integration"` guardrail on the integration / fan-in task
