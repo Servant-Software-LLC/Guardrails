@@ -15,11 +15,24 @@ namespace Guardrails.Core.Loading;
 public sealed class PlanValidator
 {
     private readonly IExecutableProbe _probe;
+    private readonly BannedPatternRegistry _bannedPatterns;
 
-    public PlanValidator(IExecutableProbe probe) => _probe = probe;
+    /// <summary>Validate with the given PATH probe and the embedded default banned-pattern registry.</summary>
+    public PlanValidator(IExecutableProbe probe) : this(probe, BannedPatternRegistry.Load()) { }
 
-    /// <summary>Validate with the real PATH probe.</summary>
+    /// <summary>Validate with the real PATH probe and the embedded default banned-pattern registry.</summary>
     public PlanValidator() : this(new PathExecutableProbe()) { }
+
+    /// <summary>
+    /// Validate with an injected PATH probe AND an injected banned-pattern registry (SSOT §4.6,
+    /// issue #346). Mirrors the <see cref="IExecutableProbe"/> injection so the GR2037 scan is
+    /// unit-testable with a synthetic registry, without touching the shipped one.
+    /// </summary>
+    public PlanValidator(IExecutableProbe probe, BannedPatternRegistry bannedPatterns)
+    {
+        _probe = probe;
+        _bannedPatterns = bannedPatterns;
+    }
 
     /// <summary>Run every semantic check and return all diagnostics (errors and warnings).</summary>
     public IReadOnlyList<Diagnostic> Validate(PlanDefinition plan)
@@ -42,6 +55,7 @@ public sealed class PlanValidator
         ValidateGuardrailScopeValues(plan, diagnostics);
         ValidateGuardrailExpectedDurations(plan, diagnostics);
         ValidateDuplicateCheckNames(plan, diagnostics);
+        ValidateBannedGuardrailPatterns(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
@@ -925,6 +939,101 @@ public sealed class PlanValidator
                 "colliding files so the names differ (SSOT §4.5)."));
         }
     }
+
+    /// <summary>
+    /// The banned-guardrail-pattern scan (GR2037, SSOT §4.6, issue #346). For every four-folder
+    /// SCRIPT guardrail — task <c>guardrails/</c>+<c>preflights/</c>, wave <c>guardrails/</c>+
+    /// <c>preflights/</c>, plan <c>guardrails/</c>+<c>preflights/</c> — read its body, <b>strip
+    /// whole-line comments first</b> (reusing <see cref="StripCommentLines"/> — itself the #97
+    /// lesson, so a <c>catches:</c>/header comment that merely DESCRIBES a banned construction cannot
+    /// false-fire), then test each registry entry's <c>badPattern</c> against the stripped body. Emit
+    /// ONE GR2037 per (guardrail, entry) match, citing the entry <c>id</c> + <c>reason</c> +
+    /// <c>goodPatternHint</c>. Prompt guardrails are prose (not a regex construction) and script
+    /// ACTIONS are out of scope for v1 — the scan is script-guardrail-only. A body that cannot be read
+    /// is skipped (other checks surface the structural problem). Data-driven: a new lesson is a JSON
+    /// entry, never new C# here.
+    /// </summary>
+    private void ValidateBannedGuardrailPatterns(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (_bannedPatterns.Patterns.Count == 0)
+        {
+            return;
+        }
+
+        foreach (GuardrailDefinition guardrail in FourFolderScriptGuardrails(plan))
+        {
+            string? body = TryReadAllText(guardrail.Path);
+            if (body is null)
+            {
+                continue;
+            }
+
+            string stripped = StripCommentLines(body);
+
+            foreach (BannedPattern pattern in _bannedPatterns.Patterns)
+            {
+                if (pattern.Matcher.IsMatch(stripped))
+                {
+                    diagnostics.Add(Error(DiagnosticCodes.BannedGuardrailPattern, guardrail.Path,
+                        $"Guardrail '{guardrail.Name}' contains a banned regex construction ({pattern.Id}): " +
+                        $"{pattern.Reason} Fix: {pattern.GoodPatternHint} A correct SKILL.md does not " +
+                        "guarantee an LLM applies it every generation, so this fixed-spelling lesson is " +
+                        "enforced deterministically here (banned-guardrail-patterns registry, GR2037 — " +
+                        "SSOT §4.6)."));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every SCRIPT guardrail across the four folders at all three scopes — task <c>guardrails/</c>+
+    /// <c>preflights/</c>, wave <c>guardrails/</c>+<c>preflights/</c>, plan <c>guardrails/</c>+
+    /// <c>preflights/</c> — the uniform enumeration the four-folder checks use. <c>plan.Tasks</c> is
+    /// flattened across waves (so waved TASK folders are covered by the task loop); only the
+    /// wave-LEVEL folders need the separate <c>plan.Waves</c> loop. Prompt guardrails are excluded
+    /// (they are prose, not a regex construction).
+    /// </summary>
+    private static IEnumerable<GuardrailDefinition> FourFolderScriptGuardrails(PlanDefinition plan)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            foreach (GuardrailDefinition guardrail in ScriptGuardrails(task.Guardrails))
+            {
+                yield return guardrail;
+            }
+
+            foreach (GuardrailDefinition guardrail in ScriptGuardrails(task.Preflights))
+            {
+                yield return guardrail;
+            }
+        }
+
+        foreach (WaveNode wave in plan.Waves)
+        {
+            foreach (GuardrailDefinition guardrail in ScriptGuardrails(wave.Guardrails))
+            {
+                yield return guardrail;
+            }
+
+            foreach (GuardrailDefinition guardrail in ScriptGuardrails(wave.Preflights))
+            {
+                yield return guardrail;
+            }
+        }
+
+        foreach (GuardrailDefinition guardrail in ScriptGuardrails(plan.PlanPreflights))
+        {
+            yield return guardrail;
+        }
+
+        foreach (GuardrailDefinition guardrail in ScriptGuardrails(plan.PlanGuardrails))
+        {
+            yield return guardrail;
+        }
+    }
+
+    private static IEnumerable<GuardrailDefinition> ScriptGuardrails(IReadOnlyList<GuardrailDefinition> guardrails) =>
+        guardrails.Where(g => g.Kind == ActionKind.Script);
 
     private static void ValidateDependencies(PlanDefinition plan, List<Diagnostic> diagnostics)
     {

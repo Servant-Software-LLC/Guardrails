@@ -188,6 +188,12 @@ a "how many items were processed" result (see SKILL.md Step 4's decision tree).
 - **Pattern to USE** (requires a positive value):
   `(>\s*0|>=\s*1|NotEmpty\s*\(|True\s*\([^)]*Count\s*>\s*0)`
 
+> **Also enforced deterministically (GR2037, #346).** The hollow AVOID construction above is banned by
+> the banned-pattern registry (`references/banned-guardrail-patterns.json`, entry `#73`; SSOT §4.6) —
+> `guardrails validate` rejects any guardrail whose comment-stripped source keys on the
+> `Assert.*(Moved|Written|Count|Entities)` keyword-presence shape. It **complements**, not replaces, the
+> #302 smoke-test + `/guardrails-review`; use the strictly-positive value check above and it never fires.
+
 Even stronger than matching the *source text* of an assertion is reading the **runner's
 recorded outcome** (a TRX, a structured result file, or a state key the action published)
 and asserting the moved-count `> 0` directly — the source-text regex proves a positive
@@ -1283,6 +1289,15 @@ bare `=======` middle marker collides with legitimate content — a `======` ban
 ours/theirs markers) are false-positive-free; the `=======` separator is redundant given both are
 required, so drop it entirely (even line-anchored it still collides with a column-0 setext underline).
 Gold standard when the file is under git: `git diff --check` reports conflict markers directly.
+
+> **Also enforced deterministically (GR2037, #346).** Because correct doctrine text here does not
+> guarantee an LLM applies it every generation (a fresh breakdown regressed this exact fix to the old
+> unanchored spelling), `guardrails validate` mechanically **rejects** the unanchored `<<<<<<<`/`>>>>>>>`
+> forms (a 7-char ours/theirs run not line-anchored) via the banned-pattern registry
+> (`references/banned-guardrail-patterns.json`, entry `#187a`; SSOT §4.6). It **complements** — does not
+> replace — the #302 author-time smoke-test and the `/guardrails-review` adversarial pass; author the
+> line-anchored form and it never fires. (The bare `=======` is retired from the good form by doctrine
+> but is deliberately NOT banned by GR2037 — a `={7}` ban would false-fire on a setext underline / banner.)
 
 The **unconditional** form (`if ($content -notmatch "test-commander-rest") { exit 1 }`) is the bug: it
 fails at the intermediate union BEFORE the REST task has run, red-halting a healthy partial merge. The
