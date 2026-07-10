@@ -1,9 +1,13 @@
 # Model tiering — Stage 3: Dynamic behavior (escalation ladder + interactive steering)
 
 > **Design of record: [`13-model-tiering.md`](13-model-tiering.md)** — the contract-locked
-> decisions live there; where this brief and the DoR differ, the DoR wins (notably: the #228
-> escalation-budget question is RESOLVED — same retry pool, no reset — and #231's unattended
-> threshold behavior rides the shared `autonomyPolicy` `routing` boundary, DoR §7/§8).
+> decisions live there; where this brief and the DoR differ, the DoR wins.
+> **DEFERRED TO v2 (DoR revision):** this entire stage — **#228 escalation ladder** and **#231
+> interactive steering** — is deferred to named v2 bets (DoR §7, §8, §10). It is **not part of
+> v1** (static routing). The DoR retains the ratified designs here (same retry pool for the ladder;
+> `routing` `autonomyPolicy` boundary for steering) **and** records the open items a v2 build must
+> resolve first: the OD-A last-attempt guarantee is a BLOCKER as written (DoR §7 / DA F1), and the
+> mid-run route-down lever (DA F2) must be decided. Revisit with #230-lite measurement in hand.
 > "Stage" here means a sequential design phase of this epic — NOT a #254 runtime wave (SSOT §14).
 
 Part of the model-tiering epic (#201). This is stage 3 of 3 — **depends on stage 2

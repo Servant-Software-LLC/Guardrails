@@ -56,7 +56,12 @@ test fails. §3 documents `task.json`'s schema (where the new tier field joins `
    `action.model`/`action.maxTurns` already exist (same file, same pattern).
 2. `/plan-breakdown` classifies each prompt-driven task (and any surviving judge-guardrail) into a
    tier — `easy | medium | hard` — and writes it to `task.json`. Surface the classification in the
-   breakdown report, never silent (the #42 test-framework-choice precedent).
+   breakdown report, never silent (the #42 test-framework-choice precedent). **Gated on tiering
+   being configured (DoR §5, D19):** the skill produces `guardrails.json`, so it knows whether any
+   `routing` block exists. If tiering is **not** configured (no `routing` block — the single-model
+   default), the skill writes **NO `action.tier` fields, NO `tiering` block, and NO classification
+   report lines**, and GR2041 cannot fire — a single-model user's breakdown is **byte-identical to
+   today** (DoR Invariant 7).
 3. A plan-wide default tier (config-level, e.g. `guardrails.json`) applies to any task left
    untagged — including one a human hand-adds to the folder after breakdown.
 4. `guardrails validate` rejects an unrecognized tier value.
@@ -70,8 +75,13 @@ test fails. §3 documents `task.json`'s schema (where the new tier field joins `
 - A runner config with an unrecognized `kind` fails `guardrails validate` with an actionable
   message naming the bad value.
 - A `task.json` with `action.tier: "easy"|"medium"|"hard"` validates; an absent tier resolves to
-  the configured plan-wide default; an unrecognized tier value fails validation.
-- `/plan-breakdown` assigns and reports a tier per generated task on a real plan.
+  the configured plan-wide default *if one is set* (else legacy resolution); an unrecognized tier
+  value fails validation.
+- **With tiering configured:** `/plan-breakdown` assigns and reports a tier per generated task on a
+  real plan.
+- **Gated tagging (DoR Invariant 7 / D19):** breaking down a plan against a **no-`routing`** config
+  produces a folder **byte-identical to today** — no `action.tier`, no `tiering` block, no
+  classification report lines, GR2041 does not fire.
 - SSOT §9 and §3 (including the canonical-schema sentinel) are updated in the same change as their
   respective code changes — not left to drift.
 

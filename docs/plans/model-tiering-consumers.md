@@ -1,9 +1,12 @@
 # Model tiering — Stage 2: Consumers (resolution, budget probes, review check, cost accounting)
 
 > **Design of record: [`13-model-tiering.md`](13-model-tiering.md)** — the contract-locked
-> decisions live there; where this brief and the DoR differ, the DoR wins (notably: probes
-> ADVISE ranking and never gate a launch — DoR §6.3 revises this brief's #226 item 4).
-> "Stage" here means a sequential design phase of this epic — NOT a #254 runtime wave (SSOT §14).
+> decisions live there; where this brief and the DoR differ, the DoR wins.
+> **v1/v2 re-bucket (DoR revision):** of this stage's four issues, **v1** ships **#226 as a
+> STATIC resolver** (no probe consultation, no ladder-awareness — DoR §6.1–§6.3), **#229** (review
+> check), and **#230 as a per-tier spend line** (#230-lite, DoR §9.3). **#227 budget/limit probes
+> are DEFERRED to a named v2 bet** (DoR §6.4, §10) — do not build the probe layer in v1. "Stage"
+> here means a sequential design phase of this epic — NOT a #254 runtime wave (SSOT §14).
 
 Part of the model-tiering epic (#201). This is stage 2 of 3 — **depends on stage 1
 (`model-tiering-foundation.md`, issues #224+#225) having landed**: every task here reads either
