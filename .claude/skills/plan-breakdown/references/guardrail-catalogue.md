@@ -1187,8 +1187,21 @@ merge with a downstream task unsettled?"*): a full build/suite answers **no**. S
 and `02-all-tests-pass` in the terminal `<plan>/guardrails/` folder are **LOCAL** (no `scope` key) —
 they run only once, at the terminal gate on the merged HEAD, after every upstream task has merged, which
 is the correct and ONLY moment for a full build + full suite. The real integration-set re-run that
-**GR2028** requires in the folder is instead a **union-safe conditional invariant** (below) — typically
-the conflict-marker / union-invariant check, never the build or the suite.
+**GR2028** requires in the folder is instead a **union-safe conditional invariant** (below) — the
+**conflict-marker-freedom check**, never the build or the suite.
+
+**What actually satisfies GR2028 — the two ungameable forms (#343).** GR2028 is credited **only** by a
+**git-conflict-marker-freedom check** (the line-anchored `<<<<<<<` / `>>>>>>>` scan) **or** a recognized
+whole-repo build/test/suite invocation. These two are ungameable by construction. A
+content/**contribution-present** grep — "if token `X` is present, verify it's real" — alone does **NOT**
+satisfy GR2028: it is **ADDITIVE**, layered on top of one of the two forms, never the sole content of the
+terminal/exit gate. The reason is structural: the union-safe CONDITIONAL shape (#165, below) can never
+*fail* when a merge **dropped** a contribution entirely — the gate goes false → pass — so a content-only
+union check certifies **nothing** about whether the union integrated soundly. It is a per-contribution
+tightening, not a union-soundness proof. (This is why `guardrails validate` rejects a content-topic-only
+union guardrail with GR2028 even though it is a textbook union-SAFE conditional: union-safety and
+GR2028-satisfaction are two different bars — a GR2028-satisfying guardrail must be BOTH union-safe AND
+carry one of the two ungameable forms.)
 
 **The rule: assert a union-safe INVARIANT, never a terminal POSTCONDITION.** A `scope:"integration"`
 guardrail must assert something true of **any valid intermediate union** — an invariant like "every
@@ -1300,8 +1313,11 @@ non-empty). This is exactly the texttools showcase's `components-union-verified`
 (`05-integration-gate/.../03-components-union-verified.json`, `scope:"integration"`). Keep it
 **union-safe** (#125 — assert "every contribution PRESENT in the union is intact", an invariant true
 of any valid intermediate union, never a terminal "all N present" postcondition that false-fails on a
-partial merge). The well-authored plan covers the residual this way; `guardrails-review` emits a WEAK
-finding when colliding writeScopes carry no such union-guardrail.
+partial merge). When this union-guardrail also serves as a terminal/exit gate, it satisfies **GR2028
+via its conflict-marker-freedom check** (above) — the contribution-present checks are the *additive*
+tightening layered on top, never the GR2028-crediting content on their own (#343). The well-authored
+plan covers the residual this way; `guardrails-review` emits a WEAK finding when colliding writeScopes
+carry no such union-guardrail.
 
 **Duplicate-definition sub-check on a shared CODE file (#175).** When the shared overlapping-`writeScope`
 file is a **code file** and **both** colliding tasks could ADD a type/member DEFINITION to it (each

@@ -412,9 +412,10 @@ public sealed class PlanValidator
                         $"Wave '{wave.Dir}' has a parallel topology (≥2 leaf tasks or a fan-in task) but its " +
                         $"'{wave.Dir}/guardrails/' exit gate carries no deterministic check that re-runs the " +
                         "integration set. Each such wave's exit gate is a union soundness boundary; an empty " +
-                        "folder — or one holding only a tautological 'exit 0' file — verifies nothing. Add a " +
-                        $"'{wave.Dir}/guardrails/' check that re-runs the whole-repo build / full suite / a " +
-                        "union invariant (SSOT §3.3/§14.3)."));
+                        "folder — or one holding only a tautological 'exit 0' file — verifies nothing. " +
+                        Gr2028AcceptedFormsClause +
+                        $" Add a '{wave.Dir}/guardrails/' check of one of the two accepted forms " +
+                        "(SSOT §3.3/§14.3)."));
                 }
             }
 
@@ -427,10 +428,26 @@ public sealed class PlanValidator
                 "Plan has a parallel topology (≥2 leaf tasks or a fan-in task) but its terminal " +
                 "'<plan>/guardrails/' folder carries no deterministic check that re-runs the integration " +
                 "set. The terminal gate is the whole-repo soundness boundary; an empty folder — or one " +
-                "holding only a tautological 'exit 0' file — verifies nothing. Add a '<plan>/guardrails/' " +
-                "check that re-runs the whole-repo build / full suite / a union invariant (SSOT §3.3)."));
+                "holding only a tautological 'exit 0' file — verifies nothing. " +
+                Gr2028AcceptedFormsClause +
+                " Add a '<plan>/guardrails/' check of one of the two accepted forms (SSOT §3.3)."));
         }
     }
+
+    /// <summary>
+    /// The teaching clause shared by both GR2028 messages (plan-level and per-wave). Names the two
+    /// ungameable forms that satisfy the terminal gate and states — the #343 doctrine-tightening — that a
+    /// content/"contribution-present" grep alone is NOT sufficient: it is additive, because the union-safe
+    /// conditional shape (SSOT §4.3/#165) can never FAIL when a merge dropped a contribution entirely, so
+    /// it certifies nothing about union soundness on its own. This is the single message that would have
+    /// saved the #343 reporter the trial-and-error.
+    /// </summary>
+    private const string Gr2028AcceptedFormsClause =
+        "A GR2028-satisfying check must prove union soundness one of two ways: a " +
+        "git-conflict-marker-freedom check (a line-anchored '<<<<<<<' / '>>>>>>>' scan) OR a recognized " +
+        "whole-repo build/test/suite invocation. A content/'contribution-present' grep alone does NOT " +
+        "satisfy GR2028 — it is additive, not sufficient, because it cannot fail when a merge DROPPED a " +
+        "contribution entirely.";
 
     /// <summary>
     /// True when a task set forms a UNION that needs a terminal integration re-run (GR2028): ≥2 leaf tasks
@@ -586,16 +603,26 @@ public sealed class PlanValidator
     /// Recognised git-conflict-marker check that constitutes a real integration-set re-run via a genuine
     /// UNION INVARIANT (the GR2028 content teeth, form 2 of 2 — SSOT §3.3, added for plans with no
     /// build/test tool to invoke, e.g. a portable zero-toolchain demo). Matches a literal occurrence of
-    /// one of the three canonical 7-character git conflict-marker tokens (<c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c>,
-    /// <c>=======</c>, <c>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c>) in the STRIPPED body — comments already
-    /// removed by <see cref="StripCommentLines"/>, so a comment that merely explains what conflict
-    /// markers are cannot satisfy this. A script that genuinely tests for these markers is, by
-    /// construction, verifying the merged/union bytes integrated cleanly — no legitimate reason exists
+    /// one of the two labelled ours/theirs 7-character git conflict-marker tokens
+    /// (<c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c>, <c>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c>) in the STRIPPED body —
+    /// comments already removed by <see cref="StripCommentLines"/>, so a comment that merely explains
+    /// what conflict markers are cannot satisfy this. A script that genuinely tests for these markers is,
+    /// by construction, verifying the merged/union bytes integrated cleanly — no legitimate reason exists
     /// to search for this exact 7-character sequence other than conflict-marker detection, so this
     /// signal is effectively ungameable without actually performing the check.
+    /// <para>
+    /// <b>The bare <c>=======</c> middle marker is NOT credited (issue #343, aligning with #187).</b>
+    /// #187 retired the bare <c>=======</c> check from the doctrine because it collides with legitimate
+    /// content — a <c>======</c> banner, a Markdown setext header underline, an ASCII-art table rule —
+    /// and false-fires on a correct run. A guardrail whose ONLY conflict evidence was a bare
+    /// <c>=======</c> used to be credited here (a latent validator/doctrine drift); it no longer is. The
+    /// labelled ours/theirs tokens are the union-soundness signal, and the good anchored form
+    /// (<c>(?m)^&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c> / <c>(?m)^&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c>) still
+    /// contains them.
+    /// </para>
     /// </summary>
     private static readonly Regex UnionInvariantConflictMarker = new(
-        @"<{7}|={7}|>{7}",
+        @"<{7}|>{7}",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>

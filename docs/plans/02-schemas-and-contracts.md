@@ -492,10 +492,17 @@ membership** (a folder-scoped equivalent of the §4.3 tag); the surviving obliga
 check (`PlanValidator.ReRunsIntegrationSet`) accepts a `<plan>/guardrails/` script matching EITHER: (1) a
 recognized whole-repo build/test/suite command across common ecosystems (`dotnet test`/`dotnet build`,
 `npm test`, `pytest`, `make`, `git diff --check`, …) actually **invoked**, OR (2) a genuine **union
-invariant** — a check for git conflict markers (`<<<<<<<`/`=======`/`>>>>>>>`) in the merged bytes, the
-deterministic verdict that a union integrated cleanly. Form (2) exists for plans with no build/test tool to
-invoke at all (e.g. a portable, zero-toolchain demo like `examples/parallel-hello`) whose only honest
-integration content is exactly this shape.
+invariant** — a check for git conflict markers (`<<<<<<<`/`>>>>>>>`) in the merged bytes, the
+deterministic verdict that a union integrated cleanly. The bare `=======` middle marker is **not**
+credited (retired by #187 — it collides with setext underlines / `====` banners; issue #343 dropped it
+from this credit regex to align the validator with the doctrine); the labelled ours/theirs tokens are the
+union-soundness signal, and the good anchored form (`(?m)^<<<<<<<` / `(?m)^>>>>>>>`) still contains them.
+Form (2) exists for plans with no build/test tool to invoke at all (e.g. a portable, zero-toolchain demo
+like `examples/parallel-hello`) whose only honest integration content is exactly this shape. A
+content/"contribution-present" grep alone (no conflict-marker-freedom check, no build/test invocation)
+does **not** satisfy GR2028 — it is **additive**, layered on top of one of the two forms, never the sole
+content of the terminal gate: the union-safe conditional shape (§4.3) can never *fail* when a merge
+dropped a contribution entirely, so it certifies nothing about union soundness by itself (issue #343).
 
 The two forms are matched at **different rigor by design (issue #207)**. A comment that merely names a marker
 or a build command never counts under either — whole-line comments are stripped first (`StripCommentLines`).

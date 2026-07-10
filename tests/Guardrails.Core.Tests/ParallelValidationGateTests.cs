@@ -326,6 +326,124 @@ public sealed class ParallelValidationGateTests : IDisposable
         Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
     }
 
+    [Fact]
+    public void MultiLeafPlan_WorktreeMode_ContentTopicOnlyUnionCheck_ProducesGr2028_Error()
+    {
+        // Issue #343 — the doctrine-tightening. A terminal <plan>/guardrails/ check that greps ONLY a
+        // content topic ("if the shared file mentions <topic>, verify it's real") — with NO git
+        // conflict-marker token and NO build/test invocation — is a textbook union-SAFE conditional (the
+        // exact shape the SKILL.md doctrine used to present as an equally-valid standalone GR2028 shape),
+        // yet it does NOT satisfy GR2028: the union-safe conditional can never FAIL when a merge DROPPED a
+        // contribution entirely, so it certifies nothing about union soundness on its own. GR2028 must
+        // reject it, and the improved message (D2) must teach the two accepted forms.
+        string planDir = Path.Combine(_tempRoot, "gr2028-content-only-union");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-contribution-present.ps1",
+                    "# catches: the shared file dropped its risk_tracking contribution\n" +
+                    "$p = Join-Path $env:GUARDRAILS_WORKSPACE 'out/shared.md'\n" +
+                    "if (-not (Test-Path $p)) { exit 0 }\n" +
+                    "$content = Get-Content -Raw -Path $p\n" +
+                    "if ($content -match 'risk_tracking') {\n" +
+                    "    if ($content -notmatch 'risk_tracking:\\s*enabled') { Write-Output 'risk_tracking present only as mention'; exit 1 }\n" +
+                    "}\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Diagnostic gr2028 = Assert.Single(
+            diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
+        // The improved reason (issue #343, D2) names the two accepted forms and calls a content grep additive.
+        Assert.Contains("does NOT satisfy GR2028", gr2028.Message, StringComparison.Ordinal);
+        Assert.Contains("additive", gr2028.Message, StringComparison.Ordinal);
+        Assert.Contains("conflict-marker-freedom", gr2028.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MultiLeafPlan_WorktreeMode_AnchoredConflictMarkerCheck_ProducesNoGr2028()
+    {
+        // Issue #343 — form (2) that DOES satisfy GR2028: a git-conflict-marker-freedom check. The
+        // canonical line-anchored ours/theirs scan (examples/parallel-hello's shape) is the zero-toolchain
+        // union-soundness proof; the credit regex `<{7}|>{7}` still matches its labelled tokens.
+        string planDir = Path.Combine(_tempRoot, "gr2028-anchored-conflict-marker");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-union-clean.ps1",
+                    "# catches: a union that left git conflict markers in the merged bytes\n" +
+                    "$out = Join-Path $env:GUARDRAILS_WORKSPACE 'out'\n" +
+                    "if (-not (Test-Path $out)) { exit 0 }\n" +
+                    "foreach ($f in Get-ChildItem -Path $out -Filter *.txt -File) {\n" +
+                    "    $content = Get-Content -Raw -Path $f.FullName\n" +
+                    "    if ($content -match '(?m)^<<<<<<<' -or $content -match '(?m)^>>>>>>>') { Write-Output 'conflict markers'; exit 1 }\n" +
+                    "}\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
+    }
+
+    [Fact]
+    public void MultiLeafPlan_WorktreeMode_BareEqualsOnlyConflictCheck_ProducesGr2028_Error()
+    {
+        // Issue #343 / #187 alignment — the regression guard for the ={7} drop. A guardrail whose ONLY
+        // conflict evidence is the bare `=======` middle marker (no labelled ours/theirs token, no
+        // build/test invocation) WAS credited before this change (the credit regex was `<{7}|={7}|>{7}`).
+        // #187 retired the bare `=======` (it collides with setext underlines / `====` banners), so GR2028
+        // dropped `={7}` from its credit regex to align validator with doctrine — this guardrail is now
+        // (correctly) NOT credited and GR2028 fires. This test would FAIL on the pre-#343 code (the bare
+        // `=======` was accepted), pinning the behavioural change.
+        string planDir = Path.Combine(_tempRoot, "gr2028-bare-equals-only");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-bare-equals.ps1",
+                    "# catches: a union that left conflict markers (bare separator only — retired by #187)\n" +
+                    "$out = Join-Path $env:GUARDRAILS_WORKSPACE 'out'\n" +
+                    "if (-not (Test-Path $out)) { exit 0 }\n" +
+                    "foreach ($f in Get-ChildItem -Path $out -Filter *.txt -File) {\n" +
+                    "    $content = Get-Content -Raw -Path $f.FullName\n" +
+                    "    if ($content -match '=======') { Write-Output 'separator found'; exit 1 }\n" +
+                    "}\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.Contains(diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
+    }
+
     // =========================================================================
     // GR2029 — a task still declares the retired integrationGate: true key
     // =========================================================================
