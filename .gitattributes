@@ -25,3 +25,7 @@
 # --- CI shell scripts: must stay LF so the bash shebang / `set -euo pipefail` run on the
 #     Linux CI runner (a CRLF checkout breaks `#!/usr/bin/env bash`). ---
 /.github/scripts/*.sh eol=lf
+
+# --- Root bootstrap installer: LF so the bash shebang runs when a macOS/Linux user
+#     downloads it via `curl … | bash` (a CRLF checkout breaks `#!/usr/bin/env bash`). ---
+/install.sh eol=lf

@@ -86,6 +86,9 @@ jobs:
   publish:
     name: pack and publish to NuGet.org
     needs: [test, packaged-tool-smoke]
+    # Skip NuGet publish for throwaway `-ci.` dry-run tags (e.g. v0.0.0-ci.1): those tags
+    # still exercise the binaries + tap jobs, but must NOT push a junk version to NuGet.org.
+    if: ${{ !contains(github.ref_name, '-ci.') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -116,3 +119,150 @@ jobs:
 
       - name: Push to NuGet.org
         run: dotnet nuget push "nupkg/*.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # ===========================================================================
+  # Option 1 — native self-contained binaries + GitHub Release assets (ADDITIVE).
+  # The `publish` job above keeps shipping the NuGet dotnet-tool; these jobs give
+  # everyone else a binary with NO .NET on their machine. Self-contained single-file,
+  # trimming OFF (Spectre.Console reflection). RestoreLockedMode=false scoped here only:
+  # a RID restore pulls runtime packages absent from the framework-dependent lock; the
+  # deterministic locked restore stays enforced by `test`/`publish`. No code/csproj change:
+  # the bundled skills already publish as loose files next to the binary, and the installer
+  # reads them from AppContext.BaseDirectory (the binary's own dir for a single-file app).
+  # ===========================================================================
+  create-release:
+    name: create GitHub Release
+    needs: [test, packaged-tool-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create or reuse the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing."
+          else
+            PRE=""
+            case "$TAG" in *-*) PRE="--prerelease" ;; esac   # v1.0.0-preview.1 → prerelease
+            gh release create "$TAG" --title "$TAG" --generate-notes $PRE
+          fi
+
+  binaries:
+    name: binary (${{ matrix.rid }})
+    needs: [create-release]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-latest,   rid: osx-arm64,   archive: tar, smoke: true  }
+          - { runner: macos-latest,   rid: osx-x64,     archive: tar, smoke: false } # x64 cross-built on arm mac
+          - { runner: ubuntu-latest,  rid: linux-x64,   archive: tar, smoke: true  }
+          - { runner: ubuntu-latest,  rid: linux-arm64, archive: tar, smoke: false } # arm64 cross-built on x64 linux
+          - { runner: windows-latest, rid: win-x64,     archive: zip, smoke: true  }
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish self-contained single-file
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          dotnet publish src/Guardrails.Cli -c Release -r "${{ matrix.rid }}" \
+            --self-contained true \
+            -p:RestoreLockedMode=false \
+            -p:Version="$VER" \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:DebugType=none \
+            -p:DebugSymbols=false \
+            -o "publish/${{ matrix.rid }}"
+
+      - name: Codesign + notarize (macOS — auto-skips until signing secrets exist)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        env:
+          CERT_P12_BASE64:      ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD:        ${{ secrets.MACOS_CERT_PASSWORD }}
+          SIGN_IDENTITY:        ${{ secrets.MACOS_SIGN_IDENTITY }}
+          NOTARY_KEY_ID:        ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID:     ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          BIN="publish/${{ matrix.rid }}/guardrails"
+          if [ -z "${CERT_P12_BASE64:-}" ]; then
+            echo "::warning::No macOS signing secrets set — shipping an UNSIGNED binary for ${{ matrix.rid }}."
+            exit 0
+          fi
+
+          # 1) import the Developer ID cert into a throwaway keychain
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"; KCPW="$(uuidgen)"
+          security create-keychain -p "$KCPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KCPW" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          # 2) sign with hardened runtime + .NET entitlements + secure timestamp
+          codesign --force --timestamp --options runtime \
+            --entitlements .github/macos/entitlements.plist \
+            --sign "$SIGN_IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+          # 3) notarize the zipped binary (notarytool, App Store Connect API key).
+          #    A bare CLI binary CANNOT be stapled (stapler supports .app/.dmg/.pkg only);
+          #    notarization is recorded server-side and Gatekeeper verifies online on first run.
+          echo "$NOTARY_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          ditto -c -k "$BIN" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/cert.p12"
+          echo "Signed + notarized ${{ matrix.rid }}."
+
+      - name: Smoke — run the binary and prove skills ship with it
+        if: ${{ matrix.smoke }}
+        shell: bash
+        run: |
+          DIR="publish/${{ matrix.rid }}"
+          BIN="$DIR/guardrails"; [ "${{ matrix.archive }}" = "zip" ] && BIN="$DIR/guardrails.exe"
+          "$BIN" --version
+          # Install bundled skills into an isolated dir — fails loudly if skills/ didn't travel.
+          tmp="$(mktemp -d)"
+          ( cd "$tmp" && "$OLDPWD/$BIN" skills install --force )
+          test -d "$tmp/.claude/skills/plan-breakdown" || { echo "skills payload missing"; exit 1; }
+
+      - name: Package
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          NAME="guardrails-$VER-${{ matrix.rid }}"
+          DIR="publish/${{ matrix.rid }}"
+          mkdir -p dist
+          sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            ( cd "$DIR" && 7z a -tzip "$GITHUB_WORKSPACE/dist/$NAME.zip" ./* >/dev/null )
+          else
+            export COPYFILE_DISABLE=1            # keep macOS ._AppleDouble files out of the tarball
+            tar -C "$DIR" -czf "dist/$NAME.tar.gz" .
+          fi
+          ( cd dist && for f in *; do sha256 "$f" > "$f.sha256"; done )
+
+      - name: Upload assets to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
