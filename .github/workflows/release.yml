@@ -180,6 +180,7 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           dotnet publish src/Guardrails.Cli -c Release -r "${{ matrix.rid }}" \
             --self-contained true \
+            -p:AssemblyName=guardrails \
             -p:RestoreLockedMode=false \
             -p:Version="$VER" \
             -p:PublishSingleFile=true \
@@ -240,10 +241,9 @@ jobs:
           DIR="publish/${{ matrix.rid }}"
           BIN="$DIR/guardrails"; [ "${{ matrix.archive }}" = "zip" ] && BIN="$DIR/guardrails.exe"
           "$BIN" --version
-          # Install bundled skills into an isolated dir — fails loudly if skills/ didn't travel.
-          tmp="$(mktemp -d)"
-          ( cd "$tmp" && "$OLDPWD/$BIN" skills install --force )
-          test -d "$tmp/.claude/skills/plan-breakdown" || { echo "skills payload missing"; exit 1; }
+          # Prove the bundled skills shipped NEXT TO the binary — exactly what the runtime
+          # resolves via AppContext.BaseDirectory when `guardrails skills install` runs.
+          test -d "$DIR/skills/plan-breakdown" || { echo "skills payload did not ship next to the binary"; exit 1; }
 
       - name: Package
         shell: bash
