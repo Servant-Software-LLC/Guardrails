@@ -180,7 +180,6 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           dotnet publish src/Guardrails.Cli -c Release -r "${{ matrix.rid }}" \
             --self-contained true \
-            -p:AssemblyName=guardrails \
             -p:RestoreLockedMode=false \
             -p:Version="$VER" \
             -p:PublishSingleFile=true \
@@ -189,6 +188,15 @@ jobs:
             -p:DebugType=none \
             -p:DebugSymbols=false \
             -o "publish/${{ matrix.rid }}"
+          # dotnet names the apphost after the project (Guardrails.Cli). Rename it to `guardrails`
+          # so the formula/installers/wrapper/smoke find it. A global -p:AssemblyName would ALSO
+          # rename Guardrails.Core → guardrails.dll and collide on publish (NETSDK1152).
+          DIR="publish/${{ matrix.rid }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            mv "$DIR/Guardrails.Cli.exe" "$DIR/guardrails.exe"
+          else
+            mv "$DIR/Guardrails.Cli" "$DIR/guardrails" && chmod +x "$DIR/guardrails"
+          fi
 
       - name: Codesign + notarize (macOS — auto-skips until signing secrets exist)
         if: startsWith(matrix.rid, 'osx-')
