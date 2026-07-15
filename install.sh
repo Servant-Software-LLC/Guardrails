@@ -1,67 +1,99 @@
 #!/usr/bin/env bash
 # =============================================================================
-# install.sh — macOS/Linux bootstrap for Guardrails.
+# install.sh — macOS/Linux bootstrap for Guardrails (NO .NET required).
 #
-# !! NOT TESTED ON THIS WINDOWS DEV BOX. !!
-# This is a minimal twin of install.ps1 (the tested, canonical bootstrap) and
-# mirrors its logic line-for-line: verify dotnet, install-or-update the tool,
-# run `guardrails skills install`, print next steps. Treat install.ps1 as the
-# source of truth; if the two ever diverge, install.ps1 is correct.
+# Downloads a prebuilt self-contained binary + its bundled skills from the
+# GitHub Release, installs them under ~/.guardrails, drops a wrapper on PATH,
+# and deploys the agent skills. Prefer Homebrew if you have it:
+#     brew install servant-software-llc/tap/guardrails
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.sh | bash
-#   ./install.sh                 # install from NuGet.org
-#   ./install.sh ./nupkg         # install from a local packed folder (pre-publish testing)
+#   ./install.sh                 # install the latest release
+#   ./install.sh 1.0.0-preview.1 # install a specific version
+#
+# Env overrides:
+#   GUARDRAILS_HOME  install dir for binary + skills   (default: ~/.guardrails)
+#   GUARDRAILS_BIN   dir for the `guardrails` wrapper   (default: ~/.local/bin)
 # =============================================================================
 set -euo pipefail
 
-PACKAGE_ID="ServantSoftware.Guardrails"
-SOURCE="${1:-}"   # optional: a local folder (or feed) to install from
+REPO="Servant-Software-LLC/Guardrails"
+HOME_DIR="${GUARDRAILS_HOME:-$HOME/.guardrails}"
+BIN_DIR="${GUARDRAILS_BIN:-$HOME/.local/bin}"
 
-# --- 1. dotnet must be on PATH -----------------------------------------------
-if ! command -v dotnet >/dev/null 2>&1; then
-  echo "ERROR: the .NET SDK (dotnet) was not found on PATH." >&2
-  echo "Install the .NET 8 SDK, then re-run this script:" >&2
-  echo "    brew install dotnet            # macOS" >&2
-  echo "  or see https://dotnet.microsoft.com/download/dotnet/8.0" >&2
-  exit 1
-fi
+# --- 1. detect platform -> .NET RID -----------------------------------------
+os="$(uname -s)"; arch="$(uname -m)"
+case "$os" in
+  Darwin) os_rid="osx" ;;
+  Linux)  os_rid="linux" ;;
+  *) echo "ERROR: unsupported OS '$os' (this installer covers macOS and Linux)." >&2; exit 1 ;;
+esac
+case "$arch" in
+  arm64|aarch64) arch_rid="arm64" ;;
+  x86_64|amd64)  arch_rid="x64" ;;
+  *) echo "ERROR: unsupported architecture '$arch'." >&2; exit 1 ;;
+esac
+RID="$os_rid-$arch_rid"
 
-# --- 2. install vs update (idempotent) ---------------------------------------
-if dotnet tool list --global 2>/dev/null | grep -qi "$PACKAGE_ID"; then
-  VERB="update"
+# --- 2. resolve version/tag (latest release, prereleases included) ----------
+if [ "${1:-}" != "" ]; then
+  VER="${1#v}"
 else
-  VERB="install"
+  # /releases lists newest-first and INCLUDES prereleases (unlike /releases/latest,
+  # which skips them — and current builds are -preview). No jq dependency.
+  VER="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" \
+        | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"v?([^"]+)".*/\1/')"
+fi
+[ -n "$VER" ] || { echo "ERROR: could not resolve a release version." >&2; exit 1; }
+TAG="v$VER"
+ASSET="guardrails-$VER-$RID.tar.gz"
+URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
+
+echo "Installing Guardrails $VER ($RID)"
+echo "  from $URL"
+
+# --- 3. download, verify, extract -------------------------------------------
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "$URL" -o "$tmp/$ASSET"
+
+# checksum (best-effort: skip if the .sha256 asset is unavailable)
+if curl -fsSL "$URL.sha256" -o "$tmp/$ASSET.sha256" 2>/dev/null; then
+  expected="$(awk '{print $1}' "$tmp/$ASSET.sha256")"
+  if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum "$tmp/$ASSET" | awk '{print $1}')"
+  else actual="$(shasum -a 256 "$tmp/$ASSET" | awk '{print $1}')"; fi
+  [ "$expected" = "$actual" ] || { echo "ERROR: checksum mismatch for $ASSET." >&2; exit 1; }
+  echo "  checksum OK"
 fi
 
-ARGS=(tool "$VERB" --global "$PACKAGE_ID" --prerelease)
-if [ -n "$SOURCE" ]; then
-  RESOLVED="$(cd "$SOURCE" && pwd)"
-  ARGS+=(--add-source "$RESOLVED")
-  echo "Installing $PACKAGE_ID from source: $RESOLVED"
-else
-  echo "Installing $PACKAGE_ID from NuGet.org"
-fi
+rm -rf "$HOME_DIR"; mkdir -p "$HOME_DIR"
+tar -C "$HOME_DIR" -xzf "$tmp/$ASSET"
+chmod +x "$HOME_DIR/guardrails"
 
-echo "  dotnet ${ARGS[*]}"
-dotnet "${ARGS[@]}"
+# --- 4. wrapper on PATH ------------------------------------------------------
+# A wrapper (not a symlink) guarantees the binary runs from $HOME_DIR, where the
+# skills/ folder sits, so `guardrails skills install` always finds its payload.
+mkdir -p "$BIN_DIR"
+cat > "$BIN_DIR/guardrails" <<SH
+#!/bin/sh
+exec "$HOME_DIR/guardrails" "\$@"
+SH
+chmod +x "$BIN_DIR/guardrails"
 
-# --- 3. install the bundled skills -------------------------------------------
-# --force so re-running the bootstrap to UPGRADE actually refreshes the deployed skills
-# (skills install skips existing folders by default — that would leave stale skills on upgrade).
+# --- 5. deploy the bundled skills -------------------------------------------
 echo ""
 echo "Installing bundled skills..."
-if ! guardrails skills install --force; then
-  echo "ERROR: 'guardrails skills install' failed." >&2
-  echo "If 'guardrails' was not found, ensure ~/.dotnet/tools is on PATH, then run:" >&2
-  echo "    guardrails skills install --force" >&2
-  exit 1
-fi
+"$BIN_DIR/guardrails" skills install --force
 
-# --- 4. next steps -----------------------------------------------------------
+# --- 6. next steps -----------------------------------------------------------
 echo ""
-echo "Guardrails is installed."
+echo "Guardrails $VER is installed at $HOME_DIR"
+case ":$PATH:" in
+  *":$BIN_DIR:"*) : ;;
+  *) echo "NOTE: add $BIN_DIR to your PATH, e.g.:"
+     echo "      echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc && source ~/.zshrc" ;;
+esac
 echo "Next steps:"
 echo "  1. Restart Claude Code (or start a new session) so it picks up the new skills."
-echo "  2. In your work repo, run  /plan-breakdown path/to/your-plan.md  to generate a task folder."
-echo "  3. Then  guardrails run path/to/your-plan  to execute it to green."
+echo "  2. In your work repo:  /plan-breakdown path/to/your-plan.md"
+echo "  3. Then:               guardrails run path/to/your-plan"

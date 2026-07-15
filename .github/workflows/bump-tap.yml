@@ -1,0 +1,102 @@
+# Hands-off Homebrew bump: after the Release workflow succeeds, read the checksums the
+# release job uploaded, regenerate the formula from the committed template, and open a PR
+# to the tap repo.
+#
+# Trigger note: this uses `workflow_run`, NOT `release: published`. A release created inside
+# the Release workflow by the built-in GITHUB_TOKEN does not emit events that start new
+# workflows, so `release: published` would never fire. `workflow_run` fires regardless.
+#
+# Requires ONE secret: TAP_PAT — a fine-grained PAT with Contents:write + Pull-requests:write
+# on Servant-Software-LLC/homebrew-tap.
+name: Bump Homebrew tap
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to bump to (e.g. v1.0.0-preview.2)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Only on a successful, tag-driven Release run (head_branch holds the tag for tag pushes),
+    # or a manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    steps:
+      - name: Checkout Guardrails at the released commit (for the formula template)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - name: Resolve tag + version
+        id: v
+        run: |
+          TAG="${{ github.event.inputs.tag || github.event.workflow_run.head_branch }}"
+          [ -n "$TAG" ] || { echo "no tag resolved" >&2; exit 1; }
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Read sha256 for the four Homebrew RIDs
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="${{ github.repository }}"
+          TAG="${{ steps.v.outputs.tag }}"; VER="${{ steps.v.outputs.version }}"
+          d="$RUNNER_TEMP/sha"; mkdir -p "$d"
+          read_sha() {
+            gh release download "$TAG" -R "$REPO" \
+              -p "guardrails-$VER-$1.tar.gz.sha256" -D "$d" --clobber
+            awk '{print $1}' "$d/guardrails-$VER-$1.tar.gz.sha256"
+          }
+          {
+            echo "osx_arm64=$(read_sha osx-arm64)"
+            echo "osx_x64=$(read_sha osx-x64)"
+            echo "linux_arm64=$(read_sha linux-arm64)"
+            echo "linux_x64=$(read_sha linux-x64)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the tap
+        uses: actions/checkout@v6
+        with:
+          repository: Servant-Software-LLC/homebrew-tap
+          token: ${{ secrets.TAP_PAT }}
+          path: tap
+
+      - name: Render formula from template
+        run: |
+          set -euo pipefail
+          mkdir -p tap/Formula
+          sed \
+            -e "s/@VERSION@/${{ steps.v.outputs.version }}/g" \
+            -e "s/@SHA_OSX_ARM64@/${{ steps.sha.outputs.osx_arm64 }}/g" \
+            -e "s/@SHA_OSX_X64@/${{ steps.sha.outputs.osx_x64 }}/g" \
+            -e "s/@SHA_LINUX_ARM64@/${{ steps.sha.outputs.linux_arm64 }}/g" \
+            -e "s/@SHA_LINUX_X64@/${{ steps.sha.outputs.linux_x64 }}/g" \
+            .github/templates/guardrails.rb.tmpl > tap/Formula/guardrails.rb
+          echo "----- rendered formula -----"; cat tap/Formula/guardrails.rb
+
+      - name: Open PR to the tap
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.TAP_PAT }}
+          path: tap
+          branch: bump-guardrails-${{ steps.v.outputs.version }}
+          base: main
+          title: "guardrails ${{ steps.v.outputs.version }}"
+          commit-message: "guardrails ${{ steps.v.outputs.version }}"
+          delete-branch: true
+          body: |
+            Automated formula bump for Guardrails **${{ steps.v.outputs.version }}**,
+            generated from the release assets' checksums by `.github/workflows/bump-tap.yml`.
