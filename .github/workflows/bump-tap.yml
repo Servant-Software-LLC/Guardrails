@@ -93,7 +93,8 @@ jobs:
           token: ${{ secrets.TAP_PAT }}
           path: tap
           branch: bump-guardrails-${{ steps.v.outputs.version }}
-          base: main
+          # No `base:` — defaults to the tap's checked-out default branch, so this works
+          # whether the tap repo uses `main` or `master` (this org creates repos as `master`).
           title: "guardrails ${{ steps.v.outputs.version }}"
           commit-message: "guardrails ${{ steps.v.outputs.version }}"
           delete-branch: true
