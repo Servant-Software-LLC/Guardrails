@@ -15,6 +15,13 @@ namespace Guardrails.Cli.Commands;
 /// staleness via exit code (0 fresh, 2 stale/missing, 1 on a load/validate error). <c>--stdout</c>
 /// prints the diagram instead of writing a file. Defaults to the current directory when the
 /// folder is omitted.
+/// <para>
+/// When the supplied folder matches the wave-dir pattern (<c>^wave-([0-9]+)-[a-z0-9-]+$</c>)
+/// AND its parent contains a <c>guardrails.json</c>, the command renders a wave-scoped sub-diagram:
+/// only that wave's task DAG plus its entry/exit gates. The output files (<c>diagram.md</c> and
+/// <c>diagram.html</c>) are written to the wave folder so the per-wave review pause can surface
+/// just that wave (SSOT §14, issue #355).
+/// </para>
 /// </summary>
 public static partial class GraphCommand
 {
@@ -84,6 +91,17 @@ public static partial class GraphCommand
     {
         TextWriter output = io.Out;
 
+        // Wave-scoped sub-diagram: when the caller targets a wave folder (name matches the
+        // wave-dir pattern and the parent has guardrails.json) load only that wave's slice of
+        // the plan and write diagram.md / diagram.html into the wave folder itself — so the
+        // per-wave review pause surfaces just that wave (SSOT §14, issue #355).
+        if (IsWaveFolder(folder))
+        {
+            PlanDefinition? wavePlan = LoadWaveScoped(folder, output);
+            if (wavePlan is null) return ExitCodes.HarnessError;
+            return Render(wavePlan, check, toStdout, noHtml, io);
+        }
+
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
         {
@@ -91,7 +109,78 @@ public static partial class GraphCommand
             return ExitCodes.HarnessError;
         }
 
-        PlanDefinition plan = probe.Plan;
+        return Render(probe.Plan, check, toStdout, noHtml, io);
+    }
+
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="folder"/> names a wave folder: its leaf name
+    /// matches the wave-dir pattern (<c>^wave-([0-9]+)-[a-z0-9-]+$</c>) AND its parent directory
+    /// contains a <c>guardrails.json</c> (so we know it is genuinely a wave of a waved plan, not
+    /// a coincidentally-named standalone folder).
+    /// </summary>
+    private static bool IsWaveFolder(string folder)
+    {
+        string absFolder = Path.GetFullPath(folder);
+        string name = Path.GetFileName(Path.TrimEndingDirectorySeparator(absFolder));
+        if (!WaveDirRegex().IsMatch(name)) return false;
+        string? parent = Path.GetDirectoryName(absFolder);
+        return parent is not null && File.Exists(Path.Combine(parent, "guardrails.json"));
+    }
+
+    /// <summary>
+    /// Load the parent plan and project it down to a wave-scoped <see cref="PlanDefinition"/>
+    /// whose <see cref="PlanDefinition.PlanDirectory"/> is the wave folder, so the renderer
+    /// writes <c>diagram.md</c> / <c>diagram.html</c> into the wave folder. Returns
+    /// <c>null</c> (and prints a diagnostic) on any load/validate error or if the wave folder
+    /// does not appear in the parent plan's wave list.
+    /// </summary>
+    private static PlanDefinition? LoadWaveScoped(string folder, TextWriter output)
+    {
+        string absFolder = Path.GetFullPath(folder);
+        string parentDir = Path.GetDirectoryName(absFolder)!;
+
+        PlanProbe.Result probe = PlanProbe.LoadAndValidate(parentDir);
+        if (probe.HasErrors || probe.Plan is null)
+        {
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, output);
+            return null;
+        }
+
+        WaveNode? wave = probe.Plan.Waves.FirstOrDefault(w =>
+            string.Equals(Path.GetFullPath(w.Directory), absFolder, StringComparison.OrdinalIgnoreCase));
+
+        if (wave is null)
+        {
+            string waveName = Path.GetFileName(absFolder);
+            output.WriteLine(
+                $"error: '{waveName}' matches the wave-dir pattern but was not found in the parent plan's waves.");
+            return null;
+        }
+
+        // Project the full plan down to a wave-scoped slice: only this wave's tasks, preflight
+        // gate, and exit gate; PlanDirectory set to the wave folder so diagram.md / diagram.html
+        // land there. Waves cleared so MermaidRenderer sees a flat-plan shape (no wave headers).
+        return probe.Plan with
+        {
+            PlanDirectory = wave.Directory,
+            Tasks = wave.Tasks,
+            Waves = [],
+            PlanPreflights = wave.Preflights,
+            PlanGuardrails = wave.Guardrails,
+        };
+    }
+
+    /// <summary>
+    /// Shared render path for both the flat-plan and wave-scoped code paths. Drives the full
+    /// write / <c>--check</c> / <c>--stdout</c> pipeline against the supplied
+    /// <paramref name="plan"/>. <c>plan.PlanDirectory</c> is the output directory for
+    /// <c>diagram.md</c> and <c>diagram.html</c> — for a wave-scoped call this is the wave
+    /// folder, not the plan root.
+    /// </summary>
+    private static int Render(PlanDefinition plan, bool check, bool toStdout, bool noHtml, IConsoleIo io)
+    {
+        TextWriter output = io.Out;
+
         string sourceHash = GraphSourceHash.Compute(plan);
         string diagramPath = Path.Combine(plan.PlanDirectory, DiagramFileName);
         string diagramHtmlPath = Path.Combine(plan.PlanDirectory, DiagramHtmlFileName);
@@ -243,4 +332,12 @@ public static partial class GraphCommand
 
     [GeneratedRegex(@"\A\s*<!--\s*guardrails:graph\s+v1\s+source-sha256=(?<hash>[0-9a-f]+)\b")]
     private static partial Regex ProvenanceHashRegex();
+
+    /// <summary>
+    /// Matches a wave folder name (e.g. <c>wave-01-foundation</c>, <c>wave-02-provision</c>).
+    /// The numeric group drives the strict total order (SSOT §14.1). Mirrors the pattern used
+    /// by <c>PlanLoader</c> — kept in sync by the loader/validator tests.
+    /// </summary>
+    [GeneratedRegex(@"^wave-([0-9]+)-[a-z0-9-]+$", RegexOptions.CultureInvariant)]
+    private static partial Regex WaveDirRegex();
 }

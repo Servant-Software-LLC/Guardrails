@@ -8,6 +8,12 @@ namespace Guardrails.Integration.Tests;
 /// always present there), bash elsewhere (always present on the Linux/macOS runners) —
 /// selected by <see cref="OperatingSystem.IsWindows"/>, so the same test genuinely runs
 /// cross-platform.
+/// <para>
+/// Supports both flat plans (via <see cref="AddTask"/>) and waved plans (via
+/// <see cref="AddWave"/>). The two modes are mutually exclusive: call <see cref="AddWave"/>
+/// before any root <see cref="AddTask"/> calls, or use only <see cref="AddTask"/> for a
+/// flat plan.
+/// </para>
 /// </summary>
 public sealed class ScriptPlanBuilder : IDisposable
 {
@@ -68,6 +74,62 @@ public sealed class ScriptPlanBuilder : IDisposable
         WriteScript(Path.Combine(taskDir, "guardrails", GuardrailFileName), Body(guardrailPasses, "guardrail"));
 
         return this;
+    }
+
+    /// <summary>
+    /// Switch this builder to WAVED mode and add a wave. Must be called BEFORE any root
+    /// <see cref="AddTask"/> calls (a waved plan has no root <c>tasks/</c> directory).
+    /// Returns a wave-scoped <see cref="WaveBuilder"/> for adding tasks to that wave.
+    /// </summary>
+    public WaveBuilder AddWave(string waveDirName)
+    {
+        // The constructor always creates a root tasks/ dir for the flat-plan case. Remove it on
+        // the first AddWave call (waved plans must not have a root tasks/ dir — GR2032). Guard
+        // with _taskFolders.Any() so a second AddWave call (dir already gone) is safe.
+        string rootTasks = Path.Combine(_root, "tasks");
+        if (Directory.Exists(rootTasks) && !_taskFolders.Any())
+            Directory.Delete(rootTasks);
+
+        string waveDir = Path.Combine(_root, waveDirName);
+        Directory.CreateDirectory(waveDir);
+        Directory.CreateDirectory(Path.Combine(waveDir, "tasks"));
+        return new WaveBuilder(this, waveDir);
+    }
+
+    /// <summary>
+    /// Add a task inside a wave folder. Called by <see cref="WaveBuilder.AddTask"/>; not part
+    /// of the public flat-plan API. Writes a <c>task.json</c> with the wave-qualified
+    /// <paramref name="qualifiedDepsOn"/> array plus an action and a guardrail script.
+    /// </summary>
+    internal void AddWaveTask(
+        string waveDir,
+        string id,
+        bool actionSucceeds,
+        bool guardrailPasses,
+        string[] qualifiedDepsOn)
+    {
+        string taskDir = Path.Combine(waveDir, "tasks", id);
+        Directory.CreateDirectory(taskDir);
+        Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+        _taskFolders.Add(taskDir);
+
+        string waveName = Path.GetFileName(waveDir);
+        string qualifiedId = $"{waveName}/{id}";
+
+        string dependsJson = qualifiedDepsOn.Length == 0
+            ? "[]"
+            : "[" + string.Join(", ", qualifiedDepsOn.Select(d => $"\"{d}\"")) + "]";
+
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            $$"""
+            {
+              "description": "Wave task {{qualifiedId}}",
+              "dependsOn": {{dependsJson}}
+            }
+            """);
+
+        WriteScript(Path.Combine(taskDir, ActionFileName), Body(actionSucceeds, "action"));
+        WriteScript(Path.Combine(taskDir, "guardrails", GuardrailFileName), Body(guardrailPasses, "guardrail"));
     }
 
     private static string ActionFileName => UsePowerShell ? "action.ps1" : "action.sh";
@@ -145,6 +207,49 @@ public sealed class ScriptPlanBuilder : IDisposable
         catch (IOException)
         {
             // Best-effort cleanup; a locked file should not fail the test.
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Wave support
+    // -----------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A builder scoped to a single wave folder, returned by <see cref="ScriptPlanBuilder.AddWave"/>.
+    /// Add tasks to the wave with <see cref="AddTask"/>; use <see cref="WaveDir"/> to get the
+    /// wave folder's absolute path (the target for <c>guardrails graph</c> in wave-scoped tests).
+    /// </summary>
+    public sealed class WaveBuilder
+    {
+        private readonly ScriptPlanBuilder _parent;
+        private readonly string _waveDir;
+
+        internal WaveBuilder(ScriptPlanBuilder parent, string waveDir)
+        {
+            _parent = parent;
+            _waveDir = waveDir;
+        }
+
+        /// <summary>Absolute path to this wave's folder.</summary>
+        public string WaveDir => _waveDir;
+
+        /// <summary>
+        /// Add a task to this wave. Dependencies that already contain a <c>/</c> are passed
+        /// through unchanged (already wave-qualified, SSOT §14.2); bare folder names are
+        /// automatically prefixed with this wave's directory name.
+        /// </summary>
+        public WaveBuilder AddTask(
+            string id,
+            bool actionSucceeds = true,
+            bool guardrailPasses = true,
+            params string[] dependsOn)
+        {
+            string waveName = Path.GetFileName(_waveDir);
+            string[] qualifiedDeps = dependsOn
+                .Select(d => d.Contains('/') ? d : $"{waveName}/{d}")
+                .ToArray();
+            _parent.AddWaveTask(_waveDir, id, actionSucceeds, guardrailPasses, qualifiedDeps);
+            return this;
         }
     }
 }
