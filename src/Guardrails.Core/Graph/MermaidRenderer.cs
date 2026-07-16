@@ -193,6 +193,8 @@ public static class MermaidRenderer
     // planLevel` fills exactly, so the rendered colours are unchanged.
     private const string TaskStyle = "fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;";
     private const string PlanLevelStyle = "fill:#d4edda,stroke:#2e7d32,color:#10341a;";
+    private const string WaveStyle = "fill:#f0f4f8,stroke:#64748b,color:#0f172a;";
+    private const string WaveStubStyle = "fill:#fef9c3,stroke:#ca8a04,color:#713f12;";
 
     /// <summary>Render the plan as a Mermaid <c>flowchart TD</c> string (no trailing I/O).</summary>
     public static string Render(PlanDefinition plan)
@@ -404,7 +406,10 @@ public static class MermaidRenderer
     /// container ids, so both subgraph blocks must already be declared; emitting all containers
     /// first keeps every edge's endpoints resolvable and the output deterministic.
     /// </remarks>
-    private static IReadOnlyDictionary<string, string> AppendNodesAndEdges(PlanDefinition plan, StringBuilder sb)
+    private static IReadOnlyDictionary<string, string> AppendNodesAndEdges(PlanDefinition plan, StringBuilder sb) =>
+        plan.IsWaved ? AppendNodesAndEdgesWaved(plan, sb) : AppendNodesAndEdgesFlat(plan, sb);
+
+    private static IReadOnlyDictionary<string, string> AppendNodesAndEdgesFlat(PlanDefinition plan, StringBuilder sb)
     {
         var graph = new DependencyGraph(plan.Tasks);
 
@@ -570,6 +575,161 @@ public static class MermaidRenderer
         {
             AppendLf(sb, $"  task_{nodeIdBase[leaf.Id]} --> {PlanGuardrailsId}");
         }
+    }
+
+    /// <summary>
+    /// Emit the waved-plan container model: plan preflights → per-wave (entry gate + task subgraph +
+    /// exit gate) → plan guardrails → waved container edges. Dispatched from
+    /// <see cref="AppendNodesAndEdges"/> when <c>plan.IsWaved</c>. ORDER MATTERS: all containers
+    /// (including wave subgraphs and their task sub-subgraphs) are emitted BEFORE any edge line.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> AppendNodesAndEdgesWaved(PlanDefinition plan, StringBuilder sb)
+    {
+        // Allocate node id bases for ALL tasks (full flattened list) — same invariant as flat path.
+        List<TaskNode> allTasks = plan.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal).ToList();
+        IReadOnlyDictionary<string, string> nodeIdBase = AllocateNodeIdBases(allTasks);
+
+        // 1. Plan-level Full Flight Checks (always, top-level)
+        AppendPlanLevelContainer(sb, PlanPreflightsId, "Full Flight Checks", plan.PlanPreflights, "preflight");
+
+        // 2. One wave block per wave (in Number order, as loaded)
+        foreach (WaveNode wave in plan.Waves)
+        {
+            string waveId = $"wave_{wave.Number}";
+            string wavePrefsId = $"{waveId}_preflights";
+            string waveGuardsId = $"{waveId}_guardrails";
+            string waveLabel = $"Wave {wave.Number} — {wave.Slug}";
+
+            // a. Wave entry gate (top-level, outside the wave subgraph)
+            AppendPlanLevelContainer(sb, wavePrefsId, $"Wave {wave.Number} Entry Gate", wave.Preflights, "preflight");
+
+            // b. Wave task subgraph (wraps the tasks or a JIT-stub placeholder)
+            AppendLf(sb, $"  subgraph {waveId}[{Quote(waveLabel)}]");
+
+            if (wave.Tasks.Count == 0)
+            {
+                AppendLf(sb, $"    {waveId}_stub[{Quote("⏸ JIT stub — run halts here for breakdown")}]");
+                AppendLf(sb, $"    style {waveId}_stub {WaveStubStyle}");
+            }
+            else
+            {
+                foreach (TaskNode task in wave.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal))
+                {
+                    AppendTaskContainerWaved(sb, task, nodeIdBase[task.Id]);
+                }
+            }
+
+            AppendLf(sb, "  end");
+            AppendLf(sb, $"  style {waveId} {WaveStyle}");
+
+            // c. Wave exit gate (top-level, after the subgraph)
+            AppendPlanLevelContainer(sb, waveGuardsId, $"Wave {wave.Number} Exit Gate", wave.Guardrails, "guardrail");
+        }
+
+        // 3. Plan-level Terminal Gate (always, top-level)
+        AppendPlanLevelContainer(sb, PlanGuardrailsId, "Terminal Gate", plan.PlanGuardrails, "guardrail");
+
+        // 4. All waved container edges (after all nodes)
+        AppendWavedContainerEdges(plan, nodeIdBase, sb);
+
+        return nodeIdBase;
+    }
+
+    /// <summary>
+    /// Append one task container inside a wave subgraph. Same structure as
+    /// <see cref="AppendTaskContainer"/> but: (a) indented by 4 spaces (not 2) since the container
+    /// is a sub-subgraph of the enclosing wave subgraph; and (b) the drawn label is the SHORT task
+    /// folder name only (the part after the wave prefix slash), never the full wave-qualified id —
+    /// the wave subgraph already provides the wave context visually.
+    /// The NODE ID (<c>task_&lt;base&gt;</c>) is unchanged and still derived from the full wave-qualified
+    /// <see cref="TaskNode.Id"/>, so all external references (edges, click directives, status badges)
+    /// remain consistent.
+    /// </summary>
+    private static void AppendTaskContainerWaved(StringBuilder sb, TaskNode task, string @base)
+    {
+        string containerId = $"task_{@base}";
+
+        // Strip the "wave-NN-slug/" wave-prefix from the label; node id is unchanged.
+        string label = task.WaveDir is not null && task.Id.Contains('/')
+            ? task.Id[(task.Id.IndexOf('/') + 1)..]
+            : task.Id;
+
+        AppendLf(sb, $"    subgraph {containerId}[{Quote(label)}]");
+        AppendCheckNodes(sb, "      ", $"{containerId}_pf", task.Preflights, "preflight");
+        AppendCheckNodes(sb, "      ", $"{containerId}_gr", task.Guardrails, "guardrail");
+        AppendLf(sb, "    end");
+        AppendLf(sb, $"    style {containerId} {TaskStyle}");
+    }
+
+    /// <summary>
+    /// Append every container→container edge for a waved plan, in emission order:
+    /// <list type="bullet">
+    ///   <item><c>plan_preflights</c> → wave-1 entry gate</item>
+    ///   <item>Per-wave: entry gate → root tasks, task→task within-wave DAG edges, leaf tasks → exit gate</item>
+    ///   <item>Dotted barrier edges between consecutive wave exit and next-wave entry gates</item>
+    ///   <item>Last wave exit gate → <c>plan_guardrails</c></item>
+    /// </list>
+    /// Called after ALL containers are emitted, so every edge endpoint is already declared.
+    /// </summary>
+    private static void AppendWavedContainerEdges(
+        PlanDefinition plan,
+        IReadOnlyDictionary<string, string> nodeIdBase,
+        StringBuilder sb)
+    {
+        // plan_preflights → first wave entry gate
+        AppendLf(sb, $"  {PlanPreflightsId} --> wave_{plan.Waves[0].Number}_preflights");
+
+        foreach (WaveNode wave in plan.Waves)
+        {
+            string wavePrefsId = $"wave_{wave.Number}_preflights";
+            string waveGuardsId = $"wave_{wave.Number}_guardrails";
+            string waveId = $"wave_{wave.Number}";
+
+            if (wave.Tasks.Count == 0)
+            {
+                // JIT-stub wave: entry gate → stub node → exit gate
+                AppendLf(sb, $"  {wavePrefsId} --> {waveId}_stub");
+                AppendLf(sb, $"  {waveId}_stub --> {waveGuardsId}");
+            }
+            else
+            {
+                List<TaskNode> waveTasks = wave.Tasks.OrderBy(t => t.Id, StringComparer.Ordinal).ToList();
+                var waveGraph = new DependencyGraph(wave.Tasks);
+
+                // Entry gate → root tasks (no intra-wave dependencies)
+                foreach (TaskNode root in waveTasks.Where(t => t.DependsOn.Count == 0))
+                {
+                    AppendLf(sb, $"  {wavePrefsId} --> task_{nodeIdBase[root.Id]}");
+                }
+
+                // Within-wave task→task dependency edges
+                foreach (TaskNode dep in waveTasks)
+                {
+                    foreach (string dependentId in waveGraph.DependentsOf(dep.Id)
+                                 .OrderBy(id => id, StringComparer.Ordinal))
+                    {
+                        AppendLf(sb, $"  task_{nodeIdBase[dep.Id]} --> task_{nodeIdBase[dependentId]}");
+                    }
+                }
+
+                // Leaf tasks → exit gate (tasks nothing else depends on)
+                foreach (TaskNode leaf in waveTasks.Where(t => waveGraph.DependentsOf(t.Id).Count == 0))
+                {
+                    AppendLf(sb, $"  task_{nodeIdBase[leaf.Id]} --> {waveGuardsId}");
+                }
+            }
+        }
+
+        // Dotted barrier edges between consecutive waves
+        for (int i = 0; i < plan.Waves.Count - 1; i++)
+        {
+            string exitId = $"wave_{plan.Waves[i].Number}_guardrails";
+            string entryId = $"wave_{plan.Waves[i + 1].Number}_preflights";
+            AppendLf(sb, $"  {exitId} -.->|{Quote("\U0001f512 wave barrier")}| {entryId}");
+        }
+
+        // Last wave exit gate → plan_guardrails
+        AppendLf(sb, $"  wave_{plan.Waves[^1].Number}_guardrails --> {PlanGuardrailsId}");
     }
 
     /// <summary>
