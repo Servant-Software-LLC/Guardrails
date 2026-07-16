@@ -429,4 +429,53 @@ public sealed class GraphCliTests
             }
             """);
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Wave-scoped graph (issue #355)
+    // -----------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Graph_WaveFolder_WritesDiagramInWaveDir_ExitsZero()
+    {
+        // guardrails graph <plan>/<wave-NN-slug> must write diagram.md into the WAVE folder
+        // (not the plan root) and exit 0. The diagram must contain the wave's tasks and the
+        // standard provenance comment + flowchart marker.
+        using var plan = new ScriptPlanBuilder();
+        ScriptPlanBuilder.WaveBuilder wave = plan.AddWave("wave-01-foundation");
+        wave.AddTask("01-write").AddTask("02-verify", dependsOn: "wave-01-foundation/01-write");
+
+        string waveDirPath = wave.WaveDir;
+        (int exit, string output) = await InvokeCapturingAsync("graph", waveDirPath);
+
+        Assert.Equal(ExitCodes.Success, exit);
+
+        string diagramPath = Path.Combine(waveDirPath, "diagram.md");
+        Assert.True(File.Exists(diagramPath), "diagram.md must be written to the wave folder");
+
+        string content = await File.ReadAllTextAsync(diagramPath, TestContext.Current.CancellationToken);
+        Assert.Contains("flowchart TD", content);
+        Assert.Contains("source-sha256=", content);
+
+        // Only the wave's tasks should appear in the diagram.
+        Assert.Contains("01-write", content);
+        Assert.Contains("02-verify", content);
+    }
+
+    [Fact]
+    public async Task Graph_WaveFolder_CheckAfterGenerate_ExitsZero()
+    {
+        // A wave-folder generate followed by --check must report FRESH (exit 0) — the source
+        // hash embedded in the wave's diagram.md must agree with the recomputed wave-scoped hash.
+        using var plan = new ScriptPlanBuilder();
+        ScriptPlanBuilder.WaveBuilder wave = plan.AddWave("wave-01-foundation");
+        wave.AddTask("01-write");
+
+        string waveDirPath = wave.WaveDir;
+
+        (int generateExit, _) = await InvokeCapturingAsync("graph", waveDirPath);
+        Assert.Equal(ExitCodes.Success, generateExit);
+
+        (int checkExit, _) = await InvokeCapturingAsync("graph", waveDirPath, "--check");
+        Assert.Equal(ExitCodes.Success, checkExit);
+    }
 }
