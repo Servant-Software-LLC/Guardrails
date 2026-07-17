@@ -1,3 +1,4 @@
+using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 using Spectre.Console;
@@ -238,6 +239,11 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             // wave without mutating table rows (the #145 in-region-write corruption is avoided).
             AnsiConsole.MarkupLine(
                 $"[bold]Wave {index}/{total}:[/] {Markup.Escape(wave.Dir)} — {wave.Tasks.Count} task(s)");
+
+            // Regenerate the wave-scoped diagram so it reflects the now-authored tasks before
+            // execution begins (issue #359). Runs silently inside the live region to avoid ANSI
+            // output interleaving; failures are swallowed — never change the run outcome.
+            GraphCommand.RenderWaveScoped(wave.Directory, TextWriter.Null);
         }
     }
 

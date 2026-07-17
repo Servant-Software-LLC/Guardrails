@@ -257,6 +257,14 @@ public sealed record WaveHalt
     /// <summary>The integration worktree path a human breaks the next wave down against (JIT checkpoint, §14.4/decision D); null when N/A.</summary>
     public string? IntegrationWorktreePath { get; init; }
 
+    /// <summary>
+    /// Absolute path to the wave folder (e.g. the full OS path to <c>wave-02-build</c>).
+    /// Populated for <see cref="WaveHaltKind.NextWaveUnauthored"/> (the JIT checkpoint); null for
+    /// other halt kinds. Used by the CLI to render a focused wave diagram at the checkpoint
+    /// (issue #359).
+    /// </summary>
+    public string? WaveDirectory { get; init; }
+
     /// <summary>For a wave-drift halt: this wave + its downstream waves that would re-run on resolve; empty otherwise.</summary>
     public IReadOnlyList<string> AffectedWaves { get; init; } = [];
 

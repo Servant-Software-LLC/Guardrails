@@ -1,3 +1,4 @@
+using Guardrails.Cli.Commands;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
@@ -104,6 +105,19 @@ public sealed class ConsoleRunObserver : IRunObserver
         lock (_gate)
         {
             _output.WriteLine($"===== Wave {index}/{total}: {wave.Dir} — {wave.Tasks.Count} task(s) =====");
+
+            // Regenerate the wave-scoped diagram so it reflects the now-authored tasks before
+            // execution begins (issue #359). Best-effort: failures are swallowed and never change
+            // the run outcome or obscure the wave banner. Uses plain-URI fallback since output
+            // may be redirected (CI, --no-ui). The same render fires at the JIT checkpoint in
+            // RunCommand.PrintWaveHalt.
+            if (GraphCommand.RenderWaveScoped(wave.Directory, TextWriter.Null))
+            {
+                string diagramHtml = Path.Combine(wave.Directory, "diagram.html");
+                bool linkable = !Console.IsOutputRedirected;
+                string link = RunCommand.Hyperlink(diagramHtml, linkable);
+                _output.WriteLine($"  Wave diagram (focused): {link}");
+            }
         }
     }
 

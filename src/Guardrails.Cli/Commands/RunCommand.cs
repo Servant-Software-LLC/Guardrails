@@ -805,6 +805,22 @@ public static class RunCommand
         {
             o.WriteLine($"  FAILED: {g.Name} — {g.Reason ?? "failed"}");
         }
+
+        // JIT checkpoint (issue #359): render a focused wave diagram into the wave folder and
+        // surface a "Wave diagram (focused):" link so the operator can see the wave's shape while
+        // breaking it down. Best-effort: a render failure is swallowed; it never changes the exit
+        // code or obscures the checkpoint message. The same render runs at wave-start on re-run
+        // (see ConsoleRunObserver / LiveRunObserver.WaveStarting) so the diagram is always fresh.
+        if (halt.Kind == WaveHaltKind.NextWaveUnauthored && halt.WaveDirectory is { } waveAbsDir)
+        {
+            if (GraphCommand.RenderWaveScoped(waveAbsDir, TextWriter.Null))
+            {
+                string diagramHtml = Path.Combine(waveAbsDir, "diagram.html");
+                bool linkable = !Console.IsOutputRedirected && Spectre.Console.AnsiConsole.Profile.Capabilities.Links;
+                string link = Hyperlink(diagramHtml, linkable);
+                o.WriteLine($"  Wave diagram (focused): {link}");
+            }
+        }
     }
 
     /// <summary>

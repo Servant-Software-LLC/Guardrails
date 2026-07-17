@@ -142,6 +142,15 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount) =>
         _inner.PromptPaused(task, reason, backoff, pauseCount);
 
+    public void OutOfScopeStripped(TaskNode task, IReadOnlyList<WriteScopeOffense> stripped) =>
+        _inner.OutOfScopeStripped(task, stripped);
+
+    public void WaveStarting(WaveNode wave, int index, int total) =>
+        _inner.WaveStarting(wave, index, total);
+
+    public void WaveFinished(WaveNode wave, Core.Journal.WaveStatus status, bool skipped) =>
+        _inner.WaveFinished(wave, status, skipped);
+
     // --- site projection --------------------------------------------------------------------
 
     private void SetStatus(string taskId, string status)
