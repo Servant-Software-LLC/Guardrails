@@ -921,7 +921,8 @@ public sealed class Scheduler
             Headline = $"Wave '{wave.Dir}' has no authored tasks — halting for JIT breakdown (SSOT §14.4).",
             Detail = "The prior wave(s) completed and are materialized on the plan branch. Break down + review "
                    + $"'{wave.Dir}' against the materialized upstream artifacts{at}\nthen re-run 'guardrails run' to continue.",
-            IntegrationWorktreePath = worktree
+            IntegrationWorktreePath = worktree,
+            WaveDirectory = wave.Directory
         };
     }
 

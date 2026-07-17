@@ -113,6 +113,50 @@ public static partial class GraphCommand
     }
 
     /// <summary>
+    /// Render a wave-scoped diagram (<c>diagram.md</c> + <c>diagram.html</c>) into
+    /// <paramref name="waveDir"/> — both generated, non-authored files excluded from
+    /// <c>guardrails.baseline</c> (SSOT §10). Returns <c>true</c> on success; on any load or
+    /// render failure writes a one-line diagnostic to <paramref name="errorOutput"/> and returns
+    /// <c>false</c>. Best-effort: a failure never crashes the caller.
+    /// <para>
+    /// Called by <see cref="RunCommand"/> at the JIT wave checkpoint (issue #359, §14.4) to surface
+    /// a focused wave diagram alongside the checkpoint message, and at wave-start on re-run so the
+    /// diagram reflects the now-authored tasks before execution begins.
+    /// </para>
+    /// </summary>
+    public static bool RenderWaveScoped(string waveDir, TextWriter errorOutput)
+    {
+        if (!IsWaveFolder(waveDir))
+        {
+            return false;
+        }
+
+        PlanDefinition? wavePlan = LoadWaveScoped(waveDir, errorOutput);
+        if (wavePlan is null) return false;
+
+        try
+        {
+            string sourceHash = GraphSourceHash.Compute(wavePlan);
+            string diagramPath = Path.Combine(wavePlan.PlanDirectory, DiagramFileName);
+            string diagramHtmlPath = Path.Combine(wavePlan.PlanDirectory, DiagramHtmlFileName);
+
+            string diagram = MermaidRenderer.Render(wavePlan);
+            AtomicFile.WriteAllText(diagramPath, ComposeDocument(diagram, sourceHash));
+
+            string interactive = MermaidRenderer.RenderInteractive(wavePlan);
+            IReadOnlyDictionary<string, string> taskFolderTargets = MermaidRenderer.TaskFolderTargets(wavePlan);
+            AtomicFile.WriteAllText(diagramHtmlPath, HtmlDiagramRenderer.Render(interactive, sourceHash, taskFolderTargets));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            errorOutput.WriteLine($"  [graph] wave diagram render failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Returns <c>true</c> when <paramref name="folder"/> names a wave folder: its leaf name
     /// matches the wave-dir pattern (<c>^wave-([0-9]+)-[a-z0-9-]+$</c>) AND its parent directory
     /// contains a <c>guardrails.json</c> (so we know it is genuinely a wave of a waved plan, not
