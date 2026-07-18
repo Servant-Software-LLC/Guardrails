@@ -110,6 +110,35 @@ public static class DriftDecisions
         BuildWave(AutonomyPolicies.Token(configuredPolicy), "auto-applied", waveDir, rewindTarget,
             oldHash: null, newHash: null, affectedWaves, manualReset: true);
 
+    /// <summary>
+    /// The between-wave JIT checkpoint HALT (SSOT §14.4/§14.10, #360 Phase 0): a waved run reached a wave
+    /// whose <c>tasks/</c> is empty (unauthored) and honest-halted for human JIT breakdown. A
+    /// <c>wave</c>-boundary entry recorded as <c>halted</c> — Phase 0 invokes NO auto-breakdown (that lands
+    /// under <c>autonomyPolicy</c> in a future phase). <paramref name="briefPresent"/> notes whether an
+    /// OPTIONAL <c>brief.md</c> is authored in the wave folder (the opt-in signal for that future
+    /// auto-breakdown). This closes the gap where the JIT checkpoint was the one wave boundary that emitted
+    /// no <c>decisions[]</c> entry (design-360, §14.4).
+    /// </summary>
+    public static DecisionEntry WaveCheckpointHalt(
+        AutonomyPolicy configuredPolicy, string waveDir, bool briefPresent)
+    {
+        string brief = $"{waveDir}/{WaveNode.BriefFileName}";
+        string detail = briefPresent
+            ? $"'{brief}' is present — auto-breakdown against it will be available under autonomyPolicy in a "
+              + "future phase; Phase 0 honest-halts for manual JIT breakdown + review."
+            : $"No '{brief}' — create one to enable auto-breakdown at this checkpoint in a future release, "
+              + "or author the wave manually against the integration worktree.";
+        return new DecisionEntry
+        {
+            Boundary = "wave",
+            Policy = AutonomyPolicies.Token(configuredPolicy),
+            Decision = "halted",
+            Subject = waveDir,
+            Headline = $"Wave '{waveDir}' unauthored — halted for JIT breakdown",
+            Detail = detail
+        };
+    }
+
     private static DecisionEntry BuildWave(
         string policyToken, string decision, string waveDir, string? rewindTarget,
         string? oldHash, string? newHash, IReadOnlyList<string> affectedWaves, bool manualReset)

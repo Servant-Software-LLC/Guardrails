@@ -8,6 +8,16 @@ namespace Guardrails.Core.Model;
 /// </summary>
 public sealed record WaveNode
 {
+    /// <summary>
+    /// The conventional file name of a wave's OPTIONAL human-authored brief (SSOT §14.10, #360 Phase 0):
+    /// the <c>plan-breakdown</c> input at the JIT checkpoint. Its PRESENCE is the opt-in signal — absent
+    /// = honest-halt exactly as today; present = auto-breakdown-*eligible* in a future phase. Folded into
+    /// <see cref="Journal.WaveDefinitionHash"/> (a changed brief on a COMPLETED wave is legitimate drift)
+    /// but EXCLUDED from <see cref="Journal.PlanDefinitionHash"/> (it is breakdown INPUT, not reviewed
+    /// output). The single spelling both the hasher and the scheduler's checkpoint reference.
+    /// </summary>
+    public const string BriefFileName = "brief.md";
+
     /// <summary>The wave directory name (e.g. "wave-02-provision"), matching <c>^wave-([0-9]+)-[a-z0-9-]+$</c>.</summary>
     public required string Dir { get; init; }
 

@@ -3644,7 +3644,16 @@ resume pre-pass, integration/settle — are unchanged). Per wave, in strict orde
 1. skip if already complete (§14.6);
 2. **[between-wave step]** v1: if the next wave is **empty/unauthored** (a JIT stub with zero tasks) →
    **honest halt** (exit 2, `RunReport.WaveHalt` kind `NextWaveUnauthored`) with JIT-breakdown instructions
-   pointed at the integration worktree (§14.9 v2 plugs the overwatcher in here). **v1 note:** the *reviewed*
+   pointed at the integration worktree (§14.9 v2 plugs the overwatcher in here). **`brief.md` naming (#360
+   Phase 0):** when the wave folder carries an OPTIONAL human-authored `brief.md` (§14.10) the halt message
+   NAMES it and states that auto-breakdown against it will be available under `autonomyPolicy` in a future
+   phase; when it is ABSENT the message names the `brief.md` convention as the way to enable auto-breakdown
+   at this checkpoint. **In BOTH cases Phase 0 still honest-halts — it invokes nothing.** The checkpoint now
+   also emits a **`boundary:"wave"` `decisions[]` entry** (`decision:"halted"`, subject = the wave dir) —
+   previously the JIT checkpoint was the one wave boundary that emitted no decision (the gap #360 Phase 0
+   closes). **Phase 1 hook site:** the overwatcher's between-wave actor plugs in at exactly this point
+   (`Scheduler.RunWavedAsync`, `BuildUnauthoredWaveHalt`), gated by `autonomyPolicy` per §14.9; the review
+   gate on the breakdown output is preserved regardless of policy. **v1 note:** the *reviewed*
    half of the "authored **and** reviewed" checkpoint is the **advisory GR2025 nudge** (SSOT §13, a
    plan-level warning), **not** a hard halt — consistent with the plan-level review being advisory, never
    blocking; only an *unauthored* (empty) wave hard-halts. Making unreviewed a per-wave hard gate is a
@@ -3681,8 +3690,10 @@ the wave-level analogue of the task integration commit's trailer triple; survive
 Part C wave-scoped-rewind boundary. (Open Decision E: derived-only is the lighter alternative.)
 
 **`WaveDefinitionHash`** (§7.2/§7.3 nesting) folds each constituent task's **`TaskDefinitionHash`** (in
-wave-relative task-id order) plus the wave-level `preflights/**` and `guardrails/**` files, `sha256:`-prefixed,
-same discipline as `PlanHash`. Nesting: `PlanDefinitionHash` ⊇ `WaveDefinitionHash` ⊇ `TaskDefinitionHash`.
+wave-relative task-id order) plus the wave-level `preflights/**` and `guardrails/**` files, plus the wave's
+OPTIONAL `brief.md` **when present** (§14.10 — a changed brief on a completed wave is legitimate drift),
+`sha256:`-prefixed, same discipline as `PlanHash`. Nesting: `PlanDefinitionHash` ⊇ `WaveDefinitionHash` ⊇
+`TaskDefinitionHash`.
 
 ### 14.6 Cross-wave resume
 
@@ -3758,10 +3769,70 @@ the per-wave task-table concern is the `IRunObserver.WaveStarting`/`WaveFinished
 the live table keeps rendering every wave-qualified task and segments it with a per-wave banner. Between
 waves = a plain human JIT-breakdown checkpoint (proceed if the next wave is authored, else honest halt;
 review is the advisory GR2025 nudge, §14.4 v1 note). Wave-drift `prompt` is confirmed by the CLI before the
-run (a wave-drift probe over the journal), mirroring the task-drift confirm. **Per-wave diagrams** (`graph
+run (a wave-drift probe over the journal), mirroring the task-drift confirm. **Wave brief (`brief.md`)
+convention — #360 Phase 0 (LANDED):** the between-wave checkpoint recognizes an OPTIONAL human-authored
+`wave-NN-slug/brief.md` (§14.10) as the opt-in signal for future auto-breakdown — Phase 0 NAMES it in the
+halt and emits the `boundary:"wave"` checkpoint decision but invokes nothing (honest-halt preserved), and
+folds a present brief into `WaveDefinitionHash` (drift on a completed wave). `WaveHaltKind.BreakdownComplete`
+/ `.BreakdownFailed` are added in Phase 0 as **reserved stub values** (not yet emitted) for the future
+between-wave invoker. The invocation machinery itself (a `breakdown` prompt-runner profile, cost charged to
+`overheadCostUsd`, the validate-then-halt-for-review flow) is the deferred **v2 bet** below, gated on #269's
+between-wave design of record. **Per-wave diagrams** (`graph
 <plan>/<wave>`) are the one v1 nicety **deferred** — `graph <plan>` renders the whole waved DAG (all
 wave-qualified tasks); a per-wave sub-diagram (loading a wave subfolder that has no own `guardrails.json`) is
 follow-up. **v2 bets (deferred):** overwatcher-**driven** intelligent inter-wave adjustment (`auto`/`prompt`
 authoring of a future wave, gated by `autonomyPolicy`, re-staling that wave's review marker) and **bounded
 auto-heal** — both plug into the v1 between-wave seam and reuse §2.1 verbatim; **gated on #269's own design
 of record**.
+
+### 14.10 The wave brief (`brief.md`) — issue #360 Phase 0
+
+> **Status: Phase 0 LANDED (#360).** The `brief.md` convention + the enhanced JIT-checkpoint halt message +
+> the `boundary:"wave"` checkpoint decision + the `WaveDefinitionHash` fold ship now. The **auto-breakdown
+> invocation** it enables (Phase 1 design, Phase 2 implementation) is deferred — it belongs to the
+> overwatcher's between-wave arc (§14.9 v2 bet; design of record `docs/plans/design-360-auto-wave-breakdown.md`).
+
+A wave's **`brief.md`** is an **OPTIONAL, human-authored** Markdown file living at the wave-folder root,
+`wave-NN-slug/brief.md` — a sibling of the wave's `preflights/`, `guardrails/`, and `tasks/` folders:
+
+```
+wave-02-review-server/
+├── brief.md            # OPTIONAL; human-authored at plan-write time; the plan-breakdown INPUT for this wave
+├── preflights/         # wave ENTRY gate
+├── guardrails/         # wave EXIT gate
+└── tasks/              # empty until broken down (the JIT stub); non-empty once authored
+```
+
+**Role.** `brief.md` is the reviewed `.md` plan the `plan-breakdown` skill takes as input, scoped to ONE
+JIT wave (the skill's Step 0 "path to a reviewed `.md` plan", one level down). The **integration worktree**
+supplies the *materialized* upstream state (the prior waves' real outputs); `brief.md` supplies the *intent*
+(what this wave must accomplish, which upstream artifacts it builds on, any intra-wave ordering constraints).
+
+**Opt-in semantics.** Its **presence is the only signal**:
+- **Absent** → the between-wave JIT checkpoint (§14.4) honest-halts **exactly as today** (`RunReport.WaveHalt`
+  kind `NextWaveUnauthored`, exit 2); the halt message names the `brief.md` convention as the way to enable
+  auto-breakdown at this checkpoint in a future release.
+- **Present** → the checkpoint is **auto-breakdown-*eligible* in a future phase**; the halt message names the
+  brief and states that auto-breakdown against it will be available under `autonomyPolicy`. **In Phase 0 a
+  present brief still honest-halts — the harness invokes nothing.** (Phase 1/2 wire the invocation; the
+  human review gate on the breakdown output is preserved regardless of `autonomyPolicy`.)
+
+**Validation.** `guardrails validate` does **NOT** error on an absent `brief.md` (it is optional). A future
+**GR2038** (a WARNING on a wave stub — empty `tasks/` — that has no `brief.md`) is **DEFERRED**, not shipped
+in Phase 0.
+
+**Hash treatment.**
+- **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a
+  `/guardrails-review` pass scrutinizes, so it must not stale the review marker. `PlanDefinitionHash` folds
+  each task's `TaskDefinitionFiles` set + the plan-root `guardrails/`/`preflights/` folders and never
+  enumerates a loose wave-folder `brief.md`, so this exclusion holds by construction (no code change).
+- **INCLUDED in `WaveDefinitionHash`** (§7.2/§14.5) **when present**: a changed / added / removed brief on a
+  **COMPLETED** wave is legitimate wave-level **drift** (the wave was broken down against a different intent
+  and may need re-breaking), handled by the ordinary wave-drift path (§14.6, halt/resolve per
+  `autonomyPolicy`). The brief is folded **only when the file exists**, so a briefless wave's hash is
+  byte-identical to before this convention existed; editing an all-`pending` future wave's brief is
+  sanctioned forward adjustment, not drift (§14.7 `isCompleted`).
+
+**What a `brief.md` should contain** (guidance, not schema): 1–3 paragraphs on what the wave must accomplish;
+the upstream artifacts it builds on (file paths / shapes produced by prior waves); any known intra-wave
+ordering or constraints.

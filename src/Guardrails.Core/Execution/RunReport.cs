@@ -232,7 +232,26 @@ public enum WaveHaltKind
     EntryGateFailed,
 
     /// <summary>A wave's EXIT/terminal gate failed (§14.3) on the merged HEAD-so-far.</summary>
-    ExitGateFailed
+    ExitGateFailed,
+
+    /// <summary>
+    /// RESERVED, not yet emitted (Phase 0 stub for #360 Phase 2). Between-wave auto-breakdown against a
+    /// wave's <c>brief.md</c> (SSOT §14.4/§14.9/§14.10) completed and produced a wave that passes
+    /// <c>guardrails validate</c>; the run halts for the human review gate (<c>/guardrails-review</c>)
+    /// before advancing. No code path emits this in Phase 0 — the between-wave invoker lands in a future
+    /// phase; this value reserves the halt kind so the enum, journal, and CLI can be wired without a
+    /// renumber later.
+    /// </summary>
+    BreakdownComplete,
+
+    /// <summary>
+    /// RESERVED, not yet emitted (Phase 0 stub for #360 Phase 2). Between-wave auto-breakdown against a
+    /// wave's <c>brief.md</c> (SSOT §14.4/§14.9/§14.10) ran but produced a wave that FAILS
+    /// <c>guardrails validate</c>; the run halts carrying the validation errors for manual repair. No code
+    /// path emits this in Phase 0 — reserved for the future between-wave invoker (see
+    /// <see cref="BreakdownComplete"/>).
+    /// </summary>
+    BreakdownFailed
 }
 
 /// <summary>
