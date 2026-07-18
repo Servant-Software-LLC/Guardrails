@@ -300,6 +300,70 @@ public sealed class SchedulerWaveExecutionTests
         Assert.Equal(WaveStatus.Completed, journal.WaveEntryOf("wave-01-scaffold")!.Status);
     }
 
+    // --- #360 Phase 0: JIT-checkpoint brief.md naming + the boundary:"wave" halted decision -------
+
+    [Fact]
+    public async Task UnauthoredNextWave_BriefAbsent_NamesTheConvention_AndRecordsWaveHaltedDecision()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-scaffold", "01-config");
+        b.RootDir(Path.Combine("wave-02-build", "tasks")); // JIT stub, NO brief.md
+        PlanDefinition plan = b.Load().Plan!;
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        RunReport report = await NewScheduler(plan, new WaveFakeExecutor(), journal, new RecordingWorktreeProvider())
+            .RunAsync(plan, Ct);
+
+        Assert.NotNull(report.WaveHalt);
+        Assert.Equal(WaveHaltKind.NextWaveUnauthored, report.WaveHalt!.Kind);
+
+        // brief ABSENT → the message names the brief.md CONVENTION as the way to enable auto-breakdown.
+        Assert.Contains("wave-02-build/brief.md", report.WaveHalt.Detail);
+        Assert.Contains("Create", report.WaveHalt.Detail);
+        Assert.Contains("auto-breakdown", report.WaveHalt.Detail);
+        // ABSENT must NOT claim a present brief.
+        Assert.DoesNotContain("is present", report.WaveHalt.Detail);
+
+        // The JIT checkpoint now emits a boundary:"wave", decision:"halted" decisions[] entry (the #360 gap).
+        DecisionEntry decision = Assert.Single(journal.Document.Decisions ?? []);
+        Assert.Equal("wave", decision.Boundary);
+        Assert.Equal("halted", decision.Decision);
+        Assert.Equal("wave-02-build", decision.Subject);
+    }
+
+    [Fact]
+    public async Task UnauthoredNextWave_BriefPresent_NamesTheBrief_AndAutonomyPolicy()
+    {
+        using var b = new WavePlanBuilder();
+        b.Task("wave-01-scaffold", "01-config");
+        b.RootDir(Path.Combine("wave-02-build", "tasks")); // JIT stub
+        PlanDefinition plan = b.Load().Plan!;
+
+        // Author a brief.md in the stub wave folder (the opt-in signal for future auto-breakdown).
+        File.WriteAllText(
+            Path.Combine(plan.PlanDirectory, "wave-02-build", "brief.md"),
+            "# wave-02-build\nBuild the compiled artifact from wave-01's config.\n");
+
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+        RunReport report = await NewScheduler(plan, new WaveFakeExecutor(), journal, new RecordingWorktreeProvider())
+            .RunAsync(plan, Ct);
+
+        Assert.NotNull(report.WaveHalt);
+        Assert.Equal(WaveHaltKind.NextWaveUnauthored, report.WaveHalt!.Kind);
+
+        // brief PRESENT → the message NAMES it and states auto-breakdown will be available under autonomyPolicy.
+        Assert.Contains("wave-02-build/brief.md", report.WaveHalt.Detail);
+        Assert.Contains("is present", report.WaveHalt.Detail);
+        Assert.Contains("autonomyPolicy", report.WaveHalt.Detail);
+
+        // Still halts (Phase 0 invokes nothing) with a boundary:"wave" halted decision naming the brief.
+        DecisionEntry decision = Assert.Single(journal.Document.Decisions ?? []);
+        Assert.Equal("wave", decision.Boundary);
+        Assert.Equal("halted", decision.Decision);
+        Assert.Contains("wave-02-build/brief.md", decision.Detail);
+        Assert.Contains("autonomyPolicy", decision.Detail);
+    }
+
     // --- 7. Wave-scoped reset: reset a wave + its downstream waves to pending --------------------
 
     [Fact]

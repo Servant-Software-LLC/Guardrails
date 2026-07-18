@@ -306,11 +306,21 @@ public sealed class Scheduler
                 }
             }
 
-            // 2. Between-wave JIT checkpoint (SSOT §14.4): an unauthored/empty wave honest-halts (exit 2).
+            // 2. Between-wave JIT checkpoint (SSOT §14.4/§14.10): an unauthored/empty wave honest-halts
+            //    (exit 2). #360 Phase 0: detect an OPTIONAL human-authored brief.md (the opt-in signal for
+            //    future auto-breakdown) and name it in the halt, AND record a boundary:"wave" decisions[]
+            //    entry — the JIT checkpoint was previously the one wave boundary emitting none (the gap #360
+            //    Phase 0 closes). The overwatcher's between-wave actor will plug in HERE in a future phase
+            //    (§14.9); Phase 0 invokes nothing and still honest-halts.
             if (wave.Tasks.Count == 0)
             {
+                bool briefPresent = File.Exists(Path.Combine(wave.Directory, WaveNode.BriefFileName));
+                DecisionEntry checkpoint =
+                    DriftDecisions.WaveCheckpointHalt(_plan.Config.AutonomyPolicy, wave.Dir, briefPresent);
+                _journal.RecordDecision(checkpoint);
+                _observer.DecisionRecorded(checkpoint);
                 return BuildReport(plan, settled, cancelled: false)
-                    with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ) };
+                    with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ, briefPresent) };
             }
 
             _observer.WaveStarting(wave, i + 1, waves.Count);
@@ -910,17 +920,31 @@ public sealed class Scheduler
         };
     }
 
-    private static WaveHalt BuildUnauthoredWaveHalt(WaveNode wave, IntegrationHandle? integ)
+    private static WaveHalt BuildUnauthoredWaveHalt(WaveNode wave, IntegrationHandle? integ, bool briefPresent)
     {
         string? worktree = integ?.IntegrationWorktreePath;
         string at = worktree is not null ? $" at:\n  {worktree}" : "";
+        string brief = $"{wave.Dir}/{WaveNode.BriefFileName}";
+
+        // #360 Phase 0: a PRESENT brief.md is the opt-in signal that names future auto-breakdown under
+        // 'autonomyPolicy'; an ABSENT one names the convention as the way to enable it. Either way Phase 0
+        // still honest-halts (invokes nothing) and keeps the integration-worktree path + re-run instruction.
+        string detail = briefPresent
+            ? $"A wave brief '{brief}' is present. Auto-breakdown against it will be available under "
+              + "'autonomyPolicy' in a future release; for now the harness honest-halts. The prior wave(s) "
+              + $"completed and are materialized on the plan branch{at}\nBreak down + review '{wave.Dir}' "
+              + "against the materialized upstream artifacts, then re-run 'guardrails run' to continue."
+            : "The prior wave(s) completed and are materialized on the plan branch. Break down + review "
+              + $"'{wave.Dir}' against the materialized upstream artifacts{at}\nCreate '{brief}' to enable "
+              + "auto-breakdown here in a future release, or author the wave manually, then re-run "
+              + "'guardrails run' to continue.";
+
         return new WaveHalt
         {
             WaveDir = wave.Dir,
             Kind = WaveHaltKind.NextWaveUnauthored,
             Headline = $"Wave '{wave.Dir}' has no authored tasks — halting for JIT breakdown (SSOT §14.4).",
-            Detail = "The prior wave(s) completed and are materialized on the plan branch. Break down + review "
-                   + $"'{wave.Dir}' against the materialized upstream artifacts{at}\nthen re-run 'guardrails run' to continue.",
+            Detail = detail,
             IntegrationWorktreePath = worktree,
             WaveDirectory = wave.Directory
         };

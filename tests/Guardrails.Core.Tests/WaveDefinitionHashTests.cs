@@ -89,6 +89,40 @@ public sealed class WaveDefinitionHashTests
     }
 
     [Fact]
+    public void BriefMd_IsIncludedInWaveHash_ButExcludedFromPlanDefinitionHash()
+    {
+        // SSOT §14.10 (#360 Phase 0): brief.md is folded into WaveDefinitionHash (a changed/added/removed
+        // brief on a COMPLETED wave is legitimate drift) but NEVER into PlanDefinitionHash (it is breakdown
+        // INPUT, not the reviewed OUTPUT a /guardrails-review pass scrutinizes).
+        using var plan = new WavePlanBuilder().Task("wave-01-scaffold", "01-init");
+
+        Loading.PlanLoadResult result = plan.Load();
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics.Select(d => $"{d.Code}: {d.Message}")));
+        PlanDefinition loaded = result.Plan!;
+        WaveNode wave = loaded.Waves[0];
+
+        string waveBriefless = WaveDefinitionHash.Compute(wave);
+        string planBefore = PlanDefinitionHash.Compute(loaded);
+
+        string briefPath = Path.Combine(plan.PlanDir, "wave-01-scaffold", WaveNode.BriefFileName);
+
+        // Add a brief.md.
+        File.WriteAllText(briefPath, "# wave-01\nintent v1\n");
+        string waveWithBrief = WaveDefinitionHash.Compute(wave);
+        Assert.NotEqual(waveBriefless, waveWithBrief);        // INCLUDED: adding a brief moves the wave hash
+        Assert.Equal(planBefore, PlanDefinitionHash.Compute(loaded)); // EXCLUDED: the plan-definition hash is stable
+
+        // Edit the brief content.
+        File.WriteAllText(briefPath, "# wave-01\nintent v2 (edited)\n");
+        Assert.NotEqual(waveWithBrief, WaveDefinitionHash.Compute(wave)); // editing the brief moves the wave hash
+
+        // Remove the brief.
+        File.Delete(briefPath);
+        Assert.Equal(waveBriefless, WaveDefinitionHash.Compute(wave)); // removing it restores the briefless hash
+        Assert.Equal(planBefore, PlanDefinitionHash.Compute(loaded));  // plan hash stayed stable throughout
+    }
+
+    [Fact]
     public void AddingATaskToTheWave_ChangesTheWaveHash()
     {
         using var single = new WavePlanBuilder().Task("wave-01-scaffold", "01-init");
