@@ -1,14 +1,24 @@
-# Model tiering — Wave 3: Dynamic behavior (escalation ladder + interactive steering)
+# Model tiering — Stage 3: Dynamic behavior (escalation ladder + interactive steering)
 
-Part of the model-tiering epic (#201). This is wave 3 of 3 — **depends on wave 2
+> **Design of record: [`13-model-tiering.md`](13-model-tiering.md)** — the contract-locked
+> decisions live there; where this brief and the DoR differ, the DoR wins.
+> **DEFERRED TO v2 (DoR revision):** this entire stage — **#228 escalation ladder** and **#231
+> interactive steering** — is deferred to named v2 bets (DoR §7, §8, §10). It is **not part of
+> v1** (static routing). The DoR retains the ratified designs here (same retry pool for the ladder;
+> `routing` `autonomyPolicy` boundary for steering) **and** records the open items a v2 build must
+> resolve first: the OD-A last-attempt guarantee is a BLOCKER as written (DoR §7 / DA F1), and the
+> mid-run route-down lever (DA F2) must be decided. Revisit with #230-lite measurement in hand.
+> "Stage" here means a sequential design phase of this epic — NOT a #254 runtime wave (SSOT §14).
+
+Part of the model-tiering epic (#201). This is stage 3 of 3 — **depends on stage 2
 (`model-tiering-consumers.md`, issues #226+#227) having landed**: both tasks here modify or
-consult the per-attempt resolution step and the budget probes wave 2 introduces. Covers issues
+consult the per-attempt resolution step and the budget probes stage 2 introduces. Covers issues
 **#228** (escalation ladder) and **#231** (interactive routing steering).
 
 ## Context
 
-Wave 2's #226 resolves a task's tier to a concrete (provider, model, effort) fresh at each attempt
-launch; #227 gives that resolution live budget/limit visibility per provider. This wave is the
+Stage 2's #226 resolves a task's tier to a concrete (provider, model, effort) fresh at each attempt
+launch; #227 gives that resolution live budget/limit visibility per provider. This stage is the
 first to make resolution **behavior-dependent** rather than purely state-dependent: #228 reacts to
 a task's own attempt history, and #231 reacts to a live human decision. Both are already recorded
 as design (not yet implementation) on #201's "Resolution timing" section:
@@ -21,7 +31,7 @@ as design (not yet implementation) on #201's "Resolution timing" section:
 ## The ask
 
 ### #228 — Escalation ladder ("graduate to a stronger provider on repeated attempts")
-1. A task's first attempt resolves at its tagged tier (wave 1/2 mechanism, unchanged). If that
+1. A task's first attempt resolves at its tagged tier (stage 1/2 mechanism, unchanged). If that
    attempt's guardrails fail, the task's **next** attempt resolution (#226) is asked to escalate
    one tier stronger, rather than re-resolving at the same tier.
 2. Escalation is scoped to that one task's own retry loop — it must not affect sibling tasks'
@@ -47,7 +57,7 @@ as design (not yet implementation) on #201's "Resolution timing" section:
    concrete surface — a CLI flag, a session-scoped setting, or a config override the resolution
    step reads alongside the registry and probed budget state (#227).
 2. **Threshold-triggered prompt at `/plan-breakdown` time**: before task-to-tier assignment is
-   finalized (wave 1, #225), check limits across registered providers (#227); if one is running
+   finalized (stage 1, #225), check limits across registered providers (#227); if one is running
    low, surface routing-strategy options to the human before generating the DAG.
 3. **Threshold-triggered prompt at harness `run` time**: mid-run, when the projected remaining
    work would blow through a provider's rate window, pause and present concrete options (see the
@@ -79,6 +89,6 @@ threshold-check + prompt UX). Verification: `dotnet test tests/Guardrails.Core.T
 check for the interactive-prompt UX (both at `/plan-breakdown` and `guardrails run` call sites).
 
 ## Related
-#201 (epic), #226/#227 (wave 2 — hard prerequisite), #224 (registry — defines the ladder's rungs
-and what's available to steer toward), #228/#231 (this wave's issues), #198/#230 (existing model
-logging + cost accounting this wave's visibility requirements extend).
+#201 (epic), #226/#227 (stage 2 — hard prerequisite), #224 (registry — defines the ladder's rungs
+and what's available to steer toward), #228/#231 (this stage's issues), #198/#230 (existing model
+logging + cost accounting this stage's visibility requirements extend).
