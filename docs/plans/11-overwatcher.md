@@ -234,7 +234,13 @@ separate durable schema:
   doomed → halt" is always safe at every tier; the overwatcher makes halts *earlier and richer*, never
   softer.
 
-## 9. The inter-wave role (v2, couples to #254)
+## 9. The inter-wave role — auto wave breakdown at the JIT checkpoint (#360; v2, couples to #254)
+
+> **Status: DESIGN (extends the v1 seam).** §9.1–§9.6 flesh the reserved between-wave seam into a complete,
+> implementable design for the #360 inter-wave breakdown invocation (Phase 1/2), superseding the deferral in
+> `docs/plans/design-360-auto-wave-breakdown.md` (whose Q1–Q5 decisions are carried in and cited). The
+> **criticality dial** that governs this checkpoint under an unattended run is designed in the companion
+> `docs/plans/12-autonomous-mode.md` (#361); Phase 1 here needs only the shipped `autonomyPolicy`.
 
 The overwatcher is **one supervisor invoked at decision boundaries**, and a **wave boundary** is
 another such boundary. `10-multi-wave-plans.md` (§14.7/§14.9) and roadmap bet #6 already reserve this:
@@ -256,6 +262,119 @@ guarantee.
 `autonomyPolicy` (§2.1); the `boundary`-discriminated `decisions[]` (§7); the nested
 `<plan>/<wave>/<tasks>` layout + strict wave order (§14). No new shared contract is introduced here.
 
+### 9.1 The trigger — the JIT checkpoint, not a task struggle
+
+The between-wave actor fires at a **different boundary** from the per-task overwatcher and must not be
+conflated with it (design-360 Q4): the per-task overwatcher (§4) triggers on a **failing task** inside its
+retry loop; the between-wave actor triggers at the **JIT wave checkpoint** (SSOT §14.4 step 2) — a wave
+folder present but with an **empty/unauthored `tasks/`** — on an **all-`pending`** next wave. They are
+disjoint by unit state (a struggling task vs. an unauthored wave) and share only the `autonomyPolicy` knob
+and the `decisions[]` log. **This is therefore NOT a new trigger on the `Overwatch` class** — it is a
+distinct between-wave actor the wave loop (`Scheduler.RunWavedAsync`) invokes at the checkpoint. They are
+"one supervisor" conceptually (both are the harness reasoning at a boundary), two components mechanically.
+
+**Opt-in signal (design-360 Q1) — the wave `brief.md`.** Auto-breakdown fires only when the unauthored wave
+carries a human-authored `wave-NN-slug/brief.md` (the `.md` plan-breakdown already expects as input). Its
+presence is the opt-in: **absent ⇒ the current honest-halt** (`WaveHalt` kind `NextWaveUnauthored`) with an
+updated message naming the `brief.md` convention; **present ⇒ auto-breakdown-eligible**, gated by
+`autonomyPolicy` (and, unattended, the dial's `wave-checkpoint` gate — doc 12 §5.1). `brief.md` is committed,
+excluded from `PlanDefinitionHash` (it is breakdown *input*, not reviewed output) but included in
+`WaveDefinitionHash` (a changed brief on a completed wave is legitimate drift). Contents: what the wave must
+accomplish, the materialized upstream it builds on, any intra-wave constraints (design-360 Q1).
+
+### 9.2 The `breakdown` prompt-runner profile
+
+The invocation uses the shipped `IPromptRunner` seam under a **reserved `breakdown` profile** in
+`promptRunners` (alongside `overwatch` / `ai-merge` / `ai-triage`), resolved with fallback to the default
+runner. It differs from the `overwatch` diagnose profile along the one axis that matters:
+
+| | `overwatch` profile (diagnose, §4) | `breakdown` profile (this section) |
+|---|---|---|
+| Tool set | **Read-only** (Read, Grep, Glob) — it only reasons | **Full authoring** (Read, Write, Edit, Bash, Grep, Glob) — it writes task files |
+| Writes | nothing (advisory proposal only) | the next wave's `tasks/**` (+ its diagram) |
+| Verdict gate | none (advisory) | **`guardrails validate`** on the output (§9.4) — deterministic |
+| Cost sink | `overheadCostUsd` | `overheadCostUsd` (same sink; not a task attempt) |
+
+The full tool set is the reason it is a **distinct** profile, not a mode of `overwatch`: breakdown authors
+files (invariant 2 — it writes into a `pending` wave folder, never merged state); diagnose never writes.
+
+### 9.3 Composing the invocation
+
+The harness composes a skill-invocation prompt exactly as the diagnose composes its own (inline the skill,
+inject the context):
+
+1. **Inline the `plan-breakdown` SKILL.md** content (the same technique the diagnose uses for its skill).
+2. **Pass `wave-NN-slug/brief.md`** as the breakdown target (the input plan).
+3. **Inject the integration worktree path** so the skill reads the **materialized** upstream — the outputs
+   of the completed prior waves live on the plan branch at `<worktreeRoot>/<runId>/_integration`, NOT the
+   user's read-only checkout (SSOT §14.4 Decision D / the #197 hand-fix flow). This is the sharpest genuine
+   tension (design-360 C4): the author/skill works against the integration worktree, consistent with #197,
+   not the checkout.
+4. **`--add-dir <integration-worktree-path>`** so the Claude sub-process can access those materialized files.
+
+The invocation is **not retry-aware** in v1: a failed breakdown falls back to honest-halt with the failure
+detail (§9.5), and the human intervenes. Cost is charged to `overheadCostUsd` (the shared overhead sink,
+alongside diagnose / AI-merge / terminal triage, #314) — folded into `maxCostUsd` and the reported total.
+
+### 9.4 The deterministic gate on the output (invariant 1)
+
+The breakdown output is verified **deterministically**, never by the judge that produced it: after the skill
+writes `wave-NN-slug/tasks/**`, the harness runs **`guardrails validate <plan>`** (the existing command, no
+new code) as the gate. It already catches missing required files, zero-guardrail tasks, cross-wave
+`dependsOn` (GR2034), and numbering gaps (GR2033). **Pass → `WaveHalt` kind `BreakdownComplete`** (the wave
+is authored, awaiting human review — §9.6). **Fail → `WaveHalt` kind `BreakdownFailed`** carrying the full
+`guardrails validate` output; the partial `tasks/` is left in place for human repair.
+
+No hot-reload (design-360 Q3): after `BreakdownComplete` the human reviews, then the next `guardrails run` is
+an **ordinary resume** — the plan re-loads fresh, the completed waves skip, and the now-authored wave's JIT
+checkpoint passes. Hot-reloading mid-run would replumb the Scheduler's single-write-at-start plan/journal/
+worktree references for a negligible latency saving; the hard-halt-then-resume pattern is battle-tested.
+
+### 9.5 Halt kinds + logs
+
+- **`WaveHaltKind.BreakdownComplete`** / **`.BreakdownFailed`** — two new kinds added to the shipped
+  `WaveHaltKind` enum (`NextWaveUnauthored` / `WaveDrift` / `EntryGateFailed` / `ExitGateFailed`).
+  Phase 0 (design-360) reserves them as stub values; Phase 1 emits them.
+- **Transcript location** (design-360 Q3 / doc 12 §6.1): `logs/<runId>/<wave-dir>/breakdown/` — the
+  between-wave invocation is NOT a task attempt, so it does not live under `logs/<runId>/<task-id>/
+  attempt-N/`. It holds the composed prompt, the raw stream, the transcript projection, and the
+  `guardrails validate` output. **Proposed SSOT §8 addition** (named, not written — the §14/§8-owning
+  worktree lands it): the `logs/<runId>/<wave-dir>/breakdown/` sub-tree.
+- **`decisions[]` entry** — every checkpoint invocation OR decline emits a `boundary:"wave"` entry
+  (`decision`: `halted` | `prompted-approved` | `auto-applied`, extended by doc 12 §6.2 under the dial).
+  Today the JIT checkpoint emits no `decisions[]` entry — closing that gap is a Phase-0 deliverable.
+
+### 9.6 The review-gate invariant survives `auto` / full-autonomous — the load-bearing constraint
+
+Auto-breakdown may **invoke** breakdown and (per dial) proceed past *some* gates, but **marking a JIT wave
+"reviewed" without attestation is forbidden at every tier, including `auto` and the fully-autonomous dial.**
+This is §3.1's asymmetry at the wave boundary: the mandatory `/guardrails-review` pass on the freshly-authored
+wave IS the verdict-surface protection, and the harness never self-attests it (SSOT §13; invariant 5).
+
+The `autonomyPolicy` table applies to **invocation** (design-360 Q5), NOT to the review gate:
+
+| `autonomyPolicy` | `brief.md` | Behavior |
+|---|---|---|
+| `halt` | any | honest-halt, `brief.md` named in the message |
+| `prompt` (default), interactive TTY | present | prompt "invoke plan-breakdown for wave-NN? [y/N]" → invoke / halt |
+| `prompt`, non-interactive | present | honest-halt (consistent with drift) |
+| `auto` | present | invoke without prompting |
+| any | absent | honest-halt, message names the `brief.md` convention |
+
+**`auto` governs invocation; it NEVER authorizes skipping review.** After a successful `BreakdownComplete`,
+the harness still halts for the human to run `/guardrails-review` — the review step is impossible to miss
+(the halt message says so) and the wave's `WaveDefinitionHash` re-stales the per-wave review marker on any
+edit during review, so a subsequent run sees the wave as reviewed only if it genuinely was.
+
+**The unattended-run reconciliation (design-360 Q4, resolved in doc 12 §5.2).** In a fully-unattended
+firstmate run there is no human to run `/guardrails-review`, so the review gate cannot be auto-cleared. The
+resolution: **default = escalate to firstmate** (halt the wave, record a `review-gate` escalation with full
+context, surface via `IEscalationSink` — doc 12 §7); **opt-in = proceed-with-recorded-unreviewed-risk**
+(`gateThresholds.review-gate: "proceed-unreviewed"`, doc 12 §5.2 Option P), which runs the wave WITHOUT a
+review marker, records `decision: "proceeded-unreviewed"`, and permanently flags the run as "ran with N
+unreviewed waves" — it never marks the wave reviewed. Escalate is the recommended default; the opt-in is a
+deliberate, named, forensically-indelible risk transfer, never a silent one and never a forged attestation.
+
 ## 10. Phasing
 
 - **v1 (fast-follow, ships under #269):** the diagnosis core (always on) + the `prompt`/`halt` decision
@@ -266,7 +385,16 @@ guarantee.
 - **v2 bet #6 (auto-heal):** the `auto` value grants silent overwatcher auto-application; the persistent
   authoring-defect fix classes (#259 dep-restore, `action.prompt.md` edits); the `auto`-tier
   block-until-review hardening (Open Decision A). Depends on #260 (shipped).
-- **v2 bet #6 (inter-wave):** the wave-boundary application (§9). Ships with/after the waves design.
+- **v2 bet #6 (inter-wave) — auto wave breakdown (#360, §9.1–§9.6):**
+  - **Phase 0 (docs + minor harness, no AI-invocation):** the `brief.md` convention (SSOT §14.10); the
+    enhanced `NextWaveUnauthored` halt naming `brief.md`; the `WaveHaltKind.BreakdownComplete`/`.BreakdownFailed`
+    stub values; the `boundary:"wave"` `decisions[]` entry at the checkpoint. Ships without any prompt runner.
+  - **Phase 1 (the invocation):** the `breakdown` profile (§9.2), the between-wave actor in
+    `Scheduler.RunWavedAsync` (§9.3), the `guardrails validate` gate (§9.4), the `logs/<runId>/<wave-dir>/
+    breakdown/` transcript (§9.5), `overheadCostUsd` charging, and the review-gate invariant under `auto`
+    (§9.6). Governed by the shipped `autonomyPolicy` alone.
+  - **Phase 2+ (the dial + unattended review-gate resolution):** designed in `docs/plans/12-autonomous-mode.md`
+    (#361) — the `wave-checkpoint` dial gate and the escalate/`proceed-unreviewed` review-gate policy (§9.6).
 
 ## 11. Devil's-advocate self-critique
 
@@ -330,3 +458,29 @@ triage repositioned as §9.2.1 (terminal-exhaustion case, invariants verbatim); 
    drift-halt disjoint-by-state. `filesTouched: tests/**`.
 3. `guardrails-skill-author` — `guardrails-domain-knowledge` execution-semantics section (overwatcher
    subsumes §9.2). `filesTouched: .claude/skills/guardrails-domain-knowledge/**`.
+
+### 13.1 Inter-wave role (#360, §9) — SSOT deltas + handoff (v2, separate draft PR)
+
+**Proposed SSOT deltas (named, NOT written here — the §14/§8-owning worktree lands each in the change that
+implements it, invariant 4):**
+- **§14.10 (NEW)** — the `brief.md` convention: optional human-authored wave-input file; opt-in semantics;
+  `PlanDefinitionHash` exclusion + `WaveDefinitionHash` inclusion; `guardrails validate` does not error on
+  absent `brief.md` (design-360 Q1).
+- **§14.4** — the between-wave step gains the `brief.md`-detection branch + the `autonomyPolicy` invocation
+  table (§9.6) + the `boundary:"wave"` `decisions[]` entry at the checkpoint.
+- **§9 (prompt runners)** — the reserved `breakdown` profile (full authoring tool set; `overheadCostUsd`;
+  integration-worktree `--add-dir` injection, §9.2/§9.3).
+- **§8 (log layout)** — the `logs/<runId>/<wave-dir>/breakdown/` transcript sub-tree (§9.5).
+- **`WaveHaltKind`** (harness enum, not SSOT) — add `BreakdownComplete` / `BreakdownFailed` (§9.5).
+
+**Implementation handoff (after this DoR's #106 draft-PR review; sequencing per doc 12 §11 Phase 1):**
+1. `guardrails-harness-developer` — Phase 0 (`brief.md` detection in `BuildUnauthoredWaveHalt`, the two
+   `WaveHaltKind` stub values, the checkpoint `decisions[]` entry) then Phase 1 (the `breakdown` profile,
+   the between-wave actor in `Scheduler.RunWavedAsync`, the `guardrails validate` gate, `overheadCostUsd`
+   charging, the breakdown log site). `filesTouched: src/Guardrails.Core/Execution/**, src/Guardrails.Cli/**,
+   docs/plans/02-schemas-and-contracts.md` (the §14.10/§14.4/§9/§8 deltas, same change).
+2. `guardrails-skill-author` — `plan-breakdown` Step 9: `brief.md` as the JIT-wave input;
+   `example-breakdown-waved.md` gains an example `brief.md`. `filesTouched: .claude/skills/plan-breakdown/**`.
+3. `guardrails-test-author` — breakdown-invoked → valid wave → `BreakdownComplete` halt; invalid wave →
+   `BreakdownFailed` with validate errors; `autonomyPolicy: prompt` non-interactive → honest-halt regardless
+   of `brief.md`; `auto` invokes but still review-halts. `filesTouched: tests/**`.
