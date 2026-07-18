@@ -49,6 +49,25 @@ verdict-surface change, or self-attest a `/guardrails-review`. A wrong best-gues
 **fails its own deterministic guardrails** → honest halt anyway. The deterministic floor is the backstop
 under every dial setting.
 
+**Delivery interacts with best-guessing — a hard rule (#340).** Since preview.40 a green run **DELIVERS to
+the user's branch by default** (`mergeOnSuccess` ON — "green means delivered"; AI-merge still withheld). An
+autonomous run that best-guessed its way to green would therefore auto-deliver **machine-decided work** to
+the user's branch with no human in the loop — the DA-1 mitigation "undelivered until a human inspects" was
+STALE and inverted. So the hard rule: **any run that records even one `proceeded-best-guess` or
+`proceeded-unreviewed` decision DEFAULTS `mergeOnSuccess` to OFF** — the verified work stays on the plan
+branch `guardrails/<plan>` for a human to inspect and deliver, and the shipped green-but-undelivered warning
+(#340) fires. An operator may still force delivery with an explicit `--merge-on-success`, but delivery is
+never automatic once a machine judgment shaped the result. (§5.2 covers the review-gate case specifically.)
+
+**A named v1 liveness limitation — forensic, not self-resuming.** Autonomous mode converts a **supervised
+halt into a forensic halt**: a gate that EXCEEDS the dial (or a hard blocker) still stops the unit and
+records everything, exactly as today — it does **NOT** make the run resumable *without a human*. Because
+resume is outcome-agnostic (#190), a plain resume resets the escalated unit to `pending` and re-hits the same
+gate (escalate → resume → re-escalate), so an escalation is effectively terminal until a human acts (edits
+the plan, answers, reviews, or raises the dial — i.e. *reduces* caution). The liveness win is real only for
+runs where **nothing exceeds the dial**; a run that escalates needs a human to get un-stuck. Bringing
+resume-time answer-injection into scope is the north-star product call surfaced prominently in §10.
+
 **Autonomous mode is a SIBLING, not a replacement.** Interactive stays the default; the dial is inert
 unless the operator opts in (`--autonomous`, or a config value). An existing run's behavior is byte-for-byte
 unchanged.
@@ -163,8 +182,13 @@ The dial's **value is the lowest criticality that still escalates** (a threshold
 | `low` | low, moderate, high, critical | (nothing) | **cautious** — escalate ~everything (≡ interactive halt-at-every-gate) |
 | `moderate` | moderate, high, critical | low | conservative |
 | `high` (**recommended default for `--autonomous`**) | high, critical | low, moderate | balanced |
-| `critical` | critical | low, moderate, high | **fully autonomous** — best-guess ~everything |
-| `never` | (nothing) | everything | **maximally autonomous** — best-guess even critical judgment calls (still never a floor) |
+| `critical` | critical | low, moderate, high | **fully autonomous** — best-guess everything except critical judgment calls; floors always escalate |
+
+`critical` is the maximum: it best-guesses low/moderate/high judgment calls and escalates only `critical`
+ones. There is **deliberately no "never" level** (resolves Open F): a `never` would differ from `critical`
+only by *also* best-guessing the critical judgment calls — precisely the ones a human most wants to see — for
+negligible benefit and maximum blast radius. The floors (§5) always escalate regardless, so `critical`
+already means "as autonomous as it gets, floors only."
 
 The value-vs-behavior inversion (`low` = most cautious) is documented explicitly and rendered as this table
 wherever the field appears, because it *is* a threshold and any other framing would be a lie.
@@ -200,8 +224,18 @@ wherever the field appears, because it *is* a threshold and any other framing wo
   with `escalationThreshold: high` if the config omits one. `--dial <level>` overrides the run-wide
   threshold. Combining `--autonomous` with an interactive-only expectation is a usage error.
 - **A conservative default is deliberate.** `--autonomous` alone escalates high + critical (best-guesses
-  only low + moderate). Reaching *fully autonomous* requires the operator to type `--dial critical` (or
-  `never`) — an explicit, deliberate act, never a default.
+  only low + moderate). Reaching *fully autonomous* requires the operator to type `--dial critical` — an
+  explicit, deliberate act, never a default.
+- **A cost ceiling is REQUIRED under `--autonomous` (a liveness floor).** `maxCostUsd` is optional in
+  general (absent ⇒ no cap, SSOT §2). But an unattended run has no human to notice a runaway spend, and
+  autonomous mode ADDS spend the interactive flow does not: each **criticality assessment** ($ of a
+  diagnose-class prompt) and each **breakdown invocation** (a full authoring session — **≫ a diagnose**,
+  ~$1–5) is charged to `overheadCostUsd`, plus every best-guess that sends a task down a wrong path burns
+  its retry budget. So: **`--autonomous` REQUIRES an effective `maxCostUsd`** — if neither the config nor a
+  `--max-cost` flag sets one, the CLI emits a **loud warning** and applies a conservative built-in default
+  (Open I), rather than running uncapped. `maxCostUsd` bounds **dollars**; `blockerRetry.totalWaitSeconds`
+  (§4.2) bounds **wall-clock** for a single blocker — they are different ceilings and an autonomous run
+  wants both.
 
 ### 3.5 Per-gate overrides — the three gate types
 
@@ -215,8 +249,8 @@ wherever the field appears, because it *is* a threshold and any other framing wo
 
 The `review-gate` key deliberately lives in the *same* per-gate map so the operator sees all three gates in
 one place — but its value space is different, precisely so that setting the run-wide dial to `critical`
-(or `never`) can **never accidentally clear the review gate**. Clearing it requires typing the named
-acknowledgment `proceed-unreviewed` against that specific key (§5).
+can **never accidentally clear the review gate**. Clearing it requires typing the named acknowledgment
+`proceed-unreviewed` against that specific key (§5).
 
 ## 4. Classify-then-act — the model
 
@@ -279,27 +313,48 @@ design keeps invariant 1:
   an explicitly recorded rationale — and that record carries **why it was judged retryable, how many
   attempts were made, and how long was waited before escalating**. This is a `decisions[]` +
   `autonomy.jsonl` record (§6), so the classification judgment is auditable exactly like a best-guess.
+- **The recorded rationale is advisory self-report, NOT an independent check.** The true default is
+  *escalate unless the judge flips it to spin* — the judge can only ever make the harness spend more, never
+  less. So the widening is **capped PER RUN**, not just per gate: a run-level ceiling
+  (`autonomy.maxJudgeWidenings`, default small — Open I) bounds how many times a judge may reclassify an
+  unknown failure as retryable across the WHOLE run. Once spent, every subsequent unknown failure escalates
+  deterministically. This defends against the abuse mode (an over-eager judge marks everything transient →
+  spins to the ceiling on every gate → burns `maxCostUsd`/wall-clock), which a per-gate bound alone misses.
 
 The result: the deterministic classifier is the authority for the dangerous cases (a missing credential is
-never spun on); a judge can only ever make the harness *more patient* with an ambiguous transient, bounded
-and recorded.
+never spun on); a judge can only ever make the harness *more patient* with an ambiguous transient — bounded
+per gate (§4.2), bounded per run (this cap), and fully recorded.
 
 ## 5. The verdict-surface / review-gate floor — what the dial may NEVER clear
 
 The overwatcher's mechanical asymmetry (doc 11 §3) is preserved **verbatim and extended to the dial**: a
 machine may never soften a deterministic guardrail's verdict or self-attest a `/guardrails-review`. Under
-autonomous mode this becomes three hard floors the dial cannot lower **at any threshold, including
-`never`**:
+autonomous mode this becomes three floors the dial cannot lower **at any threshold, including `critical`** —
+but they are **not the same KIND of floor**, and the design is honest about which is mechanical and which is
+control-flow:
 
-1. **A deterministic guardrail/preflight verdict.** Untouched — the dial governs gates, not guardrails. A
-   best-guess that produces wrong work fails the deterministic guardrails → honest halt. The dial cannot
-   even *see* a guardrail verdict.
-2. **A verdict-surface change** (the overwatcher DENYLIST: any guardrail/preflight body, or `writeScope` /
-   `scope` / `dependsOn` / `integrationGate`). Classified by the SAME `OverwatchFixClassifier`; always
-   routes to human + `/guardrails-review`, never auto-applied — dial or no dial.
-3. **The review gate** (`mark-reviewed`). **The harness NEVER writes a review marker on a human's behalf, at
-   any dial setting.** Marking a wave reviewed when no human ran the adversarial pass would claim verified
-   output is verified when it is not (invariant 5 + the #360 review-gate invariant).
+1. **A deterministic guardrail/preflight verdict — a mechanical verdict-from-files floor.** Untouched — the
+   dial governs gates, not guardrails. A best-guess that produces wrong work fails the deterministic
+   guardrails → honest halt. The dial cannot even *see* a guardrail verdict.
+2. **A verdict-surface change — a mechanical path/field-membership floor.** The overwatcher DENYLIST (any
+   guardrail/preflight body, or `writeScope` / `scope` / `dependsOn` / `integrationGate`) is decided by the
+   SAME pure `OverwatchFixClassifier.Classify` path test; always routes to human + `/guardrails-review`,
+   never auto-applied — dial or no dial. This is a real deterministic gate, shipped.
+3. **The review gate (`mark-reviewed`) — a CONTROL-FLOW floor + a reporting flag, NOT a deterministic
+   verdict.** Be precise: there is today **no runtime gate that halts on a missing/stale review marker** —
+   the shipped GR2025 is only a `validate`/`run` **warning** (`PlanValidator.ReviewMarkerDiagnostic`,
+   suppressible; SSOT §13) and the Scheduler never consults the marker. So "the review gate" is NOT enforced
+   the way floors 1/2 are. What actually enforces it under autonomous mode is two deliberate, to-be-built
+   mechanisms: **(a)** the `WaveHaltKind.BreakdownComplete` **control-flow halt** after an auto-breakdown
+   (the run stops for review rather than running the fresh wave — doc 11 §9.6); and **(b)** a **reporting
+   flag** — a run that proceeds unreviewed (§5.2 Option P) is permanently marked "ran with N unreviewed
+   waves" and **exits with a DISTINCT NON-ZERO code** so an automated firstmate consumer can never read it
+   as clean green. The invariant that survives absolutely is narrow and true: **the harness NEVER writes a
+   review marker on a human's behalf, at any dial setting** — it never *forges* the attestation; it either
+   halts for a real one or proceeds explicitly-unreviewed and says so, loudly and non-zero. **Scope option
+   (NOT v1):** making floor 3 a real *deterministic* gate — a runtime halt on a stale/missing marker for a
+   wave about to run — would mean **promoting GR2025 from a warning to a runtime halt** (an
+   `autonomy.reviewGate: "enforce"` mode). Named as an option (§10 Open K), deliberately not v1.
 
 ### 5.1 Which gates the dial MAY clear vs. MAY NOT — the explicit list
 
@@ -324,11 +379,13 @@ happens? Two honest options, and I recommend one with the tradeoff stated:
   every JIT wave** — limiting for a JIT-waved plan.
 - **Option P (opt-in) — proceed-with-recorded-unreviewed-risk.** The harness runs the auto-broken-down wave
   **without a review marker**, recording a prominent, durable `decisions[]` entry
-  (`decision: "proceeded-unreviewed"`) and flagging the run's final verdict as *"ran with N unreviewed
-  waves."* The wave's tasks still pass their **deterministic** guardrails (the real verification); only the
-  **adversarial review pass** — which hunts the cheapest wrong implementation that passes those guardrails —
-  is skipped, and that skip is **indelible** in the trail. The run can NEVER be reported as
-  fully-reviewed-green.
+  (`decision: "proceeded-unreviewed"`), flagging the run's final verdict as *"ran with N unreviewed waves,"*
+  **exiting with a distinct non-zero code** (so an automated firstmate consumer can never read it as clean
+  green — §5 floor 3), and — per the §1 hard rule — **defaulting `mergeOnSuccess` to OFF** so the unreviewed
+  work is NOT auto-delivered to the user's branch. The wave's tasks still pass their **deterministic**
+  guardrails (the real verification); only the **adversarial review pass** — which hunts the cheapest wrong
+  implementation that passes those guardrails — is skipped, and that skip is **indelible** in the trail. The
+  run can NEVER be reported as fully-reviewed-green.
 
 **Recommendation: default to Option E (`review-gate: "escalate"`); offer Option P ONLY as an explicit,
 named per-gate acknowledgment (`gateThresholds.review-gate: "proceed-unreviewed"`).**
@@ -344,11 +401,24 @@ Rationale and tradeoff, stated not hidden:
   escape hatch, versus the dishonest alternative a crew would otherwise reach for (hand-writing a review
   marker, i.e. a **forged attestation**, which is strictly worse).
 - Making Option P a *named acknowledgment* rather than a dial level means turning the run-wide dial to
-  `critical`/`never` can never accidentally skip review — the operator must specifically type
-  `proceed-unreviewed` against the `review-gate` key. Deliberate, not incidental.
+  `critical` can never accidentally skip review — the operator must specifically type `proceed-unreviewed`
+  against the `review-gate` key. Deliberate, not incidental.
 
 This is the resolution to #360's Q4 open question ("escalate vs. proceed-with-recorded-risk"): **both,
 escalate by default, proceed only under an explicit named opt-in.**
+
+**The compound-config gate (the DA-1 ∩ DA-4 danger — §8).** Option P is safe in isolation and the dial is
+safe in isolation, but their **intersection is not**: `--dial critical` + `review-gate: proceed-unreviewed`
+on a JIT wave means the wave's tasks AND its guardrails are machine-authored unattended, `guardrails
+validate` cannot see a weak/tautological guardrail, and then the wave runs with no human review — so DA-1's
+whole mitigation ("the deterministic guardrails catch a wrong best-guess") collapses into *the same
+automation's own unreviewed guardrails checking its own unreviewed work*. **Recommendation:
+`proceed-unreviewed` is INCOMPATIBLE with `dial: critical` (a validation/usage error).** An unreviewed wave
+may run, OR the design questions inside it may be best-guessed — but not both: you may never skip BOTH review
+AND escalation. Under `proceed-unreviewed`, the effective in-wave dial is clamped so `critical` (and `high`)
+judgment calls still escalate, keeping a human in the loop for the consequential decisions inside an
+unreviewed wave. Surfaced as **Open A** — it is the maintainer's product call, but the incompatibility is
+the recommended default.
 
 ## 6. The forensic contract — an explicit, testable guarantee
 
@@ -475,10 +545,20 @@ directory. Do not invent a socket, a queue, or a callback — YAGNI and it would
 
 - It does **not** block waiting for firstmate to answer (that would make the harness a server — a daemon,
   forbidden by invariant 6). An escalation is fire-and-halt; resolution is a **resume** after a human/
-  firstmate acts (edits the plan, answers via a resume input, runs `/guardrails-review`), which the existing
-  resume machinery already handles.
-- It does **not** encode a reply channel in v1. If firstmate needs to *inject* an answer for a resumed run,
-  that is a follow-up (a resume-time input file), flagged as an open decision (§Open F).
+  firstmate acts (edits the plan, runs `/guardrails-review`, or raises the dial), which the existing resume
+  machinery already handles.
+- **It does NOT encode a reply channel in v1 — and this is the named liveness limitation, not a footnote.**
+  Because resume is outcome-agnostic (#190), a plain resume resets the escalated unit to `pending` and
+  re-hits the same gate → **escalate → resume → re-escalate**. So a fire-and-halt escalation is *effectively
+  terminal until a human acts*: the only crew-available lever to get un-stuck without editing the plan is to
+  **raise the dial in `guardrails.json`** — i.e. *reduce caution*, which is the wrong direction. Autonomous
+  mode therefore converts a **supervised** halt into a **forensic** halt (§1); it does **not** make a run
+  resumable-without-a-human once a gate exceeds the dial. Bringing **resume-time answer-injection** (a
+  firstmate writes an answer file that the resume consumes to satisfy the escalated gate) into v1 scope is
+  the north-star product call — surfaced as **Open B**. Recommendation: **name the limitation in v1** and
+  defer the reply channel to a fast-follow, because it interacts with #190's outcome-agnostic resume and
+  deserves its own design; do not silently imply "long-running unattended" when v1 delivers "forensic-halt
+  unattended."
 
 ## 8. Devil's-advocate self-critique
 
@@ -489,12 +569,18 @@ own risk* is the fox guarding the henhouse. *Response:* three things keep it fro
 whether to *proceed past a gate that has no deterministic answer*. The worst case of a wrong best-guess is a
 task that then **fails its deterministic guardrails → honest halt/needs-human anyway.** The deterministic
 floor catches a bad best-guess. (2) The default dial is conservative (escalate high+critical); fully
-autonomous requires a deliberate `--dial critical`. (3) Everything is recorded and the run's work sits on
-the plan branch **undelivered until green** — a wrong best-guess is auditable and reversible. **Accepted
-residual:** a best-guess that happens to satisfy *weak* guardrails is the same action-side-gaming residual
-the overwatcher already accepts (doc 11 §11) — the mitigation is the product's existing one (strong
-deterministic guardrails + the review pass), and review-skipping is exactly what the review-gate floor
-(§5.2 default E) prevents.
+autonomous requires a deliberate `--dial critical`. (3) **Delivery is gated (corrected from the stale
+draft):** since #340 a green run auto-delivers by default, so the original "undelivered until green" claim
+was **inverted**. The fix is the §1 hard rule — **any run that recorded a best-guess/unreviewed decision
+defaults `mergeOnSuccess` to OFF**, so machine-decided work sits on the plan branch until a human inspects;
+that restores the "auditable and reversible" property the stale claim wrongly assumed for free. **Accepted
+residual, and the honest boundary on this verdict:** a best-guess that happens to satisfy *weak* guardrails
+is the same action-side-gaming residual the overwatcher already accepts (doc 11 §11) — the mitigation is the
+product's existing one (strong deterministic guardrails + the review pass). **DA-1 is therefore adequate ONLY
+in the default posture** (guardrails were human-reviewed, so the floor that catches a wrong best-guess is a
+*trusted* floor). **It is NOT adequate on its own for `critical` + `proceed-unreviewed`**, where the floor
+becomes the same automation's own unreviewed guardrails — see the joint DA-1 ∩ DA-4 analysis below, which is
+why the compound-config gate (§5.2 / Open A) exists.
 
 **DA-2 — "criticality" is unmeasurable; the dial is a false sense of control.** An LLM cannot reliably rank
 its own decisions' criticality; the threshold is theater. *Response:* real tension, partially conceded. The
@@ -514,11 +600,35 @@ an `IEscalationSink` seam. It is **phased** (§9) so each phase is independently
 shippable.
 
 **DA-4 — the review-gate opt-in (`proceed-unreviewed`) is a hole; a crew will set it and ship unreviewed
-weak guardrails.** *Response:* accepted residual, named. Default is escalate. The opt-in **never marks
-reviewed**, the run can **never** report fully-reviewed-green, and the skipped review is **indelible**. It is
-a deliberate recorded risk transfer, honest and loud — strictly better than the dishonest workaround it
-prevents (a hand-forged review marker). Removing it would make autonomous mode useless for JIT-waved plans
-and push crews toward forgery. Better an honest escape hatch than a dishonest one.
+weak guardrails.** *Response (revised — the original was too comfortable):* the opt-in is a deliberate,
+recorded risk transfer — it **never marks reviewed**, the run can **never** report fully-reviewed-green, the
+skipped review is **indelible**, it exits **distinct non-zero** (§5 floor 3), and it defaults delivery OFF
+(§1). Those make it *honest* and strictly better than the forged-marker workaround it prevents. **But
+"honest and recorded" is NOT the same as "safe," and the original verdict overstated it.** `proceed-
+unreviewed` genuinely removes the adversarial pass whose entire job is catching the weak guardrail — so it is
+adequate **only** when paired with a human-in-the-loop for the consequential in-wave decisions. That is
+exactly the compound-config gate (§5.2 / Open A): `proceed-unreviewed` is **incompatible with `dial:
+critical`**, and under it the in-wave dial is clamped so `high`/`critical` judgment calls still escalate. So
+**DA-4 is adequate only WITH the compound gate applied; without it, it is not** — you would be skipping both
+review and escalation, and the residual would be unbounded. See the joint analysis.
+
+**DA-1 ∩ DA-4 (joint — the real residual).** The two residuals are safe **apart** and dangerous **together**.
+DA-1 leans on "the deterministic guardrails catch a wrong best-guess"; DA-4 leans on "the deterministic
+guardrails still gate the wave, only the review pass is skipped." Compose them at the fully-autonomous
+extreme — `--dial critical` (best-guess every judgment call, incl. inside the wave) + `review-gate:
+proceed-unreviewed` (skip review) on a JIT wave — and **both leans become the same object**: the wave's tasks
+AND its guardrails are machine-authored unattended, `guardrails validate` (a structural check, not a
+strength check) cannot see a weak/tautological guardrail, and the run then trusts that unreviewed guardrail
+to catch its own unreviewed best-guesses. That is a closed loop with **no human and no independent
+deterministic check anywhere in it** — the one configuration the product's whole thesis forbids. **Resolution
+(the recommended default, not left to chance):** the compound-config gate makes `proceed-unreviewed` +
+`dial: critical` a **usage error**, and clamps the in-wave dial under `proceed-unreviewed` so consequential
+design questions still escalate. You may skip review OR best-guess the hard calls — never both. **Named,
+un-hidden residual that remains even so:** a crew that sets `proceed-unreviewed` with a *moderate* dial still
+runs unreviewed guardrails against machine best-guessed low/moderate work; the mitigation is the product's
+existing one (strong deterministic guardrails) plus the indelible non-zero-exit trail that makes a human
+review it *after the fact*. This is the maintainer's call (Open A) — the design's recommendation is the gate,
+and the honest statement is that autonomous mode's safety rests on the compound gate holding.
 
 **DA-5 — a best-guess that answers a `needsHuman` mid-attempt corrupts the attempt's semantics.** The agent
 asked because it genuinely did not know; injecting a guessed answer may send it down a wrong path that burns
@@ -552,55 +662,94 @@ DoR before Phase 1 starts.
   class-(b)/(c) wiring over the existing transient/permission-wall/abort signals, `IEscalationSink` +
   `logs/<runId>/escalations/`, the run-level exit-2-with-pending-escalations semantics.
 - **Phase 4 — the review-gate policy + overwatcher `auto`-tier allowlist.** The `review-gate` per-gate
-  acknowledgment (Option P opt-in), and — as a natural consequence — the overwatcher's **allowlist**
-  (guidance/budget) levers become dial-governed silent auto-apply under `auto` (realizing the *action/budget*
-  half of overwatcher v2 bet #6; the DENYLIST stays permanently human-only).
+  acknowledgment (Option P opt-in) + the compound-config gate (§5.2), and — as a natural consequence — the
+  overwatcher's **allowlist** (guidance/budget) levers become dial-governed silent auto-apply (realizing the
+  *action/budget* half of overwatcher v2 bet #6; the DENYLIST stays permanently human-only).
+  **CRITICAL back-compat gate (do NOT reintroduce the rejected Option (c)):** the shipped overwatcher keys
+  its tier on `autonomyPolicy` ALONE (`Overwatch.Decide`, `_policy = plan.Config.AutonomyPolicy`; `auto`
+  **degrades to prompt** today, doc 11 §6). If Phase 4 flipped `auto` → silent auto-apply keyed on
+  `autonomyPolicy` alone, **every existing `autonomyPolicy: auto` consumer would silently gain overwatcher
+  auto-application on upgrade** — exactly the Option (c) danger §3.1 rejected. So the auto-tier auto-apply is
+  gated on the **PRESENCE OF THE NEW `autonomy` BLOCK**, not `autonomyPolicy: auto` alone: `autonomyPolicy:
+  auto` with **no** `autonomy` block ⇒ the overwatcher **still degrades to prompt**, byte-identical to today.
+  A required back-compat test asserts exactly this (§11).
 
 ## 10. Open decisions — for maintainer
 
-Carried forward from `design-360-auto-wave-breakdown.md` (still open, now reframed under the dial):
+### The two load-bearing product judgment calls (answer these first)
 
-- **A. `autonomyPolicy: "auto"` and the review pause (design-360 Q1, now §5.2).** Confirmed recommendation:
-  `auto` governs breakdown *invocation*; the review gate is a **floor** the dial clears only via the explicit
-  named `gateThresholds.review-gate: "proceed-unreviewed"`. Does the maintainer accept Option E as the
-  default and Option P as a named opt-in — or should review be an **absolute** floor with no opt-in at all
-  (autonomous mode simply cannot run a JIT-waved plan end-to-end unattended)?
-- **B. `wave.json` metadata alongside `brief.md` (design-360 Q2).** Still recommend `brief.md` only. Does
-  the criticality assessment or the breakdown-prompt composition need structured per-wave metadata (target
-  stack, parent-plan pointer) that would justify a `wave.json`? Current answer: no.
-- **C. Breakdown transcript log location (design-360 Q3).** Recommend `logs/<runId>/<wave-dir>/breakdown/`
+These two are not schema knobs — they set the safety posture and the north star of the whole feature. The
+design makes a recommendation for each, but they are the maintainer's to answer.
+
+- **A. The compound-config gate — the DA-1 ∩ DA-4 intersection (§5.2 / §8).** DA-1 ("the deterministic
+  guardrails catch a wrong best-guess") and DA-4 ("only the review pass is skipped, the guardrails still
+  gate") are each adequate alone and dangerous together: `--dial critical` + `review-gate:
+  proceed-unreviewed` on a JIT wave = tasks AND guardrails machine-authored unattended, then the run trusts
+  those unreviewed guardrails to check its own unreviewed best-guesses — a closed loop with no human and no
+  independent deterministic check. **Recommendation: make `proceed-unreviewed` INCOMPATIBLE with `dial:
+  critical` (a usage error), and under `proceed-unreviewed` clamp the in-wave dial so `high`/`critical`
+  judgment calls still escalate — you may skip review OR best-guess the hard calls, never both.** Does the
+  maintainer accept the gate, or a stricter posture (e.g. `proceed-unreviewed` disallowed entirely)?
+- **B. North star: "long-running unattended" vs "forensic-halt unattended" (§1 / §7.3).** With fire-and-halt
+  escalation + outcome-agnostic resume (#190), any gate that exceeds the dial is effectively terminal
+  (escalate → resume → re-escalate); the only un-stick lever is to *raise the dial* (reduce caution). So v1
+  delivers **forensic-halt unattended**, not **long-running unattended**. **Recommendation: name this as a
+  v1 limitation and defer resume-time answer-injection (a firstmate-written answer file the resume consumes)
+  to a fast-follow** — it interacts with #190 and deserves its own design. Does the maintainer want the
+  reply channel pulled into v1 scope instead, accepting the larger surface?
+
+### Carried forward from `design-360-auto-wave-breakdown.md` (still open, reframed under the dial)
+
+- **C. `autonomyPolicy: "auto"` and the review pause (design-360 Q1, now §5.2).** `auto` governs breakdown
+  *invocation*; the review gate is a floor the dial clears only via the explicit `gateThresholds.review-gate:
+  "proceed-unreviewed"`. Accept Option E default + Option P named opt-in (§5.2), or an absolute floor with no
+  opt-in (autonomous mode cannot run a JIT-waved plan end-to-end unattended)?
+- **D. `wave.json` metadata alongside `brief.md` (design-360 Q2).** Recommend `brief.md` only. Does the
+  criticality assessment or the breakdown-prompt composition need structured per-wave metadata (target
+  stack, parent-plan pointer) justifying a `wave.json`? Current answer: no.
+- **E. Breakdown transcript log location (design-360 Q3).** Recommend `logs/<runId>/<wave-dir>/breakdown/`
   (doc 11 §9). Confirm vs. a plan-level location.
 
-New for #361:
+### New for #361
 
-- **D. Dial granularity + names.** Recommend the coarse ordered enum `low < moderate < high < critical`
-  (+ `never`) with the "value = lowest criticality that still escalates" threshold semantics (§3.3).
-  Confirm the level names (alternatives: `trivial/minor/major/severe`) and whether `never` (best-guess even
-  critical judgment calls) should exist at all.
-- **E. The dial field name + shape.** Recommend a new `autonomy` block with `escalationThreshold` +
-  `gateThresholds` + `blockerRetry` (§3.4), composing with the unchanged `autonomyPolicy`. Confirm the block
-  name (alternatives: `unattended`, `criticality`) and that a NEW orthogonal field (Option b) — not
-  extending/reinterpreting `autonomyPolicy` — is the chosen model.
-- **F. Criticality-assessment authority.** Recommend a hybrid: deterministic gate-classification + a
+- **F. Dial granularity + names (RESOLVED to a recommendation — confirm).** Recommend the coarse ordered
+  enum `low < moderate < high < critical` with "value = lowest criticality that still escalates" (§3.3), and
+  **`never` REMOVED** (`critical` is already "fully autonomous, floors only"; `never` would best-guess the
+  critical judgment calls a human most wants to see). Confirm the level names (alternatives:
+  `trivial/minor/major/severe`) and the removal of `never`.
+- **G. The dial field name + shape.** Recommend a new `autonomy` block with `escalationThreshold` +
+  `gateThresholds` + `blockerRetry` + `maxJudgeWidenings` (§3.4), composing with the unchanged
+  `autonomyPolicy`. Confirm the block name (alternatives: `unattended`, `criticality`) and that a NEW
+  orthogonal field (Option b) — not extending/reinterpreting `autonomyPolicy` — is the chosen model.
+- **H. Criticality-assessment authority.** Recommend a hybrid: deterministic gate-classification + a
   constrained advisory LLM assessment (the reserved `overwatch`/`assess` profile) that is NEVER the verdict
-  authority; malformed/absent ⇒ escalate (§2 invariant 1, §4.3). Confirm the profile name and whether the
-  assessment should reuse the `overwatch` profile or get its own `assess` profile.
-- **G. Hard-blocker retry-ceiling defaults.** Recommend `blockerRetry: { maxAttempts: 5, totalWaitSeconds:
-  900 }`, floored by the shipped `transientPauseBudgetSeconds` (§4.2). Confirm the defaults.
-- **H. Per-gate override syntax.** Recommend the `gateThresholds` map with keys `needs-human` /
+  authority; malformed/absent ⇒ escalate (invariant 1, §4.3). Confirm the profile name (reuse `overwatch` or
+  a new `assess`).
+- **I. Cost/liveness defaults (accounting for breakdown spend specifically).** Recommend `blockerRetry:
+  { maxAttempts: 5, totalWaitSeconds: 900 }` (floored by `transientPauseBudgetSeconds`, §4.2);
+  `maxJudgeWidenings` a small run-level cap (§4.3); and — load-bearing — **`--autonomous` REQUIRES an
+  effective `maxCostUsd`**, applying a conservative built-in default with a loud warning if unset (§3.4). The
+  cap must budget for **breakdown invocations specifically** (a full authoring session ≫ a diagnose, ~$1–5
+  each) plus assessments plus best-guess retries — confirm the built-in default dollar figure (e.g. $20) and
+  the `blockerRetry`/`maxJudgeWidenings` numbers.
+- **J. Per-gate override syntax.** Recommend the `gateThresholds` map with keys `needs-human` /
   `wave-checkpoint` / `review-gate` (§3.5), the `review-gate` key taking the escalate/`proceed-unreviewed`
   acknowledgment rather than a criticality level. Confirm.
-- **I. The escalation seam shape.** Recommend a file-based `IEscalationSink` writing
+- **K. Review-gate enforcement strength (scope option, NOT v1).** v1 enforces the review gate via a
+  control-flow halt + a distinct-non-zero-exit reporting flag (§5 floor 3), NOT a deterministic runtime
+  gate. Making it a real deterministic gate — a runtime halt on a stale/missing marker for a wave about to
+  run — would mean **promoting GR2025 from a warning to a runtime halt** (an `autonomy.reviewGate: "enforce"`
+  mode). Recommend deferring; confirm it stays out of v1.
+- **L. The escalation seam shape.** Recommend a file-based `IEscalationSink` writing
   `logs/<runId>/escalations/<seq>-<gate>.json` + `decisions[]` + observer, fire-and-halt, no reply channel
-  in v1 (§7). Confirm — and decide whether a resume-time answer-injection file (§7.3) is in scope or a
-  follow-up.
-- **J. The GR code for an invalid dial value.** The next-free code is **GR2038** (GR2035 DuplicateCheckName,
+  in v1 (§7). Confirm (the reply-channel question is folded into Open B).
+- **M. The GR code for an invalid dial value.** The next-free code is **GR2038** (GR2035 DuplicateCheckName,
   GR2036 ExpectedDurationNonPositive, GR2037 BannedGuardrailPattern are taken); `design-360-auto-wave-
   breakdown.md` earmarks GR2038 for a *deferred* "warn on wave stub without `brief.md`". Recommend the dial
   takes **GR2039** and leaves GR2038 for that earmark — confirm, or reassign if the earmark is dropped.
-- **K. `--autonomous` default dial.** Recommend `--autonomous` alone sets `escalationThreshold: high`
-  (conservative — best-guess only low/moderate); *fully autonomous* requires an explicit `--dial
-  critical`/`never`. Confirm the default is conservative, not fully-autonomous.
+- **N. `--autonomous` default dial.** Recommend `--autonomous` alone sets `escalationThreshold: high`
+  (conservative — best-guess only low/moderate); *fully autonomous* requires an explicit `--dial critical`.
+  Confirm the default is conservative, not fully-autonomous.
 
 ## 11. SSOT deltas + implementation handoff
 
@@ -610,26 +759,36 @@ Land each in the SAME change that implements it (invariant 4). These are **propo
 approve; then the harness developer writes them into `02-schemas-and-contracts.md`:
 
 - **§2 (`guardrails.json`)** — add the OPTIONAL `autonomy` block (`escalationThreshold`, `gateThresholds`,
-  `blockerRetry`) with all-optional/inert-by-default semantics (§3.4). Note it composes with, and does not
-  replace, `autonomyPolicy`.
+  `blockerRetry`, `maxJudgeWidenings`) with all-optional/inert-by-default semantics (§3.4). Note it composes
+  with, and does not replace, `autonomyPolicy`. Note the `--autonomous`-requires-`maxCostUsd` rule (§3.4).
 - **§2.1 (`autonomyPolicy`)** — add a paragraph: the dial is a NEW ORTHOGONAL axis engaging only under
   `auto` in a non-interactive context; it NEVER lowers a floor (verdict surface / review gate / unsound
-  rewind / terminal exhaustion). `autonomyPolicy`'s three values and GR2031 are **unchanged**.
+  rewind / terminal exhaustion). `autonomyPolicy`'s three values and GR2031 are **unchanged**. State the
+  overwatcher `auto`-tier gate: silent auto-apply requires the PRESENCE of the `autonomy` block, NOT
+  `autonomyPolicy: auto` alone (§9 Phase 4) — so an existing `auto` consumer's behavior is unchanged.
+- **§5.3 / §2 (delivery)** — state the interaction with #340 `mergeOnSuccess`: a run that recorded any
+  `proceeded-best-guess` or `proceeded-unreviewed` decision **defaults `mergeOnSuccess` to OFF** (machine
+  judgment ⇒ no auto-delivery; the green-but-undelivered warning fires), overridable only by explicit
+  `--merge-on-success` (§1).
 - **§7 (`run.json`)** — extend `decisions[]` `DecisionEntry` with the OPTIONAL fields `gate`,
   `classification`, `criticality`, `confidence`, `threshold`, `bestGuess`, `blockerAttempts`,
   `blockerWaitedSeconds`, `assessmentRef`; add the `decision` tokens `escalated`, `proceeded-best-guess`,
   `proceeded-unreviewed`, `blocker-retried` (§6.2). Additive — existing entries unchanged.
+- **§7.1 (exit codes)** — a run that took a `proceeded-unreviewed` decision (or ends with unresolved
+  escalations) exits with a **distinct non-zero code** so an automated firstmate consumer never reads
+  "ran with N unreviewed waves" as clean green (§5 floor 3, §7.2). Reconcile the exact code with the shipped
+  0/1/2/3 scheme (recommend 2 = actionable/needs-human, with the reporting flag disambiguating; confirm).
 - **§8 (log layout)** — add the run-level `logs/<runId>/autonomy.jsonl` detail stream (§6.3) and the
   `logs/<runId>/escalations/<seq>-<gate>.json` escalation records (§7.2); note `logs/<runId>/<wave-dir>/
   breakdown/` is defined by doc 11 §9.
 - **§9 (prompt runners)** — reference the reserved `breakdown` profile (defined in doc 11 §9) and the
-  criticality-assessment profile (reuse `overwatch` or a new `assess` — Open F). Note the assessment is
+  criticality-assessment profile (reuse `overwatch` or a new `assess` — Open H). Note the assessment is
   advisory (verdict-from-files; malformed ⇒ escalate).
 - **§9.2 (overwatcher)** — cross-reference: under autonomous mode the overwatcher's ALLOWLIST levers become
   dial-governed auto-apply (Phase 4, the action/budget half of v2 bet #6); the DENYLIST is unchanged.
 - **§14.4 (JIT checkpoint)** — the dial governs the `wave-checkpoint` gate; the review half stays a floor
   (§5.2). (Proposed to the §14-owning worktree — this doc does not edit §14.)
-- **New GR code GR2039** — invalid `escalationThreshold`/`gateThresholds` value (Open J).
+- **New GR code GR2039** — invalid `escalationThreshold`/`gateThresholds` value (Open M).
 
 ### Companion doc change (this branch)
 
@@ -651,13 +810,20 @@ for inline review; implementation milestones do NOT start until comments are add
 **Phase 1 (#360 breakdown invocation) — sequenced first, no dial dependency:**
 1. `guardrails-harness-developer` — the `breakdown` profile + the between-wave actor in
    `Scheduler.RunWavedAsync`; `WaveHaltKind.BreakdownComplete`/`.BreakdownFailed`; `guardrails validate`
-   gate; `overheadCostUsd` charging; the `logs/<runId>/<wave-dir>/breakdown/` log site. **SSOT edits land in
-   the same change** (§9, §8, §14.4 breakdown-invocation half). `filesTouched: src/Guardrails.Core/**,
-   src/Guardrails.Cli/**, docs/plans/02-schemas-and-contracts.md`.
+   gate; `overheadCostUsd` charging; the `logs/<runId>/<wave-dir>/breakdown/` log site.
+   **Add explicit `RunCommand.PrintWaveHalt` arms for the two new `WaveHaltKind` values** — without them
+   both render as the generic "WAVE HALT" fallback (a shipped rendering gap). **`BreakdownFailed` must keep
+   the plan loadable** — it REVERTS the wave to its empty stub OR quarantines the partial invalid output to
+   `logs/<runId>/<wave-dir>/breakdown/rejected/` (doc 11 §9.5), so an unattended resume re-fires the JIT
+   checkpoint cleanly instead of failing to load the whole plan (exit 1) with no human to delete the partial.
+   **SSOT edits land in the same change** (§9, §8, §14.4 breakdown-invocation half). `filesTouched:
+   src/Guardrails.Core/**, src/Guardrails.Cli/**, docs/plans/02-schemas-and-contracts.md`.
 2. `guardrails-skill-author` — `plan-breakdown` Step 9 `brief.md` input path; `guardrails-domain-knowledge`
    execution-semantics update. `filesTouched: .claude/skills/**`.
 3. `guardrails-test-author` — breakdown-invoked-then-review-halt (Option E) integration test;
-   `BreakdownFailed` path; validate-gate-on-output. `filesTouched: tests/**`.
+   `BreakdownFailed` path **keeps the plan loadable + re-fires the checkpoint on resume** (quarantine/revert);
+   validate-gate-on-output; the two `WaveHaltKind` arms render distinctly (not the fallback).
+   `filesTouched: tests/**`.
 
 **Phase 2 (the dial) — after Phase 1:**
 1. `guardrails-harness-developer` — the `autonomy` config block + loader/validator (GR2039); the
@@ -678,18 +844,28 @@ for inline review; implementation milestones do NOT start until comments are add
 
 **Phase 4 (review-gate policy + overwatcher auto-tier) — after Phase 3:**
 1. `guardrails-harness-developer` — the `review-gate: proceed-unreviewed` opt-in + the never-report-green
-   verdict flag; the overwatcher allowlist dial-governed auto-apply (via the existing
-   `IOverwatchInteraction` seam). `filesTouched: src/Guardrails.Core/**, src/Guardrails.Cli/**,
-   docs/plans/02-schemas-and-contracts.md, docs/plans/11-overwatcher.md`.
-2. `guardrails-test-author` — proceed-unreviewed never writes a marker; run verdict flags unreviewed waves;
-   overwatcher allowlist auto-applies under `auto`, denylist still halts. `filesTouched: tests/**`.
+   verdict flag + the **distinct non-zero exit code**; the **compound-config gate** (§5.2: `proceed-unreviewed`
+   + `dial: critical` = usage error; clamp the in-wave dial under `proceed-unreviewed`); the overwatcher
+   allowlist dial-governed auto-apply (via the existing `IOverwatchInteraction` seam), **gated on the PRESENCE
+   of the `autonomy` block, NOT `autonomyPolicy: auto` alone** (§9 Phase 4). `filesTouched:
+   src/Guardrails.Core/**, src/Guardrails.Cli/**, docs/plans/02-schemas-and-contracts.md,
+   docs/plans/11-overwatcher.md`.
+2. `guardrails-test-author` — proceed-unreviewed never writes a marker + exits distinct non-zero + defaults
+   `mergeOnSuccess` OFF; the compound-config gate rejects `proceed-unreviewed` + `dial: critical`; run verdict
+   flags unreviewed waves; overwatcher allowlist auto-applies only WITH an `autonomy` block, denylist still
+   halts. **REQUIRED back-compat test: `autonomyPolicy: auto` with NO `autonomy` block ⇒ the overwatcher
+   still degrades to prompt, byte-identical to today** (the anti-Option-(c) guard). `filesTouched: tests/**`.
 
 ### Testing strategy (qa-standards)
 
-- **P0 (exhaustive) — the honest-halt floors.** Decision-table + negative tests that the dial at `never`
-  still: never writes a review marker; never auto-applies a denylist op; never best-guesses past a
-  terminal-exhaustion needs-human; never spins a permission wall. These are the invariant-5/asymmetry
+- **P0 (exhaustive) — the honest-halt floors.** Decision-table + negative tests that the dial at `critical`
+  (the maximum) still: never writes a review marker; never auto-applies a denylist op; never best-guesses
+  past a terminal-exhaustion needs-human; never spins a permission wall. These are the invariant-5/asymmetry
   guarantees — the highest-risk code.
+- **P0 — the compound-config gate + delivery gating.** `proceed-unreviewed` + `dial: critical` is rejected;
+  a run that best-guessed/proceeded-unreviewed defaults `mergeOnSuccess` OFF and exits distinct non-zero.
+- **P0 — the anti-Option-(c) back-compat guard.** `autonomyPolicy: auto` with no `autonomy` block ⇒
+  overwatcher still degrades to prompt (byte-identical to today).
 - **P0 — the forensic-non-lossy invariant.** A property/integration test: for every auto-cleared gate in a
   scripted autonomous run, assert the `decisions[]` entry + `autonomy.jsonl` record + gate artifact exist.
 - **P1 — the dial decision table.** `escalationThreshold × criticality × {interactive, non-interactive} →

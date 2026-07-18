@@ -323,7 +323,18 @@ writes `wave-NN-slug/tasks/**`, the harness runs **`guardrails validate <plan>`*
 new code) as the gate. It already catches missing required files, zero-guardrail tasks, cross-wave
 `dependsOn` (GR2034), and numbering gaps (GR2033). **Pass → `WaveHalt` kind `BreakdownComplete`** (the wave
 is authored, awaiting human review — §9.6). **Fail → `WaveHalt` kind `BreakdownFailed`** carrying the full
-`guardrails validate` output; the partial `tasks/` is left in place for human repair.
+`guardrails validate` output.
+
+**`BreakdownFailed` must NOT poison resume — quarantine, don't leave in place.** A partial invalid `tasks/`
+(a `task.json` with no guardrails, or malformed JSON) is a load/validation failure for the WHOLE plan, so an
+earlier "the partial is left in place for human repair" design would make the very next `guardrails run`
+**fail to load (exit 1)** — and under full autonomy there is no human to delete the partial, so the run is
+wedged. Instead, on `BreakdownFailed` the harness **keeps the plan loadable**: it either **reverts the wave
+to its empty stub** (the pre-invocation state) OR **quarantines the partial output** to
+`logs/<runId>/<wave-dir>/breakdown/rejected/` (outside the loadable plan tree, preserved for a human). Either
+way the JIT checkpoint **cleanly re-fires** (or re-escalates under the dial) on the next resume rather than
+crashing the load. **Recommendation: quarantine** (the partial output is the most useful debugging artifact
+for a breakdown-skill bug); revert is the simpler fallback.
 
 No hot-reload (design-360 Q3): after `BreakdownComplete` the human reviews, then the next `guardrails run` is
 an **ordinary resume** — the plan re-loads fresh, the completed waves skip, and the now-authored wave's JIT
@@ -338,8 +349,9 @@ worktree references for a negligible latency saving; the hard-halt-then-resume p
 - **Transcript location** (design-360 Q3 / doc 12 §6.1): `logs/<runId>/<wave-dir>/breakdown/` — the
   between-wave invocation is NOT a task attempt, so it does not live under `logs/<runId>/<task-id>/
   attempt-N/`. It holds the composed prompt, the raw stream, the transcript projection, and the
-  `guardrails validate` output. **Proposed SSOT §8 addition** (named, not written — the §14/§8-owning
-  worktree lands it): the `logs/<runId>/<wave-dir>/breakdown/` sub-tree.
+  `guardrails validate` output; a `BreakdownFailed` quarantine lands the rejected partial output under
+  `logs/<runId>/<wave-dir>/breakdown/rejected/` (§9.4). **Proposed SSOT §8 addition** (named, not written —
+  the §14/§8-owning worktree lands it): the `logs/<runId>/<wave-dir>/breakdown/` sub-tree incl. `rejected/`.
 - **`decisions[]` entry** — every checkpoint invocation OR decline emits a `boundary:"wave"` entry
   (`decision`: `halted` | `prompted-approved` | `auto-applied`, extended by doc 12 §6.2 under the dial).
   Today the JIT checkpoint emits no `decisions[]` entry — closing that gap is a Phase-0 deliverable.
@@ -375,6 +387,13 @@ review marker, records `decision: "proceeded-unreviewed"`, and permanently flags
 unreviewed waves" — it never marks the wave reviewed. Escalate is the recommended default; the opt-in is a
 deliberate, named, forensically-indelible risk transfer, never a silent one and never a forged attestation.
 
+**Delivery + exit-code interaction (#340; doc 12 §1/§5.2).** A `proceed-unreviewed` run **defaults
+`mergeOnSuccess` to OFF** — since preview.40 a green run auto-delivers to the user's branch by default, and
+machine-authored-and-unreviewed work must NOT auto-deliver; it stays on the plan branch for a human, and the
+run **exits with a distinct non-zero code** so an automated firstmate consumer never reads it as clean green.
+And — the DA-1 ∩ DA-4 gate (doc 12 §5.2 / Open A) — **`proceed-unreviewed` is incompatible with the fully-
+autonomous `dial: critical`**: you may skip review OR best-guess the hard in-wave design calls, never both.
+
 ## 10. Phasing
 
 - **v1 (fast-follow, ships under #269):** the diagnosis core (always on) + the `prompt`/`halt` decision
@@ -382,9 +401,14 @@ deliberate, named, forensically-indelible risk transfer, never a silent one and 
   allowlist/denylist boundary (v1 exercises the allowlist's ephemeral+budget members and the denylist's
   propose-only routing); the shared reporting (`decisions[]` + `overwatch.jsonl`); honest-halt-with-rich
   diagnosis. Low risk: advisory + honest-halt + no authored-file mutation.
-- **v2 bet #6 (auto-heal):** the `auto` value grants silent overwatcher auto-application; the persistent
+- **v2 bet #6 (auto-heal):** silent overwatcher auto-application of the ALLOWLIST levers; the persistent
   authoring-defect fix classes (#259 dep-restore, `action.prompt.md` edits); the `auto`-tier
-  block-until-review hardening (Open Decision A). Depends on #260 (shipped).
+  block-until-review hardening (Open Decision A). Depends on #260 (shipped). **Gating (anti-Option-(c),
+  doc 12 §9 Phase 4):** silent auto-apply is gated on the PRESENCE of the new `autonomy` block, **NOT
+  `autonomyPolicy: auto` alone** — an existing `autonomyPolicy: auto` consumer with no `autonomy` block
+  **still degrades to prompt**, byte-identical to today (a required back-compat test). Flipping the gate to
+  `autonomyPolicy: auto` alone would silently arm auto-application for every current `auto` consumer on
+  upgrade — the exact danger doc 12 §3.1 rejected.
 - **v2 bet #6 (inter-wave) — auto wave breakdown (#360, §9.1–§9.6):**
   - **Phase 0 (docs + minor harness, no AI-invocation):** the `brief.md` convention (SSOT §14.10); the
     enhanced `NextWaveUnauthored` halt naming `brief.md`; the `WaveHaltKind.BreakdownComplete`/`.BreakdownFailed`
@@ -470,17 +494,24 @@ implements it, invariant 4):**
   table (§9.6) + the `boundary:"wave"` `decisions[]` entry at the checkpoint.
 - **§9 (prompt runners)** — the reserved `breakdown` profile (full authoring tool set; `overheadCostUsd`;
   integration-worktree `--add-dir` injection, §9.2/§9.3).
-- **§8 (log layout)** — the `logs/<runId>/<wave-dir>/breakdown/` transcript sub-tree (§9.5).
-- **`WaveHaltKind`** (harness enum, not SSOT) — add `BreakdownComplete` / `BreakdownFailed` (§9.5).
+- **§8 (log layout)** — the `logs/<runId>/<wave-dir>/breakdown/` transcript sub-tree incl. the
+  `rejected/` quarantine for a `BreakdownFailed` partial (§9.4/§9.5).
+- **`WaveHaltKind`** (harness enum, not SSOT) — add `BreakdownComplete` / `BreakdownFailed` (§9.5), **and add
+  explicit `RunCommand.PrintWaveHalt` render arms for both** — without them they fall back to the generic
+  "WAVE HALT" rendering (a shipped rendering gap).
 
 **Implementation handoff (after this DoR's #106 draft-PR review; sequencing per doc 12 §11 Phase 1):**
 1. `guardrails-harness-developer` — Phase 0 (`brief.md` detection in `BuildUnauthoredWaveHalt`, the two
    `WaveHaltKind` stub values, the checkpoint `decisions[]` entry) then Phase 1 (the `breakdown` profile,
    the between-wave actor in `Scheduler.RunWavedAsync`, the `guardrails validate` gate, `overheadCostUsd`
-   charging, the breakdown log site). `filesTouched: src/Guardrails.Core/Execution/**, src/Guardrails.Cli/**,
+   charging, the breakdown log site, **the two `RunCommand.PrintWaveHalt` render arms**, and **the
+   `BreakdownFailed` quarantine/revert** so a partial invalid wave never wedges the next resume's load,
+   §9.4). `filesTouched: src/Guardrails.Core/Execution/**, src/Guardrails.Cli/**,
    docs/plans/02-schemas-and-contracts.md` (the §14.10/§14.4/§9/§8 deltas, same change).
 2. `guardrails-skill-author` — `plan-breakdown` Step 9: `brief.md` as the JIT-wave input;
    `example-breakdown-waved.md` gains an example `brief.md`. `filesTouched: .claude/skills/plan-breakdown/**`.
-3. `guardrails-test-author` — breakdown-invoked → valid wave → `BreakdownComplete` halt; invalid wave →
-   `BreakdownFailed` with validate errors; `autonomyPolicy: prompt` non-interactive → honest-halt regardless
-   of `brief.md`; `auto` invokes but still review-halts. `filesTouched: tests/**`.
+3. `guardrails-test-author` — breakdown-invoked → valid wave → `BreakdownComplete` halt (rendered by its own
+   `PrintWaveHalt` arm, not the fallback); invalid wave → `BreakdownFailed` with validate errors **that keeps
+   the plan loadable and re-fires the checkpoint on resume** (quarantine/revert); `autonomyPolicy: prompt`
+   non-interactive → honest-halt regardless of `brief.md`; `auto` invokes but still review-halts.
+   `filesTouched: tests/**`.
