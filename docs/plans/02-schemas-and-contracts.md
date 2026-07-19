@@ -3546,9 +3546,18 @@ under `state/`:
 
 ```jsonc
 {
-  "version": 1,
-  "reviewedAt": "2026-06-22T14:03:11Z",   // ISO-8601 UTC, review time
-  "planHash": "sha256:…"                   // PlanDefinitionHash (§7.3) at review time — the plan's full behavioral definition (wire name kept for back-compat)
+  "version": 2,                            // bump; readers NEVER gate on version — classify by the attestation block
+  "reviewedAt": "2026-06-22T14:03:11Z",   // ISO-8601 UTC, review time — UNCHANGED
+  "planHash": "sha256:…",                  // PlanDefinitionHash (§7.3) at review time — the plan's full behavioral definition (wire name kept for back-compat) — UNCHANGED
+  "attestation": {                         // OPTIONAL, NEW (issue #366); absent on a v1 marker ⇒ read as `legacy`
+    "source": "review-artifact",           // evidence class: review-artifact | bare | machine
+    "tool": "guardrails 1.0.0-preview.43", // self-reported CLI build that stamped it (informational, non-authoritative)
+    "actor": "david.maltby@hotmail.com",   // OPTIONAL, self-reported, NON-AUTHORITATIVE reviewer id
+    "evidence": {                          // present ONLY for source: "review-artifact"
+      "reportPath": "state/reviews/review-1a2b3c4d5e6f-2026-06-22T140311Z.md",  // plan-folder-relative, under the hash-excluded state/reviews/ tree
+      "reportDigest": "sha256:…"           // sha256 of the report bytes, newline-normalized (F7), at stamp time
+    }
+  }
 }
 ```
 
@@ -3568,7 +3577,8 @@ review's edits. It is an attestation about the **committed plan content** — no
 checkout — and because it is `PlanDefinitionHash`-keyed (§7.3) it **self-invalidates the instant any
 reviewed file — `task.json`, `guardrails.json`, an `action.*`, or any guardrail/preflight body or
 sidecar — changes the `PlanDefinitionHash`** (the GR2025 nudge returns), so a committed marker can never
-falsely vouch for changed content. That self-invalidation is exactly what makes committing it safe and
+falsely vouch for **changed** content — a **staleness** property only (see the *Evidence hygiene* trust
+boundary below), **not** a claim that the marker is unforgeable. That self-invalidation is exactly what makes committing it safe and
 correct: it travels with the plan it attests to, and any edit that the `PlanDefinitionHash` covers reads
 as un-reviewed rather than as a false green. It is therefore **NOT wiped by `--fresh`** (§6.1) —
 `--fresh` clears genuine per-run runtime state (`run.json`, `state.json`, `merge-conflicts.log`,
@@ -3589,12 +3599,68 @@ bodies. Re-running `/guardrails-review` (or `guardrails mark-reviewed`) clears i
 The marker is **written by the `/guardrails-review` skill**; the harness only reads it
 (`ReviewMarker.Read`/`Evaluate`), computes staleness, and surfaces the warning.
 
+### Evidence hygiene (issue #366)
+
+The marker carries an **OPTIONAL `attestation` block** recording a deterministic **evidence class** — what
+the CLI could actually verify at stamp time — additively over the three unchanged fields. It is **additive
+and back-compat**: a pre-#366 marker (no `attestation` block) reads as `legacy`, and a v2 marker read by an
+older tool ignores the unknown block and behaves exactly as a v1 marker. Full rationale, threat model, and
+scope live in `docs/plans/16-review-attestation-provenance.md`.
+
+**`source` — the evidence class the CLI can verify** (it cannot authenticate an *actor*: a human and a
+machine invoke the same `mark-reviewed`):
+- **`review-artifact`** — a `/guardrails-review` report artifact was present, **passed the F2 stamp-time
+  checks**, and was digested. `evidence` is present **iff** `source: review-artifact`.
+- **`bare`** — `mark-reviewed` invoked with **no** valid review artifact: the current unconditional
+  behavior — a human's manual "I read it," **or** a `review-artifact` attempt that failed F2 and was
+  downgraded. Clears GR2025 exactly as today.
+- **`machine`** — explicitly stamped by an **automated** flow (auto-breakdown / autonomous mode, via
+  `--source machine`); never masquerades as human review.
+- **`legacy`** — **read-time only, never written**: a marker with no `attestation` block (a v1 marker).
+
+**F2 — stamp-time hygiene checks** (what makes `review-artifact` mean anything): when `mark-reviewed` would
+write `source: review-artifact`, it MUST assert, at stamp time — **(a) plan-binding:** the report **embeds a
+`Plan-Definition-Hash:` line that equals the marker's `planHash`** (the current `PlanDefinitionHash`; the
+skill obtains the hash from a read-only `plan-hash` affordance and writes it into the report — it cannot
+compute the hash itself); and **(b) path containment:** `reportPath` **resolves under
+`<plan>/state/reviews/`** (full-path containment, not a substring match — rejects `..` escapes and
+out-of-tree paths). **On failure of either, `mark-reviewed` downgrades to `source: bare` — it never
+fabricates an evidence class it cannot substantiate.** F2 is a **hygiene check, not a security check**: it
+closes the accidental/mechanical failures (cross-plan misfiling, replay of a foreign report) so the class
+reliably means "a report for *this* plan exists" to a cooperating reader; it does **not** stop a determined
+forger (who can author a report with the correct embedded hash at ~zero cost).
+
+**`reportPath`** lives under **`state/reviews/`**, which §7.3 **excludes** from `PlanDefinitionHash`, so the
+report **cannot re-stale the marker** — no circularity, the same reason the marker itself lives under the
+excluded `state/`. **`reportDigest`** is the `sha256` of the report bytes under the **same newline
+normalization as `PlanDefinitionHash`** (CRLF/CR → LF), applied **symmetrically across writer and reader
+(F7)**, so an audit tool that re-checks the digest agrees byte-for-byte with the stamp on any checkout.
+**`actor` and `tool` are self-reported and non-authoritative** — surfaced only as audit richness (label them,
+e.g. `reviewer (self-reported): …`), never as trust.
+
+**Reader rule: never gate on `version`; classify by the `attestation` block** — its presence + `source`,
+never the integer. Bumping to `2` is a signal, not a gate.
+
+**Trust boundary.** The review floor is only as strong as **write-access to the plan folder**: an agent that
+can author the plan can write any marker, and there is **no unforgeable option** in a plain-file /
+same-machine model — not provenance, not a digest chain, not even a GPG-signed commit (the autonomous agent
+holds the signing key). #366 records a **deterministic evidence class + an audit trail for the
+non-adversarial case** — it **does not prove a human and is not a forgery deterrent** (invariant 6). The
+self-invalidation property above scopes strictly to *staleness*; it is not a forgeability claim.
+
+**Read for AUDIT, not by the Scheduler.** There is **no runtime gate** on the review marker — enforce-mode
+(an `autonomy.reviewGate: enforce` halt) was considered and **rejected** as security theater on a forgeable
+file (see `docs/plans/16-review-attestation-provenance.md` §6). **GR2025 stays an advisory warning** (per
+*Surfacing* above); the recorded `source` exists for humans and tooling to inspect after the fact — the
+Scheduler never reads it.
+
 **Multi-wave plans (§14):** the review marker + its `PlanDefinitionHash` are **per-wave** — each wave
 subfolder carries its own `<plan>/<wave>/state/guardrails-review.json`, keyed on that wave's own
 `PlanDefinitionHash` (computed over the wave's own authored files; the shared `guardrails.json` is
 **excluded** so an upstream wave's marker stays stable, Open Decision C). GR2025 is surfaced **JIT per wave**
 — checked before that wave runs — so an already-reviewed + run upstream wave never re-stales when a
-downstream wave is authored later.
+downstream wave is authored later. The **`attestation` block (issue #366) is per-wave** exactly as the
+marker is, and a wave's review report lives under **`<plan>/<wave>/state/reviews/`**. No new wave semantics.
 
 ---
 
