@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=79a4ad4385c1df083c7de4ff8d451fd1d47e84ec4fc95866bae74066fb98792c -->
+<!-- guardrails:graph v1 source-sha256=8d0e46db53b1408403a2781f867e24f36b688465c587f9486a4622a769fff067 -->
 
 ```mermaid
 flowchart TD
@@ -80,6 +80,7 @@ flowchart TD
     subgraph task_wave_02_dial_config_04_author_tests_autonomy_validation["04-author-tests-autonomy-validation"]
       task_wave_02_dial_config_04_author_tests_autonomy_validation_gr_0["01-tests-build"]:::guardrail
       task_wave_02_dial_config_04_author_tests_autonomy_validation_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_02_dial_config_04_author_tests_autonomy_validation_gr_2["03-covers-gr2040-cases"]:::guardrail
     end
     style task_wave_02_dial_config_04_author_tests_autonomy_validation fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_02_dial_config_05_implement_autonomy_validation["05-implement-autonomy-validation"]
@@ -137,9 +138,9 @@ flowchart TD
   task_wave_02_dial_config_03_implement_autonomy_config --> task_wave_02_dial_config_04_author_tests_autonomy_validation
   task_wave_02_dial_config_03_implement_autonomy_config --> task_wave_02_dial_config_06_author_tests_autonomous_cli
   task_wave_02_dial_config_04_author_tests_autonomy_validation --> task_wave_02_dial_config_05_implement_autonomy_validation
+  task_wave_02_dial_config_05_implement_autonomy_validation --> task_wave_02_dial_config_07_implement_autonomous_cli
   task_wave_02_dial_config_06_author_tests_autonomous_cli --> task_wave_02_dial_config_07_implement_autonomous_cli
   task_wave_02_dial_config_01_ssot_autonomy_delta --> wave_2_guardrails
-  task_wave_02_dial_config_05_implement_autonomy_validation --> wave_2_guardrails
   task_wave_02_dial_config_07_implement_autonomous_cli --> wave_2_guardrails
   wave_3_preflights --> wave_3_stub
   wave_3_stub --> wave_3_guardrails

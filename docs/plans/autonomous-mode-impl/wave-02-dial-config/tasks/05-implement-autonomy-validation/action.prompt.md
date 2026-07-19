@@ -29,6 +29,15 @@ Implement:
 - Do NOT emit GR2040 when `proceed-unreviewed` sits at the cautious/`high` dials with no reachable
   `critical` (it is allowed there). Follow the existing validator's diagnostic-emission style
   (severity, message shape) — see how neighbouring GR20xx checks are written.
+- **Factor the GR2040 core into a REUSABLE predicate (B1 — load-bearing).** Implement the GR2040 check
+  as a `public static` predicate/method on `PlanValidator` (e.g.
+  `bool ViolatesCompoundConfig(AutonomyConfig effective, out string diagnostic)` or equivalent) that
+  takes an ARBITRARY effective autonomy config and returns whether it hits the forbidden
+  `proceed-unreviewed` + reachable-`critical` end-state, plus the GR2040 diagnostic string. Load-time
+  validation calls this predicate — its load-time behaviour is UNCHANGED — but the core MUST also be
+  callable on an effective config that a later stage produces. This exists because `--dial`/`--autonomous`
+  (task 07) mutate the config AFTER load-time validation runs, so GR2040 must be re-checkable on the
+  effective config, not inline-only; task 07 `dependsOn` this task and CALLS this predicate.
 
 Do NOT change the autonomy PARSE (a prior task owns it) or `DiagnosticCodes.cs` (the constants already
 exist). Validation only.

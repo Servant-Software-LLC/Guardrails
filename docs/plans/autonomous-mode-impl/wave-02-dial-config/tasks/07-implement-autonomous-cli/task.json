@@ -1,6 +1,6 @@
 {
   "description": "Implement `run --autonomous`/`--dial` resolution (autonomyPolicy auto + escalationThreshold high default, --dial override, $20 maxCostUsd default + loud warning) so the authored CLI tests pass",
   "stableId": "w2i7cl",
-  "dependsOn": ["06-author-tests-autonomous-cli"],
+  "dependsOn": ["06-author-tests-autonomous-cli", "05-implement-autonomy-validation"],
   "writeScope": ["src/Guardrails.Cli/Commands/RunCommand.cs"]
 }

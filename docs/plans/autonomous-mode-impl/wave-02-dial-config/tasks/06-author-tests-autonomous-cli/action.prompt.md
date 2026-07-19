@@ -32,6 +32,13 @@ Write two artifacts (both in scope):
    - **`--dial <level>` overrides**: `run <plan> --autonomous --dial critical --dry-run` resolves
      `escalationThreshold: critical`.
    - **Invalid dial**: `run <plan> --dial bogus` exits non-zero with a message naming the invalid value.
+   - **GR2040 on the EFFECTIVE post-flag config (B1)**: a fixture plan whose `guardrails.json` sets
+     `autonomy.gateThresholds.review-gate: "proceed-unreviewed"` + `autonomy.escalationThreshold: "high"`
+     (which is VALID at load — `high` is not `critical`), invoked as `run <fixture> --dial critical
+     --dry-run`, exits **NON-ZERO AND** stdout contains **`GR2040`** — the flag pushes the effective
+     end-state to the forbidden `critical` + `proceed-unreviewed` compound, which nothing catches at load.
+     This is a BLACK-BOX CLI assertion (it drives the command and greps stdout for `GR2040`; it does NOT
+     reference the validator predicate type), so this task's `dependsOn: 03` is unchanged.
    Use a small committed fixture plan (build one as existing integration tests do).
 
 2. **The minimal stubs** in `src/Guardrails.Cli/Commands/RunCommand.cs`: add the `--autonomous`

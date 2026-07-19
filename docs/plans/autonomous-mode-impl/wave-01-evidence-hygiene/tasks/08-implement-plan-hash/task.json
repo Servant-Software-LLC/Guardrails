@@ -2,5 +2,5 @@
   "description": "Implement the read-only `guardrails plan-hash <folder>` command (prints PlanDefinitionHash) so the authored tests pass through the real CommandFactory dispatch",
   "stableId": "w1i8ph",
   "dependsOn": ["07-author-tests-plan-hash"],
-  "writeScope": ["src/Guardrails.Cli/Commands/PlanHashCommand.cs"]
+  "writeScope": ["src/Guardrails.Cli/Commands/PlanHashCommand.cs", "src/Guardrails.Cli/CommandFactory.cs"]
 }

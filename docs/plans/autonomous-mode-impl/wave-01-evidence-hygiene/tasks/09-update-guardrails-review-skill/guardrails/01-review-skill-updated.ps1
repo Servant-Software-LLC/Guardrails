@@ -3,7 +3,7 @@
 #          producer. Positive presence check on the one file this task owns. (The "drop unforgeable
 #          framing" instruction is a judgment call with no clean structural proxy — a bare -match
 #          'unforgeable' would false-fire on wording that explains the marker is NOT unforgeable — so it
-#          is intentionally NOT guarded here; see the breakdown report.)
+#          is intentionally left unguarded here, #221.)
 $skill = ".claude/skills/guardrails-review/SKILL.md"
 if (-not (Test-Path $skill)) {
     Write-Output "$skill does not exist — the harness-write of the updated skill did not land"
