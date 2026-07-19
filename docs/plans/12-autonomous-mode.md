@@ -68,12 +68,15 @@ is not a dead end: firstmate answers it **asynchronously** by writing an **answe
 resume consumes to satisfy the gate and continue — so the run progresses **across** escalations without a
 human editing the plan (§7.4–§7.7). This is the firstmate loop: run → escalate (the unit halts, independent
 branches keep running) → firstmate writes an answer → resume injects it → continue. Autonomous mode is
-therefore **long-running unattended**, not merely forensic-halt-and-wait. **The honest boundary:** only the
+therefore **long-running unattended**, not merely forensic-halt-and-wait. **The honest boundaries:** only the
 JUDGMENT gates a human could answer are answerable this way (`needs-human`, the JIT wave-checkpoint). A
 **hard blocker** (missing credential, unreachable DB), a **terminal-exhaustion `needs-human`** (a task that
 could not reach green), and an **unsound drift rewind** stay **terminal** — no answer file makes a doomed
-task green or a missing secret present (§4.1 floors). And the **review gate is never forged by an answer**
-(§7.5): an answer may point at a real `/guardrails-review` attestation, but can never *be* one.
+task green or a missing secret present (§4.1 floors). The **review gate is NOT resolvable by any answer file**
+(§7.5, issue #366) — it clears only by escalate or the explicit `proceed-unreviewed` opt-in. And inside a
+`proceed-unreviewed` wave the **clamped `high`/`critical` hard calls are non-answerable** (§5.2/§7.3,
+Blocker 1) — they stop the run for real human work, so the "skip review OR best-guess the hard calls, never
+both" invariant holds even with the reply channel live.
 
 **Autonomous mode is a SIBLING, not a replacement.** Interactive stays the default; the dial is inert
 unless the operator opts in (`--autonomous`, or a config value). An existing run's behavior is byte-for-byte
@@ -215,8 +218,11 @@ wherever the field appears, because it *is* a threshold and any other framing wo
       "wave-checkpoint": "high",
       "review-gate":     "escalate"         // SPECIAL — a floor, NOT a criticality level (§5). "escalate"
                                             //   (default) or the acknowledgment "proceed-unreviewed" — the
-                                            //   latter is a GR2040 error when escalationThreshold=="critical"
-                                            //   (the settled compound-config invariant, §5.2).
+                                            //   latter is a GR2040 error when the reachable end-state best-
+                                            //   guesses a hard call: escalationThreshold=="critical" OR any
+                                            //   in-wave gateThresholds value=="critical" (§5.2). Under
+                                            //   "proceed-unreviewed" high/critical always escalate + are
+                                            //   non-answerable (the clamp, §7.3).
     },
     "blockerRetry": {                       // OPTIONAL bounded wait for a hard-blocker-retryable (§4.2).
       "maxAttempts": 5,                     // ceiling on retries before escalating a retryable blocker
@@ -235,9 +241,19 @@ wherever the field appears, because it *is* a threshold and any other framing wo
 - **A conservative default is deliberate.** `--autonomous` alone escalates high + critical (best-guesses
   only low + moderate). Reaching *fully autonomous* requires the operator to type `--dial critical` — an
   explicit, deliberate act, never a default.
-- **Settled invariant: `proceed-unreviewed` + `dial: critical` is a load-time error (GR2040).** You may skip
-  the review pass OR best-guess the hard design calls — never both (§5.2, maintainer ruling). Under
-  `proceed-unreviewed` the in-wave dial is clamped so `high`/`critical` judgment calls still escalate.
+- **Settled invariant: GR2040 gates the END-STATE, and the clamp is concrete + non-answerable (§5.2).** You
+  may skip the review pass OR best-guess the hard design calls — never both (maintainer ruling). Two teeth:
+  - **GR2040 (load-time error) fires when** `gateThresholds.review-gate == "proceed-unreviewed"` **AND**
+    (`escalationThreshold == "critical"` **OR** any in-wave `gateThresholds` value —
+    `needs-human`/`wave-checkpoint` — `== "critical"`). This keys on the *reachable end-state*, so a per-gate
+    override like `{ "needs-human": "critical", "review-gate": "proceed-unreviewed" }` under
+    `escalationThreshold: high` is caught, not just a run-wide `critical`.
+  - **The clamp (runtime, concrete + testable):** under `proceed-unreviewed`, an assessed criticality of
+    `high` or `critical` **ALWAYS escalates**, overriding the run-wide dial **and** every per-gate override —
+    and (Blocker 1) **those clamped escalations are NON-ANSWERABLE by fiat** (§7.3). They clear only by
+    out-of-band human work (a real `/guardrails-review`, lowering `proceed-unreviewed`, or editing the plan),
+    never by an answer file. So under an explicitly-unreviewed wave the hard calls genuinely STOP the
+    unattended run — the clamp keeps a *human*, not merely an escalation, in the loop.
 - **A cost ceiling is REQUIRED under `--autonomous` (a liveness floor).** `maxCostUsd` is optional in
   general (absent ⇒ no cap, SSOT §2). But an unattended run has no human to notice a runaway spend, and
   autonomous mode ADDS spend the interactive flow does not: each **criticality assessment** ($ of a
@@ -263,6 +279,13 @@ The `review-gate` key deliberately lives in the *same* per-gate map so the opera
 one place — but its value space is different, precisely so that setting the run-wide dial to `critical`
 can **never accidentally clear the review gate**. Clearing it requires typing the named acknowledgment
 `proceed-unreviewed` against that specific key (§5).
+
+**Per-gate overrides cannot route around the compound gate (Finding 3).** GR2040 keys on the reachable
+end-state, so `escalationThreshold: high` + `gateThresholds: { "needs-human": "critical", "review-gate":
+"proceed-unreviewed" }` is a **load-time error** — it would otherwise best-guess the hard in-wave calls under
+an unreviewed wave. And regardless of any override, under `proceed-unreviewed` the **clamp** forces `high`/
+`critical` to escalate non-answerably (§3.4, §7.3): a per-gate `needs-human: critical` cannot re-enable
+best-guessing the hard calls in an unreviewed wave.
 
 ## 4. Classify-then-act — the model
 
@@ -361,12 +384,17 @@ control-flow:
    (the run stops for review rather than running the fresh wave — doc 11 §9.6); and **(b)** a **reporting
    flag** — a run that proceeds unreviewed (§5.2 Option P) is permanently marked "ran with N unreviewed
    waves" and **exits with a DISTINCT NON-ZERO code** so an automated firstmate consumer can never read it
-   as clean green. The invariant that survives absolutely is narrow and true: **the harness NEVER writes a
-   review marker on a human's behalf, at any dial setting** — it never *forges* the attestation; it either
-   halts for a real one or proceeds explicitly-unreviewed and says so, loudly and non-zero. **Scope option
-   (NOT v1):** making floor 3 a real *deterministic* gate — a runtime halt on a stale/missing marker for a
-   wave about to run — would mean **promoting GR2025 from a warning to a runtime halt** (an
-   `autonomy.reviewGate: "enforce"` mode). Named as an option (§10 Open K), deliberately not v1.
+   as clean green. The invariant that survives is narrow and true: **the harness NEVER writes a review marker
+   on a human's behalf, at any dial setting.** **Honest caveat — do NOT call this floor "unforgeable"
+   (adversarial-pass finding, issue #366):** the marker `state/guardrails-review.json` is written by
+   `guardrails mark-reviewed`, which today attests **nothing about a human** — it recomputes `planHash` from
+   readable files for any structurally-valid plan, with no authorization check. So the marker is only as
+   strong as **write-access to the plan folder**; the harness not forging it does not make it unforgeable by
+   *anything else*. That shipped weakness is tracked in **#366** (marker provenance/authorization). **Scope
+   option (NOT v1), now gated on #366:** promoting floor 3 to a real *deterministic* runtime gate — a halt on
+   a stale/missing marker before a wave runs (GR2025 warning → runtime halt, an `autonomy.reviewGate:
+   "enforce"` mode) — is only *worth* building once #366 makes the marker a trustworthy signal; a forgeable
+   marker cannot be a trustworthy runtime boundary. Named as an option (§10 Open K), deliberately not v1.
 
 ### 5.1 Which gates the dial MAY clear vs. MAY NOT — the explicit list
 
@@ -427,14 +455,27 @@ design calls are machine-best-guessed (`--dial critical` inside the wave), and w
 same unreviewed guardrails (`review-gate: proceed-unreviewed`) is **Guardrails with no guardrails** — that
 flow belongs to firstmate, not to a `guardrails run`. So, DECIDED (no longer an open recommendation):
 
-- **`proceed-unreviewed` is INCOMPATIBLE with `dial: critical` — a load-time validation error, GR2040**
-  (a cross-field constraint on the `autonomy` block; distinct from GR2039, which flags a single invalid
-  `escalationThreshold`/`gateThresholds` *value* — this is a distinct diagnostic message for a distinct
-  condition, §11). The run refuses to start.
-- **Under `proceed-unreviewed`, the effective in-wave dial is CLAMPED** so `high`/`critical` judgment calls
-  still escalate, keeping a human in the loop for the consequential decisions inside an unreviewed wave.
+- **GR2040 is a load-time error keyed on the reachable END-STATE (Finding 3), not just the run-wide dial.**
+  It fires when `gateThresholds.review-gate == "proceed-unreviewed"` AND (`escalationThreshold == "critical"`
+  OR any in-wave `gateThresholds` value — `needs-human`/`wave-checkpoint` — `== "critical"`). So a per-gate
+  override that reaches "best-guess the hard calls under an unreviewed wave" is caught too, not only a
+  run-wide `critical`. (A cross-field constraint on the `autonomy` block; distinct from GR2039, the
+  single-invalid-*value* check — §11.) The run refuses to start.
+- **Under `proceed-unreviewed`, the in-wave dial is CLAMPED and the clamped escalations are NON-ANSWERABLE
+  (Blocker 1, maintainer ruling).** An assessed criticality of `high` or `critical` ALWAYS escalates
+  (overriding the run-wide dial and every per-gate override), **and those escalations cannot be cleared by an
+  answer file** — they are in the terminal/unanswerable set *for this mode* (§7.3/§7.6). They clear only by
+  out-of-band human work: run a real `/guardrails-review`, lower `proceed-unreviewed`, or edit the plan. This
+  is what makes the clamp REAL: the clamp keeps a **human** in the loop, not merely an escalation that
+  firstmate's own automation could then auto-answer (`answeredBy` is unauthenticated self-report, §7.7). So
+  under an explicitly-unreviewed wave the hard design calls genuinely **STOP the unattended run**.
 - **The rule in one line:** *skip the review pass OR best-guess the hard design calls — never both; a human
   stays in the loop for at least one.*
+- **Answer-injection still fully works in the normal flow.** The non-answerable rule applies ONLY to the
+  clamped hard-call escalations inside an *explicitly-unreviewed* wave. A reviewed wave, or any run without
+  `proceed-unreviewed`, keeps the full long-running-unattended reply channel (§7.4) — that is Decision B's
+  win; the clamp just carves out the one mode where answering the hard calls would re-open the loop
+  Decision A closed.
 
 `proceed-unreviewed` itself remains a valid named opt-in at the cautious / `high` dials (§5.1); only its
 intersection with `critical` is forbidden.
@@ -568,6 +609,19 @@ public sealed record EscalationId(string RunId, int Seq, string Gate, string Sub
 The on-disk record `logs/<runId>/escalations/<seq>-<gate>.json` is the serialized `EscalationRequest` plus
 the assigned `EscalationId` and a `status` (`open` → `answered` → `consumed`, §7.6).
 
+**Replay/binding specifics (Finding 5) — pinned:**
+- **`seq` is durably MONOTONIC per run and never reused across resumes.** It is allocated from a persisted
+  run-level counter (journaled, not derived from a directory listing), so a stale unconsumed answer can never
+  bind to a *later* escalation that happens to reuse the same `{ runId, seq, gate, subject }` — the tuple is
+  unique for the life of the run.
+- **Consumption is anchored to the CREATING run's `escalations/` directory.** An escalation is created under
+  the run that raised it; a later `resume` mints a **new** `runId`, but it reads and consumes answers from the
+  **creating run's** `escalations/` dir, and the `open → answered → consumed` `status` persists **there** (the
+  cross-runId bookkeeping). A consumed escalation stays consumed no matter how many resumes follow.
+- **The `status` flip is SINGLE-WRITER / CAS-guarded** — it uses the same plan-branch-tip compare-and-swap
+  discipline as the drift rewind (§7.2/SSOT §7.2), so two concurrent resumes on the same plan can never
+  both consume the same answer (no double-injection). The harness remains the single writer (invariant 2).
+
 ### 7.2 What the file-based sink does (the minimal recommendation)
 
 An escalation **is an honest halt enriched with a machine-readable question** — so the sink is a thin layer
@@ -599,10 +653,21 @@ The reply channel (§7.4) is v1, so "no reply channel" is no longer a non-goal. 
   `needs-human`** (a task that could not reach green), and an **unsound drift rewind** are **terminal**: they
   escalate for a human, but **no answer file makes a doomed task green or a missing secret present** (§4.1
   floors). An answer file targeting a terminal escalation is rejected (§7.6).
-- **The review gate is the special case — answerable only by POINTER, never by fiat.** An answer may *point
-  at* a real `/guardrails-review` attestation that the harness re-verifies (§7.5), but can never *be* one; it
-  cannot itself clear the gate. The harness still never writes a review marker on a human's behalf. (To run a
-  wave genuinely unreviewed, use the explicit `proceed-unreviewed` opt-in, §5.2 — not an answer.)
+- **MODE-SPECIFIC non-answerability under `proceed-unreviewed` (Blocker 1, maintainer ruling).** Inside an
+  explicitly-unreviewed wave, the **clamped** `high`/`critical` `needs-human` and `wave-checkpoint`
+  escalations (§5.2) are **NON-ANSWERABLE by fiat** — they join the terminal set *for that mode*. They clear
+  only by out-of-band human work (run a real `/guardrails-review`, lower `proceed-unreviewed`, or edit the
+  plan), never by an answer file. This is what makes the compound gate real: without it, firstmate's own
+  automation could answer the clamped hard calls (`answeredBy` is unauthenticated self-report, §7.7) and
+  re-open the "Guardrails without Guardrails" loop Decision A closed. Answer-injection is otherwise fully
+  live — this carve-out is **only** the clamped hard calls in an unreviewed wave; a reviewed wave / cautious
+  dial keeps the full reply channel.
+- **The review gate is NOT answerable by an answer file in v1 (Blocker 2, maintainer ruling; issue #366).**
+  There is no `review-attested` answer kind. The review gate keeps exactly two v1 resolutions: **escalate**
+  (default) or the explicit **`proceed-unreviewed`** named opt-in (§5.2, with its teeth — recorded, distinct
+  non-zero exit, `mergeOnSuccess` off, GR2040). v1 does **not** turn the review marker into a runtime boundary
+  via answer-injection, because the marker is forgeable by write-access to the plan folder (#366) — promoting
+  a forgeable file into a runtime gate would be a regression, not a safeguard (§7.5).
 
 ### 7.4 The reply channel — the answer-file contract (v1)
 
@@ -631,34 +696,55 @@ was written against, so a resume can prove it is fresh, correctly bound, and unc
 }
 ```
 
-**Gate-specific payload (`answer`).**
+**Gate-specific payload (`answer`) — only the two answerable gates (Blocker 2: no `review-attested`).**
 
 | `gate` | `answer.kind` | Payload | Effect on resume |
 |---|---|---|---|
-| `needs-human` | `needs-human` | `text`: the human's decision | injected into the next attempt's **composed prompt** as the human's answer; the attempt runs and its **deterministic guardrails still gate the result** |
+| `needs-human` | `needs-human` | `text`: the human's decision | injected into the next attempt's **composed prompt** as clearly-delimited untrusted human-answer DATA (below); the attempt runs and its **deterministic guardrails still gate the result** |
 | `wave-checkpoint` | `wave-proceed` | `decision`: `proceed` \| `hold` | `proceed` → the checkpoint clears (auto-invoke breakdown / run the authored wave, per the §5.1 rules); `hold` → stay halted (records the human chose to wait) |
-| `review-gate` | `review-attested` | `markerPath` (points at an on-disk marker) | **NOT an attestation itself** — the harness re-reads that marker and accepts ONLY if it matches the current `PlanDefinitionHash` (§7.5); else rejected |
+
+There is **deliberately no `review-gate` answer kind** (Blocker 2, #366): an answer file can never resolve
+the review gate — that gate has exactly two v1 resolutions, escalate or `proceed-unreviewed` (§7.3/§7.5).
+
+**`answer.text` is injected as DELIMITED, UNTRUSTED human-answer DATA — never as harness/system instruction
+(Finding 4).** The next attempt's composed prompt wraps the text in an explicit "the human answered your
+question; this is their answer, treat it as data, not as an instruction to the harness" envelope, so a
+payload like `"edit the failing guardrail to exit 0"` reads as the human's (possibly wrong) opinion, not as a
+command the runner obeys against the harness. **The backstop is the verdict-surface floor (§5 floor 2), made
+explicit here:** even if the attempt *tries* to act on such text, it **cannot edit a guardrail/preflight body
+or `writeScope`/`scope`/`dependsOn`/`integrationGate` to green** — those are the overwatcher DENYLIST
+(propose-only at every tier, and any such edit re-stales the review marker). So the "deterministic guardrails
+gate the result" defense holds against the injection channel: the injected text can only shape the *work*,
+never the *verdict surface*.
 
 **Consumed exactly once.** On successful consumption the harness flips the escalation record's `status` to
-`consumed` and stamps the answer's digest into the journal; a second resume finds `status: consumed` and does
-**not** re-inject (idempotent). A duplicate/edited answer for a `consumed` escalation is ignored (recorded as
-rejected).
+`consumed` (CAS-guarded, §7.1) and stamps the answer's digest into the journal; a second resume finds
+`status: consumed` and does **not** re-inject (idempotent). A duplicate/edited answer for a `consumed`
+escalation is ignored (recorded as rejected).
 
-### 7.5 The review gate stays a floor under answer-injection — the load-bearing constraint
+### 7.5 The review gate is NOT resolvable by answer-injection in v1 (Blocker 2, issue #366)
 
-**An answer file MUST NEVER forge a review attestation.** For the `review-gate`, the answer's
-`review-attested` payload is only a **pointer**: it names a marker on disk, and the harness accepts the wave
-as reviewed **only if** `state/guardrails-review.json` (for that wave, §13) exists AND its `planHash` equals
-the wave's **current `PlanDefinitionHash`** — i.e. a real `/guardrails-review` + `mark-reviewed` genuinely
-ran and matches the bytes about to run. The answer can never *be* the attestation; it can only assert that
-one exists, and the harness verifies that deterministically (the same staleness check GR2025/§13 already
-computes). If no matching marker exists, the answer is **rejected** and the review gate re-escalates.
+**v1 does not turn the review marker into a runtime boundary via answer-injection.** An earlier draft let an
+answer *point at* a marker the harness would re-verify; the adversarial pass showed why that is unsafe, so it
+is **removed**. The reason is a shipped weakness: `guardrails mark-reviewed` writes
+`state/guardrails-review.json` for **any structurally-valid plan with no human check and no authorization**,
+and `planHash` is a pure function of readable files. So a hash-match proves only *"a marker exists that
+matches these bytes,"* **not** *"a human reviewed."* Worse, that forge path is **cheaper than honest
+`proceed-unreviewed`** — it exits 0, keeps `mergeOnSuccess` on, needs no flag and trips no GR2040.
+Answer-injection would have been the first mechanism to promote that forgeable file into a runtime boundary —
+a regression, not a safeguard.
 
-If firstmate wants an unreviewed wave to run **without** a real review, that is the existing, explicit
-`proceed-unreviewed` named opt-in (§5.2 — recorded, distinct non-zero exit, `mergeOnSuccess` off, and
-forbidden with `dial: critical`), **not** an answer-injection. The two paths are kept distinct on purpose:
-answer-injection resolves `needs-human` and wave-checkpoint-proceed; the `mark-reviewed` floor (§5 floor 3)
-is untouched — the harness still never writes a marker on anyone's behalf.
+So, per the maintainer ruling:
+
+- **No `review-attested` answer kind exists in v1** (§7.4). The review gate has exactly two v1 resolutions:
+  **escalate** (default) or the explicit **`proceed-unreviewed`** named opt-in (§5.2, with teeth).
+- **Stop calling any floor "unforgeable."** The honest invariant is narrow: *the harness never writes the
+  review marker on a human's behalf* — but the marker is only as strong as **write-access to the plan
+  folder**, a shipped weakness tracked in **#366** (marker provenance/authorization). Making the review gate
+  a trustworthy *runtime* boundary (Open K) depends on #366 landing first.
+- Answer-injection therefore resolves **only** `needs-human` and `wave-checkpoint` (§7.3); the `mark-reviewed`
+  floor is untouched, and a crew that wants an unreviewed wave to run uses the explicit, recorded
+  `proceed-unreviewed` opt-in — never an answer file.
 
 ### 7.6 Resume consumption + the #190 interaction
 
@@ -670,14 +756,18 @@ re-hit an escalated gate, the harness:
 1. **Looks for a pending answer** — an `…​.answer.json` beside an escalation record whose `status` is not yet
    `consumed`.
 2. **Validates the binding (all must hold, else REJECT + re-escalate):** `{ runId, seq, gate, subject }`
-   equal the escalation's; the gate is answerable (§7.3); `definitionHash` equals the escalation record's
-   hash **AND** the unit's *current* `TaskDefinitionHash`/`WaveDefinitionHash` (a **stale** answer — the
-   definition changed since the escalation — is rejected, mirroring #274/§7.2); for a `review-gate`, the
-   §7.5 marker check passes.
-3. **Injects instead of re-escalating:** for `needs-human`, the answer `text` is appended to the next
-   attempt's composed prompt as the human's decision; for `wave-checkpoint`, the `proceed`/`hold` decision is
-   applied at the checkpoint. Records a `decision: "answer-injected"` (§6.2) with the answer's provenance,
-   the bound escalation id, and the matched hash; flips the escalation `status` to `consumed`.
+   equal the escalation's (the `seq` uniqueness of §7.1 makes the tuple unambiguous); the gate is answerable
+   (§7.3) — `needs-human` or `wave-checkpoint`, and **NOT** a clamped hard-call escalation under
+   `proceed-unreviewed` (§5.2 / Blocker 1), and **not** the `review-gate` (no answer kind exists, §7.5), and
+   not terminal (§7.3); `definitionHash` equals the escalation record's hash **AND** the unit's *current*
+   `TaskDefinitionHash`/`WaveDefinitionHash` (a **stale** answer — the definition changed since the escalation
+   — is rejected, mirroring #274/§7.2).
+3. **Injects instead of re-escalating:** for `needs-human`, the answer `text` is injected into the next
+   attempt's composed prompt as **clearly-delimited untrusted human-answer data** (§7.4, Finding 4 — never as
+   a harness/system instruction, and never able to reach the verdict surface); for `wave-checkpoint`, the
+   `proceed`/`hold` decision is applied at the checkpoint. Records a `decision: "answer-injected"` (§6.2) with
+   the answer's provenance, the bound escalation id, and the matched hash; flips the escalation `status` to
+   `consumed` (CAS-guarded, §7.1).
 4. **No answer present ⇒ behavior is unchanged** — the gate re-escalates exactly as §7.3, so the seam
    **degrades gracefully** to plain forensic-halt when no crew is answering. A rejected answer also
    re-escalates, with the rejection reason recorded (so firstmate can see *why* its answer bounced).
@@ -694,13 +784,15 @@ removed — but it is a real trust surface, named not hidden. The trust granted 
 the judgment questions a human would have answered,"* nothing more, because an answer:
 
 - **never bypasses a deterministic gate** — the injected decision still produces work the task's guardrails
-  must pass (§7.6);
-- **never satisfies the review floor** — it can only point at a real attestation the harness re-verifies
-  (§7.5);
+  must pass, and the injected `text` is delimited untrusted DATA that cannot reach the verdict surface (the
+  overwatcher DENYLIST backstop, §7.4 Finding 4);
+- **never resolves the review gate** — there is no `review-attested` answer kind in v1 (§7.5, #366); the
+  review gate clears only by escalate or the explicit `proceed-unreviewed` opt-in;
 - **never resurrects a terminal escalation** — a hard blocker / doomed task / unsound rewind is not
-  answerable (§7.3);
-- **is bound and fresh** — the identity + definition-hash binding stops a replayed or misfiled answer from
-  landing on the wrong (or a changed) gate (§7.6).
+  answerable, and neither is a clamped hard call inside a `proceed-unreviewed` wave (§7.3, Blocker 1);
+- **is bound and fresh** — the `{ runId, seq, gate, subject }` binding (with monotonic, never-reused `seq`)
+  plus the dual definition-hash check stop a replayed or misfiled answer from landing on the wrong (or a
+  changed) gate, and CAS-guarded once-only consumption stops a double-inject (§7.1/§7.6).
 
 **The firstmate loop (the liveness win).** `run` → escalate (the unit halts, **independent branches keep
 running**) → firstmate writes an answer file → `resume` injects it → the run continues past the escalation.
@@ -729,9 +821,9 @@ is the same action-side-gaming residual the overwatcher already accepts (doc 11 
 product's existing one (strong deterministic guardrails + the review pass). **DA-1 is therefore adequate ONLY
 in the default posture** (guardrails were human-reviewed, so the floor that catches a wrong best-guess is a
 *trusted* floor). **It is NOT adequate on its own for `critical` + `proceed-unreviewed`**, where the floor
-becomes the same automation's own unreviewed guardrails — which is exactly why that combination is now a
-**forbidden config (GR2040, §5.2)**: the joint DA-1 ∩ DA-4 analysis below is structurally unreachable, not
-merely discouraged.
+becomes the same automation's own unreviewed guardrails — which is exactly why that combination is closed by
+the compound gate: a **forbidden config (GR2040, §5.2)** PLUS the clamp's non-answerability (Blocker 1). The
+joint DA-1 ∩ DA-4 analysis below is honest that this took more than Decision A alone.
 
 **DA-2 — "criticality" is unmeasurable; the dial is a false sense of control.** An LLM cannot reliably rank
 its own decisions' criticality; the threshold is theater. *Response:* real tension, partially conceded. The
@@ -763,22 +855,30 @@ exactly the compound-config gate (§5.2, now a **settled invariant — GR2040**)
 judgment calls still escalate. So **DA-4 is adequate WITH the compound gate, which is now enforced at load
 time** — you can no longer configure "skip both review and escalation."
 
-**DA-1 ∩ DA-4 (joint — STRUCTURALLY PREVENTED, per the maintainer ruling).** The two residuals are safe
-**apart** and dangerous **together**. DA-1 leans on "the deterministic guardrails catch a wrong best-guess";
-DA-4 leans on "the deterministic guardrails still gate the wave, only the review pass is skipped." Compose
-them at the fully-autonomous extreme — `--dial critical` (best-guess every judgment call, incl. inside the
-wave) + `review-gate: proceed-unreviewed` (skip review) on a JIT wave — and **both leans become the same
-object**: the wave's tasks AND its guardrails are machine-authored unattended, `guardrails validate` (a
-structural check, not a strength check) cannot see a weak/tautological guardrail, and the run then trusts
-that unreviewed guardrail to catch its own unreviewed best-guesses — the maintainer's *"Guardrails run
-without any Guardrails."* **This is no longer a residual to weigh: it is a load-time config error (GR2040,
-§5.2).** The closed loop is **unreachable** — the run refuses to start, and under `proceed-unreviewed` the
-in-wave dial is clamped so consequential design questions still escalate. **Named, un-hidden residual that
-remains at the *permitted* settings:** a crew that sets `proceed-unreviewed` with a *moderate* dial still
-runs unreviewed guardrails against machine best-guessed low/moderate work; the mitigation is the product's
-existing one (strong deterministic guardrails) plus the indelible non-zero-exit trail that makes a human
-review it *after the fact*. That residual is bounded (never the critical decisions, never a `critical` dial)
-and is the honest floor of what `proceed-unreviewed` costs.
+**DA-1 ∩ DA-4 (joint — now STRUCTURALLY CLOSED, but honestly: NOT by Decision A alone).** The two residuals
+are safe **apart** and dangerous **together**: compose `--dial critical` (best-guess every judgment call,
+incl. inside the wave) + `review-gate: proceed-unreviewed` (skip review) on a JIT wave and the wave's tasks
+AND guardrails are machine-authored unattended, `guardrails validate` (a structural check, not a strength
+check) cannot see a weak/tautological guardrail, and the run trusts that unreviewed guardrail to catch its own
+unreviewed best-guesses — the maintainer's *"Guardrails run without any Guardrails."* **The honest history
+(the adversarial pass caught this):** Decision A's clamp alone did NOT close the loop, because the clamp only
+kept an *escalation* in the loop — and Decision B's answer-injection then let firstmate's own automation
+*satisfy* that escalation (`answeredBy` is unauthenticated self-report), re-opening it. At `dial: high` +
+`proceed-unreviewed` (which GR2040 permits), the crew could auto-answer the clamped hard calls → back to the
+forbidden loop. So the earlier "structurally unreachable from A alone" claim was **false**, and it took a
+third rule to make it true. **What actually closes it — two teeth:**
+- **GR2040 (load-time), keyed on the reachable END-STATE (Finding 3):** the config that best-guesses a
+  critical hard call under `proceed-unreviewed` — run-wide `critical` OR any in-wave override `== critical` —
+  refuses to start.
+- **The clamp + NON-ANSWERABILITY (runtime, Blocker 1):** under `proceed-unreviewed`, `high`/`critical` hard
+  calls always escalate AND those escalations are **non-answerable by fiat** — no answer file clears them.
+  They stop the unattended run until real human work happens. This is the rule that keeps a *human*, not a
+  firstmate auto-answer, in the loop.
+**Named, un-hidden residual at the *permitted* settings:** a crew that sets `proceed-unreviewed` with a
+*moderate* dial still runs unreviewed guardrails against machine best-guessed **low/moderate** work (the hard
+calls now escalate non-answerably); the mitigation is the product's existing one (strong deterministic
+guardrails) plus the indelible non-zero-exit trail that forces after-the-fact human review. Bounded (never the
+hard calls, never a `critical` dial) — the honest floor of what `proceed-unreviewed` costs.
 
 **DA-7 — answer-injection is a new, security-sensitive attack surface (an answer file an unattended resume
 trusts to proceed past a human gate).** Four concrete attacks and their mitigations:
@@ -786,23 +886,31 @@ trusts to proceed past a human gate).** Four concrete attacks and their mitigati
   definition changed). *Mitigation:* the answer must carry the `definitionHash` captured at escalation time
   AND it must equal the unit's *current* `TaskDefinitionHash`/`WaveDefinitionHash` at consumption — the
   #274/§7.2 drift discipline. A stale answer is rejected and re-escalates (§7.6).
-- **Wrong-escalation binding** (an answer misfiled onto, or crafted for, a different gate/task). *Mitigation:*
-  the answer must echo the full `{ runId, seq, gate, subject }` identity verbatim; a mismatch is rejected. The
-  answer lives beside the exact escalation record it answers, and consumption is once-only (`status:
-  consumed`), so a replayed file after consumption is ignored.
-- **Review-forgery attempt** (an answer claiming a wave is reviewed). *Mitigation:* an answer can never *be*
-  an attestation — a `review-attested` answer only *points at* a marker, and the harness accepts only if that
-  marker exists and matches the current `PlanDefinitionHash` (§7.5). No marker ⇒ rejected. The `mark-reviewed`
-  floor is untouched.
-- **An answer that best-guesses a gate the dial would have escalated** (firstmate answering a `critical`
-  question the crew wanted a *human* to see). *Mitigation, stated honestly:* this is the trust surface named
-  in §7.7 — consuming an answer IS trusting firstmate to be the human. The bound is that the answer never
-  bypasses a deterministic gate (the injected decision's work still passes the task's guardrails) and never
-  the review floor; and the escalation only reached firstmate *because* it exceeded the dial, so answering it
-  is firstmate exercising the human-in-the-loop it represents — recorded (`answer-injected` + `answeredBy`)
-  for after-the-fact audit. **Accepted residual:** if firstmate itself is compromised or careless, it can
-  answer judgment questions badly — but it can still never forge a review, resurrect a doomed task, or clear
-  a deterministic guardrail. The trust is exactly "answer the questions a human would have," no more.
+- **Wrong-escalation binding / replay-onto-a-reused-id** (an answer misfiled onto, or crafted for, a
+  different gate/task; or a stale unconsumed answer binding to a later escalation reusing the tuple).
+  *Mitigation:* the answer must echo the full `{ runId, seq, gate, subject }` identity verbatim, and **`seq`
+  is durably monotonic per run and never reused across resumes (Finding 5, §7.1)** — so the tuple is unique
+  for the life of the run and a stale answer can never bind to a later escalation. Consumption is once-only
+  (`status: consumed`, CAS-guarded), persisted in the *creating* run's `escalations/` dir across resumes, so
+  a replayed file after consumption — even under a new `runId` — is ignored.
+- **Review-forgery attempt** (an answer claiming a wave is reviewed). *Mitigation (Blocker 2):* there is **no
+  `review-attested` answer kind in v1** — an answer simply cannot resolve the review gate (§7.5). The earlier
+  "answer points at a marker the harness re-verifies" design was **removed** precisely because the marker
+  itself is forgeable by write-access to the plan folder (`guardrails mark-reviewed` attests nothing about a
+  human). **Named residual, not hidden — issue #366:** the review marker is only as strong as plan-folder
+  write-access; the harness never *writes* it on a human's behalf, but that is not "unforgeable." Making the
+  review gate a trustworthy runtime boundary (Open K) waits on #366's provenance work.
+- **An answer that best-guesses a gate the dial would have escalated** (firstmate answering a hard question
+  the crew wanted a *human* to see). *Mitigation:* **inside a `proceed-unreviewed` wave the clamped
+  `high`/`critical` hard calls are NON-ANSWERABLE (Blocker 1)** — no answer file clears them, so firstmate's
+  automation cannot rubber-stamp them; they stop the run for real human work. **Outside that mode** (a
+  reviewed wave, or a low/moderate call), consuming an answer IS the named trust surface (§7.7): firstmate is
+  the human, time-shifted. The bound holds — the answer never reaches the verdict surface (§7.4 Finding 4),
+  never resolves the review gate, never resurrects a terminal escalation; and it is recorded
+  (`answer-injected` + `answeredBy`) for after-the-fact audit. **Accepted residual:** a compromised/careless
+  firstmate can answer *low/moderate reviewed-context* judgment questions badly — but it can never forge a
+  review, resurrect a doomed task, clear a deterministic guardrail, or touch a clamped hard call. The trust is
+  exactly "answer the low-stakes questions a human would have," no more.
 
 **DA-5 — a best-guess that answers a `needsHuman` mid-attempt corrupts the attempt's semantics.** The agent
 asked because it genuinely did not know; injecting a guessed answer may send it down a wrong path that burns
@@ -835,11 +943,13 @@ DoR before Phase 1 starts.
 - **Phase 3 — classify-then-act + the escalation AND reply channel (long-running unattended, v1).**
   `blockerRetry` bounds, the class-(b)/(c) wiring over the existing transient/permission-wall/abort signals,
   `IEscalationSink` + `logs/<runId>/escalations/`, the run-level exit-2-with-pending-escalations semantics —
-  **and the v1 reply channel (maintainer ruling):** the answer-file contract (§7.4), the resume-time
-  consumption + binding/staleness/once-only validation (§7.6), the §7.5 review-floor re-check, and the
-  `answer-injected` decision token. This is the phase that turns forensic-halt-unattended into
-  **long-running unattended**. It is security-sensitive (§7, DA-7) — the lead runs a focused adversarial
-  pass on the answer-file consumption before it lands.
+  **and the v1 reply channel (maintainer ruling):** the answer-file contract for `needs-human` +
+  `wave-checkpoint` ONLY (§7.4 — **no `review-attested` kind**, Blocker 2/#366); the resume-time consumption
+  with the monotonic-`seq`/CAS/cross-runId binding + dual-hash staleness + once-only validation (§7.1/§7.6);
+  the **clamped-hard-call non-answerability under `proceed-unreviewed`** (§7.3, Blocker 1); the
+  delimited-untrusted-data injection (§7.4 Finding 4); and the `answer-injected` decision token. This phase
+  turns forensic-halt-unattended into **long-running unattended**. Security-sensitive (§7, DA-7) — the lead
+  runs a focused adversarial pass on the answer-file consumption before it lands.
 - **Phase 4 — the review-gate policy + overwatcher `auto`-tier allowlist.** The `review-gate` per-gate
   acknowledgment (Option P opt-in) + the compound-config gate (§5.2), and — as a natural consequence — the
   overwatcher's **allowlist** (guidance/budget) levers become dial-governed silent auto-apply (realizing the
@@ -904,16 +1014,19 @@ DoR before Phase 1 starts.
 - **J. Per-gate override syntax.** Recommend the `gateThresholds` map with keys `needs-human` /
   `wave-checkpoint` / `review-gate` (§3.5), the `review-gate` key taking the escalate/`proceed-unreviewed`
   acknowledgment rather than a criticality level. Confirm.
-- **K. Review-gate enforcement strength (scope option, NOT v1).** v1 enforces the review gate via a
-  control-flow halt + a distinct-non-zero-exit reporting flag (§5 floor 3), NOT a deterministic runtime
-  gate. Making it a real deterministic gate — a runtime halt on a stale/missing marker for a wave about to
-  run — would mean **promoting GR2025 from a warning to a runtime halt** (an `autonomy.reviewGate: "enforce"`
-  mode). Recommend deferring; confirm it stays out of v1.
+- **K. Review-gate enforcement strength (scope option, NOT v1 — now GATED ON #366).** v1 enforces the review
+  gate via a control-flow halt + a distinct-non-zero-exit reporting flag (§5 floor 3), NOT a deterministic
+  runtime gate. Promoting it to a runtime halt on a stale/missing marker (GR2025 warning → halt, an
+  `autonomy.reviewGate: "enforce"` mode) is only worth building **after #366** makes the marker a trustworthy,
+  authorized signal — the marker is currently forgeable by plan-folder write-access, so a runtime gate on it
+  would gate on a forgeable file. Recommend deferring; confirm it stays out of v1 and is sequenced behind #366.
 - **L. The escalation + reply seam shape (reply channel now v1, Decision B).** Recommend a file-based
   `IEscalationSink` writing `logs/<runId>/escalations/<seq>-<gate>.json` + `decisions[]` + observer
-  (fire-and-record), plus the v1 answer-file `…​.answer.json` beside it consumed by resume (§7.4–§7.6).
-  Confirm the answer-file location (co-located vs a dedicated inbox), the binding fields, and the once-only
-  `status` lifecycle. **Security-sensitive — a focused adversarial pass on §7.6 consumption is planned.**
+  (fire-and-record), plus the v1 answer-file `…​.answer.json` beside it consumed by resume for **`needs-human`
+  + `wave-checkpoint` only** (§7.4–§7.6; **no `review-attested` kind**, Blocker 2/#366). Confirm the answer-file
+  location (co-located vs a dedicated inbox), the binding fields, the monotonic-`seq`/CAS/cross-runId
+  consumption discipline (§7.1), and the clamped-hard-call non-answerability under `proceed-unreviewed`
+  (Blocker 1). **Security-sensitive — a focused adversarial pass on §7.6 consumption is planned.**
 - **M. GR codes for the `autonomy` block.** The next-free code is **GR2038** (GR2035 DuplicateCheckName,
   GR2036 ExpectedDurationNonPositive, GR2037 BannedGuardrailPattern are taken); `design-360-auto-wave-
   breakdown.md` earmarks GR2038 for a *deferred* "warn on wave stub without `brief.md`". Recommend **GR2039**
@@ -957,11 +1070,19 @@ approve; then the harness developer writes them into `02-schemas-and-contracts.m
   `DefinitionHash`, §7.1) and their **`…​.answer.json` reply files** (the answer-file contract, §7.4) with the
   `open`→`answered`→`consumed` `status` lifecycle; note `logs/<runId>/<wave-dir>/breakdown/` is defined by
   doc 11 §9.
-- **§7.2 / §13 (answer-injection binding)** — the escalation captures a `DefinitionHash`
-  (`TaskDefinitionHash` for `needs-human`, `WaveDefinitionHash` for a wave gate); a resume consumes an answer
-  only if it echoes the escalation identity, is non-stale against the unit's current hash, is unconsumed, and
-  — for a `review-gate` answer — points at a `state/guardrails-review.json` marker matching the current
-  `PlanDefinitionHash` (§7.5/§7.6). The harness never writes a review marker on a human's behalf.
+- **§7.2 / §7.2 resume (answer-injection binding)** — the escalation captures a `DefinitionHash`
+  (`TaskDefinitionHash` for `needs-human`, `WaveDefinitionHash` for `wave-checkpoint`); `seq` is a durably
+  monotonic, never-reused run counter; a resume consumes an answer only if it echoes the escalation identity,
+  is non-stale against the unit's current hash, is unconsumed (CAS-guarded, cross-runId `status` in the
+  creating run's `escalations/`), targets an **answerable** gate (`needs-human`/`wave-checkpoint`, and NOT a
+  clamped hard call under `proceed-unreviewed`). **There is no `review-attested` answer kind** (Blocker
+  2/#366) — the review gate is never resolved by an answer. The injected `needs-human` text is delimited
+  untrusted data that cannot reach the verdict surface (§7.4 Finding 4).
+- **§13 / issue #366 (review-marker provenance)** — note that `state/guardrails-review.json` /
+  `guardrails mark-reviewed` currently attests nothing about a human (forgeable by plan-folder write-access);
+  autonomous mode does NOT promote it to a runtime boundary. Do not describe the review gate as
+  "unforgeable"; the honest invariant is "the harness never writes the marker on a human's behalf." Tracked
+  in #366; Open K's runtime-gate promotion is sequenced behind it.
 - **§9 (prompt runners)** — reference the reserved `breakdown` profile (defined in doc 11 §9) and the
   criticality-assessment profile (reuse `overwatch` or a new `assess` — Open H). Note the assessment is
   advisory (verdict-from-files; malformed ⇒ escalate).
@@ -1020,33 +1141,45 @@ for inline review; implementation milestones do NOT start until comments are add
 **Phase 3 (classify-then-act + escalation AND reply channel — long-running unattended, v1) — after Phase 2:**
 1. `guardrails-harness-developer` — `blockerRetry` bounds over the transient/permission-wall/abort signals;
    `IEscalationSink` + `logs/<runId>/escalations/` (records carry the `EscalationId` + `DefinitionHash`);
-   the exit-2-with-pending-escalations semantics; **the v1 reply channel** — the `…​.answer.json` contract
-   (§7.4), the resume-time consumption with binding/staleness/once-only validation (§7.6), the §7.5
-   review-floor marker re-check, the `answer-injected` decision token, and the `status` lifecycle.
+   the exit-2-with-pending-escalations semantics; **the v1 reply channel** — the `…​.answer.json` contract for
+   `needs-human` + `wave-checkpoint` ONLY (§7.4; **no `review-attested` kind**), the monotonic-`seq`/CAS/
+   cross-runId + dual-hash + once-only consumption (§7.1/§7.6), the **clamped-hard-call non-answerability
+   under `proceed-unreviewed`** (§7.3, Blocker 1), the delimited-untrusted-data injection (§7.4 Finding 4),
+   the `answer-injected` token, and the `status` lifecycle.
    **SECURITY-SENSITIVE — the lead runs a focused adversarial pass on the §7.6 consumption path before merge.**
    `filesTouched: src/Guardrails.Core/**, src/Guardrails.Cli/**, docs/plans/02-schemas-and-contracts.md`.
 2. `guardrails-test-author` — classify-then-act decision table (known-transient → retry-bounded → escalate;
    unknown → escalate; permission wall → escalate); escalation-record-on-disk; independent-branches-continue;
    **the answer-injection security matrix (P0):** valid answer → injected + `answer-injected` + `status:
    consumed`; **stale-hash answer rejected + re-escalates**; **wrong-identity answer rejected**;
-   **once-only (a re-dropped answer after consumption is ignored)**; **a `review-attested` answer with NO
-   matching marker rejected — never writes a marker**; a terminal-gate escalation is NOT answerable; no answer
+   **`seq` never reused across resumes (a stale answer can't bind a later escalation)**; **once-only + CAS
+   (a re-dropped answer after consumption, even under a new `runId`, is ignored; two concurrent resumes never
+   double-inject)**; **an answer targeting the `review-gate` is rejected — there is no `review-attested` kind,
+   and the harness never writes a marker**; **an answer targeting a clamped hard call under
+   `proceed-unreviewed` is rejected (Blocker 1)**; **injected `text` cannot edit a guardrail body /
+   `writeScope` to green (Finding 4 backstop)**; a terminal-gate escalation is NOT answerable; no answer
    present → unchanged re-escalate (graceful degrade). `filesTouched: tests/**`.
 
 **Phase 4 (review-gate policy + overwatcher auto-tier) — after Phase 3:**
 1. `guardrails-harness-developer` — the `review-gate: proceed-unreviewed` opt-in + the never-report-green
-   verdict flag + the **distinct non-zero exit code**; the **compound-config gate GR2040** (§5.2:
-   `proceed-unreviewed` + `dial: critical` = a load-time error; clamp the in-wave dial under
-   `proceed-unreviewed`); the overwatcher allowlist dial-governed auto-apply (via the existing
+   verdict flag + the **distinct non-zero exit code**; the **compound-config gate GR2040 keyed on the
+   reachable END-STATE** (§5.2: `proceed-unreviewed` AND (`escalationThreshold == critical` OR any in-wave
+   `gateThresholds` value `== critical`) = a load-time error) **plus the runtime clamp** (under
+   `proceed-unreviewed`, assessed `high`/`critical` always escalate, overriding every override, and are
+   non-answerable — Blocker 1); the overwatcher allowlist dial-governed auto-apply (via the existing
    `IOverwatchInteraction` seam), **gated on the PRESENCE of the `autonomy` block, NOT `autonomyPolicy: auto`
    alone** (§9 Phase 4). `filesTouched:
    src/Guardrails.Core/**, src/Guardrails.Cli/**, docs/plans/02-schemas-and-contracts.md,
    docs/plans/11-overwatcher.md`.
 2. `guardrails-test-author` — proceed-unreviewed never writes a marker + exits distinct non-zero + defaults
-   `mergeOnSuccess` OFF; the compound-config gate rejects `proceed-unreviewed` + `dial: critical`; run verdict
-   flags unreviewed waves; overwatcher allowlist auto-applies only WITH an `autonomy` block, denylist still
-   halts. **REQUIRED back-compat test: `autonomyPolicy: auto` with NO `autonomy` block ⇒ the overwatcher
-   still degrades to prompt, byte-identical to today** (the anti-Option-(c) guard). `filesTouched: tests/**`.
+   `mergeOnSuccess` OFF; **GR2040 fires on the END-STATE** — both `escalationThreshold: critical` +
+   `proceed-unreviewed` AND `escalationThreshold: high` + `gateThresholds: { needs-human: critical,
+   review-gate: proceed-unreviewed }` (the per-gate route-around, Finding 3); **the clamp escalates
+   `high`/`critical` non-answerably under `proceed-unreviewed`** even with a per-gate override trying to lower
+   it (Blocker 1); run verdict flags unreviewed waves; overwatcher allowlist auto-applies only WITH an
+   `autonomy` block, denylist still halts. **REQUIRED back-compat test: `autonomyPolicy: auto` with NO
+   `autonomy` block ⇒ the overwatcher still degrades to prompt, byte-identical to today** (the anti-Option-(c)
+   guard). `filesTouched: tests/**`.
 
 ### Testing strategy (qa-standards)
 
@@ -1054,13 +1187,16 @@ for inline review; implementation milestones do NOT start until comments are add
   (the maximum) still: never writes a review marker; never auto-applies a denylist op; never best-guesses
   past a terminal-exhaustion needs-human; never spins a permission wall. These are the invariant-5/asymmetry
   guarantees — the highest-risk code.
-- **P0 — the compound-config gate + delivery gating.** `proceed-unreviewed` + `dial: critical` is a load-time
-  error (GR2040); a run that best-guessed/proceeded-unreviewed defaults `mergeOnSuccess` OFF and exits
-  distinct non-zero.
+- **P0 — the compound-config gate + delivery gating.** GR2040 fires on the reachable END-STATE
+  (`proceed-unreviewed` + run-wide OR per-gate `critical`, Finding 3); the clamp escalates `high`/`critical`
+  non-answerably under `proceed-unreviewed` (Blocker 1); a run that best-guessed/proceeded-unreviewed defaults
+  `mergeOnSuccess` OFF and exits distinct non-zero.
 - **P0 (SECURITY) — the answer-injection matrix (§7.6, DA-7).** valid answer injects once and flips `status:
-  consumed`; stale-hash / wrong-identity / already-consumed answers are rejected + re-escalate; a
-  `review-attested` answer with no matching `PlanDefinitionHash` marker never writes a marker and re-escalates;
-  a terminal escalation is not answerable; no answer ⇒ unchanged re-escalate.
+  consumed`; stale-hash / wrong-identity / already-consumed answers rejected + re-escalate; `seq` never reused
+  across resumes; CAS blocks concurrent double-inject; **an answer targeting the `review-gate` is rejected (no
+  `review-attested` kind) and never writes a marker**; **an answer targeting a clamped hard call under
+  `proceed-unreviewed` is rejected**; injected `text` cannot reach the verdict surface (Finding 4); a terminal
+  escalation is not answerable; no answer ⇒ unchanged re-escalate.
 - **P0 — the anti-Option-(c) back-compat guard.** `autonomyPolicy: auto` with no `autonomy` block ⇒
   overwatcher still degrades to prompt (byte-identical to today).
 - **P0 — the forensic-non-lossy invariant.** A property/integration test: for every auto-cleared gate in a

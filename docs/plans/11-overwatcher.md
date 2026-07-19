@@ -391,12 +391,15 @@ deliberate, named, forensically-indelible risk transfer, never a silent one and 
 `mergeOnSuccess` to OFF** — since preview.40 a green run auto-delivers to the user's branch by default, and
 machine-authored-and-unreviewed work must NOT auto-deliver; it stays on the plan branch for a human, and the
 run **exits with a distinct non-zero code** so an automated firstmate consumer never reads it as clean green.
-And — the settled compound-config invariant (maintainer ruling, doc 12 §5.2, **GR2040**) — **`proceed-
-unreviewed` is a load-time error with the fully-autonomous `dial: critical`**: you may skip review OR
-best-guess the hard in-wave design calls, never both. In a long-running unattended run, a `wave-checkpoint`
-escalation is **answerable** via the firstmate reply channel (doc 12 §7.4) — but the review gate itself is
-never forged by an answer (doc 12 §7.5): an answer may only point at a real `/guardrails-review` marker the
-harness re-verifies, never *be* one.
+And — the settled compound-config invariant (maintainer ruling, doc 12 §5.2, **GR2040**, keyed on the
+reachable end-state) — **`proceed-unreviewed` is a load-time error when the run would best-guess a `critical`
+hard call** (run-wide or any per-gate override): you may skip review OR best-guess the hard in-wave design
+calls, never both. In a long-running unattended run a `wave-checkpoint` escalation is **answerable** via the
+firstmate reply channel (doc 12 §7.4) in the *normal* flow — but two carve-outs hold: (1) the **review gate
+is NOT answerable by any answer file** (doc 12 §7.5, issue #366 — there is no `review-attested` kind; the
+marker is forgeable by plan-folder write-access, so v1 does not make it a runtime boundary), and (2) under
+`proceed-unreviewed` the **clamped `high`/`critical` hard-call escalations are NON-ANSWERABLE** (doc 12 §7.3,
+Blocker 1) — they stop the run for real human work, so firstmate's own automation cannot rubber-stamp them.
 
 ## 10. Phasing
 
