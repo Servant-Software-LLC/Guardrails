@@ -120,24 +120,65 @@ public static class DriftDecisions
     /// no <c>decisions[]</c> entry (design-360, §14.4).
     /// </summary>
     public static DecisionEntry WaveCheckpointHalt(
-        AutonomyPolicy configuredPolicy, string waveDir, bool briefPresent)
+        AutonomyPolicy configuredPolicy, string waveDir, bool briefPresent, string decision = "halted")
     {
         string brief = $"{waveDir}/{WaveNode.BriefFileName}";
         string detail = briefPresent
-            ? $"'{brief}' is present — auto-breakdown against it will be available under autonomyPolicy in a "
-              + "future phase; Phase 0 honest-halts for manual JIT breakdown + review."
-            : $"No '{brief}' — create one to enable auto-breakdown at this checkpoint in a future release, "
+            ? $"'{brief}' is present — auto-breakdown against it is invoked under autonomyPolicy 'auto' (or a "
+              + "'prompt' approval); this run honest-halts for manual JIT breakdown + review."
+            : $"No '{brief}' — create one to enable auto-breakdown at this checkpoint, "
               + "or author the wave manually against the integration worktree.";
         return new DecisionEntry
         {
             Boundary = "wave",
             Policy = AutonomyPolicies.Token(configuredPolicy),
-            Decision = "halted",
+            Decision = decision,
             Subject = waveDir,
-            Headline = $"Wave '{waveDir}' unauthored — halted for JIT breakdown",
+            Headline = decision == "prompted-declined"
+                ? $"Wave '{waveDir}' unauthored — breakdown DECLINED, halted for manual JIT breakdown"
+                : $"Wave '{waveDir}' unauthored — halted for JIT breakdown",
             Detail = detail
         };
     }
+
+    /// <summary>
+    /// The between-wave breakdown INVOCATION succeeded and its output passed <c>guardrails validate</c>
+    /// (#360 Phase 1, SSOT §14.4/doc 11 §9): the JIT wave was authored and the run HALTS for the human review
+    /// gate (<c>/guardrails-review</c>) — the review gate is NEVER auto-satisfied at any policy (doc 11 §9.6).
+    /// A <c>wave</c>-boundary entry whose <paramref name="invocationDecision"/> records HOW the invocation was
+    /// authorized: <c>auto-applied</c> (autonomyPolicy <c>auto</c>) or <c>prompted-approved</c> (an interactive
+    /// <c>prompt</c> approval).
+    /// </summary>
+    public static DecisionEntry WaveBreakdownComplete(
+        AutonomyPolicy policy, string waveDir, string invocationDecision, int taskCount) =>
+        new()
+        {
+            Boundary = "wave",
+            Policy = AutonomyPolicies.Token(policy),
+            Decision = invocationDecision,
+            Subject = waveDir,
+            Headline = $"Wave '{waveDir}' broken down ({taskCount} task(s)) — halting for /guardrails-review",
+            Detail = "The breakdown output is a DRAFT: inspect the wave, run /guardrails-review, then re-run "
+                     + "'guardrails run'. The harness never marks a wave reviewed on a human's behalf."
+        };
+
+    /// <summary>
+    /// The between-wave breakdown INVOCATION ran but its output FAILED <c>guardrails validate</c> (#360 Phase 1):
+    /// the partial invalid <c>tasks/</c> is quarantined so the plan stays loadable and the JIT checkpoint
+    /// cleanly re-fires on resume. A <c>wave</c>-boundary entry; <paramref name="invocationDecision"/> records
+    /// how the invocation was authorized (<c>auto-applied</c> / <c>prompted-approved</c>).
+    /// </summary>
+    public static DecisionEntry WaveBreakdownFailed(
+        AutonomyPolicy policy, string waveDir, string invocationDecision, string errorSummary) =>
+        new()
+        {
+            Boundary = "wave",
+            Policy = AutonomyPolicies.Token(policy),
+            Decision = invocationDecision,
+            Subject = waveDir,
+            Headline = $"Wave '{waveDir}' breakdown FAILED validation — partial output quarantined",
+            Detail = errorSummary
+        };
 
     private static DecisionEntry BuildWave(
         string policyToken, string decision, string waveDir, string? rewindTarget,

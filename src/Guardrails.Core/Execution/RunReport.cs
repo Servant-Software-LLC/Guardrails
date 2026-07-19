@@ -235,21 +235,19 @@ public enum WaveHaltKind
     ExitGateFailed,
 
     /// <summary>
-    /// RESERVED, not yet emitted (Phase 0 stub for #360 Phase 2). Between-wave auto-breakdown against a
-    /// wave's <c>brief.md</c> (SSOT §14.4/§14.9/§14.10) completed and produced a wave that passes
-    /// <c>guardrails validate</c>; the run halts for the human review gate (<c>/guardrails-review</c>)
-    /// before advancing. No code path emits this in Phase 0 — the between-wave invoker lands in a future
-    /// phase; this value reserves the halt kind so the enum, journal, and CLI can be wired without a
-    /// renumber later.
+    /// Between-wave auto-breakdown (#360 Phase 1, SSOT §14.4/§14.10; doc 11 §9) against a wave's
+    /// <c>brief.md</c> was invoked (autonomyPolicy <c>auto</c>, or a <c>prompt</c> approval) and its output
+    /// PASSED the deterministic <c>guardrails validate</c> gate; the run HALTS for the human review gate
+    /// (<c>/guardrails-review</c>) before advancing — the review gate is NEVER auto-satisfied at any policy
+    /// (doc 11 §9.6). <see cref="WaveHalt.Detail"/> carries the review instructions.
     /// </summary>
     BreakdownComplete,
 
     /// <summary>
-    /// RESERVED, not yet emitted (Phase 0 stub for #360 Phase 2). Between-wave auto-breakdown against a
-    /// wave's <c>brief.md</c> (SSOT §14.4/§14.9/§14.10) ran but produced a wave that FAILS
-    /// <c>guardrails validate</c>; the run halts carrying the validation errors for manual repair. No code
-    /// path emits this in Phase 0 — reserved for the future between-wave invoker (see
-    /// <see cref="BreakdownComplete"/>).
+    /// Between-wave auto-breakdown (#360 Phase 1) was invoked but its output FAILED <c>guardrails validate</c>.
+    /// The partial invalid <c>tasks/</c> is QUARANTINED (to <c>logs/&lt;runId&gt;/&lt;wave-dir&gt;/breakdown/
+    /// rejected/</c>) so the plan stays loadable and the JIT checkpoint cleanly re-fires on resume; the run
+    /// halts carrying the full validation errors (in <see cref="WaveHalt.Detail"/>) for manual repair.
     /// </summary>
     BreakdownFailed
 }

@@ -97,7 +97,8 @@ public static class SchedulerFactory
         IRunObserver observer,
         DriftAuthorization? driftAuthorization = null,
         IReadOnlySet<string>? waveDriftAuthorized = null,
-        IOverwatchInteraction? overwatchInteraction = null)
+        IOverwatchInteraction? overwatchInteraction = null,
+        IReadOnlyDictionary<string, bool>? breakdownConfirmations = null)
     {
         (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer, overwatchInteraction);
 
@@ -123,6 +124,7 @@ public static class SchedulerFactory
         //       shared-workspace-parallel fallback.
         IWorktreeProvider? worktreeProvider = null;
         IAiMergeWorker? aiMergeWorker = null;
+        WaveBreakdownInvoker? breakdownInvoker = null;
         if (plan.Config.MaxParallelism > 1 && IsGitRepository(plan.Workspace))
         {
             // The prompt-runner registry the worktree collaborators need is rebuilt from the same
@@ -143,6 +145,16 @@ public static class SchedulerFactory
             {
                 aiMergeWorker = new AiMergeWorker(mergeRunner);
             }
+
+            // #360 Phase 1 (doc 11 §9): the between-wave breakdown actor. Built only in worktree mode
+            // because it needs the integration worktree (the materialized upstream a JIT wave breaks down
+            // against). Over the reserved `breakdown` profile, else the default/sole runner; null when the
+            // plan declares NO prompt runner (the JIT checkpoint then honest-halts, never a silent invoke).
+            IPromptRunner? breakdownRunner = ResolveBreakdownRunner(registry);
+            if (breakdownRunner is not null)
+            {
+                breakdownInvoker = new WaveBreakdownInvoker(breakdownRunner);
+            }
         }
 
         return new Scheduler(
@@ -152,7 +164,9 @@ public static class SchedulerFactory
             reVerifier: reVerifier,
             aiMergeWorker: aiMergeWorker,
             driftAuthorization: driftAuthorization,
-            waveDriftAuthorized: waveDriftAuthorized);
+            waveDriftAuthorized: waveDriftAuthorized,
+            breakdownInvoker: breakdownInvoker,
+            breakdownConfirmations: breakdownConfirmations);
     }
 
     /// <summary>
@@ -180,9 +194,22 @@ public static class SchedulerFactory
     /// </summary>
     private const string OverwatchRunnerProfile = "overwatch";
 
+    /// <summary>
+    /// The reserved <c>promptRunners</c> profile name for the #360 Phase 1 between-wave breakdown actor
+    /// (doc 11 §9.2). When a plan declares it, the JIT-checkpoint breakdown uses exactly that profile
+    /// (typically the FULL authoring tool set); otherwise it falls back to the default/sole runner so a plan
+    /// that only configured <c>claude</c> still gets auto-breakdown. Null only when the plan declares no
+    /// prompt runner — the checkpoint then honest-halts, never a silent no-op invoke.
+    /// </summary>
+    private const string BreakdownRunnerProfile = "breakdown";
+
     /// <summary>Resolve the runner the overwatcher's diagnose prompt drives: the reserved <c>overwatch</c> profile, else the default/sole runner, else null.</summary>
     private static IPromptRunner? ResolveOverwatchRunner(PromptRunnerRegistry registry) =>
         ResolveReservedRunner(registry, OverwatchRunnerProfile);
+
+    /// <summary>Resolve the runner the #360 between-wave breakdown drives: the reserved <c>breakdown</c> profile, else the default/sole runner, else null.</summary>
+    private static IPromptRunner? ResolveBreakdownRunner(PromptRunnerRegistry registry) =>
+        ResolveReservedRunner(registry, BreakdownRunnerProfile);
 
     /// <summary>
     /// Resolve the <see cref="IPromptRunner"/> the AI-merge worker should drive: the reserved

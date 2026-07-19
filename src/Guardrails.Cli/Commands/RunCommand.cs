@@ -301,6 +301,18 @@ public static class RunCommand
             waveDriftAuthorized = authorizedWaves;
         }
 
+        // #360 Phase 1 between-wave breakdown confirm (doc 11 §9.6): under the default "prompt" policy the JIT
+        // checkpoint auto-invokes plan-breakdown only on an interactive approval. The Scheduler cannot prompt
+        // (it never touches the console, and the checkpoint fires INSIDE the Spectre live region — #145 Bug 1),
+        // so — mirroring the wave-drift confirm — the CLI detects the upcoming unauthored-wave checkpoint BEFORE
+        // any UI and asks y/N; the answers are passed to the Scheduler. Non-interactive → no confirmation →
+        // honest-halt. "auto" needs no confirmation (it invokes unconditionally); "halt" never invokes.
+        IReadOnlyDictionary<string, bool>? breakdownConfirmations = null;
+        if (probe.Plan.IsWaved && probe.Plan.Config.AutonomyPolicy == Core.Model.AutonomyPolicy.Prompt)
+        {
+            breakdownConfirmations = ConfirmWaveBreakdownIfInteractive(probe.Plan, journal, io);
+        }
+
         // The log server is a companion to the live table: start it only in the interactive path
         // (nobody clicks links in CI / redirected output), and never let a binding failure abort
         // the run — TryStart returns null and prints one warning.
@@ -351,7 +363,7 @@ public static class RunCommand
                 // Stack the diagram observer AROUND the log-site observer: it forwards every event down
                 // the chain and re-renders logs/<runId>/diagram.html after each.
                 diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
-                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -362,7 +374,7 @@ public static class RunCommand
                 PrintStaticIndexLink(logsRoot, io);
                 diagramObserver.WriteInitialDiagram();
                 PrintDiagramLink(logsRoot, io);
-                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, cancellationToken).ConfigureAwait(false);
+                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, cancellationToken).ConfigureAwait(false);
             }
 
             // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -775,6 +787,65 @@ public static class RunCommand
     }
 
     /// <summary>
+    /// #360 Phase 1 between-wave breakdown confirm (doc 11 §9.6). Under the default <c>prompt</c> policy, in an
+    /// interactive TTY, ask whether to auto-invoke <c>plan-breakdown</c> for the upcoming unauthored-wave JIT
+    /// checkpoint (a brief.md-bearing empty wave). Returns the captured answer keyed by the wave dir
+    /// (<c>true</c> = approve → the Scheduler invokes; <c>false</c> = decline → the Scheduler honest-halts
+    /// <c>prompted-declined</c>). Returns <c>null</c> — no confirmation, the Scheduler honest-halts — when
+    /// there is no upcoming checkpoint, no <c>brief.md</c>, the run is non-interactive
+    /// (<see cref="Console.IsInputRedirected"/>), or the run would not use worktree mode (no integration
+    /// worktree = no materialized upstream to break down against).
+    /// </summary>
+    private static IReadOnlyDictionary<string, bool>? ConfirmWaveBreakdownIfInteractive(
+        Core.Model.PlanDefinition plan, RunJournal journal, IConsoleIo io)
+    {
+        // The upcoming checkpoint = the FIRST not-completed wave with an empty tasks/ folder (skip completed
+        // waves and authored-but-not-completed waves, which run before any later stub). This is the wave the
+        // run halts at (the checkpoint is a terminal hard barrier).
+        Core.Model.WaveNode? checkpoint = null;
+        foreach (Core.Model.WaveNode wave in plan.Waves)
+        {
+            if (journal.WaveEntryOf(wave.Dir) is { Status: WaveStatus.Completed })
+            {
+                continue;
+            }
+
+            if (wave.Tasks.Count == 0)
+            {
+                checkpoint = wave;
+                break;
+            }
+            // authored, not completed → runs before any later stub; keep scanning.
+        }
+
+        if (checkpoint is null)
+        {
+            return null;
+        }
+
+        bool briefPresent = File.Exists(Path.Combine(checkpoint.Directory, Core.Model.WaveNode.BriefFileName));
+        if (!briefPresent || !SchedulerFactory.WouldUseWorktreeMode(plan) || Console.IsInputRedirected)
+        {
+            return null; // non-eligible or non-interactive → the Scheduler honest-halts per policy.
+        }
+
+        io.Out.WriteLine();
+        io.Out.WriteLine($"WAVE CHECKPOINT — '{checkpoint.Dir}' is unauthored and carries a brief.md (SSOT §14.4, #360).");
+        io.Out.WriteLine($"  Invoking plan-breakdown authors '{checkpoint.Dir}/tasks/' against the materialized upstream,");
+        io.Out.WriteLine("  then HALTS for you to run /guardrails-review (the review gate is never auto-satisfied).");
+        io.Out.Write($"Invoke plan-breakdown for '{checkpoint.Dir}' now? [y/N] ");
+
+        string? answer = Console.ReadLine();
+        bool yes = answer is not null && answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase);
+        if (!yes)
+        {
+            io.Out.WriteLine($"Declined — '{checkpoint.Dir}' left unauthored; author it manually, then re-run.");
+        }
+
+        return new Dictionary<string, bool>(StringComparer.Ordinal) { [checkpoint.Dir] = yes };
+    }
+
+    /// <summary>
     /// Render a WAVED run's wave-boundary halt (SSOT §14, #254 M2b): the JIT-checkpoint (unauthored next
     /// wave), a wave entry/exit gate failure, or a wave-drift halt under a halt/unconfirmed-prompt policy.
     /// Exit 2 (actionable), like the definition-drift halt.
@@ -789,6 +860,8 @@ public static class RunCommand
             WaveHaltKind.WaveDrift => "WAVE DRIFT",
             WaveHaltKind.EntryGateFailed => "WAVE ENTRY GATE FAILED",
             WaveHaltKind.ExitGateFailed => "WAVE EXIT GATE FAILED",
+            WaveHaltKind.BreakdownComplete => "WAVE BREAKDOWN COMPLETE",
+            WaveHaltKind.BreakdownFailed => "WAVE BREAKDOWN FAILED",
             _ => "WAVE HALT"
         };
         o.WriteLine($"{label}: {halt.Headline}");
@@ -811,7 +884,10 @@ public static class RunCommand
         // breaking it down. Best-effort: a render failure is swallowed; it never changes the exit
         // code or obscures the checkpoint message. The same render runs at wave-start on re-run
         // (see ConsoleRunObserver / LiveRunObserver.WaveStarting) so the diagram is always fresh.
-        if (halt.Kind == WaveHaltKind.NextWaveUnauthored && halt.WaveDirectory is { } waveAbsDir)
+        // #360 Phase 1: on BreakdownComplete the wave is now AUTHORED, so the focused diagram shows the
+        // freshly-broken-down DAG the human is about to review.
+        if (halt.Kind is WaveHaltKind.NextWaveUnauthored or WaveHaltKind.BreakdownComplete
+            && halt.WaveDirectory is { } waveAbsDir)
         {
             if (GraphCommand.RenderWaveScoped(waveAbsDir, TextWriter.Null))
             {
@@ -1191,10 +1267,12 @@ public static class RunCommand
         IRunObserver observer,
         DriftAuthorization? driftAuthorization,
         IReadOnlySet<string>? waveDriftAuthorized,
+        IReadOnlyDictionary<string, bool>? breakdownConfirmations,
         CancellationToken cancellationToken)
     {
         Scheduler scheduler = SchedulerFactory.Create(
-            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized);
+            plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
+            breakdownConfirmations: breakdownConfirmations);
         return scheduler.RunAsync(plan, cancellationToken);
     }
 
