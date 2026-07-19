@@ -71,9 +71,33 @@ public sealed record ReviewMarker
     [JsonPropertyName("planHash")]
     public string PlanHash { get; init; } = string.Empty;
 
+    /// <summary>
+    /// OPTIONAL evidence-hygiene attestation (issue #366, §4): the deterministic evidence class plus
+    /// the audit trail (source, self-reported tool/actor, and a review-report pointer). ADDITIVE and
+    /// back-compat — absent on a pre-#366 (v1) marker, which classifies
+    /// <see cref="EvidenceClass.Legacy"/>. Omitted from the wire when null (F7
+    /// <see cref="JsonIgnoreCondition.WhenWritingNull"/>) so a legacy marker stays byte-identical to
+    /// today. Classification (<see cref="ReviewAttestation.Classify"/>) keys on this block's presence
+    /// and its <c>source</c>, NEVER on <see cref="Version"/>.
+    /// </summary>
+    [JsonPropertyName("attestation")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ReviewAttestation? Attestation { get; init; }
+
     /// <summary>Absolute path to the marker file for the given plan folder (<c>state/guardrails-review.json</c>).</summary>
     public static string PathFor(string planDirectory) =>
         Path.Combine(Path.GetFullPath(planDirectory), "state", FileName);
+
+    /// <summary>
+    /// Serialize this marker to its wire JSON. The issue-#366 write path bumps <c>version</c> to 2 and
+    /// applies <see cref="JsonIgnoreCondition.WhenWritingNull"/> to the new optional members (so a
+    /// <c>bare</c> stamp emits no <c>"actor": null</c> / <c>"evidence": null</c> noise), while the
+    /// required top-three fields keep their current <see cref="JsonIgnoreCondition.Never"/>
+    /// serialization for byte-exact back-compat (§4).
+    /// </summary>
+    /// <remarks>STUB (TDD red, issue #366): the implementation task fills this. See §4/§5.</remarks>
+    public string ToJson() =>
+        throw new NotImplementedException("#366: attestation-aware marker serialization is not implemented yet.");
 
     /// <summary>
     /// Read the marker for <paramref name="planDirectory"/>, or null when it is absent or
