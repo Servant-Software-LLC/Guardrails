@@ -1,7 +1,9 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Guardrails.Core.Graph;
+using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
 using Guardrails.Core.State;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
@@ -52,6 +54,17 @@ public sealed class Scheduler
     // dirs. Empty (the default) for auto (resolves on its own) and halt / unconfirmed prompt (halts).
     private readonly IReadOnlySet<string> _waveDriftAuthorized;
 
+    // #360 Phase 1 (SSOT §14.4, doc 11 §9): the between-wave breakdown actor. Null in serial mode (no
+    // integration worktree for materialized upstream) and for a plan that declares no prompt runner —
+    // either leaves the JIT checkpoint honest-halting exactly as before. The `overwatch`-style seam.
+    private readonly WaveBreakdownInvoker? _breakdownInvoker;
+
+    // #360 Phase 1: the JIT-checkpoint breakdown decisions the CLI captured BEFORE the live region under a
+    // `prompt` policy (waveDir → operator's y/N). The Scheduler cannot prompt (it never touches the console,
+    // and the checkpoint fires inside the Spectre live region), so — mirroring the wave-drift confirm — the
+    // CLI prompts up front and passes the answers here. Absent entry ⇒ non-interactive ⇒ honest-halt.
+    private readonly IReadOnlyDictionary<string, bool> _breakdownConfirmations;
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -62,7 +75,9 @@ public sealed class Scheduler
         IReVerifier? reVerifier = null,
         IAiMergeWorker? aiMergeWorker = null,
         DriftAuthorization? driftAuthorization = null,
-        IReadOnlySet<string>? waveDriftAuthorized = null)
+        IReadOnlySet<string>? waveDriftAuthorized = null,
+        WaveBreakdownInvoker? breakdownInvoker = null,
+        IReadOnlyDictionary<string, bool>? breakdownConfirmations = null)
     {
         _plan = plan;
         _executor = executor;
@@ -73,6 +88,8 @@ public sealed class Scheduler
         _aiMergeWorker = aiMergeWorker;
         _driftAuthorization = driftAuthorization;
         _waveDriftAuthorized = waveDriftAuthorized ?? new HashSet<string>(StringComparer.Ordinal);
+        _breakdownInvoker = breakdownInvoker;
+        _breakdownConfirmations = breakdownConfirmations ?? new Dictionary<string, bool>(StringComparer.Ordinal);
 
         int requested = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
 
@@ -306,21 +323,18 @@ public sealed class Scheduler
                 }
             }
 
-            // 2. Between-wave JIT checkpoint (SSOT §14.4/§14.10): an unauthored/empty wave honest-halts
-            //    (exit 2). #360 Phase 0: detect an OPTIONAL human-authored brief.md (the opt-in signal for
-            //    future auto-breakdown) and name it in the halt, AND record a boundary:"wave" decisions[]
-            //    entry — the JIT checkpoint was previously the one wave boundary emitting none (the gap #360
-            //    Phase 0 closes). The overwatcher's between-wave actor will plug in HERE in a future phase
-            //    (§14.9); Phase 0 invokes nothing and still honest-halts.
+            // 2. Between-wave JIT checkpoint (SSOT §14.4/§14.10): an unauthored/empty wave. #360 Phase 0
+            //    detected an OPTIONAL human-authored brief.md and named it in the halt. #360 Phase 1 (doc 11
+            //    §9) plugs the between-wave breakdown ACTOR in HERE: when a brief.md is present AND the policy
+            //    authorizes it (auto, or a prompt approval the CLI captured), the harness INVOKES plan-breakdown
+            //    against the materialized upstream, runs `guardrails validate` as the deterministic gate, and
+            //    halts BreakdownComplete (for review) / BreakdownFailed (quarantining the partial). Otherwise
+            //    (brief absent, halt policy, non-interactive prompt, or no invoker) it honest-halts exactly as
+            //    before. Either way it records a boundary:"wave" decisions[] entry.
             if (wave.Tasks.Count == 0)
             {
-                bool briefPresent = File.Exists(Path.Combine(wave.Directory, WaveNode.BriefFileName));
-                DecisionEntry checkpoint =
-                    DriftDecisions.WaveCheckpointHalt(_plan.Config.AutonomyPolicy, wave.Dir, briefPresent);
-                _journal.RecordDecision(checkpoint);
-                _observer.DecisionRecorded(checkpoint);
-                return BuildReport(plan, settled, cancelled: false)
-                    with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ, briefPresent) };
+                return await RunJitCheckpointAsync(plan, wave, integ, settled, cancellationToken)
+                    .ConfigureAwait(false);
             }
 
             _observer.WaveStarting(wave, i + 1, waves.Count);
@@ -926,17 +940,19 @@ public sealed class Scheduler
         string at = worktree is not null ? $" at:\n  {worktree}" : "";
         string brief = $"{wave.Dir}/{WaveNode.BriefFileName}";
 
-        // #360 Phase 0: a PRESENT brief.md is the opt-in signal that names future auto-breakdown under
-        // 'autonomyPolicy'; an ABSENT one names the convention as the way to enable it. Either way Phase 0
-        // still honest-halts (invokes nothing) and keeps the integration-worktree path + re-run instruction.
+        // #360: a PRESENT brief.md is the opt-in signal for auto-breakdown (#360 Phase 1) under
+        // 'autonomyPolicy'; an ABSENT one names the convention as the way to enable it. This honest-halt is
+        // reached when the policy did NOT authorize invocation (halt, a non-interactive/declined prompt, or
+        // no breakdown runner) — it keeps the integration-worktree path + the manual-breakdown instruction.
         string detail = briefPresent
-            ? $"A wave brief '{brief}' is present. Auto-breakdown against it will be available under "
-              + "'autonomyPolicy' in a future release; for now the harness honest-halts. The prior wave(s) "
-              + $"completed and are materialized on the plan branch{at}\nBreak down + review '{wave.Dir}' "
-              + "against the materialized upstream artifacts, then re-run 'guardrails run' to continue."
+            ? $"A wave brief '{brief}' is present. Auto-breakdown against it runs under 'autonomyPolicy' "
+              + "'auto' (or a 'prompt' approval); this run honest-halts (halt policy, a non-interactive "
+              + $"prompt, or no breakdown runner). The prior wave(s) completed and are materialized on the "
+              + $"plan branch{at}\nBreak down + review '{wave.Dir}' against the materialized upstream "
+              + "artifacts, then re-run 'guardrails run' to continue."
             : "The prior wave(s) completed and are materialized on the plan branch. Break down + review "
               + $"'{wave.Dir}' against the materialized upstream artifacts{at}\nCreate '{brief}' to enable "
-              + "auto-breakdown here in a future release, or author the wave manually, then re-run "
+              + "auto-breakdown here under 'autonomyPolicy', or author the wave manually, then re-run "
               + "'guardrails run' to continue.";
 
         return new WaveHalt
@@ -949,6 +965,228 @@ public sealed class Scheduler
             WaveDirectory = wave.Directory
         };
     }
+
+    // --- #360 Phase 1: the between-wave breakdown actor at the JIT checkpoint (SSOT §14.4, doc 11 §9) -------
+
+    /// <summary>
+    /// Handle the JIT wave checkpoint for an unauthored (empty <c>tasks/</c>) wave. Per the design-360 table
+    /// (doc 11 §9.6): INVOKE breakdown when a <c>brief.md</c> is present AND the policy authorizes it (auto,
+    /// or a prompt approval the CLI captured) AND the actor + integration worktree exist; otherwise
+    /// honest-halt exactly as before. Records a <c>boundary:"wave"</c> <c>decisions[]</c> entry either way.
+    /// </summary>
+    private async Task<RunReport> RunJitCheckpointAsync(
+        PlanDefinition plan, WaveNode wave, IntegrationHandle? integ,
+        Dictionary<string, TaskResult> settled, CancellationToken cancellationToken)
+    {
+        AutonomyPolicy policy = _plan.Config.AutonomyPolicy;
+        bool briefPresent = File.Exists(Path.Combine(wave.Directory, WaveNode.BriefFileName));
+
+        // Invocation requires: a brief (opt-in), a breakdown runner, and the integration worktree (materialized
+        // upstream — absent in serial mode). Don't spend a full authoring session once maxCostUsd is reached.
+        bool costCapHit = _plan.Config.MaxCostUsd is { } cap && _journal.CurrentCostUsd() >= cap;
+        bool canInvoke = briefPresent && _breakdownInvoker is not null && integ is not null && !costCapHit;
+        bool prompted = _breakdownConfirmations.TryGetValue(wave.Dir, out bool approved);
+
+        string? invocationToken = null; // set only when we actually invoke
+        if (canInvoke)
+        {
+            if (policy == AutonomyPolicy.Auto)
+            {
+                invocationToken = "auto-applied";
+            }
+            else if (policy == AutonomyPolicy.Prompt && prompted && approved)
+            {
+                invocationToken = "prompted-approved";
+            }
+        }
+
+        if (invocationToken is not null)
+        {
+            return await RunBreakdownAsync(plan, wave, integ!, settled, policy, invocationToken, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        // Honest-halt. An interactive DECLINE reads as prompted-declined; everything else (halt policy, a
+        // non-interactive prompt, an absent brief, no runner, or a hit cost cap) is a plain halted.
+        string haltToken = policy == AutonomyPolicy.Prompt && prompted && !approved ? "prompted-declined" : "halted";
+        DecisionEntry checkpoint = DriftDecisions.WaveCheckpointHalt(policy, wave.Dir, briefPresent, haltToken);
+        _journal.RecordDecision(checkpoint);
+        _observer.DecisionRecorded(checkpoint);
+        return BuildReport(plan, settled, cancelled: false)
+            with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ, briefPresent) };
+    }
+
+    /// <summary>
+    /// Invoke <c>plan-breakdown</c> for the wave, then gate its output on the DETERMINISTIC in-process
+    /// <c>guardrails validate</c> (invariant 1): PASS → <see cref="WaveHaltKind.BreakdownComplete"/> (halt for
+    /// the human review gate — never auto-satisfied, doc 11 §9.6); FAIL → quarantine the partial invalid
+    /// <c>tasks/</c> (so the plan stays loadable + the checkpoint re-fires on resume) →
+    /// <see cref="WaveHaltKind.BreakdownFailed"/> carrying the validate errors.
+    /// </summary>
+    private async Task<RunReport> RunBreakdownAsync(
+        PlanDefinition plan, WaveNode wave, IntegrationHandle integ,
+        Dictionary<string, TaskResult> settled, AutonomyPolicy policy, string invocationToken,
+        CancellationToken cancellationToken)
+    {
+        // Transcript location (SSOT §8): logs/<runId>/<wave-dir>/breakdown/ — NOT a per-task attempt dir.
+        string breakdownLogDir = Path.Combine(plan.PlanDirectory, "logs", integ.RunId, wave.Dir, "breakdown");
+
+        WaveBreakdownOutcome outcome = await _breakdownInvoker!
+            .InvokeAsync(wave, plan, integ.IntegrationWorktreePath, breakdownLogDir, _journal, cancellationToken)
+            .ConfigureAwait(false);
+
+        (bool valid, string report, int authoredTaskCount) = ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
+
+        if (valid && authoredTaskCount > 0)
+        {
+            DecisionEntry done = DriftDecisions.WaveBreakdownComplete(policy, wave.Dir, invocationToken, authoredTaskCount);
+            _journal.RecordDecision(done);
+            _observer.DecisionRecorded(done);
+            return BuildReport(plan, settled, cancelled: false)
+                with { WaveHalt = BuildBreakdownCompleteHalt(wave, authoredTaskCount) };
+        }
+
+        // BreakdownFailed — quarantine the partial output (or the no-op empty wave) and keep the plan loadable.
+        string quarantineDir = QuarantinePartialWave(wave, breakdownLogDir);
+        string detail = ComposeBreakdownFailedDetail(report, outcome, quarantineDir, authoredTaskCount);
+        DecisionEntry failed = DriftDecisions.WaveBreakdownFailed(policy, wave.Dir, invocationToken, detail);
+        _journal.RecordDecision(failed);
+        _observer.DecisionRecorded(failed);
+        return BuildReport(plan, settled, cancelled: false)
+            with { WaveHalt = BuildBreakdownFailedHalt(wave, detail) };
+    }
+
+    /// <summary>
+    /// The deterministic gate on the breakdown output (design-360 Q3, doc 11 §9.4): re-load + validate the
+    /// plan IN-PROCESS — exactly what <c>guardrails validate</c> does (PlanLoader + PlanValidator), no
+    /// subprocess (and never the installed tool — dogfood safety). Returns whether the plan is error-free,
+    /// the joined diagnostic report, and how many tasks the target wave now carries.
+    /// </summary>
+    private static (bool Valid, string Report, int AuthoredTaskCount) ValidatePlanAfterBreakdown(
+        string planDirectory, string waveDir)
+    {
+        var loader = new PlanLoader();
+        PlanLoadResult loadResult = loader.Load(planDirectory);
+        var diagnostics = new List<Diagnostic>(loadResult.Diagnostics);
+        if (loadResult.Plan is not null && !loadResult.HasErrors)
+        {
+            diagnostics.AddRange(new PlanValidator().Validate(loadResult.Plan));
+        }
+
+        bool valid = !diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error);
+        int authoredTaskCount = loadResult.Plan?.Waves
+            .FirstOrDefault(w => string.Equals(w.Dir, waveDir, StringComparison.Ordinal))?.Tasks.Count ?? 0;
+        string report = string.Join("\n", diagnostics.Select(d => d.ToString()));
+        return (valid, report, authoredTaskCount);
+    }
+
+    /// <summary>
+    /// Quarantine a <see cref="WaveHaltKind.BreakdownFailed"/> wave's partial invalid <c>tasks/</c> to
+    /// <c>logs/&lt;runId&gt;/&lt;wave-dir&gt;/breakdown/rejected/tasks/</c> and RESTORE an empty stub
+    /// <c>tasks/</c> — so a partial invalid wave never wedges the next resume's plan LOAD (§14.4/doc 11 §9.4),
+    /// the checkpoint cleanly re-fires, and the rejected output is preserved for a human. Best-effort with a
+    /// revert (empty the stub) fallback if the move fails. Returns the quarantine root for the halt detail.
+    /// </summary>
+    private static string QuarantinePartialWave(WaveNode wave, string breakdownLogDir)
+    {
+        string tasksDir = Path.Combine(wave.Directory, "tasks");
+        string rejectedRoot = Path.Combine(breakdownLogDir, "rejected");
+        string rejectedTasks = Path.Combine(rejectedRoot, "tasks");
+        try
+        {
+            Directory.CreateDirectory(rejectedRoot);
+            if (Directory.Exists(tasksDir))
+            {
+                if (Directory.Exists(rejectedTasks))
+                {
+                    Directory.Delete(rejectedTasks, recursive: true);
+                }
+
+                Directory.Move(tasksDir, rejectedTasks);
+            }
+
+            Directory.CreateDirectory(tasksDir); // restore the empty JIT stub → plan stays loadable, checkpoint re-fires
+        }
+        catch
+        {
+            // Fallback (design-360 §9.4: "revert is the simpler fallback"): if the move failed, empty the
+            // stub so the plan still loads. The most useful debugging artifact may be lost, but liveness wins.
+            try
+            {
+                if (Directory.Exists(tasksDir))
+                {
+                    Directory.Delete(tasksDir, recursive: true);
+                }
+
+                Directory.CreateDirectory(tasksDir);
+            }
+            catch
+            {
+                // Nothing more we can safely do; the halt still names the failure for the human.
+            }
+        }
+
+        return rejectedRoot;
+    }
+
+    private static string ComposeBreakdownFailedDetail(
+        string validateReport, WaveBreakdownOutcome outcome, string quarantineDir, int authoredTaskCount)
+    {
+        var sb = new StringBuilder();
+        if (outcome.Error is { Length: > 0 } err)
+        {
+            sb.Append($"The breakdown invocation faulted: {err}\n");
+        }
+        else if (!outcome.ProcessCompleted)
+        {
+            sb.Append("The breakdown invocation did not complete cleanly.\n");
+        }
+
+        if (authoredTaskCount == 0 && string.IsNullOrWhiteSpace(validateReport))
+        {
+            sb.Append("The breakdown authored NO tasks for this wave.\n");
+        }
+        else
+        {
+            sb.Append("The authored wave FAILED 'guardrails validate':\n");
+            sb.Append(validateReport);
+            sb.Append('\n');
+        }
+
+        sb.Append($"The partial output was quarantined (the wave reverted to its empty stub) to:\n  {quarantineDir}\n");
+        sb.Append("The plan stays loadable and this checkpoint re-fires on the next 'guardrails run'. Fix the "
+                  + "brief or author the wave manually, then re-run.");
+        return sb.ToString();
+    }
+
+    private static WaveHalt BuildBreakdownCompleteHalt(WaveNode wave, int taskCount)
+    {
+        string detail =
+            $"'{wave.Dir}' authored ({taskCount} task(s)) and passed 'guardrails validate'. The output is a "
+            + "DRAFT — the review gate is the human gate; do not skip it:\n"
+            + $"  1. Inspect {wave.Dir}/tasks/ — verify the tasks, guardrails, and the DAG.\n"
+            + "  2. Run /guardrails-review on the wave folder.\n"
+            + "  3. Re-run 'guardrails run' to continue.\n"
+            + "The harness never marks a wave reviewed on a human's behalf (any autonomyPolicy).";
+        return new WaveHalt
+        {
+            WaveDir = wave.Dir,
+            Kind = WaveHaltKind.BreakdownComplete,
+            Headline = $"Wave '{wave.Dir}' broken down ({taskCount} task(s)) — review it before it runs (SSOT §14.4).",
+            Detail = detail,
+            WaveDirectory = wave.Directory
+        };
+    }
+
+    private static WaveHalt BuildBreakdownFailedHalt(WaveNode wave, string detail) =>
+        new()
+        {
+            WaveDir = wave.Dir,
+            Kind = WaveHaltKind.BreakdownFailed,
+            Headline = $"Wave '{wave.Dir}' breakdown FAILED validation — partial output quarantined (SSOT §14.4).",
+            Detail = detail,
+            WaveDirectory = wave.Directory
+        };
 
     private static WaveHalt BuildGateHalt(WaveNode wave, WaveHaltKind kind, IReadOnlyList<GuardrailResult> failed)
     {
