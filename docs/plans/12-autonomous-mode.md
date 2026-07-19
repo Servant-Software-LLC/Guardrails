@@ -1,10 +1,11 @@
 # 12 — Autonomous mode (the criticality dial) — design of record (issue #361)
 
-> **Status: DRAFT — design-of-record for the #106 draft-PR loop; implementation milestones do NOT start
-> until the maintainer has reviewed inline and comments are addressed.** On the **roadmap** this is a **v2
-> bet** (it realizes the autonomy slice of bet #6 and lights up the overwatcher's deferred `auto` tier for
-> the action/budget layer). It composes with — and never redefines — the shipped `autonomyPolicy` (SSOT
-> §2.1), the overwatcher (`docs/plans/11-overwatcher.md`), and the wave loop (`docs/plans/10-multi-wave-plans.md`).
+> **Status: APPROVED (maintainer, 2026-07-19) — implementation may begin per §9 phasing.** The two
+> load-bearing product calls (§10 A/B) are decided, both adversarial passes are folded in, and the maintainer
+> accepted the §10 C–N recommendations as settled (see §10). On the **roadmap** this is a **v2 bet** (it
+> realizes the autonomy slice of bet #6 and lights up the overwatcher's deferred `auto` tier for the
+> action/budget layer). It composes with — and never redefines — the shipped `autonomyPolicy` (SSOT §2.1),
+> the overwatcher (`docs/plans/11-overwatcher.md`), and the wave loop (`docs/plans/10-multi-wave-plans.md`).
 >
 > **Terminology:** "v1" **inside this doc** means *the initial delivery of autonomous mode* (its Phase 1–3,
 > §9) — as distinct from the product-roadmap "v1/v2." Per the maintainer ruling, the **firstmate reply
@@ -977,65 +978,52 @@ DoR before Phase 1 starts.
   settled in §1 / §7.4–§7.7 and Phase 3 (§9). The honest boundary stays: hard-blocker / terminal-exhaustion /
   unsound-rewind escalations are **not** answerable, and the review gate is never forged by an answer (§7.5).
 
-### Carried forward from `design-360-auto-wave-breakdown.md` (still open, reframed under the dial)
+### C–N — ACCEPTED by the maintainer (2026-07-19) as the recommended values; now settled design
 
-- **C. `autonomyPolicy: "auto"` and the review pause (design-360 Q1, now §5.2) — SETTLED by Decision A.**
-  `auto` governs breakdown *invocation*; the review gate is a floor cleared only via the explicit
+The maintainer accepted the recommendations below verbatim; each is DECIDED as stated and binds implementation
+(§9/§11). Rationale is retained for the record.
+
+- **C (DECIDED) — `autonomyPolicy: "auto"` and the review pause — settled by Decision A.** `auto` governs
+  breakdown *invocation*; the review gate is a floor cleared only via the explicit
   `gateThresholds.review-gate: "proceed-unreviewed"` (Option E default + Option P opt-in), and
-  `proceed-unreviewed` + `dial: critical` is forbidden (GR2040). No longer open — listed for traceability.
-- **D. `wave.json` metadata alongside `brief.md` (design-360 Q2).** Recommend `brief.md` only. Does the
-  criticality assessment or the breakdown-prompt composition need structured per-wave metadata (target
-  stack, parent-plan pointer) justifying a `wave.json`? Current answer: no.
-- **E. Breakdown transcript log location (design-360 Q3).** Recommend `logs/<runId>/<wave-dir>/breakdown/`
-  (doc 11 §9). Confirm vs. a plan-level location.
-
-### New for #361
-
-- **F. Dial granularity + names (RESOLVED to a recommendation — confirm).** Recommend the coarse ordered
-  enum `low < moderate < high < critical` with "value = lowest criticality that still escalates" (§3.3), and
-  **`never` REMOVED** (`critical` is already "fully autonomous, floors only"; `never` would best-guess the
-  critical judgment calls a human most wants to see). Confirm the level names (alternatives:
-  `trivial/minor/major/severe`) and the removal of `never`.
-- **G. The dial field name + shape.** Recommend a new `autonomy` block with `escalationThreshold` +
-  `gateThresholds` + `blockerRetry` + `maxJudgeWidenings` (§3.4), composing with the unchanged
-  `autonomyPolicy`. Confirm the block name (alternatives: `unattended`, `criticality`) and that a NEW
-  orthogonal field (Option b) — not extending/reinterpreting `autonomyPolicy` — is the chosen model.
-- **H. Criticality-assessment authority.** Recommend a hybrid: deterministic gate-classification + a
-  constrained advisory LLM assessment (the reserved `overwatch`/`assess` profile) that is NEVER the verdict
-  authority; malformed/absent ⇒ escalate (invariant 1, §4.3). Confirm the profile name (reuse `overwatch` or
-  a new `assess`).
-- **I. Cost/liveness defaults (accounting for breakdown spend specifically).** Recommend `blockerRetry:
-  { maxAttempts: 5, totalWaitSeconds: 900 }` (floored by `transientPauseBudgetSeconds`, §4.2);
-  `maxJudgeWidenings` a small run-level cap (§4.3); and — load-bearing — **`--autonomous` REQUIRES an
-  effective `maxCostUsd`**, applying a conservative built-in default with a loud warning if unset (§3.4). The
-  cap must budget for **breakdown invocations specifically** (a full authoring session ≫ a diagnose, ~$1–5
-  each) plus assessments plus best-guess retries — confirm the built-in default dollar figure (e.g. $20) and
-  the `blockerRetry`/`maxJudgeWidenings` numbers.
-- **J. Per-gate override syntax.** Recommend the `gateThresholds` map with keys `needs-human` /
-  `wave-checkpoint` / `review-gate` (§3.5), the `review-gate` key taking the escalate/`proceed-unreviewed`
-  acknowledgment rather than a criticality level. Confirm.
-- **K. Review-gate enforcement strength (scope option, NOT v1 — now GATED ON #366).** v1 enforces the review
-  gate via a control-flow halt + a distinct-non-zero-exit reporting flag (§5 floor 3), NOT a deterministic
-  runtime gate. Promoting it to a runtime halt on a stale/missing marker (GR2025 warning → halt, an
-  `autonomy.reviewGate: "enforce"` mode) is only worth building **after #366** makes the marker a trustworthy,
-  authorized signal — the marker is currently forgeable by plan-folder write-access, so a runtime gate on it
-  would gate on a forgeable file. Recommend deferring; confirm it stays out of v1 and is sequenced behind #366.
-- **L. The escalation + reply seam shape (reply channel now v1, Decision B).** Recommend a file-based
-  `IEscalationSink` writing `logs/<runId>/escalations/<seq>-<gate>.json` + `decisions[]` + observer
-  (fire-and-record), plus the v1 answer-file `…​.answer.json` beside it consumed by resume for **`needs-human`
-  + `wave-checkpoint` only** (§7.4–§7.6; **no `review-attested` kind**, Blocker 2/#366). Confirm the answer-file
-  location (co-located vs a dedicated inbox), the binding fields, the monotonic-`seq`/CAS/cross-runId
-  consumption discipline (§7.1), and the clamped-hard-call non-answerability under `proceed-unreviewed`
-  (Blocker 1). **Security-sensitive — a focused adversarial pass on §7.6 consumption is planned.**
-- **M. GR codes for the `autonomy` block.** The next-free code is **GR2038** (GR2035 DuplicateCheckName,
-  GR2036 ExpectedDurationNonPositive, GR2037 BannedGuardrailPattern are taken); `design-360-auto-wave-
-  breakdown.md` earmarks GR2038 for a *deferred* "warn on wave stub without `brief.md`". Recommend **GR2039**
-  = an invalid `escalationThreshold`/`gateThresholds` *value*, and **GR2040** = the settled compound-config
-  incompatibility (`proceed-unreviewed` + `dial: critical`, §5.2) — a distinct cross-field diagnostic. Confirm
-  the two codes and that GR2038 stays with the `brief.md` earmark (or reassign if that earmark is dropped).
-- **N. `--autonomous` default dial.** Recommend `--autonomous` alone sets `escalationThreshold: high`
-  (conservative — best-guess only low/moderate); *fully autonomous* requires an explicit `--dial critical`.
-  Confirm the default is conservative, not fully-autonomous.
+  `proceed-unreviewed` + `dial: critical` is forbidden (GR2040).
+- **D (DECIDED) — `brief.md` only; no `wave.json`.** No structured per-wave metadata file; the breakdown-prompt
+  composition and criticality assessment read the plan-of-record + the materialized integration worktree. Revisit
+  only if a concrete need for structured metadata appears.
+- **E (DECIDED) — breakdown transcript at `logs/<runId>/<wave-dir>/breakdown/`** (doc 11 §9), sibling to the
+  per-wave logs; not a plan-level location.
+- **F (DECIDED) — dial = the coarse ordered enum `low < moderate < high < critical`**, value = "lowest
+  criticality that still escalates" (§3.3); **`never` is removed** (`critical` already means "fully autonomous,
+  floors only"). Level names kept as-is (not `trivial/minor/major/severe`).
+- **G (DECIDED) — a NEW orthogonal `autonomy` block** (Option b) with `escalationThreshold` + `gateThresholds`
+  + `blockerRetry` + `maxJudgeWidenings` (§3.4), composing with the unchanged `autonomyPolicy`. Block name is
+  `autonomy` (not `unattended`/`criticality`). `autonomyPolicy` is neither extended nor reinterpreted.
+- **H (DECIDED) — hybrid assessment: deterministic gate-classification + a constrained advisory LLM assessment
+  that is NEVER the verdict authority** (malformed/absent ⇒ escalate, invariant 1, §4.3). It **reuses the
+  read-only `overwatch` profile** (KISS — assessment is the same read-only-advisory shape as diagnose); a
+  distinct `assess` profile is a later split only if the prompts materially diverge.
+- **I (DECIDED) — cost/liveness defaults:** `blockerRetry: { maxAttempts: 5, totalWaitSeconds: 900 }` (floored
+  by `transientPauseBudgetSeconds`, §4.2); `maxJudgeWidenings: 3` (run-level cap, §4.3); and **`--autonomous`
+  REQUIRES an effective `maxCostUsd`** — a conservative built-in default of **$20** applies with a loud warning
+  if neither config nor `--max-cost-usd` sets one. The cap budgets for breakdown invocations (~$1–5 each) +
+  assessments + best-guess retries.
+- **J (DECIDED) — per-gate `gateThresholds` map** with keys `needs-human` / `wave-checkpoint` / `review-gate`
+  (§3.5); the `review-gate` key takes the escalate/`proceed-unreviewed` acknowledgment, not a criticality level.
+- **K (DECIDED — NOT v1, sequenced behind #366).** v1 enforces the review gate via a control-flow halt + a
+  distinct non-zero exit + reporting flag (§5 floor 3), NOT a deterministic runtime gate. Promoting it to a
+  runtime halt (`autonomy.reviewGate: "enforce"`) waits on **#366** making the marker a trustworthy, authorized
+  signal — a runtime gate on a currently-forgeable file would gate on nothing.
+- **L (DECIDED) — file-based `IEscalationSink`** writing `logs/<runId>/escalations/<seq>-<gate>.json` +
+  `decisions[]` + observer (fire-and-record), plus the v1 answer-file `…​.answer.json` **co-located** beside it,
+  consumed by resume for **`needs-human` + `wave-checkpoint` only** (no `review-attested` kind, Blocker 2/#366),
+  with the monotonic-`seq`/CAS/cross-runId binding discipline (§7.1) and the clamped-hard-call non-answerability
+  under `proceed-unreviewed` (Blocker 1). The focused adversarial pass on §7.6 consumption has run (2 blockers,
+  both closed — §8 DA-7).
+- **M (DECIDED) — GR codes:** **GR2039** = an invalid `escalationThreshold`/`gateThresholds` value; **GR2040** =
+  the compound-config incompatibility (`proceed-unreviewed` + `dial: critical`, keyed on the reachable
+  end-state, §5.2). **GR2038 stays** earmarked for `design-360`'s deferred "warn on wave stub without `brief.md`".
+- **N (DECIDED) — `--autonomous` defaults `escalationThreshold: high`** (best-guess only low/moderate);
+  fully-autonomous requires an explicit `--dial critical`.
 
 ## 11. SSOT deltas + implementation handoff
 
