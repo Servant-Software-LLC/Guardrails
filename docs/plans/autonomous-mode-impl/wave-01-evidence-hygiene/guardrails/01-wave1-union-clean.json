@@ -1,0 +1,4 @@
+{
+  "description": "Wave-01 exit gate: every file wave-01 produced is conflict-marker-free at the union (union-safe integration re-run, GR2028)",
+  "scope": "integration"
+}

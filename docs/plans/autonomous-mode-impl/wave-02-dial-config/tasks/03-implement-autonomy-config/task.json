@@ -1,0 +1,10 @@
+{
+  "description": "Implement the autonomy-block parse over the stubs (map raw→AutonomyConfig, defaults 5/900/3, inert when absent) so the authored config tests pass; existing config behaviour unchanged",
+  "stableId": "w2i3cf",
+  "dependsOn": ["02-author-tests-autonomy-config"],
+  "writeScope": [
+    "src/Guardrails.Core/Model/",
+    "src/Guardrails.Core/Loading/RawManifests.cs",
+    "src/Guardrails.Core/Loading/PlanLoader.cs"
+  ]
+}

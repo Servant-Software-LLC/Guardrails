@@ -1,0 +1,6 @@
+{
+  "description": "Implement GR2039 (invalid threshold/gateThresholds value) and GR2040 (compound-config end-state incl. per-gate route-around) in PlanValidator so the authored matrix passes",
+  "stableId": "w2i5vl",
+  "dependsOn": ["04-author-tests-autonomy-validation"],
+  "writeScope": ["src/Guardrails.Core/Loading/PlanValidator.cs"]
+}

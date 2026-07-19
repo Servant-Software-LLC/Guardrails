@@ -1,0 +1,11 @@
+{
+  "description": "Author failing integration tests + minimal stub for `guardrails plan-hash <folder>` — drives the REAL CommandFactory (production dispatch), asserts the printed hash equals PlanDefinitionHash and is deterministic",
+  "stableId": "w1a7ph",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/PlanHashCliTests.cs",
+    "src/Guardrails.Cli/Commands/PlanHashCommand.cs",
+    "src/Guardrails.Cli/CommandFactory.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

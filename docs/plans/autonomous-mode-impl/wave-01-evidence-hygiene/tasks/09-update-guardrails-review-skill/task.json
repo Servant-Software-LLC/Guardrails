@@ -1,0 +1,6 @@
+{
+  "description": "Update the /guardrails-review skill (Step 6/7) to write a state/reviews report embedding Plan-Definition-Hash, then mark-reviewed --evidence; document review-artifact/bare/machine; drop unforgeable framing",
+  "stableId": "w1s9rv",
+  "dependsOn": ["06-implement-mark-reviewed-f2", "08-implement-plan-hash"],
+  "writeScope": [".claude/skills/guardrails-review/SKILL.md"]
+}

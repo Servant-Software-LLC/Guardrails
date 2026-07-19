@@ -1,0 +1,10 @@
+{
+  "description": "Author failing integration tests + option stubs for `run --autonomous`/`--dial` — defaults escalationThreshold high, requires an effective maxCostUsd ($20 built-in default + loud warning), --dial validation",
+  "stableId": "w2a6cl",
+  "dependsOn": ["03-implement-autonomy-config"],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/AutonomousModeCliTests.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

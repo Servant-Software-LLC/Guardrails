@@ -1,0 +1,10 @@
+{
+  "description": "Author failing xUnit tests + minimal NotImplementedException stubs for the ReviewMarker attestation block (round-trip, back-compat/legacy, WhenWritingNull, symmetric digest)",
+  "stableId": "w1a3at",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ReviewAttestationTests.cs",
+    "src/Guardrails.Core/Review/ReviewAttestation.cs",
+    "src/Guardrails.Core/Review/ReviewMarker.cs"
+  ]
+}

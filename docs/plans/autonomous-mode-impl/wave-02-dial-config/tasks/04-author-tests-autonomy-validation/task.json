@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + the GR2039/GR2040 DiagnosticCodes constants for the autonomy-validation matrix (invalid threshold; compound-config end-state incl. the per-gate route-around; valid-config negatives)",
+  "stableId": "w2a4vl",
+  "dependsOn": ["03-implement-autonomy-config"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/AutonomyValidatorTests.cs",
+    "src/Guardrails.Core/Loading/DiagnosticCodes.cs"
+  ]
+}
