@@ -391,8 +391,12 @@ deliberate, named, forensically-indelible risk transfer, never a silent one and 
 `mergeOnSuccess` to OFF** — since preview.40 a green run auto-delivers to the user's branch by default, and
 machine-authored-and-unreviewed work must NOT auto-deliver; it stays on the plan branch for a human, and the
 run **exits with a distinct non-zero code** so an automated firstmate consumer never reads it as clean green.
-And — the DA-1 ∩ DA-4 gate (doc 12 §5.2 / Open A) — **`proceed-unreviewed` is incompatible with the fully-
-autonomous `dial: critical`**: you may skip review OR best-guess the hard in-wave design calls, never both.
+And — the settled compound-config invariant (maintainer ruling, doc 12 §5.2, **GR2040**) — **`proceed-
+unreviewed` is a load-time error with the fully-autonomous `dial: critical`**: you may skip review OR
+best-guess the hard in-wave design calls, never both. In a long-running unattended run, a `wave-checkpoint`
+escalation is **answerable** via the firstmate reply channel (doc 12 §7.4) — but the review gate itself is
+never forged by an answer (doc 12 §7.5): an answer may only point at a real `/guardrails-review` marker the
+harness re-verifies, never *be* one.
 
 ## 10. Phasing
 
