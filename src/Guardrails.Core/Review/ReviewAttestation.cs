@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Serialization;
+using Guardrails.Core.Hashing;
 
 namespace Guardrails.Core.Review;
 
@@ -28,9 +31,11 @@ public sealed record ReviewAttestation
 
     /// <summary>
     /// Self-reported CLI build that stamped the marker (e.g. <c>guardrails 1.0.0-preview.43</c>).
-    /// Informational and NON-authoritative — audit richness, not trust (§4).
+    /// Informational and NON-authoritative — audit richness, not trust (§4). Omitted from the wire
+    /// when null (F7 <see cref="JsonIgnoreCondition.WhenWritingNull"/>).
     /// </summary>
     [JsonPropertyName("tool")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Tool { get; init; }
 
     /// <summary>
@@ -40,6 +45,7 @@ public sealed record ReviewAttestation
     /// <c>"actor": null</c> noise.
     /// </summary>
     [JsonPropertyName("actor")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Actor { get; init; }
 
     /// <summary>
@@ -47,6 +53,7 @@ public sealed record ReviewAttestation
     /// (and omitted from the wire, F7) for <c>bare</c>/<c>machine</c> stamps (§4).
     /// </summary>
     [JsonPropertyName("evidence")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ReviewEvidence? Evidence { get; init; }
 
     /// <summary>
@@ -54,9 +61,28 @@ public sealed record ReviewAttestation
     /// and that block's <see cref="Source"/> — NEVER from the marker's integer <c>version</c> (§4). A
     /// marker with no (or an unreadable) block classifies <see cref="EvidenceClass.Legacy"/>.
     /// </summary>
-    /// <remarks>STUB (TDD red, issue #366): the implementation task fills this. See §4/§7.</remarks>
-    public static EvidenceClass Classify(ReviewMarker marker) =>
-        throw new NotImplementedException("#366: evidence-class classification is not implemented yet.");
+    public static EvidenceClass Classify(ReviewMarker marker)
+    {
+        ArgumentNullException.ThrowIfNull(marker);
+
+        // No block (a v1 / pre-#366 marker, or one whose block was tolerated to null on read) ⇒ legacy.
+        // NEVER key on marker.Version: an old integer with a real block still classifies by the block,
+        // and a bumped integer with no block is still legacy (§4, "readers never gate on version").
+        if (marker.Attestation is not { } attestation)
+        {
+            return EvidenceClass.Legacy;
+        }
+
+        return attestation.Source switch
+        {
+            "review-artifact" => EvidenceClass.ReviewArtifact,
+            "bare" => EvidenceClass.Bare,
+            "machine" => EvidenceClass.Machine,
+            // An unrecognized (or empty) self-reported source carries no class we can stand behind —
+            // treat it as legacy rather than crediting it, matching the tolerant "malformed ⇒ legacy" spirit.
+            _ => EvidenceClass.Legacy
+        };
+    }
 
     /// <summary>
     /// The <c>sha256:</c>-prefixed digest of a review report's text after the SAME newline
@@ -64,9 +90,17 @@ public sealed record ReviewAttestation
     /// checkout of the same report digest IDENTICALLY. The rule is symmetric across the writer (stamp
     /// time) and any reader that re-checks the digest (F7).
     /// </summary>
-    /// <remarks>STUB (TDD red, issue #366): the implementation task fills this. See §4.</remarks>
-    public static string ComputeReportDigest(string reportContent) =>
-        throw new NotImplementedException("#366: symmetric report-digest helper is not implemented yet.");
+    public static string ComputeReportDigest(string reportContent)
+    {
+        ArgumentNullException.ThrowIfNull(reportContent);
+
+        // The SAME newline normalization PlanDefinitionHash folds every plan file through (CRLF/CR → LF),
+        // so a CRLF checkout and an LF checkout of the same report digest identically — symmetric across
+        // the stamp-time writer and any reader that re-checks it (F7).
+        string normalized = HashText.NormalizeNewlines(reportContent);
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        return "sha256:" + Convert.ToHexString(hash).ToLowerInvariant();
+    }
 }
 
 /// <summary>

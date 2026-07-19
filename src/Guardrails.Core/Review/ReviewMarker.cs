@@ -39,14 +39,21 @@ public sealed record ReviewMarker
     /// <summary>The marker file name under <c>state/</c>.</summary>
     public const string FileName = "guardrails-review.json";
 
-    /// <summary>The current marker schema version.</summary>
-    public const int CurrentVersion = 1;
+    /// <summary>
+    /// The current marker schema version — bumped to 2 for the issue-#366 attestation block (§4). It is
+    /// written as a SIGNAL, never a gate: readers classify by the presence of the <c>attestation</c>
+    /// block and its <c>source</c>, never by this integer (see <see cref="ReviewAttestation.Classify"/>).
+    /// </summary>
+    public const int CurrentVersion = 2;
 
     private static readonly JsonSerializerOptions ReadOptions = new()
     {
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true
+        AllowTrailingCommas = true,
+        // Tolerate a malformed attestation block: it deserializes to null (→ classified `legacy`) rather
+        // than throwing and losing the whole marker, mirroring the tolerant `Read` (§4 field rules).
+        Converters = { new TolerantAttestationConverter() }
     };
 
     private static readonly JsonSerializerOptions WriteOptions = new()
@@ -95,9 +102,7 @@ public sealed record ReviewMarker
     /// required top-three fields keep their current <see cref="JsonIgnoreCondition.Never"/>
     /// serialization for byte-exact back-compat (§4).
     /// </summary>
-    /// <remarks>STUB (TDD red, issue #366): the implementation task fills this. See §4/§5.</remarks>
-    public string ToJson() =>
-        throw new NotImplementedException("#366: attestation-aware marker serialization is not implemented yet.");
+    public string ToJson() => JsonSerializer.Serialize(this, WriteOptions);
 
     /// <summary>
     /// Read the marker for <paramref name="planDirectory"/>, or null when it is absent or
@@ -160,6 +165,46 @@ public sealed record ReviewMarker
         return string.Equals(marker.PlanHash, current, StringComparison.Ordinal)
             ? new ReviewEvaluation(ReviewState.Reviewed, marker.PlanHash, current)
             : new ReviewEvaluation(ReviewState.Stale, marker.PlanHash, current);
+    }
+
+    /// <summary>
+    /// Read-tolerant converter for the optional <see cref="Attestation"/> block: a well-formed block
+    /// deserializes normally, but a MALFORMED one (e.g. <c>evidence</c> a string where an object is
+    /// expected) yields <c>null</c> rather than throwing and taking the whole marker down with it —
+    /// so a marker with the three top fields intact stays readable and classifies
+    /// <see cref="EvidenceClass.Legacy"/> (§4 field rules; mirrors the tolerant <see cref="Read"/>).
+    /// Registered only in <see cref="ReadOptions"/>; the write path (<see cref="WriteOptions"/>) serializes
+    /// the record directly so the per-member <see cref="JsonIgnoreCondition.WhenWritingNull"/> rules apply.
+    /// </summary>
+    private sealed class TolerantAttestationConverter : JsonConverter<ReviewAttestation>
+    {
+        // A converter-free options instance for the inner (de)serialize — using ReadOptions here would
+        // recurse into this same converter. Case-insensitive to match the tolerant reader.
+        private static readonly JsonSerializerOptions Plain = new() { PropertyNameCaseInsensitive = true };
+
+        public override ReviewAttestation? Read(
+            ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Null)
+            {
+                return null;
+            }
+
+            try
+            {
+                using JsonDocument document = JsonDocument.ParseValue(ref reader);
+                return document.RootElement.Deserialize<ReviewAttestation>(Plain);
+            }
+            catch (JsonException)
+            {
+                // Malformed block — tolerate it to null (→ `legacy`) rather than fail the marker read.
+                return null;
+            }
+        }
+
+        public override void Write(
+            Utf8JsonWriter writer, ReviewAttestation value, JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value, Plain);
     }
 }
 
