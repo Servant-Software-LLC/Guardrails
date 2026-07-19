@@ -19,6 +19,7 @@ public static class CommandFactory
         var rootCommand = new RootCommand("Guardrails — run a plan folder's task DAG to green.");
         rootCommand.Add(ValidateCommand.Create(io));
         rootCommand.Add(MarkReviewedCommand.Create(io));
+        rootCommand.Add(PlanHashCommand.Create(io));
         rootCommand.Add(RunCommand.Create(io));
         rootCommand.Add(PlanCommand.Create(io));
         rootCommand.Add(GraphCommand.Create(io));
