@@ -1,4 +1,5 @@
 using System.CommandLine;
+using Guardrails.Core.Journal;
 
 namespace Guardrails.Cli.Commands;
 
@@ -8,10 +9,11 @@ namespace Guardrails.Cli.Commands;
 /// skill needs to embed the exact plan hash it reviewed into its attestation (F2a) — the skill
 /// cannot compute the hash itself.
 ///
-/// <para>STUB (TDD red): the handler throws <see cref="NotImplementedException"/>. The command is
-/// wired into production dispatch (<see cref="CommandFactory.BuildRootCommand"/>) so the failing
-/// <c>PlanHashCliTests</c> can drive it through the real factory; the hash-printing body is
-/// implemented in the follow-up task, not here.</para>
+/// <para>Loads + validates the plan the same way <see cref="ValidateCommand"/> / <see cref="MarkReviewedCommand"/>
+/// do (via <see cref="PlanProbe"/>); on a load/validation error it prints the diagnostics and exits
+/// non-zero, and on success writes the single <c>sha256:…</c> hash line to stdout and exits 0. It writes
+/// nothing to disk. Wired into production dispatch (<see cref="CommandFactory.BuildRootCommand"/>) so the
+/// <c>PlanHashCliTests</c> drive it through the real factory.</para>
 /// </summary>
 public static class PlanHashCommand
 {
@@ -33,7 +35,20 @@ public static class PlanHashCommand
         return command;
     }
 
-    // TODO(#366): load the plan and write PlanDefinitionHash.Compute(plan) to io.Out. Not
-    // implemented yet — PlanHashCliTests are RED against this stub by design.
-    private static int Run(string folder, IConsoleIo io) => throw new NotImplementedException();
+    private static int Run(string folder, IConsoleIo io)
+    {
+        // Read-only: load + validate the plan exactly like validate/mark-reviewed. A plan that won't
+        // load (or has structural errors) cannot yield an honest hash — print the diagnostics and refuse.
+        PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
+        if (probe.HasErrors || probe.Plan is null)
+        {
+            PlanProbe.PrintDiagnostics(probe.Diagnostics, io.Out);
+            io.Out.WriteLine("\nFAILED: cannot compute a plan hash for an invalid plan — fix the errors above first.");
+            return ExitCodes.HarnessError;
+        }
+
+        // A single clean sha256:… line the /guardrails-review skill can parse. Writes nothing to disk.
+        io.Out.WriteLine(PlanDefinitionHash.Compute(probe.Plan));
+        return ExitCodes.Success;
+    }
 }
