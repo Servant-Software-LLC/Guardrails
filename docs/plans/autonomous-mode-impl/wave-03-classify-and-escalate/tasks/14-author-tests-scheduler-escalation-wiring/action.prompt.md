@@ -46,7 +46,10 @@ Assert the wired-only observable behaviour (each fails now, passes once task 15 
   than escalating immediately.
 - **Resume answer-injection**: a valid `…answer.json` on resume yields `decision == answer-injected`
   and the escalation `status` flips to `consumed`.
-- **Exit code**: a run ending with an unresolved escalation exits with the distinct non-zero code (§7.1).
+- **Exit code**: a run ending with an unresolved escalation exits with the NEW distinct code
+  `ExitCodes.EscalationsPending` (`= 4`, §7.1) — assert on that constant, NOT `2`/`TaskFailed`
+  (a plain needs-human) and NOT `0`. Task 15 adds the constant; assert the code so the wiring test
+  proves the answer-required halt is distinguishable from needs-human.
 
 Write ONE artifact: `tests/Guardrails.Integration.Tests/SchedulerEscalationWiringTests.cs`. It MUST
 COMPILE (all referenced types exist from the ancestor tasks) and FAIL against the unwired factory (TDD

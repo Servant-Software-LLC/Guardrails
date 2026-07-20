@@ -1,24 +1,23 @@
-# catches: an answer-injection that appends the human answer.text as a bare/undelimited section — or
-#          worse, as a harness/system instruction — instead of clearly-delimited UNTRUSTED human-answer
-#          DATA (doc 12 §7.4 Finding 4). The prompt PROHIBITS treating the text as an instruction; this
-#          is the STRUCTURAL backing for that prohibition (#221 — a prose-only 'inject as data, not
-#          instruction' rule an adversarial/lazy impl is free to ignore). Asserts PromptComposer.cs gained
-#          an injection section that both (a) references the answer/injected text and (b) marks it as
-#          untrusted DATA (not an instruction). Scoped to the one file this task modifies.
+# catches: an answer-injection that appends the human answer.text without the pinned UNTRUSTED-DATA
+#          delimiter — so injected human text could be read as a harness/system instruction instead of
+#          delimited data (doc 12 §7.4 Finding 4). The prompt PROHIBITS treating the text as an
+#          instruction and PINS the exact delimiter `[BEGIN UNTRUSTED HUMAN ANSWER]` … `[END UNTRUSTED
+#          HUMAN ANSWER]`; this is the STRUCTURAL backing for that prohibition (#221) — a grep for the
+#          LITERAL delimiter string (not an English word an impl could satisfy with a comment). Scoped to
+#          the one composer file this task modifies. (The overwatcher denylist is the runtime backstop.)
 $composer = "src/Guardrails.Core/Prompts/PromptComposer.cs"
 if (-not (Test-Path $composer)) {
     Write-Output "$composer does not exist"
     exit 1
 }
 $c = Get-Content -Raw -Path $composer
-# (a) An injection section that names the injected answer must exist (new since this task).
-if ($c -notmatch '(?i)inject' -or $c -notmatch '(?i)answer') {
-    Write-Output "$composer has no answer-injection section — the delimited-untrusted injection (doc 12 §7.4) was not added to ComposeAction"
+# The pinned open + close delimiter literals must both be emitted by the composer's injection section.
+if ($c -notmatch [regex]::Escape('BEGIN UNTRUSTED HUMAN ANSWER')) {
+    Write-Output "$composer does not emit the pinned '[BEGIN UNTRUSTED HUMAN ANSWER]' delimiter — the injected answer.text is not wrapped as UNTRUSTED DATA (doc 12 §7.4 Finding 4); a bare append could be read as a harness instruction"
     exit 1
 }
-# (b) The section must mark the text as UNTRUSTED DATA and NOT an instruction (the Finding-4 envelope).
-if ($c -notmatch '(?i)untrusted' -or $c -notmatch '(?i)not.{0,30}(an )?instruction|data,?\s*not') {
-    Write-Output "$composer injects the answer but does not delimit it as UNTRUSTED DATA that is NOT a harness instruction — the Finding-4 envelope (doc 12 §7.4) is missing; injected human text could be read as an instruction"
+if ($c -notmatch [regex]::Escape('END UNTRUSTED HUMAN ANSWER')) {
+    Write-Output "$composer emits the opening delimiter but not the closing '[END UNTRUSTED HUMAN ANSWER]' — the untrusted-data block must be explicitly closed so trailing composed-prompt content is not read as part of the human answer"
     exit 1
 }
 exit 0

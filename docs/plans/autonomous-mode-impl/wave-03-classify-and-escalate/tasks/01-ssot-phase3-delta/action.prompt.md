@@ -42,10 +42,13 @@ Apply exactly these (per doc 12 §11 "Proposed SSOT changes"):
    `review-attested` answer kind** (Blocker 2 / #366) — the review gate is never resolved by an answer;
    and the injected `needs-human` `text` is **delimited UNTRUSTED data** that cannot reach the
    verdict surface (§7.4 Finding 4 — the overwatcher denylist is the backstop).
-4. **§7.1 (exit codes)** — note that a run ending with unresolved escalations (or that took a
-   `proceeded-unreviewed` decision) exits with a **distinct non-zero code** so an automated firstmate
-   consumer never reads it as clean green; reconcile with the shipped 0/1/2/3 scheme (recommend 2 =
-   actionable/needs-human).
+4. **§7.1 (exit codes)** — document that a run ending with **unresolved escalations** (an
+   answer-required halt) exits with a **NEW, DISTINCT non-zero code** so an automated firstmate consumer
+   never reads it as clean green AND can tell it apart from a plain needs-human. The shipped scheme is
+   `0` Success / `1` HarnessError / `2` TaskFailed(needs-human/blocked) / `3` Cancelled — so this is the
+   **next free value, `4` = `EscalationsPending`** (do NOT reuse `2`, which is indistinguishable from
+   needs-human). A run that took a `proceeded-unreviewed` decision keeps its existing distinct-non-zero
+   reporting (§5.2). State `EscalationsPending = 4` as the pinned value.
 
 Do NOT restate the harness ALGORITHM (that is doc 12); write the CONTRACT (shapes, tokens, paths,
 binding rules). Do NOT edit any other section beyond what these require, and do NOT touch any other

@@ -30,4 +30,13 @@ if ($missing.Count -gt 0) {
     Write-Output ("AnswerFileConsumptionTests is missing security cases: " + ($missing -join ', ') + " — every DA-7 attack/defence (binding, stale-replay, seq-uniqueness, CAS once-only, review-gate-reject, clamped-hard-call-reject, terminal-not-answerable) must be a named test")
     exit 1
 }
+# The negative cases must actually ASSERT REJECTION — a file that merely NAMES the tokens in happy-path
+# asserts is hollow. Require rejection-shaped assertions (stale / replayed / wrong-bound / review-attested /
+# clamped each reject). Raises the floor; the real proof is the tests-pass guardrail + the pre-merge human
+# review (#375).
+$rej = ([regex]::Matches($c, '(?i)Reject|re-escalat|Assert\.Throws|NotEqual\("consumed"|Assert\.False')).Count
+if ($rej -lt 5) {
+    Write-Output "AnswerFileConsumptionTests must ASSERT rejection for the negative security cases (stale / replayed / wrong-bound / review-attested / clamped) — found $rej rejection-shaped assertions, need >= 5"
+    exit 1
+}
 exit 0

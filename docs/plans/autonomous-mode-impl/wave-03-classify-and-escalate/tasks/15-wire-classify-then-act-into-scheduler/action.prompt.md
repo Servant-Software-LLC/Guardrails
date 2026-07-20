@@ -42,8 +42,11 @@ Wire (each closes a live-from-CLI gap; the terminal whole-suite build/test does 
 - **Resume**: before a unit re-hits an escalated gate, run `AnswerFileConsumer` (§7.6) — inject a valid
   answer via `ActionRunner` → `PromptComposer.ComposeAction`'s delimited-untrusted section; otherwise
   re-escalate.
-- **`RunCommand` / `ExitCodes`**: a run ending with unresolved escalations exits with the distinct
-  non-zero code (§7.1) so an automated firstmate consumer never reads it as clean green.
+- **`RunCommand` / `ExitCodes`**: add a NEW constant `ExitCodes.EscalationsPending = 4` (the next free
+  value after the shipped `Success=0`/`HarnessError=1`/`TaskFailed=2`/`Cancelled=3`) and return it when
+  the run ends with **unresolved escalations** (an answer-required halt). Do **NOT** reuse `2`
+  (`TaskFailed`/needs-human) — the whole point (§7.1) is that a firstmate consumer can tell an
+  answer-required halt apart from a plain needs-human and never read either as clean green.
 
 Do NOT change the component types' internal logic (they are done + tested); this task is construction +
 injection + gate dispatch + exit-code surfacing only.

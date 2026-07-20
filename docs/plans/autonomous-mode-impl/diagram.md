@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=6221393f6fe022f73a884b95a07c2639e5fd6155292ad847f0c17108b5a42201 -->
+<!-- guardrails:graph v1 source-sha256=0cc03441528352c116e08a9e2262f4afec7c549f535d1de46bf7b49a4421d2d5 -->
 
 ```mermaid
 flowchart TD
@@ -116,6 +116,7 @@ flowchart TD
     subgraph task_wave_03_classify_and_escalate_02_author_tests_forensic_records["02-author-tests-forensic-records"]
       task_wave_03_classify_and_escalate_02_author_tests_forensic_records_gr_0["01-tests-build"]:::guardrail
       task_wave_03_classify_and_escalate_02_author_tests_forensic_records_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_03_classify_and_escalate_02_author_tests_forensic_records_gr_2["03-covers-forensic-roundtrip"]:::guardrail
     end
     style task_wave_03_classify_and_escalate_02_author_tests_forensic_records fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_03_classify_and_escalate_03_implement_forensic_records["03-implement-forensic-records"]
@@ -135,6 +136,7 @@ flowchart TD
     subgraph task_wave_03_classify_and_escalate_06_author_tests_blocker_retry["06-author-tests-blocker-retry"]
       task_wave_03_classify_and_escalate_06_author_tests_blocker_retry_gr_0["01-tests-build"]:::guardrail
       task_wave_03_classify_and_escalate_06_author_tests_blocker_retry_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_03_classify_and_escalate_06_author_tests_blocker_retry_gr_2["03-covers-blocker-bounds"]:::guardrail
     end
     style task_wave_03_classify_and_escalate_06_author_tests_blocker_retry fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_03_classify_and_escalate_07_implement_blocker_retry["07-implement-blocker-retry"]
@@ -154,6 +156,7 @@ flowchart TD
     subgraph task_wave_03_classify_and_escalate_10_author_tests_escalation_sink["10-author-tests-escalation-sink"]
       task_wave_03_classify_and_escalate_10_author_tests_escalation_sink_gr_0["01-tests-build"]:::guardrail
       task_wave_03_classify_and_escalate_10_author_tests_escalation_sink_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_03_classify_and_escalate_10_author_tests_escalation_sink_gr_2["03-covers-escalation-invariants"]:::guardrail
     end
     style task_wave_03_classify_and_escalate_10_author_tests_escalation_sink fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_03_classify_and_escalate_11_implement_escalation_sink["11-implement-escalation-sink"]
@@ -169,11 +172,13 @@ flowchart TD
     subgraph task_wave_03_classify_and_escalate_13_implement_answer_consumption["13-implement-answer-consumption"]
       task_wave_03_classify_and_escalate_13_implement_answer_consumption_gr_0["01-answer-consumption-tests-pass"]:::guardrail
       task_wave_03_classify_and_escalate_13_implement_answer_consumption_gr_1["02-answer-injection-untrusted-delimited"]:::guardrail
+      task_wave_03_classify_and_escalate_13_implement_answer_consumption_gr_2["03-no-review-attested-kind"]:::guardrail
     end
     style task_wave_03_classify_and_escalate_13_implement_answer_consumption fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring["14-author-tests-scheduler-escalation-wiring"]
       task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_0["01-tests-build"]:::guardrail
       task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_2["03-covers-wiring-behaviors"]:::guardrail
     end
     style task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler["15-wire-classify-then-act-into-scheduler"]
