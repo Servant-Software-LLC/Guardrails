@@ -301,14 +301,17 @@ public static class RunCommand
             waveDriftAuthorized = authorizedWaves;
         }
 
-        // #360 Phase 1 between-wave breakdown confirm (doc 11 §9.6): under the default "prompt" policy the JIT
-        // checkpoint auto-invokes plan-breakdown only on an interactive approval. The Scheduler cannot prompt
-        // (it never touches the console, and the checkpoint fires INSIDE the Spectre live region — #145 Bug 1),
-        // so — mirroring the wave-drift confirm — the CLI detects the upcoming unauthored-wave checkpoint BEFORE
-        // any UI and asks y/N; the answers are passed to the Scheduler. Non-interactive → no confirmation →
-        // honest-halt. "auto" needs no confirmation (it invokes unconditionally); "halt" never invokes.
+        // #360 between-wave breakdown confirm. With the DEFAULT autoBreakdown (SSOT §14.4/§14.10) the JIT
+        // checkpoint auto-invokes plan-breakdown with NO prompt regardless of autonomyPolicy, so no
+        // confirmation is captured here. Only the LEGACY autoBreakdown:false + "prompt"-policy path prompts:
+        // the Scheduler cannot prompt (it never touches the console, and the checkpoint fires INSIDE the
+        // Spectre live region — #145 Bug 1), so — mirroring the wave-drift confirm — the CLI detects the
+        // upcoming unauthored-wave checkpoint BEFORE any UI and asks y/N; the answers are passed to the
+        // Scheduler. Non-interactive → no confirmation → honest-halt. "auto" needs no confirmation (it invokes
+        // unconditionally); "halt" never invokes.
         IReadOnlyDictionary<string, bool>? breakdownConfirmations = null;
-        if (probe.Plan.IsWaved && probe.Plan.Config.AutonomyPolicy == Core.Model.AutonomyPolicy.Prompt)
+        if (probe.Plan.IsWaved && !probe.Plan.Config.AutoBreakdown
+            && probe.Plan.Config.AutonomyPolicy == Core.Model.AutonomyPolicy.Prompt)
         {
             breakdownConfirmations = ConfirmWaveBreakdownIfInteractive(probe.Plan, journal, io);
         }

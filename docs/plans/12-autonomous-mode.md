@@ -399,6 +399,12 @@ control-flow:
 
 ### 5.1 Which gates the dial MAY clear vs. MAY NOT — the explicit list
 
+**Reconciliation (LANDED, SSOT §14.4):** the *base* (non-dial) between-wave breakdown INVOCATION is now gated
+by the dedicated **`autoBreakdown`** knob (SSOT §2, DEFAULT `true`), **decoupled from `autonomyPolicy`** — with
+the default a present `brief.md` auto-fires `plan-breakdown` at the checkpoint with no prompt at any policy.
+The dial's `wave-checkpoint` handling below sits ABOVE that base gating (a fully-unattended escalate-vs-proceed
+layer, Phase 2+) and is unchanged; the review gate remains a floor under both.
+
 | Gate | Dial may clear? | Best-guess behavior when below threshold |
 |---|---|---|
 | Agent `needsHuman` question | **YES** | inject a recorded best-guess answer into the next attempt's composed prompt; continue. The task's deterministic guardrails still gate the result. |

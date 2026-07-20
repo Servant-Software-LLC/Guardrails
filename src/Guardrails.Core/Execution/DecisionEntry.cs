@@ -111,21 +111,23 @@ public static class DriftDecisions
             oldHash: null, newHash: null, affectedWaves, manualReset: true);
 
     /// <summary>
-    /// The between-wave JIT checkpoint HALT (SSOT §14.4/§14.10, #360 Phase 0): a waved run reached a wave
-    /// whose <c>tasks/</c> is empty (unauthored) and honest-halted for human JIT breakdown. A
-    /// <c>wave</c>-boundary entry recorded as <c>halted</c> — Phase 0 invokes NO auto-breakdown (that lands
-    /// under <c>autonomyPolicy</c> in a future phase). <paramref name="briefPresent"/> notes whether an
-    /// OPTIONAL <c>brief.md</c> is authored in the wave folder (the opt-in signal for that future
-    /// auto-breakdown). This closes the gap where the JIT checkpoint was the one wave boundary that emitted
-    /// no <c>decisions[]</c> entry (design-360, §14.4).
+    /// The between-wave JIT checkpoint HALT (SSOT §14.4/§14.10, #360): a waved run reached a wave whose
+    /// <c>tasks/</c> is empty (unauthored) and honest-halted for human JIT breakdown. A <c>wave</c>-boundary
+    /// entry recorded as <c>halted</c> (or <c>prompted-declined</c>) — the auto-breakdown INVOCATION did not
+    /// fire (an absent <c>brief.md</c>, no breakdown runner / serial mode / hit cost cap, or the
+    /// <c>autoBreakdown:false</c> <c>autonomyPolicy</c>-gated path declined it). <paramref name="briefPresent"/>
+    /// notes whether an OPTIONAL <c>brief.md</c> is authored in the wave folder (the opt-in signal, which under
+    /// the default <c>autoBreakdown</c> auto-fires the breakdown). This closes the gap where the JIT checkpoint
+    /// was the one wave boundary that emitted no <c>decisions[]</c> entry (design-360, §14.4).
     /// </summary>
     public static DecisionEntry WaveCheckpointHalt(
         AutonomyPolicy configuredPolicy, string waveDir, bool briefPresent, string decision = "halted")
     {
         string brief = $"{waveDir}/{WaveNode.BriefFileName}";
         string detail = briefPresent
-            ? $"'{brief}' is present — auto-breakdown against it is invoked under autonomyPolicy 'auto' (or a "
-              + "'prompt' approval); this run honest-halts for manual JIT breakdown + review."
+            ? $"'{brief}' is present — auto-breakdown against it is on by default (autoBreakdown, decoupled from "
+              + "autonomyPolicy); this run honest-halts because it could not run (no breakdown runner, serial "
+              + "mode, or cost cap) or autoBreakdown is false — do a manual JIT breakdown + review."
             : $"No '{brief}' — create one to enable auto-breakdown at this checkpoint, "
               + "or author the wave manually against the integration worktree.";
         return new DecisionEntry
