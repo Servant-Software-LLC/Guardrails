@@ -64,10 +64,10 @@ public sealed record BlockerRetryResult
 /// (<see cref="Model.RunConfig.TransientPauseBudgetSeconds"/>, SSOT §9) — and bounds it FURTHER with the
 /// autonomy-dial ceiling <see cref="Model.BlockerRetry"/> (<c>maxAttempts</c> / <c>totalWaitSeconds</c>).
 ///
-/// <para>The intended loop (NOT implemented here — this is a TDD-red stub) is, per doc 12 §4.2: retry the
-/// same attempt with backoff (honoring any parsed reset hint) UNTIL either <c>maxAttempts</c> OR the
-/// effective wall-clock ceiling — <c>min(totalWaitSeconds, transientPauseBudgetSeconds)</c> — is reached
-/// (whichever first). On the transient clearing ⇒ <see cref="BlockerRetryOutcome.Resolved"/>; on a ceiling ⇒
+/// <para>The loop, per doc 12 §4.2: retry the same attempt with backoff (honoring any parsed reset hint)
+/// UNTIL either <c>maxAttempts</c> OR the effective wall-clock ceiling —
+/// <c>min(totalWaitSeconds, transientPauseBudgetSeconds)</c> — is reached (whichever first). On the transient
+/// clearing ⇒ <see cref="BlockerRetryOutcome.Resolved"/>; on a ceiling ⇒
 /// <see cref="BlockerRetryOutcome.Escalate"/> to class (c). Either way the retry ledger records the attempts
 /// and cumulative wait, and it NEVER consumes the task's retry budget.</para>
 ///
@@ -105,18 +105,78 @@ public sealed class BlockerRetry
     /// <see cref="Prompts.ClaudeSignalClassifier.ExtractResetHint"/>).
     /// </summary>
     /// <remarks>
-    /// TDD-RED STUB: the real class-(b) loop (doc 12 §4.2) is deliberately NOT implemented yet. The delay
-    /// seam and both ceilings are wired so the eventual implementation drops in behind this signature; every
-    /// seam is referenced below so the stub compiles cleanly under <c>TreatWarningsAsErrors</c> without
-    /// pretending to do the work.
+    /// The wall-clock ceiling is <c>min(totalWaitSeconds, transientPauseBudgetSeconds)</c> — the blocker's own
+    /// ceiling floored by the shipped transient-pause budget (doc 12 §4.2). Backoff TIMING is delegated to the
+    /// shipped <see cref="TransientBackoff"/> (the exponential 2s/4s/… schedule and the per-pause budget clamp,
+    /// SSOT §9 / issue #115) — this loop only adds the <c>maxAttempts</c> ceiling and the first-pause reset-hint
+    /// override on top. The wait is charged against a single cumulative total so the two ceilings compose
+    /// (whichever trips first escalates), and the outcome NEVER decrements the task's logic-retry budget.
     /// </remarks>
-    public Task<BlockerRetryResult> RunAsync(
+    public async Task<BlockerRetryResult> RunAsync(
         Func<int, bool> hasCleared,
         TimeSpan? resetHint = null,
         CancellationToken cancellationToken = default)
     {
-        _ = (_ceilings, _transientPauseBudget, _delay, hasCleared, resetHint, cancellationToken);
-        throw new NotImplementedException(
-            "BlockerRetry.RunAsync is a TDD stub — the class-(b) bounded wait/backoff loop (doc 12 §4.2) is not implemented yet.");
+        // The effective wall-clock bound is the blocker's own totalWaitSeconds ceiling FLOORED by the shipped
+        // transient-pause budget — the blocker ceiling never exceeds it (doc 12 §4.2, SSOT §9). i.e. min().
+        TimeSpan blockerCeiling = TimeSpan.FromSeconds(_ceilings.TotalWaitSeconds);
+        TimeSpan effectiveBound = blockerCeiling < _transientPauseBudget ? blockerCeiling : _transientPauseBudget;
+
+        // The shipped transient discipline drives the exponential backoff timing + per-pause budget clamp.
+        // Created lazily for the exponential phase so a first-pause reset hint (which overrides the 2s
+        // exponential head) is charged against the bound FIRST, leaving the backoff the exact remaining budget.
+        TransientBackoff? backoff = null;
+        TimeSpan cumulativeWait = TimeSpan.Zero;
+
+        for (int attempt = 1; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (hasCleared(attempt))
+            {
+                // The transient cleared within the ceiling — continue as if the blocker never happened (§4.2).
+                return Result(BlockerRetryOutcome.Resolved, attempt, cumulativeWait);
+            }
+
+            // Not cleared on this re-run. Escalate to class (c) once EITHER ceiling is reached (whichever
+            // first, §4.2): the maxAttempts ceiling, OR the effective wall-clock bound. The ledger the
+            // escalation carries records the attempts + cumulative wait so the escalation record can report it.
+            if (attempt >= _ceilings.MaxAttempts || cumulativeWait >= effectiveBound)
+            {
+                return Result(BlockerRetryOutcome.Escalate, attempt, cumulativeWait);
+            }
+
+            // Back off before the next re-run. The FIRST backoff honors any parsed reset hint (wait until the
+            // limit resets), clamped to the remaining bound; every subsequent backoff uses the shipped
+            // exponential schedule (2s, 4s, …), which TransientBackoff itself clamps to the remaining bound.
+            TimeSpan waited;
+            if (attempt == 1 && resetHint is { } hint)
+            {
+                TimeSpan remaining = effectiveBound - cumulativeWait;
+                waited = hint < remaining ? hint : remaining;
+                await _delay(waited).ConfigureAwait(false);
+            }
+            else
+            {
+                backoff ??= new TransientBackoff(effectiveBound - cumulativeWait, (d, _) => _delay(d));
+                waited = await backoff.PauseAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            cumulativeWait += waited;
+        }
     }
+
+    private static BlockerRetryResult Result(BlockerRetryOutcome outcome, int attempts, TimeSpan cumulativeWait) =>
+        new()
+        {
+            Outcome = outcome,
+            Ledger = new BlockerRetryLedger
+            {
+                Attempts = attempts,
+                CumulativeWait = cumulativeWait,
+                // ALWAYS false: a transient is not a logic failure, so class (b) never decrements the task's
+                // logic-retry budget — even when it escalates to class (c) (§4.2, the shipped transient rule).
+                ConsumedLogicRetry = false,
+            },
+        };
 }
