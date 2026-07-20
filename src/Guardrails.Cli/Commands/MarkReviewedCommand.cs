@@ -20,14 +20,51 @@ public static class MarkReviewedCommand
     {
         var folderArgument = FolderArgument.Create();
 
+        // ── issue #366 evidence-hygiene options (design 16-review-attestation-provenance §4/§5) ──────────
+        // Present ONLY as minimal stubs for the TDD-red F2 tests: the review-artifact / evidence-class
+        // stamp path they drive is not implemented yet (see the SetAction stub below). The plain BARE
+        // stamp (`mark-reviewed <folder>` with none of these) keeps its shipped behaviour.
+        var evidenceOption = new Option<string?>("--evidence")
+        {
+            Description = "Path to the /guardrails-review report artifact under <plan>/state/reviews/ that this stamp attests. On the F2 stamp-time checks passing (report embeds the current plan hash; path resolves under state/reviews/) the marker records source: review-artifact + evidence; on failure it downgrades to source: bare (SSOT §13, issue #366)."
+        };
+
+        var sourceOption = new Option<string?>("--source")
+        {
+            Description = "Explicit evidence class for the stamp: 'machine' for an automated flow (auto-breakdown / autonomous mode) so a machine stamp is honestly labelled and never masquerades as human review (issue #366)."
+        };
+
+        var reviewerOption = new Option<string?>("--reviewer")
+        {
+            Description = "Self-reported, NON-authoritative reviewer id recorded as attestation.actor (audit richness only — the CLI cannot authenticate an actor; issue #366)."
+        };
+
         var command = new Command(
             "mark-reviewed",
             "Record that /guardrails-review ran over the current plan (writes the committed review marker).");
         command.Add(folderArgument);
+        command.Add(evidenceOption);
+        command.Add(sourceOption);
+        command.Add(reviewerOption);
 
         command.SetAction(parseResult =>
         {
             string folder = FolderArgument.ResolveAndAnnounce(parseResult.GetValue(folderArgument), io.Out);
+            string? evidence = parseResult.GetValue(evidenceOption);
+            string? source = parseResult.GetValue(sourceOption);
+            string? reviewer = parseResult.GetValue(reviewerOption);
+
+            // #366 F2 STUB — the evidence-class stamp path (review-artifact / machine / self-reported
+            // reviewer) is deliberately not implemented yet, so the TDD-red F2 tests fail against it.
+            // Any of --evidence/--source/--reviewer selects that path. The shipped BARE stamp (none of
+            // them) falls through to Run(...) unchanged and keeps clearing GR2025 exactly as today.
+            if (evidence is not null || source is not null || reviewer is not null)
+            {
+                throw new NotImplementedException(
+                    "mark-reviewed evidence-class stamping (F2, issue #366) is not implemented yet — " +
+                    "--evidence/--source/--reviewer are stubbed pending the harness change.");
+            }
+
             return Run(folder, io);
         });
 
