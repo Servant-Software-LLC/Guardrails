@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.Json;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 
@@ -61,10 +63,319 @@ public sealed class CriticalityJudge
     /// <c>{ "criticality": "low|moderate|high|critical", "confidence": "low|moderate|high",
     /// "bestGuess": "…", "rationale": "…" }</c>; an unknown-failure widening
     /// (<see cref="CriticalityGate.UnknownFailure"/>) — <c>{ "retryable": true|false, "rationale": "…" }</c>.</para>
+    ///
+    /// <para>Invariant 1 (§4.3, verdict-from-files): the judge is NEVER the verdict authority. A thrown runner,
+    /// an incomplete/errored result, or an unparseable body all yield <see cref="CriticalityOutcome.Escalate"/>
+    /// — the safe default is escalate, never spin.</para>
     /// </summary>
-    public Task<CriticalityDecision> AssessAsync(CriticalityGateContext context, CancellationToken cancellationToken) =>
-        throw new NotImplementedException(
-            "CriticalityJudge.AssessAsync is not yet implemented (TDD red — doc 12 §3.2/§3.3, §4.3, §5.2).");
+    public async Task<CriticalityDecision> AssessAsync(CriticalityGateContext context, CancellationToken cancellationToken)
+    {
+        PromptResult result;
+        try
+        {
+            PromptInvocation invocation = BuildInvocation(context);
+            result = await _runner.RunAsync(invocation, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Advisory-never-gates: a thrown runner is an absent assessment ⇒ the safe default (invariant 1).
+            return Escalate();
+        }
+
+        // The runner did not complete (or reported an error), or produced no result text ⇒ treat the
+        // assessment as ABSENT and escalate — never trust a body the run did not stand behind (§4.3).
+        if (!result.Completed || result.IsError || string.IsNullOrWhiteSpace(result.ResultText))
+        {
+            return Escalate();
+        }
+
+        return context.Gate == CriticalityGate.UnknownFailure
+            ? DecideUnknownFailure(result.ResultText!)
+            : DecideJudgmentCall(context.Gate, result.ResultText!);
+    }
+
+    // --- judgment call: threshold compare + proceed-unreviewed clamp (§3.3/§3.5, §5.2) ----------
+
+    /// <summary>
+    /// Decide a class-(a) judgment call (<see cref="CriticalityGate.NeedsHuman"/> /
+    /// <see cref="CriticalityGate.WaveCheckpoint"/>): parse the advisory assessment, apply the
+    /// <c>proceed-unreviewed</c> clamp, then compare against the effective (per-gate-overridden) threshold.
+    /// </summary>
+    private CriticalityDecision DecideJudgmentCall(CriticalityGate gate, string resultText)
+    {
+        if (!TryParseAssessment(resultText, out EscalationThreshold assessed, out JudgeConfidence? confidence,
+            out string? bestGuess, out string? rationale))
+        {
+            // Invariant 1: nothing parseable ⇒ no assessed level, escalate (the safe default).
+            return Escalate();
+        }
+
+        // The proceed-unreviewed clamp (§5.2 / Blocker 1): under `review-gate: proceed-unreviewed`, an assessed
+        // `high`/`critical` ALWAYS escalates — overriding the run-wide dial AND every per-gate override. This is
+        // the runtime mirror of the load-time PlanValidator.ViolatesCompoundConfig (GR2040) predicate: never
+        // best-guess a hard call inside an unreviewed wave.
+        if (_config.GateThresholds?.ReviewGate == ReviewGateDecision.ProceedUnreviewed
+            && assessed >= EscalationThreshold.High)
+        {
+            return new CriticalityDecision
+            {
+                Outcome = CriticalityOutcome.Escalate,
+                Criticality = assessed,
+                Confidence = confidence,
+                Rationale = rationale
+            };
+        }
+
+        // The deterministic threshold compare (§3.3): escalate ⟺ assessedCriticality ≥ effectiveThreshold.
+        if (assessed >= EffectiveThreshold(gate))
+        {
+            return new CriticalityDecision
+            {
+                Outcome = CriticalityOutcome.Escalate,
+                Criticality = assessed,
+                Confidence = confidence,
+                Rationale = rationale
+            };
+        }
+
+        // Below threshold ⇒ proceed on the recorded best-guess (carrying the best-guess text + rationale).
+        return new CriticalityDecision
+        {
+            Outcome = CriticalityOutcome.ProceedBestGuess,
+            Criticality = assessed,
+            Confidence = confidence,
+            BestGuess = bestGuess,
+            Rationale = rationale
+        };
+    }
+
+    /// <summary>
+    /// The effective threshold for <paramref name="gate"/> (§3.5): a per-gate <see cref="GateThresholds"/>
+    /// override for this gate when present, else the run-wide <see cref="AutonomyConfig.EscalationThreshold"/>.
+    /// </summary>
+    private EscalationThreshold EffectiveThreshold(CriticalityGate gate)
+    {
+        GateThresholds? gates = _config.GateThresholds;
+        EscalationThreshold? perGate = gate switch
+        {
+            CriticalityGate.NeedsHuman => gates?.NeedsHuman,
+            CriticalityGate.WaveCheckpoint => gates?.WaveCheckpoint,
+            _ => null
+        };
+        return perGate ?? _config.EscalationThreshold;
+    }
+
+    // --- unknown failure: the maxJudgeWidenings run-level cap (§4.3) -----------------------------
+
+    /// <summary>
+    /// Decide an <see cref="CriticalityGate.UnknownFailure"/> (§4.3): the judge may only ever WIDEN an ambiguous
+    /// failure to retryable, bounded by <see cref="AutonomyConfig.MaxJudgeWidenings"/> per run (the injected
+    /// <see cref="WideningLedger"/>). A declined widening (or a spent cap) escalates deterministically and
+    /// spends none of the cap — the judge can make the harness MORE patient, never less.
+    /// </summary>
+    private CriticalityDecision DecideUnknownFailure(string resultText)
+    {
+        if (!TryParseWidening(resultText, out bool retryable, out string? rationale))
+        {
+            // Invariant 1: a malformed widening self-report ⇒ escalate (the safe default).
+            return Escalate();
+        }
+
+        // The judge declined to widen ⇒ escalate; spends no cap (it can only ever add patience, never remove it).
+        if (!retryable)
+        {
+            return new CriticalityDecision { Outcome = CriticalityOutcome.Escalate, Rationale = rationale };
+        }
+
+        // Cap already spent ⇒ a further unknown failure escalates deterministically, even though the judge
+        // still wants to widen — the run-level bound against an over-eager judge spinning every gate (§4.3).
+        if (_widenings.Count >= _config.MaxJudgeWidenings)
+        {
+            return new CriticalityDecision { Outcome = CriticalityOutcome.Escalate, Rationale = rationale };
+        }
+
+        // Under the cap ⇒ WIDEN to retryable (proceed). The advisory self-report is recorded but STILL counts
+        // against the run-level cap (the record is not an independent check).
+        _widenings.RecordWidening();
+        return new CriticalityDecision
+        {
+            Outcome = CriticalityOutcome.ProceedBestGuess,
+            Rationale = rationale,
+            Widened = true
+        };
+    }
+
+    // --- assessment parsing --------------------------------------------------------------------
+
+    /// <summary>
+    /// Parse a judgment-call assessment body. Returns false (⇒ escalate, invariant 1) unless the body is a JSON
+    /// object carrying a recognised <c>criticality</c> token (<see cref="EscalationThresholds.TryParse"/>);
+    /// <c>confidence</c> / <c>bestGuess</c> / <c>rationale</c> are best-effort and null when absent/invalid.
+    /// </summary>
+    private static bool TryParseAssessment(string resultText, out EscalationThreshold criticality,
+        out JudgeConfidence? confidence, out string? bestGuess, out string? rationale)
+    {
+        criticality = default;
+        confidence = null;
+        bestGuess = null;
+        rationale = null;
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(resultText);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (!root.TryGetProperty("criticality", out JsonElement critEl)
+                || critEl.ValueKind != JsonValueKind.String
+                || !EscalationThresholds.TryParse(critEl.GetString() ?? "", out criticality))
+            {
+                return false; // no recognised criticality ⇒ not a usable assessment.
+            }
+
+            if (root.TryGetProperty("confidence", out JsonElement confEl)
+                && confEl.ValueKind == JsonValueKind.String
+                && TryParseConfidence(confEl.GetString(), out JudgeConfidence c))
+            {
+                confidence = c;
+            }
+
+            bestGuess = ReadString(root, "bestGuess");
+            rationale = ReadString(root, "rationale");
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Parse an unknown-failure widening body (§4.3). Returns false (⇒ escalate) unless the body is a JSON
+    /// object carrying a boolean <c>retryable</c> field; <c>rationale</c> is best-effort.
+    /// </summary>
+    private static bool TryParseWidening(string resultText, out bool retryable, out string? rationale)
+    {
+        retryable = false;
+        rationale = null;
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(resultText);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("retryable", out JsonElement retEl)
+                || (retEl.ValueKind != JsonValueKind.True && retEl.ValueKind != JsonValueKind.False))
+            {
+                return false;
+            }
+
+            retryable = retEl.GetBoolean();
+            rationale = ReadString(root, "rationale");
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Parse a <c>confidence</c> token (trim + case-insensitive): <c>low</c> / <c>moderate</c> / <c>high</c>.</summary>
+    private static bool TryParseConfidence(string? value, out JudgeConfidence confidence)
+    {
+        switch (value?.Trim().ToLowerInvariant())
+        {
+            case "low":
+                confidence = JudgeConfidence.Low;
+                return true;
+            case "moderate":
+                confidence = JudgeConfidence.Moderate;
+                return true;
+            case "high":
+                confidence = JudgeConfidence.High;
+                return true;
+            default:
+                confidence = JudgeConfidence.Low;
+                return false;
+        }
+    }
+
+    /// <summary>The trimmed string value of <paramref name="name"/> on <paramref name="root"/>, or null when absent/non-string/blank.</summary>
+    private static string? ReadString(JsonElement root, string name)
+    {
+        if (root.TryGetProperty(name, out JsonElement el) && el.ValueKind == JsonValueKind.String)
+        {
+            string? value = el.GetString();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+
+        return null;
+    }
+
+    // --- the advisory assessment prompt --------------------------------------------------------
+
+    /// <summary>The safe-default escalate decision — no assessed level, no best-guess, no widening (invariant 1).</summary>
+    private static CriticalityDecision Escalate() => new() { Outcome = CriticalityOutcome.Escalate };
+
+    /// <summary>
+    /// Compose the <see cref="PromptInvocation"/> for the advisory assessment. The already-configured read-only
+    /// <c>overwatch</c> runner (§10 H) is injected, so this carries only the constrained prompt + the
+    /// diagnose-class runtime shape (bounded turns/timeout, no extra env); the paths are left to the
+    /// composition-root's runner (the FAKE ignores the invocation under test).
+    /// </summary>
+    private PromptInvocation BuildInvocation(CriticalityGateContext context) => new()
+    {
+        ComposedPrompt = BuildAssessmentPrompt(context),
+        WorkingDirectory = string.Empty,
+        PlanDirectory = string.Empty,
+        Environment = new Dictionary<string, string>(StringComparer.Ordinal),
+        Settings = new PromptRunnerSettings { MaxTurns = 10 },
+        Timeout = TimeSpan.FromMinutes(5),
+        StreamLogPath = string.Empty
+    };
+
+    /// <summary>
+    /// The constrained assessment prompt: for a judgment call it asks for a criticality/confidence/best-guess
+    /// self-report; for an unknown failure it asks the bounded retryable/not read (§4.3). The judge remains
+    /// advisory — the harness, not this reply, decides via the deterministic threshold/clamp/cap.
+    /// </summary>
+    private static string BuildAssessmentPrompt(CriticalityGateContext context)
+    {
+        var sb = new StringBuilder();
+        if (context.Gate == CriticalityGate.UnknownFailure)
+        {
+            sb.AppendLine("# Criticality assessment: unknown failure (advisory widening)");
+            sb.AppendLine();
+            sb.AppendLine($"Failure: {context.Detail}");
+            sb.AppendLine();
+            sb.AppendLine(
+                "This failure was not recognised as a known-transient signal. Decide whether a bounded retry " +
+                "can plausibly clear it (retryable) or it is structural (not retryable). The safe default is " +
+                "NOT retryable — only widen when you have a concrete reason.");
+            sb.AppendLine();
+            sb.AppendLine("Return ONLY this JSON object:");
+            sb.Append("""{"retryable":true|false,"rationale":"<why>"}""");
+            return sb.ToString();
+        }
+
+        string gate = context.Gate == CriticalityGate.WaveCheckpoint ? "between-wave checkpoint" : "needs-human question";
+        sb.AppendLine($"# Criticality assessment: {gate} (advisory)");
+        sb.AppendLine();
+        sb.AppendLine($"Decision to assess: {context.Detail}");
+        sb.AppendLine();
+        sb.AppendLine(
+            "Assess how CRITICAL this judgment call is — how much damage a wrong best-guess would do if the " +
+            "harness proceeds unattended instead of escalating to a human. Report your confidence and, when " +
+            "the call is low enough to best-guess, the conservative default you would take and why.");
+        sb.AppendLine();
+        sb.AppendLine("Return ONLY this JSON object:");
+        sb.Append(
+            """{"criticality":"low|moderate|high|critical","confidence":"low|moderate|high","bestGuess":"<conservative default>","rationale":"<why>"}""");
+        return sb.ToString();
+    }
 }
 
 /// <summary>
