@@ -148,6 +148,8 @@ public sealed class PlanLoader
                 kvp => (IReadOnlyList<string>)kvp.Value,
                 StringComparer.OrdinalIgnoreCase);
 
+        AutonomyConfig? autonomy = MapAutonomy(raw.Autonomy);
+
         return new RunConfig
         {
             Version = raw.Version.Value,
@@ -168,12 +170,31 @@ public sealed class PlanLoader
             MergeOnSuccessExplicit = raw.MergeOnSuccess,
             TriageAutoFile = raw.TriageAutoFile ?? false,
             AutonomyPolicy = autonomyPolicy,
+            Autonomy = autonomy,
             PreserveAttemptsForSalvage = raw.PreserveAttemptsForSalvage ?? true,
             Interpreters = interpreters,
             PromptRunnerNames = runners.Names,
             DefaultPromptRunner = runners.Default,
             PromptRunners = runners.Runners
         };
+    }
+
+    /// <summary>
+    /// Map the raw <c>autonomy</c> block (issue #361, doc 12 §3) onto <see cref="AutonomyConfig"/>. STUB (TDD
+    /// red): a config WITHOUT the block loads inertly — <c>null</c> ⇒ the dial is off, the doc 12 §3.2
+    /// back-compat guarantee — but a config WITH the block is NOT YET PARSED. The real mapping (the decided
+    /// defaults §10 I/N, the GR2039/GR2040 validation) is authored by the implement task
+    /// (<c>03-implement-autonomy-config</c>); until then a present block deliberately throws so the
+    /// populated-block / defaults tests fail red while existing (block-absent) config loading is unbroken.
+    /// </summary>
+    private static AutonomyConfig? MapAutonomy(RawAutonomyConfig? raw)
+    {
+        if (raw is null)
+        {
+            return null; // block absent → inert dial (back-compat); no throw, so today's configs still load.
+        }
+
+        throw new NotImplementedException();
     }
 
     private static bool TryParseGuardrailMode(string value, out GuardrailMode mode)

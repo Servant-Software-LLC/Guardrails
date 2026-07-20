@@ -114,6 +114,16 @@ public sealed record RunConfig
     /// </summary>
     public AutonomyPolicy AutonomyPolicy { get; init; } = AutonomyPolicy.Prompt;
 
+    /// <summary>
+    /// The OPTIONAL criticality-dial block (issue #361, doc 12 §3; decided §10 G). Null (the default) ⇒ the
+    /// <c>autonomy</c> block was ABSENT from <c>guardrails.json</c> ⇒ the dial is INERT and the run behaves
+    /// byte-for-byte as today (doc 12 §3.2 — the load-bearing back-compat guarantee). A NEW ORTHOGONAL axis
+    /// that COMPOSES with — and never redefines — <see cref="AutonomyPolicy"/> (SSOT §2.1): both may be set
+    /// independently. The raw→model mapping is stubbed in <see cref="Loading.PlanLoader"/> (a present block
+    /// throws <see cref="NotImplementedException"/> until the implement task wires the real parse).
+    /// </summary>
+    public AutonomyConfig? Autonomy { get; init; }
+
     /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
     public string? DefaultPromptRunner { get; init; }
 
