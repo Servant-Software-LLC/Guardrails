@@ -1,0 +1,14 @@
+{
+  "description": "Wire the escalation exit code + verify the composition root (#120), part 3 of 3 (the DAG SINK): add ExitCodes.EscalationsPending = 4 (the next free value after Success=0/HarnessError=1/TaskFailed=2/Cancelled=3) and return it from RunCommand when the run ends with unresolved escalations (an answer-required halt) — distinct from a plain needs-human (2) and never green (0). Carries the #120 composition-root proof: the drive-the-real-SchedulerFactory.Create integration test task 14 authored red, now made GREEN across all five facts (escalated / best-guess / blocker-retried / answer-injected / exit-4).",
+  "stableId": "w3i17xw",
+  "dependsOn": [
+    "15-wire-escalation-components-into-factory",
+    "16-wire-classify-then-act-into-scheduler",
+    "14-author-tests-scheduler-escalation-wiring"
+  ],
+  "writeScope": [
+    "src/Guardrails.Cli/Commands/RunCommand.cs",
+    "src/Guardrails.Cli/ExitCodes.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

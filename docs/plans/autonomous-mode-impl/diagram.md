@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=0cc03441528352c116e08a9e2262f4afec7c549f535d1de46bf7b49a4421d2d5 -->
+<!-- guardrails:graph v1 source-sha256=45c74cf9ae76e823f83e39e667a3d977814ad1ccaad7af4e312cc94e91ed6e00 -->
 
 ```mermaid
 flowchart TD
@@ -181,11 +181,21 @@ flowchart TD
       task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_2["03-covers-wiring-behaviors"]:::guardrail
     end
     style task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-    subgraph task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler["15-wire-classify-then-act-into-scheduler"]
-      task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler_gr_0["01-factory-wires-escalation"]:::guardrail
-      task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler_gr_1["02-scheduler-escalation-wiring-tests-pass"]:::guardrail
+    subgraph task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory["15-wire-escalation-components-into-factory"]
+      task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory_gr_0["01-wire-escalation-structural"]:::guardrail
+      task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory_gr_1["02-solution-builds"]:::guardrail
     end
-    style task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    style task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler["16-wire-classify-then-act-into-scheduler"]
+      task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler_gr_0["01-solution-builds"]:::guardrail
+      task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler_gr_1["02-classify-then-act-wiring-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root["17-wire-exit-code-and-verify-composition-root"]
+      task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root_gr_0["01-exit-code-escalations-pending"]:::guardrail
+      task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root_gr_1["02-factory-wires-escalation-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_3 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_3_guardrails["Wave 3 Exit Gate"]
@@ -242,19 +252,28 @@ flowchart TD
   task_wave_03_classify_and_escalate_03_implement_forensic_records --> task_wave_03_classify_and_escalate_11_implement_escalation_sink
   task_wave_03_classify_and_escalate_04_author_tests_gate_classifier --> task_wave_03_classify_and_escalate_05_implement_gate_classifier
   task_wave_03_classify_and_escalate_05_implement_gate_classifier --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_05_implement_gate_classifier --> task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory
   task_wave_03_classify_and_escalate_06_author_tests_blocker_retry --> task_wave_03_classify_and_escalate_07_implement_blocker_retry
   task_wave_03_classify_and_escalate_07_implement_blocker_retry --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_07_implement_blocker_retry --> task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory
   task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment --> task_wave_03_classify_and_escalate_09_implement_criticality_assessment
   task_wave_03_classify_and_escalate_09_implement_criticality_assessment --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_09_implement_criticality_assessment --> task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory
   task_wave_03_classify_and_escalate_10_author_tests_escalation_sink --> task_wave_03_classify_and_escalate_11_implement_escalation_sink
   task_wave_03_classify_and_escalate_10_author_tests_escalation_sink --> task_wave_03_classify_and_escalate_12_author_tests_answer_consumption
   task_wave_03_classify_and_escalate_11_implement_escalation_sink --> task_wave_03_classify_and_escalate_13_implement_answer_consumption
   task_wave_03_classify_and_escalate_11_implement_escalation_sink --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_11_implement_escalation_sink --> task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory
   task_wave_03_classify_and_escalate_12_author_tests_answer_consumption --> task_wave_03_classify_and_escalate_13_implement_answer_consumption
   task_wave_03_classify_and_escalate_13_implement_answer_consumption --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
-  task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring --> task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler
+  task_wave_03_classify_and_escalate_13_implement_answer_consumption --> task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory
+  task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring --> task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler
+  task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring --> task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root
+  task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory --> task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler
+  task_wave_03_classify_and_escalate_15_wire_escalation_components_into_factory --> task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root
+  task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler --> task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root
   task_wave_03_classify_and_escalate_01_ssot_phase3_delta --> wave_3_guardrails
-  task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler --> wave_3_guardrails
+  task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root --> wave_3_guardrails
   wave_4_preflights --> wave_4_stub
   wave_4_stub --> wave_4_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights

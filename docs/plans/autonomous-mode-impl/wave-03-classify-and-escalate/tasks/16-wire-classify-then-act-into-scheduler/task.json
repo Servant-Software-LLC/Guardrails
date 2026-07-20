@@ -1,0 +1,14 @@
+{
+  "description": "Wire classify-then-act reply channel (#120), part 2 of 3: complete the Scheduler's resume answer-consumption (construct AnswerFileConsumer at the resume use-site, §7.6) and thread the injected answer/best-guess text into the next attempt's composed prompt via ActionRunner → PromptComposer.ComposeAction's existing injectedHumanAnswer channel — so the escalate / proceed-best-guess / blocker-retried / answer-injected behaviour is OBSERVABLE through the real SchedulerFactory.Create. Proves facts 1-4 of the authored wiring test (the exit-code fact is task 17). Scheduler.cs overlaps task 15 on a linear chain (16 dependsOn 15) — allowed, no sibling collision.",
+  "stableId": "w3i16sw",
+  "dependsOn": [
+    "15-wire-escalation-components-into-factory",
+    "14-author-tests-scheduler-escalation-wiring"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Prompts/PromptComposer.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}
