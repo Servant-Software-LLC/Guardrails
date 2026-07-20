@@ -1,4 +1,8 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Guardrails.Core.Journal;
+using Guardrails.Core.Model;
+using Guardrails.Core.State;
 
 namespace Guardrails.Core.Execution;
 
@@ -17,14 +21,28 @@ namespace Guardrails.Core.Execution;
 /// reused. <see cref="Escalate"/> NEVER blocks: it records and returns the id; the reply arrives out of
 /// band (§7.1).
 ///
-/// TDD-RED STUB (issue #361 Phase 3, task <c>10-author-tests-escalation-sink</c>): <see cref="Escalate"/>
-/// throws so the escalation-sink tests COMPILE and FAIL. The real record write, the run-level <c>seq</c>
-/// allocation, and the <c>decisions[]</c> append are wired by the sibling implementation task (which also
-/// adds the journaled counter to <see cref="RunJournal"/>); this stub stays self-contained and touches no
-/// shipped type.
+/// This is a THIN layer over shipped machinery (§7.2), NOT a new transport: it writes plain files
+/// (invariant 6), delegates the durable audit to <see cref="RunJournal.RecordDecision"/>, and surfaces the
+/// live event through <see cref="IRunObserver"/>. The harness never knows firstmate exists — it writes files
+/// and (elsewhere) sets an exit code; polling/answering happens out of band.
 /// </summary>
 public sealed class FileEscalationSink : IEscalationSink
 {
+    /// <summary>The initial record status (§7.6 <c>open → answered → consumed</c>); a later resume flips it.</summary>
+    private const string OpenStatus = "open";
+
+    /// <summary>
+    /// Pretty-printed, camelCase, omit-null serializer for the human-/firstmate-inspectable escalation
+    /// record (contrast the compact single-line <c>autonomy.jsonl</c> stream) — a record is a pollable
+    /// document a human may read, so it is indented.
+    /// </summary>
+    private static readonly JsonSerializerOptions RecordJson = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
     private readonly string _logsRoot;
     private readonly RunJournal _journal;
     private readonly IRunObserver _observer;
@@ -50,12 +68,87 @@ public sealed class FileEscalationSink : IEscalationSink
     /// <inheritdoc />
     public EscalationId Escalate(EscalationRequest request)
     {
-        // Dependencies the implementation task will consume (referenced here so the stub compiles clean
-        // under TreatWarningsAsErrors); the stub itself records nothing — it is TDD red.
-        _ = (_logsRoot, _journal, _observer, _escalationThreshold, request);
-        throw new NotImplementedException(
-            "FileEscalationSink.Escalate is a TDD-red stub: the escalations/<seq>-<gate>.json write, the "
-            + "run-level seq allocation, the decisions[] 'escalated' append, and the DecisionRecorded emit "
-            + "land in the implementation task.");
+        // 1. Allocate the durably-monotonic, never-reused run-level seq (doc 12 §7.1, Finding 5) — journaled,
+        //    NOT derived from the escalations/ listing — and bind the escalation's identity.
+        string runId = _journal.Document.RunId;
+        int seq = _journal.NextEscalationSeq();
+        var id = new EscalationId(runId, seq, request.Gate, request.Subject);
+
+        // 2. Write the structured record atomically to the well-known, pollable path
+        //    logs/<runId>/escalations/<seq>-<gate>.json: the serialized request + the assigned id + status
+        //    "open", carrying the anti-stale DefinitionHash. This is the machine-readable question (§7.2).
+        string recordPath = Path.Combine(_logsRoot, runId, "escalations", $"{seq}-{request.Gate}.json");
+        var record = new EscalationRecord
+        {
+            Gate = request.Gate,
+            Subject = request.Subject,
+            Question = request.Question,
+            Context = request.Context,
+            Criticality = request.Criticality,
+            DefinitionHash = request.DefinitionHash,
+            At = request.At,
+            Id = id,
+            Status = OpenStatus
+        };
+        AtomicFile.WriteAllText(recordPath, JsonSerializer.Serialize(record, RecordJson));
+
+        // 3 + 4. Build the 'escalated' decisions[] entry (the §6.2 fields) ONCE, append it to the durable
+        //    audit via the shipped single-writer RunJournal.RecordDecision, and emit the SAME entry live so a
+        //    UI / stdout shows the escalation as it happens (§7.2).
+        var decision = new DecisionEntry
+        {
+            Boundary = BoundaryFor(request.Gate),
+            // The sink is the AUTONOMOUS escalation seam: it is reached only when the run is classifying gates
+            // itself rather than prompting/halting — so 'auto' is the policy in force at this boundary.
+            Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+            Decision = DecisionTokens.Escalated,
+            Subject = request.Subject,
+            Headline = Headline(request),
+            At = request.At,
+            Gate = request.Gate,
+            Criticality = request.Criticality,
+            Threshold = _escalationThreshold
+        };
+        _journal.RecordDecision(decision);
+        _observer.DecisionRecorded(decision);
+
+        // 5. Never block: return the assigned id immediately. The answer arrives out of band and is consumed
+        //    by a later resume (§7.1) — no wait here, and no answer file is synthesized.
+        return id;
+    }
+
+    /// <summary>Map the gate to the §6.2 <c>boundary</c> discriminator: a wave gate → <c>wave</c>; everything else → <c>task</c>.</summary>
+    private static string BoundaryFor(string gate) => gate switch
+    {
+        "wave-checkpoint" => "wave",
+        "review-gate" => "wave",
+        _ => "task"
+    };
+
+    /// <summary>A one-line human headline for the live UI / <c>decisions[]</c> audit.</summary>
+    private static string Headline(EscalationRequest request)
+    {
+        string criticality = request.Criticality is { Length: > 0 } c ? $" (criticality {c})" : "";
+        return $"Escalated {request.Gate} for '{request.Subject}'{criticality} — awaiting a human answer";
+    }
+
+    /// <summary>
+    /// The on-disk escalation record (doc 12 §7.1): the serialized <see cref="EscalationRequest"/> fields, the
+    /// assigned <see cref="EscalationId"/> (<see cref="Id"/>, so the <c>{ runId, seq, gate, subject }</c>
+    /// binding lives in the body, not just the path), and the <c>open</c> <see cref="Status"/> a later resume
+    /// flips through <c>answered → consumed</c> (§7.6). Null <see cref="Criticality"/> (a hard blocker) is
+    /// omitted via <see cref="RecordJson"/>'s omit-null policy.
+    /// </summary>
+    private sealed record EscalationRecord
+    {
+        public required string Gate { get; init; }
+        public required string Subject { get; init; }
+        public required string Question { get; init; }
+        public required string Context { get; init; }
+        public string? Criticality { get; init; }
+        public required string DefinitionHash { get; init; }
+        public required DateTimeOffset At { get; init; }
+        public required EscalationId Id { get; init; }
+        public required string Status { get; init; }
     }
 }
