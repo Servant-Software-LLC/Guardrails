@@ -152,11 +152,61 @@ public static class GateClassifier
 {
     /// <summary>
     /// Classify an observed <paramref name="signal"/> into its <see cref="GateClass"/> per the doc 12
-    /// §4.1 table. TDD-red stub: the real mapping is implemented by a later wave-03 task; this throws so
-    /// the pinned tests compile and FAIL.
+    /// §4.1 classify-then-act table. A PURE function of its input — no I/O, no prompt, no judgment — so it
+    /// is the deterministic authority for the dangerous cases and a trivially re-runnable unit-test base.
+    /// A KNOWN-transient prompt failure is class (b) as a FACT; an UNKNOWN/ambiguous signal defaults to
+    /// <see cref="GateClass.HardBlockerPermanent"/> — escalate, never silently spin (§4.3, invariant 1).
     /// </summary>
-    public static GateClass Classify(GateSignal signal) =>
-        throw new NotImplementedException(
-            "GateClassifier.Classify is a TDD-red stub (issue #361 Phase 3, doc 12 §4.1); " +
-            "the classify-then-act mapping is implemented by a later wave-03 task.");
+    /// <param name="signal">The already-observed run stop to classify.</param>
+    /// <returns>The deterministic <see cref="GateClass"/> the stop maps to.</returns>
+    public static GateClass Classify(GateSignal signal)
+    {
+        ArgumentNullException.ThrowIfNull(signal);
+
+        return signal.Kind switch
+        {
+            // (b) Hard blocker, retryable/transient (§4.1): a KNOWN transient (429/503/529, overloaded,
+            // rate/session/usage limit) is the ONLY prompt failure that backs off + retries. Every other
+            // PromptFailureKind (None/OutputCap/Timeout/MaxTurns/Error) is NOT a known-transient, so the
+            // §4.3 safe default applies — escalate, never silently spin.
+            GateSignalKind.PromptFailure => signal.Prompt == PromptFailureKind.Transient
+                ? GateClass.HardBlockerRetryable
+                : GateClass.HardBlockerPermanent,
+
+            // (c) Hard blocker, permanent (§4.1): no best-guess exists and no retry clears these. A
+            // permission wall (#266/#86/#104) halts unconditionally — no best-guess grants a missing path;
+            // an infrastructure fault / RunAbort (#150) is an honest abort; a plan/wave preflight failure
+            // (SSOT §3.3/§14.3) means the environment is not ready. All escalate with full context.
+            GateSignalKind.PermissionWall => GateClass.HardBlockerPermanent,
+            GateSignalKind.InfrastructureFault => GateClass.HardBlockerPermanent,
+            GateSignalKind.PreflightFailure => GateClass.HardBlockerPermanent,
+
+            // (a) Judgment call — the ONLY dial-eligible class (§4 row a). An agent-emitted needsHuman is
+            // an explicit design question with a best-guess. The JIT wave-checkpoint is dial-eligible only
+            // when it is the "next wave unauthored" checkpoint (§14.4, #360); any other WaveHaltKind is not
+            // that checkpoint, so it takes the §4.3 safe default rather than being best-guessed past.
+            GateSignalKind.AgentNeedsHuman => GateClass.JudgmentCall,
+            GateSignalKind.WaveCheckpoint => signal.Checkpoint == WaveHaltKind.NextWaveUnauthored
+                ? GateClass.JudgmentCall
+                : GateClass.HardBlockerPermanent,
+
+            // Floor (§4.1 / §5, invariant 5): the overwatcher's DETERMINISTIC floor — a no-op deadlock
+            // (#174), the #264 deterministic-script reproduction, or a terminal-exhaustion needs-human (a
+            // task that could not converge to green). The dial may NEVER lower these at any threshold,
+            // including `critical`. Any other overwatch trigger is not a floor here, so it escalates via
+            // the §4.3 safe default rather than being mislabelled a floor.
+            GateSignalKind.Overwatch => signal.Trigger is
+                OverwatchTrigger.NoOpDeadlock or
+                OverwatchTrigger.DeterministicScript or
+                OverwatchTrigger.TerminalExhaustion
+                    ? GateClass.Floor
+                    : GateClass.HardBlockerPermanent,
+
+            // The load-bearing negative (§4.3): an UNKNOWN/ambiguous stop is NOT silently treated as
+            // retryable — it escalates as a permanent blocker. Escalate, never spin. An unrecognized
+            // discriminator is itself ambiguous and takes the same safe default.
+            GateSignalKind.Unknown => GateClass.HardBlockerPermanent,
+            _ => GateClass.HardBlockerPermanent
+        };
+    }
 }
