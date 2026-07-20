@@ -157,6 +157,45 @@ public static class SchedulerFactory
             }
         }
 
+        // #361 Phase 3 (doc 12 §4/§7): the classify-then-act escalation machinery, CONSTRUCTED at the
+        // production composition root (the recurring #120 lesson: built + unit-green is not wired) and injected
+        // into the Scheduler — but ONLY when the plan carries an `autonomy` block under a non-interactive
+        // `autonomyPolicy: auto` run. Absent the block (or under prompt/halt) NONE is constructed and the
+        // Scheduler receives nulls, so behaviour is byte-identical to today (the inert-by-default guarantee,
+        // §3.2). These are RUN-LEVEL — one instance per run, because each holds run-scoped state: the sink's
+        // monotonic never-reused seq, the judge's run-level WideningLedger cap, the blocker ceilings/budget —
+        // so they are built HERE and threaded through, mirroring how Overwatch / GitWorktreeProvider /
+        // AiMergeWorker are wired above. (GateClassifier is a STATIC class — never constructed; the Scheduler
+        // calls GateClassifier.Classify directly. AnswerFileConsumer is new'd at its resume use-site in task 16.)
+        IEscalationSink? escalationSink = null;
+        CriticalityJudge? criticalityJudge = null;
+        BlockerRetry? blockerRetry = null;
+        if (plan.Config.Autonomy is { } autonomy && plan.Config.AutonomyPolicy == AutonomyPolicy.Auto)
+        {
+            // The sink writes escalations/<seq>-<gate>.json + a decisions[] 'escalated' entry over the run's
+            // logs/ root and the SHARED RunJournal (the single writer of decisions[] + the monotonic seq).
+            escalationSink = new FileEscalationSink(
+                Path.Combine(plan.PlanDirectory, "logs"), journal, observer,
+                autonomy.EscalationThreshold.ToString().ToLowerInvariant());
+
+            // The advisory criticality judge drives the reserved read-only `overwatch`-profile runner (EXACTLY
+            // as the overwatcher's diagnose does). A script-only plan that resolves no runner leaves the judge
+            // null — a judgment call then escalates (the safe default, invariant 1), never silently best-guesses.
+            PromptRunnerRegistry autonomyRegistry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
+            IPromptRunner? overwatchRunner = ResolveOverwatchRunner(autonomyRegistry);
+            if (overwatchRunner is not null)
+            {
+                criticalityJudge = new CriticalityJudge(overwatchRunner, autonomy);
+            }
+
+            // The class-(b) bounded wait/backoff: the autonomy-dial ceilings (maxAttempts/totalWaitSeconds)
+            // floored by the shipped transient-pause budget; production passes a real Task.Delay wait.
+            blockerRetry = new BlockerRetry(
+                autonomy.BlockerRetry,
+                TimeSpan.FromSeconds(plan.Config.TransientPauseBudgetSeconds),
+                delay => Task.Delay(delay));
+        }
+
         return new Scheduler(
             plan, executor, journal,
             worktreeProvider: worktreeProvider,
@@ -166,7 +205,10 @@ public static class SchedulerFactory
             driftAuthorization: driftAuthorization,
             waveDriftAuthorized: waveDriftAuthorized,
             breakdownInvoker: breakdownInvoker,
-            breakdownConfirmations: breakdownConfirmations);
+            breakdownConfirmations: breakdownConfirmations,
+            escalationSink: escalationSink,
+            criticalityJudge: criticalityJudge,
+            blockerRetry: blockerRetry);
     }
 
     /// <summary>

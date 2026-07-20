@@ -65,6 +65,18 @@ public sealed class Scheduler
     // CLI prompts up front and passes the answers here. Absent entry ⇒ non-interactive ⇒ honest-halt.
     private readonly IReadOnlyDictionary<string, bool> _breakdownConfirmations;
 
+    // #361 Phase 3 (doc 12 §4/§7): the classify-then-act escalation machinery, injected by SchedulerFactory
+    // ONLY for a non-interactive `autonomyPolicy: auto` run that carries an `autonomy` block (else all three
+    // are null → the dial is INERT and the run is byte-identical to today, the §3.2 back-compat guarantee).
+    // At a task-level needs-human / rate-limit gate (and the JIT wave-checkpoint) the Scheduler CLASSIFIES the
+    // stop with GateClassifier.Classify and acts: escalate via the sink, RECORD a proceed-best-guess, or run a
+    // bounded class-(b) retry — every gate landing in decisions[] + the run-level autonomy.jsonl (§6). The
+    // production sink is FileEscalationSink; the judge/blocker-retry may be null (a script-only plan resolves
+    // no overwatch runner → a judgment call escalates, the safe default).
+    private readonly IEscalationSink? _escalationSink;
+    private readonly CriticalityJudge? _criticalityJudge;
+    private readonly BlockerRetry? _blockerRetry;
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -77,7 +89,10 @@ public sealed class Scheduler
         DriftAuthorization? driftAuthorization = null,
         IReadOnlySet<string>? waveDriftAuthorized = null,
         WaveBreakdownInvoker? breakdownInvoker = null,
-        IReadOnlyDictionary<string, bool>? breakdownConfirmations = null)
+        IReadOnlyDictionary<string, bool>? breakdownConfirmations = null,
+        IEscalationSink? escalationSink = null,
+        CriticalityJudge? criticalityJudge = null,
+        BlockerRetry? blockerRetry = null)
     {
         _plan = plan;
         _executor = executor;
@@ -90,6 +105,9 @@ public sealed class Scheduler
         _waveDriftAuthorized = waveDriftAuthorized ?? new HashSet<string>(StringComparer.Ordinal);
         _breakdownInvoker = breakdownInvoker;
         _breakdownConfirmations = breakdownConfirmations ?? new Dictionary<string, bool>(StringComparer.Ordinal);
+        _escalationSink = escalationSink;
+        _criticalityJudge = criticalityJudge;
+        _blockerRetry = blockerRetry;
 
         int requested = Math.Max(1, maxParallelism ?? plan.Config.MaxParallelism);
 
@@ -1006,6 +1024,20 @@ public sealed class Scheduler
                 .ConfigureAwait(false);
         }
 
+        // #361 Phase 3 (doc 12 §4): when the dial is wired, classify-then-act the JIT wave-checkpoint (a
+        // class-(a) judgment call — assess criticality → escalate via the sink or RECORD a best-guess) BEFORE
+        // the shipped honest-halt below. The shipped WaveCheckpointHalt decision + WaveHalt report are
+        // preserved unchanged (an escalation records the open question; it does not itself author the wave).
+        if (_escalationSink is not null)
+        {
+            await ClassifyAndActAsync(
+                GateSignal.WaveCheckpoint(WaveHaltKind.NextWaveUnauthored), gate: "wave-checkpoint",
+                subject: wave.Dir, boundary: "wave",
+                question: $"Wave '{wave.Dir}' is unauthored — the next-wave JIT breakdown checkpoint.",
+                definitionHash: Journal.WaveDefinitionHash.Compute(wave),
+                criticalityGate: CriticalityGate.WaveCheckpoint, cancellationToken).ConfigureAwait(false);
+        }
+
         // Honest-halt. An interactive DECLINE reads as prompted-declined; everything else (halt policy, a
         // non-interactive prompt, an absent brief, no runner, or a hit cost cap) is a plain halted.
         string haltToken = policy == AutonomyPolicy.Prompt && prompted && !approved ? "prompted-declined" : "halted";
@@ -1697,6 +1729,294 @@ public sealed class Scheduler
         };
     }
 
+    // ================================================================================================
+    //  #361 Phase 3 — the classify-then-act dispatch at an autonomous gate (doc 12 §4/§7).
+    //  Reached ONLY when SchedulerFactory wired the run-level sink/judge/blocker-retry (an `autonomy`
+    //  block under `autonomyPolicy: auto`). The construction + injection of those components is task 15's
+    //  slice, as is this dispatch; the RESUME answer-consumption path (AnswerFileConsumer) and the
+    //  ActionRunner→PromptComposer best-guess/answer INJECTION are task 16; the distinct exit code is task 17.
+    // ================================================================================================
+
+    /// <summary>
+    /// Map a just-settled task's non-green outcome to a <see cref="GateSignal"/> and dispatch it through
+    /// <see cref="ClassifyAndActAsync"/> (doc 12 §4.1). Only two task-level stops are dial-eligible gates: an
+    /// agent-emitted <c>{"needsHuman": "…"}</c> (a class-(a) judgment call, recognised by the settled
+    /// <see cref="TaskResult.Summary"/>'s stable <c>needs human: </c> prefix) and a rate-limit exhaustion (a
+    /// class-(b) transient). Every other non-green outcome (a terminal-exhaustion needs-human, a cost-cap halt,
+    /// an overwatcher floor) already carries its own shipped handling and is left untouched here.
+    /// </summary>
+    private async Task ClassifyTaskGateAsync(TaskNode task, TaskResult result, CancellationToken ct)
+    {
+        try
+        {
+            string definitionHash = Journal.TaskDefinitionHash.Compute(task);
+
+            if (result.Outcome == TaskOutcome.NeedsHuman
+                && ExtractNeedsHumanQuestion(result.Summary) is { } question)
+            {
+                await ClassifyAndActAsync(
+                    GateSignal.AgentNeedsHuman(question), gate: "needs-human", subject: task.Id, boundary: "task",
+                    question: question, definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman,
+                    ct).ConfigureAwait(false);
+            }
+            else if (result.Outcome == TaskOutcome.RateLimited)
+            {
+                await ClassifyAndActAsync(
+                    GateSignal.PromptFailure(Prompts.PromptFailureKind.Transient), gate: "blocker",
+                    subject: task.Id, boundary: "task", question: null, definitionHash: definitionHash,
+                    criticalityGate: CriticalityGate.NeedsHuman, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // A forensic escalation write must never flip the run's verdict or abort the drain (§6, the
+            // don't-fault-on-audit posture) — surface it and continue.
+            _observer.CleanupFailed(task.Id, ex);
+        }
+    }
+
+    /// <summary>
+    /// The deterministic classify-then-act core (doc 12 §4): <see cref="GateClassifier.Classify"/> routes the
+    /// gate, then — a judgment call (a) → the advisory <see cref="CriticalityJudge"/> → escalate (≥ threshold)
+    /// via the injected <see cref="FileEscalationSink"/> or RECORD a proceed-best-guess; a retryable blocker
+    /// (b) → <see cref="BlockerRetry"/> bounded wait/backoff; a permanent blocker (c) / floor →
+    /// halt-and-escalate. The judge/best-guess INJECTION into the next attempt is task 16 — here a below-
+    /// threshold call only RECORDS the best-guess text on the <c>decisions[]</c> entry.
+    /// </summary>
+    private async Task ClassifyAndActAsync(
+        GateSignal signal, string gate, string subject, string boundary, string? question,
+        string definitionHash, CriticalityGate criticalityGate, CancellationToken ct)
+    {
+        switch (GateClassifier.Classify(signal))
+        {
+            case GateClass.JudgmentCall:
+                await ActOnJudgmentCallAsync(gate, subject, boundary, question, definitionHash, criticalityGate, ct)
+                    .ConfigureAwait(false);
+                break;
+
+            case GateClass.HardBlockerRetryable:
+                await ActOnRetryableBlockerAsync(gate, subject, boundary, definitionHash, ct).ConfigureAwait(false);
+                break;
+
+            default: // HardBlockerPermanent or Floor — no best-guess, no retry clears it: halt-and-escalate.
+                EscalateGate(gate, subject, boundary, question, definitionHash, "hard-blocker-permanent",
+                    criticality: null);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// A class-(a) judgment call (doc 12 §4 row a / §3.3): run the advisory assessment; at/above the effective
+    /// threshold escalate via the sink, else RECORD a proceed-best-guess (the injection into the next attempt
+    /// is task 16). A null judge (a script-only plan with no overwatch runner) escalates — invariant 1.
+    /// </summary>
+    private async Task ActOnJudgmentCallAsync(
+        string gate, string subject, string boundary, string? question, string definitionHash,
+        CriticalityGate criticalityGate, CancellationToken ct)
+    {
+        if (_criticalityJudge is null)
+        {
+            EscalateGate(gate, subject, boundary, question, definitionHash, "judgment-call", criticality: null);
+            return;
+        }
+
+        CriticalityDecision decision = await _criticalityJudge
+            .AssessAsync(new CriticalityGateContext { Gate = criticalityGate, Detail = question ?? "" }, ct)
+            .ConfigureAwait(false);
+
+        string threshold = EffectiveThresholdToken(criticalityGate);
+        string? criticality = decision.Criticality is { } c ? c.ToString().ToLowerInvariant() : null;
+        string? confidence = decision.Confidence is { } cf ? cf.ToString().ToLowerInvariant() : null;
+
+        if (decision.Outcome == CriticalityOutcome.Escalate)
+        {
+            _escalationSink!.Escalate(new EscalationRequest
+            {
+                Gate = gate,
+                Subject = subject,
+                Question = question ?? $"A {gate} judgment call for '{subject}' needs a human answer.",
+                Context = BuildGateContext(gate, subject, question),
+                Criticality = criticality,
+                DefinitionHash = definitionHash,
+                At = DateTimeOffset.UtcNow
+            });
+            // The sink already appended the 'escalated' decisions[] entry + emitted DecisionRecorded; add the
+            // run-level autonomy.jsonl detail line (§6.3).
+            AppendAutonomyRecord(gate, boundary, subject, "judgment-call", DecisionTokens.Escalated,
+                criticality, confidence, threshold, question, bestGuess: null, decision.Rationale);
+            return;
+        }
+
+        // Below threshold ⇒ proceed on the recorded best-guess. Task 15 RECORDS it (decisions[] + the best-guess
+        // text); task 16 injects that text into the next attempt's composed prompt as delimited UNTRUSTED data.
+        var entry = new DecisionEntry
+        {
+            Boundary = boundary,
+            Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+            Decision = DecisionTokens.ProceededBestGuess,
+            Subject = subject,
+            Headline = $"Proceeded on a recorded best-guess at the {gate} gate for '{subject}'"
+                       + (criticality is not null ? $" (criticality {criticality} < threshold {threshold})" : ""),
+            At = DateTimeOffset.UtcNow,
+            Gate = gate,
+            Classification = "judgment-call",
+            Criticality = criticality,
+            Confidence = confidence,
+            Threshold = threshold,
+            BestGuess = decision.BestGuess
+        };
+        _journal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+        AppendAutonomyRecord(gate, boundary, subject, "judgment-call", DecisionTokens.ProceededBestGuess,
+            criticality, confidence, threshold, question, decision.BestGuess, decision.Rationale);
+    }
+
+    /// <summary>
+    /// A class-(b) retryable hard blocker (doc 12 §4 row b / §4.2): the bounded wait/backoff. By the time a
+    /// transient reaches this run-level gate the shipped transient-pause discipline (the executor's
+    /// <see cref="TransientBackoff"/>) has already elapsed against the pause budget, so the run-level
+    /// <see cref="BlockerRetry"/> re-probe treats it as cleared and RECORDS a <c>blocker-retried</c> ledger —
+    /// never an immediate escalation (the whole point of class (b) vs class (c)). The live re-run probe the
+    /// executor supplies on resume is task 16's concern. On a ceiling it escalates to class (c).
+    /// </summary>
+    private async Task ActOnRetryableBlockerAsync(
+        string gate, string subject, string boundary, string definitionHash, CancellationToken ct)
+    {
+        BlockerRetryResult retry = await _blockerRetry!
+            .RunAsync(hasCleared: _ => true, resetHint: null, ct).ConfigureAwait(false);
+
+        if (retry.Outcome == BlockerRetryOutcome.Escalate)
+        {
+            EscalateGate(gate, subject, boundary, question: null, definitionHash, "hard-blocker-retryable",
+                criticality: null);
+            return;
+        }
+
+        var entry = new DecisionEntry
+        {
+            Boundary = boundary,
+            Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+            Decision = DecisionTokens.BlockerRetried,
+            Subject = subject,
+            Headline = $"Class-(b) transient at the {gate} gate for '{subject}' cleared after "
+                       + $"{retry.Ledger.Attempts} attempt(s)",
+            At = DateTimeOffset.UtcNow,
+            Gate = gate,
+            Classification = "hard-blocker-retryable",
+            BlockerAttempts = retry.Ledger.Attempts,
+            BlockerWaitedSeconds = (int)retry.Ledger.CumulativeWait.TotalSeconds
+        };
+        _journal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+        AppendAutonomyRecord(gate, boundary, subject, "hard-blocker-retryable", DecisionTokens.BlockerRetried,
+            criticality: null, confidence: null, threshold: null, question: null, bestGuess: null,
+            rationale: null);
+    }
+
+    /// <summary>
+    /// Halt-and-escalate a gate via the injected <see cref="FileEscalationSink"/> (doc 12 §7.2): fire-and-record
+    /// (the sink writes the escalations/&lt;seq&gt;-&lt;gate&gt;.json record, appends the 'escalated'
+    /// <c>decisions[]</c> entry, and emits <see cref="IRunObserver.DecisionRecorded"/>), then add the run-level
+    /// autonomy.jsonl detail line. The task/wave still settles non-green — an escalation records the open
+    /// question for an out-of-band answer (task 16's resume), it does not clear the gate.
+    /// </summary>
+    private void EscalateGate(
+        string gate, string subject, string boundary, string? question, string definitionHash,
+        string classification, string? criticality)
+    {
+        _escalationSink!.Escalate(new EscalationRequest
+        {
+            Gate = gate,
+            Subject = subject,
+            Question = question ?? $"A {gate} blocker for '{subject}' needs a human — no best-guess is available.",
+            Context = BuildGateContext(gate, subject, question),
+            Criticality = criticality,
+            DefinitionHash = definitionHash,
+            At = DateTimeOffset.UtcNow
+        });
+        AppendAutonomyRecord(gate, boundary, subject, classification, DecisionTokens.Escalated,
+            criticality, confidence: null, threshold: null, question: question, bestGuess: null, rationale: null);
+    }
+
+    /// <summary>The full reconstruction context a human/firstmate reads to answer the escalation (doc 12 §7.1).</summary>
+    private string BuildGateContext(string gate, string subject, string? question)
+    {
+        string logs = Path.Combine(_plan.PlanDirectory, "logs");
+        string q = question is { Length: > 0 } ? $" Question: {question}." : "";
+        return $"Autonomous {gate} gate for '{subject}'.{q} Full logs under {logs}.";
+    }
+
+    /// <summary>
+    /// The effective escalation threshold token for <paramref name="gate"/> (doc 12 §3.5): a per-gate
+    /// <see cref="GateThresholds"/> override when present, else the run-wide dial — the same resolution the
+    /// judge applies, recomputed here only to STAMP the forensic record (the judge does not surface it).
+    /// </summary>
+    private string EffectiveThresholdToken(CriticalityGate gate)
+    {
+        AutonomyConfig? cfg = _plan.Config.Autonomy;
+        if (cfg is null)
+        {
+            return "";
+        }
+
+        EscalationThreshold? perGate = gate switch
+        {
+            CriticalityGate.NeedsHuman => cfg.GateThresholds?.NeedsHuman,
+            CriticalityGate.WaveCheckpoint => cfg.GateThresholds?.WaveCheckpoint,
+            _ => null
+        };
+        return (perGate ?? cfg.EscalationThreshold).ToString().ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// The agent-emitted needs-human question carried on a settled <see cref="TaskResult.Summary"/> (the
+    /// executor stamps <c>needs human: &lt;question&gt;</c> for an agent <c>{"needsHuman": …}</c> short-circuit).
+    /// Returns null for any other needs-human summary (a terminal exhaustion, a cost cap) so those are NOT
+    /// misclassified as dial-eligible judgment calls.
+    /// </summary>
+    private static string? ExtractNeedsHumanQuestion(string summary)
+    {
+        const string prefix = "needs human: ";
+        return summary.StartsWith(prefix, StringComparison.Ordinal) ? summary[prefix.Length..] : null;
+    }
+
+    /// <summary>
+    /// Append one compact <c>autonomy.jsonl</c> detail line for this gate (doc 12 §6.1/§6.3) — the multi-fire
+    /// DETAIL behind the durable <c>decisions[]</c> audit. Written only when the journal is the real
+    /// <see cref="Journal.RunJournal"/> (a unit-test fake models neither the run id nor the detail stream).
+    /// </summary>
+    private void AppendAutonomyRecord(
+        string gate, string boundary, string subject, string classification, string decision,
+        string? criticality, string? confidence, string? threshold, string? question, string? bestGuess,
+        string? rationale)
+    {
+        if (_journal is not Journal.RunJournal runJournal)
+        {
+            return;
+        }
+
+        var record = new Journal.AutonomyRecord
+        {
+            At = DateTimeOffset.UtcNow,
+            Gate = gate,
+            Boundary = boundary,
+            Subject = subject,
+            Classification = classification,
+            Decision = decision,
+            Criticality = criticality,
+            Confidence = confidence,
+            Threshold = threshold,
+            Question = question,
+            BestGuess = bestGuess,
+            Rationale = rationale
+        };
+        Journal.AutonomyJsonl.Append(Path.Combine(_plan.PlanDirectory, "logs"), runJournal.Document.RunId, record);
+    }
+
     /// <summary>
     /// Called after a task finishes (executor or cost-cap halt). For worktree-mode green results,
     /// performs the B1 deferred settle (fragment merge → git integration commit → journal settle)
@@ -1747,6 +2067,15 @@ public sealed class Scheduler
                 try { provider.PruneSalvageRefs(task.Id); }
                 catch (Exception ex) { _observer.CleanupFailed(task.Id, ex); }
             }
+        }
+
+        // #361 Phase 3 (doc 12 §4): classify-then-act at a task-level gate when the autonomy dial is wired. A
+        // non-green needs-human / rate-limit stop is deterministically classified and acted on (escalate /
+        // proceed-best-guess / bounded class-(b) retry) as the task settles — independent branches keep
+        // draining (this runs per settling task, OFF the run barrier). Inert when the dial is not wired.
+        if (_escalationSink is not null)
+        {
+            await ClassifyTaskGateAsync(task, result, ct).ConfigureAwait(false);
         }
 
         var newlyReady = new List<TaskEnvelope>();
