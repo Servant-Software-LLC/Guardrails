@@ -76,6 +76,29 @@ public static class RunCommand
             Description = "Suppress the warning when the plan hasn't been through /guardrails-review (or has changed since) (SSOT §13, issue #79)."
         };
 
+        // ── Autonomous-mode flags (issue #361, doc 12 §3.4) — STUBS ONLY ──────────────────────────
+        // Task 06-author-tests-autonomous-cli adds ONLY the options so `--autonomous`, `--dial <level>`,
+        // and `--max-cost-usd <n>` PARSE. Their RESOLUTION is deliberately left unimplemented — no
+        // resolved-autonomy summary line, no built-in-$20 maxCostUsd default warning, no --dial
+        // validation, and no GR2040 re-check on the post-flag effective config — so the RED
+        // AutonomousModeCliTests fail here. The paired task 07-implement-autonomous-cli fills that in
+        // (doc 12 §3.4, decided §10 I/N); wiring it below would turn those tests green. Accordingly these
+        // options are REGISTERED (below) but intentionally NOT read in SetAction yet.
+        var autonomousOption = new Option<bool>("--autonomous")
+        {
+            Description = "Run unattended (doc 12 §3.4): set autonomyPolicy 'auto' and, when the config omits an autonomy block, apply one with escalationThreshold 'high' (best-guess only low/moderate — the conservative default, §10 N). REQUIRES an effective maxCostUsd; when none is set a built-in $20 default applies with a loud warning."
+        };
+
+        var dialOption = new Option<string?>("--dial")
+        {
+            Description = "Override the run-wide autonomy escalationThreshold (doc 12 §3.3/§3.4): 'low', 'moderate', 'high', or 'critical' — the lowest criticality that still escalates. 'critical' is fully autonomous (floors always escalate). An unrecognized value is a usage error."
+        };
+
+        var maxCostUsdOption = new Option<decimal?>("--max-cost-usd")
+        {
+            Description = "Set the effective maxCostUsd ceiling for this run (overrides guardrails.json). Under --autonomous this satisfies the required cost cap, so the built-in $20 default is not applied."
+        };
+
         var command = new Command("run", "Run a plan folder's task DAG to green (parallel; resume-aware).");
         command.Add(folderArgument);
         command.Add(freshOption);
@@ -89,6 +112,12 @@ public static class RunCommand
         command.Add(reprocessDriftOption);
         command.Add(revalidateTaskOption);
         command.Add(skipReviewCheckOption);
+
+        // Autonomous-mode option STUBS (see the block where they are declared): registered so the args
+        // parse, but deliberately not read in the action — task 07 implements their resolution.
+        command.Add(autonomousOption);
+        command.Add(dialOption);
+        command.Add(maxCostUsdOption);
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
