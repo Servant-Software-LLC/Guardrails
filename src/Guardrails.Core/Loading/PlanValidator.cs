@@ -62,6 +62,7 @@ public sealed class PlanValidator
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
+        ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
         return diagnostics;
@@ -267,6 +268,185 @@ public sealed class PlanValidator
         }
 
         return !model.Any(c => char.IsWhiteSpace(c) || char.IsControl(c));
+    }
+
+    /// <summary>
+    /// Semantic validation of the OPTIONAL <c>autonomy</c> criticality-dial block (issue #361, doc 12
+    /// §3.4/§3.5/§5.2; decided §10 M). Two ERROR codes:
+    /// <list type="bullet">
+    /// <item><b>GR2039</b> (<see cref="ValidateAutonomyDialValues"/>) — an unrecognised value: an
+    ///   <c>escalationThreshold</c> that is not a criticality level, a <c>gateThresholds.needs-human</c> /
+    ///   <c>wave-checkpoint</c> that is not a criticality level, or a <c>gateThresholds.review-gate</c> that
+    ///   is neither <c>escalate</c> nor <c>proceed-unreviewed</c>.</item>
+    /// <item><b>GR2040</b> (<see cref="ViolatesCompoundConfig"/>) — the forbidden compound config, keyed on
+    ///   the reachable end-state (Finding 3).</item>
+    /// </list>
+    /// The whole block absent ⇒ <see cref="RunConfig.Autonomy"/> is <c>null</c> ⇒ nothing to validate (the
+    /// dial is inert, doc 12 §3.2 back-compat). Mirrors GR2031 (<c>autonomyPolicy</c>) for the orthogonal
+    /// unified-autonomy knob.
+    /// </summary>
+    private static void ValidateAutonomy(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (plan.Config.Autonomy is not { } autonomy)
+        {
+            return; // block absent ⇒ inert dial; nothing to validate.
+        }
+
+        ValidateAutonomyDialValues(plan, diagnostics);
+
+        // GR2040 keyed on the reachable end-state via the reusable predicate (B1). The predicate is the
+        // single source for the message so a later stage re-checking the EFFECTIVE config (task 07's
+        // --dial/--autonomous mutation runs AFTER load-time validation) reports identically.
+        if (ViolatesCompoundConfig(autonomy, out string compoundDiagnostic))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.IncompatibleAutonomyCompoundConfig, plan.PlanDirectory,
+                compoundDiagnostic));
+        }
+    }
+
+    /// <summary>
+    /// GR2039 (ERROR): flag any <c>autonomy</c> wire value that is not one of its recognised tokens. This
+    /// must inspect the RAW values, because the parse (<see cref="PlanLoader.MapAutonomy"/>) silently falls an
+    /// unrecognised value back to the dial/default — the parsed <see cref="AutonomyConfig"/> no longer carries
+    /// the typo, so a value read from the model could never reveal it. The raw block is therefore re-read from
+    /// <c>guardrails.json</c> through the loader's EXACT deserialization path (<see cref="RawRunConfig"/> +
+    /// <see cref="PlanJson.Options"/>: case-insensitive, comment- and trailing-comma-tolerant), so the value
+    /// checked here is byte-for-byte the value the loader would have bound. A missing/unreadable/malformed file
+    /// is skipped — the loader would already have failed it (GR1001/GR1002) and the validator would not run.
+    /// The recognised-token tests reuse the SSOT parsers (<see cref="EscalationThresholds.TryParse"/> /
+    /// <see cref="ReviewGateDecisions.TryParse"/>) so the spelling never forks.
+    /// </summary>
+    private static void ValidateAutonomyDialValues(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        string configPath = Path.Combine(plan.PlanDirectory, "guardrails.json");
+        string? text = TryReadAllText(configPath);
+        if (text is null)
+        {
+            return;
+        }
+
+        RawAutonomyConfig? raw;
+        try
+        {
+            raw = JsonSerializer.Deserialize<RawRunConfig>(text, PlanJson.Options)?.Autonomy;
+        }
+        catch (JsonException)
+        {
+            return; // malformed JSON is GR1002's concern; it would not have produced a model to validate here.
+        }
+
+        if (raw is null)
+        {
+            return; // the block re-read as absent — nothing to check.
+        }
+
+        // escalationThreshold — the run-wide dial: a criticality level (doc 12 §3.4).
+        if (raw.EscalationThreshold is { } threshold && !EscalationThresholds.TryParse(threshold, out _))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.InvalidAutonomyDialValue, configPath,
+                $"autonomy.escalationThreshold '{threshold}' is not a recognised criticality level; expected " +
+                "'low', 'moderate', 'high', or 'critical' (doc 12 §3.4)."));
+        }
+
+        if (raw.GateThresholds is not { } gates)
+        {
+            return;
+        }
+
+        // needs-human / wave-checkpoint are criticality levels; review-gate is the escalate/proceed-unreviewed
+        // acknowledgment (a floor, NOT a criticality level — doc 12 §3.5). Gate keys are matched
+        // case-insensitively, mirroring the loader (PlanLoader.TryGetGate).
+        CheckCriticalityGateValue(gates, "needs-human", configPath, diagnostics);
+        CheckCriticalityGateValue(gates, "wave-checkpoint", configPath, diagnostics);
+
+        if (TryGetGateValue(gates, "review-gate", out string? reviewGate) && reviewGate is not null &&
+            !ReviewGateDecisions.TryParse(reviewGate, out _))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.InvalidAutonomyDialValue, configPath,
+                $"autonomy.gateThresholds.review-gate '{reviewGate}' is not a recognised value; it is a floor, " +
+                "not a criticality level — expected 'escalate' (default) or the named opt-in " +
+                "'proceed-unreviewed' (doc 12 §3.5/§5.2)."));
+        }
+    }
+
+    /// <summary>GR2039 helper: a <c>gateThresholds</c> criticality-level gate (needs-human / wave-checkpoint).</summary>
+    private static void CheckCriticalityGateValue(
+        Dictionary<string, string> gates, string key, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (TryGetGateValue(gates, key, out string? value) && value is not null &&
+            !EscalationThresholds.TryParse(value, out _))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.InvalidAutonomyDialValue, configPath,
+                $"autonomy.gateThresholds.{key} '{value}' is not a recognised criticality level; expected " +
+                "'low', 'moderate', 'high', or 'critical' (doc 12 §3.5)."));
+        }
+    }
+
+    /// <summary>
+    /// Case-insensitive lookup into the raw gate map (the wire keys are kebab-case, e.g. <c>needs-human</c>),
+    /// mirroring the loader's <c>PlanLoader.TryGetGate</c> so the value checked matches the value bound.
+    /// </summary>
+    private static bool TryGetGateValue(Dictionary<string, string> gates, string key, out string? value)
+    {
+        foreach (KeyValuePair<string, string> gate in gates)
+        {
+            if (string.Equals(gate.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = gate.Value;
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>
+    /// The GR2040 core (B1 — load-bearing, reusable). Returns whether an ARBITRARY EFFECTIVE
+    /// <see cref="AutonomyConfig"/> hits the forbidden compound configuration (issue #361, doc 12 §5.2/§3.4;
+    /// decided §10 M/A) — <c>gateThresholds.review-gate == proceed-unreviewed</c> AND a reachable
+    /// <c>critical</c> end-state (<c>escalationThreshold == critical</c> OR any in-wave <c>gateThresholds</c>
+    /// criticality value — <c>needs-human</c> / <c>wave-checkpoint</c> — <c>== critical</c>) — and, when it
+    /// does, the GR2040 <paramref name="diagnostic"/> string (else the empty string). Keyed on the REACHABLE
+    /// END-STATE (Finding 3), so a per-gate override like
+    /// <c>{ "needs-human": "critical", "review-gate": "proceed-unreviewed" }</c> under
+    /// <c>escalationThreshold: high</c> cannot route around it. <c>proceed-unreviewed</c> stays a valid named
+    /// opt-in at the cautious / <c>high</c> dials (no reachable <c>critical</c>) and returns <c>false</c> there.
+    /// <para>
+    /// Deliberately <c>public static</c> and taking the effective config (not a <see cref="PlanDefinition"/>):
+    /// load-time validation (<see cref="ValidateAutonomy"/>) calls it — its load-time behaviour is unchanged —
+    /// but so must a later stage AFTER <c>--dial</c>/<c>--autonomous</c> mutate the config post-load (task 07,
+    /// which <c>dependsOn</c> this task and CALLS this predicate). GR2040 must be re-checkable on the effective
+    /// config, not inline-only, so the core cannot live buried in the load-time walk.
+    /// </para>
+    /// </summary>
+    public static bool ViolatesCompoundConfig(AutonomyConfig effective, out string diagnostic)
+    {
+        diagnostic = string.Empty;
+
+        GateThresholds? gates = effective.GateThresholds;
+        if (gates?.ReviewGate != ReviewGateDecision.ProceedUnreviewed)
+        {
+            return false; // review is not bypassed — the compound gate needs BOTH conjuncts.
+        }
+
+        bool reachableCritical =
+            effective.EscalationThreshold == EscalationThreshold.Critical ||
+            gates.NeedsHuman == EscalationThreshold.Critical ||
+            gates.WaveCheckpoint == EscalationThreshold.Critical;
+        if (!reachableCritical)
+        {
+            return false; // proceed-unreviewed is permitted at the cautious / high dials (doc 12 §5.1).
+        }
+
+        diagnostic =
+            "autonomy declares the forbidden compound configuration (doc 12 §5.2, GR2040): " +
+            "gateThresholds.review-gate is 'proceed-unreviewed' (review skipped) AND the reachable end-state " +
+            "best-guesses a 'critical' hard call (escalationThreshold 'critical', or a per-gate " +
+            "needs-human/wave-checkpoint 'critical'). Auto-best-guessing a critical hard call while ALSO " +
+            "skipping review is 'Guardrails with no guardrails' and is refused at load time. Either lower the " +
+            "reachable criticality below 'critical', or set review-gate to 'escalate'.";
+        return true;
     }
 
     /// <summary>
