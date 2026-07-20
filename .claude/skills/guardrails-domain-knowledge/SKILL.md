@@ -579,8 +579,10 @@ total order driven by the wave folder's numeric prefix.
   `decisions[]` entry. Drift fires ONLY on already-COMPLETED units; editing an all-`pending` future wave is
   sanctioned forward adjustment, NOT drift (the `isCompleted` predicate is the clean separator).
 - **Wave loop + hard barrier (LANDED, M2b).** `Scheduler.RunWavedAsync` drives, per wave in strict order:
-  skip if complete (resume, + a wave-drift check); the between-wave JIT checkpoint (an empty/unauthored next
-  wave HONEST-HALTS `RunReport.WaveHalt`, pointed at the integration worktree, Decision D); the wave ENTRY
+  skip if complete (resume, + a wave-drift check); the between-wave JIT checkpoint (a next-wave stub carrying a
+  `brief.md` AUTO-FIRES the breakdown -- `autoBreakdown` default `true`, §14.4 -- then halts
+  `BreakdownComplete` for the human review gate; a brief-less one HONEST-HALTS `RunReport.WaveHalt`, pointed at
+  the integration worktree, Decision D); the wave ENTRY
   preflight (skip-once); drain the wave's DAG on the continuous plan branch via the EXISTING Scheduler
   worker loop (a shared `DrainAsync`); HARD BARRIER (full drain -- any needs-human/blocked/failed halts the
   run, later waves never start, their tasks reported `blocked`); the wave EXIT gate; the **`Guardrails-Wave:`
@@ -632,11 +634,16 @@ total order driven by the wave folder's numeric prefix.
   authoring wave N+1 **after** wave N executes, **reading the materialized upstream from the integration
   worktree** (`<worktreeRoot>/<runId>/_integration`, Decision D -- the user's checkout stays read-only).
   Workflow: break down + review the ready waves; leave a not-yet-designable wave as a declared **stub**
-  (empty `tasks/`); `run` executes to the stub and **honest-halts** (`RunReport.WaveHalt`,
-  `NextWaveUnauthored`) pointing at the integration worktree; author the wave against that materialized
-  workspace; `/guardrails-review` **that single wave** (each wave has its own `PlanDefinitionHash`-keyed
-  review marker); resume. The whole-plan "break down everything up front" path still works when the
-  downstream waves ARE designable up front.
+  (empty `tasks/`) whose `brief.md` `plan-breakdown` **auto-seeds by default** from that wave's section of the
+  parent plan (SSOT §14.10 -- a template + report flag when no section is identifiable, never brief-less by
+  default). At the JIT checkpoint a seeded `brief.md` makes the harness **auto-fire the between-wave
+  breakdown** (`autoBreakdown` default `true`, §14.4, decoupled from `autonomyPolicy`) against that
+  materialized workspace, then **halt at `BreakdownComplete`** for the human review gate (never
+  auto-satisfied); a brief-less/opt-out stub instead **honest-halts** (`RunReport.WaveHalt`,
+  `NextWaveUnauthored`) pointing at the integration worktree for a manual re-invocation. Either way,
+  `/guardrails-review` **that single wave** (each wave has its own `PlanDefinitionHash`-keyed review marker);
+  resume. The whole-plan "break down everything up front" path still works when the downstream waves ARE
+  designable up front.
 - **`dependsOn` is intra-wave only (GR2034); the state key is wave-qualified.** A cross-wave dependency is
   expressed as the downstream wave's entry gate, never a task edge. A prompt action's state fragment must
   be keyed by the wave-qualified id `<waveDir>/<taskFolder>` (a bare folder-name key is rejected foreign
