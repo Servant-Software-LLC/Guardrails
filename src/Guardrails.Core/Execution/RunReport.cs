@@ -59,6 +59,17 @@ public sealed record TaskResult
     /// </summary>
     public PendingAttempt? PendingAttempt { get; init; }
 
+    /// <summary>
+    /// Set when this task hit at least one class-(b) transient PAUSE (issue #115 <see cref="TransientBackoff"/>)
+    /// that RESOLVED WITHIN the per-task pause budget and the attempt then SUCCEEDED (doc 12 §4.1/§4.2). Null
+    /// when the task never paused. The executor already resolved the transient (it re-ran the paused attempt to
+    /// success) — this is the forensic signal the autonomous layer (<see cref="Scheduler.ClassifyTaskGateAsync"/>)
+    /// reads to record a <c>blocker-retried</c> decision WITHOUT re-running any wait. Distinct from
+    /// <see cref="TaskOutcome.RateLimited"/> (a transient that did NOT clear within budget): a resolved
+    /// transient settles <see cref="TaskOutcome.Succeeded"/> and carries this instead.
+    /// </summary>
+    public ResolvedTransient? ResolvedTransient { get; init; }
+
     /// <summary>True only for a genuine success this run (not a resume skip).</summary>
     public bool Succeeded => Outcome == TaskOutcome.Succeeded;
 
@@ -101,6 +112,22 @@ public sealed record PendingAttempt
     /// a script task.
     /// </summary>
     public Journal.AttemptProvenance? Provenance { get; init; }
+}
+
+/// <summary>
+/// The forensic signal a <see cref="TaskResult"/> carries when a class-(b) transient (429/503/529, overloaded,
+/// a rate/session/usage limit) PAUSED at least once and then CLEARED within the per-task pause budget, letting
+/// the attempt succeed (issue #115 / doc 12 §4.2). The executor's <see cref="TransientBackoff"/> already
+/// resolved it — no further wait is needed; this only records HOW MANY pauses and HOW LONG was waited so the
+/// autonomous layer can append the <c>blocker-retried</c> forensic entry (doc 12 §6.2).
+/// </summary>
+public sealed record ResolvedTransient
+{
+    /// <summary>How many backoff pauses were taken before the paused attempt succeeded (≥ 1 when this signal is present).</summary>
+    public required int Pauses { get; init; }
+
+    /// <summary>Cumulative scheduled wall-clock time spent paused before the transient cleared.</summary>
+    public required TimeSpan Waited { get; init; }
 }
 
 /// <summary>The aggregate result of an entire run.</summary>

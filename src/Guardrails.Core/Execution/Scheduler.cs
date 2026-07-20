@@ -1738,12 +1738,15 @@ public sealed class Scheduler
     // ================================================================================================
 
     /// <summary>
-    /// Map a just-settled task's non-green outcome to a <see cref="GateSignal"/> and dispatch it through
-    /// <see cref="ClassifyAndActAsync"/> (doc 12 §4.1). Only two task-level stops are dial-eligible gates: an
+    /// Map a just-settled task's outcome to a <see cref="GateSignal"/> and dispatch it through
+    /// <see cref="ClassifyAndActAsync"/> (doc 12 §4.1). Three task-level stops are dial/forensic-eligible: an
     /// agent-emitted <c>{"needsHuman": "…"}</c> (a class-(a) judgment call, recognised by the settled
-    /// <see cref="TaskResult.Summary"/>'s stable <c>needs human: </c> prefix) and a rate-limit exhaustion (a
-    /// class-(b) transient). Every other non-green outcome (a terminal-exhaustion needs-human, a cost-cap halt,
-    /// an overwatcher floor) already carries its own shipped handling and is left untouched here.
+    /// <see cref="TaskResult.Summary"/>'s stable <c>needs human: </c> prefix); a rate-limit EXHAUSTION (a
+    /// class-(b) transient that never cleared → <see cref="TaskOutcome.RateLimited"/>); and a SUCCEEDED task
+    /// that carries a <see cref="TaskResult.ResolvedTransient"/> signal (a class-(b) transient that DID clear
+    /// within the pause budget — the executor already resolved it, so this only RECORDS the <c>blocker-retried</c>
+    /// forensic entry, never re-runs a wait). Every other outcome (a terminal-exhaustion needs-human, a cost-cap
+    /// halt, an overwatcher floor, a plain success) already carries its own shipped handling and is untouched.
     /// </summary>
     private async Task ClassifyTaskGateAsync(TaskNode task, TaskResult result, CancellationToken ct)
     {
@@ -1765,6 +1768,14 @@ public sealed class Scheduler
                     GateSignal.PromptFailure(Prompts.PromptFailureKind.Transient), gate: "blocker",
                     subject: task.Id, boundary: "task", question: null, definitionHash: definitionHash,
                     criticalityGate: CriticalityGate.NeedsHuman, ct).ConfigureAwait(false);
+            }
+            else if (result.Outcome == TaskOutcome.Succeeded && result.ResolvedTransient is { } resolved)
+            {
+                // A class-(b) transient that RESOLVED WITHIN THE CEILING (doc 12 §4.1/§6.2 `blocker-retried`).
+                // The executor's TransientBackoff already re-ran the paused attempt to green — so, unlike the
+                // RateLimited branch, this does NOT invoke BlockerRetry's bounded wait again; it only RECORDS
+                // the resolved-transient ledger so the forensic trail is non-lossy (§6). Never escalates.
+                RecordResolvedTransientBlocker(task.Id, boundary: "task", resolved);
             }
         }
         catch (OperationCanceledException)
@@ -1913,6 +1924,38 @@ public sealed class Scheduler
         _journal.RecordDecision(entry);
         _observer.DecisionRecorded(entry);
         AppendAutonomyRecord(gate, boundary, subject, "hard-blocker-retryable", DecisionTokens.BlockerRetried,
+            criticality: null, confidence: null, threshold: null, question: null, bestGuess: null,
+            rationale: null);
+    }
+
+    /// <summary>
+    /// Record a <c>blocker-retried</c> forensic entry (doc 12 §4.1/§6.2) for a class-(b) transient that PAUSED
+    /// and then CLEARED WITHIN the executor's per-task pause budget (surfaced as
+    /// <see cref="TaskResult.ResolvedTransient"/> on a <see cref="TaskOutcome.Succeeded"/> settle). This is the
+    /// within-budget sibling of <see cref="ActOnRetryableBlockerAsync"/>: the executor already re-ran the paused
+    /// attempt to green, so — unlike that path — NO <see cref="BlockerRetry"/> wait is invoked here; only the
+    /// ledger (pauses + cumulative wait) is written, matching that path's <see cref="DecisionEntry"/> shape so
+    /// the two record identically. Never escalates — a resolved transient is a success (§4.2).
+    /// </summary>
+    private void RecordResolvedTransientBlocker(string subject, string boundary, ResolvedTransient resolved)
+    {
+        var entry = new DecisionEntry
+        {
+            Boundary = boundary,
+            Policy = AutonomyPolicies.Token(AutonomyPolicy.Auto),
+            Decision = DecisionTokens.BlockerRetried,
+            Subject = subject,
+            Headline = $"Class-(b) transient for '{subject}' cleared within budget after "
+                       + $"{resolved.Pauses} pause(s)",
+            At = DateTimeOffset.UtcNow,
+            Gate = "blocker",
+            Classification = "hard-blocker-retryable",
+            BlockerAttempts = resolved.Pauses,
+            BlockerWaitedSeconds = (int)resolved.Waited.TotalSeconds
+        };
+        _journal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+        AppendAutonomyRecord("blocker", boundary, subject, "hard-blocker-retryable", DecisionTokens.BlockerRetried,
             criticality: null, confidence: null, threshold: null, question: null, bestGuess: null,
             rationale: null);
     }
