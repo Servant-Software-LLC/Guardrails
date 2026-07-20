@@ -76,14 +76,12 @@ public static class RunCommand
             Description = "Suppress the warning when the plan hasn't been through /guardrails-review (or has changed since) (SSOT §13, issue #79)."
         };
 
-        // ── Autonomous-mode flags (issue #361, doc 12 §3.4) — STUBS ONLY ──────────────────────────
-        // Task 06-author-tests-autonomous-cli adds ONLY the options so `--autonomous`, `--dial <level>`,
-        // and `--max-cost-usd <n>` PARSE. Their RESOLUTION is deliberately left unimplemented — no
-        // resolved-autonomy summary line, no built-in-$20 maxCostUsd default warning, no --dial
-        // validation, and no GR2040 re-check on the post-flag effective config — so the RED
-        // AutonomousModeCliTests fail here. The paired task 07-implement-autonomous-cli fills that in
-        // (doc 12 §3.4, decided §10 I/N); wiring it below would turn those tests green. Accordingly these
-        // options are REGISTERED (below) but intentionally NOT read in SetAction yet.
+        // ── Autonomous-mode flags (issue #361, doc 12 §3.4; decided §10 I/N) ──────────────────────────
+        // Task 06-author-tests-autonomous-cli added these option stubs so `--autonomous`, `--dial <level>`,
+        // and `--max-cost-usd <n>` PARSE; task 07 (this one) wires their RESOLUTION in ResolveAutonomousMode
+        // below — the resolved-autonomy summary line, the built-in-$20 maxCostUsd default + loud warning,
+        // --dial validation, and the GR2040 re-check on the POST-FLAG effective config — and applies the
+        // resulting overrides to the executing run in RunAsync.
         var autonomousOption = new Option<bool>("--autonomous")
         {
             Description = "Run unattended (doc 12 §3.4): set autonomyPolicy 'auto' and, when the config omits an autonomy block, apply one with escalationThreshold 'high' (best-guess only low/moderate — the conservative default, §10 N). REQUIRES an effective maxCostUsd; when none is set a built-in $20 default applies with a loud warning."
@@ -113,8 +111,8 @@ public static class RunCommand
         command.Add(revalidateTaskOption);
         command.Add(skipReviewCheckOption);
 
-        // Autonomous-mode option STUBS (see the block where they are declared): registered so the args
-        // parse, but deliberately not read in the action — task 07 implements their resolution.
+        // Autonomous-mode options (see the block where they are declared): resolved in ResolveAutonomousMode
+        // and applied to the executing run in RunAsync.
         command.Add(autonomousOption);
         command.Add(dialOption);
         command.Add(maxCostUsdOption);
@@ -133,6 +131,9 @@ public static class RunCommand
             bool reprocessDrift = parseResult.GetValue(reprocessDriftOption);
             string? revalidateTask = parseResult.GetValue(revalidateTaskOption);
             bool skipReviewCheck = parseResult.GetValue(skipReviewCheckOption);
+            bool autonomous = parseResult.GetValue(autonomousOption);
+            string? dial = parseResult.GetValue(dialOption);
+            decimal? maxCostUsd = parseResult.GetValue(maxCostUsdOption);
 
             // #340 delivery tri-state: --merge-on-success forces ON, --no-merge-on-success forces OFF,
             // neither leaves it to guardrails.json (which itself now defaults ON). Passing BOTH is a
@@ -160,19 +161,31 @@ public static class RunCommand
                 return await Revalidate.ExecuteAsync(folder, revalidateTask, io, cancellationToken).ConfigureAwait(false);
             }
 
+            // Autonomous-mode resolution (doc 12 §3.4): validate --dial, apply --autonomous/--dial to the
+            // EFFECTIVE post-flag config, re-check GR2040 on that end-state (B1 — the load-time check ran
+            // before these flags mutated the config), enforce the required cost cap, and print the resolved
+            // summary + warning. Surfaced BEFORE the --dry-run branch so it is observable without executing the
+            // DAG; a usage error (bad dial) or a GR2040 violation exits non-zero here without running anything.
+            if (ResolveAutonomousMode(
+                    folder, autonomous, dial, maxCostUsd,
+                    out Core.Model.EscalationThreshold? dialOverride, out decimal? maxCostOverride, io) is { } autonomyExit)
+            {
+                return autonomyExit;
+            }
+
             if (dryRun)
             {
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -230,7 +243,9 @@ public static class RunCommand
             autonomyOverride = parsed;
         }
 
-        if (reprocessDrift)
+        // --reprocess-drift is the legacy alias for `auto`; --autonomous (doc 12 §3.4) likewise forces the
+        // unified policy to `auto` (unattended). An UNSAFE action still halts regardless.
+        if (reprocessDrift || autonomous)
         {
             autonomyOverride = Core.Model.AutonomyPolicy.Auto;
         }
@@ -238,6 +253,29 @@ public static class RunCommand
         if (autonomyOverride is { } policy && probe.Plan.Config.AutonomyPolicy != policy)
         {
             probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { AutonomyPolicy = policy } } };
+        }
+
+        // Apply the autonomous-mode dial/cost overrides (doc 12 §3.4) to the EFFECTIVE run config. The command
+        // layer already validated these and surfaced the resolved summary + required-cost-cap warning + GR2040
+        // re-check (ResolveAutonomousMode); here we only APPLY the resolved end-state so the scheduled run
+        // honours it. --autonomous with no config autonomy block installs the conservative default dial
+        // (escalationThreshold high — best-guess only low/moderate, §10 N); --dial overrides the run-wide
+        // threshold (preserving any per-gate overrides); the resolved cost cap (an explicit --max-cost-usd, or
+        // the built-in $20 default under --autonomous) caps the run.
+        if (autonomous && probe.Plan.Config.Autonomy is null)
+        {
+            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { Autonomy = new Core.Model.AutonomyConfig() } } };
+        }
+
+        if (dialOverride is { } dialLevel)
+        {
+            Core.Model.AutonomyConfig dialBase = probe.Plan.Config.Autonomy ?? new Core.Model.AutonomyConfig();
+            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { Autonomy = dialBase with { EscalationThreshold = dialLevel } } } };
+        }
+
+        if (maxCostOverride is { } costCap && probe.Plan.Config.MaxCostUsd != costCap)
+        {
+            probe = probe with { Plan = probe.Plan with { Config = probe.Plan.Config with { MaxCostUsd = costCap } } };
         }
 
         if (fresh)
@@ -497,6 +535,134 @@ public static class RunCommand
                 await logServer.DisposeAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    /// <summary>
+    /// The built-in <c>maxCostUsd</c> ceiling applied when <c>--autonomous</c> is used but neither the config
+    /// nor a cost flag sets one (doc 12 §3.4, decided §10 I). An unattended run must never run uncapped, so
+    /// this conservative default is applied with a LOUD warning rather than left absent.
+    /// </summary>
+    private const decimal AutonomousDefaultMaxCostUsd = 20m;
+
+    /// <summary>
+    /// Resolve the autonomous-mode flags (<c>--autonomous</c> / <c>--dial</c> / <c>--max-cost-usd</c>) into the
+    /// effective run-wide autonomy end-state (doc 12 §3.4; decided §10 I/N), BEFORE the plan runs so the
+    /// resolution is observable under <c>--dry-run</c>. It:
+    /// <list type="bullet">
+    /// <item>validates <c>--dial</c> (an unrecognised level is a usage error naming the offending token);</item>
+    /// <item>applies the conservative <c>--autonomous</c> default dial (<c>escalationThreshold: high</c> — used
+    ///   only when the config omits an autonomy block) and lets <c>--dial</c> override the run-wide threshold;</item>
+    /// <item>re-runs the reusable GR2040 predicate
+    ///   (<see cref="Core.Loading.PlanValidator.ViolatesCompoundConfig"/>) on the POST-FLAG effective config
+    ///   (B1) — the flags mutate the config AFTER load-time validation, so the load-time GR2040 never saw this
+    ///   end-state; the forbidden <c>critical</c> + <c>proceed-unreviewed</c> compound is refused here;</item>
+    /// <item>enforces the required cost cap under <c>--autonomous</c>: when neither the config nor
+    ///   <c>--max-cost-usd</c> sets one, applies the built-in <c>$20</c> default with a LOUD warning;</item>
+    /// <item>prints a concise resolved-autonomy summary line.</item>
+    /// </list>
+    /// Returns a non-null exit code when the run must STOP (an invalid dial, or a GR2040 violation); returns
+    /// <c>null</c> to proceed, with <paramref name="dialOverride"/> / <paramref name="maxCostOverride"/> carrying
+    /// the resolved overrides for the executing run (<see cref="RunAsync"/>) to apply. When neither
+    /// <c>--autonomous</c> nor <c>--dial</c> is present the dial is inert (doc 12 §3.2 back-compat): nothing is
+    /// printed, and only a bare <c>--max-cost-usd</c> flag (if any) is passed through as a cost override.
+    /// </summary>
+    private static int? ResolveAutonomousMode(
+        string folder, bool autonomous, string? dial, decimal? maxCostFlag,
+        out Core.Model.EscalationThreshold? dialOverride, out decimal? maxCostOverride, IConsoleIo io)
+    {
+        dialOverride = null;
+        maxCostOverride = maxCostFlag; // a bare --max-cost-usd still overrides the run's cost cap.
+
+        // --dial validation is a pure usage error (no plan needed) — reject an unrecognised level, naming it.
+        if (!string.IsNullOrWhiteSpace(dial))
+        {
+            if (!Core.Model.EscalationThresholds.TryParse(dial, out Core.Model.EscalationThreshold parsedDial))
+            {
+                io.Out.WriteLine(
+                    $"Unknown --dial value '{dial}'. Expected 'low', 'moderate', 'high', or 'critical' " +
+                    "(the lowest criticality that still escalates; doc 12 §3.4).");
+                return ExitCodes.HarnessError;
+            }
+
+            dialOverride = parsedDial;
+        }
+
+        // Neither knob engaged ⇒ the dial is inert; the run behaves byte-for-byte as before (doc 12 §3.2).
+        if (!autonomous && dialOverride is null)
+        {
+            return null;
+        }
+
+        // The effective end-state needs the config (its autonomy block + its cost cap). A plan that fails
+        // validation is left to the normal run/dry-run path to report — resolution is moot for a plan that
+        // will not run, and re-reporting the diagnostics here would be noise.
+        PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
+        if (probe.HasErrors || probe.Plan is null)
+        {
+            return null;
+        }
+
+        Core.Model.RunConfig config = probe.Plan.Config;
+
+        // Build the POST-FLAG effective autonomy config. --autonomous installs the conservative default block
+        // (escalationThreshold high, §10 N) ONLY when the config omits one; --dial then overrides the run-wide
+        // threshold, preserving any per-gate overrides the block carries.
+        Core.Model.AutonomyConfig? effective = config.Autonomy;
+        if (autonomous && effective is null)
+        {
+            effective = new Core.Model.AutonomyConfig();
+        }
+
+        if (dialOverride is { } level)
+        {
+            effective = (effective ?? new Core.Model.AutonomyConfig()) with { EscalationThreshold = level };
+        }
+
+        // GR2040 on the EFFECTIVE post-flag config (B1). The reusable predicate is the single source of the
+        // message so this re-check reports identically to the load-time one.
+        if (effective is not null &&
+            Core.Loading.PlanValidator.ViolatesCompoundConfig(effective, out string compoundDiagnostic))
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine($"{Core.Loading.DiagnosticCodes.IncompatibleAutonomyCompoundConfig}: {compoundDiagnostic}");
+            io.Out.WriteLine("Refusing to run; nothing was executed.");
+            return ExitCodes.HarnessError;
+        }
+
+        // Required cost cap under --autonomous (§3.4 liveness floor): an unattended run must never run uncapped.
+        // When neither the config nor --max-cost-usd sets one, apply the built-in $20 default and LOUDLY warn;
+        // when a cap IS set, no default and no warning.
+        decimal? effectiveMaxCost = maxCostFlag ?? config.MaxCostUsd;
+        bool appliedDefaultCap = autonomous && effectiveMaxCost is null;
+        if (appliedDefaultCap)
+        {
+            effectiveMaxCost = AutonomousDefaultMaxCostUsd;
+        }
+
+        maxCostOverride = maxCostFlag ?? (appliedDefaultCap ? AutonomousDefaultMaxCostUsd : (decimal?)null);
+
+        if (appliedDefaultCap)
+        {
+            io.Out.WriteLine();
+            io.Out.WriteLine(
+                "WARNING: --autonomous requires a cost cap but none is set — no maxCostUsd in guardrails.json " +
+                $"and no --max-cost-usd flag. Applying the built-in default maxCostUsd=${AutonomousDefaultMaxCostUsd} " +
+                "so this unattended run cannot run uncapped. Pass --max-cost-usd (or set \"maxCostUsd\" in " +
+                "guardrails.json) to choose your own ceiling.");
+            io.Out.WriteLine();
+        }
+
+        // Concise resolved-autonomy summary — observable under --dry-run (the tests assert on it).
+        Core.Model.EscalationThreshold threshold =
+            effective?.EscalationThreshold ?? Core.Model.EscalationThreshold.High;
+        string costPart = effectiveMaxCost is { } cost
+            ? $", maxCostUsd=${cost}" + (appliedDefaultCap ? " (built-in default)" : string.Empty)
+            : string.Empty;
+        string policyPart = autonomous ? ", autonomyPolicy=auto" : string.Empty;
+        io.Out.WriteLine(
+            $"Resolved autonomy: escalationThreshold={threshold.ToString().ToLowerInvariant()}{costPart}{policyPart}.");
+
+        return null;
     }
 
     /// <summary>
