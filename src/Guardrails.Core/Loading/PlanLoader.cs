@@ -180,12 +180,14 @@ public sealed class PlanLoader
     }
 
     /// <summary>
-    /// Map the raw <c>autonomy</c> block (issue #361, doc 12 §3) onto <see cref="AutonomyConfig"/>. STUB (TDD
-    /// red): a config WITHOUT the block loads inertly — <c>null</c> ⇒ the dial is off, the doc 12 §3.2
-    /// back-compat guarantee — but a config WITH the block is NOT YET PARSED. The real mapping (the decided
-    /// defaults §10 I/N, the GR2039/GR2040 validation) is authored by the implement task
-    /// (<c>03-implement-autonomy-config</c>); until then a present block deliberately throws so the
-    /// populated-block / defaults tests fail red while existing (block-absent) config loading is unbroken.
+    /// Map the raw <c>autonomy</c> block (issue #361, doc 12 §3.3–§3.5) onto <see cref="AutonomyConfig"/>. A
+    /// config WITHOUT the block loads inertly — <c>null</c> ⇒ the dial is off, the doc 12 §3.2 back-compat
+    /// guarantee. A PRESENT block (even <c>{}</c>) binds a non-null instance, resolving the decided defaults
+    /// (§10 I/N) for any omitted field: <c>escalationThreshold: high</c>, <c>blockerRetry { maxAttempts: 5,
+    /// totalWaitSeconds: 900 }</c>, <c>maxJudgeWidenings: 3</c>. This block COMPOSES with — and never
+    /// redefines — <c>autonomyPolicy</c> (parsed separately, above). Value VALIDATION (GR2039 for an
+    /// unrecognized threshold/gate value, GR2040 for the forbidden compound) is a SEPARATE task: an
+    /// unrecognized value here falls back to the dial/default rather than being reported.
     /// </summary>
     private static AutonomyConfig? MapAutonomy(RawAutonomyConfig? raw)
     {
@@ -194,7 +196,89 @@ public sealed class PlanLoader
             return null; // block absent → inert dial (back-compat); no throw, so today's configs still load.
         }
 
-        throw new NotImplementedException();
+        return new AutonomyConfig
+        {
+            EscalationThreshold = raw.EscalationThreshold is not null &&
+                                  EscalationThresholds.TryParse(raw.EscalationThreshold, out EscalationThreshold t)
+                ? t
+                : EscalationThreshold.High,
+            GateThresholds = MapGateThresholds(raw.GateThresholds),
+            BlockerRetry = MapBlockerRetry(raw.BlockerRetry),
+            MaxJudgeWidenings = raw.MaxJudgeWidenings ?? 3
+        };
+    }
+
+    /// <summary>
+    /// Map the optional <c>autonomy.gateThresholds</c> map (doc 12 §3.5). Absent ⇒ <c>null</c> (no overrides
+    /// at all). Present ⇒ a <see cref="GateThresholds"/> whose members are the parsed per-gate overrides;
+    /// <c>needs-human</c>/<c>wave-checkpoint</c> are criticality levels, <c>review-gate</c> is the
+    /// escalate/<c>proceed-unreviewed</c> acknowledgment (NOT a criticality level). A gate key that is absent
+    /// (or, pending GR2039, holds an unrecognized value) leaves that member <c>null</c> ⇒ it falls back to the
+    /// run-wide dial.
+    /// </summary>
+    private static GateThresholds? MapGateThresholds(Dictionary<string, string>? raw)
+    {
+        if (raw is null)
+        {
+            return null;
+        }
+
+        return new GateThresholds
+        {
+            NeedsHuman = ParseGateThreshold(raw, "needs-human"),
+            WaveCheckpoint = ParseGateThreshold(raw, "wave-checkpoint"),
+            ReviewGate = ParseReviewGate(raw, "review-gate")
+        };
+    }
+
+    /// <summary>Parse a criticality-level gate override; null when the key is absent or unrecognized.</summary>
+    private static EscalationThreshold? ParseGateThreshold(Dictionary<string, string> gates, string key) =>
+        TryGetGate(gates, key, out string? value) &&
+        value is not null &&
+        EscalationThresholds.TryParse(value, out EscalationThreshold threshold)
+            ? threshold
+            : null;
+
+    /// <summary>Parse the <c>review-gate</c> acknowledgment; null when the key is absent or unrecognized.</summary>
+    private static ReviewGateDecision? ParseReviewGate(Dictionary<string, string> gates, string key) =>
+        TryGetGate(gates, key, out string? value) &&
+        value is not null &&
+        ReviewGateDecisions.TryParse(value, out ReviewGateDecision decision)
+            ? decision
+            : null;
+
+    /// <summary>Case-insensitive lookup into the raw gate map (the wire keys are kebab-case, e.g. <c>needs-human</c>).</summary>
+    private static bool TryGetGate(Dictionary<string, string> gates, string key, out string? value)
+    {
+        foreach (KeyValuePair<string, string> gate in gates)
+        {
+            if (string.Equals(gate.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = gate.Value;
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    /// <summary>
+    /// Map the optional <c>autonomy.blockerRetry</c> sub-block (doc 12 §4.2). Absent ⇒ the decided defaults
+    /// (<c>{ maxAttempts: 5, totalWaitSeconds: 900 }</c>, §10 I); present ⇒ each field defaults independently.
+    /// </summary>
+    private static BlockerRetry MapBlockerRetry(RawBlockerRetry? raw)
+    {
+        if (raw is null)
+        {
+            return new BlockerRetry();
+        }
+
+        return new BlockerRetry
+        {
+            MaxAttempts = raw.MaxAttempts ?? 5,
+            TotalWaitSeconds = raw.TotalWaitSeconds ?? 900
+        };
     }
 
     private static bool TryParseGuardrailMode(string value, out GuardrailMode mode)

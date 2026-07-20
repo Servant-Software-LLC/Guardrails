@@ -118,3 +118,68 @@ public enum ReviewGateDecision
     /// <summary>Explicit named opt-in: run the wave unreviewed, recorded indelibly (Option P, §5.2).</summary>
     ProceedUnreviewed
 }
+
+/// <summary>
+/// The single source of truth for the <see cref="EscalationThreshold"/> wire tokens (doc 12 §3.3/§3.4:
+/// <c>low</c> / <c>moderate</c> / <c>high</c> / <c>critical</c>). Shared by the loader
+/// (<c>guardrails.json</c> parsing), the CLI <c>--dial</c> flag, and the reporting surface (§8) so the
+/// spelling never forks — mirroring <see cref="AutonomyPolicies"/>.
+/// </summary>
+public static class EscalationThresholds
+{
+    /// <summary>
+    /// Parse an <c>escalationThreshold</c> / <c>gateThresholds</c> criticality string (trim +
+    /// case-insensitive): <c>low</c>, <c>moderate</c>, <c>high</c>, or <c>critical</c>. Any other value
+    /// returns <c>false</c> (the caller emits GR2039 — a separate task; the loader falls back to the dial).
+    /// </summary>
+    public static bool TryParse(string value, out EscalationThreshold threshold)
+    {
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "low":
+                threshold = EscalationThreshold.Low;
+                return true;
+            case "moderate":
+                threshold = EscalationThreshold.Moderate;
+                return true;
+            case "high":
+                threshold = EscalationThreshold.High;
+                return true;
+            case "critical":
+                threshold = EscalationThreshold.Critical;
+                return true;
+            default:
+                threshold = EscalationThreshold.High;
+                return false;
+        }
+    }
+}
+
+/// <summary>
+/// The single source of truth for the <c>review-gate</c> acknowledgment tokens (doc 12 §3.5/§5.2:
+/// <c>escalate</c> / <c>proceed-unreviewed</c>). A FLOOR, not a criticality level — kept in its own token
+/// space precisely so turning the run-wide dial to <c>critical</c> can never clear the review gate.
+/// </summary>
+public static class ReviewGateDecisions
+{
+    /// <summary>
+    /// Parse a <c>gateThresholds.review-gate</c> string (trim + case-insensitive): <c>escalate</c> (default)
+    /// or the explicit named opt-in <c>proceed-unreviewed</c>. Any other value returns <c>false</c> (the
+    /// caller emits GR2039 — a separate task).
+    /// </summary>
+    public static bool TryParse(string value, out ReviewGateDecision decision)
+    {
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "escalate":
+                decision = ReviewGateDecision.Escalate;
+                return true;
+            case "proceed-unreviewed":
+                decision = ReviewGateDecision.ProceedUnreviewed;
+                return true;
+            default:
+                decision = ReviewGateDecision.Escalate;
+                return false;
+        }
+    }
+}
