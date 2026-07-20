@@ -129,6 +129,19 @@ decision (issue #275) and is deliberately NOT done here.
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": true,             // OPTIONAL; DEFAULT true (#340). When the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here). Set false (or pass --no-merge-on-success) to leave the work on the plan branch for manual review
   "autonomyPolicy": "prompt",         // OPTIONAL; the UNIFIED autonomy knob (§2.1). "prompt" (DEFAULT): interactive TTY prompts, non-interactive HALTS. "auto": apply a SAFE decision with no prompt (CLI --autonomy auto, or the legacy alias --reprocess-drift). "halt": always halt. An UNSAFE/UNSOUND action ALWAYS halts regardless. GR2031 if unrecognized. In M1 the only wired boundary is the on-resume definition-drift gate (§7.2)
+  "autonomy": {                       // OPTIONAL, NEW (§2.1; design of record doc 12). The criticality dial — a NEW ORTHOGONAL axis composing with autonomyPolicy. Whole block ABSENT ⇒ the dial is inert ⇒ behaviour is byte-identical to today. Engages ONLY under autonomyPolicy:"auto" in a non-interactive context; NEVER lowers a floor
+    "escalationThreshold": "high",    // run-wide dial over the ordered enum low < moderate < high < critical; value = "lowest criticality that still escalates" (escalate ⟺ assessed ≥ threshold). Default "high" when the block is present. GR2039 if unrecognized
+    "gateThresholds": {               // OPTIONAL per-gate overrides; any key absent ⇒ the run-wide escalationThreshold applies
+      "needs-human":     "moderate",  // a criticality level
+      "wave-checkpoint": "high",      // a criticality level
+      "review-gate":     "escalate"   // SPECIAL — a FLOOR, NOT a criticality level: the acknowledgment "escalate" (default) or "proceed-unreviewed" (§2.1). GR2039 on any other value; GR2040 when "proceed-unreviewed" reaches a best-guessed hard call
+    },
+    "blockerRetry": {                 // OPTIONAL bounded wait for a RETRYABLE hard blocker (§2.1), floored by transientPauseBudgetSeconds
+      "maxAttempts": 5,               // ceiling on retries before escalating a retryable blocker
+      "totalWaitSeconds": 900         // ceiling on cumulative wait before escalating
+    },
+    "maxJudgeWidenings": 3            // OPTIONAL run-level cap on how many times a judge may reclassify an unknown failure as retryable; once spent, every unknown failure escalates deterministically
+  },
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issues #195/#306). Default true. Stashes ANY rolled-back non-final worktree attempt to a git ref + applyable patch (exposed to the retry) instead of pure discard; set false to disable
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
@@ -210,6 +223,38 @@ decision (issue #275) and is deliberately NOT done here.
   `"auto"` (CLI `--autonomy auto`, or the legacy alias `--reprocess-drift`) → auto-resolve a safe drift
   with no prompt; `"halt"` → always HALT. An **UNSAFE** drift ALWAYS halts (exit 2) regardless. An
   unrecognized value is a validation error (**GR2031**).
+- `autonomy` (**OPTIONAL, absent by default**) is the **criticality dial** — a NEW config block, orthogonal
+  to `autonomyPolicy`, that lets an **unattended `auto`** run proceed past a *judgment* gate on a recorded
+  best-guess instead of honest-halting. **Every field is optional and the whole block absent ⇒ the dial is
+  inert ⇒ behaviour is byte-identical to today** (the backward-compatibility guarantee). The full contract —
+  how the dial composes with `autonomyPolicy`, the floors it may never lower, and the `gateThresholds` value
+  spaces — is **§2.1** (design of record `docs/plans/12-autonomous-mode.md`). In brief:
+  - `escalationThreshold` — the run-wide dial over the coarse ordered enum `low < moderate < high < critical`;
+    the value is the **lowest criticality that still escalates** (`escalate ⟺ assessedCriticality ≥
+    escalationThreshold`), so `low` = most cautious (escalate ~everything) and `critical` = most autonomous
+    (best-guess all but critical judgment calls). Defaults to `high` when the block is present. An
+    unrecognized value is a validation error (**GR2039**).
+  - `gateThresholds` — OPTIONAL per-gate overrides keyed `needs-human` / `wave-checkpoint` / `review-gate`;
+    any key absent falls back to `escalationThreshold`. The first two take a criticality level; the
+    **`review-gate` key is special — its value is NOT a criticality level but the `escalate` (default) /
+    `proceed-unreviewed` acknowledgment** (a floor, §2.1). An invalid `escalationThreshold`/`gateThresholds`
+    value is **GR2039**.
+  - `blockerRetry` (`maxAttempts` default `5`, `totalWaitSeconds` default `900`, floored by
+    `transientPauseBudgetSeconds`) — the bounded wait/backoff ceiling for a *retryable hard blocker* (rate
+    limit / 503) before it escalates; and `maxJudgeWidenings` (default `3`) — a run-level cap on how many
+    times a judge may reclassify an unknown failure as retryable, after which every unknown failure escalates
+    deterministically.
+  - **`--autonomous` (alias `--unattended`) REQUIRES an effective `maxCostUsd`.** `maxCostUsd` is optional in
+    general (absent ⇒ no cap), but an unattended run has no human to notice a runaway spend and autonomous
+    mode adds spend the interactive flow does not (each criticality assessment + each breakdown invocation,
+    ~$1–5, charged to `overheadCostUsd`). So if neither the config nor `--max-cost-usd` sets one, the CLI
+    emits a **loud warning** and applies a conservative built-in default of **$20** rather than running
+    uncapped.
+  - **GR2040** (the compound-config incompatibility — a cross-field load-time error, §2.1): fires when
+    `gateThresholds.review-gate == "proceed-unreviewed"` **AND** a reachable `critical` end-state
+    (`escalationThreshold == "critical"` **OR** any in-wave `gateThresholds` value —
+    `needs-human`/`wave-checkpoint` — `== "critical"`). *Skip the review pass OR best-guess the hard design
+    calls — never both.*
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
@@ -289,6 +334,40 @@ drift), `task` (#269 overwatcher per-task attempts-vs-fix-vs-halt); `decision` i
 (the on-resume definition-drift gate, §7.2); the schema + discriminator already accommodate all three so
 the `wave` (M2) and `task` (M3) boundaries just append. #269's design of record reuses this policy + log
 verbatim.
+
+**The criticality dial (`autonomy` block) — a NEW ORTHOGONAL axis (issue #361; design of record
+`docs/plans/12-autonomous-mode.md`).** Autonomous mode adds the OPTIONAL `autonomy` config block (§2:
+`escalationThreshold`, `gateThresholds`, `blockerRetry`, `maxJudgeWidenings`). It is a **separate axis from
+`autonomyPolicy`, not an extension of it** — `autonomyPolicy`'s **three values and its `GR2031` check are
+UNCHANGED**. `autonomyPolicy` decides the *posture* (may I prompt / must I halt / may I apply a known-safe
+action); the dial decides, **only at a JUDGMENT gate under `autonomyPolicy: auto` in a NON-INTERACTIVE
+context**, whether to *escalate* or *proceed past that gate on a recorded best-guess*. Under `prompt`/`halt`,
+or interactively, the dial is inert — which is why an existing run's behaviour is unchanged.
+
+- **The dial NEVER lowers a floor.** A denylist/**verdict-surface** change, an **unsound drift rewind**
+  (§7.2), the **review gate** (§13; the harness never self-attests a review), and a **terminal-exhaustion
+  `needs-human`** (§9.2.1) always halt/escalate regardless of the dial — including at `escalationThreshold:
+  critical`. The dial only ever converts an *honest-halt-at-a-soft-judgment-gate* into a *recorded best-guess
+  below threshold*; a wrong best-guess still fails its own deterministic guardrails → honest halt.
+- **The value spaces.** `escalationThreshold` is the run-wide dial (`low < moderate < high < critical`, value
+  = lowest criticality that still escalates); `gateThresholds` overrides it per gate. The two dial-eligible
+  gates (`needs-human`, `wave-checkpoint`) take a criticality level; the **`review-gate` key is a FLOOR**
+  whose value is the `escalate` (default) / `proceed-unreviewed` acknowledgment — deliberately NOT a
+  criticality level, so turning the run-wide dial to `critical` can never accidentally clear review. An
+  invalid `escalationThreshold`/`gateThresholds` value is a load-time validation error (**GR2039**).
+- **The compound-config gate (GR2040) — a settled invariant.** *Skip the review pass OR best-guess the hard
+  design calls — never both.* `gateThresholds.review-gate == "proceed-unreviewed"` combined with a reachable
+  `critical` end-state (`escalationThreshold == "critical"` **OR** any in-wave `gateThresholds` value
+  `== "critical"`) is a **load-time error (GR2040)**, keyed on the reachable end-state — so a per-gate
+  override like `{ "needs-human": "critical", "review-gate": "proceed-unreviewed" }` under
+  `escalationThreshold: high` is caught, not just a run-wide `critical`. (Distinct from GR2039, the
+  single-invalid-*value* check.) `proceed-unreviewed` stays a valid opt-in at the cautious/`high` dials; only
+  its intersection with a best-guessed hard call is forbidden.
+- **The overwatcher `auto`-tier gate keys on the PRESENCE of the `autonomy` block, NOT `autonomyPolicy: auto`
+  alone.** Under autonomous mode the overwatcher's ALLOWLIST levers become dial-governed silent auto-apply —
+  but *only when an `autonomy` block is present*. An existing `autonomyPolicy: auto` run with **no** `autonomy`
+  block keeps today's behaviour byte-for-byte (the overwatcher still degrades an allowlist fix to *propose*),
+  so the new axis never silently changes a shipped `auto` consumer.
 
 ## 3. `tasks/<id>/task.json`
 
@@ -3792,6 +3871,11 @@ after the run, unchanged.
 
 The `DependencyGraph`'s existing topological-level accessor is renamed **`Waves()` → `Tiers()`** (a wave
 *contains* tiers) to free the word "wave" for this plan-stage concept.
+
+> **Autonomous-mode dial (issue #361, doc 12 §5.2).** Under `autonomyPolicy: auto` + an `autonomy` block
+> (§2.1), the criticality dial governs the step-2 `wave-checkpoint` gate — a below-threshold best-guess
+> auto-invokes the breakdown actor instead of honest-halting; the **review half stays a floor** (the harness
+> never self-attests a review, §5.2 of doc 12). Cross-reference only — the wave mechanics above are unchanged.
 
 ### 14.5 The recursive completion-unit model — durable wave completion + `WaveDefinitionHash`
 
