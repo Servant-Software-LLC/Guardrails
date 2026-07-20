@@ -1,0 +1,6 @@
+{
+  "description": "Apply the #361 Phase-3 forensic/escalation delta to docs/plans/02-schemas-and-contracts.md §7/§8 (+ §7.2 answer-injection, §7.1 exit code): decisions[] new fields+tokens, autonomy.jsonl, escalations/<seq>-<gate>.json + .answer.json layout, the seq/CAS/dual-hash binding",
+  "stableId": "w3ssot",
+  "dependsOn": [],
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md"]
+}

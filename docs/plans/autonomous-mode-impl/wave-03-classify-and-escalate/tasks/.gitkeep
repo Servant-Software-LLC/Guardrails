@@ -1,7 +1,0 @@
-# JIT one-ahead stub (wave-03-classify-and-escalate) — #365 / SSOT §14.10.
-# This wave is INTENTIONALLY unauthored: an empty tasks/ with NO brief.md.
-# Wave 3 (Classify-then-act + the escalation & reply channel, #361 Phase 3) references the config/seam
-# types Wave 2 ships, so it is broken down JIT against Wave 2's MATERIALIZED code — not guessed up front.
-# `guardrails run` honest-halts here (NextWaveUnauthored, exit 2) pointing at the integration worktree;
-# re-invoke /plan-breakdown in JIT mode to author this wave, then re-stub wave-04 (one-ahead invariant).
-# The skill never seeds brief.md — the human MAY drop one in to opt into future auto-breakdown (#360).

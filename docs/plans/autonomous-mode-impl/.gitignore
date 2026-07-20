@@ -1,0 +1,10 @@
+# Guardrails: transient runtime state (regenerated every run, cleared by `guardrails run --fresh`).
+# This is exactly the set RunReset.Fresh deletes. Committed plan artifacts (guardrails.json,
+# tasks/**, preflights/**, guardrails/**, guardrails.baseline, state/seed.json,
+# state/guardrails-review.json) stay tracked. See issue #258.
+/logs/
+/state/run.json
+/state/state.json
+/state/merge-conflicts.log
+/state/rewind-intent.json
+/state/captured/

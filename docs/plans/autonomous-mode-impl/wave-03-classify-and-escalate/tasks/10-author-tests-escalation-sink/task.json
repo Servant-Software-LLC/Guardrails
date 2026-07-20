@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests + minimal stubs for the file-based IEscalationSink: EscalationRequest/EscalationId records + status open, the sink writes logs/<runId>/escalations/<seq>-<gate>.json + appends a decisions[] 'escalated' entry + emits IRunObserver.DecisionRecorded, with a monotonic never-reused seq",
+  "stableId": "w3a10sk",
+  "dependsOn": ["02-author-tests-forensic-records"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/EscalationSinkTests.cs",
+    "src/Guardrails.Core/Execution/IEscalationSink.cs",
+    "src/Guardrails.Core/Execution/FileEscalationSink.cs"
+  ]
+}

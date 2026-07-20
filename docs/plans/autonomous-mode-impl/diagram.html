@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=8d0e46db53b1408403a2781f867e24f36b688465c587f9486a4622a769fff067 -->
+<!-- guardrails:graph v1 source-sha256=6221393f6fe022f73a884b95a07c2639e5fd6155292ad847f0c17108b5a42201 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -194,16 +194,101 @@
   end
   style wave_2_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_3_preflights["Wave 3 Entry Gate"]
+    wave_3_preflights_0["01-wave2-materialized"]:::preflight
   end
   style wave_3_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_3["Wave 3 — classify-and-escalate"]
-    wave_3_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_3_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_03_classify_and_escalate_01_ssot_phase3_delta["01-ssot-phase3-delta"]
+      task_wave_03_classify_and_escalate_01_ssot_phase3_delta_gr_0["01-ssot-phase3-documented"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_01_ssot_phase3_delta fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_02_author_tests_forensic_records["02-author-tests-forensic-records"]
+      task_wave_03_classify_and_escalate_02_author_tests_forensic_records_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_classify_and_escalate_02_author_tests_forensic_records_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_02_author_tests_forensic_records fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_03_implement_forensic_records["03-implement-forensic-records"]
+      task_wave_03_classify_and_escalate_03_implement_forensic_records_gr_0["01-forensic-records-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_03_implement_forensic_records fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_04_author_tests_gate_classifier["04-author-tests-gate-classifier"]
+      task_wave_03_classify_and_escalate_04_author_tests_gate_classifier_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_classify_and_escalate_04_author_tests_gate_classifier_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_03_classify_and_escalate_04_author_tests_gate_classifier_gr_2["03-covers-classification-signals"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_04_author_tests_gate_classifier fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_05_implement_gate_classifier["05-implement-gate-classifier"]
+      task_wave_03_classify_and_escalate_05_implement_gate_classifier_gr_0["01-gate-classifier-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_05_implement_gate_classifier fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_06_author_tests_blocker_retry["06-author-tests-blocker-retry"]
+      task_wave_03_classify_and_escalate_06_author_tests_blocker_retry_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_classify_and_escalate_06_author_tests_blocker_retry_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_06_author_tests_blocker_retry fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_07_implement_blocker_retry["07-implement-blocker-retry"]
+      task_wave_03_classify_and_escalate_07_implement_blocker_retry_gr_0["01-blocker-retry-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_07_implement_blocker_retry fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment["08-author-tests-criticality-assessment"]
+      task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment_gr_2["03-covers-assessment-invariants"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_09_implement_criticality_assessment["09-implement-criticality-assessment"]
+      task_wave_03_classify_and_escalate_09_implement_criticality_assessment_gr_0["01-criticality-assessment-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_09_implement_criticality_assessment fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_10_author_tests_escalation_sink["10-author-tests-escalation-sink"]
+      task_wave_03_classify_and_escalate_10_author_tests_escalation_sink_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_classify_and_escalate_10_author_tests_escalation_sink_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_10_author_tests_escalation_sink fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_11_implement_escalation_sink["11-implement-escalation-sink"]
+      task_wave_03_classify_and_escalate_11_implement_escalation_sink_gr_0["01-escalation-sink-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_11_implement_escalation_sink fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_12_author_tests_answer_consumption["12-author-tests-answer-consumption"]
+      task_wave_03_classify_and_escalate_12_author_tests_answer_consumption_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_classify_and_escalate_12_author_tests_answer_consumption_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_03_classify_and_escalate_12_author_tests_answer_consumption_gr_2["03-covers-security-matrix"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_12_author_tests_answer_consumption fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_13_implement_answer_consumption["13-implement-answer-consumption"]
+      task_wave_03_classify_and_escalate_13_implement_answer_consumption_gr_0["01-answer-consumption-tests-pass"]:::guardrail
+      task_wave_03_classify_and_escalate_13_implement_answer_consumption_gr_1["02-answer-injection-untrusted-delimited"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_13_implement_answer_consumption fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring["14-author-tests-scheduler-escalation-wiring"]
+      task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_0["01-tests-build"]:::guardrail
+      task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler["15-wire-classify-then-act-into-scheduler"]
+      task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler_gr_0["01-factory-wires-escalation"]:::guardrail
+      task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler_gr_1["02-scheduler-escalation-wiring-tests-pass"]:::guardrail
+    end
+    style task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_3 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_3_guardrails["Wave 3 Exit Gate"]
+    wave_3_guardrails_0["01-wave3-union-clean"]:::guardrail
+    wave_3_guardrails_1["02-wave3-solution-builds"]:::guardrail
+    wave_3_guardrails_2["03-wave3-classify-escalate-tests-pass"]:::guardrail
   end
   style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_4_preflights["Wave 4 Entry Gate"]
+  end
+  style wave_4_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_4["Wave 4 — review-gate-policy"]
+    wave_4_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_4_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_4 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_4_guardrails["Wave 4 Exit Gate"]
+  end
+  style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
@@ -231,11 +316,35 @@
   task_wave_02_dial_config_06_author_tests_autonomous_cli --> task_wave_02_dial_config_07_implement_autonomous_cli
   task_wave_02_dial_config_01_ssot_autonomy_delta --> wave_2_guardrails
   task_wave_02_dial_config_07_implement_autonomous_cli --> wave_2_guardrails
-  wave_3_preflights --> wave_3_stub
-  wave_3_stub --> wave_3_guardrails
+  wave_3_preflights --> task_wave_03_classify_and_escalate_01_ssot_phase3_delta
+  wave_3_preflights --> task_wave_03_classify_and_escalate_02_author_tests_forensic_records
+  wave_3_preflights --> task_wave_03_classify_and_escalate_04_author_tests_gate_classifier
+  wave_3_preflights --> task_wave_03_classify_and_escalate_06_author_tests_blocker_retry
+  wave_3_preflights --> task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment
+  task_wave_03_classify_and_escalate_02_author_tests_forensic_records --> task_wave_03_classify_and_escalate_03_implement_forensic_records
+  task_wave_03_classify_and_escalate_02_author_tests_forensic_records --> task_wave_03_classify_and_escalate_10_author_tests_escalation_sink
+  task_wave_03_classify_and_escalate_03_implement_forensic_records --> task_wave_03_classify_and_escalate_11_implement_escalation_sink
+  task_wave_03_classify_and_escalate_04_author_tests_gate_classifier --> task_wave_03_classify_and_escalate_05_implement_gate_classifier
+  task_wave_03_classify_and_escalate_05_implement_gate_classifier --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_06_author_tests_blocker_retry --> task_wave_03_classify_and_escalate_07_implement_blocker_retry
+  task_wave_03_classify_and_escalate_07_implement_blocker_retry --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment --> task_wave_03_classify_and_escalate_09_implement_criticality_assessment
+  task_wave_03_classify_and_escalate_09_implement_criticality_assessment --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_10_author_tests_escalation_sink --> task_wave_03_classify_and_escalate_11_implement_escalation_sink
+  task_wave_03_classify_and_escalate_10_author_tests_escalation_sink --> task_wave_03_classify_and_escalate_12_author_tests_answer_consumption
+  task_wave_03_classify_and_escalate_11_implement_escalation_sink --> task_wave_03_classify_and_escalate_13_implement_answer_consumption
+  task_wave_03_classify_and_escalate_11_implement_escalation_sink --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_12_author_tests_answer_consumption --> task_wave_03_classify_and_escalate_13_implement_answer_consumption
+  task_wave_03_classify_and_escalate_13_implement_answer_consumption --> task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring
+  task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring --> task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler
+  task_wave_03_classify_and_escalate_01_ssot_phase3_delta --> wave_3_guardrails
+  task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler --> wave_3_guardrails
+  wave_4_preflights --> wave_4_stub
+  wave_4_stub --> wave_4_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
   wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
-  wave_3_guardrails --> plan_guardrails
+  wave_3_guardrails -.->|"🔒 wave barrier"| wave_4_preflights
+  wave_4_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   click task_wave_01_evidence_hygiene_01_ssot_review_marker_delta_gr_0 href "wave-01-evidence-hygiene/tasks/01-ssot-review-marker-delta/guardrails/01-ssot-attestation-documented.ps1" "01-ssot-attestation-documented" _blank
@@ -261,8 +370,35 @@
   click task_wave_02_dial_config_05_implement_autonomy_validation_gr_0 href "wave-02-dial-config/tasks/05-implement-autonomy-validation/guardrails/01-autonomy-validation-tests-pass.ps1" "01-autonomy-validation-tests-pass" _blank
   click task_wave_02_dial_config_06_author_tests_autonomous_cli_gr_0 href "wave-02-dial-config/tasks/06-author-tests-autonomous-cli/guardrails/01-tests-build.ps1" "01-tests-build" _blank
   click task_wave_02_dial_config_06_author_tests_autonomous_cli_gr_1 href "wave-02-dial-config/tasks/06-author-tests-autonomous-cli/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
-  click task_wave_02_dial_config_07_implement_autonomous_cli_gr_0 href "wave-02-dial-config/tasks/07-implement-autonomous-cli/guardrails/01-autonomous-cli-tests-pass.ps1" "01-autonomous-cli-tests-pass" _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_wave_01_evidence_hygiene_01_ssot_review_marker_delta":"wave-01-evidence-hygiene/tasks/01-ssot-review-marker-delta/","task_wave_01_evidence_hygiene_02_amend_open_k":"wave-01-evidence-hygiene/tasks/02-amend-open-k/","task_wave_01_evidence_hygiene_03_author_tests_review_attestation":"wave-01-evidence-hygiene/tasks/03-author-tests-review-attestation/","task_wave_01_evidence_hygiene_04_implement_review_attestation":"wave-01-evidence-hygiene/tasks/04-implement-review-attestation/","task_wave_01_evidence_hygiene_05_author_tests_mark_reviewed_f2":"wave-01-evidence-hygiene/tasks/05-author-tests-mark-reviewed-f2/","task_wave_01_evidence_hygiene_06_implement_mark_reviewed_f2":"wave-01-evidence-hygiene/tasks/06-implement-mark-reviewed-f2/","task_wave_01_evidence_hygiene_07_author_tests_plan_hash":"wave-01-evidence-hygiene/tasks/07-author-tests-plan-hash/","task_wave_01_evidence_hygiene_08_implement_plan_hash":"wave-01-evidence-hygiene/tasks/08-implement-plan-hash/","task_wave_01_evidence_hygiene_09_update_guardrails_review_skill":"wave-01-evidence-hygiene/tasks/09-update-guardrails-review-skill/","task_wave_02_dial_config_01_ssot_autonomy_delta":"wave-02-dial-config/tasks/01-ssot-autonomy-delta/","task_wave_02_dial_config_02_author_tests_autonomy_config":"wave-02-dial-config/tasks/02-author-tests-autonomy-config/","task_wave_02_dial_config_03_implement_autonomy_config":"wave-02-dial-config/tasks/03-implement-autonomy-config/","task_wave_02_dial_config_04_author_tests_autonomy_validation":"wave-02-dial-config/tasks/04-author-tests-autonomy-validation/","task_wave_02_dial_config_05_implement_autonomy_validation":"wave-02-dial-config/tasks/05-implement-autonomy-validation/","task_wave_02_dial_config_06_author_tests_autonomous_cli":"wave-02-dial-config/tasks/06-author-tests-autonomous-cli/","task_wave_02_dial_config_07_implement_autonomous_cli":"wave-02-dial-config/tasks/07-implement-autonomous-cli/"}</script>
+  click task_wave_02_dial_config_07_implement_autonomous_cli_gr_0 href "wave-02-dial-config/tasks/07-implement-autonomous-cli/guardrails/01-autonomous-cli-tests-pass.ps1" "01-autonomous-cli-tests-pass" _blank
+  click task_wave_03_classify_and_escalate_01_ssot_phase3_delta_gr_0 href "wave-03-classify-and-escalate/tasks/01-ssot-phase3-delta/guardrails/01-ssot-phase3-documented.ps1" "01-ssot-phase3-documented" _blank
+  click task_wave_03_classify_and_escalate_02_author_tests_forensic_records_gr_0 href "wave-03-classify-and-escalate/tasks/02-author-tests-forensic-records/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_03_classify_and_escalate_02_author_tests_forensic_records_gr_1 href "wave-03-classify-and-escalate/tasks/02-author-tests-forensic-records/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_03_classify_and_escalate_03_implement_forensic_records_gr_0 href "wave-03-classify-and-escalate/tasks/03-implement-forensic-records/guardrails/01-forensic-records-tests-pass.ps1" "01-forensic-records-tests-pass" _blank
+  click task_wave_03_classify_and_escalate_04_author_tests_gate_classifier_gr_0 href "wave-03-classify-and-escalate/tasks/04-author-tests-gate-classifier/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_03_classify_and_escalate_04_author_tests_gate_classifier_gr_1 href "wave-03-classify-and-escalate/tasks/04-author-tests-gate-classifier/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_03_classify_and_escalate_04_author_tests_gate_classifier_gr_2 href "wave-03-classify-and-escalate/tasks/04-author-tests-gate-classifier/guardrails/03-covers-classification-signals.ps1" "03-covers-classification-signals" _blank
+  click task_wave_03_classify_and_escalate_05_implement_gate_classifier_gr_0 href "wave-03-classify-and-escalate/tasks/05-implement-gate-classifier/guardrails/01-gate-classifier-tests-pass.ps1" "01-gate-classifier-tests-pass" _blank
+  click task_wave_03_classify_and_escalate_06_author_tests_blocker_retry_gr_0 href "wave-03-classify-and-escalate/tasks/06-author-tests-blocker-retry/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_03_classify_and_escalate_06_author_tests_blocker_retry_gr_1 href "wave-03-classify-and-escalate/tasks/06-author-tests-blocker-retry/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_03_classify_and_escalate_07_implement_blocker_retry_gr_0 href "wave-03-classify-and-escalate/tasks/07-implement-blocker-retry/guardrails/01-blocker-retry-tests-pass.ps1" "01-blocker-retry-tests-pass" _blank
+  click task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment_gr_0 href "wave-03-classify-and-escalate/tasks/08-author-tests-criticality-assessment/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment_gr_1 href "wave-03-classify-and-escalate/tasks/08-author-tests-criticality-assessment/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment_gr_2 href "wave-03-classify-and-escalate/tasks/08-author-tests-criticality-assessment/guardrails/03-covers-assessment-invariants.ps1" "03-covers-assessment-invariants" _blank
+  click task_wave_03_classify_and_escalate_09_implement_criticality_assessment_gr_0 href "wave-03-classify-and-escalate/tasks/09-implement-criticality-assessment/guardrails/01-criticality-assessment-tests-pass.ps1" "01-criticality-assessment-tests-pass" _blank
+  click task_wave_03_classify_and_escalate_10_author_tests_escalation_sink_gr_0 href "wave-03-classify-and-escalate/tasks/10-author-tests-escalation-sink/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_03_classify_and_escalate_10_author_tests_escalation_sink_gr_1 href "wave-03-classify-and-escalate/tasks/10-author-tests-escalation-sink/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_03_classify_and_escalate_11_implement_escalation_sink_gr_0 href "wave-03-classify-and-escalate/tasks/11-implement-escalation-sink/guardrails/01-escalation-sink-tests-pass.ps1" "01-escalation-sink-tests-pass" _blank
+  click task_wave_03_classify_and_escalate_12_author_tests_answer_consumption_gr_0 href "wave-03-classify-and-escalate/tasks/12-author-tests-answer-consumption/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_03_classify_and_escalate_12_author_tests_answer_consumption_gr_1 href "wave-03-classify-and-escalate/tasks/12-author-tests-answer-consumption/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_03_classify_and_escalate_12_author_tests_answer_consumption_gr_2 href "wave-03-classify-and-escalate/tasks/12-author-tests-answer-consumption/guardrails/03-covers-security-matrix.ps1" "03-covers-security-matrix" _blank
+  click task_wave_03_classify_and_escalate_13_implement_answer_consumption_gr_0 href "wave-03-classify-and-escalate/tasks/13-implement-answer-consumption/guardrails/01-answer-consumption-tests-pass.ps1" "01-answer-consumption-tests-pass" _blank
+  click task_wave_03_classify_and_escalate_13_implement_answer_consumption_gr_1 href "wave-03-classify-and-escalate/tasks/13-implement-answer-consumption/guardrails/02-answer-injection-untrusted-delimited.ps1" "02-answer-injection-untrusted-delimited" _blank
+  click task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_0 href "wave-03-classify-and-escalate/tasks/14-author-tests-scheduler-escalation-wiring/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring_gr_1 href "wave-03-classify-and-escalate/tasks/14-author-tests-scheduler-escalation-wiring/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
+  click task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler_gr_0 href "wave-03-classify-and-escalate/tasks/15-wire-classify-then-act-into-scheduler/guardrails/01-factory-wires-escalation.ps1" "01-factory-wires-escalation" _blank
+  click task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler_gr_1 href "wave-03-classify-and-escalate/tasks/15-wire-classify-then-act-into-scheduler/guardrails/02-scheduler-escalation-wiring-tests-pass.ps1" "02-scheduler-escalation-wiring-tests-pass" _blank</script>
+<script type="application/json" id="task-folder-targets">{"task_wave_01_evidence_hygiene_01_ssot_review_marker_delta":"wave-01-evidence-hygiene/tasks/01-ssot-review-marker-delta/","task_wave_01_evidence_hygiene_02_amend_open_k":"wave-01-evidence-hygiene/tasks/02-amend-open-k/","task_wave_01_evidence_hygiene_03_author_tests_review_attestation":"wave-01-evidence-hygiene/tasks/03-author-tests-review-attestation/","task_wave_01_evidence_hygiene_04_implement_review_attestation":"wave-01-evidence-hygiene/tasks/04-implement-review-attestation/","task_wave_01_evidence_hygiene_05_author_tests_mark_reviewed_f2":"wave-01-evidence-hygiene/tasks/05-author-tests-mark-reviewed-f2/","task_wave_01_evidence_hygiene_06_implement_mark_reviewed_f2":"wave-01-evidence-hygiene/tasks/06-implement-mark-reviewed-f2/","task_wave_01_evidence_hygiene_07_author_tests_plan_hash":"wave-01-evidence-hygiene/tasks/07-author-tests-plan-hash/","task_wave_01_evidence_hygiene_08_implement_plan_hash":"wave-01-evidence-hygiene/tasks/08-implement-plan-hash/","task_wave_01_evidence_hygiene_09_update_guardrails_review_skill":"wave-01-evidence-hygiene/tasks/09-update-guardrails-review-skill/","task_wave_02_dial_config_01_ssot_autonomy_delta":"wave-02-dial-config/tasks/01-ssot-autonomy-delta/","task_wave_02_dial_config_02_author_tests_autonomy_config":"wave-02-dial-config/tasks/02-author-tests-autonomy-config/","task_wave_02_dial_config_03_implement_autonomy_config":"wave-02-dial-config/tasks/03-implement-autonomy-config/","task_wave_02_dial_config_04_author_tests_autonomy_validation":"wave-02-dial-config/tasks/04-author-tests-autonomy-validation/","task_wave_02_dial_config_05_implement_autonomy_validation":"wave-02-dial-config/tasks/05-implement-autonomy-validation/","task_wave_02_dial_config_06_author_tests_autonomous_cli":"wave-02-dial-config/tasks/06-author-tests-autonomous-cli/","task_wave_02_dial_config_07_implement_autonomous_cli":"wave-02-dial-config/tasks/07-implement-autonomous-cli/","task_wave_03_classify_and_escalate_01_ssot_phase3_delta":"wave-03-classify-and-escalate/tasks/01-ssot-phase3-delta/","task_wave_03_classify_and_escalate_02_author_tests_forensic_records":"wave-03-classify-and-escalate/tasks/02-author-tests-forensic-records/","task_wave_03_classify_and_escalate_03_implement_forensic_records":"wave-03-classify-and-escalate/tasks/03-implement-forensic-records/","task_wave_03_classify_and_escalate_04_author_tests_gate_classifier":"wave-03-classify-and-escalate/tasks/04-author-tests-gate-classifier/","task_wave_03_classify_and_escalate_05_implement_gate_classifier":"wave-03-classify-and-escalate/tasks/05-implement-gate-classifier/","task_wave_03_classify_and_escalate_06_author_tests_blocker_retry":"wave-03-classify-and-escalate/tasks/06-author-tests-blocker-retry/","task_wave_03_classify_and_escalate_07_implement_blocker_retry":"wave-03-classify-and-escalate/tasks/07-implement-blocker-retry/","task_wave_03_classify_and_escalate_08_author_tests_criticality_assessment":"wave-03-classify-and-escalate/tasks/08-author-tests-criticality-assessment/","task_wave_03_classify_and_escalate_09_implement_criticality_assessment":"wave-03-classify-and-escalate/tasks/09-implement-criticality-assessment/","task_wave_03_classify_and_escalate_10_author_tests_escalation_sink":"wave-03-classify-and-escalate/tasks/10-author-tests-escalation-sink/","task_wave_03_classify_and_escalate_11_implement_escalation_sink":"wave-03-classify-and-escalate/tasks/11-implement-escalation-sink/","task_wave_03_classify_and_escalate_12_author_tests_answer_consumption":"wave-03-classify-and-escalate/tasks/12-author-tests-answer-consumption/","task_wave_03_classify_and_escalate_13_implement_answer_consumption":"wave-03-classify-and-escalate/tasks/13-implement-answer-consumption/","task_wave_03_classify_and_escalate_14_author_tests_scheduler_escalation_wiring":"wave-03-classify-and-escalate/tasks/14-author-tests-scheduler-escalation-wiring/","task_wave_03_classify_and_escalate_15_wire_classify_then_act_into_scheduler":"wave-03-classify-and-escalate/tasks/15-wire-classify-then-act-into-scheduler/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">

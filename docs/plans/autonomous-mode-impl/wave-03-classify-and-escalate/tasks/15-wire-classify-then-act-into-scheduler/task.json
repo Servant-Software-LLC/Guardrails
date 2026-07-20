@@ -1,0 +1,13 @@
+{
+  "description": "Wire classify-then-act into production (#120): SchedulerFactory.Create constructs+injects GateClassifier/BlockerRetry/CriticalityJudge/FileEscalationSink/AnswerFileConsumer; Scheduler performs classify-then-act at the needs-human/wave-checkpoint gate + resume consumes answers via ActionRunner→PromptComposer; RunCommand/ExitCodes surface the exit-2-with-pending-escalations code — so the wiring test goes green",
+  "stableId": "w3i15wr",
+  "dependsOn": ["14-author-tests-scheduler-escalation-wiring"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/SchedulerFactory.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs",
+    "src/Guardrails.Cli/ExitCodes.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + a minimal stub for the class-(b) blocker bounded wait/backoff: retry until maxAttempts OR totalWaitSeconds (whichever first, honoring a reset hint), floored by transientPauseBudgetSeconds; resolve ⇒ continue, ceiling ⇒ escalate class-(c) with the retry ledger",
+  "stableId": "w3a06br",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/BlockerRetryTests.cs",
+    "src/Guardrails.Core/Execution/BlockerRetry.cs"
+  ]
+}

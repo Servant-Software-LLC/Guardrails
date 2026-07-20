@@ -1,0 +1,13 @@
+{
+  "description": "Author the FAILING composition-root wiring test (#120): drive the REAL SchedulerFactory.Create under an autonomous-mode config with a fake overwatch-profile runner, hit a needs-human gate, and assert the wired classify-then-act behaviour (escalation record on disk / decisions[] escalated at/above threshold; proceeded-best-guess injected below; blocker-retried; resume answer-injected) — RED against the currently-unwired factory",
+  "stableId": "w3a14wr",
+  "dependsOn": [
+    "05-implement-gate-classifier",
+    "07-implement-blocker-retry",
+    "09-implement-criticality-assessment",
+    "11-implement-escalation-sink",
+    "13-implement-answer-consumption"
+  ],
+  "writeScope": ["tests/Guardrails.Integration.Tests/SchedulerEscalationWiringTests.cs"],
+  "action": { "maxTurns": 75 }
+}
