@@ -1,3 +1,7 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
 namespace Guardrails.Core.Journal;
 
 /// <summary>
@@ -7,21 +11,36 @@ namespace Guardrails.Core.Journal;
 /// spans tasks AND waves (unlike the per-task <c>overwatch.jsonl</c>) the stream is run-level. An escalation,
 /// a best-guess, AND a class-(b) retry each append exactly one compact single-line JSON record (§6.3), so the
 /// file has one line per gate assessment.
-///
-/// TDD STUB (issue #361 Phase 3): <see cref="Append"/> throws — the real append-only writer lands in the
-/// classifier/assessment/escalation-sink tasks that record THROUGH this substrate. The tests in
-/// <c>AutonomyForensicRecordsTests</c> compile against this signature and fail RED against the throw until
-/// the writer is implemented.
 /// </summary>
 public static class AutonomyJsonl
 {
     /// <summary>
+    /// Compact, single-line camelCase serializer for the detail stream (contrast <see cref="JournalJson.Options"/>,
+    /// which pretty-prints <c>run.json</c>). Omit-null so the gate-specific
+    /// <c>question</c>/<c>bestGuess</c>/<c>rationale</c> and the hard-blocker-null
+    /// <c>criticality</c>/<c>confidence</c> add no null noise. Mirrors <c>OverwatchDetailWriter</c>.
+    /// </summary>
+    private static readonly JsonSerializerOptions LineOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>
     /// Append one compact single-line JSON <paramref name="record"/> (§6.3 fields) to
     /// <c>&lt;logsDirectory&gt;/&lt;runId&gt;/autonomy.jsonl</c>, creating the run's log directory if needed.
-    /// Append-only: N calls ⇒ N lines. NOT YET IMPLEMENTED (TDD red).
+    /// Append-only (never truncates): N calls ⇒ N lines, each a single object terminated by <c>\n</c>.
     /// </summary>
-    public static void Append(string logsDirectory, string runId, AutonomyRecord record) =>
-        throw new NotImplementedException();
+    public static void Append(string logsDirectory, string runId, AutonomyRecord record)
+    {
+        string runLogDir = Path.Combine(logsDirectory, runId);
+        Directory.CreateDirectory(runLogDir);
+
+        string line = JsonSerializer.Serialize(record, LineOptions);
+        File.AppendAllText(Path.Combine(runLogDir, "autonomy.jsonl"), line + "\n", Utf8NoBom);
+    }
 }
 
 /// <summary>
