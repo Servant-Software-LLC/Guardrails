@@ -114,6 +114,23 @@ public sealed record RunConfig
     /// </summary>
     public AutonomyPolicy AutonomyPolicy { get; init; } = AutonomyPolicy.Prompt;
 
+    /// <summary>
+    /// The between-wave breakdown-INVOCATION knob (SSOT §14.4/§14.10, #360). Default <c>true</c>: at a JIT
+    /// wave checkpoint (an unauthored/empty next wave) carrying a human-authored <c>brief.md</c>, the harness
+    /// AUTO-INVOKES <c>plan-breakdown</c> with NO prompt (even non-interactive), <b>DECOUPLED from</b>
+    /// <see cref="AutonomyPolicy"/> — it does not read or modify it. This is a breakdown-specific default, NOT
+    /// a change to the global autonomy default: the run-time judgment gates (<c>needsHuman</c>, drift §7.2,
+    /// overwatcher §9.2) keep their own <see cref="AutonomyPolicy"/> behavior untouched. The breakdown output
+    /// is still gated by the deterministic <c>guardrails validate</c> re-run, and the <b>human review gate
+    /// still HALTS</b> (<c>BreakdownComplete</c> → <c>/guardrails-review</c>) at every policy — <c>autoBreakdown</c>
+    /// governs INVOCATION only, never the review. A present <c>brief.md</c> is still REQUIRED (absent →
+    /// honest-halt, unchanged); invocation also still requires the <c>breakdown</c> actor + the integration
+    /// worktree (worktree mode) and an un-hit <c>maxCostUsd</c>. Set <c>false</c> to fall back to the
+    /// EXACT #368 <see cref="AutonomyPolicy"/>-gated behavior (auto → invoke; prompt + interactive TTY →
+    /// y/N; prompt + non-interactive → honest-halt; halt → honest-halt).
+    /// </summary>
+    public bool AutoBreakdown { get; init; } = true;
+
     /// <summary>The value of <c>promptRunners.default</c>, if present.</summary>
     public string? DefaultPromptRunner { get; init; }
 

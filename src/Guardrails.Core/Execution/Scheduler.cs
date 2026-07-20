@@ -940,19 +940,21 @@ public sealed class Scheduler
         string at = worktree is not null ? $" at:\n  {worktree}" : "";
         string brief = $"{wave.Dir}/{WaveNode.BriefFileName}";
 
-        // #360: a PRESENT brief.md is the opt-in signal for auto-breakdown (#360 Phase 1) under
-        // 'autonomyPolicy'; an ABSENT one names the convention as the way to enable it. This honest-halt is
-        // reached when the policy did NOT authorize invocation (halt, a non-interactive/declined prompt, or
-        // no breakdown runner) — it keeps the integration-worktree path + the manual-breakdown instruction.
+        // #360 §14.4/§14.10: a PRESENT brief.md is the opt-in signal for auto-breakdown, gated by
+        // 'autoBreakdown' (default true, DECOUPLED from 'autonomyPolicy'); an ABSENT one names the convention.
+        // With the default, this brief-present honest-halt is reached only when auto-breakdown CANNOT run — no
+        // 'breakdown' prompt runner, serial mode (no integration worktree = no materialized upstream), or the
+        // cost cap is hit — OR when 'autoBreakdown' is false and the 'autonomyPolicy' path did not authorize it.
         string detail = briefPresent
-            ? $"A wave brief '{brief}' is present. Auto-breakdown against it runs under 'autonomyPolicy' "
-              + "'auto' (or a 'prompt' approval); this run honest-halts (halt policy, a non-interactive "
-              + $"prompt, or no breakdown runner). The prior wave(s) completed and are materialized on the "
-              + $"plan branch{at}\nBreak down + review '{wave.Dir}' against the materialized upstream "
-              + "artifacts, then re-run 'guardrails run' to continue."
+            ? $"A wave brief '{brief}' is present — auto-breakdown is on by default ('autoBreakdown'), but this "
+              + "run honest-halts because auto-breakdown could not run (no 'breakdown' prompt runner, serial "
+              + "mode, or the cost cap is hit), or 'autoBreakdown' is false (which gates invocation on "
+              + $"'autonomyPolicy'). The prior wave(s) completed and are materialized on the plan branch{at}\n"
+              + $"Break down + review '{wave.Dir}' against the materialized upstream artifacts, then re-run "
+              + "'guardrails run' to continue."
             : "The prior wave(s) completed and are materialized on the plan branch. Break down + review "
               + $"'{wave.Dir}' against the materialized upstream artifacts{at}\nCreate '{brief}' to enable "
-              + "auto-breakdown here under 'autonomyPolicy', or author the wave manually, then re-run "
+              + "auto-breakdown here (on by default, 'autoBreakdown'), or author the wave manually, then re-run "
               + "'guardrails run' to continue.";
 
         return new WaveHalt
@@ -969,16 +971,21 @@ public sealed class Scheduler
     // --- #360 Phase 1: the between-wave breakdown actor at the JIT checkpoint (SSOT §14.4, doc 11 §9) -------
 
     /// <summary>
-    /// Handle the JIT wave checkpoint for an unauthored (empty <c>tasks/</c>) wave. Per the design-360 table
-    /// (doc 11 §9.6): INVOKE breakdown when a <c>brief.md</c> is present AND the policy authorizes it (auto,
-    /// or a prompt approval the CLI captured) AND the actor + integration worktree exist; otherwise
-    /// honest-halt exactly as before. Records a <c>boundary:"wave"</c> <c>decisions[]</c> entry either way.
+    /// Handle the JIT wave checkpoint for an unauthored (empty <c>tasks/</c>) wave (SSOT §14.4/§14.10, #360).
+    /// When <see cref="RunConfig.AutoBreakdown"/> is <c>true</c> (the DEFAULT, decoupled from
+    /// <see cref="RunConfig.AutonomyPolicy"/>): INVOKE breakdown whenever a <c>brief.md</c> is present AND the
+    /// actor + integration worktree exist AND the cost cap is un-hit — with NO prompt, at ANY policy. When
+    /// <c>AutoBreakdown</c> is <c>false</c>: fall back to the EXACT #368 <c>autonomyPolicy</c>-gated path
+    /// (auto → invoke; prompt + a CLI-captured approval → invoke; else honest-halt). An absent <c>brief.md</c>
+    /// (or no actor / serial mode / hit cost cap) always honest-halts. Records a <c>boundary:"wave"</c>
+    /// <c>decisions[]</c> entry either way; the human review gate always halts (never auto-satisfied).
     /// </summary>
     private async Task<RunReport> RunJitCheckpointAsync(
         PlanDefinition plan, WaveNode wave, IntegrationHandle? integ,
         Dictionary<string, TaskResult> settled, CancellationToken cancellationToken)
     {
         AutonomyPolicy policy = _plan.Config.AutonomyPolicy;
+        bool autoBreakdown = _plan.Config.AutoBreakdown;
         bool briefPresent = File.Exists(Path.Combine(wave.Directory, WaveNode.BriefFileName));
 
         // Invocation requires: a brief (opt-in), a breakdown runner, and the integration worktree (materialized
@@ -990,8 +997,18 @@ public sealed class Scheduler
         string? invocationToken = null; // set only when we actually invoke
         if (canInvoke)
         {
-            if (policy == AutonomyPolicy.Auto)
+            if (autoBreakdown)
             {
+                // The DEFAULT (SSOT §14.4/§14.10, #360): a present brief.md AUTO-FIRES the breakdown with NO
+                // prompt (even non-interactive), DECOUPLED from autonomyPolicy — this knob never reads or
+                // modifies the policy, and the run-time judgment gates (needsHuman, drift §7.2, overwatcher
+                // §9.2) keep their own policy behavior untouched. The human REVIEW gate still HALTS below at
+                // every policy (BreakdownComplete → /guardrails-review); autoBreakdown governs INVOCATION only.
+                invocationToken = "auto-applied";
+            }
+            else if (policy == AutonomyPolicy.Auto)
+            {
+                // autoBreakdown:false → the EXACT #368 autonomyPolicy-gated fallback (preserved verbatim).
                 invocationToken = "auto-applied";
             }
             else if (policy == AutonomyPolicy.Prompt && prompted && approved)

@@ -129,6 +129,7 @@ decision (issue #275) and is deliberately NOT done here.
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": true,             // OPTIONAL; DEFAULT true (#340). When the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here). Set false (or pass --no-merge-on-success) to leave the work on the plan branch for manual review
   "autonomyPolicy": "prompt",         // OPTIONAL; the UNIFIED autonomy knob (§2.1). "prompt" (DEFAULT): interactive TTY prompts, non-interactive HALTS. "auto": apply a SAFE decision with no prompt (CLI --autonomy auto, or the legacy alias --reprocess-drift). "halt": always halt. An UNSAFE/UNSOUND action ALWAYS halts regardless. GR2031 if unrecognized. In M1 the only wired boundary is the on-resume definition-drift gate (§7.2)
+  "autoBreakdown": true,              // OPTIONAL; DEFAULT true (#360, §14.4/§14.10). Between-wave breakdown INVOCATION only, DECOUPLED from autonomyPolicy. true: a JIT-checkpoint wave carrying a brief.md AUTO-FIRES plan-breakdown with NO prompt (even non-interactive), at ANY policy; the human review gate STILL halts. false: fall back to the #368 autonomyPolicy-gated invocation. brief.md still required (absent → honest-halt)
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issues #195/#306). Default true. Stashes ANY rolled-back non-final worktree attempt to a git ref + applyable patch (exposed to the retry) instead of pure discard; set false to disable
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
@@ -210,6 +211,21 @@ decision (issue #275) and is deliberately NOT done here.
   `"auto"` (CLI `--autonomy auto`, or the legacy alias `--reprocess-drift`) → auto-resolve a safe drift
   with no prompt; `"halt"` → always HALT. An **UNSAFE** drift ALWAYS halts (exit 2) regardless. An
   unrecognized value is a validation error (**GR2031**).
+- `autoBreakdown` (**default `true`, #360**) is the **between-wave breakdown-INVOCATION** knob (§14.4/§14.10)
+  and is **DECOUPLED from `autonomyPolicy`** — it does not read or modify it. When `true`, a JIT wave
+  checkpoint whose folder carries a human-authored `brief.md` **AUTO-INVOKES `plan-breakdown` with NO prompt
+  (even non-interactive), at ANY `autonomyPolicy`** (the `breakdown` actor + integration worktree must exist
+  and `maxCostUsd` be un-hit). It governs **invocation only** — the breakdown output is still gated by the
+  deterministic `guardrails validate` re-run, and the **human review gate still HALTS**
+  (`BreakdownComplete` → `/guardrails-review`, never auto-satisfied at any policy). An absent `brief.md`
+  honest-halts, unchanged. When `false`, the checkpoint falls back to the **exact `autonomyPolicy`-gated**
+  invocation (auto → invoke; prompt + interactive-TTY `y/N`; prompt + non-interactive → honest-halt; halt →
+  honest-halt). Because `autoBreakdown` is a distinct knob, the RUN-time judgment gates governed by
+  `autonomyPolicy` (needs-human, drift §7.2, overwatcher §9.2) are **untouched**. The companion
+  `plan-breakdown` skill change (auto-seeding a `brief.md` by default) is what makes this default fire without
+  extra author effort. *Rationale:* between-wave breakdown is generative-but-review-gated, so auto-firing the
+  INVOCATION (which never marks anything reviewed) is safe by default without loosening the global autonomy
+  posture.
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
@@ -3678,19 +3694,24 @@ resume pre-pass, integration/settle — are unchanged). Per wave, in strict orde
 1. skip if already complete (§14.6);
 2. **[between-wave step]** if the next wave is **empty/unauthored** (a JIT stub with zero tasks), the
    `Scheduler.RunWavedAsync` checkpoint (`RunJitCheckpointAsync`) either INVOKES the between-wave breakdown
-   actor (#360 Phase 1, below) or **honest-halts** (exit 2, `RunReport.WaveHalt` kind `NextWaveUnauthored`)
+   actor (#360, below) or **honest-halts** (exit 2, `RunReport.WaveHalt` kind `NextWaveUnauthored`)
    with JIT-breakdown instructions pointed at the integration worktree. **`brief.md` (§14.10)** is the
    opt-in signal: **absent → always honest-halt** (the message names the `brief.md` convention);
-   **present → auto-breakdown-eligible**, gated by `autonomyPolicy`:
-   | `autonomyPolicy` | `brief.md` | interactivity | Behavior |
-   |---|---|---|---|
-   | `halt` | any | any | honest-halt (`decision:"halted"`) |
-   | `prompt` (default) | present | interactive TTY | the CLI prompts `y/N` BEFORE the live region (mirroring the wave-drift confirm — the Scheduler cannot prompt inside the Spectre live region); `y` → invoke (`prompted-approved`), `N` → honest-halt (`prompted-declined`) |
-   | `prompt` | present | non-interactive (`Console.IsInputRedirected`) | honest-halt (`decision:"halted"`) |
-   | `auto` | present | any | invoke without prompting (`auto-applied`) |
-   | any | absent | any | honest-halt (`decision:"halted"`) |
-   Invocation ALSO requires the between-wave actor to exist — a `breakdown` prompt-runner profile (§9) AND
-   the integration worktree (worktree mode; serial mode has no materialized upstream) — else it honest-halts.
+   **present → the breakdown is INVOKED**, gated by **`autoBreakdown`** (§2, DEFAULT `true`) —
+   **decoupled from `autonomyPolicy`**:
+   | `autoBreakdown` | `autonomyPolicy` | `brief.md` | interactivity | Behavior |
+   |---|---|---|---|---|
+   | `true` (DEFAULT) | any | present | any (incl. non-interactive) | **invoke without prompting (`auto-applied`)** — the review gate still halts |
+   | `false` | `halt` | any | any | honest-halt (`decision:"halted"`) |
+   | `false` | `prompt` (default) | present | interactive TTY | the CLI prompts `y/N` BEFORE the live region (mirroring the wave-drift confirm — the Scheduler cannot prompt inside the Spectre live region); `y` → invoke (`prompted-approved`), `N` → honest-halt (`prompted-declined`) |
+   | `false` | `prompt` | present | non-interactive (`Console.IsInputRedirected`) | honest-halt (`decision:"halted"`) |
+   | `false` | `auto` | present | any | invoke without prompting (`auto-applied`) |
+   | any | any | absent | any | honest-halt (`decision:"halted"`) |
+   `autoBreakdown` governs the **INVOCATION only** and never touches `autonomyPolicy` — the RUN-time judgment
+   gates (`needsHuman`, drift §7.2, overwatcher §9.2) keep their own `autonomyPolicy` behavior. Invocation
+   ALSO requires the between-wave actor to exist — a `breakdown` prompt-runner profile (§9) AND the
+   integration worktree (worktree mode; serial mode has no materialized upstream) — and `maxCostUsd` un-hit,
+   else it honest-halts.
    **The between-wave breakdown actor (#360 Phase 1, doc 11 §9):** on invocation the harness drives
    `plan-breakdown` through the shipped `IPromptRunner` seam under the reserved **`breakdown`** profile (§9),
    passing `wave-NN-slug/brief.md` as the target and injecting the integration worktree via a second
@@ -3822,14 +3843,16 @@ convention — #360 Phase 0/1 (LANDED):** the between-wave checkpoint recognizes
 `wave-NN-slug/brief.md` (§14.10) as the opt-in signal for auto-breakdown, and folds a present brief into
 `WaveDefinitionHash` (drift on a completed wave). **Phase 0** named the brief in the halt + emitted the
 `boundary:"wave"` checkpoint decision. **Phase 1 (LANDED, #360, doc 11 §9):** the between-wave breakdown
-ACTOR (`WaveBreakdownInvoker`) now INVOKES `plan-breakdown` at the checkpoint under `autonomyPolicy` (the
-§14.4 table — `auto`, or a `prompt` approval the CLI captures before the live region), through the reserved
+ACTOR (`WaveBreakdownInvoker`) now INVOKES `plan-breakdown` at the checkpoint through the reserved
 `breakdown` prompt-runner profile (§9, full authoring tool set + the integration-worktree `--add-dir`),
 charges its spend to `overheadCostUsd`, gates the output on the DETERMINISTIC in-process `guardrails validate`
 (`BreakdownComplete` → halt for review / `BreakdownFailed` → quarantine the partial to
 `logs/<runId>/<wave-dir>/breakdown/rejected/` so the plan stays loadable), and NEVER auto-satisfies the review
-gate. Governed by the shipped `autonomyPolicy` alone — the criticality dial (`autonomy` block, best-guess,
-escalation sink) is **Phase 2+**, designed in `docs/plans/12-autonomous-mode.md`. **Per-wave diagrams** (`graph
+gate. **Invocation is gated by `autoBreakdown` (§2, DEFAULT `true`), decoupled from `autonomyPolicy`:** a
+present `brief.md` auto-fires the breakdown with no prompt at any policy (§14.4 table); `autoBreakdown:false`
+falls back to the #368 `autonomyPolicy`-gated path (`auto`, or a `prompt` approval the CLI captures before the
+live region). The criticality dial (`autonomy` block, best-guess, escalation sink) is **Phase 2+**, designed
+in `docs/plans/12-autonomous-mode.md`. **Per-wave diagrams** (`graph
 <plan>/<wave>`) are the one v1 nicety **deferred** — `graph <plan>` renders the whole waved DAG (all
 wave-qualified tasks); a per-wave sub-diagram (loading a wave subfolder that has no own `guardrails.json`) is
 follow-up. **v2 bets (deferred):** overwatcher-**driven** intelligent inter-wave adjustment (`auto`/`prompt`
@@ -3839,12 +3862,15 @@ of record**.
 
 ### 14.10 The wave brief (`brief.md`) — issue #360 Phase 0
 
-> **Status: Phase 0 + Phase 1 LANDED (#360).** The `brief.md` convention + the enhanced JIT-checkpoint halt
-> message + the `boundary:"wave"` checkpoint decision + the `WaveDefinitionHash` fold shipped in Phase 0. The
-> **auto-breakdown INVOCATION** it enables shipped in Phase 1 — the between-wave actor drives `plan-breakdown`
-> at the checkpoint under `autonomyPolicy` (§14.4 table, the `breakdown` profile §9, the `guardrails validate`
-> gate, the `logs/<runId>/<wave-dir>/breakdown/` transcript, the review-gate invariant). The criticality dial
-> that governs this checkpoint under a fully-unattended run is **Phase 2+** (`docs/plans/12-autonomous-mode.md`).
+> **Status: Phase 0 + Phase 1 LANDED (#360); auto-breakdown DEFAULT-ON.** The `brief.md` convention + the
+> enhanced JIT-checkpoint halt message + the `boundary:"wave"` checkpoint decision + the `WaveDefinitionHash`
+> fold shipped in Phase 0. The **auto-breakdown INVOCATION** it enables shipped in Phase 1 — the between-wave
+> actor drives `plan-breakdown` at the checkpoint (the `breakdown` profile §9, the `guardrails validate` gate,
+> the `logs/<runId>/<wave-dir>/breakdown/` transcript, the review-gate invariant). Invocation is now gated by
+> the **`autoBreakdown`** knob (§2, DEFAULT `true`), **decoupled from `autonomyPolicy`**: a present `brief.md`
+> auto-fires the breakdown with no prompt at any policy (§14.4 table); `autoBreakdown:false` restores the
+> #368 `autonomyPolicy`-gated path. The criticality dial that governs this checkpoint under a fully-unattended
+> run is **Phase 2+** (`docs/plans/12-autonomous-mode.md`).
 
 A wave's **`brief.md`** is an **OPTIONAL, human-authored** Markdown file living at the wave-folder root,
 `wave-NN-slug/brief.md` — a sibling of the wave's `preflights/`, `guardrails/`, and `tasks/` folders:
@@ -3865,11 +3891,16 @@ supplies the *materialized* upstream state (the prior waves' real outputs); `bri
 **Opt-in semantics.** Its **presence is the only signal**:
 - **Absent** → the between-wave JIT checkpoint (§14.4) honest-halts **exactly as today** (`RunReport.WaveHalt`
   kind `NextWaveUnauthored`, exit 2); the halt message names the `brief.md` convention as the way to enable
-  auto-breakdown at this checkpoint in a future release.
-- **Present** → the checkpoint is **auto-breakdown-*eligible* in a future phase**; the halt message names the
-  brief and states that auto-breakdown against it will be available under `autonomyPolicy`. **In Phase 0 a
-  present brief still honest-halts — the harness invokes nothing.** (Phase 1/2 wire the invocation; the
-  human review gate on the breakdown output is preserved regardless of `autonomyPolicy`.)
+  auto-breakdown at this checkpoint.
+- **Present** → with **`autoBreakdown` default-on (§2/§14.4)** the checkpoint **AUTO-FIRES `plan-breakdown`**
+  against the brief (with NO prompt, at any `autonomyPolicy`), runs the deterministic `guardrails validate`
+  gate, and halts `BreakdownComplete` (for the human review gate) / `BreakdownFailed` (quarantine + halt). The
+  **companion `plan-breakdown` skill now auto-seeds a `brief.md` by default** when it emits a JIT wave stub, so
+  this default fires without extra author effort (a skill change tracked separately — the harness contract is
+  only that a present `brief.md` auto-fires). Setting `autoBreakdown:false` restores the §14.4
+  `autonomyPolicy`-gated invocation. **The human review gate on the breakdown output HALTS regardless of
+  `autoBreakdown` or `autonomyPolicy`** — the harness invokes but never marks a wave reviewed on a human's
+  behalf.
 
 **Validation.** `guardrails validate` does **NOT** error on an absent `brief.md` (it is optional). A future
 **GR2038** (a WARNING on a wave stub — empty `tasks/` — that has no `brief.md`) is **DEFERRED**, not shipped

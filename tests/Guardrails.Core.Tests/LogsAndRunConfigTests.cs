@@ -154,6 +154,40 @@ public sealed class LogsAndRunConfigTests : IDisposable
         Assert.True(result.Plan!.Config.TriageAutoFile);
     }
 
+    [Fact]
+    public void AutoBreakdown_DefaultsTrue_WhenAbsentFromConfig()
+    {
+        // SSOT §14.4/§14.10 (#360): between-wave breakdown auto-invocation defaults ON — an OMITTED
+        // autoBreakdown key resolves the true default (a present brief.md auto-fires the JIT-checkpoint
+        // breakdown, decoupled from autonomyPolicy).
+        PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan("""{ "version": 1 }"""));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
+        Assert.True(result.Plan!.Config.AutoBreakdown);
+    }
+
+    [Fact]
+    public void AutoBreakdown_RoundTrips_WhenFalse()
+    {
+        // The explicit opt-out restores the #368 autonomyPolicy-gated invocation (SSOT §14.4).
+        const string json = """{ "version": 1, "autoBreakdown": false }""";
+        PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan(json));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
+        Assert.False(result.Plan!.Config.AutoBreakdown);
+    }
+
+    [Fact]
+    public void AutoBreakdown_RoundTrips_WhenTrue()
+    {
+        // An explicit true resolves the same as the default (SSOT §14.4).
+        const string json = """{ "version": 1, "autoBreakdown": true }""";
+        PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan(json));
+        Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));
+
+        Assert.True(result.Plan!.Config.AutoBreakdown);
+    }
+
     // ── §8 per-attempt log layout ──────────────────────────────────────────────────────────────
 
     [Fact]

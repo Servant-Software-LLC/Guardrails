@@ -19,6 +19,7 @@ internal sealed class RawRunConfig
     public bool? MergeOnSuccess { get; set; }
     public bool? TriageAutoFile { get; set; }
     public string? AutonomyPolicy { get; set; }
+    public bool? AutoBreakdown { get; set; }
     public bool? PreserveAttemptsForSalvage { get; set; }
     public Dictionary<string, List<string>>? Interpreters { get; set; }
 
