@@ -835,37 +835,110 @@ concerns a guardrail the human added or edited (check `git log`/`git diff` if th
 folder is tracked, else say you cannot tell), name that explicitly before proposing
 changes to it.
 
-### 7. Record the review
+### 7. Record the review — leave durable evidence, then stamp (#366)
 
-When the review pass is complete (findings reported; fixes applied or explicitly declined), record it
-so the harness's review nudge clears:
+When the review pass is complete (findings reported; fixes applied or explicitly declined), record it so
+the harness's review nudge clears **and a durable audit trail is left behind**. Today the pass leaves
+nothing on disk but the marker itself, so a real review and a bare stamp are byte-identical (#366 §1).
+Close that gap in three moves — **get the hash → write the report → stamp with the report as evidence**:
+
+**1. Obtain the plan hash (the skill can't compute it).** `PlanDefinitionHash` is computed by the CLI, so
+ask for it:
 
 ```bash
-guardrails mark-reviewed <folder>
+guardrails plan-hash <folder>
 ```
 
-**Waved plan (#254):** each wave is a mini-plan with its **own** `PlanDefinitionHash`-keyed review
-marker. When you reviewed the whole plan wave-by-wave, run `guardrails mark-reviewed <folder>`; when you
-reviewed a **single freshly-authored wave** (the JIT flow), run `guardrails mark-reviewed
-<folder>/wave-NN-<slug>` for that wave — it records the marker keyed on that wave's hash, so re-authoring
-or resuming other waves does not falsely mark this one reviewed (and editing this wave's files re-stales
-just its marker). Do not mark a wave reviewed while a BLOCKER in it is open.
+It prints a single `sha256:…` line and writes nothing to disk. Capture it as `<planHash>`; its first 12
+hex characters (after the `sha256:` prefix) are `<planHashShort>`.
 
-This writes the committed, `PlanDefinitionHash`-keyed `state/guardrails-review.json` marker (SSOT §13 /
-§7.3) — the skill can't compute the `PlanDefinitionHash` itself, so it delegates to the CLI. Until the
-plan's behavioral definition changes, `guardrails validate`/`run` stop emitting the GR2025 "not reviewed"
-warning; editing any `task.json` / `guardrails.json`, **an `action.*` body, or a guardrail/preflight body
-or `.json` sidecar** re-stales the marker and the nudge returns. `PlanDefinitionHash` **covers
-guardrail/preflight/action BODIES** — not just structure/config like the narrower `PlanHash` — so editing
-a guardrail's LOGIC after review (broadening a grep, dropping an assertion, `exit 0`-ing a check) NOW
-re-stales the marker and re-fires GR2025 (#260); bodies are exactly what the review scrutinizes most, so
-the attestation covers them. The marker is COMMITTED as part of the reviewed plan: because it is
-`PlanDefinitionHash`-keyed it is an attestation about the committed plan content that self-invalidates the
-instant any reviewed file — `task.json`, `guardrails.json`, an `action.*`, or any guardrail/preflight body
-or sidecar — changes the `PlanDefinitionHash` (the GR2025 nudge returns), so committing it can never
-falsely vouch for changed content. `--fresh` does NOT wipe it — `--fresh` clears only genuine runtime
-state (`run.json`, `state.json`, `merge-conflicts.log`, `logs/`, `captured/`). Do NOT mark a plan reviewed
-while a BLOCKER finding remains unaddressed — the marker vouches that the plan was genuinely reviewed.
+**2. Write the review report** — the durable evidence. Home it under the plan's hash-**excluded** `state/`
+tree at:
+
+```
+<plan>/state/reviews/review-<planHashShort>-<reviewedAtCompact>.md
+```
+
+(`<reviewedAtCompact>` is the review's UTC timestamp with punctuation stripped — e.g. hash `1a2b3c4d5e6f`
+at `2026-06-22T14:03:11Z` → `state/reviews/review-1a2b3c4d5e6f-2026-06-22T140311Z.md`.) The report is
+human-readable — its whole point is that a maintainer can later **read what the review found**. It
+contains:
+- the **Step 6 findings table + the verdict** (which BLOCKERs were addressed vs explicitly declined), and
+- an embedded **plan-hash line the CLI parses (F2a)** — on its own line, the full `<planHash>` verbatim:
+
+  ```
+  Plan-Definition-Hash: sha256:…
+  ```
+
+`state/reviews/` is under the tree `PlanDefinitionHash` **EXCLUDES** (SSOT §7.3), so the report **cannot
+re-stale the marker** — the same reason the marker itself lives under `state/`. It is a committed plan
+artifact (like the marker), not per-run runtime state, so it belongs under `state/`, never `logs/` (a
+review has no `runId`, and `--fresh` would wipe `logs/`).
+
+**3. Stamp the marker, passing the report as evidence:**
+
+```bash
+guardrails mark-reviewed <folder> --evidence <report>
+```
+
+`mark-reviewed` runs the **F2 stamp-time checks** on the report — **(a) plan-binding:** it must embed a
+`Plan-Definition-Hash:` equal to the current plan hash; **(b) path containment:** `<report>` must resolve
+under `<plan>/state/reviews/` — and on pass records `attestation.source: review-artifact` plus the
+report's `reportDigest`. **On failure of either check it downgrades to `source: bare`** (it never
+fabricates a class it can't substantiate) and never refuses the stamp. Watch for a
+`NOTE: … downgrading to source: bare` line: an F2a note usually means the plan changed after you ran
+`plan-hash` (re-run from move 1 with the fresh hash); an F2b note means `<report>` isn't under
+`state/reviews/`.
+
+#### Evidence classes — recorded for AUDIT, not a gate
+
+The stamp records a deterministic `attestation.source` (read back at read-time as `legacy` for a pre-#366
+marker that has no attestation block):
+
+| `source` | Meaning (what the CLI verified) | Written when |
+|---|---|---|
+| `review-artifact` | A review report for *this* plan was present and passed the F2 checks; its `reportDigest` is recorded. The only class backed by a durable report. | `mark-reviewed --evidence <report>` and F2 passes. |
+| `bare` | No valid review report backs the stamp — the unchanged manual "I read it" confirmation, **or** a `--evidence` attempt that failed F2 (downgraded). Clears GR2025 exactly as before. | `mark-reviewed <folder>` with no / invalid `--evidence`. |
+| `machine` | An **automated** flow stamped it (auto-breakdown / autonomous mode) — honestly labeled, never masquerading as human review. | `mark-reviewed <folder> --source machine`. |
+| `legacy` | **Read-time only, never written** — a v1 marker with no attestation block. | — |
+
+(`--reviewer <id>` records a self-reported, **non-authoritative** `actor` — a name to ask in an audit,
+never a trust signal; label it as self-reported wherever surfaced.)
+
+**State plainly what the class is — and is NOT.** The recorded class is for humans and tooling to inspect
+after the fact; **it gates nothing — the Scheduler never reads it, and GR2025 stays an advisory warning**
+(#366 §6; enforce-mode was considered and dropped). It is **not** a forgery deterrent and makes **no**
+security claim: the marker is only as strong as **write-access to the plan folder**, and any agent that can
+author the plan can author a matching report — there is no unforgeable option in a plain-file model (not
+provenance, not a digest chain, not even a signed commit — the autonomous agent holds the key). And **the
+harness never writes the marker on a human's behalf** to fake a human review — a `machine` stamp is labeled
+`machine`, and `mark-reviewed` never fabricates a `review-artifact` class it can't substantiate. The value
+is everyday **evidence hygiene + an audit trail** — telling a real review pass from a bare stamp,
+deterministically and on the record, and preserving what the review found — and nothing more. (Any older
+"unforgeable" / "raises forge cost" framing of the review floor is withdrawn.)
+
+**Waved plan (#254):** each wave is a mini-plan with its **own** `PlanDefinitionHash`-keyed marker and its
+own review report under `<plan>/<wave>/state/reviews/`. Run the three moves against the wave folder —
+`guardrails plan-hash <folder>/wave-NN-<slug>`, write the report under that wave's `state/reviews/`, then
+`guardrails mark-reviewed <folder>/wave-NN-<slug> --evidence <report>`. When you reviewed the **whole** plan
+wave-by-wave, do this per wave; when you reviewed a **single freshly-authored wave** (the JIT flow), stamp
+just that wave — its marker is keyed on that wave's hash, so re-authoring or resuming other waves does not
+falsely mark this one reviewed (and editing this wave's files re-stales just its marker). Do not mark a wave
+reviewed while a BLOCKER in it is open.
+
+The marker `mark-reviewed` writes is the committed, `PlanDefinitionHash`-keyed `state/guardrails-review.json`
+(SSOT §13 / §7.3). Until the plan's behavioral definition changes, `guardrails validate`/`run` stop emitting
+the GR2025 "not reviewed" warning; editing any `task.json` / `guardrails.json`, **an `action.*` body, or a
+guardrail/preflight body or `.json` sidecar** re-stales the marker and the nudge returns. `PlanDefinitionHash`
+**covers guardrail/preflight/action BODIES** — not just structure/config like the narrower `PlanHash` — so
+editing a guardrail's LOGIC after review (broadening a grep, dropping an assertion, `exit 0`-ing a check)
+NOW re-stales the marker and re-fires GR2025 (#260); bodies are exactly what the review scrutinizes most. The
+marker is COMMITTED as part of the reviewed plan: because it is `PlanDefinitionHash`-keyed it **self-stales
+the instant any hash-covered file changes** — a **staleness** guarantee (it can never keep vouching for
+*changed* content), NOT a forgery guarantee (an agent with tree access can always re-stamp; #366 §3).
+`--fresh` does NOT wipe the marker or the report — `--fresh` clears only genuine runtime state (`run.json`,
+`state.json`, `merge-conflicts.log`, `logs/`, `captured/`). Do NOT mark a plan reviewed while a BLOCKER
+finding remains unaddressed.
 
 ## Quality bar
 - [ ] `guardrails validate` ran first; findings don't duplicate the tool.
@@ -907,4 +980,4 @@ while a BLOCKER finding remains unaddressed — the marker vouches that the plan
 - [ ] (#254) A waved plan was reviewed WAVE-BY-WAVE (each wave a mini-plan): the §2 adversarial probes ran per task within each wave, and each wave's entry/exit gates got the four-folder treatment. No cross-wave `dependsOn` edge (GR2034 — a wave-2 dependency on a wave-1 artifact is the wave-2 ENTRY gate, not an edge; BLOCKER if present). Every waved-plan prompt's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (header + example + state-output guardrail index agree; a bare/wrong-wave key is a BLOCKER, the #164 loop one level up).
 - [ ] (#254) Each wave ≥ 2 has a POSITIVE, positive-monotone-safe ENTRY gate ("prior wave's outputs materialized"; missing = WEAK, negative-polarity = BLOCKER). Each multi-leaf/fan-in wave's EXIT gate satisfies GR2028 (≥1 real integration re-run); every INTERMEDIATE wave's exit gate keeps whole-build/whole-suite LOCAL and any `scope:"integration"` guardrail union-safe/conditional (a whole-suite marked `scope:"integration"` in an intermediate wave = BLOCKER, #125); only the LAST wave's exit gate carries a whole-suite LOCAL `tests-pass`. A declared-but-empty JIT stub wave is NOT flagged as missing tasks; the JIT workflow for it is documented in the breakdown report.
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
-- [ ] The review was recorded with `guardrails mark-reviewed <folder>` once findings were addressed/declined — clearing the GR2025 nudge (#79/#131); NOT run while a BLOCKER remained open. For a waved plan, per-wave (`mark-reviewed <folder>/wave-NN-<slug>`) after a single-wave JIT review, or whole-plan after a wave-by-wave pass (#254).
+- [ ] The review left durable evidence (#366): the plan hash was obtained via `guardrails plan-hash <folder>` (the skill can't compute it), a review report — the Step 6 findings table + verdict + an embedded `Plan-Definition-Hash: sha256:…` line (F2a) — was written under the hash-EXCLUDED `<plan>/state/reviews/`, and the marker was stamped with `guardrails mark-reviewed <folder> --evidence <report>` (recording `attestation.source: review-artifact`, or a downgrade to `bare` on an F2 failure) — clearing the GR2025 nudge (#79/#131), NOT run while a BLOCKER remained open. The recorded evidence class (`review-artifact` / `bare` / `machine`, read-time `legacy`) is for AUDIT, not a gate — the marker is only as strong as write-access to the plan folder, and the harness never writes it on a human's behalf. For a waved plan, run the flow per-wave against `<folder>/wave-NN-<slug>` (its own `state/reviews/` + hash) after a single-wave JIT review, or whole-plan after a wave-by-wave pass (#254).
