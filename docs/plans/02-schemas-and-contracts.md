@@ -79,8 +79,10 @@ others in. `runId` lives in worktree directory names and commit trailers, **not*
 `guardrails validate` and a run pre-flight reject a non-git-top-level workspace (**`GR2015`**, a
 FRESH code — the old plan-07 draft cited `GR2013`, which is **taken on `master`** by the live triad
 `CaptureHashEscapesWorkspace`). The harness creates all worktrees under a **harness-owned root
-outside the workspace** — default `<temp>/guardrails-worktrees/<workspace-hash>/<runId>/`,
-overridable via `guardrails.json: worktreeRoot`. Worktrees + the plan branch are runtime state
+outside the workspace** — default `<temp>/gr-wt/<workspace-hash>/<runId>/` (issue #383 shortened this
+from the old `<temp>/guardrails-worktrees/<plan-name>-<hash>/…` to keep segment paths clear of Windows
+MAX_PATH), overridable per-machine via the `GUARDRAILS_WORKTREE_ROOT` env var (→
+`<value>/<workspace-hash>/<runId>/`) or per-plan via `guardrails.json: worktreeRoot`. Worktrees + the plan branch are runtime state
 (wiped by `--fresh`, pruned on resume; the integration worktree is reattached, not pruned). The
 user's own working tree and branch are **read-only for the entire run**; the only write to the user's
 branch is the end-of-run delivery (`mergeOnSuccess`, **ON by default — #340**; opt out with
@@ -125,7 +127,7 @@ decision (issue #275) and is deliberately NOT done here.
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
-  "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/guardrails-worktrees/<hash>/<runId>/
+  "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/gr-wt/<hash>/<runId>/ (#383). A MACHINE concern is better set via the GUARDRAILS_WORKTREE_ROOT env var (§2) than this per-plan key
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": true,             // OPTIONAL; DEFAULT true (#340). When the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here). Set false (or pass --no-merge-on-success) to leave the work on the plan branch for manual review
   "autonomyPolicy": "prompt",         // OPTIONAL; the UNIFIED autonomy knob (§2.1). "prompt" (DEFAULT): interactive TTY prompts, non-interactive HALTS. "auto": apply a SAFE decision with no prompt (CLI --autonomy auto, or the legacy alias --reprocess-drift). "halt": always halt. An UNSAFE/UNSOUND action ALWAYS halts regardless. GR2031 if unrecognized. In M1 the only wired boundary is the on-resume definition-drift gate (§7.2)
@@ -178,15 +180,36 @@ decision (issue #275) and is deliberately NOT done here.
   value is a validation error (GR2012).
 - `worktreeRoot` overrides where the integration + segment worktrees are created. Each task's child
   processes run with cwd = its segment worktree; the integration worktree (plan branch
-  `guardrails/<plan-name>`) is written only by the harness's integration (§5.3).
+  `guardrails/<plan-name>`) is written only by the harness's integration (§5.3). The DEFAULT root is
+  `<temp>/gr-wt/<workspace-hash>/` (issue #383 — the short `gr-wt` dir with no `<plan-name>-` prefix keeps
+  segment paths off Windows MAX_PATH; the 8-char `<workspace-hash>` subdir is retained so re-runs / resume
+  / `--fresh` prune all key on ONE stable root per plan directory).
+- **`GUARDRAILS_WORKTREE_ROOT` (env var, issue #383)** overrides the worktree root at run start →
+  `<value>/<workspace-hash>/`. A worktree root is a **machine / CI concern** — the same portable plan runs
+  on boxes with different path budgets — so the override is an environment variable, NOT a per-plan
+  `guardrails.json` key (a plan committed with a machine's short root would be wrong on the next machine).
+  When set and non-empty it wins over the default; the per-plan hash subdir is unchanged, so prune/resume
+  stay stable. `worktreeRoot` in `guardrails.json` remains for the rare per-plan case.
 - `runOnCurrentBranch` (default `false`) makes the plan branch the current branch instead of a fresh
   `guardrails/<plan-name>`; the harness still integrates via a harness-owned worktree, never the
   user's live checkout. **Pre-flight:** if `runOnCurrentBranch` is set AND the current branch has
   uncommitted changes, the harness PROMPTS for explicit permission at run start (interactive) or
   REFUSES and halts (non-interactive, unless an explicit `--yes`/auto-confirm is given) — because the
   end-of-run integration merges back into the current branch and a dirty tree invites merge
-  complications. **GR2016** (warning): a deep `worktreeRoot` + deep source tree risks exceeding
-  Windows MAX_PATH (260 chars); document `core.longpaths` as the mitigation.
+  complications. **GR2016** (warning, validate-time): a deep *configured* `worktreeRoot` + deep source
+  tree risks exceeding Windows MAX_PATH (260 chars); document `core.longpaths` as the mitigation.
+- **`GR2038` — Windows MAX_PATH run-start hard halt (error, issue #383).** The authoritative path-length
+  check, **Windows-only + worktree-mode-only**, run at **run start** (before any task executes) because it
+  depends on the machine's ACTUAL worktree root (the `GUARDRAILS_WORKTREE_ROOT`-aware default), which
+  `guardrails validate` cannot know. For each task the harness measures the segment base
+  `<root>/<runId>/<taskId>/attempt-1` and adds a reserved build-output budget (**90 chars**, sized for the
+  in-segment `\bin\Debug\net8.0\<assembly>.exe`); if `base + reserve > 260` for any task it **FAILS FAST**
+  (exit 1, nothing runs) naming each offending task + its computed length. Motivating real case: a built
+  test-exe hit **264** chars and CreateProcessW failed with Win32 **206** (ERROR_FILENAME_EXCED_RANGE) —
+  which Windows `LongPathsEnabled` does **not** prevent (it does not lift CreateProcess's application-name
+  ceiling), so a short root is the durable fix. Remedy the diagnostic points at: set
+  `GUARDRAILS_WORKTREE_ROOT` to a short path (e.g. `C:\gw`). Non-Windows and serial / in-place
+  (non-worktree) mode are a no-op.
 - `mergeOnSuccess` (**default `true`, #340**) delivers the plan branch into the user's original
   branch at run end when the whole run goes green — so **"green" means "delivered."** **AI-merge is
   withheld at this boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts
@@ -1397,7 +1420,7 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
             "model": "claude-…",    // FULLY RESOLVED --model (#200): task.json action.model if set, else
                                      //   promptRunners.<name>.model, else "(cli default)"; ABSENT for a script task
             "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
-            "worktreePath": "/…/guardrails-worktrees/…",
+            "worktreePath": "/…/gr-wt/…",
             "baseCommit": "sha…"    // the commit the segment forked from (taskBase); ABSENT in serial mode
           }
         }
@@ -1699,8 +1722,8 @@ must be committed on the harness's integration branch itself. Steps (verified ag
    checked out).
 2. **Identify the integration worktree.** It is the worktree checked out on the plan branch, at
    `<worktreeRoot>/<runId>/_integration` under the harness-owned worktree root (default
-   `<temp>/guardrails-worktrees/<plan-folder-name>-<hash>/`, §1 — overridable via `guardrails.json`'s
-   `worktreeRoot`). `git worktree list` output makes this unambiguous: the path ending `.../_integration`
+   `<temp>/gr-wt/<workspace-hash>/`, §1/§2 — overridable via the `GUARDRAILS_WORKTREE_ROOT` env var or
+   `guardrails.json`'s `worktreeRoot`). `git worktree list` output makes this unambiguous: the path ending `.../_integration`
    is it.
 3. **Edit + commit the merged file THERE with a PLAIN message — do NOT add any `Guardrails-*` trailers.**
    `git -C <integration-worktree-path> add <file>` then `git -C <integration-worktree-path> commit -m

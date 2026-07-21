@@ -3,6 +3,7 @@ using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
+using Guardrails.Core.Loading;
 using Guardrails.Core.State;
 using Spectre.Console;
 
@@ -227,6 +228,26 @@ public static class RunCommand
         // run.json — so this runId matches the one the executor writes attempt logs under.
         RunJournal journal = RunJournal.LoadOrCreate(probe.Plan);
         string runId = journal.Document.RunId;
+
+        // #383 run-start path-length preflight (SSOT §2, GR2038). In WORKTREE mode on WINDOWS, refuse to
+        // start when a task's segment worktree + its build output would exceed MAX_PATH (260): each task
+        // builds under <root>/<runId>/<taskId>/attempt-N, and a built test-exe measured 264 chars broke
+        // CreateProcessW with Win32 206 (LongPathsEnabled does NOT help). This is the AUTHORITATIVE check —
+        // it depends on the machine's ACTUAL worktree root (the GUARDRAILS_WORKTREE_ROOT-aware
+        // WorktreeRootFor), so it lives here at run start rather than in `guardrails validate`. Windows +
+        // worktree-mode only: the IsWindows() short-circuit keeps non-Windows from ever spawning the git
+        // probe WouldUseWorktreeMode runs, and serial / non-worktree mode never hits per-segment paths.
+        if (OperatingSystem.IsWindows() && SchedulerFactory.WouldUseWorktreeMode(probe.Plan))
+        {
+            Diagnostic? pathHalt = WorktreePathPreflight.Check(
+                SchedulerFactory.WorktreeRootFor(probe.Plan), runId, probe.Plan.Tasks.Select(t => t.Id));
+            if (pathHalt is not null)
+            {
+                PlanProbe.PrintDiagnostics([pathHalt], io.Out);
+                io.Out.WriteLine("\nWindows MAX_PATH preflight FAILED; nothing was run.");
+                return ExitCodes.HarnessError;
+            }
+        }
 
         // Pre-DAG plan-preflight phase (SSOT §7, deliverable 3): evaluate <plan>/preflights/ ONCE,
         // BEFORE the Scheduler builds any wave, against the run's starting bytes. A red preflight halts
