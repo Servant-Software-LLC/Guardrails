@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -76,6 +77,14 @@ public sealed class Scheduler
     private readonly IEscalationSink? _escalationSink;
     private readonly CriticalityJudge? _criticalityJudge;
     private readonly BlockerRetry? _blockerRetry;
+
+    // #361 Phase 3 (doc 12 §4.1/§7.4): the reply channel's in-run handoff. A below-threshold judgment call
+    // records a best-guess (ActOnJudgmentCallAsync) whose text must reach the NEXT attempt's composed prompt —
+    // but the executor terminates a needs-human short-circuit WITHOUT retrying, so the Scheduler re-drives one
+    // bounded injected attempt. This map carries taskId → best-guess text from the classify step to that
+    // OnSettledAsync re-drive; an entry lives only until the re-drive consumes it (TryRemove).
+    private readonly ConcurrentDictionary<string, string> _pendingBestGuessInjection =
+        new(StringComparer.Ordinal);
 
     public Scheduler(
         PlanDefinition plan,
@@ -1661,6 +1670,16 @@ public sealed class Scheduler
                     continue;
                 }
 
+                // #361 Phase 3 (doc 12 §7.6): resume answer-consumption pre-check. BEFORE an escalated unit
+                // re-hits its gate, consume any pending firstmate answer for it — record answer-injected, flip
+                // the escalation to consumed, and stage the answer text for this re-run's composed prompt — so
+                // the reply channel intercepts the #190 outcome-agnostic re-run. Inert (no matching open
+                // escalation) on a first run and whenever the dial is not wired.
+                if (_escalationSink is not null)
+                {
+                    ConsumePendingAnswers(task);
+                }
+
                 TaskResult result = await _executor.ExecuteAsync(task, handle, cancellationToken).ConfigureAwait(false);
 
                 await OnSettledAsync(context, task, result, handle, cancellationToken).ConfigureAwait(false);
@@ -1884,6 +1903,15 @@ public sealed class Scheduler
         _observer.DecisionRecorded(entry);
         AppendAutonomyRecord(gate, boundary, subject, "judgment-call", DecisionTokens.ProceededBestGuess,
             criticality, confidence, threshold, question, decision.BestGuess, decision.Rationale);
+
+        // Reply channel (doc 12 §4.1, §7.4 Finding 4): the recorded best-guess is injected into the NEXT
+        // attempt's composed prompt as delimited UNTRUSTED data. Stage it here for the OnSettledAsync re-drive
+        // to hand to ActionRunner — a task-level gate (boundary "task") only; a wave-checkpoint best-guess has
+        // no per-attempt prompt to inject into (it auto-invokes breakdown instead, §5.1).
+        if (boundary == "task" && decision.BestGuess is { Length: > 0 } bestGuessText)
+        {
+            _pendingBestGuessInjection[subject] = bestGuessText;
+        }
     }
 
     /// <summary>
@@ -2060,6 +2088,177 @@ public sealed class Scheduler
         Journal.AutonomyJsonl.Append(Path.Combine(_plan.PlanDirectory, "logs"), runJournal.Document.RunId, record);
     }
 
+    // ================================================================================================
+    //  #361 Phase 3 — the reply channel (doc 12 §4.1/§7.4/§7.6). Two directions, both threaded through
+    //  ActionRunner → PromptComposer.ComposeAction's injectedHumanAnswer section via a per-task
+    //  injected-human-answer.txt handoff: (1) a below-threshold best-guess re-driven into the NEXT attempt,
+    //  and (2) a resume consuming a firstmate answer BEFORE the escalated unit re-hits its gate.
+    // ================================================================================================
+
+    /// <summary>
+    /// Reply channel direction 1 (doc 12 §4.1): when the just-settled task recorded a below-threshold
+    /// best-guess (staged in <see cref="_pendingBestGuessInjection"/>), re-drive ONE bounded attempt with the
+    /// best-guess injected into the composed prompt (via <see cref="ActionRunner"/> →
+    /// <see cref="Prompts.PromptComposer.ComposeAction"/>'s <c>injectedHumanAnswer</c> channel, delimited
+    /// UNTRUSTED data). The executor terminates a needs-human short-circuit WITHOUT retrying, so the injection
+    /// is OBSERVABLE only if the Scheduler re-runs the unit — this is that re-run. The re-driven result is a
+    /// pure side-effect (it composes + persists the injected next attempt); the ORIGINAL settle stands. Driven
+    /// DIRECTLY (never through the worker loop) so it does not re-enter the classify-then-act dispatch. Never
+    /// faults the run — a reply-channel side-effect must never flip the verdict (§6).
+    /// </summary>
+    private async Task RerunForBestGuessInjectionIfPendingAsync(TaskNode task, WorktreeHandle handle, CancellationToken ct)
+    {
+        if (!_pendingBestGuessInjection.TryRemove(task.Id, out string? bestGuess))
+        {
+            return;
+        }
+
+        try
+        {
+            WriteInjectionFile(task.Id, bestGuess);
+            await _executor.ExecuteAsync(task, handle, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _observer.CleanupFailed(task.Id, ex);
+        }
+    }
+
+    /// <summary>
+    /// Reply channel direction 2 (doc 12 §7.6): for a unit about to re-hit an escalated gate, find its OPEN
+    /// answerable escalation(s) in the CREATING run's <c>escalations/</c> dir (anchored on the STABLE journal
+    /// runId, §7.1 — the same anchor <see cref="FileEscalationSink"/> wrote to, unchanged across resume) and
+    /// try to consume a pending firstmate answer via <see cref="AnswerFileConsumer"/>. On a valid answer:
+    /// record the <see cref="DecisionTokens.AnswerInjected"/> decision (the consumer already flipped the
+    /// record's <c>status</c> to <c>consumed</c>, CAS-guarded) and stage the answer text for this re-run's
+    /// composed prompt. A missing/rejected answer is left to re-escalate through the normal gate path. Inert
+    /// when the journal is not a real <see cref="Journal.RunJournal"/> (a unit-test fake).
+    /// </summary>
+    private void ConsumePendingAnswers(TaskNode task)
+    {
+        if (_journal is not Journal.RunJournal runJournal)
+        {
+            return;
+        }
+
+        string escDir = Path.Combine(_plan.PlanDirectory, "logs", runJournal.Document.RunId, "escalations");
+        if (!Directory.Exists(escDir))
+        {
+            return;
+        }
+
+        string currentHash = Journal.TaskDefinitionHash.Compute(task);
+        var consumer = new AnswerFileConsumer(escDir);
+
+        foreach (string recordPath in Directory.EnumerateFiles(escDir, "*.json"))
+        {
+            if (recordPath.EndsWith(".answer.json", StringComparison.Ordinal))
+            {
+                continue; // the reply file, not an escalation record
+            }
+
+            (int? seq, string? gate, string? subject, string? status) = ReadEscalationBinding(recordPath);
+            // Only THIS unit's still-open, answerable (needs-human — a task-level gate) escalations bind here.
+            if (seq is not { } s || gate != "needs-human" || subject != task.Id
+                || string.Equals(status, "consumed", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            AnswerConsumptionResult consumed = consumer.Consume(s, gate, currentHash);
+            if (consumed.Outcome != AnswerOutcome.Injected || consumed.Decision is null)
+            {
+                continue; // no / rejected answer ⇒ re-escalate through the normal gate path (§7.6.4)
+            }
+
+            _journal.RecordDecision(consumed.Decision);
+            _observer.DecisionRecorded(consumed.Decision);
+            AppendAutonomyRecord(gate, consumed.Decision.Boundary, task.Id, "judgment-call",
+                DecisionTokens.AnswerInjected, criticality: null, confidence: null, threshold: null,
+                question: null, bestGuess: null, rationale: consumed.Decision.Detail);
+
+            // Stage the human answer text for the re-run's composed prompt (§7.4 needs-human injection).
+            if (TryReadAnswerText(escDir, s, gate) is { Length: > 0 } answerText)
+            {
+                WriteInjectionFile(task.Id, answerText);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Write the per-task injected-human-answer file the next attempt's <see cref="ActionRunner"/> reads (and
+    /// consumes once). The raw <paramref name="text"/> is wrapped into the delimited UNTRUSTED envelope by
+    /// <see cref="Prompts.PromptComposer.ComposeAction"/> (§7.4 Finding 4). Lives at the TASK log level
+    /// (<c>logs/&lt;runId&gt;/&lt;taskId&gt;/</c>, the stable journal runId) so it is found regardless of the
+    /// next attempt number — the filename literal mirrors <see cref="ActionRunner"/>'s reader.
+    /// </summary>
+    private void WriteInjectionFile(string taskId, string text)
+    {
+        if (_journal is not Journal.RunJournal runJournal)
+        {
+            return;
+        }
+
+        string path = Path.Combine(
+            _plan.PlanDirectory, "logs", runJournal.Document.RunId, taskId, "injected-human-answer.txt");
+        AtomicFile.WriteAllText(path, text);
+    }
+
+    /// <summary>Read an escalation record's binding fields (seq/gate/subject/status), tolerating either a top-level or nested <c>id</c> shape; all null on a missing/corrupt record.</summary>
+    private static (int? Seq, string? Gate, string? Subject, string? Status) ReadEscalationBinding(string recordPath)
+    {
+        try
+        {
+            if (JsonNode.Parse(File.ReadAllText(recordPath)) is not JsonObject record)
+            {
+                return (null, null, null, null);
+            }
+
+            JsonObject? id = record["id"] as JsonObject;
+            int? seq = NodeInt(id?["seq"]) ?? NodeInt(record["seq"]);
+            string? gate = NodeString(record["gate"]) ?? NodeString(id?["gate"]);
+            string? subject = NodeString(record["subject"]) ?? NodeString(id?["subject"]);
+            string? status = NodeString(record["status"]);
+            return (seq, gate, subject, status);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return (null, null, null, null);
+        }
+    }
+
+    /// <summary>Read the raw <c>answer.text</c> from a firstmate <c>…answer.json</c> beside an escalation, or null when absent/malformed.</summary>
+    private static string? TryReadAnswerText(string escDir, int seq, string gate)
+    {
+        try
+        {
+            string answerPath = Path.Combine(escDir, $"{seq}-{gate}.answer.json");
+            if (!File.Exists(answerPath))
+            {
+                return null;
+            }
+
+            return JsonNode.Parse(File.ReadAllText(answerPath)) is JsonObject answer
+                   && answer["answer"] is JsonObject payload
+                ? NodeString(payload["text"])
+                : null;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private static int? NodeInt(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue(out int i) ? i : null;
+
+    private static string? NodeString(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue(out string? s) ? s : null;
+
     /// <summary>
     /// Called after a task finishes (executor or cost-cap halt). For worktree-mode green results,
     /// performs the B1 deferred settle (fragment merge → git integration commit → journal settle)
@@ -2119,6 +2318,10 @@ public sealed class Scheduler
         if (_escalationSink is not null)
         {
             await ClassifyTaskGateAsync(task, result, ct).ConfigureAwait(false);
+            // Reply channel part 2 (doc 12 §4.1): if the classify step recorded a below-threshold best-guess,
+            // re-drive ONE bounded attempt with it injected — the executor short-circuits a needs-human without
+            // retrying, so this is the only place the injection becomes OBSERVABLE in a composed prompt.
+            await RerunForBestGuessInjectionIfPendingAsync(task, handle, ct).ConfigureAwait(false);
         }
 
         var newlyReady = new List<TaskEnvelope>();
