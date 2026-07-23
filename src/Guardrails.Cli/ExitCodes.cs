@@ -14,4 +14,12 @@ public static class ExitCodes
 
     /// <summary>The run was cancelled (Ctrl+C); in-flight tasks were journaled back to pending.</summary>
     public const int Cancelled = 3;
+
+    /// <summary>
+    /// The run halted with unresolved escalations — an autonomous-mode answer-required halt (§7.1): the wired
+    /// escalation sink left at least one <c>logs/&lt;runId&gt;/escalations/</c> record <c>open</c>, awaiting a
+    /// firstmate answer. Distinct from <see cref="TaskFailed"/> so a consumer can tell an answer-required halt
+    /// apart from a plain needs-human and never read either as green.
+    /// </summary>
+    public const int EscalationsPending = 4;
 }

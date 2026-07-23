@@ -12,7 +12,8 @@ namespace Guardrails.Cli.Commands;
 /// <c>guardrails run [folder] [--fresh] [--no-ui]</c> — validate then execute the plan
 /// DAG (parallel, retry-aware, resume-aware). <c>--fresh</c> wipes runtime state first
 /// (SSOT §6.1). Live Spectre progress when interactive; plain lines otherwise. Exit codes
-/// per SSOT §7: 0 green, 1 error, 2 needs-human/failed, 3 cancelled. Defaults to the
+/// per SSOT §7: 0 green, 1 error, 2 needs-human/failed, 3 cancelled, 4 escalations-pending
+/// (an autonomous-mode answer-required halt, §7.1). Defaults to the
 /// current directory when the folder is omitted.
 /// </summary>
 public static class RunCommand
@@ -778,7 +779,72 @@ public static class RunCommand
             return ExitCodes.TaskFailed;
         }
 
-        return report.AllSucceeded ? ExitCodes.Success : ExitCodes.TaskFailed;
+        if (report.AllSucceeded)
+        {
+            return ExitCodes.Success;
+        }
+
+        // Autonomous-mode answer-required halt (SSOT §7.1, issue #361 Phase 3). A run driven under
+        // classify-then-act escalation ends NON-green with the escalated task settled needs-human — but that
+        // is DISTINCT from a plain needs-human: the wired FileEscalationSink left an OPEN escalation record
+        // awaiting a firstmate answer (logs/<runId>/escalations/<seq>-<gate>.json, status "open", §7.6).
+        // Surface the distinct EscalationsPending code so a consumer never reads an answer-required halt as a
+        // plain needs-human (2) — and never as green (0). A non-autonomous needs-human writes no such record
+        // and still returns TaskFailed.
+        if (HasUnresolvedEscalation(planDirectory, runId))
+        {
+            return ExitCodes.EscalationsPending;
+        }
+
+        return ExitCodes.TaskFailed;
+    }
+
+    /// <summary>
+    /// True when this run ended with at least one UNRESOLVED escalation (SSOT §7.1/§7.6, issue #361 Phase 3):
+    /// an autonomous-mode <see cref="Core.Execution.FileEscalationSink"/> record under
+    /// <c>logs/&lt;runId&gt;/escalations/</c> whose <c>status</c> is still <c>open</c> — not yet flipped to
+    /// <c>consumed</c> by a resume's answer-injection. This is the answer-required-halt signal the exit-code
+    /// mapping branches on to return <see cref="ExitCodes.EscalationsPending"/> instead of a plain
+    /// <see cref="ExitCodes.TaskFailed"/>. Best-effort: an unreadable/corrupt record is skipped (a read hiccup
+    /// must neither manufacture nor mask the distinct code), and a run with no <c>escalations/</c> dir returns
+    /// false. The sibling <c>&lt;seq&gt;-&lt;gate&gt;.answer.json</c> reply files carry no <c>status</c>, so
+    /// they are naturally ignored.
+    /// </summary>
+    private static bool HasUnresolvedEscalation(string planDirectory, string runId)
+    {
+        string escalationsDir = Path.Combine(planDirectory, "logs", runId, "escalations");
+        if (!Directory.Exists(escalationsDir))
+        {
+            return false;
+        }
+
+        foreach (string recordPath in Directory.EnumerateFiles(escalationsDir, "*.json"))
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(File.ReadAllText(recordPath));
+                if (document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("status", out JsonElement status)
+                    && status.ValueEquals("open"))
+                {
+                    return true;
+                }
+            }
+            catch (IOException)
+            {
+                // A record that cannot be read must not manufacture the distinct code — skip it.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // As above — best-effort.
+            }
+            catch (JsonException)
+            {
+                // A corrupt/partial record is skipped, not treated as open.
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
