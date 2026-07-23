@@ -73,9 +73,13 @@ public static class SchedulerFactory
             NeedsHumanTriage? triage = triageRunner is not null
                 ? new NeedsHumanTriage(triageRunner, plan.Config.TriageAutoFile)
                 : null;
+            // The auto-tier gate (issue #361 Phase 4, doc 12 §9 Phase 4) engages ONLY when the plan carries an
+            // explicit `autonomy` block — NOT on `autonomyPolicy: auto` alone (the anti-Option-(c) guard). Pass
+            // block-presence so a bare `auto` still degrades to prompt, byte-identical to today.
             overwatch = new Overwatch(
                 diagnoseRunner, triage, plan.Config.AutonomyPolicy,
-                overwatchInteraction ?? IOverwatchInteraction.NonInteractive);
+                overwatchInteraction ?? IOverwatchInteraction.NonInteractive,
+                autonomyBlockPresent: plan.Config.Autonomy is not null);
         }
 
         var executor = new TaskExecutor(plan, processRunner, interpreterMap, stateManager, journal, observer, registry, overwatch);
