@@ -3,6 +3,7 @@ using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
+using Guardrails.Core.Loading;
 using Guardrails.Core.State;
 using Spectre.Console;
 
@@ -227,6 +228,47 @@ public static class RunCommand
         // run.json — so this runId matches the one the executor writes attempt logs under.
         RunJournal journal = RunJournal.LoadOrCreate(probe.Plan);
         string runId = journal.Document.RunId;
+
+        // #383 Windows short-junction worktree root + run-start path-length preflight (SSOT §2/§5.3, GR2038).
+        // In WORKTREE mode on WINDOWS, first allocate/restore a short directory JUNCTION
+        // (<drive>:\.a..z → the real worktree root) so each task's segment cwd — and thus dotnet test's built
+        // exe path — stays clear of MAX_PATH (260). git canonicalizes the junction back to the real path in
+        // its OWN worktree registrations, so the chosen link is recorded ONLY in the journal (it cannot be
+        // re-derived); a resume restores that SAME link before any git worktree op, hard-failing if it points
+        // elsewhere (a concurrent run). GR2038 then measures the EFFECTIVE root — the junction (so it almost
+        // never fires), or the real root on the graceful no-junction fallback (where it may fire with the
+        // actionable GUARDRAILS_WORKTREE_ROOT remedy). Windows + worktree-mode only: the IsWindows()
+        // short-circuit keeps non-Windows from ever spawning the git probe WouldUseWorktreeMode runs, and
+        // serial / non-worktree mode never hits per-segment paths.
+        if (OperatingSystem.IsWindows() && SchedulerFactory.WouldUseWorktreeMode(probe.Plan))
+        {
+            string realWorktreeRoot = SchedulerFactory.WorktreeRootFor(probe.Plan);
+            WorktreeJunction.JunctionResolution junction = WorktreeJunction.ResolveForRun(
+                realWorktreeRoot, journal.Document.WorktreeJunctionRoot,
+                Path.GetPathRoot(realWorktreeRoot) ?? string.Empty, io.Out);
+            if (junction.RestoreError is { } restoreError)
+            {
+                io.Out.WriteLine(restoreError);
+                io.Out.WriteLine("\nWorktree junction could not be restored; nothing was run.");
+                return ExitCodes.HarnessError;
+            }
+
+            if (junction.RecordRoot is { } recordRoot)
+            {
+                // Persist the chosen link so the Scheduler (fresh journal load) roots segments there, and
+                // a later resume / --fresh can find it. git canonicalizes it away, so this is its only record.
+                journal.RecordWorktreeJunctionRoot(recordRoot);
+            }
+
+            Diagnostic? pathHalt = WorktreePathPreflight.Check(
+                junction.EffectiveRoot, runId, probe.Plan.Tasks.Select(t => t.Id));
+            if (pathHalt is not null)
+            {
+                PlanProbe.PrintDiagnostics([pathHalt], io.Out);
+                io.Out.WriteLine("\nWindows MAX_PATH preflight FAILED; nothing was run.");
+                return ExitCodes.HarnessError;
+            }
+        }
 
         // Pre-DAG plan-preflight phase (SSOT §7, deliverable 3): evaluate <plan>/preflights/ ONCE,
         // BEFORE the Scheduler builds any wave, against the run's starting bytes. A red preflight halts

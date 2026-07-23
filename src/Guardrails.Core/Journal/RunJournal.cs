@@ -376,6 +376,23 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// Record the run's Windows short-junction worktree root (issue #383, SSOT §2) and persist. The junction
+    /// (<c>&lt;drive&gt;:\.a</c>..<c>\.z</c> → the real worktree root) keeps segment build paths clear of
+    /// Windows MAX_PATH; git canonicalizes it away in its own worktree registrations, so this journal field
+    /// is the ONLY durable record of the chosen link — a resume restores it before any git worktree op, and
+    /// <c>--fresh</c> tears it down. Idempotent: re-recording the same value is a harmless re-persist.
+    /// </summary>
+    public void RecordWorktreeJunctionRoot(string junctionRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(junctionRoot);
+        lock (_gate)
+        {
+            _document = _document with { WorktreeJunctionRoot = junctionRoot };
+            Persist();
+        }
+    }
+
     // --- waves[] (SSOT §7/§14, #254 M2b) ----------------------------------------------
 
     /// <summary>The wave's durable journal record, or null when the waves[] section omits it.</summary>

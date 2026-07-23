@@ -51,7 +51,7 @@ public sealed class LogsAndRunConfigTests : IDisposable
     [Fact]
     public void WorktreeRoot_DefaultsToNull_WhenAbsentFromConfig()
     {
-        // §1/§2: worktreeRoot null → harness uses <temp>/guardrails-worktrees/<hash>/<runId>/.
+        // §1/§2: worktreeRoot null → harness uses <temp>/gr-wt/<hash>/<runId>/ (#383 shortened default).
         // COMPILE FAILURE: RunConfig.WorktreeRoot does not yet exist.
         PlanLoadResult result = new PlanLoader().Load(MinimalConfigPlan("""{ "version": 1 }"""));
         Assert.False(result.HasErrors, string.Join("\n", result.Diagnostics));

@@ -132,7 +132,7 @@ public static class SchedulerFactory
             // the serial path does not construct it.
             PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
 
-            worktreeProvider = new GitWorktreeProvider(plan.Workspace, WorktreeRootFor(plan));
+            worktreeProvider = new GitWorktreeProvider(plan.Workspace, EffectiveWorktreeRoot(plan, journal));
 
             // Plan 08 §9.1 / defect #120-followup: the AI-merge worker is the conflict-resolution
             // path for a non-FF union. Without it the Scheduler's `_aiMergeWorker != null && …`
@@ -287,16 +287,73 @@ public static class SchedulerFactory
     }
 
     /// <summary>
+    /// The environment variable that overrides the harness-owned worktree ROOT (issue #383, SSOT §2).
+    /// A worktree root is a MACHINE / CI concern — the SAME plan runs on different machines with
+    /// different path budgets — so the override is an environment variable, NOT a
+    /// <c>guardrails.json</c> key (a per-plan setting would be wrong: the plan is portable, the
+    /// path-length problem is local). When set and non-empty, the per-plan root becomes
+    /// <c>&lt;value&gt;/&lt;shortHash&gt;</c> — the SAME 8-char plan-directory hash subdir the default
+    /// uses, so distinct plans never collide and resume / <c>--fresh</c> prune still key on ONE stable
+    /// root per plan directory.
+    /// </summary>
+    public const string WorktreeRootEnvVar = "GUARDRAILS_WORKTREE_ROOT";
+
+    /// <summary>
     /// A stable temp root for this plan's harness-owned worktrees (plan 08 §1: "all under one temp
-    /// root"). Keyed by a hash of the plan directory so re-runs of the same plan reuse the root
+    /// root"). Keyed by an 8-char hash of the plan directory so re-runs of the same plan reuse the root
     /// (prune/resume see prior worktrees) while distinct plans never collide. Public so
     /// <see cref="State.RunReset"/> can prune the same root on <c>--fresh</c> (F3).
+    /// <para>
+    /// Two shapes, both keeping the SAME per-plan hash subdir so the contract (a STABLE per-plan root)
+    /// is preserved and every call site (<see cref="GitWorktreeProvider.PruneStaleSegmentBranches"/>,
+    /// <see cref="GitWorktreeProvider.TeardownPlanBranch"/>, RunReset) resolves the identical root for a
+    /// given plan directory + environment:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>Override</b> (<see cref="WorktreeRootEnvVar"/> set): <c>&lt;value&gt;/&lt;shortHash&gt;</c>
+    /// — the CI / MAX_PATH escape hatch to a short root (issue #383).</item>
+    /// <item><b>Default</b>: <c>&lt;temp&gt;/gr-wt/&lt;shortHash&gt;</c> — issue #383 shortened this from
+    /// the old <c>&lt;temp&gt;/guardrails-worktrees/&lt;planName&gt;-&lt;shortHash&gt;</c>, dropping
+    /// <c>guardrails-worktrees</c>→<c>gr-wt</c> and the <c>&lt;planName&gt;-</c> prefix (~35 chars saved)
+    /// so segment paths stay clear of Windows MAX_PATH, while keeping the hash (and thus the stable
+    /// per-plan root).</item>
+    /// </list>
     /// </summary>
     public static string WorktreeRootFor(PlanDefinition plan)
     {
-        string planName = Path.GetFileName(plan.PlanDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(plan.PlanDirectory));
         string shortHash = Convert.ToHexString(hash)[..8].ToLowerInvariant();
-        return Path.Combine(Path.GetTempPath(), "guardrails-worktrees", $"{planName}-{shortHash}");
+
+        string? overrideRoot = Environment.GetEnvironmentVariable(WorktreeRootEnvVar);
+        if (!string.IsNullOrWhiteSpace(overrideRoot))
+        {
+            return Path.Combine(overrideRoot.Trim(), shortHash);
+        }
+
+        // A per-plan guardrails.json `worktreeRoot` also overrides, BELOW the machine-level env var
+        // (precedence: env > config > default). Preferred layer is the env var — a root committed in the
+        // plan is NON-PORTABLE across machines — but the key is honored here so the documented override is
+        // real, not dead (SSOT §2, issue #383). Same `/<shortHash>` subdir as the other shapes.
+        if (!string.IsNullOrWhiteSpace(plan.Config.WorktreeRoot))
+        {
+            return Path.Combine(plan.Config.WorktreeRoot.Trim(), shortHash);
+        }
+
+        return Path.Combine(Path.GetTempPath(), "gr-wt", shortHash);
     }
+
+    /// <summary>
+    /// The worktree root the <see cref="GitWorktreeProvider"/> builds segment/integration paths under: the
+    /// short Windows JUNCTION root recorded at run start (issue #383, <see cref="WorktreeJunction"/>) when
+    /// present, else the real <see cref="WorktreeRootFor"/> result. Segments created under the junction keep
+    /// their child-process cwd — and thus <c>dotnet test</c>'s built exe path — clear of Windows MAX_PATH.
+    /// git canonicalizes the junction back to the real path in its OWN worktree registrations, so PRUNE /
+    /// resume-teardown still key on the real root; only the FORWARD segment-creation path uses the junction
+    /// alias. The value is read from the run journal — the CLI resolves + records it before this runs (a
+    /// non-CLI caller, or a run that took the graceful no-junction fallback, simply gets the real root).
+    /// </summary>
+    private static string EffectiveWorktreeRoot(PlanDefinition plan, RunJournal journal) =>
+        journal.Document.WorktreeJunctionRoot is { Length: > 0 } junctionRoot
+            ? junctionRoot
+            : WorktreeRootFor(plan);
 }

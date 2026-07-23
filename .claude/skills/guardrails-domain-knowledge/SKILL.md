@@ -117,8 +117,8 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     not the inheritor's advanced tip).
   - Fan-in: **forks one** upstream and merges the others in (union settle, SSOT section 5.3).
   Worktrees are created under a harness-owned root outside the workspace (default
-  `<temp>/guardrails-worktrees/<hash>/<runId>/`, overridable via `worktreeRoot` in
-  `guardrails.json`). `maxParallelism` defaults to **3**. The user's checkout is **read-only
+  `<temp>/gr-wt/<hash>/<runId>/` — shortened for Windows MAX_PATH, #383; overridable via the
+  `GUARDRAILS_WORKTREE_ROOT` env var or `worktreeRoot` in `guardrails.json`). `maxParallelism` defaults to **3**. The user's checkout is **read-only
   for the entire run**; the only optional write to the user's branch is `--merge-on-success`
   (AI-merge is withheld at that boundary).
 - **Runtime containment hook + stash safety (issues #199/#192, SSOT section 9.4):** the write-scope
