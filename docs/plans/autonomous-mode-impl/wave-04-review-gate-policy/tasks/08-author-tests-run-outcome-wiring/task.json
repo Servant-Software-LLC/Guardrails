@@ -1,0 +1,9 @@
+{
+  "description": "Author a FAILING integration test (RunOutcomeWiringTests, TDD red against current code) that drives the REAL CLI run on a fixture that proceeds a wave unreviewed and asserts the four observable facts: delivery is suppressed (WhollyGreenButUndelivered / not delivered — mergeOnSuccess OFF), the CLI exits the distinct non-zero code (numeric 5), the run flags 'ran with N unreviewed waves', and the harness NEVER wrote a review marker (state/guardrails-review.json absent)",
+  "stableId": "w4a08rw",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/RunOutcomeWiringTests.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Apply the #361 Phase-4 SSOT delta to docs/plans/02-schemas-and-contracts.md: (§2.1/§9.2) the overwatcher auto-tier silent auto-apply is gated on the PRESENCE of the autonomy block, NOT autonomyPolicy:auto alone (anti-Option-(c) back-compat); (§5.3/§2) a run that recorded any proceeded-best-guess/proceeded-unreviewed decision defaults mergeOnSuccess OFF; (§7.1) a proceeded-unreviewed run exits with a distinct non-zero code (ProceededUnreviewed)",
+  "stableId": "w4ssot",
+  "dependsOn": [],
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md"]
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Wire the run-outcome policy into the run finalize path (#120), part 1 of 2: in Scheduler's end-of-run Finalize, resolve mergeOnSuccess OFF when RunOutcomePolicy.SuppressesDelivery(recorded decisions) is true (machine-decided work is never auto-delivered — #340), and surface the 'ran with N unreviewed waves' count (RunOutcomePolicy.ProceededUnreviewedWaveCount) on RunReport. Scheduler.cs overlaps task 05 on a linear chain (09 dependsOn 05) — allowed, no sibling collision. The distinct exit code is task 10.",
+  "stableId": "w4i09fw",
+  "dependsOn": [
+    "03-implement-run-outcome-policy",
+    "05-wire-review-gate-resolution-into-wave-loop"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

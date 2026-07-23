@@ -1,0 +1,6 @@
+{
+  "description": "Implement the pure RunOutcomePolicy over the stub (SuppressesDelivery = any proceeded-best-guess OR proceeded-unreviewed decision recorded; ProceededUnreviewedWaveCount = count of proceeded-unreviewed decisions) so the authored RunOutcomePolicyTests pass",
+  "stableId": "w4i03ro",
+  "dependsOn": ["02-author-tests-run-outcome-policy"],
+  "writeScope": ["src/Guardrails.Core/Execution/RunOutcomePolicy.cs"]
+}

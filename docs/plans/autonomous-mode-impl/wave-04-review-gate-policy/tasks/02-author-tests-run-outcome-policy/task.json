@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + a minimal stub for the pure RunOutcomePolicy: over a run's recorded decisions[] it decides SuppressesDelivery (true when ANY proceeded-best-guess OR proceeded-unreviewed decision was recorded — the #340 mergeOnSuccess-OFF trigger) and ProceededUnreviewedWaveCount (how many proceeded-unreviewed waves ran — the 'ran with N unreviewed waves' flag + the distinct-exit trigger)",
+  "stableId": "w4a02ro",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/RunOutcomePolicyTests.cs",
+    "src/Guardrails.Core/Execution/RunOutcomePolicy.cs"
+  ]
+}

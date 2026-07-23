@@ -1,0 +1,13 @@
+{
+  "description": "Wire the distinct proceeded-unreviewed exit code + verify the composition root (#120), part 2 of 2 (the DAG SINK): add ExitCodes.ProceededUnreviewed = 5 (the next free value after EscalationsPending=4) and return it from RunCommand when the run recorded a proceeded-unreviewed decision (+ render the 'ran with N unreviewed waves' warning) — distinct from green (0), needs-human (2), and EscalationsPending (4). Carries the composition-root proof: the drive-the-real-CLI-run RunOutcomeWiringTests (task 08) authored red, now GREEN across all four facts (undelivered / exit-5 / N-unreviewed / no-forged-marker).",
+  "stableId": "w4i10xw",
+  "dependsOn": [
+    "08-author-tests-run-outcome-wiring",
+    "09-wire-run-outcome-into-finalize"
+  ],
+  "writeScope": [
+    "src/Guardrails.Cli/ExitCodes.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

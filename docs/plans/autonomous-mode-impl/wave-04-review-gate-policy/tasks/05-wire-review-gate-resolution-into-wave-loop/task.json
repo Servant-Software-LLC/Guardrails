@@ -1,0 +1,9 @@
+{
+  "description": "Wire the unattended review-gate resolution into Scheduler.RunWavedAsync (#120): at an unreviewed wave, read plan.Config.Autonomy.GateThresholds.ReviewGate — ProceedUnreviewed (Option P) records a proceeded-unreviewed decision + runs the wave; the default (Escalate, Option E) records a review-gate escalation via the shipped IEscalationSink + halts the wave. The harness NEVER writes a review marker on a human's behalf (§5 floor 3). Makes the authored SchedulerReviewGateTests pass.",
+  "stableId": "w4i05rg",
+  "dependsOn": ["04-author-tests-review-gate-resolution"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}
