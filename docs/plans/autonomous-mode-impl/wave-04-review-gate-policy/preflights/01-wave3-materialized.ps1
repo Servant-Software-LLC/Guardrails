@@ -52,7 +52,7 @@ Assert-Contains 'src/Guardrails.Core/Model/RunConfig.cs' '\bAutonomy\b' `
 # 6. The overwatcher + review marker wave-04 extends / references for the no-forged-marker invariant.
 Assert-Contains 'src/Guardrails.Core/Execution/Overwatch.cs' 'class\s+Overwatch' `
     "the Overwatch actor is not materialized; wave-04's auto-tier gating has nothing to extend"
-Assert-Contains 'src/Guardrails.Core/Review/ReviewMarker.cs' 'class\s+ReviewMarker' `
+Assert-Contains 'src/Guardrails.Core/Review/ReviewMarker.cs' '(class|record)\s+ReviewMarker' `
     "ReviewMarker is not materialized; wave-04's 'harness never forges a review marker' invariant has nothing to assert against"
 
 exit 0
