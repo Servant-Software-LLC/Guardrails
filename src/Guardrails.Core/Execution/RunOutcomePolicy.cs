@@ -31,7 +31,9 @@ public static class RunOutcomePolicy
     /// <param name="decisions">The run's recorded <c>decisions[]</c> stream.</param>
     /// <returns>Whether auto-delivery must be suppressed.</returns>
     public static bool SuppressesDelivery(IEnumerable<DecisionEntry> decisions) =>
-        throw new NotImplementedException();
+        decisions.Any(d =>
+            d.Decision == DecisionTokens.ProceededBestGuess ||
+            d.Decision == DecisionTokens.ProceededUnreviewed);
 
     /// <summary>
     /// The number of <see cref="DecisionTokens.ProceededUnreviewed"/> decisions the run recorded (doc 12 §5.2
@@ -41,5 +43,5 @@ public static class RunOutcomePolicy
     /// <param name="decisions">The run's recorded <c>decisions[]</c> stream.</param>
     /// <returns>The count of <c>proceeded-unreviewed</c> decisions.</returns>
     public static int ProceededUnreviewedWaveCount(IEnumerable<DecisionEntry> decisions) =>
-        throw new NotImplementedException();
+        decisions.Count(d => d.Decision == DecisionTokens.ProceededUnreviewed);
 }
