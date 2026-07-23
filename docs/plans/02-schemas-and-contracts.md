@@ -216,6 +216,9 @@ decision (issue #275) and is deliberately NOT done here.
   wholly-green worktree-mode run instead prints the **loud green-but-undelivered warning** at run end
   (`RunReport.WhollyGreenButUndelivered`; §7 "Run end") — the backstop so verified work left on
   `guardrails/<plan-name>` is never one `--fresh`/`reset -y` away from silent loss.
+  **Autonomous-mode default (issue #361):** a run that recorded any `proceeded-best-guess` or
+  `proceeded-unreviewed` decision (§7 `decisions[]`) **defaults `mergeOnSuccess` to OFF** — machine-decided
+  work is never auto-delivered; only an explicit `--merge-on-success` re-enables delivery (mechanics in §5.3).
 - `autonomyPolicy` (default `"prompt"`) is the **unified autonomy knob** governing every prompt/halt/auto
   decision boundary — the full contract, and the shared `decisions[]` reporting surface it feeds, is
   **§2.1** below. In M1 the only wired boundary is the on-resume **definition-drift** gate (§7.2); its
@@ -1236,6 +1239,16 @@ and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed 
 after a prior run already delivered re-issues an ff-only merge that git reports "Already up to date"
 (→ `FastForwarded`, exit 0) — never a double-merge or error.
 
+**Autonomous mode reconciles delivery with the #340 default (issue #361, `docs/plans/12-autonomous-mode.md`
+§1/§5.2).** A run that recorded **any** `proceeded-best-guess` **or** `proceeded-unreviewed` decision (§7
+`decisions[]`) **defaults `mergeOnSuccess` to OFF** — once a machine judgment shaped the result, the
+verified work is **never auto-delivered** to the user's branch. It stays on the plan branch
+`guardrails/<plan>` for a human to inspect, and the shipped **green-but-undelivered warning** (below) fires.
+This default-OFF is overridable **only** by an explicit **`--merge-on-success`** (an operator deliberately
+forcing delivery of machine-judged work); neither a `guardrails.json` `mergeOnSuccess: true` nor the #340
+delivered-by-default posture silently re-enables it. Delivery is thus never automatic once a best-guess or
+an unreviewed wave shaped the result.
+
 > **BREAKING DEFAULT (#340, no CHANGELOG in-repo — recorded here + in `docs/plans/13-merge-on-success-default.md`).**
 > `mergeOnSuccess` flipped from **OFF → ON**: on upgrade, an existing plan that OMITS the key now delivers to
 > the user's branch on a wholly-green run instead of leaving the work on `guardrails/<plan-name>`. Two
@@ -1897,12 +1910,24 @@ cancelled · `4` **`EscalationsPending`** — an autonomous run (`docs/plans/12-
 non-zero code** — the next free value after the shipped `0`/`1`/`2`/`3` — so an automated firstmate consumer
 **never** reads an answer-required halt as clean green AND can tell it apart from a plain needs-human halt.
 Code `2` is deliberately **NOT** reused here: `2` is indistinguishable from a normal needs-human, whereas
-`EscalationsPending` signals "a firstmate answer file (§7.2/§7.4) can unblock this on the next resume."
+`EscalationsPending` signals "a firstmate answer file (§7.2/§7.4) can unblock this on the next resume." ·
+`5` **`ProceededUnreviewed`** — an autonomous run (`docs/plans/12-autonomous-mode.md` §5.2, issue #361
+Phase 4) that took a **`proceeded-unreviewed`** decision (§7 `decisions[]`, the Option P review-gate
+opt-in): it ran one or more waves **without a review marker**. This is the **next free value after
+`EscalationsPending = 4`** and is deliberately DISTINCT from both `2` (a plain needs-human halt) and `4` (an
+answer-required escalation halt), so an automated firstmate consumer can **never** read "ran with N
+unreviewed waves" as clean green AND can tell an unreviewed-but-green run apart from a needs-human or an
+answer-required halt.
 
-**Autonomous-mode exit-code note.** `EscalationsPending = 4` is the pinned value. A run that took a
-`proceeded-unreviewed` decision (§7 `decisions[]`, the Option P opt-in) keeps its **own existing distinct
-non-zero reporting** (`docs/plans/12-autonomous-mode.md` §5.2) so "ran with N unreviewed waves" is never
-read as clean green — that is a separate, orthogonal signal from `EscalationsPending`.
+**Autonomous-mode exit-code note.** Both autonomous-mode non-zero codes are **pinned**:
+`EscalationsPending = 4` (unresolved answer-required escalations) and **`ProceededUnreviewed = 5`** (a
+`proceeded-unreviewed` decision was taken — the §5.2 Option P opt-in); `5` is the **next free value after
+`4`**. A `proceeded-unreviewed` run exits **`5`** when it would otherwise have drained green — so it is
+never read as clean green and stays tell-apart from both `2` and `4`. The run is also **permanently flagged
+*"ran with N unreviewed waves"*** in its final verdict — a marker durable **independent of the exit code**:
+it remains set even when the run ALSO ends with unconsumed escalations, where `EscalationsPending = 4` takes
+exit-code precedence as the resume-able halt while the unreviewed-waves flag stays recorded for the report.
+Such a run also defaults `mergeOnSuccess` to OFF (§5.3).
 
 **Plan-file → task-folder argument fixup** (all commands taking a plan folder as their first
 positional: `run`, `validate`, `plan`, `graph`, `lock`, `merge`, `logs`). Before the folder's existence
@@ -2729,6 +2754,17 @@ remain the **floor** (they always fire); the overwatcher only un-halts one by in
 so "no observable change + byte-identical failure" no longer describes the next attempt. In v1 production
 (non-interactive), no grant ever happens — the floor stands and the overwatcher makes halts *earlier and
 richer*, never softer.
+
+**Autonomous mode lights up the `auto`-tier ALLOWLIST lever — dial-governed silent auto-apply (issue #361
+Phase 4).** When a run carries an `autonomy` block (§2.1), the overwatcher's **ALLOWLIST** levers (guidance
+injection + the `maxTurns`/`retries`/`timeoutSeconds` budget overrides) stop degrading to *propose* and are
+**silently auto-applied**, dial-governed — realizing the action/budget half of the overwatcher's v2 `auto`
+bet (#6). This is **gated on the PRESENCE of the `autonomy` block, NOT `autonomyPolicy: auto` alone** (the
+anti-Option-(c) back-compat guarantee, §2.1): an `autonomyPolicy: auto` run with **no** `autonomy` block
+still degrades the allowlist lever to *propose* (honest-halt when non-interactive), **byte-identical to
+today**, so no shipped `auto` consumer silently gains overwatcher auto-application on upgrade. The
+**DENYLIST (the verdict surface) is unchanged** — it stays propose-to-human-plus-a-`/guardrails-review`
+re-run at every tier, dial or no dial. (Design of record: `docs/plans/12-autonomous-mode.md` §9 Phase 4.)
 
 **Reporting — the shared `decisions[]` + a per-task `overwatch.jsonl`.** Each overwatcher fire appends a
 `decisions[]` entry with **`boundary: "task"`** (reusing the M1 `DecisionEntry` / `IRunObserver.DecisionRecorded`,
