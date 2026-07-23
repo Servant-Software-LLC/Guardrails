@@ -360,8 +360,21 @@ public sealed class Scheduler
             //    before. Either way it records a boundary:"wave" decisions[] entry.
             if (wave.Tasks.Count == 0)
             {
-                return await RunJitCheckpointAsync(plan, wave, integ, settled, cancellationToken)
+                JitCheckpointOutcome jit = await RunJitCheckpointAsync(plan, wave, integ, settled, cancellationToken)
                     .ConfigureAwait(false);
+                if (jit.Halt is { } haltReport)
+                {
+                    return haltReport;
+                }
+
+                // Review-gate Option P (doc 12 §5.2, issue #361 Phase 4): the freshly-authored wave RUNS
+                // UNREVIEWED — its indelible proceeded-unreviewed decision is already recorded. Splice the
+                // authored wave into the in-memory plan (the run LOADED the empty JIT stub) so this drain AND
+                // the end-of-run report reflect its real tasks, then fall through to the normal
+                // entry/drain/exit path for this same wave.
+                plan = SpliceAuthoredWave(plan, jit.ProceedWithWave!);
+                waves = plan.Waves;
+                wave = waves[i];
             }
 
             _observer.WaveStarting(wave, i + 1, waves.Count);
@@ -1001,7 +1014,7 @@ public sealed class Scheduler
     /// or a prompt approval the CLI captured) AND the actor + integration worktree exist; otherwise
     /// honest-halt exactly as before. Records a <c>boundary:"wave"</c> <c>decisions[]</c> entry either way.
     /// </summary>
-    private async Task<RunReport> RunJitCheckpointAsync(
+    private async Task<JitCheckpointOutcome> RunJitCheckpointAsync(
         PlanDefinition plan, WaveNode wave, IntegrationHandle? integ,
         Dictionary<string, TaskResult> settled, CancellationToken cancellationToken)
     {
@@ -1053,8 +1066,8 @@ public sealed class Scheduler
         DecisionEntry checkpoint = DriftDecisions.WaveCheckpointHalt(policy, wave.Dir, briefPresent, haltToken);
         _journal.RecordDecision(checkpoint);
         _observer.DecisionRecorded(checkpoint);
-        return BuildReport(plan, settled, cancelled: false)
-            with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ, briefPresent) };
+        return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
+            with { WaveHalt = BuildUnauthoredWaveHalt(wave, integ, briefPresent) });
     }
 
     /// <summary>
@@ -1064,7 +1077,7 @@ public sealed class Scheduler
     /// <c>tasks/</c> (so the plan stays loadable + the checkpoint re-fires on resume) →
     /// <see cref="WaveHaltKind.BreakdownFailed"/> carrying the validate errors.
     /// </summary>
-    private async Task<RunReport> RunBreakdownAsync(
+    private async Task<JitCheckpointOutcome> RunBreakdownAsync(
         PlanDefinition plan, WaveNode wave, IntegrationHandle integ,
         Dictionary<string, TaskResult> settled, AutonomyPolicy policy, string invocationToken,
         CancellationToken cancellationToken)
@@ -1076,15 +1089,41 @@ public sealed class Scheduler
             .InvokeAsync(wave, plan, integ.IntegrationWorktreePath, breakdownLogDir, _journal, cancellationToken)
             .ConfigureAwait(false);
 
-        (bool valid, string report, int authoredTaskCount) = ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
+        (bool valid, string report, int authoredTaskCount, WaveNode? authoredWave) =
+            ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
 
         if (valid && authoredTaskCount > 0)
         {
+            // The wave was authored + passed 'guardrails validate' — it is now UNREVIEWED. Resolve the
+            // review-gate FLOOR (doc 12 §5.2, issue #361 Phase 4) by consulting the configured threshold.
+            // NEITHER branch writes a review marker — the harness never self-attests a review at any dial
+            // setting (§5 floor 3, #375).
+            ReviewGateDecision reviewGate =
+                _plan.Config.Autonomy?.GateThresholds?.ReviewGate ?? ReviewGateDecision.Escalate;
+
+            if (reviewGate == ReviewGateDecision.ProceedUnreviewed && authoredWave is not null)
+            {
+                // Option P — proceed-with-recorded-unreviewed-risk: record the indelible proceeded-unreviewed
+                // decision, then hand the authored wave back to the loop to RUN (skip the review halt). The
+                // run can never be reported fully-reviewed-green; the recorded decision is the durable teeth.
+                RecordProceededUnreviewed(policy, wave.Dir, authoredTaskCount);
+                return JitCheckpointOutcome.Proceed(authoredWave);
+            }
+
+            // Option E (default) — escalate to a human review pass: record the breakdown-complete audit, raise
+            // a review-gate escalation through the shipped IEscalationSink (a human must run /guardrails-review
+            // before the wave runs), and keep the shipped BreakdownComplete halt so later waves stay blocked
+            // behind the barrier.
             DecisionEntry done = DriftDecisions.WaveBreakdownComplete(policy, wave.Dir, invocationToken, authoredTaskCount);
             _journal.RecordDecision(done);
             _observer.DecisionRecorded(done);
-            return BuildReport(plan, settled, cancelled: false)
-                with { WaveHalt = BuildBreakdownCompleteHalt(wave, authoredTaskCount) };
+            if (_escalationSink is not null)
+            {
+                EscalateReviewGate(authoredWave ?? wave);
+            }
+
+            return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
+                with { WaveHalt = BuildBreakdownCompleteHalt(wave, authoredTaskCount) });
         }
 
         // BreakdownFailed — quarantine the partial output (or the no-op empty wave) and keep the plan loadable.
@@ -1093,8 +1132,90 @@ public sealed class Scheduler
         DecisionEntry failed = DriftDecisions.WaveBreakdownFailed(policy, wave.Dir, invocationToken, detail);
         _journal.RecordDecision(failed);
         _observer.DecisionRecorded(failed);
-        return BuildReport(plan, settled, cancelled: false)
-            with { WaveHalt = BuildBreakdownFailedHalt(wave, detail) };
+        return JitCheckpointOutcome.HaltWith(BuildReport(plan, settled, cancelled: false)
+            with { WaveHalt = BuildBreakdownFailedHalt(wave, detail) });
+    }
+
+    /// <summary>
+    /// The outcome of the between-wave JIT checkpoint (doc 12 §5.2, issue #361 Phase 4): either a terminal
+    /// <see cref="RunReport"/> HALT (an honest-halt, a BreakdownComplete/Failed halt, or the review-gate
+    /// Option E escalation-then-halt) OR — the review-gate Option P (<c>proceed-unreviewed</c>) — the freshly
+    /// authored <see cref="WaveNode"/> the wave loop must now RUN in place of the empty JIT stub.
+    /// </summary>
+    private sealed record JitCheckpointOutcome(RunReport? Halt, WaveNode? ProceedWithWave)
+    {
+        public static JitCheckpointOutcome HaltWith(RunReport report) => new(report, null);
+
+        public static JitCheckpointOutcome Proceed(WaveNode authoredWave) => new(null, authoredWave);
+    }
+
+    /// <summary>
+    /// Splice a freshly-authored wave (Option P, §5.2) into the in-memory plan the run LOADED with that wave
+    /// as an empty JIT stub — so the wave loop drains its real tasks and the end-of-run report lists them. The
+    /// plan's <see cref="RunConfig"/> (the dial / autonomy block) is preserved unchanged; only the one wave and
+    /// the flattened <see cref="PlanDefinition.Tasks"/> union are replaced.
+    /// </summary>
+    private static PlanDefinition SpliceAuthoredWave(PlanDefinition plan, WaveNode authoredWave)
+    {
+        var updatedWaves = plan.Waves
+            .Select(w => string.Equals(w.Dir, authoredWave.Dir, StringComparison.Ordinal) ? authoredWave : w)
+            .ToList();
+        return plan with { Waves = updatedWaves, Tasks = updatedWaves.SelectMany(w => w.Tasks).ToList() };
+    }
+
+    /// <summary>
+    /// Option P (§5.2): record the indelible <see cref="DecisionTokens.ProceededUnreviewed"/> <c>wave</c>-boundary
+    /// decision for a wave the harness is about to run UNREVIEWED — the durable teeth that keep the run from
+    /// ever being reported fully-reviewed-green. NEVER writes a review marker (§5 floor 3); also appends the
+    /// run-level <c>autonomy.jsonl</c> detail line (§6) so the forensic trail stays non-lossy.
+    /// </summary>
+    private void RecordProceededUnreviewed(AutonomyPolicy policy, string waveDir, int taskCount)
+    {
+        var entry = new DecisionEntry
+        {
+            Boundary = "wave",
+            Policy = AutonomyPolicies.Token(policy),
+            Decision = DecisionTokens.ProceededUnreviewed,
+            Subject = waveDir,
+            Headline = $"Wave '{waveDir}' ran UNREVIEWED ({taskCount} task(s)) — review-gate proceed-unreviewed "
+                       + "(§5.2 Option P). The run can NEVER be reported fully-reviewed-green.",
+            Detail = "The wave's tasks still pass their deterministic guardrails; only the adversarial review "
+                     + "pass was skipped, and that skip is indelible. The harness never marks a wave reviewed "
+                     + "on a human's behalf.",
+            At = DateTimeOffset.UtcNow,
+            Gate = "review-gate"
+        };
+        _journal.RecordDecision(entry);
+        _observer.DecisionRecorded(entry);
+        AppendAutonomyRecord("review-gate", "wave", waveDir, "review-gate", DecisionTokens.ProceededUnreviewed,
+            criticality: null, confidence: null, threshold: null, question: null, bestGuess: null, rationale: null);
+    }
+
+    /// <summary>
+    /// Option E (default, §5.2): escalate the review gate for a freshly-authored but UNREVIEWED wave through the
+    /// shipped <see cref="IEscalationSink"/> — the sink writes the record, appends the <c>escalated</c>
+    /// <c>review-gate</c> <c>wave</c>-boundary decision, and surfaces it live — then adds the run-level
+    /// <c>autonomy.jsonl</c> detail line. The wave still HALTS (the shipped BreakdownComplete halt); this only
+    /// records the open question a human resolves out of band by running <c>/guardrails-review</c>. The review
+    /// gate has no answer kind (§7.5): it clears only by a real human review pass, never a forged marker (§5
+    /// floor 3).
+    /// </summary>
+    private void EscalateReviewGate(WaveNode wave)
+    {
+        string question = $"Wave '{wave.Dir}' was authored but is UNREVIEWED — a human must run "
+                          + "/guardrails-review before it runs (doc 12 §5.2 Option E).";
+        _escalationSink!.Escalate(new EscalationRequest
+        {
+            Gate = "review-gate",
+            Subject = wave.Dir,
+            Question = question,
+            Context = BuildGateContext("review-gate", wave.Dir, question),
+            Criticality = null,
+            DefinitionHash = Journal.WaveDefinitionHash.Compute(wave),
+            At = DateTimeOffset.UtcNow
+        });
+        AppendAutonomyRecord("review-gate", "wave", wave.Dir, "review-gate", DecisionTokens.Escalated,
+            criticality: null, confidence: null, threshold: null, question: question, bestGuess: null, rationale: null);
     }
 
     /// <summary>
@@ -1103,7 +1224,7 @@ public sealed class Scheduler
     /// subprocess (and never the installed tool — dogfood safety). Returns whether the plan is error-free,
     /// the joined diagnostic report, and how many tasks the target wave now carries.
     /// </summary>
-    private static (bool Valid, string Report, int AuthoredTaskCount) ValidatePlanAfterBreakdown(
+    private static (bool Valid, string Report, int AuthoredTaskCount, WaveNode? AuthoredWave) ValidatePlanAfterBreakdown(
         string planDirectory, string waveDir)
     {
         var loader = new PlanLoader();
@@ -1115,10 +1236,11 @@ public sealed class Scheduler
         }
 
         bool valid = !diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error);
-        int authoredTaskCount = loadResult.Plan?.Waves
-            .FirstOrDefault(w => string.Equals(w.Dir, waveDir, StringComparison.Ordinal))?.Tasks.Count ?? 0;
+        WaveNode? authoredWave = loadResult.Plan?.Waves
+            .FirstOrDefault(w => string.Equals(w.Dir, waveDir, StringComparison.Ordinal));
+        int authoredTaskCount = authoredWave?.Tasks.Count ?? 0;
         string report = string.Join("\n", diagnostics.Select(d => d.ToString()));
-        return (valid, report, authoredTaskCount);
+        return (valid, report, authoredTaskCount, authoredWave);
     }
 
     /// <summary>
