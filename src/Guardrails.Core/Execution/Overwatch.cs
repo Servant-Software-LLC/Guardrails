@@ -34,6 +34,7 @@ public sealed class Overwatch
     private readonly NeedsHumanTriage? _terminalTriage;
     private readonly AutonomyPolicy _policy;
     private readonly IOverwatchInteraction _interaction;
+    private readonly bool _autonomyBlockPresent;
 
     /// <param name="diagnoseRunner">
     /// The runner for the eager/short-circuit diagnose prompt (the reserved <c>overwatch</c> profile,
@@ -50,11 +51,7 @@ public sealed class Overwatch
     /// <c>auto</c>-tier gate keys on the PRESENCE of this block — NOT on <c>autonomyPolicy: auto</c> alone (the
     /// anti-Option-(c) guard): only a block-present <c>auto</c> tier silently auto-applies a sanctioned ALLOWLIST
     /// lever; a bare <c>auto</c> with no block still degrades to <c>prompt</c>, byte-identical to today.
-    /// <para>TDD STUB (task 06): accepted-and-ignored for now so the constructor signature is stable for every
-    /// caller (including <see cref="SchedulerFactory"/>). It is deliberately NOT stored in a field yet (an unused
-    /// private field trips CS0169 under <c>TreatWarningsAsErrors</c>) and <see cref="Decide"/> is unchanged —
-    /// which leaves <c>auto</c> degrading to <c>prompt</c>, exactly what makes the auto-apply gate test fail
-    /// (red). Storing it and wiring the gate is the implementation task's job (task 07).</para>
+    /// It is stored in <see cref="_autonomyBlockPresent"/> and read by the <see cref="Decide"/> gate.
     /// </param>
     public Overwatch(
         IPromptRunner? diagnoseRunner,
@@ -67,7 +64,7 @@ public sealed class Overwatch
         _terminalTriage = terminalTriage;
         _policy = policy;
         _interaction = interaction ?? IOverwatchInteraction.NonInteractive;
-        _ = autonomyBlockPresent; // accept-and-ignore (see the param doc): the gate is task 07's job.
+        _autonomyBlockPresent = autonomyBlockPresent;
     }
 
     /// <summary>
@@ -252,9 +249,36 @@ public sealed class Overwatch
             return NonGrant(task, attempt, triggerToken, floor, proposal.Diagnosis, "no-sanctioned-change");
         }
 
-        // prompt (and, in v1, auto — which degrades to prompt): propose the allowlist change; apply on an
-        // interactive approve, else honest halt. Non-interactive ⇒ halt (never blocks, never spends unbidden).
+        // A sanctioned allowlist change exists. Describe it once — both the auto-tier gate and the prompt
+        // confirmation reference the same summary.
         string sanctionedSummary = DescribeSanctionedChange(guidance, budget);
+
+        // auto-tier gate (issue #361 Phase 4, doc 12 §9 Phase 4, doc 11 §6/§9.6): a BLOCK-PRESENT `auto` tier
+        // SILENTLY auto-applies the sanctioned allowlist lever — it grants the retry WITHOUT consulting
+        // `_interaction.ConfirmApply` (no prompt), realizing the action/budget half of overwatcher v2 bet #6.
+        // The gate keys on the PRESENCE of the `autonomy` block (`_autonomyBlockPresent`), NOT on
+        // `autonomyPolicy: auto` alone — the anti-Option-(c) guard. It sits BELOW every floor (halt /
+        // permission-wall / doomed / no-sanctioned-change), so a DENYLIST verdict-surface op — which the
+        // classifier never routes onto the guidance/budget levers — can never reach it (a denylist-only
+        // proposal already exited above at no-sanctioned-change). Recorded with the shipped `auto-applied`
+        // decision token.
+        if (_policy == AutonomyPolicy.Auto && _autonomyBlockPresent)
+        {
+            var autoGrant = new OverwatchDecision
+            {
+                Kind = OverwatchDecisionKind.Grant,
+                GuidanceInjection = guidance?.Guidance,
+                ExtraRetries = ExtraRetriesFor(budget)
+            };
+            string autoHeadline =
+                $"Overwatch auto-applied a sanctioned change for '{task.Id}' (attempt {attempt}, {triggerToken}): " +
+                sanctionedSummary;
+            return (autoGrant, DecisionTokens.AutoApplied, autoHeadline);
+        }
+
+        // prompt (and a bare `auto` with no block — which degrades to prompt, byte-identical to today): propose
+        // the allowlist change; apply on an interactive approve, else honest halt. Non-interactive ⇒ halt
+        // (never blocks, never spends unbidden). This is the load-bearing anti-Option-(c) back-compat path.
         OverwatchInteractionResult response = _interaction.ConfirmApply(proposal, task, trigger, sanctionedSummary);
 
         switch (response)
