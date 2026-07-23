@@ -13,8 +13,8 @@ $sc = Get-Content -Raw -Path $scheduler
 # Strip C# comments so a "// never write guardrails-review.json" note does not false-fire (comment-blind, #97).
 $code = [regex]::Replace($sc, '/\*[\s\S]*?\*/', ' ')
 $code = [regex]::Replace($code, '//[^\r\n]*', ' ')
-if ($code -match 'ReviewMarker\s*\.\s*Write' -or $code -match 'WriteMarker' -or $code -match 'guardrails-review\.json') {
-    Write-Output "Scheduler.cs writes the review marker (ReviewMarker.Write / WriteMarker / guardrails-review.json) in CODE — the harness must NEVER forge a review attestation on a human's behalf (§5 floor 3, #375/#366). The Option-P path records a proceeded-unreviewed decision; it does NOT mark the wave reviewed."
+if ($code -match 'ReviewMarker\s*\.' -or $code -match 'WriteMarker' -or $code -match 'guardrails-review\.json') {
+    Write-Output "Scheduler.cs references ReviewMarker (or writes guardrails-review.json) in CODE — the harness must NEVER forge a review attestation on a human's behalf (§5 floor 3, #375/#366). The real marker writer is ReviewMarker.PathFor(...) + ToJson() (MarkReviewedCommand.Persist), so ANY ReviewMarker access is a forge vector; the wave loop legitimately references ReviewMarker NOWHERE. The Option-P path records a proceeded-unreviewed decision; it does NOT mark the wave reviewed."
     exit 1
 }
 exit 0

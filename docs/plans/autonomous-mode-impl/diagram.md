@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=45c74cf9ae76e823f83e39e667a3d977814ad1ccaad7af4e312cc94e91ed6e00 -->
+<!-- guardrails:graph v1 source-sha256=316a6638f2f84fe6c4b79fa0f778c08e54bcb0f421acbf98e6d0db0b6d531d7b -->
 
 ```mermaid
 flowchart TD
@@ -205,14 +205,69 @@ flowchart TD
   end
   style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_4_preflights["Wave 4 Entry Gate"]
+    wave_4_preflights_0["01-wave3-materialized"]:::preflight
   end
   style wave_4_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph wave_4["Wave 4 — review-gate-policy"]
-    wave_4_stub["⏸ JIT stub — run halts here for breakdown"]
-    style wave_4_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+    subgraph task_wave_04_review_gate_policy_01_ssot_phase4_delta["01-ssot-phase4-delta"]
+      task_wave_04_review_gate_policy_01_ssot_phase4_delta_gr_0["01-ssot-phase4-documented"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_01_ssot_phase4_delta fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_02_author_tests_run_outcome_policy["02-author-tests-run-outcome-policy"]
+      task_wave_04_review_gate_policy_02_author_tests_run_outcome_policy_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_review_gate_policy_02_author_tests_run_outcome_policy_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_04_review_gate_policy_02_author_tests_run_outcome_policy_gr_2["03-covers-outcome-cases"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_02_author_tests_run_outcome_policy fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_03_implement_run_outcome_policy["03-implement-run-outcome-policy"]
+      task_wave_04_review_gate_policy_03_implement_run_outcome_policy_gr_0["01-run-outcome-policy-tests-pass"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_03_implement_run_outcome_policy fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_04_author_tests_review_gate_resolution["04-author-tests-review-gate-resolution"]
+      task_wave_04_review_gate_policy_04_author_tests_review_gate_resolution_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_review_gate_policy_04_author_tests_review_gate_resolution_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_04_review_gate_policy_04_author_tests_review_gate_resolution_gr_2["03-covers-review-gate-cases"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_04_author_tests_review_gate_resolution fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_05_wire_review_gate_resolution_into_wave_loop["05-wire-review-gate-resolution-into-wave-loop"]
+      task_wave_04_review_gate_policy_05_wire_review_gate_resolution_into_wave_loop_gr_0["01-review-gate-resolution-structural"]:::guardrail
+      task_wave_04_review_gate_policy_05_wire_review_gate_resolution_into_wave_loop_gr_1["02-no-forged-review-marker"]:::guardrail
+      task_wave_04_review_gate_policy_05_wire_review_gate_resolution_into_wave_loop_gr_2["03-review-gate-resolution-tests-pass"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_05_wire_review_gate_resolution_into_wave_loop fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_06_author_tests_overwatch_auto_tier["06-author-tests-overwatch-auto-tier"]
+      task_wave_04_review_gate_policy_06_author_tests_overwatch_auto_tier_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_review_gate_policy_06_author_tests_overwatch_auto_tier_gr_1["02-tests-fail-on-stubs"]:::guardrail
+      task_wave_04_review_gate_policy_06_author_tests_overwatch_auto_tier_gr_2["03-covers-auto-tier-cases"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_06_author_tests_overwatch_auto_tier fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_07_implement_overwatch_auto_tier["07-implement-overwatch-auto-tier"]
+      task_wave_04_review_gate_policy_07_implement_overwatch_auto_tier_gr_0["01-auto-tier-structural"]:::guardrail
+      task_wave_04_review_gate_policy_07_implement_overwatch_auto_tier_gr_1["02-overwatch-auto-tier-tests-pass"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_07_implement_overwatch_auto_tier fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_08_author_tests_run_outcome_wiring["08-author-tests-run-outcome-wiring"]
+      task_wave_04_review_gate_policy_08_author_tests_run_outcome_wiring_gr_0["01-tests-build"]:::guardrail
+      task_wave_04_review_gate_policy_08_author_tests_run_outcome_wiring_gr_1["02-tests-fail-on-current-code"]:::guardrail
+      task_wave_04_review_gate_policy_08_author_tests_run_outcome_wiring_gr_2["03-covers-wiring-facts"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_08_author_tests_run_outcome_wiring fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_09_wire_run_outcome_into_finalize["09-wire-run-outcome-into-finalize"]
+      task_wave_04_review_gate_policy_09_wire_run_outcome_into_finalize_gr_0["01-solution-builds"]:::guardrail
+      task_wave_04_review_gate_policy_09_wire_run_outcome_into_finalize_gr_1["02-finalize-run-outcome-structural"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_09_wire_run_outcome_into_finalize fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_04_review_gate_policy_10_wire_proceeded_unreviewed_exit_and_verify["10-wire-proceeded-unreviewed-exit-and-verify"]
+      task_wave_04_review_gate_policy_10_wire_proceeded_unreviewed_exit_and_verify_gr_0["01-exit-code-proceeded-unreviewed-structural"]:::guardrail
+      task_wave_04_review_gate_policy_10_wire_proceeded_unreviewed_exit_and_verify_gr_1["02-run-outcome-wiring-tests-pass"]:::guardrail
+    end
+    style task_wave_04_review_gate_policy_10_wire_proceeded_unreviewed_exit_and_verify fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_4 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_4_guardrails["Wave 4 Exit Gate"]
+    wave_4_guardrails_0["01-wave4-union-clean"]:::guardrail
+    wave_4_guardrails_1["02-wave4-solution-builds"]:::guardrail
+    wave_4_guardrails_2["03-wave4-review-gate-policy-tests-pass"]:::guardrail
   end
   style wave_4_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
@@ -274,8 +329,21 @@ flowchart TD
   task_wave_03_classify_and_escalate_16_wire_classify_then_act_into_scheduler --> task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root
   task_wave_03_classify_and_escalate_01_ssot_phase3_delta --> wave_3_guardrails
   task_wave_03_classify_and_escalate_17_wire_exit_code_and_verify_composition_root --> wave_3_guardrails
-  wave_4_preflights --> wave_4_stub
-  wave_4_stub --> wave_4_guardrails
+  wave_4_preflights --> task_wave_04_review_gate_policy_01_ssot_phase4_delta
+  wave_4_preflights --> task_wave_04_review_gate_policy_02_author_tests_run_outcome_policy
+  wave_4_preflights --> task_wave_04_review_gate_policy_04_author_tests_review_gate_resolution
+  wave_4_preflights --> task_wave_04_review_gate_policy_06_author_tests_overwatch_auto_tier
+  wave_4_preflights --> task_wave_04_review_gate_policy_08_author_tests_run_outcome_wiring
+  task_wave_04_review_gate_policy_02_author_tests_run_outcome_policy --> task_wave_04_review_gate_policy_03_implement_run_outcome_policy
+  task_wave_04_review_gate_policy_03_implement_run_outcome_policy --> task_wave_04_review_gate_policy_09_wire_run_outcome_into_finalize
+  task_wave_04_review_gate_policy_04_author_tests_review_gate_resolution --> task_wave_04_review_gate_policy_05_wire_review_gate_resolution_into_wave_loop
+  task_wave_04_review_gate_policy_05_wire_review_gate_resolution_into_wave_loop --> task_wave_04_review_gate_policy_09_wire_run_outcome_into_finalize
+  task_wave_04_review_gate_policy_06_author_tests_overwatch_auto_tier --> task_wave_04_review_gate_policy_07_implement_overwatch_auto_tier
+  task_wave_04_review_gate_policy_08_author_tests_run_outcome_wiring --> task_wave_04_review_gate_policy_10_wire_proceeded_unreviewed_exit_and_verify
+  task_wave_04_review_gate_policy_09_wire_run_outcome_into_finalize --> task_wave_04_review_gate_policy_10_wire_proceeded_unreviewed_exit_and_verify
+  task_wave_04_review_gate_policy_01_ssot_phase4_delta --> wave_4_guardrails
+  task_wave_04_review_gate_policy_07_implement_overwatch_auto_tier --> wave_4_guardrails
+  task_wave_04_review_gate_policy_10_wire_proceeded_unreviewed_exit_and_verify --> wave_4_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
   wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
   wave_3_guardrails -.->|"🔒 wave barrier"| wave_4_preflights
