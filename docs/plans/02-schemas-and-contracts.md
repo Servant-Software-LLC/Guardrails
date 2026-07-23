@@ -82,7 +82,10 @@ FRESH code — the old plan-07 draft cited `GR2013`, which is **taken on `master
 outside the workspace** — default `<temp>/gr-wt/<workspace-hash>/<runId>/` (issue #383 shortened this
 from the old `<temp>/guardrails-worktrees/<plan-name>-<hash>/…` to keep segment paths clear of Windows
 MAX_PATH), overridable per-machine via the `GUARDRAILS_WORKTREE_ROOT` env var (→
-`<value>/<workspace-hash>/<runId>/`) or per-plan via `guardrails.json: worktreeRoot`. Worktrees + the plan branch are runtime state
+`<value>/<workspace-hash>/<runId>/`) or per-plan via `guardrails.json: worktreeRoot`. On **Windows in
+worktree mode** the harness additionally roots segments under a short directory **junction** (issue #383,
+below) so each segment's child-process cwd stays clear of MAX_PATH regardless of how deep that real root
+is. Worktrees + the plan branch are runtime state
 (wiped by `--fresh`, pruned on resume; the integration worktree is reattached, not pruned). The
 user's own working tree and branch are **read-only for the entire run**; the only write to the user's
 branch is the end-of-run delivery (`mergeOnSuccess`, **ON by default — #340**; opt out with
@@ -190,6 +193,35 @@ decision (issue #275) and is deliberately NOT done here.
   `guardrails.json` key (a plan committed with a machine's short root would be wrong on the next machine).
   When set and non-empty it wins over the default; the per-plan hash subdir is unchanged, so prune/resume
   stay stable. `worktreeRoot` in `guardrails.json` remains for the rare per-plan case.
+- **Windows short-junction worktree root (env-independent, issue #383).** The STRONGER primary Windows
+  lever, layered ON TOP of the short default + env/config override + GR2038 (which become the
+  fallback/defense-in-depth). **Windows + worktree-mode only** (a no-op on Linux/macOS and in serial /
+  in-place mode). At run start the harness allocates a short directory **JUNCTION** — a reparse point at
+  the drive root `<drive>:\.a`, incrementing `.b`…`.z` to the FIRST free name (5 chars; the leading `.`
+  marks it harness-owned/hidden) — pointing at the real worktree root (the env/config/short-default
+  result), and uses that junction path as the run's **effective root** for ALL forward worktree ops
+  (segment paths + child-process cwds). A junction needs **no admin / Developer Mode** (unlike a symlink),
+  created via `mklink /J`. WHY it works: `CreateProcessW` caps a spawned process's application name at
+  MAX_PATH (260) **regardless of `LongPathsEnabled`**, so `dotnet test`'s out-of-process test-exe launch
+  fails (Win32 206) when the built `…\bin\…\<assembly>.exe` path is deep; a segment cwd of `C:\.a\…` keeps
+  it short — MSBuild/`Path.GetFullPath` leave the reparse point intact, so the build output stays under the
+  short alias. **Resume:** `git worktree add` **canonicalizes** the junction back to the real path in its
+  OWN registrations, so the chosen link exists nowhere in git — it is recorded in the run journal
+  (`run.json`'s optional `worktreeJunctionRoot`, §7) as the SOLE durable record. A resume RESTORES that
+  exact link before any git worktree op: recreate if missing, reuse if it already junctions to the real
+  root, and **hard-fail** (`could not restore worktree junction <link>; it points elsewhere — is another
+  run active?`) if it points to a different target (a concurrency collision). Because git stores real
+  paths, PRUNE / `--fresh` teardown key on the **real** root (git-authoritative) unchanged — only the
+  junction LINK is removed, via `Directory.Delete(link, recursive:false)` (removes the reparse point ONLY,
+  never the target's contents; guarded so a non-reparse-point path is never touched — the data-loss guard).
+  The link is torn down at the authoritative full-worktree teardown (RunReset `--fresh` / `reset -y`) and
+  **reused across normal runs / halts** (a halt/needs-human keeps it for resume, exactly like the plan
+  branch + integration worktree), so the readable `<drive>:\.a\<runId>\<task>\attempt-N` folders stay
+  browsable between runs. **Graceful fallback:** if the junction cannot be created for ANY reason (a
+  locked-down `<drive>:\` ACL, a non-NTFS or sandboxed root, all 26 names taken), the harness logs a note
+  and falls back to the real (non-junction) root — the run proceeds exactly as without the feature, relying
+  on the short default + GR2038 backstop. The junction is an optimization that must never block an
+  otherwise-workable run.
 - `runOnCurrentBranch` (default `false`) makes the plan branch the current branch instead of a fresh
   `guardrails/<plan-name>`; the harness still integrates via a harness-owned worktree, never the
   user's live checkout. **Pre-flight:** if `runOnCurrentBranch` is set AND the current branch has
@@ -200,8 +232,10 @@ decision (issue #275) and is deliberately NOT done here.
   tree risks exceeding Windows MAX_PATH (260 chars); document `core.longpaths` as the mitigation.
 - **`GR2038` — Windows MAX_PATH run-start hard halt (error, issue #383).** The authoritative path-length
   check, **Windows-only + worktree-mode-only**, run at **run start** (before any task executes) because it
-  depends on the machine's ACTUAL worktree root (the `GUARDRAILS_WORKTREE_ROOT`-aware default), which
-  `guardrails validate` cannot know. For each task the harness measures the segment base
+  depends on the machine's ACTUAL worktree root, which `guardrails validate` cannot know. It measures the
+  run's **EFFECTIVE root** — the short junction when one was created (so it almost never fires:
+  `C:\.a\<runId>\<task>\attempt-1` + reserve is tiny) or, on the graceful no-junction fallback, the real
+  root (where it may fire with the actionable remedy). For each task the harness measures the segment base
   `<root>/<runId>/<taskId>/attempt-1` and adds a reserved build-output budget (**90 chars**, sized for the
   in-segment `\bin\Debug\net8.0\<assembly>.exe`); if `base + reserve > 260` for any task it **FAILS FAST**
   (exit 1, nothing runs) naming each offending task + its computed length. Motivating real case: a built
@@ -1724,7 +1758,9 @@ must be committed on the harness's integration branch itself. Steps (verified ag
    `<worktreeRoot>/<runId>/_integration` under the harness-owned worktree root (default
    `<temp>/gr-wt/<workspace-hash>/`, §1/§2 — overridable via the `GUARDRAILS_WORKTREE_ROOT` env var or
    `guardrails.json`'s `worktreeRoot`). `git worktree list` output makes this unambiguous: the path ending `.../_integration`
-   is it.
+   is it. (On **Windows** the run may alias that root with a short `<drive>:\.a` **junction** for MAX_PATH
+   headroom (§2); this does not change the hand-fix — `git worktree list` reports the REAL path, because
+   `git worktree add` canonicalizes the junction away, so use exactly the path it prints.)
 3. **Edit + commit the merged file THERE with a PLAIN message — do NOT add any `Guardrails-*` trailers.**
    `git -C <integration-worktree-path> add <file>` then `git -C <integration-worktree-path> commit -m
    "<plain human message>"`, or `cd` into that worktree and use plain `git`. This is an ordinary human
@@ -3926,8 +3962,9 @@ supplies the *materialized* upstream state (the prior waves' real outputs); `bri
   behalf.
 
 **Validation.** `guardrails validate` does **NOT** error on an absent `brief.md` (it is optional). A future
-**GR2038** (a WARNING on a wave stub — empty `tasks/` — that has no `brief.md`) is **DEFERRED**, not shipped
-in Phase 0.
+validation **WARNING** on a wave stub — empty `tasks/` — that has no `brief.md` is **DEFERRED**, not shipped
+in Phase 0; it will take a fresh GR code when implemented (`GR2038` was since taken by #383's
+`WorktreePathTooLong`).
 
 **Hash treatment.**
 - **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a
