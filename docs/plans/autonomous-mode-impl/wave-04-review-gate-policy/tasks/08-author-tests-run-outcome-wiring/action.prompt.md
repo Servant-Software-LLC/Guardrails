@@ -52,11 +52,25 @@ wave proceeds unreviewed, driven end-to-end. Assert the FOUR facts (each must FA
 4. **No forged review marker.** After the run, assert `ReviewMarker.PathFor(planDirectory)`
    (`state/guardrails-review.json`) does NOT exist — the harness never self-attests (doc 12 §5 floor 3).
 
-The test MUST COMPILE (against shipped symbols + numeric literals) and FAIL against current code. If a
-real end-to-end `proceed-unreviewed` run cannot be set up deterministically from a fixture (e.g. reaching
-the unreviewed-wave boundary needs the JIT breakdown path), do NOT guess a fragile setup — write
-`{"needsHuman": "how should the integration test reach a real proceed-unreviewed run — a pre-authored unreviewed wave with review-gate:proceed-unreviewed, or the JIT BreakdownComplete path?"}` to the state-out
-path and stop.
+The test MUST COMPILE (against shipped symbols + numeric literals) and FAIL against current code.
+
+**Reaching a real proceed-unreviewed run — DECIDED: use the JIT `BreakdownComplete` path.** The review gate
+fires on a freshly-machine-authored UNREVIEWED wave (doc 12 §5.2), NOT a pre-authored/config-only wave — and
+that is exactly what the review-gate resolution (task 05) wires. **Mirror the SHIPPED
+`tests/Guardrails.Core.Tests/SchedulerReviewGateTests.cs`**, lifted to the CLI-integration level: build a real
+on-disk waved fixture plan with wave-01 authored + **wave-02 a JIT stub** (a `wave-02-.../tasks/` folder that
+is EMPTY plus a `wave-02-.../brief.md`); register a **FAKE `breakdown`-profile prompt runner** in the plan's
+`promptRunners` that authors a canned VALID wave-02 (its `task.json` + action + a trivial guardrail) and
+returns success — **NO real Claude process** (exactly how `SchedulerReviewGateTests`'s fake breakdown runner +
+its `AuthorValidWave` helper do it, and how `SchedulerEscalationWiringTests` registers its fake `overwatch`
+runner). Set `autonomyPolicy: auto` + the `autonomy` block with
+`gateThresholds: { "review-gate": "proceed-unreviewed" }`. Drive it end-to-end through the real `RunCommand`
+(the `Cli_RunWithUnresolvedEscalation` CLI-in-process pattern): the run JIT-breaks-down wave-02, arrives at
+the review gate for that freshly-authored unreviewed wave, proceeds-unreviewed, runs it — then assert the
+four facts below. Do NOT spawn a real breakdown and do NOT use a pre-authored wave (that is not where the
+gate fires).
+
+If some OTHER shipped symbol you need is genuinely missing, write `{"needsHuman": "<what is missing>"}` and stop.
 
 **In-attempt regression check (issue #253 + #374 — do NOT skip, and run it PLAINLY):** run ONLY your
 targeted filter, via the **Bash tool**, as a **plain** command — no `&`, no pipe, no `2>&1 |`, not the
