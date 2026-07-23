@@ -45,16 +45,29 @@ public sealed class Overwatch
     /// </param>
     /// <param name="policy">The shared <see cref="AutonomyPolicy"/> in force for this run.</param>
     /// <param name="interaction">The <c>prompt</c>-tier confirmation seam; defaults to non-interactive (honest halt).</param>
+    /// <param name="autonomyBlockPresent">
+    /// Whether the run's config carries an explicit <c>autonomy</c> block (doc 12 §9 Phase 4, doc 11 §9.6). The
+    /// <c>auto</c>-tier gate keys on the PRESENCE of this block — NOT on <c>autonomyPolicy: auto</c> alone (the
+    /// anti-Option-(c) guard): only a block-present <c>auto</c> tier silently auto-applies a sanctioned ALLOWLIST
+    /// lever; a bare <c>auto</c> with no block still degrades to <c>prompt</c>, byte-identical to today.
+    /// <para>TDD STUB (task 06): accepted-and-ignored for now so the constructor signature is stable for every
+    /// caller (including <see cref="SchedulerFactory"/>). It is deliberately NOT stored in a field yet (an unused
+    /// private field trips CS0169 under <c>TreatWarningsAsErrors</c>) and <see cref="Decide"/> is unchanged —
+    /// which leaves <c>auto</c> degrading to <c>prompt</c>, exactly what makes the auto-apply gate test fail
+    /// (red). Storing it and wiring the gate is the implementation task's job (task 07).</para>
+    /// </param>
     public Overwatch(
         IPromptRunner? diagnoseRunner,
         NeedsHumanTriage? terminalTriage,
         AutonomyPolicy policy,
-        IOverwatchInteraction? interaction = null)
+        IOverwatchInteraction? interaction = null,
+        bool autonomyBlockPresent = false)
     {
         _diagnoseRunner = diagnoseRunner;
         _terminalTriage = terminalTriage;
         _policy = policy;
         _interaction = interaction ?? IOverwatchInteraction.NonInteractive;
+        _ = autonomyBlockPresent; // accept-and-ignore (see the param doc): the gate is task 07's job.
     }
 
     /// <summary>
