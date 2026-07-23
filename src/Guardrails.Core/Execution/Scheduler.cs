@@ -614,11 +614,29 @@ public sealed class Scheduler
         Dictionary<string, string> directoryOwner, IReadOnlyDictionary<string, TaskResult> settled,
         CancellationToken cancellationToken)
     {
-        // Deliver the completed plan branch to the user's branch when every task succeeded and
-        // mergeOnSuccess is enabled. AI-merge is withheld: a conflict halts with the plan branch intact.
+        // #361 Phase 4 / doc 12 §1 hard rule (#340): a run whose result was SHAPED BY A MACHINE DECISION
+        // (a proceeded-best-guess or proceeded-unreviewed recorded in decisions[]) DEFAULTS delivery OFF —
+        // the verified work stays on the plan branch, never auto-delivered — UNLESS the operator EXPLICITLY
+        // forced delivery on (guardrails.json "mergeOnSuccess": true, i.e. MergeOnSuccessExplicit == true;
+        // the CLI --merge-on-success/--no-merge-on-success already resolved into plan.Config.MergeOnSuccess
+        // by RunCommand, and an explicit-ON manifest key is the override signal that reaches the Scheduler).
+        // SuppressesDelivery is the PURE RunOutcomePolicy call (task 03) over the run's recorded decisions[];
+        // the decisions come from the real RunJournal — a unit-test fake journal records none, so nothing is
+        // suppressed there.
+        IReadOnlyList<DecisionEntry> decisions =
+            (_journal as Journal.RunJournal)?.Document.Decisions ?? [];
+        bool operatorForcedDelivery = plan.Config.MergeOnSuccessExplicit == true;
+        bool deliverySuppressedByDecision =
+            RunOutcomePolicy.SuppressesDelivery(decisions) && !operatorForcedDelivery;
+
+        // The effective delivery gate: mergeOnSuccess enabled AND not suppressed by a machine decision.
+        bool deliver = plan.Config.MergeOnSuccess && !deliverySuppressedByDecision;
+
+        // Deliver the completed plan branch to the user's branch when every task succeeded and delivery
+        // resolved on. AI-merge is withheld: a conflict halts with the plan branch intact.
         MergeOnSuccessResult? mergeOutcome = null;
         string? mergeDetail = null;
-        if (report.AllSucceeded && plan.Config.MergeOnSuccess && _worktreeProvider != null && integ != null)
+        if (report.AllSucceeded && deliver && _worktreeProvider != null && integ != null)
         {
             mergeOutcome = _worktreeProvider.MergePlanBranchIntoUserBranch(integ, cancellationToken);
             if (mergeOutcome == MergeOnSuccessResult.HookRejected)
@@ -627,13 +645,14 @@ public sealed class Scheduler
             }
         }
 
-        // Issue #340: a wholly-green run whose delivery did NOT happen because mergeOnSuccess resolved OFF
-        // — the verified work is sitting undelivered on the plan branch guardrails/<plan-name>. HONEST:
-        // only a run with a real, SEPARATE plan branch has anything undelivered. A serial run has no
-        // provider/integ (the work is already in the shared workspace) — the `integ != null` guard
-        // suppresses the warning there. This is the symmetric complement of the delivery guard above
-        // (same worktree preconditions, mergeOnSuccess off). The CLI turns it into a loud end-of-run
-        // warning once the terminal gate also passes.
+        // Issue #340: a wholly-green run whose delivery did NOT happen because delivery resolved OFF — the
+        // verified work is sitting undelivered on the plan branch guardrails/<plan-name>. HONEST: only a run
+        // with a real, SEPARATE plan branch has anything undelivered. A serial run has no provider/integ (the
+        // work is already in the shared workspace) — the `integ != null` guard suppresses the warning there.
+        // This is the symmetric complement of the delivery guard above (same worktree preconditions, delivery
+        // off): keyed on the SAME effective `deliver` gate, so it now ALSO fires when delivery was defaulted
+        // OFF by a machine decision (#361 Phase 4), not only when mergeOnSuccess itself is off. The CLI turns
+        // it into a loud end-of-run warning once the terminal gate also passes.
         //
         // #345 review (finding 1c): the warning is NOT suppressed for runOnCurrentBranch. runOnCurrentBranch
         // is currently an UNWIRED STUB (read only by PlanLoader/RunConfig + this warning path; NOT wired into
@@ -644,7 +663,7 @@ public sealed class Scheduler
         // current-branch (nothing undelivered because it IS the current branch), NOT on the stub flag.
         bool whollyGreenButUndelivered =
             report.AllSucceeded
-            && !plan.Config.MergeOnSuccess
+            && !deliver
             && _worktreeProvider != null
             && integ != null;
 
@@ -666,7 +685,8 @@ public sealed class Scheduler
             MergeOnSuccessOutcome = mergeOutcome,
             MergeOnSuccessDetail = mergeDetail,
             DeliveredToBranch = deliveredToBranch,
-            WhollyGreenButUndelivered = whollyGreenButUndelivered
+            WhollyGreenButUndelivered = whollyGreenButUndelivered,
+            UnreviewedWaveCount = RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions)
         };
     }
 

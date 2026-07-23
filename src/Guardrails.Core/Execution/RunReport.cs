@@ -195,6 +195,18 @@ public sealed record RunReport
     public bool WhollyGreenButUndelivered { get; init; }
 
     /// <summary>
+    /// How many waves this run PROCEEDED THROUGH UNREVIEWED (issue #361 Phase 4, doc 12 §5.2 Option P / §7.1):
+    /// the count of <see cref="DecisionTokens.ProceededUnreviewed"/> decisions the run recorded, derived by
+    /// <see cref="RunOutcomePolicy.ProceededUnreviewedWaveCount"/> over the durable <c>decisions[]</c> stream
+    /// and stamped here by the Scheduler's <c>Finalize</c>. Zero for a run that never advanced past an
+    /// unreviewed wave (including one that only best-guessed). A positive count PERMANENTLY flags the run
+    /// "ran with N unreviewed waves" so an automated firstmate consumer can never read it as clean green — the
+    /// CLI rendering and the distinct non-zero exit code that consume it are task 10 (this only carries the
+    /// number). Purely descriptive here; it does not change the delivery gate.
+    /// </summary>
+    public int UnreviewedWaveCount { get; init; }
+
+    /// <summary>
     /// Non-null when the run was ABORTED by an unexpected infrastructure fault (a task executor or an
     /// integration step threw — e.g. an offline git hook failing an INTERNAL commit, or git itself
     /// being unavailable). Rather than propagating an unhandled exception out of the scheduler
