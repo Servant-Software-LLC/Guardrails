@@ -23,6 +23,13 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private readonly Func<string, string?>? _logUrlForTask;
     private readonly string? _planDirectory;
     private readonly string? _runId;
+    // #379 collapse-completed-waves state. For a FLAT plan (or --all-tasks) these stay inert and the
+    // table is the pre-#379 flat one-row-per-task list; for a WAVED plan the row set is (re)planned via
+    // LiveTableRows as each wave settles, collapsing completed waves to a single summary row.
+    private readonly IReadOnlyList<TaskNode> _tasks;
+    private readonly IReadOnlyList<WaveNode> _waves;
+    private readonly bool _showAllTasks;
+    private readonly HashSet<string> _completedWaves = new(StringComparer.Ordinal);
     private LiveDisplayContext? _context;
 
     /// <summary>A task currently running: when it started and the status word to prefix the clock.</summary>
@@ -45,28 +52,36 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     /// (SSOT §8). Required alongside <paramref name="planDirectory"/> for the post-mortem link;
     /// null suppresses the link the same way a null plan dir does.
     /// </param>
+    /// <param name="waves">
+    /// The plan's waves in strict order, or null/empty for a FLAT plan (issue #379). When supplied (and
+    /// <paramref name="showAllTasks"/> is false) a COMPLETED wave's per-task rows collapse to a single
+    /// summary line as the wave settles — the active/pending waves keep full rows. A flat plan is
+    /// unaffected: its table is byte-identical to the pre-#379 one-row-per-task list.
+    /// </param>
+    /// <param name="showAllTasks">
+    /// The <c>--all-tasks</c> opt-out (issue #379): when true, NO wave ever collapses — every task keeps
+    /// its own row, exactly as a flat plan renders. Ignored for a flat plan (nothing to collapse).
+    /// </param>
     public LiveRunObserver(
         IReadOnlyList<TaskNode> tasks,
         Func<string, string?>? logUrlForTask = null,
         string? planDirectory = null,
-        string? runId = null)
+        string? runId = null,
+        IReadOnlyList<WaveNode>? waves = null,
+        bool showAllTasks = false)
     {
         _logUrlForTask = logUrlForTask;
         _planDirectory = planDirectory;
         _runId = runId;
+        _tasks = tasks;
+        _waves = waves ?? [];
+        _showAllTasks = showAllTasks;
         _table = new Table().Border(TableBorder.Rounded);
         _table.AddColumn("Task");
         _table.AddColumn("Status");
         _table.AddColumn("Detail");
 
-        for (int i = 0; i < tasks.Count; i++)
-        {
-            _rowByTask[tasks[i].Id] = i;
-            _table.AddRow(
-                new Markup(Markup.Escape(tasks[i].Id)),
-                new Markup("[grey]pending[/]"),
-                new Markup(string.Empty));
-        }
+        RebuildRows();
 
         _liveLoop = AnsiConsole.Live(_table).StartAsync(async ctx =>
         {
@@ -89,6 +104,14 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     {
         lock (_gate)
         {
+            // #379: never start a clock for a task whose wave has collapsed (it has no row). A task in a
+            // completed wave is only ever replayed as finished on resume, never started — but guard anyway
+            // so a phantom entry can't accumulate in _running and spin the ticker forever.
+            if (!_rowByTask.ContainsKey(task.Id))
+            {
+                return;
+            }
+
             _running[task.Id] = new RunningState(DateTimeOffset.UtcNow, "running");
         }
 
@@ -134,8 +157,15 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 
             foreach (KeyValuePair<string, RunningState> entry in _running)
             {
+                // #379: skip a running task whose wave collapsed out from under it (defensive — a wave
+                // only collapses once all its tasks are settled and removed from _running).
+                if (!_rowByTask.TryGetValue(entry.Key, out int row))
+                {
+                    continue;
+                }
+
                 string elapsed = FormatElapsed(DateTimeOffset.UtcNow - entry.Value.Since);
-                _table.UpdateCell(_rowByTask[entry.Key], 1, new Markup($"[yellow]{entry.Value.Prefix} {elapsed}[/]"));
+                _table.UpdateCell(row, 1, new Markup($"[yellow]{entry.Value.Prefix} {elapsed}[/]"));
             }
 
             _context.Refresh();
@@ -257,6 +287,19 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                     ? "[green]completed[/]"
                     : $"[red]halted ({Markup.Escape(status.ToString().ToLowerInvariant())})[/]";
             AnsiConsole.MarkupLine($"[bold]Wave {Markup.Escape(wave.Dir)}:[/] {verb}");
+
+            // #379: collapse a COMPLETED wave's per-task rows to a single summary line — its rows are pure
+            // noise once settled (logs stay on the static site + live diagram). A HALTED wave keeps its full
+            // rows so the failing task stays visible. Guarded behind "plan has waves" + not --all-tasks, so a
+            // flat plan (and the opt-out) never rebuilds and renders byte-identically to before.
+            if (!_showAllTasks
+                && _waves.Count > 0
+                && status == Core.Journal.WaveStatus.Completed
+                && _completedWaves.Add(wave.Dir))
+            {
+                RebuildRows();
+                _context?.Refresh();
+            }
         }
     }
 
@@ -290,11 +333,53 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         await _liveLoop.ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// (Re)build the table's rows + the <see cref="_rowByTask"/> index map from the current
+    /// <see cref="_completedWaves"/> set (issue #379). Called once at construction and again each time a
+    /// wave settles (from <see cref="WaveFinished"/>) to collapse it. Safe because a rebuild only ever
+    /// happens at a wave boundary, where the hard barrier (SSOT §14.4) guarantees every task in a
+    /// not-yet-completed later wave is still <c>pending</c> — so re-seeding later rows to pending never
+    /// discards live progress, and the just-completed wave's rows are intentionally replaced by its
+    /// summary line. Caller holds <see cref="_gate"/> (or runs single-threaded during the ctor).
+    /// </summary>
+    private void RebuildRows()
+    {
+        _rowByTask.Clear();
+        _table.Rows.Clear();
+
+        IReadOnlyList<LiveTableRow> rows = LiveTableRows.Plan(_tasks, _waves, _completedWaves, _showAllTasks);
+        for (int i = 0; i < rows.Count; i++)
+        {
+            switch (rows[i])
+            {
+                case TaskLiveRow task:
+                    _rowByTask[task.TaskId] = i;
+                    _table.AddRow(
+                        new Markup(Markup.Escape(task.TaskId)),
+                        new Markup("[grey]pending[/]"),
+                        new Markup(string.Empty));
+                    break;
+                case WaveSummaryLiveRow wave:
+                    _table.AddRow(
+                        new Markup($"[green]✔ {Markup.Escape(wave.WaveDir)} — {wave.TaskCount}/{wave.TaskCount} tasks green[/]"),
+                        new Markup(string.Empty),
+                        new Markup(string.Empty));
+                    break;
+            }
+        }
+    }
+
     private void Update(string taskId, string? statusMarkup, string? detailMarkup)
     {
         lock (_gate)
         {
-            int row = _rowByTask[taskId];
+            // #379: a task whose wave has collapsed has no row — tolerate the missing id as a no-op
+            // (a resume replays completed-wave `skipped`/finish events; its logs stay on the static site).
+            if (!_rowByTask.TryGetValue(taskId, out int row))
+            {
+                return;
+            }
+
             if (statusMarkup is not null)
             {
                 _table.UpdateCell(row, 1, new Markup(statusMarkup));

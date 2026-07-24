@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
 
@@ -30,11 +31,39 @@ public sealed class WaveBreakdownInvoker
     /// <summary>The full authoring tool set (doc 11 §9.2) — distinct from the read-only <c>overwatch</c> diagnose profile.</summary>
     private static readonly IReadOnlyList<string> AuthoringTools = ["Read", "Write", "Edit", "Bash", "Grep", "Glob"];
 
-    /// <summary>A generous turn ceiling — breakdown is a full authoring session, not a one-shot diagnose.</summary>
-    private const int BreakdownMaxTurns = 120;
+    /// <summary>
+    /// The turn-budget BASE (issue #385): a generous fixed ceiling every wave breakdown gets, comfortably
+    /// above the old fixed 120 that TRUNCATED a large (~11-task) wave — and enough, on its own (zero brief
+    /// signal), to author a large wave. <c>--max-turns</c> is a CEILING, not a target: the agent stops when
+    /// the wave is authored + self-validated, so headroom is FREE for a wave that finishes early and only
+    /// ever bites the large wave it exists to protect. (Wall-clock is separately bounded by
+    /// <see cref="BreakdownTimeout"/>; prompt spend by <c>maxCostUsd</c> — a higher ceiling adds neither cost
+    /// nor time to a wave that completes.)
+    /// </summary>
+    private const int BreakdownBaseTurns = 400;
+
+    /// <summary>
+    /// Extra turn headroom added per work-item signal counted in the wave's <c>brief.md</c> (a list item /
+    /// numbered step / sub-heading — <see cref="EstimateBriefSignalCount"/>). The brief describes INTENT and
+    /// UNDER-declares the eventual task count (#385: a 3-bullet brief broke down to ~11 tasks), so this only
+    /// ADDS headroom on top of the generous base — it never lowers the budget below it.
+    /// </summary>
+    private const int BreakdownTurnsPerBriefSignal = 25;
+
+    /// <summary>A hard turn ceiling so a pathological brief can never request an unbounded session (the timeout also bounds it).</summary>
+    private const int BreakdownMaxTurnsCeiling = 1000;
 
     /// <summary>A generous timeout — a whole-wave breakdown + self-validate is a long session.</summary>
     private static readonly TimeSpan BreakdownTimeout = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// A markdown "work-item" line in a brief: a list item (<c>- </c>/<c>* </c>), a numbered step
+    /// (<c>N.</c>/<c>N)</c>), or a sub-heading (<c>##</c>+). A coarse size proxy only (see
+    /// <see cref="EstimateBriefSignalCount"/>); the level-1 title (a single <c>#</c>) is deliberately excluded.
+    /// </summary>
+    private static readonly Regex BriefWorkItemLine = new(
+        @"^[ \t]*(?:[-*][ \t]+|\d+[.)][ \t]+|#{2,}[ \t]+)\S",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.Multiline);
 
     private readonly IPromptRunner _runner;
 
@@ -67,6 +96,11 @@ public sealed class WaveBreakdownInvoker
             string prompt = ComposePrompt(wave, plan, integrationWorktreePath);
             try { File.WriteAllText(composedPromptPath, prompt); } catch { /* best-effort log tee */ }
 
+            // Scale the turn budget to the wave's size (issue #385): a generous base that covers a large wave
+            // on its own, plus per-brief-signal headroom. --max-turns is a CEILING, so this only ever helps a
+            // wave large enough to truncate; a small wave finishes well below the cap at no extra cost/time.
+            int maxTurns = ComputeMaxTurns(ReadBriefSignalCount(wave));
+
             var invocation = new PromptInvocation
             {
                 ComposedPrompt = prompt,
@@ -79,7 +113,7 @@ public sealed class WaveBreakdownInvoker
                 {
                     PermissionMode = "acceptEdits",
                     AllowedTools = AuthoringTools,
-                    MaxTurns = BreakdownMaxTurns,
+                    MaxTurns = maxTurns,
                     // Doc 11 §9.3 step 4: grant the sub-process access to the materialized upstream on the
                     // plan branch (a SECOND --add-dir on top of the plan dir) so the skill reads real prior-wave
                     // outputs from the integration worktree, NOT the read-only user checkout.
@@ -108,6 +142,41 @@ public sealed class WaveBreakdownInvoker
             // A runner fault (e.g. the runner binary off PATH) must never crash the run — the caller's
             // deterministic validate gate then reports BreakdownFailed with this error carried in the detail.
             return new WaveBreakdownOutcome { ProcessCompleted = false, Error = ex.Message };
+        }
+    }
+
+    /// <summary>
+    /// Compute the breakdown invocation's turn ceiling (issue #385) from the coarse brief-size signal: a
+    /// generous fixed <see cref="BreakdownBaseTurns"/> base (covers a large wave on its own) PLUS
+    /// <see cref="BreakdownTurnsPerBriefSignal"/> per counted work-item, floored at the base (a small wave is
+    /// never starved) and clamped to <see cref="BreakdownMaxTurnsCeiling"/>. Pure/deterministic — unit-pinned.
+    /// </summary>
+    internal static int ComputeMaxTurns(int briefSignalCount)
+    {
+        int scaled = BreakdownBaseTurns + BreakdownTurnsPerBriefSignal * Math.Max(briefSignalCount, 0);
+        return Math.Clamp(scaled, BreakdownBaseTurns, BreakdownMaxTurnsCeiling);
+    }
+
+    /// <summary>
+    /// A coarse count of the work-item signals a wave's <c>brief.md</c> declares — markdown list items,
+    /// numbered steps, and sub-headings (<see cref="BriefWorkItemLine"/>). Used ONLY to add turn headroom on
+    /// top of <see cref="BreakdownBaseTurns"/>, so imprecision is safe (it never reduces the base). A null,
+    /// whitespace, or unreadable brief yields 0 → the base budget.
+    /// </summary>
+    internal static int EstimateBriefSignalCount(string? briefText) =>
+        string.IsNullOrWhiteSpace(briefText) ? 0 : BriefWorkItemLine.Matches(briefText).Count;
+
+    /// <summary>Best-effort read of the wave's <c>brief.md</c> and count its work-item signals (a read fault → 0 → the base budget).</summary>
+    private static int ReadBriefSignalCount(WaveNode wave)
+    {
+        try
+        {
+            string briefPath = Path.Combine(wave.Directory, WaveNode.BriefFileName);
+            return File.Exists(briefPath) ? EstimateBriefSignalCount(File.ReadAllText(briefPath)) : 0;
+        }
+        catch
+        {
+            return 0;
         }
     }
 

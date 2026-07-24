@@ -2782,7 +2782,14 @@ materialized upstream (SSOT §14.4 Decision D / the #197 flow — NOT the read-o
 prompt spend is charged to the shared `overheadCostUsd` sink (§7, #314), folded into `maxCostUsd` and the
 reported total. There is no `guardrailOverrides` (a skill invocation has no verifier sub-path); the
 deterministic gate on its output is the harness re-running `guardrails validate` (§14.4/doc 11 §9.4), never
-the judge that produced the wave.
+the judge that produced the wave. **Turn budget (issue #385):** authoring a whole wave is a long session, so
+the invocation's `--max-turns` is a **generous base that also SCALES with the wave's brief size** — a fixed
+floor (well above the per-task action default, enough on its own to author a large ~11-task wave) plus per-
+work-item headroom counted from the wave's `brief.md`, hard-capped. `--max-turns` is a ceiling not a target
+(the agent stops when the wave is authored + self-validated), so the headroom is free for a small wave and
+only ever protects a wave large enough to otherwise truncate mid-authoring into an invalid partial (the #385
+GR1001-quarantine incident). The exact numbers are an internal `WaveBreakdownInvoker` constant, not a wire
+contract.
 
 **Triggers — deterministic, EAGER, at most once per attempt (#305 Decision C).** The harness (never the
 judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager `attempt ≥ 2`** trigger:
@@ -3799,6 +3806,7 @@ the live progress table's existing per-task elapsed clock as their liveness sign
 |---|---|---|
 | `--no-log-server` | off (server on) | Do not start the log server / per-task links (headless or CI use). The server is also skipped whenever the run is non-interactive or `--no-ui` is set, regardless of this flag. |
 | `--log-port <n>` | `0` | Port for the live log server. `0` = an automatically chosen free port. Bound to localhost only. |
+| `--all-tasks` | off (collapse on) | Live table only (issue #379): show EVERY task's row across ALL waves, even completed ones. By default a WAVED run collapses each COMPLETED wave to a one-line summary (`✔ <wave-dir> — N/N tasks green`) so the active wave stays on-screen; this restores the full flat table. No effect on a flat plan or under `--no-ui`; the static log site (§12.3) always keeps every task. |
 
 ### 12.2 `guardrails logs` — post-mortem viewer
 
@@ -4238,7 +4246,9 @@ restricted to fully-`pending` future waves.
 **v1 (skeleton) — LANDED (M2a + M2b):** §14.1–§14.8 + the shared autonomy policy + decisions log (§2.1)
 exercised by wave-level drift (a `boundary:"wave"` `decisions[]` entry) and the between-wave JIT checkpoint;
 the per-wave task-table concern is the `IRunObserver.WaveStarting`/`WaveFinished` events (no new contract) —
-the live table keeps rendering every wave-qualified task and segments it with a per-wave banner. Between
+the live table segments per wave and (issue #379) COLLAPSES each COMPLETED wave's per-task rows to a single
+summary line (`✔ <wave-dir> — N/N tasks green`) so the active wave stays on-screen, with `--all-tasks`
+restoring the full per-task table; the static log site (§12.3) still renders every task in every wave. Between
 waves = a plain human JIT-breakdown checkpoint (proceed if the next wave is authored, else honest halt;
 review is the advisory GR2025 nudge, §14.4 v1 note). Wave-drift `prompt` is confirmed by the CLI before the
 run (a wave-drift probe over the journal), mirroring the task-drift confirm. **Wave brief (`brief.md`)
