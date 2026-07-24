@@ -1,5 +1,6 @@
 {
   "description": "Create out/greet.ps1, a script that prints 'Hello, <name>!' for a given name",
   "stableId": "k3f9a1",
-  "dependsOn": []
+  "dependsOn": [],
+  "writeScope": ["out/greet.ps1"]
 }

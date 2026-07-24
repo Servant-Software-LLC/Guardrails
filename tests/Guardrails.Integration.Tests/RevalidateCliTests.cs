@@ -174,6 +174,7 @@ public sealed class RevalidateCliTests
                 """
                 {
                   "description": "Produce the manifest; the guardrail checks the fixed marker",
+                  "writeScope": ["action-ran.txt", "fixed-marker.txt"],
                   "dependsOn": []
                 }
                 """);

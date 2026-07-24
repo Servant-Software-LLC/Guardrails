@@ -323,7 +323,7 @@ README's usage example is authored from that spec, independent of the running im
 makes `02-implement` and `03-update-readme` the plan's **two leaves** — the parallelism whose union at
 run end the terminal `<plan>/guardrails/` folder verifies.
 ```jsonc
-{ "description": "Document --stats in README.md (from the specified output format)", "dependsOn": [] }
+{ "description": "Document --stats in README.md (from the specified output format)", "writeScope": ["README.md"], "dependsOn": [] }
 ```
 
 `action.prompt.md` — harness-contract header, then: document the flag with a usage

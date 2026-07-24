@@ -245,16 +245,18 @@ public sealed class SegmentDependencyExclusionRunTests
     }
 
     /// <summary>
-    /// #280 test #2: a NO-writeScope task whose guardrail creates <c>node_modules</c> — the segment
-    /// staging exclusion (§5.3(D)) is the safety net (phase-2 scope-clean is skipped without a scope),
-    /// so it is still not committed.
+    /// #280 test #2: a task whose guardrail creates <c>node_modules</c> — the segment staging exclusion
+    /// (§5.3(D)) is the safety net, so it is still not committed. #389: the task declares a precise scope
+    /// (<c>app/main.js</c>) that does NOT mention <c>node_modules</c>, so this proves the STAGING
+    /// EXCLUSION — not the scope — is what keeps <c>node_modules</c> out (the guardrail's leftover is
+    /// invisible to the write-scope Check's staging, so it is neither flagged nor stripped).
     /// </summary>
     [Fact]
-    public async Task NoWriteScopeTask_GuardrailCreatesNodeModules_NotCommitted()
+    public async Task ScopedTask_GuardrailCreatesNodeModules_NotCommitted()
     {
         using var repo = new TempGitRepo();
         string planDir = CreatePlan(repo.RepoPath);
-        WriteTask(planDir, "01-build", [], writeScope: null,
+        WriteTask(planDir, "01-build", [], writeScope: ["app/main.js"],
             actionFiles: new Dictionary<string, string> { ["app/main.js"] = "export const main = 1;" },
             guardrailFiles: new Dictionary<string, string> { ["app/node_modules/left-pad/index.js"] = "module.exports={};" });
 
@@ -302,8 +304,9 @@ public sealed class SegmentDependencyExclusionRunTests
     {
         using var repo = new TempGitRepo();
         string planDir = CreatePlan(repo.RepoPath);
-        // 01 has no writeScope; its guardrail leaves a nested node_modules in the shared segment.
-        WriteTask(planDir, "01-vendor", [], writeScope: null,
+        // 01 is scoped to its own deliverable (dsl/pkg.js, #389); its guardrail leaves a nested
+        // node_modules in the shared segment (invisible to the write-scope Check via the staging exclusion).
+        WriteTask(planDir, "01-vendor", [], writeScope: ["dsl/pkg.js"],
             actionFiles: new Dictionary<string, string> { ["dsl/pkg.js"] = "export const v = 1;" },
             guardrailFiles: new Dictionary<string, string> { ["dsl/node_modules/ajv/dist/ajv.js"] = "module.exports={};" });
         // 02 reuses the SAME worktree (linear chain) and declares a writeScope that does NOT include the
@@ -383,7 +386,7 @@ public sealed class SegmentDependencyExclusionRunTests
     {
         using var repo = new TempGitRepo();
         string planDir = CreatePlan(repo.RepoPath);
-        WriteTask(planDir, "01-task", [], writeScope: null,
+        WriteTask(planDir, "01-task", [], writeScope: ["out/result.txt"],
             actionFiles: new Dictionary<string, string> { ["out/result.txt"] = "real deliverable" },
             guardrailFiles: new Dictionary<string, string>
             {
@@ -396,5 +399,35 @@ public sealed class SegmentDependencyExclusionRunTests
         IReadOnlyList<string> committed = repo.PlanBranchFiles("plan");
         Assert.Contains("out/result.txt", committed);
         Assert.DoesNotContain(committed, p => p.Contains(".guardrails-agent-io", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// #389: a task that OMITS <c>writeScope</c> (null) but whose action WRITES a file is caught
+    /// FAIL-CLOSED at runtime — the phase-1 write-scope check now runs for a null scope too, coalescing
+    /// it to <c>[]</c> (writes nothing allowed), so any write is an out-of-scope violation. (A validated
+    /// plan never reaches here — <c>GR2041</c> forbids an absent <c>writeScope</c> at validate time — this
+    /// proves the runtime belt-and-suspenders behind validate: the out-of-scope write is reverted, the
+    /// task escalates to needs-human, and nothing is committed.)
+    /// </summary>
+    [Fact]
+    public async Task NullWriteScopeTask_ThatWrites_IsCaughtFailClosedAtRuntime()
+    {
+        using var repo = new TempGitRepo();
+        string planDir = CreatePlan(repo.RepoPath);
+        WriteTask(planDir, "01-unscoped", [], writeScope: null,
+            actionFiles: new Dictionary<string, string> { ["src/Feature.cs"] = "class Feature {}" },
+            guardrailFiles: None);
+
+        var (report, journal) = await RunAsync(planDir, repo.RepoPath, repo.WorktreeRoot);
+
+        Assert.False(report.AllSucceeded);
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.Contains("write-scope", task.Summary ?? "", StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(JournalTaskStatus.NeedsHuman, journal.StatusOf("01-unscoped"));
+
+        // Fail-closed: the out-of-scope write was reverted and never reached the committed tree.
+        IReadOnlyList<string> committed = repo.PlanBranchFiles("plan");
+        Assert.DoesNotContain(committed, p => p.Contains("Feature.cs", StringComparison.Ordinal));
     }
 }

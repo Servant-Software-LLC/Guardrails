@@ -169,7 +169,7 @@ public sealed class RunOutcomeWiringTests
     {
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            """{ "description": "green script task", "dependsOn": [] }""");
+            """{ "description": "green script task", "writeScope": [], "dependsOn": [] }""");
 
         if (Windows)
         {
@@ -217,7 +217,7 @@ public sealed class RunOutcomeWiringTests
         $taskDir = Join-Path $planDir 'wave-02-build\tasks\01-compile'
         $guardDir = Join-Path $taskDir 'guardrails'
         New-Item -ItemType Directory -Force -Path $guardDir | Out-Null
-        Set-Content -NoNewline -Path (Join-Path $taskDir 'task.json') -Value '{ "description": "compile", "dependsOn": [] }'
+        Set-Content -NoNewline -Path (Join-Path $taskDir 'task.json') -Value '{ "description": "compile", "writeScope": [], "dependsOn": [] }'
         Set-Content -Path (Join-Path $taskDir 'action.ps1') -Value 'exit 0'
         Set-Content -Path (Join-Path $guardDir '01-check.ps1') -Value 'exit 0'
         Write-Output '{"type":"result","is_error":false,"result":"authored wave-02","num_turns":1}'
@@ -230,7 +230,7 @@ public sealed class RunOutcomeWiringTests
         planDir="$(pwd)"
         taskDir="$planDir/wave-02-build/tasks/01-compile"
         mkdir -p "$taskDir/guardrails"
-        printf '%s' '{ "description": "compile", "dependsOn": [] }' > "$taskDir/task.json"
+        printf '%s' '{ "description": "compile", "writeScope": [], "dependsOn": [] }' > "$taskDir/task.json"
         printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$taskDir/action.sh"
         chmod +x "$taskDir/action.sh"
         printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$taskDir/guardrails/01-check.sh"

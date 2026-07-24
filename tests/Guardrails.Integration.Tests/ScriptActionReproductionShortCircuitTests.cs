@@ -219,7 +219,10 @@ public sealed class ScriptActionReproductionShortCircuitTests
         // Budget = 1 + 5 = 6 attempts. The script writes a file (NOT a #174 no-op) but reproduces
         // byte-identical stdout AND fails the same guardrail every attempt → #264 escalates on attempt 2.
         using var repo = new TempGitRepo();
-        string planDir = CreateOneTaskPlan(repo.RepoPath, defaultRetries: 5, DeterministicWritingAction(), StableFailure());
+        // #389: the deterministic action writes work.txt IN SCOPE, so phase-1 passes and the GUARDRAIL
+        // failure (not a write-scope violation) is the #264 reproduction signal this test exercises.
+        string planDir = CreateOneTaskPlan(
+            repo.RepoPath, defaultRetries: 5, DeterministicWritingAction(), StableFailure(), writeScope: "work.txt");
 
         var (report, _) = await RunAsync(repo, planDir);
 
@@ -264,8 +267,10 @@ public sealed class ScriptActionReproductionShortCircuitTests
         // every attempt, so there is NO positive evidence of determinism and a retry genuinely might pass.
         // The short-circuit must NOT fire — the full budget is spent (1 + 2 retries = 3 attempts).
         using var repo = new TempGitRepo();
+        // #389: work.txt is IN SCOPE so phase-1 passes; the CHANGING action output + guardrail failure is
+        // what blocks the #264 short-circuit and forces the full budget.
         string planDir = CreateOneTaskPlan(
-            repo.RepoPath, defaultRetries: 2, NondeterministicWritingAction(), StableFailure());
+            repo.RepoPath, defaultRetries: 2, NondeterministicWritingAction(), StableFailure(), writeScope: "work.txt");
 
         var (report, _) = await RunAsync(repo, planDir);
 

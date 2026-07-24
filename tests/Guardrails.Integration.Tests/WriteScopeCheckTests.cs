@@ -366,28 +366,53 @@ public sealed class WriteScopeCheckTests
     }
 
     // -------------------------------------------------------------------------
-    // Off-switch: absent writeScope skips the check entirely
+    // Fail-closed: absent (null) writeScope treats any write as offending (#389)
     // -------------------------------------------------------------------------
 
     /// <summary>
-    /// When <c>writeScope</c> is null (absent in task.json), the check is the off-switch:
-    /// even a diff that touches out-of-scope paths produces a passing result.
+    /// #389: a null (absent in task.json) <c>writeScope</c> is NO LONGER an off-switch — it
+    /// FAIL-CLOSES, coalescing to an EMPTY scope (writes nothing allowed), so any changed path is
+    /// offending. (A validated plan never reaches here with null — <c>GR2041</c> forbids an absent
+    /// <c>writeScope</c> at validate time — so this is the runtime belt-and-suspenders behind validate.)
     /// </summary>
     [Fact]
-    public void NullWriteScope_NoCheck_AlwaysPasses()
+    public void NullWriteScope_FailClosed_TreatsAnyWriteAsOffending()
     {
         using var repo = new TempGitRepo();
         string taskBase = repo.HeadSha();
 
-        // Write changes that would normally fail any declared scope
+        // Any write at all must be caught when the scope is absent/null.
         repo.CommitFile("anywhere/anything.ts", "export {}; // unchecked", "add unchecked file");
 
-        // null = absent writeScope = off-switch (SSOT §3.4)
+        // null = absent writeScope = fail-closed empty scope (SSOT §3.4, #389)
         var result = WriteScopeCheck.Check(repo.RepoPath, taskBase, null);
 
-        Assert.True(result.Passed,
-            "Absent writeScope (null) must be the off-switch — the check does not run");
-        Assert.Empty(result.OffendingPaths);
+        Assert.False(result.Passed,
+            "Absent writeScope (null) must fail-closed — any write is offending (#389)");
+        Assert.Contains(result.OffendingPaths,
+            o => o.Path.Replace('\\', '/').EndsWith("anywhere/anything.ts", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// #389: an explicit present-empty <c>[]</c> scope ("writes nothing to the repo") is the VALID
+    /// deliberate declaration — and behaves exactly like the fail-closed null in the runtime check:
+    /// any write is offending. This pins that <c>[]</c> and null are indistinguishable at CHECK time
+    /// (both write-nothing); the null-vs-empty distinction lives at LOAD/validate time (GR2041).
+    /// </summary>
+    [Fact]
+    public void EmptyWriteScope_TreatsAnyWriteAsOffending()
+    {
+        using var repo = new TempGitRepo();
+        string taskBase = repo.HeadSha();
+
+        repo.CommitFile("anywhere/anything.ts", "export {}; // unchecked", "add unchecked file");
+
+        var result = WriteScopeCheck.Check(repo.RepoPath, taskBase, []);
+
+        Assert.False(result.Passed,
+            "An explicit [] scope (writes nothing) must treat any write as offending (#389)");
+        Assert.Contains(result.OffendingPaths,
+            o => o.Path.Replace('\\', '/').EndsWith("anywhere/anything.ts", StringComparison.OrdinalIgnoreCase));
     }
 
     // -------------------------------------------------------------------------

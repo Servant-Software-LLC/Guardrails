@@ -913,10 +913,16 @@ public sealed class TaskExecutor : ITaskExecutor
         }
 
         // --- write-scope check (plan 08 §2/§3.4): after action (and staging move / needsHarnessWrite),
-        // before guardrails. Only runs when the task declares a writeScope AND the worktree carries a
-        // real git repo path (non-empty TaskBase). Skipped for FakeWorktreeProvider segments.
-        if (task.WriteScope is { } declaredScope && IsRealGitSegment(worktree))
+        // before guardrails. Runs whenever the worktree carries a real git repo path (non-empty
+        // TaskBase); skipped for FakeWorktreeProvider segments. #389: it runs for a NULL scope too
+        // (fail-closed) — writeScope is REQUIRED (GR2041), so a validated plan never reaches here with
+        // null, but if one did, a null scope coalesces to [] (writes nothing) and any write is caught.
+        if (IsRealGitSegment(worktree))
         {
+            // #389: coalesce a null scope to [] here so WithImplicitStagingScope still folds in any
+            // stagingOutputs destinations; WriteScopeCheck.Check performs the same fail-closed coalesce.
+            IReadOnlyList<string> declaredScope = task.WriteScope ?? [];
+
             // The stagingOutputs 'to' destinations are IMPLICITLY in-scope (SSOT §3.4/§3.5): a staging
             // task must NOT have to also list its .claude/ destinations in writeScope. The check sees
             // the post-move surface, so the real .claude/ paths the move produced must be authorized.

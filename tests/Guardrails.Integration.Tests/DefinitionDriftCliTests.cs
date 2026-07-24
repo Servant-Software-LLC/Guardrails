@@ -44,10 +44,13 @@ public sealed class DefinitionDriftCliTests
     private static void EditTaskJson(string planDir, string taskId, string description)
     {
         string path = Path.Combine(planDir, "tasks", taskId, "task.json");
+        // #389: keep the writeScope on the edited task.json so a plain-resume drift HALT (or an
+        // auto-resolve re-run) is not masked by a GR2041 validation refusal at `guardrails run`.
         File.WriteAllText(path,
             $$"""
             {
               "description": "{{description}}",
+              "writeScope": [],
               "dependsOn": []
             }
             """);

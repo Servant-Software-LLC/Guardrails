@@ -1,4 +1,5 @@
 {
   "description": "Fan-in sink: combine both leaves into out/greeting.txt",
-  "dependsOn": ["01-write-hello", "02-write-world"]
+  "dependsOn": ["01-write-hello", "02-write-world"],
+  "writeScope": ["out/greeting.txt"]
 }

@@ -82,10 +82,16 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
     that STILL declares `integrationGate: true` is a hard validation error, **GR2029**. The old
     GR2017 (require exactly one sink) is gone; GR2018's content teeth (a gate must actually re-run
     >=1 `scope: "integration"` check) are re-homed onto the folder as **GR2028**.
-  - `writeScope: ["src/Foo/"]` (optional) drives the deterministic **write-scope CHECK** (SSOT
-    section 3.4): after the action, before the task's own guardrails, the harness computes
+  - `writeScope` is **REQUIRED on every task (#389, SSOT section 3.4)** and drives the deterministic
+    **write-scope CHECK**: after the action, before the task's own guardrails, the harness computes
     `git diff --name-status <taskBase>..<HEAD>` in the segment worktree and asserts every changed
-    path is in scope. Absent => no check. **Two enforcement phases (#280):** **phase 1** runs on the
+    path is in scope. **Three states:** `["src/Foo/"]` writes those paths; **`[]` is a DELIBERATE
+    "writes nothing to the repo" declaration -- VALID, never flagged** (the correct form for a
+    configure-a-database task, a verification/read-only check, or a state-only task whose only output
+    is a `GUARDRAILS_STATE_OUT` fragment, which is not a repo write); **ABSENT/null is a validation
+    ERROR, GR2041** (omitting is the "lazy planning" this forbids, and closes the #375 Q2 self-guardrail-edit
+    loophole). Runtime is **fail-closed on null** in worktree mode (`WriteScopeCheck.Check` coalesces
+    `scope ??= []`), belt-and-suspenders behind validate. **Two enforcement phases (#280):** **phase 1** runs on the
     *action's* writes BEFORE the guardrails -- a violation is a guardrail-class failure that
     scoped-**reverts** the out-of-scope paths (out-of-scope MODIFY/DELETE `git checkout <taskBase> --`,
     a new file `git rm -f`; in-scope WIP survives) and retries with feedback (eventual `needs-human`);

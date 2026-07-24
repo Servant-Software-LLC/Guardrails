@@ -416,8 +416,9 @@ public sealed class FourFolderLoaderTests : IDisposable
 
         string deps = string.Join(", ", dependsOn.Select(d => "\"" + d + "\""));
         string gate = integrationGate ? ", \"integrationGate\": true" : string.Empty;
+        // #389: writeScope is REQUIRED on every task; these script actions `exit 0` (write nothing) → [].
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            "{ \"description\": \"" + id + "\", \"dependsOn\": [" + deps + "]" + gate + " }");
+            "{ \"description\": \"" + id + "\", \"writeScope\": [], \"dependsOn\": [" + deps + "]" + gate + " }");
         File.WriteAllText(Path.Combine(taskDir, "action.ps1"), "exit 0");
 
         WriteGuardrail(grDir, "01-verify", "dotnet build --nologo\nexit $LASTEXITCODE",

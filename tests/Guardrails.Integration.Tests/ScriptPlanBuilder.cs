@@ -66,6 +66,7 @@ public sealed class ScriptPlanBuilder : IDisposable
             $$"""
             {
               "description": "Integration task {{id}}",
+              "writeScope": [],
               "dependsOn": {{dependsJson}}
             }
             """);
@@ -124,6 +125,7 @@ public sealed class ScriptPlanBuilder : IDisposable
             $$"""
             {
               "description": "Wave task {{qualifiedId}}",
+              "writeScope": [],
               "dependsOn": {{dependsJson}}
             }
             """);

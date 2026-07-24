@@ -758,7 +758,11 @@ public sealed class PlanLoader
             Retries = raw.Retries,
             TimeoutSeconds = raw.TimeoutSeconds,
             IntegrationGate = raw.IntegrationGate ?? false,
-            WriteScope = raw.WriteScope is { Count: > 0 } ws ? [.. ws] : null,
+            // #389: PRESERVE null-vs-empty. Absent in task.json ⇒ null (→ GR2041 at validate time); a
+            // DELIBERATE present-empty [] ⇒ an empty list ("writes nothing to the repo", VALID). A
+            // `Count: > 0` guard here would collapse [] to null and defeat GR2041, so match on presence
+            // (`is { }`) only.
+            WriteScope = raw.WriteScope is { } ws ? [.. ws] : null,
             StagingOutputs = BindStagingOutputs(raw.StagingOutputs),
             Action = action,
             Guardrails = guardrails,

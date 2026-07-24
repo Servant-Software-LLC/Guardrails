@@ -244,6 +244,13 @@ treat that as a **fired trigger**: the breakdown MUST split that milestone rathe
 This signal already exists in the plan — do not let it die between the plan's risk section and your
 task sizing.
 
+**Every sized task declares its write surface (#389).** Sizing bounds a task's blast radius; the
+`writeScope` MAKES that bound explicit and machine-checked. Once a task is sized, it MUST carry a
+`writeScope` — real paths for a writing task, or **`[]` when it writes nothing to the repo** (a
+configure-a-database task, a verification/read-only check, a state-only task whose only output is a
+`GUARDRAILS_STATE_OUT` fragment). Omitting it is a validation ERROR (**GR2041**) that Step 7's
+`guardrails validate` will catch — see the `writeScope` schema quick-ref in Step 6.
+
 **Corrective action when a trigger fires:** decompose the task into the smallest pieces that each
 (i) carry one verifiable outcome, (ii) land in one session, and (iii) retry cheaply — scoping each
 piece's test re-baseline to that piece. *Worked split:* a task bundling "add the git-required
@@ -871,12 +878,21 @@ upstream task that creates it:
     }
     ```
 
-  **OMIT `writeScope` for genuinely repo-wide tasks; NEVER emit a vacuous `**`.** `writeScope`
-  is the off-switch when absent — a task you cannot confidently scope (a sweeping
-  cross-cutting change, a terminal whole-suite gate) omits the field and is reported as a
-  broad surface, never given a vacuous `**` or a bare top-level dir. `validate` rejects a
-  scope that escapes the workspace (**GR2019**, error) and **warns** on a vacuous/over-broad
-  scope (**GR2020**) — so emit a real surface or none.
+  **`writeScope` is REQUIRED on EVERY task (#389); NEVER omit it, NEVER emit a vacuous `**`.**
+  Every emitted `task.json` MUST declare a `writeScope` — omitting it is now a validation ERROR
+  (**GR2041**), and Step 7's `guardrails validate` FAILS a breakdown that omits any writeScope
+  (self-validation closure). The three forms:
+  - **a task that writes to the repo** → list its real surface (paths/globs/dirs), e.g.
+    `["src/MyProject/"]` or `["tests/Foo/Tests.cs", "src/Foo/Feature.cs"]`;
+  - **a task that writes NOTHING to the repo** → emit `"writeScope": []` (the deliberate
+    "writes nothing" declaration — VALID, never flagged). This is the correct form for:
+    **configure-a-database** / provisioning task, a **verification / read-only check** task, and a
+    **state-only** task whose only output is a `GUARDRAILS_STATE_OUT` fragment (a state fragment is
+    NOT a repo write and never appears in the segment diff). DECLARE `[]` — do not omit;
+  - a genuinely **broad / cross-cutting** change (a sweeping refactor, a terminal whole-suite gate)
+    still declares its surface EXPLICITLY (name the directories), never a vacuous `**`.
+  `validate` rejects a scope that escapes the workspace (**GR2019**, error) and **warns** on a
+  vacuous/over-broad scope (**GR2020**) — so emit a real surface or `[]`, never omit and never `**`.
 
   **Action prompt for both tasks.** The declared scope is injected into the action prompt as
   advisory context, but the harness ALSO enforces it mechanically — so every test-author prompt
@@ -1106,13 +1122,15 @@ Per `references/schemas.md`, exactly:
   fail validation (**GR2010**). **Format (GR2011):** a `stableId` must match
   `^[a-z0-9][a-z0-9._-]*$` — lowercase alphanumeric, may contain `. _ -`, no
   colon/slash/whitespace/uppercase. Mint short lowercase base36 tokens (e.g. `k3f9a1`, `q7m2zd`).
-- **`writeScope` (optional, SSOT §3.4)** — a list of workspace-relative path prefixes/globs
-  declaring the surface the task may add/modify/delete/rename; the harness verifies the task's
-  diff stays inside it (a deterministic read-only check that never reverts). Emit it for the
-  TDD pair (test-author owns the test files; implementation EXCLUDES them — Step 5) and for any
-  task you can confidently scope. **Absent ⇒ no check** — OMIT it for a genuinely repo-wide task;
-  **never** emit a vacuous `**` or bare top-level dir (escapes the workspace ⇒ **GR2019** error;
-  vacuous/over-broad ⇒ **GR2020** warning).
+- **`writeScope` (REQUIRED on every task, SSOT §3.4, #389)** — a list of workspace-relative path
+  prefixes/globs declaring the surface the task may add/modify/delete/rename; the harness verifies the
+  task's diff stays inside it (a deterministic read-only check that never reverts). Emit it for the
+  TDD pair (test-author owns the test files; implementation EXCLUDES them — Step 5) and for EVERY other
+  task. **Three states:** real paths for a writing task; **`[]` for a task that writes nothing to the
+  repo** (a configure-a-database task, a verification/read-only check, a state-only task — DECLARE `[]`,
+  never omit); **ABSENT is a validation ERROR (GR2041)** — omitting is forbidden ("lazy planning"). Never
+  emit a vacuous `**` or bare top-level dir (escapes the workspace ⇒ **GR2019** error; vacuous/over-broad
+  ⇒ **GR2020** warning). Step 7's `guardrails validate` FAILS a breakdown that omits any writeScope.
 - **`integrationGate` — RETIRED (SSOT §3.3; see the four-folder doctrine bullet above).** There is
   **NO terminal-sink task** and no `integrationGate` field. Do NOT add this key to any `task.json`:
   a plan still declaring `integrationGate: true` is a **hard validation error — GR2029** (no
@@ -1375,7 +1393,10 @@ Per `references/schemas.md`, exactly:
    and which were deferred with the reason. (Doctrine: `guardrails-domain-knowledge` → author-time
    smoke-test gate; `guardrails-review` re-checks it.)
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
-   validation was skipped and why).
+   validation was skipped and why). **This now FAILS a breakdown that OMITS any `writeScope`**
+   (**GR2041**, #389 — required on every task): a task that writes nothing to the repo must still
+   declare `"writeScope": []`, and any task missing the field is an error to fix here before proceeding
+   (self-validation closure).
 2. Optionally run `guardrails plan <folder>` and sanity-check the waves against your
    DAG intent.
 3. Once validation passes, run `guardrails graph <folder>` to generate

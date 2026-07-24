@@ -64,7 +64,7 @@ public sealed class WaveCheckpointGraphTests
         // Wave 1 — one trivial task: action exits 0, guardrail exits 0.
         string taskDir = Path.Combine(planDir, "wave-01-foundation", "tasks", "01-setup");
         Directory.CreateDirectory(taskDir);
-        File.WriteAllText(Path.Combine(taskDir, "task.json"), """{ "description": "setup" }""");
+        File.WriteAllText(Path.Combine(taskDir, "task.json"), """{ "description": "setup", "writeScope": [] }""");
 
         // Action does not need catches:; task-level guardrails/ does not enforce it either.
         string actionContent = Ps ? "exit 0\n" : "#!/usr/bin/env bash\nexit 0\n";
@@ -221,7 +221,7 @@ public sealed class WaveCheckpointGraphTests
             // Wave 1: one trivial task.
             string w1TaskDir = Path.Combine(planDir, "wave-01-foundation", "tasks", "01-setup");
             Directory.CreateDirectory(w1TaskDir);
-            File.WriteAllText(Path.Combine(w1TaskDir, "task.json"), """{ "description": "setup" }""");
+            File.WriteAllText(Path.Combine(w1TaskDir, "task.json"), """{ "description": "setup", "writeScope": [] }""");
             string w1Action = Path.Combine(w1TaskDir, "action" + Ext);
             File.WriteAllText(w1Action, Ps ? "exit 0\n" : "#!/usr/bin/env bash\nexit 0\n");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(w1Action,
@@ -232,7 +232,7 @@ public sealed class WaveCheckpointGraphTests
             // Wave 2: one trivial task (fully authored — no JIT stub).
             string w2TaskDir = Path.Combine(planDir, "wave-02-build", "tasks", "01-compile");
             Directory.CreateDirectory(w2TaskDir);
-            File.WriteAllText(Path.Combine(w2TaskDir, "task.json"), """{ "description": "compile" }""");
+            File.WriteAllText(Path.Combine(w2TaskDir, "task.json"), """{ "description": "compile", "writeScope": [] }""");
             string w2Action = Path.Combine(w2TaskDir, "action" + Ext);
             File.WriteAllText(w2Action, Ps ? "exit 0\n" : "#!/usr/bin/env bash\nexit 0\n");
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(w2Action,

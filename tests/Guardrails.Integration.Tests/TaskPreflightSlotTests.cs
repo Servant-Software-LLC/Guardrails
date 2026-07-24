@@ -109,6 +109,7 @@ public sealed class TaskPreflightSlotTests
                 $$"""
                 {
                   "description": "task-preflight fixture {{id}}",
+                  "writeScope": ["**"],
                   "dependsOn": {{dependsJson}}
                 }
                 """);

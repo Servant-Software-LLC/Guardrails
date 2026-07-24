@@ -1,5 +1,6 @@
 {
   "description": "Write out/report.md quoting the greeting and assessing its tone",
   "stableId": "w8b4xc",
-  "dependsOn": ["02-generate-greeting"]
+  "dependsOn": ["02-generate-greeting"],
+  "writeScope": ["out/report.md"]
 }

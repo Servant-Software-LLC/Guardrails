@@ -394,6 +394,7 @@ public sealed class MergeLockAndSettleTests
             $$"""
             {
               "description": "cwd-relative write {{taskId}}",
+              "writeScope": ["**"],
               "dependsOn": []
             }
             """);
@@ -489,6 +490,7 @@ public sealed class MergeLockAndSettleTests
             $$"""
             {
               "description": "working-directory override write {{taskId}}",
+              "writeScope": ["**"],
               "dependsOn": [],
               "action": {
                 "workingDirectory": "{{overrideSubdir}}"
@@ -535,6 +537,7 @@ public sealed class MergeLockAndSettleTests
             $$"""
             {
               "description": "settle test {{taskId}}",
+              "writeScope": ["src/**"],
               "dependsOn": {{dependsJson}}
             }
             """);

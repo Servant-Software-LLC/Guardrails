@@ -1,4 +1,5 @@
 {
+  "writeScope": [],
   "description": "Has an action but no guardrails",
   "dependsOn": []
 }
