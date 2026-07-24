@@ -13,7 +13,8 @@ namespace Guardrails.Cli.Commands;
 /// DAG (parallel, retry-aware, resume-aware). <c>--fresh</c> wipes runtime state first
 /// (SSOT §6.1). Live Spectre progress when interactive; plain lines otherwise. Exit codes
 /// per SSOT §7: 0 green, 1 error, 2 needs-human/failed, 3 cancelled, 4 escalations-pending
-/// (an autonomous-mode answer-required halt, §7.1). Defaults to the
+/// (an autonomous-mode answer-required halt, §7.1), 5 proceeded-unreviewed (a wholly-green run that
+/// proceeded through one or more waves unreviewed, §7.1 / Option P §5.2). Defaults to the
 /// current directory when the folder is omitted.
 /// </summary>
 public static class RunCommand
@@ -496,6 +497,15 @@ public static class RunCommand
                 int exitCode = Finish(report, probe.Plan, runId, io); // also writes the durable final log site
                 finalSitesSettled = true; // both final pages are now settled on the normal path
 
+                // Issue #361 Phase 4 (doc 12 §5.2 Option P / §7.1): a run that PROCEEDED THROUGH one or more
+                // waves unreviewed is INDELIBLY flagged — render the permanent "ran with N unreviewed wave(s)"
+                // warning so the run can never read as clean green, regardless of the verdict resolved above.
+                // Placed before the exit-path branches below so it fires on every outcome (the fact is
+                // permanent, not conditional on the final verdict); the distinct ExitCodes.ProceededUnreviewed
+                // (5) that a wholly-green such run returns is mapped in Finish — this is its console companion
+                // (SSOT §7 rendering lives behind the CLI seam).
+                RenderUnreviewedWavesWarning(report, io.Out);
+
                 if (report.AllSucceeded && !planGuardrailsPassed)
                 {
                     PrintTerminalGateFailure(probe.Plan.PlanDirectory, io);
@@ -781,6 +791,18 @@ public static class RunCommand
 
         if (report.AllSucceeded)
         {
+            // Autonomous-mode proceeded-unreviewed run (SSOT §7.1, issue #361 Phase 4; Option P, §5.2). A run
+            // that drained WHOLLY GREEN but PROCEEDED THROUGH one or more waves unreviewed
+            // (RunReport.UnreviewedWaveCount > 0 — the count RunOutcomePolicy derived from the recorded
+            // proceeded-unreviewed decisions, stamped by the Scheduler's Finalize) is NOT clean green: surface
+            // the DISTINCT ProceededUnreviewed (5) so a firstmate consumer can tell it apart from an ordinary
+            // success (0). This is the otherwise-green case only — an unresolved escalation ends the run
+            // NON-green and is handled below (EscalationsPending, 4), so the two never mask each other.
+            if (report.UnreviewedWaveCount > 0)
+            {
+                return ExitCodes.ProceededUnreviewed;
+            }
+
             return ExitCodes.Success;
         }
 
@@ -1330,6 +1352,41 @@ public static class RunCommand
             $"Deliver it before it is lost:  guardrails run {planName} --merge-on-success");
         output.WriteLine($"                               (or merge '{planBranch}' into your branch yourself).");
         output.WriteLine("A later --fresh or 'reset -y' will DESTROY this undelivered work.");
+        output.WriteLine(rule);
+    }
+
+    /// <summary>
+    /// Render the permanent "ran with N unreviewed wave(s)" flag (issue #361 Phase 4; doc 12 §5.2 Option P /
+    /// §7.1) when the run PROCEEDED THROUGH one or more waves UNREVIEWED
+    /// (<see cref="RunReport.UnreviewedWaveCount"/> &gt; 0). The wave(s) ran under
+    /// <c>autonomy.gateThresholds.review-gate: proceed-unreviewed</c> with NO human review and NO forged review
+    /// marker (§5 floor 3); the run is INDELIBLY flagged so neither an operator nor an automated firstmate
+    /// consumer can mistake it for a clean green run — the loud console companion of the distinct
+    /// <see cref="ExitCodes.ProceededUnreviewed"/> exit code that a wholly-green such run returns. Silent for a
+    /// run that never advanced past an unreviewed wave (count 0). Pure (writes only to
+    /// <paramref name="output"/>) and public + unit-tested with a <see cref="StringWriter"/> — the Cli assembly
+    /// ships no InternalsVisibleTo (same rationale as <see cref="Hyperlink"/>).
+    /// </summary>
+    public static void RenderUnreviewedWavesWarning(RunReport report, TextWriter output)
+    {
+        if (report.UnreviewedWaveCount <= 0)
+        {
+            return;
+        }
+
+        int count = report.UnreviewedWaveCount;
+        string waveWord = count == 1 ? "wave" : "waves";
+        const string rule = "==============================================================================";
+
+        output.WriteLine();
+        output.WriteLine(rule);
+        output.WriteLine($"*** RAN WITH {count} UNREVIEWED {waveWord.ToUpperInvariant()} ***");
+        output.WriteLine(
+            $"This run proceeded through {count} unreviewed {waveWord} (review-gate: proceed-unreviewed) — no");
+        output.WriteLine(
+            "human reviewed the work and the harness wrote no review marker (§5 floor 3). The run is");
+        output.WriteLine(
+            $"permanently flagged and exits {ExitCodes.ProceededUnreviewed} when otherwise green — it is NOT a clean green run.");
         output.WriteLine(rule);
     }
 
