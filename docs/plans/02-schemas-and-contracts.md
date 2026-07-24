@@ -2781,7 +2781,14 @@ materialized upstream (SSOT §14.4 Decision D / the #197 flow — NOT the read-o
 prompt spend is charged to the shared `overheadCostUsd` sink (§7, #314), folded into `maxCostUsd` and the
 reported total. There is no `guardrailOverrides` (a skill invocation has no verifier sub-path); the
 deterministic gate on its output is the harness re-running `guardrails validate` (§14.4/doc 11 §9.4), never
-the judge that produced the wave.
+the judge that produced the wave. **Turn budget (issue #385):** authoring a whole wave is a long session, so
+the invocation's `--max-turns` is a **generous base that also SCALES with the wave's brief size** — a fixed
+floor (well above the per-task action default, enough on its own to author a large ~11-task wave) plus per-
+work-item headroom counted from the wave's `brief.md`, hard-capped. `--max-turns` is a ceiling not a target
+(the agent stops when the wave is authored + self-validated), so the headroom is free for a small wave and
+only ever protects a wave large enough to otherwise truncate mid-authoring into an invalid partial (the #385
+GR1001-quarantine incident). The exact numbers are an internal `WaveBreakdownInvoker` constant, not a wire
+contract.
 
 **Triggers — deterministic, EAGER, at most once per attempt (#305 Decision C).** The harness (never the
 judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager `attempt ≥ 2`** trigger:
