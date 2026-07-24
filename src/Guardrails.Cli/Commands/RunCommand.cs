@@ -305,44 +305,65 @@ public static class RunCommand
         RunJournal journal = RunJournal.LoadOrCreate(probe.Plan);
         string runId = journal.Document.RunId;
 
-        // #383 Windows short-junction worktree root + run-start path-length preflight (SSOT §2/§5.3, GR2038).
-        // In WORKTREE mode on WINDOWS, first allocate/restore a short directory JUNCTION
-        // (<drive>:\.a..z → the real worktree root) so each task's segment cwd — and thus dotnet test's built
-        // exe path — stays clear of MAX_PATH (260). git canonicalizes the junction back to the real path in
-        // its OWN worktree registrations, so the chosen link is recorded ONLY in the journal (it cannot be
-        // re-derived); a resume restores that SAME link before any git worktree op, hard-failing if it points
-        // elsewhere (a concurrent run). GR2038 then measures the EFFECTIVE root — the junction (so it almost
-        // never fires), or the real root on the graceful no-junction fallback (where it may fire with the
-        // actionable GUARDRAILS_WORKTREE_ROOT remedy). Windows + worktree-mode only: the IsWindows()
-        // short-circuit keeps non-Windows from ever spawning the git probe WouldUseWorktreeMode runs, and
-        // serial / non-worktree mode never hits per-segment paths.
-        if (OperatingSystem.IsWindows() && SchedulerFactory.WouldUseWorktreeMode(probe.Plan))
+        // #383 Windows short-junction worktree root + run-start path-length preflight, plus the #407
+        // junction/root LIFECYCLE (startup GC + lazy creation). WORKTREE mode only (the IsGitRepository
+        // probe inside WouldUseWorktreeMode is skipped otherwise).
+        if (SchedulerFactory.WouldUseWorktreeMode(probe.Plan))
         {
             string realWorktreeRoot = SchedulerFactory.WorktreeRootFor(probe.Plan);
-            WorktreeJunction.JunctionResolution junction = WorktreeJunction.ResolveForRun(
-                realWorktreeRoot, journal.Document.WorktreeJunctionRoot,
-                Path.GetPathRoot(realWorktreeRoot) ?? string.Empty, io.Out);
-            if (junction.RestoreError is { } restoreError)
-            {
-                io.Out.WriteLine(restoreError);
-                io.Out.WriteLine("\nWorktree junction could not be restored; nothing was run.");
-                return ExitCodes.HarnessError;
-            }
 
-            if (junction.RecordRoot is { } recordRoot)
-            {
-                // Persist the chosen link so the Scheduler (fresh journal load) roots segments there, and
-                // a later resume / --fresh can find it. git canonicalizes it away, so this is its only record.
-                journal.RecordWorktreeJunctionRoot(recordRoot);
-            }
+            // #407 B — startup GC (cross-platform for gr-wt roots; the drive-root junction sweep is
+            // Windows-only inside). Reclaim LEAKED junctions + roots from crashed/killed/abandoned runs that
+            // never reached completion-cleanup, while NEVER touching an active/resumable run's tree — THIS
+            // run's own real root + recorded junction are excluded. Runs before the junction resolve below so
+            // a reclaimed .a..z slot is available to this run. Best-effort; each reclaim logs one line.
+            WorktreeReclaim.Reclaim(
+                probe.Plan.Workspace, realWorktreeRoot, journal.Document.WorktreeJunctionRoot, io.Out);
 
-            Diagnostic? pathHalt = WorktreePathPreflight.Check(
-                junction.EffectiveRoot, runId, probe.Plan.Tasks.Select(t => t.Id));
-            if (pathHalt is not null)
+            // #407 review Finding 1 — stamp THIS run's liveness lock into its real worktree root so a
+            // CONCURRENT run's startup GC keeps this tree even while this run sits IDLE at a prompt (mtime
+            // alone can't tell idle from abandoned). Removed with the root by completion-cleanup (A); a
+            // crash/exit leaves a dead-pid lock the GC ignores, so it never blocks the leak's eventual reclaim.
+            WorktreeReclaim.WriteRunLock(realWorktreeRoot);
+
+            // #383 (Windows only): allocate/restore a short directory JUNCTION (<drive>:\.a..z → the real
+            // worktree root) so each task's segment cwd — and thus dotnet test's built exe path — stays clear
+            // of MAX_PATH (260). #407 C (lazy): on a FRESH run the harness SKIPS the junction when the real
+            // root already leaves MAX_PATH headroom for every task (most runs) — the runId + task ids drive
+            // that predicate; a resume restores the recorded link unconditionally. git canonicalizes the
+            // junction back to the real path in its OWN registrations, so the chosen link is recorded ONLY in
+            // the journal; a resume restores that SAME link before any git worktree op, hard-failing if it
+            // points elsewhere (a concurrent run). GR2038 then measures the EFFECTIVE root — the junction (so
+            // it almost never fires), or the real root on a lazy-skip / graceful fallback (where it may fire
+            // with the actionable GUARDRAILS_WORKTREE_ROOT remedy).
+            if (OperatingSystem.IsWindows())
             {
-                PlanProbe.PrintDiagnostics([pathHalt], io.Out);
-                io.Out.WriteLine("\nWindows MAX_PATH preflight FAILED; nothing was run.");
-                return ExitCodes.HarnessError;
+                WorktreeJunction.JunctionResolution junction = WorktreeJunction.ResolveForRun(
+                    realWorktreeRoot, journal.Document.WorktreeJunctionRoot,
+                    Path.GetPathRoot(realWorktreeRoot) ?? string.Empty, io.Out,
+                    runId, probe.Plan.Tasks.Select(t => t.Id).ToList());
+                if (junction.RestoreError is { } restoreError)
+                {
+                    io.Out.WriteLine(restoreError);
+                    io.Out.WriteLine("\nWorktree junction could not be restored; nothing was run.");
+                    return ExitCodes.HarnessError;
+                }
+
+                if (junction.RecordRoot is { } recordRoot)
+                {
+                    // Persist the chosen link so the Scheduler (fresh journal load) roots segments there, and
+                    // a later resume / --fresh can find it. git canonicalizes it away, so this is its only record.
+                    journal.RecordWorktreeJunctionRoot(recordRoot);
+                }
+
+                Diagnostic? pathHalt = WorktreePathPreflight.Check(
+                    junction.EffectiveRoot, runId, probe.Plan.Tasks.Select(t => t.Id));
+                if (pathHalt is not null)
+                {
+                    PlanProbe.PrintDiagnostics([pathHalt], io.Out);
+                    io.Out.WriteLine("\nWindows MAX_PATH preflight FAILED; nothing was run.");
+                    return ExitCodes.HarnessError;
+                }
             }
         }
 
@@ -585,6 +606,23 @@ public static class RunCommand
                 // so the breaking default is observable/self-documenting rather than a silent surprise. Never
                 // fires together with the undelivered warning (that requires delivery OFF; this requires it ran).
                 RenderDeliveredByDefaultNotice(report, deliveryFromDefaultOnly, io.Out);
+
+                // #407 A — terminal-completion cleanup. A wholly-green, terminal-gate-passed, DELIVERED run
+                // is non-resumable, so reclaim its junction LINK + worktree root NOW. KEEP both for every
+                // RESUMABLE outcome — needs-human / halt / cancelled (exitCode != green) and the wholly-green
+                // -but-UNDELIVERED opt-out (its verified work sits on the plan branch for the user to inspect /
+                // deliver, so its integration worktree must survive) — where a resume needs them. The startup
+                // GC (B) is the backstop for crashed/abandoned leaks that never reach here. Cross-platform: the
+                // gr-wt root leaks on every OS; the junction is Windows-only (RemoveJunctionLink no-ops else).
+                bool terminalGreen = WorktreeReclaim.ShouldReclaimOnCompletion(report, planGuardrailsPassed);
+                if (terminalGreen && SchedulerFactory.WouldUseWorktreeMode(probe.Plan))
+                {
+                    WorktreeReclaim.CleanupCompletedRun(
+                        probe.Plan.Workspace,
+                        SchedulerFactory.WorktreeRootFor(probe.Plan),
+                        TryReadJournalForSeed(probe.Plan.PlanDirectory)?.WorktreeJunctionRoot,
+                        io.Out);
+                }
 
                 return exitCode;
             }

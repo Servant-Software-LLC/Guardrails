@@ -308,6 +308,105 @@ public sealed class WorktreeJunctionTests : IDisposable
         Assert.Null(r.RecordRoot);
     }
 
+    // ── #407 C: lazy / predictive junction creation ──────────────────────────────────────────
+
+    [Fact]
+    public void RealRootNeedsJunction_ShortRootShallowTasks_False()
+    {
+        // A short real root with comfortable headroom (base + reserve + margin ≤ 260) for every task → the
+        // junction is unneeded churn; skip it. Pure path-length maths, cross-OS.
+        Assert.False(WorktreeJunction.RealRootNeedsJunction(@"C:\gw\abc12345", "abcd1234", ["01-init", "02-build"]));
+    }
+
+    [Fact]
+    public void RealRootNeedsJunction_LongRootDeepTask_True()
+    {
+        // The #383 long-root + deep wave-qualified task shape → a segment path is at risk → CREATE.
+        const string longRoot =
+            @"C:\Users\SomeDeveloper\AppData\Local\Temp\guardrails-worktrees\autonomous-mode-impl-a1b2c3d4";
+        const string deepTask = "wave-03-classify-and-escalate/17-wire-classifier-into-executor";
+
+        Assert.True(WorktreeJunction.RealRootNeedsJunction(longRoot, "abcd1234", [deepTask]));
+    }
+
+    [Fact]
+    public void RealRootNeedsJunction_EmptyTaskSet_False()
+    {
+        // No segment paths ⇒ no MAX_PATH risk ⇒ no junction (a partially-authored waved plan self-corrects on
+        // the resume that authors its deeper wave).
+        Assert.False(WorktreeJunction.RealRootNeedsJunction(@"C:\any\root\at\all", "abcd1234", []));
+    }
+
+    [Fact]
+    public void RealRootNeedsJunction_ConservativeMarginBand_CreatesEvenWhenGr2038WouldPass()
+    {
+        // The err-toward-CREATING margin: pick a root whose base lands EXACTLY on GR2038's pass ceiling
+        // (base + reserve == 260, so the real root would PASS GR2038) — yet it is inside the conservative
+        // margin band (base + reserve + margin > 260), so C STILL creates the junction. A false skip is a
+        // MAX_PATH halt, so the extra margin buys headroom the bare GR2038 check does not.
+        const string runId = "abcd1234";
+        const string task = "01-x";
+        int suffix = Path.Combine("X", runId, task, "attempt-1").Length - 1; // "/<runId>/<task>/attempt-1"
+        int targetBase = WorktreePathPreflight.MaxPathLimit - WorktreePathPreflight.BuildOutputReserve; // GR2038 ceiling
+        string root = new('a', targetBase - suffix);
+        int baseLength = Path.Combine(root, runId, task, "attempt-1").Length;
+
+        Assert.Equal(targetBase, baseLength);
+        Assert.True(baseLength + WorktreePathPreflight.BuildOutputReserve <= WorktreePathPreflight.MaxPathLimit,
+            "precondition: the real root would PASS the bare GR2038 check");
+        Assert.True(
+            baseLength + WorktreePathPreflight.BuildOutputReserve + WorktreeJunction.JunctionSkipMargin
+            > WorktreePathPreflight.MaxPathLimit,
+            "precondition: yet it is inside the conservative margin band");
+
+        Assert.True(WorktreeJunction.RealRootNeedsJunction(root, runId, [task]));
+    }
+
+    [Fact]
+    public void ResolveForRun_Fresh_ShortRootWithHeadroom_SkipsJunction_NoRecord()
+    {
+        // #407 C: a fresh run whose real root fits every task with margin creates NO junction — the effective
+        // root IS the real root and nothing is recorded. Cross-OS: non-Windows short-circuits to the same
+        // real-root result; Windows takes the lazy-skip branch BEFORE AllocateUnder (nothing is created, so
+        // no Windows gate is needed and no link needs tracking for cleanup).
+        const string realRoot = @"C:\gw\abc12345";
+        string baseDir = Path.Combine(_root, "base");
+
+        WorktreeJunction.JunctionResolution r = WorktreeJunction.ResolveForRun(
+            realRoot, recordedRoot: null, baseDir, TextWriter.Null, runId: "abcd1234", taskIds: ["01-a", "02-b"]);
+
+        Assert.Null(r.RestoreError);
+        Assert.Equal(realRoot, r.EffectiveRoot);
+        Assert.Null(r.RecordRoot);                       // nothing created ⇒ nothing to persist
+        Assert.False(Directory.Exists(Path.Combine(baseDir, ".a"))); // no junction allocated
+    }
+
+    [Fact]
+    public void ResolveForRun_Fresh_LongRootWithoutHeadroom_CreatesJunction()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        // A real root too long for a deep task → the lazy predicate CREATES the junction (allocates .a).
+        string realRoot = Path.Combine(_root, "realroot");
+        string baseDir = Path.Combine(_root, "base");
+        const string deepTask = "wave-03-classify-and-escalate/17-wire-classifier-into-executor";
+
+        // Self-validating precondition: this shape genuinely needs a junction (independent of temp length).
+        Assert.True(WorktreeJunction.RealRootNeedsJunction(realRoot, "abcd1234", [deepTask]));
+
+        WorktreeJunction.JunctionResolution r = WorktreeJunction.ResolveForRun(
+            realRoot, recordedRoot: null, baseDir, TextWriter.Null, runId: "abcd1234", taskIds: [deepTask]);
+        Track(r.RecordRoot); // register the created link for LINK-FIRST cleanup
+
+        Assert.Null(r.RestoreError);
+        Assert.Equal(".a", Path.GetFileName(r.EffectiveRoot));
+        Assert.Equal(r.EffectiveRoot, r.RecordRoot);
+        Assert.True(WorktreeJunction.IsJunctionTo(r.EffectiveRoot, realRoot));
+    }
+
     // ── journal field: the sole durable record (git canonicalizes the junction away) ─────────
 
     [Fact]
