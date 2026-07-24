@@ -318,7 +318,7 @@ public sealed class MergeCliTests
             string taskDir = Path.Combine(Dir, "tasks", folder);
             Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
-                $"{{ \"description\": \"{folder}\", \"stableId\": \"{stableId}\", \"dependsOn\": [] }}");
+                $"{{ \"description\": \"{folder}\", \"stableId\": \"{stableId}\", \"writeScope\": [], \"dependsOn\": [] }}");
             Write(Path.Combine(taskDir, "action" + Ext), "echo run\n");
             foreach ((string name, string content) in guardrails)
             {
@@ -332,7 +332,7 @@ public sealed class MergeCliTests
             string taskDir = Path.Combine(Dir, "tasks", folder);
             Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
-                $"{{ \"description\": \"{folder}\", \"dependsOn\": [] }}");
+                $"{{ \"description\": \"{folder}\", \"writeScope\": [], \"dependsOn\": [] }}");
             Write(Path.Combine(taskDir, "action" + Ext), "echo run\n");
             foreach ((string name, string content) in guardrails)
             {

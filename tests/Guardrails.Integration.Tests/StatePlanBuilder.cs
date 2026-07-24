@@ -72,6 +72,7 @@ public sealed class StatePlanBuilder : IDisposable
             $$"""
             {
               "description": "fixture task {{id}}",
+              "writeScope": [],
               "dependsOn": {{dependsJson}}
             }
             """);

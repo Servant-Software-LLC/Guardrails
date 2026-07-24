@@ -395,7 +395,7 @@ public sealed class AiMergeWorkerTests
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
 
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            $$"""{"description": "ai-merge conflict test {{taskId}}", "dependsOn": []}""");
+            $$"""{"description": "ai-merge conflict test {{taskId}}", "writeScope": ["src/**"], "dependsOn": []}""");
 
         string fragmentJson = "{\"" + taskId + "\": {\"done\": true}}";
         string safeName = taskId.Replace("-", "_");

@@ -121,7 +121,7 @@ public sealed class WaveExecutionRunTests
     {
         string taskDir = Path.Combine(waveTasksDir, folder);
         Directory.CreateDirectory(taskDir);
-        File.WriteAllText(Path.Combine(taskDir, "task.json"), $$"""{ "description": "{{folder}}" }""");
+        File.WriteAllText(Path.Combine(taskDir, "task.json"), $$"""{ "description": "{{folder}}", "writeScope": ["{{file}}"] }""");
         WriteAction(Path.Combine(taskDir, Script("action")), file);
         // Task guardrail: check the file exists (guardrailPasses=false → check a file that never exists).
         WriteExistsGate(Path.Combine(taskDir, "guardrails", Script("01-check")),

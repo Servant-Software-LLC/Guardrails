@@ -8,15 +8,19 @@ namespace Guardrails.Core.Execution;
 /// The write-scope CHECK built-in (plan 08 §2/§3.4): verifies that every path touched by
 /// the task's action falls within the declared <c>writeScope</c> globs, performs a scoped
 /// revert of out-of-scope paths on violation, and never rewrites in-scope WIP.
-/// Keyed on <c>task.json writeScope</c> PRESENCE — a null scope is the off-switch.
+/// A null scope is fail-closed (issue #389): it coalesces to an EMPTY scope (writes nothing
+/// allowed), so any change is offending — an absent scope is NO LONGER a silent off-switch.
 /// </summary>
 public static class WriteScopeCheck
 {
     /// <summary>
     /// Diff the task's post-action working tree against <paramref name="taskBase"/> and compare
-    /// every changed path to <paramref name="scope"/>. Returns a passing result immediately when
-    /// <paramref name="scope"/> is null (the off-switch). All changed paths that are NOT claimed by
-    /// the scope are collected into <see cref="WriteScopeCheckResult.OffendingPaths"/>.
+    /// every changed path to <paramref name="scope"/>. A null <paramref name="scope"/> coalesces to an
+    /// EMPTY scope (issue #389): writes nothing allowed, so EVERY changed path is offending
+    /// (fail-closed). A validated plan never reaches here with null — <c>GR2041</c> forbids an absent
+    /// <c>writeScope</c> at validate time — so this is the runtime belt-and-suspenders behind validate.
+    /// All changed paths that are NOT claimed by the scope are collected into
+    /// <see cref="WriteScopeCheckResult.OffendingPaths"/>.
     /// </summary>
     /// <remarks>
     /// The check runs AFTER the action but BEFORE the segment commit (SSOT §3.4): at that point the
@@ -30,8 +34,10 @@ public static class WriteScopeCheck
     /// </remarks>
     public static WriteScopeCheckResult Check(string repoPath, string taskBase, IReadOnlyList<string>? scope)
     {
-        if (scope is null)
-            return new WriteScopeCheckResult { Passed = true, OffendingPaths = [] };
+        // #389: fail-closed on null — an absent scope is treated as an EMPTY scope (writes nothing
+        // allowed), so any change becomes an offense. Previously null was an early PASS = "no check",
+        // the silent unbounded-write loophole this closes.
+        scope ??= [];
 
         string diffOutput;
         try
@@ -106,15 +112,26 @@ public static class WriteScopeCheck
     /// invisible to <see cref="Check"/>'s staging, so they are NEVER seen here and thus NEVER deleted
     /// from the worktree — they stay on disk (warm-cache #255) and are kept out of the commit by the
     /// <see cref="SegmentStaging"/> exclusion at the <see cref="GitWorktreeProvider.Integrate"/> staging
-    /// site instead. Returns <c>[]</c> for a null scope (the off-switch) and for the WS_2 git-error
+    /// site instead. Returns <c>[]</c> for a null scope and for the WS_2 git-error
     /// sentinel (status <c>?</c>) — phase 2 is best-effort and must not fail the attempt, so a git error
     /// during the re-check degrades to "nothing stripped" rather than attempting to <c>git rm</c> a
     /// synthetic marker path.
+    /// </para>
+    /// <para>
+    /// The null short-circuit below KEEPS phase-2 stripping behavior byte-identical after #389 made
+    /// <see cref="Check"/> coalesce null → empty (fail-closed): phase 2 is only ever invoked by
+    /// <c>TaskExecutor</c> for a task that DECLARES a <c>writeScope</c> (a no-<c>writeScope</c> task's
+    /// safety net is the SSOT §5.3(D) staging exclusion, not a strip), so a null scope here strips
+    /// nothing rather than reverting the whole tree.
     /// </para>
     /// </summary>
     public static IReadOnlyList<WriteScopeOffense> StripOutOfScope(
         string repoPath, string taskBase, IReadOnlyList<string>? scope)
     {
+        // #389: preserve phase-2's pre-existing null behavior (strip nothing). Check now fail-closes a
+        // null scope to empty, so without this guard a null scope would revert the entire tree here.
+        if (scope is null) return [];
+
         WriteScopeCheckResult result = Check(repoPath, taskBase, scope);
 
         // Only revert REAL offending paths — the WS_2 git-error sentinel (status '?') is a synthetic

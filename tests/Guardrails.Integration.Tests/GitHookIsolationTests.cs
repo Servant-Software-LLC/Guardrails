@@ -337,7 +337,7 @@ public sealed class GitHookIsolationTests
         string taskDir = Path.Combine(planDir, "tasks", "01-task");
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            """{"description": "hook isolation task", "dependsOn": []}""");
+            """{"description": "hook isolation task", "writeScope": ["out.txt"], "dependsOn": []}""");
 
         if (OperatingSystem.IsWindows())
         {

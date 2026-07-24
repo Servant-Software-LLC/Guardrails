@@ -169,6 +169,7 @@ public sealed class ProductionWiringTests
             $$"""
             {
               "description": "production wiring fixture {{taskId}}",
+              "writeScope": ["src/**"],
               "dependsOn": {{dependsJson}}
             }
             """);

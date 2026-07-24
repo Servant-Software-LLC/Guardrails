@@ -838,14 +838,32 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// Validate <c>writeScope</c> entries across all tasks (plan 08 §2/§3.4, SSOT §3.4).
+    /// Validate <c>writeScope</c> across all tasks — including every waved task, since
+    /// <see cref="PlanDefinition.Tasks"/> is the flattened union of the waves (plan 08 §2/§3.4, SSOT §3.4).
+    /// GR2041 ERROR: <c>writeScope</c> is absent/null — REQUIRED on every task (issue #389); a present-empty
+    /// <c>[]</c> ("writes nothing to the repo") is VALID and falls through untouched.
     /// GR2019 ERROR: an entry is an absolute path or contains <c>..</c> (escapes the workspace).
     /// GR2020 WARNING: an entry is vacuous/over-broad (e.g. <c>**</c> or <c>*</c>).
+    /// Plan-level and wave-level gate FOLDERS have no <c>task.json</c>, so they are unaffected.
     /// </summary>
     private static void ValidateWriteScopes(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
         foreach (TaskNode task in plan.Tasks)
         {
+            // GR2041 (#389): writeScope is REQUIRED on every task. An ABSENT/null field is the "lazy
+            // planning" this forbids — it would skip the write-scope check and let the task write
+            // anywhere. This PRESENCE check runs BEFORE the Count guard so that a DELIBERATE present-empty
+            // [] (Count == 0 — "writes nothing to the repo") FALLS THROUGH as valid via the guard below
+            // and is never flagged.
+            if (task.WriteScope is null)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.MissingWriteScope, task.Directory,
+                    $"Task '{task.Id}' does not declare a writeScope. Every task must declare its write " +
+                    "surface — list the paths it writes, or an empty [] if it writes nothing to the repo. " +
+                    "Omitting the field is not allowed (SSOT §3.4)."));
+                continue;
+            }
+
             if (task.WriteScope is not { Count: > 0 } scope) continue;
 
             foreach (string entry in scope)

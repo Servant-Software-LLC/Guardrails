@@ -361,21 +361,30 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   "Dispatch / factory wiring"; `stacks/dotnet.md §10d`; relates to #120.)
 - **Vacuous `writeScope`**: a task declares `writeScope: ["**"]`, a bare top-level dir, or
   any over-broad surface that owns everything — the write-scope check (SSOT §3.4) then
-  discriminates nothing and is theater (`validate` warns GR2020). The honest move is to omit
-  `writeScope` entirely (reported as a broad surface) rather than emit a vacuous one. Flag
-  every `**`/over-broad scope as WEAK and propose either a real surface or omission.
+  discriminates nothing and is theater (`validate` warns GR2020). Flag every `**`/over-broad
+  scope as WEAK and propose a **real surface** (the specific directories/files it writes) — or,
+  if the task genuinely writes NOTHING to the repo, `"writeScope": []`. Do **NOT** propose omitting
+  the field: since #389, omission is a GR2041 error, so "omit it" is never the fix (`[]` is).
 - **Tests not excluded from an implementation scope**: an implementation task with an
   upstream test-author task whose own `writeScope` covers (or fails to exclude) those test
   files — the deterministic "implementation may not write the tests" boundary is open, so the
   implementation can edit the tests to force a tests-pass guardrail green. The implementation
   task's `writeScope` must EXCLUDE every test file the test-author task owns. (BLOCKER — it is
   the TDD test-protection gate.)
-- **Missing `writeScope` where one is needed**: a task with a clearly bounded surface (a TDD
-  test-author or implementation task, or any task touching one project/file) that omits
-  `writeScope` entirely — it gets NO write-scope check, so an out-of-scope escape (including
-  an implementation editing the tests) goes uncaught. Omission is correct ONLY for a genuinely
-  repo-wide task (a terminal whole-suite gate, a sweeping cross-cutting change); flag a
-  confidently-scopable task with no `writeScope` as WEAK and name the surface it should declare.
+- **ABSENT `writeScope` — always a BLOCKER (#389)**: `writeScope` is now REQUIRED on every task,
+  so a task that OMITS the field entirely is a **BLOCKER** (and a hard `validate` error, **GR2041**) —
+  drop the old "genuinely repo-wide ⇒ omission is OK" exemption entirely: a terminal whole-suite gate
+  or a sweeping cross-cutting change must declare its broad surface EXPLICITLY (name the directories),
+  never omit. An absent scope gets NO write-scope check, so an out-of-scope escape (including an
+  implementation editing the tests) goes uncaught. Fix: name the real surface, or `"writeScope": []`
+  if the task writes nothing to the repo.
+  **CRITICAL — `writeScope: []` is a FIRST-CLASS VALID declaration, NOT a finding.** An empty scope is
+  the correct, deliberate "writes nothing to the repo" form for a configure-a-database task, a
+  verification/read-only check, or a state-only task (its only output is a `GUARDRAILS_STATE_OUT`
+  fragment, which is not a repo write). **Do NOT flag `[]`** — it is not "missing" and not "vacuous";
+  flag ONLY a TRULY ABSENT field. (Sanity-check that a `[]`-declaring task genuinely writes nothing —
+  a task that DOES write to the repo but declares `[]` will fail its own write-scope check at run time,
+  which is a different, correctly-caught error.)
 - **Four-folder gap — missing/empty/tautological plan-level or task-level folder (deliverable 9)**:
   the terminal integration-gate TASK (`integrationGate: true`) is **RETIRED** — a plan still
   declaring it gets a **hard validation error (GR2029)**, no coexistence window. The replacement
@@ -948,7 +957,7 @@ finding remains unaddressed.
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
 - [ ] Coverage gaps cite the exact unverified completion criterion.
 - [ ] Every `covers-key-behaviors` guardrail's required tokens are each named (directly or via synonym) in the SAME task's action prompt; a token the guardrail requires but the prompt never mentions is a BLOCKER ("the task will fail every attempt") — the human-judgement complement to the deterministic GR2026 warning (#157).
-- [ ] Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files (but may TARGET the stub file the test-author wrote, #155); no task carries a vacuous `**`/over-broad `writeScope` (omission preferred over theater); confidently-scopable tasks declare a `writeScope`.
+- [ ] **Every task declares a `writeScope` (#389)** — an ABSENT field is a BLOCKER (GR2041); `"writeScope": []` ("writes nothing to the repo") is a FIRST-CLASS VALID declaration and is NOT flagged (flag only a truly absent field). Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files (but may TARGET the stub file the test-author wrote, #155); no task carries a vacuous `**`/over-broad `writeScope` (propose a real surface or `[]`, never omission).
 - [ ] Every inserted test-author task carries the correct TDD "red" for its type (#155): a BEHAVIORAL type has `build-passes` + `tests-fail-on-stubs` (with minimal stubs in its `writeScope`), not a lone non-zero-exit red gameable by non-compiling garbage; a split data-model task has a structural `[Fact]`/`[Theory]` covers-key-behaviors check.
 - [ ] Every test-author task's `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph (allowed path(s) + `git diff` check + retry consequence + the `needsHuman` redirect for an upstream missing-symbol compile error); absence is WEAK (#154).
 - [ ] Every PROMPT task whose primary deliverable is a file under `.claude/` (new or existing) carries the verbatim STRAIGHT-TO-HATCH `needsHarnessWrite` escape-hatch instruction in its `action.prompt.md` (emit `needsHarnessWrite` to the state-out path FIRST, no direct `Write`/`Edit` probe to the `.claude/` path); absence is a BLOCKER — the tool-permission layer refuses `.claude/` writes unconditionally, so the task hits the wall on attempt 1 and dead-ends at `needs-human` (SSOT §9.3 / #191 / #313 / #321). Exempt: SCRIPT actions, and tasks that declare `stagingOutputs` for the deliverable. A task whose deliverable IS `.claude/settings.json` / `.claude/settings.local.json` cannot use the hatch (the harness rejects permission-file writes on an agent's behalf, #321) — flag it for a human author instead.

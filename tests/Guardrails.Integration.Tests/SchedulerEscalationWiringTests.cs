@@ -460,6 +460,7 @@ public sealed class SchedulerEscalationWiringTests
                 $$"""
                 {
                   "description": "autonomous wiring fixture {{id}}",
+                  "writeScope": [],
                   "dependsOn": [],
                   "action": {
                     "path": "action.prompt.md",

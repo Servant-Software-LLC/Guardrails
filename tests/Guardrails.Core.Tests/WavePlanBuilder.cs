@@ -71,8 +71,9 @@ internal sealed class WavePlanBuilder : IDisposable
         string deps = dependsOn is { Length: > 0 }
             ? ", \"dependsOn\": [" + string.Join(", ", dependsOn.Select(d => $"\"{d}\"")) + "]"
             : string.Empty;
+        // #389: writeScope is REQUIRED on every task; the default action `echo hi` writes nothing → [].
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            $$"""{ "description": "{{folder}}"{{deps}} }""");
+            $$"""{ "description": "{{folder}}", "writeScope": []{{deps}} }""");
 
         File.WriteAllText(Path.Combine(taskDir, "action.sh"), actionBody ?? "#!/bin/sh\necho hi\n");
 

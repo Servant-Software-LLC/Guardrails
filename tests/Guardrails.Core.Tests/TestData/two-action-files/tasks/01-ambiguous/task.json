@@ -1,4 +1,5 @@
 {
+  "writeScope": [],
   "description": "Has two action files and no explicit path",
   "dependsOn": []
 }

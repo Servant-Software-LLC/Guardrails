@@ -1,4 +1,5 @@
 {
+  "writeScope": [],
   "description": "Terminal whole-repo integration gate: the merged HEAD builds and the full test suite passes, and the shared multi-writer files integrated cleanly (union invariant)",
   "stableId": "z9gate1",
   "dependsOn": [

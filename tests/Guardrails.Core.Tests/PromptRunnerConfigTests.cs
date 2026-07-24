@@ -24,7 +24,7 @@ public sealed class PromptRunnerConfigTests : IDisposable
         File.WriteAllText(Path.Combine(_root, "guardrails.json"), guardrailsJson);
         string taskDir = Path.Combine(_root, "tasks", "01-task");
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
-        File.WriteAllText(Path.Combine(taskDir, "task.json"), """{ "description": "t", "dependsOn": [] }""");
+        File.WriteAllText(Path.Combine(taskDir, "task.json"), """{ "description": "t", "writeScope": [], "dependsOn": [] }""");
 
         if (promptTask)
         {

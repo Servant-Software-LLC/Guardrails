@@ -456,12 +456,13 @@ or interactively, the dial is inert — which is why an existing run's behaviour
   "dependsOn": ["01-author-stats-tests"],        // required (may be []); task ids
   // NOTE: "integrationGate": true is RETIRED — the terminal gate is now the <plan>/guardrails/ folder (§3.3).
   //       Still declaring it is a hard validation error (GR2029). Do NOT add this key to new task.json.
-  "writeScope": ["src/Foo/"],  // optional; the deterministic write-scope check (§3.4). Absent ⇒ NO check.
-                               //   every path the action's post-action diff (staged worktree vs <taskBase>)
-                               //   adds/modifies/deletes/renames must be IN scope, or the task fails and
-                               //   retries with feedback after a SCOPED REVERT of the out-of-scope paths
-                               //   (in-scope WIP preserved). Renames = paired D+A (both in scope). A vacuous
-                               //   "**" / bare top-level dir is a granularity smell.
+  "writeScope": ["src/Foo/"],  // REQUIRED on every task (§3.4, #389); [] = writes nothing to the repo (a
+                               //   VALID declaration for a verify-only / configure / state-only task); ABSENT
+                               //   is a validation error (GR2041). every path the action's post-action diff
+                               //   (staged worktree vs <taskBase>) adds/modifies/deletes/renames must be IN
+                               //   scope, or the task fails and retries with feedback after a SCOPED REVERT of
+                               //   the out-of-scope paths (in-scope WIP preserved). Renames = paired D+A (both
+                               //   in scope). A vacuous "**" / bare top-level dir is a granularity smell (GR2020).
   "stagingOutputs": [                                // optional; autonomous .claude/ delivery (§3.5). Absent ⇒ none.
     { "from": "skill/**", "to": ".claude/skills/foo/" }  // action writes <from> under GUARDRAILS_STAGING_DIR;
   ],                                                 //   harness MOVES it to <to> after action, before guardrails
@@ -764,13 +765,23 @@ segment commit contains exactly the in-scope diff. Phase 2 is **skipped for a no
 exclusion makes the reconstructable dep dirs (v1: `node_modules` at any depth) invisible to phase 2,
 so they are kept out of the commit at staging time and are **never deleted from the worktree**
 (warm-cache #255 compatible).
-**Absent ⇒ no check** (the off-switch — a task that can't be confidently scoped omits the field and
-is reported as a broad surface, never given a vacuous `**`). **Renames** are NOT detected via git
+**`writeScope` is REQUIRED on every task — three states (issue #389).** (1) `"writeScope": ["src/Foo/"]`
+writes those paths (the behaviour above). (2) `"writeScope": []` is a DELIBERATE "writes nothing to the
+repo" declaration — **VALID, never flagged** — and is the correct form for a task with no repo output: a
+database-configure task, a verification/read-only check, or a state-only task whose only output is
+`GUARDRAILS_STATE_OUT` (a state fragment is NOT a repo write and never appears in the segment diff).
+(3) the field **ABSENT / null is a validation ERROR, `GR2041`** — omitting it is the "lazy planning" this
+forbids (it would skip the write-scope check and let the task write anywhere), so every write surface is
+now explicit and reviewable (this also closes the #375 Q2 loophole where a no-`writeScope` task could
+silently edit its own `guardrails/`). **Runtime fail-closed (belt-and-suspenders behind validate):** a
+validated plan never reaches the check with a null scope, but the check nonetheless coalesces a null scope
+to an EMPTY one in worktree mode (`WriteScopeCheck.Check` does `scope ??= []`) — writes nothing allowed, so
+any write is offending — rather than passing. **Renames** are NOT detected via git
 `-M`; a rename presents as a paired **D + A**, and **both** paths must be in scope. **Deletions:**
 the deleted path must be in scope. The declared scope is also injected into the action prompt
 (advisory) — the deterministic check is the gate. `validate` rejects a scope entry that escapes the
 workspace (**GR2019**, error) and warns on a vacuous/over-broad scope (**GR2020**, warning;
-`plan-breakdown` should omit rather than emit a vacuous scope). **TDD test-protection:** a
+`plan-breakdown` emits a real surface or `[]`, never a vacuous `**`). **TDD test-protection:** a
 test-author task owns its test files in `writeScope`; the implementation task's `writeScope` EXCLUDES
 the test files, so the check deterministically enforces "the implementation may not write the tests"
 (the replacement for the `captureHashes`/`tests-untouched`/`restoreOnRetry` triad **that this same
@@ -2645,9 +2656,11 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   3. **`writeScope`-membership check — only when the task DECLARES a `writeScope`.** Reuses
      `WriteScope.IsInScope` — the SAME scope-matching predicate the post-hoc write-scope CHECK (§3.4)
      uses, so the two enforcement points can never drift. **A task with NO `writeScope` declared
-     allows the write unconditionally**, mirroring §3.4's "Absent ⇒ no check" for the retrospective
-     check — the segment-worktree containment + the worktree-containment hook (§9.4) are the
-     backstops in that case.
+     allows the write unconditionally** — but since #389 made `writeScope` REQUIRED on every task
+     (absent ⇒ GR2041), **this "no `writeScope` ⇒ allow" branch is now DEAD for any validated plan**;
+     it is retained only as the pre-validate / serial degenerate case, and its behaviour is deliberately
+     unchanged here (a second security-path flip was out of scope for #389). The segment-worktree
+     containment + the worktree-containment hook (§9.4) are the backstops in that case.
   A rejected/denied request fails the attempt with actionable feedback naming the offending path
   (retries; eventual `needs-human` on budget exhaustion) — the same shape as an out-of-scope
   write-scope violation, except the permission-file denial's feedback routes the agent to a human
@@ -4318,7 +4331,8 @@ supplies the *materialized* upstream state (the prior waves' real outputs); `bri
 **Validation.** `guardrails validate` does **NOT** error on an absent `brief.md` (it is optional). A future
 validation **WARNING** on a wave stub — empty `tasks/` — that has no `brief.md` is **DEFERRED**, not shipped
 in Phase 0; it will take a fresh GR code when implemented (`GR2038` was since taken by #383's
-`WorktreePathTooLong`, and `GR2039`/`GR2040` by #361's autonomy-dial checks, so the next free is `GR2041`).
+`WorktreePathTooLong`, `GR2039`/`GR2040` by #361's autonomy-dial checks, and **`GR2041` by #389's
+`MissingWriteScope`** (required-`writeScope`, §3.4), so the next free is `GR2042`).
 
 **Hash treatment.**
 - **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a

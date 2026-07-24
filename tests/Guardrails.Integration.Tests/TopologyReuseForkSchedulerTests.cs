@@ -129,6 +129,7 @@ public sealed class TopologyReuseForkSchedulerTests
             $$"""
             {
               "description": "topo test {{taskId}}",
+              "writeScope": ["src/**"],
               "dependsOn": {{dependsJson}}
             }
             """);

@@ -1,1 +1,1 @@
-{ "description": "Compile against the scaffolded config" }
+{ "writeScope": [], "description": "Compile against the scaffolded config" }

@@ -553,7 +553,7 @@ public sealed class PlanGuardrailPhaseTests
                 ? "[]"
                 : "[" + string.Join(", ", dependsOn.Select(d => "\"" + d + "\"")) + "]";
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
-                "{ \"description\": \"plan-guardrail task " + id + "\", \"dependsOn\": " + deps + " }");
+                "{ \"description\": \"plan-guardrail task " + id + "\", \"writeScope\": [\"src/**\"], \"dependsOn\": " + deps + " }");
 
             WriteScript(Path.Combine(taskDir, Ps ? "action.ps1" : "action.sh"),
                 ActionScriptWithLog(id, ActionRanLogPath));
@@ -607,7 +607,7 @@ public sealed class PlanGuardrailPhaseTests
             Directory.CreateDirectory(grDir);
 
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
-                "{ \"description\": \"per-union sibling " + id + "\", \"dependsOn\": [] }");
+                "{ \"description\": \"per-union sibling " + id + "\", \"writeScope\": [\"src/**\"], \"dependsOn\": [] }");
             WriteScript(Path.Combine(taskDir, Ps ? "action.ps1" : "action.sh"), SimpleActionScript(id));
             WriteScript(Path.Combine(grDir, Ps ? "01-check.ps1" : "01-check.sh"), GreenGuardrailScript());
 

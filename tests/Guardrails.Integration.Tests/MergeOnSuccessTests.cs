@@ -325,7 +325,7 @@ public sealed class MergeOnSuccessTests
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
 
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            $$"""{"description": "mos-test {{taskId}}", "dependsOn": []}""");
+            $$"""{"description": "mos-test {{taskId}}", "writeScope": ["{{taskFile}}"], "dependsOn": []}""");
 
         string fragmentJson = "{\"" + taskId + "\": {\"done\": true}}";
 
@@ -691,7 +691,7 @@ public sealed class MergeOnSuccessTests
             Directory.CreateDirectory(taskDir);
             Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
-                """{"description": "task that always fails guardrail", "dependsOn": []}""");
+                """{"description": "task that always fails guardrail", "writeScope": [], "dependsOn": []}""");
             if (OperatingSystem.IsWindows())
             {
                 File.WriteAllText(Path.Combine(taskDir, "action.ps1"), "exit 0\n");
@@ -873,7 +873,7 @@ public sealed class MergeOnSuccessTests
         Directory.CreateDirectory(taskDir);
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            $$"""{"description": "trivial green task {{taskId}}", "dependsOn": []}""");
+            $$"""{"description": "trivial green task {{taskId}}", "writeScope": [], "dependsOn": []}""");
         if (OperatingSystem.IsWindows())
         {
             File.WriteAllText(Path.Combine(taskDir, "action.ps1"), "exit 0\n");

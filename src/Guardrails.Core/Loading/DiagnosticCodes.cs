@@ -424,6 +424,24 @@ public static class DiagnosticCodes
     /// </summary>
     public const string IncompatibleAutonomyCompoundConfig = "GR2040";
 
-    // CURRENT next-free code: GR2041. GR2040 (IncompatibleAutonomyCompoundConfig) is the last taken code
-    // above. When allocating a new code, take GR2041 and update this line (issue #320).
+    // --- writeScope required on every task (issue #389, SSOT §3.4) ------------------------------------
+
+    /// <summary>
+    /// A task's <c>task.json</c> omits <c>writeScope</c> entirely — the field is absent/null (issue #389,
+    /// SSOT §3.4). <c>writeScope</c> is REQUIRED on EVERY task; omitting it is the "lazy planning" this
+    /// forbids, because an absent scope would skip the write-scope check and let the task write anywhere
+    /// in the repo unbounded. The three states are: <c>"writeScope": ["src/Foo/"]</c> — writes those
+    /// paths; <c>"writeScope": []</c> — a DELIBERATE "writes nothing to the repo" declaration, which is
+    /// VALID and never flagged (the correct form for a verification/read-only check, a database-configure
+    /// task, or a state-only task whose only output is <c>GUARDRAILS_STATE_OUT</c>, which is NOT a repo
+    /// write and never appears in the segment diff); and the field ABSENT/null — this ERROR. Requiring a
+    /// scope everywhere makes every write surface explicit and reviewable and closes the #375 Q2 loophole
+    /// (a no-<c>writeScope</c> task could silently edit its own <c>guardrails/</c>). The runtime
+    /// belt-and-suspenders is <see cref="Execution.WriteScopeCheck"/>, which fail-closes a null scope to
+    /// an empty one (writes nothing allowed) rather than passing.
+    /// </summary>
+    public const string MissingWriteScope = "GR2041";
+
+    // CURRENT next-free code: GR2042. GR2041 (MissingWriteScope) is the last taken code
+    // above. When allocating a new code, take GR2042 and update this line (issue #320).
 }

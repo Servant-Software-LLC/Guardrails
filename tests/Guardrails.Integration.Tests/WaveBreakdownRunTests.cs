@@ -39,7 +39,7 @@ public sealed class WaveBreakdownRunTests
     {
         string taskDir = Path.Combine(tasksDir, folder);
         Directory.CreateDirectory(taskDir);
-        File.WriteAllText(Path.Combine(taskDir, "task.json"), $$"""{ "description": "{{folder}}" }""");
+        File.WriteAllText(Path.Combine(taskDir, "task.json"), $$"""{ "description": "{{folder}}", "writeScope": ["scaffold.txt"] }""");
         string action = Ps
             ? "Set-Content -NoNewline -Path \"$env:GUARDRAILS_WORKSPACE/scaffold.txt\" -Value 'x'\nexit 0\n"
             : "#!/usr/bin/env bash\nprintf 'x' > \"$GUARDRAILS_WORKSPACE/scaffold.txt\"\nexit 0\n";

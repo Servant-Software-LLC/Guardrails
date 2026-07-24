@@ -364,6 +364,7 @@ public sealed class PlanPreflightPhaseTests
             $$"""
             {
               "description": "plan-preflight fixture {{id}}",
+              "writeScope": ["**"],
               "dependsOn": {{deps}}
             }
             """);

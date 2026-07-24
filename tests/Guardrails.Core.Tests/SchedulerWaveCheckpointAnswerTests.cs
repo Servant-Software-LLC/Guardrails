@@ -219,7 +219,7 @@ public sealed class SchedulerWaveCheckpointAnswerTests
         {
             string taskDir = Path.Combine(invocation.WorkingDirectory, Wave2, "tasks", "01-compile");
             Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
-            File.WriteAllText(Path.Combine(taskDir, "task.json"), """{ "description": "compile" }""");
+            File.WriteAllText(Path.Combine(taskDir, "task.json"), """{ "description": "compile", "writeScope": [] }""");
             File.WriteAllText(Path.Combine(taskDir, "action.sh"), "#!/bin/sh\necho hi\n");
             File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-ok.sh"), "#!/bin/sh\nexit 0\n");
             return Task.FromResult(new PromptResult

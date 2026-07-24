@@ -297,13 +297,14 @@ public sealed class HarnessWriteRunTests
     }
 
     [Fact]
-    public async Task Worktree_NoWriteScopeDeclared_AllowsHarnessWrite()
+    public async Task Worktree_HarnessWriteDestinationInScope_Succeeds()
     {
         using var repo = new TempGitRepo();
-        // No writeScope declared at all -> per the documented decision, needsHarnessWrite is allowed
-        // unconditionally (mirrors "Absent => no check" for the retrospective write-scope check).
+        // #389: every task declares a writeScope. A needsHarnessWrite destination must be IN that scope —
+        // HarnessWrite.Validate allows it (in-scope) AND the post-action phase-1 write-scope check (which
+        // now runs for every real segment, fail-closed on absent) sees the harness-written file in-scope.
         string planDir = WriteHarnessWritePlan(
-            repo.RepoPath, requestedPath: ".claude/skills/bar/SKILL.md", writeScope: null);
+            repo.RepoPath, requestedPath: ".claude/skills/bar/SKILL.md", writeScope: "\".claude/skills/bar/SKILL.md\"");
 
         var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
 

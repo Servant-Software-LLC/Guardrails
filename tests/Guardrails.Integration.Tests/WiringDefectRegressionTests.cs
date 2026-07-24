@@ -232,6 +232,7 @@ public sealed class WiringDefectRegressionTests
             $$"""
             {
               "description": "defect regression {{taskId}}",
+              "writeScope": ["src/**"],
               "dependsOn": {{dependsJson}}
             }
             """);
@@ -549,6 +550,7 @@ public sealed class WiringDefectRegressionTests
             """
             {
               "description": "F2 retry reset test",
+              "writeScope": ["wip.txt"],
               "dependsOn": [],
               "retries": 1
             }

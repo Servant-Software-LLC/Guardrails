@@ -96,6 +96,7 @@ public sealed class FakeClaudePlanBuilder : IDisposable
             $$"""
             {
               "description": "fake prompt task {{id}}",
+              "writeScope": [],
               "dependsOn": {{dependsJson}},
               "action": {
                 "path": "action.prompt.md",
@@ -134,6 +135,7 @@ public sealed class FakeClaudePlanBuilder : IDisposable
             $$"""
             {
               "description": "fake prompt task {{id}}",
+              "writeScope": [],
               "dependsOn": [],
               "action": {
                 "path": "action.prompt.md",

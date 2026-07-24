@@ -117,7 +117,7 @@ public sealed class DefinitionDriftTests
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
         string dependsJson = dependsOn.Length == 0 ? "[]" : "[" + string.Join(", ", dependsOn.Select(d => $"\"{d}\"")) + "]";
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            $$"""{ "description": "drift {{taskId}}", "dependsOn": {{dependsJson}} }""");
+            $$"""{ "description": "drift {{taskId}}", "writeScope": ["src/**"], "dependsOn": {{dependsJson}} }""");
 
         string safe = taskId.Replace("-", "_");
         if (Ps)
