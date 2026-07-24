@@ -386,6 +386,44 @@ public static class DiagnosticCodes
     /// </summary>
     public const string WorktreePathTooLong = "GR2038";
 
-    // CURRENT next-free code: GR2039. GR2038 (WorktreePathTooLong) is the last taken code above.
-    // When allocating a new code, take GR2039 and update this line (issue #320).
+    // --- Autonomy criticality dial (the OPTIONAL `autonomy` block, issue #361 / doc 12 §3.4/§3.5/§5.2,
+    //     decided §10 M) ---------------------------------------------------------------------------------
+    // Historical: GR2038 (WorktreePathTooLong, #383/#384) is the last taken code above; the two
+    // autonomy-block checks below take the next codes — the value check (GR2039) and the compound-config
+    // gate (GR2040). (The #361 branch had provisionally reserved GR2038 for design-360 and placed these at
+    // GR2039/GR2040; #384 landed WorktreePathTooLong at GR2038 first, so that reservation is void and the
+    // GR2039/GR2040 numbering stands unchanged.)
+
+    /// <summary>
+    /// A value in the OPTIONAL <c>autonomy</c> criticality-dial block (issue #361, doc 12 §3.4/§3.5;
+    /// decided §10 M) is not one of its recognised tokens: an <c>escalationThreshold</c> that is not
+    /// <c>low</c>/<c>moderate</c>/<c>high</c>/<c>critical</c>, a <c>gateThresholds.needs-human</c> or
+    /// <c>gateThresholds.wave-checkpoint</c> that is not a criticality level, or a
+    /// <c>gateThresholds.review-gate</c> that is neither <c>escalate</c> nor <c>proceed-unreviewed</c>. The
+    /// parse falls an unrecognised value back to the dial/default rather than failing (so the block still
+    /// loads), which means the typo would otherwise silently degrade to a policy the operator never
+    /// intended — GR2039 catches it at validate time. An ERROR, mirroring GR2031
+    /// (<see cref="InvalidAutonomyPolicy"/>) for the orthogonal <c>autonomyPolicy</c> field. A
+    /// <c>null</c>/absent value is the default and is not flagged.
+    /// </summary>
+    public const string InvalidAutonomyDialValue = "GR2039";
+
+    /// <summary>
+    /// The <c>autonomy</c> block declares the FORBIDDEN compound configuration (issue #361, doc 12
+    /// §5.2/§3.4; decided §10 M/A): <c>gateThresholds.review-gate == "proceed-unreviewed"</c> AND the
+    /// reachable end-state best-guesses a hard call — <c>escalationThreshold == "critical"</c> OR any
+    /// in-wave <c>gateThresholds</c> criticality value (<c>needs-human</c> / <c>wave-checkpoint</c>)
+    /// <c>== "critical"</c>. Keyed on the REACHABLE END-STATE (Finding 3), so a per-gate override like
+    /// <c>{ "needs-human": "critical", "review-gate": "proceed-unreviewed" }</c> under
+    /// <c>escalationThreshold: "high"</c> cannot route around it. Auto-best-guessing a critical hard call
+    /// while ALSO skipping review is "Guardrails with no guardrails" (self-defeating), so this is a
+    /// load-time ERROR, not merely discouraged. <c>proceed-unreviewed</c> stays a valid named opt-in at
+    /// the cautious / <c>high</c> dials (no reachable <c>critical</c>) and is NOT flagged there. The core
+    /// is a reusable predicate re-checkable on the EFFECTIVE config after <c>--dial</c>/<c>--autonomous</c>
+    /// mutate it post-load (implemented by a later task).
+    /// </summary>
+    public const string IncompatibleAutonomyCompoundConfig = "GR2040";
+
+    // CURRENT next-free code: GR2041. GR2040 (IncompatibleAutonomyCompoundConfig) is the last taken code
+    // above. When allocating a new code, take GR2041 and update this line (issue #320).
 }

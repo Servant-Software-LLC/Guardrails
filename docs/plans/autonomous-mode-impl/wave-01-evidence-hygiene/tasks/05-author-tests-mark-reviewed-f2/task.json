@@ -1,0 +1,10 @@
+{
+  "description": "Author failing integration tests + minimal stubs for mark-reviewed F2 (bare unchanged; --evidence→review-artifact on F2 pass; downgrade to bare on F2 fail; --source machine; --reviewer; symmetric digest)",
+  "stableId": "w1a5mr",
+  "dependsOn": ["04-implement-review-attestation"],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/MarkReviewedF2Tests.cs",
+    "src/Guardrails.Cli/Commands/MarkReviewedCommand.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

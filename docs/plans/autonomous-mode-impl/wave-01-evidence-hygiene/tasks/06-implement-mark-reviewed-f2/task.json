@@ -1,0 +1,6 @@
+{
+  "description": "Implement mark-reviewed F2 (plan-binding + path-containment → review-artifact else bare; --evidence/--source/--reviewer; symmetric digest) so the authored tests pass; bare path unchanged",
+  "stableId": "w1i6mr",
+  "dependsOn": ["05-author-tests-mark-reviewed-f2"],
+  "writeScope": ["src/Guardrails.Cli/Commands/MarkReviewedCommand.cs"]
+}

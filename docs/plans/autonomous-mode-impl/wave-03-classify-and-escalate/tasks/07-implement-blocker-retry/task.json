@@ -1,0 +1,6 @@
+{
+  "description": "Implement the class-(b) BlockerRetry bounded wait/backoff over the stub (ceilings maxAttempts/totalWaitSeconds whichever first, floored by transientPauseBudgetSeconds, reset-hint backoff, retry ledger; never consumes the logic-retry budget) so the authored tests pass",
+  "stableId": "w3i07br",
+  "dependsOn": ["06-author-tests-blocker-retry"],
+  "writeScope": ["src/Guardrails.Core/Execution/BlockerRetry.cs"]
+}

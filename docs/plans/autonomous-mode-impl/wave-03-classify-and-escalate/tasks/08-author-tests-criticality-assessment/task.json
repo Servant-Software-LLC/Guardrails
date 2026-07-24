@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + a minimal stub for the criticality-assessment decider: advisory judge via an injected IPromptRunner (never the verdict authority; malformed/absent ⇒ escalate), threshold compare (escalate ⟺ criticality ≥ threshold), the proceed-unreviewed clamp (high/critical always escalate), the run-level maxJudgeWidenings cap",
+  "stableId": "w3a08ca",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/CriticalityAssessmentTests.cs",
+    "src/Guardrails.Core/Execution/CriticalityJudge.cs"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Author a FAILING Core test (SchedulerReviewGateTests, TDD red against current code) that drives the REAL Scheduler wave loop at the review gate for an unreviewed wave: with gateThresholds.review-gate=proceed-unreviewed the wave RUNS and a proceeded-unreviewed decision is recorded; with the default (escalate) the wave HALTS with a review-gate escalation (Option E); neither path writes a review marker (the never-forged floor, §5 floor 3)",
+  "stableId": "w4a04rg",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/SchedulerReviewGateTests.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

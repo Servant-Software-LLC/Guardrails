@@ -239,13 +239,22 @@ public sealed class TaskExecutor : ITaskExecutor
             // in the morning. Display-only — the journal already records per-attempt start/end.
             if (attempt.Result.Outcome is TaskOutcome.Succeeded)
             {
+                // A class-(b) transient that PAUSED at least once and then cleared within budget (issue #115)
+                // is surfaced as a resolved-transient signal on the success (doc 12 §4.2): the executor already
+                // re-ran the paused attempt to green, so the autonomous layer records `blocker-retried` from
+                // this WITHOUT re-running any wait. Null when the task never paused (backoff untouched).
+                ResolvedTransient? resolvedTransient = backoff.PauseCount > 0
+                    ? new ResolvedTransient { Pauses = backoff.PauseCount, Waited = backoff.Elapsed }
+                    : null;
+
                 return attempt.Result with
                 {
                     // taskStartedAt is UTC; the subtraction is drift-free elapsed wall time.
                     // DateTimeOffset.Now (local) is used only for the human-readable HH:mm:ss
                     // stamp — intentional so the display matches the developer's clock.
                     Summary = $"{attempt.Result.Summary}; took {FormatDuration(DateTimeOffset.UtcNow - taskStartedAt)}, " +
-                              $"done {DateTimeOffset.Now:HH:mm:ss}"
+                              $"done {DateTimeOffset.Now:HH:mm:ss}",
+                    ResolvedTransient = resolvedTransient
                 };
             }
 

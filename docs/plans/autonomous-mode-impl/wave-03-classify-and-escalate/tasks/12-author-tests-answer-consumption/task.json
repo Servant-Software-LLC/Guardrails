@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + minimal stubs for the v1 answer-file consumption security matrix: verbatim {runId,seq,gate,subject} + dual-definitionHash binding, monotonic-seq replay defence, CAS-guarded once-only cross-runId consume, answerable-gate (needs-human/wave-checkpoint only; reject review-gate/terminal/clamped-hard-call), delimited-untrusted injection, malformed/absent ⇒ re-escalate",
+  "stableId": "w3a12ac",
+  "dependsOn": ["10-author-tests-escalation-sink"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/AnswerFileConsumptionTests.cs",
+    "src/Guardrails.Core/Execution/AnswerFile.cs",
+    "src/Guardrails.Core/Execution/AnswerFileConsumer.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

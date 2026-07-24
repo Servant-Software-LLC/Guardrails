@@ -1,0 +1,9 @@
+{
+  "description": "Implement the logs/<runId>/autonomy.jsonl append-only writer over the stub (one compact JSON record per gate, §6.3 shape) so the authored forensic-records tests pass; DecisionEntry additive fields + tokens already landed; existing journal behaviour unchanged",
+  "stableId": "w3i03fr",
+  "dependsOn": ["02-author-tests-forensic-records"],
+  "writeScope": [
+    "src/Guardrails.Core/Journal/AutonomyJsonl.cs",
+    "src/Guardrails.Core/Execution/DecisionEntry.cs"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + a minimal stub for the deterministic gate classifier: maps each shipped signal (Transient / permission wall / RunAbort / preflight fail / needsHuman / terminal-exhaustion / no-op floor / wave-checkpoint / unknown) to judgment-call | hard-blocker-retryable | hard-blocker-permanent | floor",
+  "stableId": "w3a04cl",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/GateClassifierTests.cs",
+    "src/Guardrails.Core/Execution/GateClassifier.cs"
+  ]
+}

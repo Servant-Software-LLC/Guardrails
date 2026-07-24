@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + a minimal stub for the overwatcher auto-tier gate: under autonomyPolicy:auto WITH the autonomy block present, a sanctioned ALLOWLIST lever auto-applies silently (no ConfirmApply); auto WITHOUT the autonomy block still degrades to prompt (the byte-identical anti-Option-(c) back-compat, §9 Phase 4); a DENYLIST op never auto-applies regardless. Stub = add an optional trailing ctor param autonomyBlockPresent=false to Overwatch so the tests compile + SchedulerFactory still builds.",
+  "stableId": "w4a06ow",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/OverwatchAutoTierTests.cs",
+    "src/Guardrails.Core/Execution/Overwatch.cs"
+  ]
+}

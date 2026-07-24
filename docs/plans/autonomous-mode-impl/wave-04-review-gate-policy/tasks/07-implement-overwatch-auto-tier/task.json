@@ -1,0 +1,10 @@
+{
+  "description": "Implement the overwatcher auto-tier gate (#120): in Overwatch.Decide, under autonomyPolicy:auto AND autonomyBlockPresent, SILENTLY auto-apply a sanctioned ALLOWLIST lever (grant without ConfirmApply); auto WITHOUT the block still degrades to prompt (byte-identical); DENYLIST stays human-only. AND wire SchedulerFactory's new Overwatch(...) to pass plan.Config.Autonomy is not null. Makes the authored OverwatchAutoTierTests pass. writeScope spans Overwatch.cs + SchedulerFactory.cs because the gate + the value that feeds it are one compile unit.",
+  "stableId": "w4i07ow",
+  "dependsOn": ["06-author-tests-overwatch-auto-tier"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/Overwatch.cs",
+    "src/Guardrails.Core/Execution/SchedulerFactory.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

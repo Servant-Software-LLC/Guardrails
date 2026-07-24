@@ -1,0 +1,10 @@
+{
+  "description": "Implement FileEscalationSink over the stub (write escalations/<seq>-<gate>.json with status open + the EscalationId/DefinitionHash, append a decisions[] 'escalated' entry via RunJournal.RecordDecision, emit IRunObserver.DecisionRecorded, allocate a journaled monotonic never-reused seq) so the authored sink tests pass",
+  "stableId": "w3i11sk",
+  "dependsOn": ["10-author-tests-escalation-sink", "03-implement-forensic-records"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/FileEscalationSink.cs",
+    "src/Guardrails.Core/Execution/IEscalationSink.cs",
+    "src/Guardrails.Core/Journal/RunJournal.cs"
+  ]
+}

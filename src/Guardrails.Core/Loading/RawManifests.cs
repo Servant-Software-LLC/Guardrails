@@ -21,12 +21,44 @@ internal sealed class RawRunConfig
     public string? AutonomyPolicy { get; set; }
     public bool? AutoBreakdown { get; set; }
     public bool? PreserveAttemptsForSalvage { get; set; }
+
+    // The optional criticality-dial block (issue #361, doc 12 §3.4). null ⇒ the block was ABSENT ⇒ the dial
+    // is inert (RunConfig.Autonomy stays null). A present block (even "{}") binds a non-null instance; the
+    // raw→model mapping in PlanLoader is stubbed until the implement task wires the real parse.
+    public RawAutonomyConfig? Autonomy { get; set; }
+
     public Dictionary<string, List<string>>? Interpreters { get; set; }
 
     // promptRunners is a heterogeneous map: a "default" string pointer plus named
     // runner-config objects (RawPromptRunner). Bound as raw JSON and walked property by
     // property so the "default" pointer and the runner objects can be told apart.
     public JsonElement? PromptRunners { get; set; }
+}
+
+/// <summary>
+/// Raw shape of the optional <c>autonomy</c> block (issue #361, doc 12 §3.4). Every field is optional; the
+/// whole block absent ⇒ <see cref="RawRunConfig.Autonomy"/> is null ⇒ the dial is inert. The raw→model
+/// mapping, its decided defaults (§10 I/N), and validation (GR2039/GR2040) are authored by the implement
+/// task — this is only the deserialization target.
+/// </summary>
+internal sealed class RawAutonomyConfig
+{
+    public string? EscalationThreshold { get; set; }
+
+    // gateThresholds keys are the three gate types: needs-human / wave-checkpoint (criticality levels) and
+    // review-gate (the escalate/proceed-unreviewed acknowledgment). Bound raw as string values; the mapping
+    // and its GR2039 value check are the implement task's job.
+    public Dictionary<string, string>? GateThresholds { get; set; }
+
+    public RawBlockerRetry? BlockerRetry { get; set; }
+    public int? MaxJudgeWidenings { get; set; }
+}
+
+/// <summary>Raw shape of the <c>autonomy.blockerRetry</c> sub-block (doc 12 §3.4/§4.2).</summary>
+internal sealed class RawBlockerRetry
+{
+    public int? MaxAttempts { get; set; }
+    public int? TotalWaitSeconds { get; set; }
 }
 
 /// <summary>Raw shape of one <c>promptRunners.&lt;name&gt;</c> config object (SSOT §2/§9).</summary>

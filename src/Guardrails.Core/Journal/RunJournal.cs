@@ -355,6 +355,59 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     }
 
     /// <summary>
+    /// Allocate the next durably-MONOTONIC, never-reused escalation <c>seq</c> for this run (doc 12 §7.1,
+    /// Finding 5) — the run-level counter <see cref="Execution.FileEscalationSink"/> stamps onto each
+    /// <c>logs/&lt;runId&gt;/escalations/&lt;seq&gt;-&lt;gate&gt;.json</c> record and the returned
+    /// <c>EscalationId</c>. It is PERSISTED run-level state — a small companion of <c>run.json</c> in the same
+    /// <c>state/</c> directory — and is NOT derived from the <c>escalations/</c> directory listing: so it keeps
+    /// climbing across a resume (a second <see cref="LoadOrCreate"/> re-reads the same run) and even after the
+    /// on-disk records are wiped, and a stale unconsumed answer can never bind a LATER escalation that reused
+    /// the same <c>{ runId, seq, gate, subject }</c> tuple (§7.1). Advances and persists atomically under the
+    /// same journal lock as every other mutation, so concurrent escalations never double-issue a seq.
+    /// </summary>
+    public int NextEscalationSeq()
+    {
+        lock (_gate)
+        {
+            int next = ReadEscalationSeq() + 1;
+            WriteEscalationSeq(next);
+            return next;
+        }
+    }
+
+    /// <summary>The escalation seq counter's on-disk home: a companion of <c>run.json</c> in the same <c>state/</c> dir.</summary>
+    private string EscalationSeqPath =>
+        Path.Combine(Path.GetDirectoryName(_journalPath)!, "escalation-seq.json");
+
+    /// <summary>Read the highest seq allocated so far (0 when the counter has never been written), tolerating a missing/corrupt file.</summary>
+    private int ReadEscalationSeq()
+    {
+        string path = EscalationSeqPath;
+        if (!File.Exists(path))
+        {
+            return 0;
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(path));
+            return doc.RootElement.TryGetProperty("lastSeq", out JsonElement value) && value.TryGetInt32(out int seq)
+                ? seq
+                : 0;
+        }
+        catch (JsonException)
+        {
+            // A corrupt/empty counter file must never crash an escalation; restart the counter (the
+            // escalations/ records + decisions[] audit remain the human-visible trail regardless).
+            return 0;
+        }
+    }
+
+    /// <summary>Persist the highest seq allocated so far, atomically (same-volume rename via <see cref="AtomicFile"/>).</summary>
+    private void WriteEscalationSeq(int lastSeq) =>
+        AtomicFile.WriteAllText(EscalationSeqPath, JsonSerializer.Serialize(new { lastSeq }, JournalJson.Options));
+
+    /// <summary>
     /// Charge OVERHEAD prompt spend that is not a task attempt (SSOT §7/§9.2, issues #269/#314) — the
     /// overwatcher's diagnose prompts, the AI-merge worker, and the terminal needs-human triage — to the
     /// run's cumulative cost. It is folded into <see cref="JournalCost.Total"/> so it BOTH counts toward the

@@ -1,0 +1,6 @@
+{
+  "description": "Amend docs/plans/12-autonomous-mode.md §10 K to resolve Open K in the negative (close/rescope to audit-only per #366)",
+  "stableId": "w1openk",
+  "dependsOn": [],
+  "writeScope": ["docs/plans/12-autonomous-mode.md"]
+}

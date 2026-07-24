@@ -1,0 +1,6 @@
+{
+  "description": "Implement the CriticalityJudge over the stub (advisory assessment via the overwatch-profile IPromptRunner; malformed/absent ⇒ escalate; threshold compare; the proceed-unreviewed clamp reusing ViolatesCompoundConfig semantics; the maxJudgeWidenings cap) so the authored assessment tests pass",
+  "stableId": "w3i09ca",
+  "dependsOn": ["08-author-tests-criticality-assessment"],
+  "writeScope": ["src/Guardrails.Core/Execution/CriticalityJudge.cs"]
+}

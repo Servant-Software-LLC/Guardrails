@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests + minimal stubs for the forensic substrate: the additive optional DecisionEntry fields + new decision tokens, and the append-only logs/<runId>/autonomy.jsonl detail writer (one compact JSON record per gate)",
+  "stableId": "w3a02fr",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/AutonomyForensicRecordsTests.cs",
+    "src/Guardrails.Core/Execution/DecisionEntry.cs",
+    "src/Guardrails.Core/Journal/AutonomyJsonl.cs"
+  ]
+}

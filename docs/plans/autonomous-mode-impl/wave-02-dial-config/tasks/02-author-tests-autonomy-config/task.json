@@ -1,0 +1,12 @@
+{
+  "description": "Author failing tests + minimal stubs for the autonomy-block config model + parse (populated block, defaults 5/900/3, ordered enum, and the REQUIRED inert-by-default byte-identical back-compat test)",
+  "stableId": "w2a2cf",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/AutonomyConfigTests.cs",
+    "src/Guardrails.Core/Model/AutonomyConfig.cs",
+    "src/Guardrails.Core/Model/RunConfig.cs",
+    "src/Guardrails.Core/Loading/RawManifests.cs",
+    "src/Guardrails.Core/Loading/PlanLoader.cs"
+  ]
+}

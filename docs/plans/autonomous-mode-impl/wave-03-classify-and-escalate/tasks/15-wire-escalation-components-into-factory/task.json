@@ -1,0 +1,16 @@
+{
+  "description": "Wire the escalation machinery at the composition root (#120), part 1 of 3: SchedulerFactory.Create CONSTRUCTS + INJECTS the run-level escalation components (FileEscalationSink, CriticalityJudge, BlockerRetry) into the Scheduler ONLY when the plan carries an autonomy block under autonomyPolicy:auto (byte-identical/inert when absent), and Scheduler accepts them + performs classify-then-act at the needs-human/wave-checkpoint gate (GateClassifier.Classify → escalate via the sink / CriticalityJudge best-guess / BlockerRetry for class-(b) transients). writeScope spans SchedulerFactory.cs + Scheduler.cs because the factory-construct and the Scheduler-accept-params are one compile unit under repo-wide TreatWarningsAsErrors.",
+  "stableId": "w3i15fw",
+  "dependsOn": [
+    "05-implement-gate-classifier",
+    "07-implement-blocker-retry",
+    "09-implement-criticality-assessment",
+    "11-implement-escalation-sink",
+    "13-implement-answer-consumption"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/SchedulerFactory.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

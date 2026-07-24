@@ -1,0 +1,6 @@
+{
+  "description": "Apply the #361 autonomy-block delta to docs/plans/02-schemas-and-contracts.md §2/§2.1 (+ §14.4 note): the optional inert-by-default autonomy block, orthogonal-to-autonomyPolicy, GR2039/GR2040",
+  "stableId": "w2ssot",
+  "dependsOn": [],
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md"]
+}

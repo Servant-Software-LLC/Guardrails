@@ -1,0 +1,6 @@
+{
+  "description": "Apply the #366 review-marker attestation delta to docs/plans/02-schemas-and-contracts.md §13 (SSOT-first, invariant 4)",
+  "stableId": "w1ssot",
+  "dependsOn": [],
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md"]
+}

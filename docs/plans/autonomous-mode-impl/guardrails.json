@@ -1,0 +1,30 @@
+{
+  // Run configuration — see docs/plans/02-schemas-and-contracts.md §2.
+  // ONE shared run config for the whole WAVED plan; there is no per-wave config in v1 (SSOT §14.1).
+  // workspace "../../.." = the repo root (this plan folder is docs/plans/autonomous-mode-impl/), so every
+  // writeScope and guardrail path below is repo-root-relative and child processes run at the repo root.
+  "version": 1,
+  "maxParallelism": 2,
+  "defaultRetries": 2,
+  "defaultTimeoutSeconds": 1800,
+  "guardrailMode": "failFast",
+  "workspace": "../../..",
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": [
+        "Read", "Write", "Edit", "Grep", "Glob",
+        "Bash(dotnet *)", "Bash(pwsh *)", "Bash(powershell *)",
+        "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)", "Bash(git status*)"
+      ],
+      "maxTurns": 50,
+      "guardrailOverrides": {
+        "permissionMode": "default",
+        "allowedTools": ["Read", "Grep", "Glob", "Bash(dotnet *)", "Bash(pwsh *)", "Bash(git diff*)", "Bash(git show*)"],
+        "maxTurns": 10
+      }
+    }
+  }
+}

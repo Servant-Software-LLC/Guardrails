@@ -1,0 +1,6 @@
+{
+  "description": "Implement the ReviewMarker attestation block over the stubs (read-tolerant classification, version→2 write, WhenWritingNull, symmetric digest) so the authored tests pass",
+  "stableId": "w1i4at",
+  "dependsOn": ["03-author-tests-review-attestation"],
+  "writeScope": ["src/Guardrails.Core/Review/"]
+}

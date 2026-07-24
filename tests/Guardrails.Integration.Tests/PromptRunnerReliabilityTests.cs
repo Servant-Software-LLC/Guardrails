@@ -235,9 +235,19 @@ public sealed class PromptRunnerReliabilityTests
         (RunReport report, TaskJournalEntry entry, SequencingRunner used) =
             await RunOneTaskAsync(runner, observer, defaultRetries: 0);
 
-        Assert.Equal(TaskOutcome.Succeeded, Assert.Single(report.Tasks).Outcome);
+        TaskResult settled = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, settled.Outcome);
         Assert.Equal(3, used.Calls);                       // 2 transient + 1 success
         Assert.Equal(JournalTaskStatus.Succeeded, entry.Status);
+
+        // #381/doc 12 §4.2: a class-(b) transient that PAUSED and then cleared within budget must SURFACE a
+        // resolved-transient signal on the succeeded result — the seam the autonomous layer reads to record a
+        // `blocker-retried` forensic entry. Before this fix the executor swallowed the within-budget resolution
+        // silently (settled Succeeded with no signal), so a resolved transient recorded nothing. Two backoff
+        // pauses preceded success, so the ledger reads pauses=2, waited=2s+4s (the shipped exponential schedule).
+        Assert.NotNull(settled.ResolvedTransient);
+        Assert.Equal(2, settled.ResolvedTransient!.Pauses);
+        Assert.Equal(TimeSpan.FromSeconds(6), settled.ResolvedTransient.Waited);
 
         // The retry budget was preserved: only ONE attempt was journaled (the paused retries are
         // observe-only — never journaled, never counted), and it is the succeeded one.

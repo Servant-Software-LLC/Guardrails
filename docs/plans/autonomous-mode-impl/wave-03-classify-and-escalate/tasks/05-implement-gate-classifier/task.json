@@ -1,0 +1,6 @@
+{
+  "description": "Implement the deterministic GateClassifier mapping over the stub (known signals per doc 12 §4.1; UNKNOWN ⇒ hard-blocker-permanent = escalate, the safe default; terminal-exhaustion/no-op ⇒ floor) so the authored classifier tests pass",
+  "stableId": "w3i05cl",
+  "dependsOn": ["04-author-tests-gate-classifier"],
+  "writeScope": ["src/Guardrails.Core/Execution/GateClassifier.cs"]
+}

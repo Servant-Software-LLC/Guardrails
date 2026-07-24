@@ -1,0 +1,11 @@
+{
+  "description": "Implement AnswerFileConsumer over the stub (verbatim identity + dual-hash binding, monotonic-seq/CAS once-only cross-runId consume, answerable-gate gating incl. clamped-hard-call/review-gate/terminal rejection, delimited-UNTRUSTED injection via a new PromptComposer.ComposeAction optional section, answer-injected decision + provenance) so the authored security matrix passes",
+  "stableId": "w3i13ac",
+  "dependsOn": ["12-author-tests-answer-consumption", "11-implement-escalation-sink"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/AnswerFileConsumer.cs",
+    "src/Guardrails.Core/Execution/AnswerFile.cs",
+    "src/Guardrails.Core/Prompts/PromptComposer.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}
