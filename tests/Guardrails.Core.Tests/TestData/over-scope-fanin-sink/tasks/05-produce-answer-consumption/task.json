@@ -1,0 +1,5 @@
+{
+  "description": "Produce the 05-produce-answer-consumption component (an upstream producer of the fan-in sink).",
+  "dependsOn": [],
+  "writeScope": ["src/Guardrails.Core/Execution/AnswerConsumption.cs"]
+}

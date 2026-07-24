@@ -786,6 +786,38 @@ resolve the real concrete object without standing up the whole feature; the sour
 fallback when the dispatch can only be inspected statically (the resolution is buried behind DI you can't
 easily drive in a guardrail). Prefer the type assertion, then the proximity grep.
 
+### 10e. Drive-the-real-seam contract test — prove the component through the ACTUAL seam (#382)
+
+The .NET realization of the catalogue's "drive-the-real-seam" archetype. Where §10a/§10b prove the
+**factory wires the collaborator**, this proves the **collaborator is not broken through the real
+in-process seam** — the passing-but-blind gap. A component whose unit tests inject a **fake
+`IPromptRunner`** (or fake executor / scheduler / factory) goes green while it throws through the real
+`ClaudePromptRunner` (the motivating `CriticalityJudge.BuildInvocation` empty-`StreamLogPath` bug). The
+implement task carries a **contract test that drives the REAL seam** — construct the component with the
+**production seam implementation**, faking only the **process/CLI boundary underneath it** (a fake
+`claude` executable via the runner's process-launch config, NEVER a fake `IPromptRunner`):
+
+```csharp
+// catches: CriticalityJudge passes against a fake IPromptRunner but is broken through the real
+//          ClaudePromptRunner (empty StreamLogPath throws -> catch safe-defaults to Escalate,
+//          escalating 100% of the time). Drives the REAL runner over a fake CLI process, never a
+//          fake of the in-process IPromptRunner seam itself.
+[Fact]
+public async Task Judge_BuildsAValidInvocation_ForTheRealPromptRunner()
+{
+    IPromptRunner realRunner = new ClaudePromptRunner(FakeClaudeCli.Path, ...);  // real seam, fake PROCESS
+    var judge = new CriticalityJudge(realRunner, ...);
+    CriticalityVerdict v = await judge.AssessAsync(sampleGate, ct);
+    Assert.NotEqual(CriticalityDefault.EscalateOnError, v.Source);  // did NOT hit the catch-and-safe-default
+}
+```
+
+The guardrail is the same `dotnet test --filter "…RealSeam…"` shape as §10a, in the §4.2 capture-then-
+re-emit form. Author it via the TDD pair: the test-author task's `tests-fail-on-current-code` proves it
+goes RED against the broken component, so it cannot be a tautology. **Distribute** these across the
+component tasks (one real-seam test at each component's implement task) rather than deferring all real-path
+proof to one terminal factory-driving sink — that concentration is the §10 (#378) over-scope fingerprint.
+
 ## 11. Strip comments before a forbidden-keyword scan — SQL and C# syntax (#97, #98)
 
 The catalogue's comment-blind keyword-scan rule (catalogue → "Comment-blind keyword scan"): a

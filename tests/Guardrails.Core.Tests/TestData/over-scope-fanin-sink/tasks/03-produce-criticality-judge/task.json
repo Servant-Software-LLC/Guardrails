@@ -1,0 +1,5 @@
+{
+  "description": "Produce the 03-produce-criticality-judge component (an upstream producer of the fan-in sink).",
+  "dependsOn": [],
+  "writeScope": ["src/Guardrails.Core/Execution/CriticalityJudge.cs"]
+}

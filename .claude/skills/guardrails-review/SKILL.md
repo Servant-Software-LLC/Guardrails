@@ -341,6 +341,21 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   output, or reflect on the constructed object for the non-null collaborator with a contrast case —
   the `Factory_Wires*` shape). Missing wiring task OR a seam-injecting guardrail OR reliance on
   whole-suite green to cover wiring = BLOCKER. (Catalogue → composition-root section, `stacks/dotnet.md §10`.)
+- **Passing-but-blind faked seam (#382)**: the review question is *what real path does this fake stand in
+  for, and who proves that path?* For every `author-tests-*` task that **injects a fake of an in-process
+  seam the real run drives** (an `IPromptRunner`, the executor, the scheduler, a factory / DI-resolved
+  collaborator), find the **paired task proving the component through the REAL seam** — a contract test
+  that constructs the component with the production seam and fakes only the process/CLI boundary
+  underneath (never the in-process seam itself). A component certified green solely against a fake of the
+  seam the run exercises is a *green light over a broken wire* (the `CriticalityJudge` escalated 100% of
+  the time through the real `ClaudePromptRunner`; the executor's real `TransientBackoff` never recorded
+  `blocker-retried` — both green on fakes). **BLOCKER** when the un-proven seam is a **composition-root /
+  production path**; **WEAK** when a **thin terminal join-check exists** but per-component real-seam proof
+  is missing (the proof is deferred to one sink, not absent). Name the **concrete seam** and the **task
+  that should carry the proof** (the component's own implement task, distributed — not the terminal sink,
+  which would re-create the #378 over-scope). Shares a root with the Over-scoped-task probe (§3): the sink
+  is over-scoped *because* it concentrates this deferred proof. (Catalogue → "drive-the-real-seam";
+  `stacks/dotnet.md §10e`.)
 - **Wrong-implementation swap (#158)**: the next failure past #120 — given the dispatch IS wired,
   is the **right concrete type paired with the right mode**? For a dispatch / wiring task that routes
   **≥2 enum (or discriminated) values to ≥2 concrete types** AND whose dispatch tests use
@@ -493,6 +508,18 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   smaller tasks they should become, each with its test re-baseline scoped to that piece. This is the
   inverse of the missing-insertion check (§4): there a deliverable maps to NO task; here ONE task
   carries too many deliverables.
+  **Objective teeth — read the emitted JSON, don't judge the description (#378).** The (a)–(d) triggers
+  above are description-level and an author/reviewer can rationalize past them for the **fan-in-sink /
+  composition-root-wiring** archetype ("it's just wiring"). So ALSO read the emitted `task.json`:
+  **`writeScope` cardinality + `action.maxTurns` + `dependsOn` fan-in**. Flag **BLOCKER** (a certain
+  thrash, not a mere risk) on the co-occurring fingerprint — **`maxTurns` near the ceiling AND
+  `writeScope` ≥ ~4**, OR **`dependsOn` fan-in ≥ ~5 with a multi-file `writeScope`** — naming the
+  proposed split: **one task per collaborator wiring** (factory registration, scheduler call-site, CLI
+  plumbing), with the turn-expensive composition-root proof (drive the REAL factory, #120) isolated to a
+  thin sink. This is the same signal `guardrails validate` emits as a **GR2042** WARN: **cross-check it
+  and RESOLVE it** (propose the concrete split), don't merely re-report the warning. Distinct from the
+  passing-but-blind probe (#382) below — that one shares this root (the sink is over-scoped *because* it
+  concentrates deferred integration proof) but asks a different question (which real path is unproven).
 <!-- BEGIN ADDED PROBES #74/#75/#76/#96 -->
 - **Keyword-not-structural for a METHOD CALL (#76)**: a "file calls `B.Method()`" guardrail that greps a
   **bare method name** — `RunAsync\s*\(` — passes on a comment (`// RunAsync(scope)`), a **local stub**
@@ -965,6 +992,8 @@ finding remains unaddressed.
 - [ ] A **brownfield** plan (modifies project(s) with existing tests in the touched area, worth-it gate passing) carries the #181 positive baseline as a **`<plan>/preflights/` POSITIVE check** (the general positive-baseline archetype — e.g. `01-baseline-<area>-tests-green`), NOT a no-op ROOT task: a plan-level Full Flight Check evaluated ONCE before the DAG against the starting repo, running the EXISTING area tests **via `--filter`** and asserting they pass (area-scoped, deduped one-per-area, #179-re-emit form); it targets the PRE-EXISTING tests via `--filter`, NOT the about-to-be-authored red tests and NOT the whole suite (whole-suite scope hits the #165/#176 compile-coupling trap → BLOCKER); it is DISTINCT from the terminal `<plan>/guardrails/` gate (green START before the DAG vs green END on the merged HEAD). A **greenfield** plan (or one failing the worth-it gate) has NO baseline preflight (a vacuous `dotnet test` over a zero-test project is itself a finding). Missing baseline preflight on brownfield is WEAK (BLOCKER when the area's existing tests are in fact red at start). A RED baseline preflight halts the run before the DAG (the general Full-Flight-Check semantics) (#181).
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has NO `integrationGate: true` sink task — a lingering `integrationGate: true` in any `task.json` is the BLOCKER (a **GR2029** hard error), not its absence — and instead carries a non-empty **`<plan>/guardrails/`** folder (the Terminal Gate) with **≥1 real integration-set re-run** (a whole-repo build / full suite / union invariant, `validate` enforces this as **GR2028**; a folder that merely exists or holds only a tautological `exit 0` certifies nothing → BLOCKER). Its `scope: "integration"` union-guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if X present, verify it"), NOT the full build or whole suite: a full-build or whole-suite guardrail marked `scope: "integration"` in the terminal folder is the #125 terminal-postcondition anti-pattern → **BLOCKER** (it red-halts correct intermediate unions where downstream TDD tasks have not run yet); the full build/suite must be **LOCAL** (#165). (`scope: "integration"` itself is unchanged — the per-union re-verify tag, SSOT §4.3.)
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
+- [ ] Every `author-tests-*` task that fakes an **in-process seam the real run drives** (`IPromptRunner`/executor/scheduler/factory) has a paired **real-seam contract test** proving the component through the ACTUAL seam (faking only the process/CLI boundary, never the in-process seam) — BLOCKER when the un-proven seam is a composition-root/production path, WEAK when only a thin terminal join-check covers it; real-path proof is DISTRIBUTED to each component's implement task, not concentrated in one end-of-wave sink (that re-creates the #378 over-scope) (#382).
+- [ ] No task carries the **structural over-scope fingerprint** (GR2042): a `maxTurns`-near-ceiling + `writeScope` ≥ ~4 co-occurrence, `writeScope` ≥ ~6, or a `dependsOn` fan-in ≥ ~5 with a multi-file `writeScope` — the fan-in-sink / composition-root-wiring archetype. BLOCKER with the proposed split (one task per collaborator wiring; composition-root proof isolated to a thin sink); resolve the `guardrails validate` GR2042 WARN, don't merely re-report it (#378).
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).

@@ -229,13 +229,30 @@ it is the single most likely `needs-human` in a run (the exact retry-cheapness a
   references (a rough line: **deleting ≥3 source files, or touching ≳10 files / test references** in
   one action). A wide-blast task fails the retry-cheapness rule by construction: a one-line guardrail
   miss re-does the entire multi-file change. Split so each task's diff — and therefore its retry — is
-  bounded.
+  bounded. **Turn-budget lowers this threshold sharply (#378).** For a task already near the `maxTurns`
+  ceiling, the blast-radius threshold DROPS — flag at **`writeScope` ≥ ~3–4 paths, not ≥10**; near-max
+  `maxTurns` AND a multi-file surface is the exact thrash-and-timeout profile (the author's own max-budget
+  bump is an admission the task is turn-heavy). `validate` emits **GR2042** (WARN) on precisely this
+  co-occurrence — treat that warning as a fired trigger, not noise to wave through.
 - **(c) Maps 1:1 to a design milestone.** A plan milestone / phase / numbered section is NOT a task —
   it is a *bundle* of deliverables. If a candidate task is "implement Milestone M4," decompose it into
   the deliverables inside M4; never size a milestone 1:1 to a task.
 - **(d) Retry re-runs expensive work.** Estimate what a single failed guardrail forces to redo. If a
   retry re-runs an hour of refactoring (a multi-deletion, a 100+-ref re-baseline), the task is
   mis-sized by definition. Split so each task's retry is cheap.
+- **(e) Fan-in-sink / composition-root wiring (#378).** "Wire the components together" is **NOT one
+  deliverable** when it spans multiple collaborators or the composition root — each wire-up (factory
+  registration, scheduler call-site, CLI exit-code plumbing) is a **separately-verifiable integration
+  point**; **"it's just wiring" is a rationalization that dodges the split** (it reads as a single outcome
+  precisely because it is described as one). Treat a task that **composes the outputs of ≥2 upstream
+  producers** into a factory / `Program.cs` / dispatch site as **N tasks** (one collaborator wiring each),
+  isolating the turn-expensive composition-root proof (drive the REAL factory, #120) to a **thin sink**.
+  This is the archetype the older triggers missed: it is not "milestone-sized," creates/deletes nothing,
+  and sits at half the ≳10-file line — yet each file is a distinct integration surface the retry re-runs.
+  Its structural tell is the co-occurrence in (b) — a near-max `maxTurns` plus a multi-file `writeScope`
+  plus a wide `dependsOn` fan-in — the same fingerprint `validate` flags **GR2042**. This trigger shares a
+  root with the passing-but-blind check (#382, Step 4 analysis): the sink is over-scoped *because* it
+  concentrates real-seam integration proof that should be distributed to each collaborator's own task.
 
 **Carry the plan's own feasibility signals into sizing (#111).** When the plan's
 feasibility / self-critique / risk section flags a milestone as **heavy, over-packed, or
@@ -567,6 +584,23 @@ optional:
   that one greps `Program.cs` + smoke-tests a route for a *server serving over a port*; this one
   asserts a *factory/container constructs and injects an internal collaborator*. A plan can need
   both — wire the entry point to the launcher AND wire a collaborator into the factory.)
+- **Faked-seam ⇒ paired real-seam proof (#382 — passing but blind)** — does an `author-tests-*` task
+  **fake an in-process seam the real run drives** (an `IPromptRunner`, the executor, the scheduler, a
+  factory) via DI? A unit test that injects a fake of the very seam the production path exercises can go
+  **GREEN over a component that is broken through the real composition root** — a *green light over a
+  broken wire*. Where #120 asks "is the component wired at all?", this asks "is the component **proven
+  through the seam the run actually drives**, or only against a fake of it?". Two authoring moves close it:
+  1. **The implement task carries a real-seam contract test that drives the ACTUAL seam.** A fake
+     **CLI / process / subprocess** is fine (the #120 wiring test already fakes the *process* boundary),
+     but a **fake of the in-process seam itself is NOT** — the test must exercise the real
+     `IPromptRunner` / executor / scheduler / factory the run will use.
+  2. **Distribute the composition-root proof.** Prove each component **through the real factory AT the
+     task that builds it**, where feasible, so an integration bug surfaces in-scope and early. Keep only
+     a **thin join-check** in the terminal `<plan>/guardrails/` gate over already-integration-proven
+     parts. **Do NOT concentrate all real-path proof in one over-scoped end-of-wave sink** — that sink IS
+     the **#378 fingerprint** (over-scoped *because* it concentrates deferred integration risk, and it
+     cannot fix a cross-file bug it finds), and the two issues share one root. (Catalogue →
+     "drive-the-real-seam"; `stacks/dotnet.md §10e`.)
 - **Dispatch / factory pairing (#158 — is the RIGHT impl wired to the RIGHT mode?)** — does this task
   **dispatch from an enum / discriminated value to one of ≥2 concrete implementations**
   (`ImportMode.TcApiLocal → new TcApiLocalImporter()`, a `switch`/`if` selecting a handler per mode)?

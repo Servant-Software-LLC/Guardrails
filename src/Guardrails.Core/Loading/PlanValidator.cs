@@ -57,6 +57,7 @@ public sealed class PlanValidator
         ValidateDuplicateCheckNames(plan, diagnostics);
         ValidateBannedGuardrailPatterns(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
+        ValidateStructuralOverScope(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
@@ -890,6 +891,74 @@ public sealed class PlanValidator
                         "scope to a specific directory or file pattern (SSOT §3.4)."));
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// The named turn-budget threshold for the GR2042 structural over-scope lint (issue #378). A task
+    /// whose <c>action.maxTurns</c> is at or above this is turn-heavy by the author's OWN #94 budget bump;
+    /// combined with a multi-file <c>writeScope</c> it is the thrash-and-timeout profile. Keyed here (≈60)
+    /// rather than on the current literal max (75) so the lint does not silently break when the max budget
+    /// bump moves — a task bumped to any near-max budget still trips clause (i).
+    /// </summary>
+    public const int OverScopeTurnThreshold = 60;
+
+    /// <summary>
+    /// GR2042 (WARNING, issue #378 / SSOT §3.4): the deterministic structural over-scope lint. Reads the
+    /// mechanically-checkable over-scope signals sitting in the emitted <c>task.json</c> — <c>writeScope</c>
+    /// cardinality, <c>action.maxTurns</c>, and <c>dependsOn</c> fan-in — and warns on the co-occurring
+    /// fingerprint of a fan-in / composition-root-wiring SINK (the motivating task-15 shape: a turn-heavy
+    /// budget bump PLUS a multi-file surface PLUS a wide fan-in). A WARNING, not an error: it surfaces the
+    /// over-scope for <c>/guardrails-review</c> to acknowledge or resolve with a split, moving the whole
+    /// thrash-and-timeout class LEFT of the run deterministically, without hard-failing a plan whose author
+    /// had a defensible reason. Post-#389 every task carries a <c>writeScope</c>; a non-writing task's
+    /// <c>[]</c> (Count 0) never trips any clause, so this never fires on a read-only/verification task.
+    /// </summary>
+    private static void ValidateStructuralOverScope(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            int writeScopeCount = task.WriteScope?.Count ?? 0;
+            int dependsOnCount = task.DependsOn.Count;
+            int? maxTurns = task.Action.MaxTurns;
+
+            // Each clause is a distinct thrash-and-timeout profile (SSOT §3.4). Build the fired-signal
+            // list so the message names exactly WHICH co-occurrence tripped, not a generic "too big".
+            var signals = new List<string>();
+
+            // (i) turn-heavy budget bump AND a multi-file surface — the smoking-gun co-occurrence.
+            if (maxTurns is int turns && turns >= OverScopeTurnThreshold && writeScopeCount >= 4)
+            {
+                signals.Add(
+                    $"action.maxTurns {turns} (>= {OverScopeTurnThreshold}, turn-heavy by the author's own " +
+                    $"budget bump) co-occurs with a {writeScopeCount}-path writeScope");
+            }
+
+            // (ii) a wide blast radius regardless of budget.
+            if (writeScopeCount >= 6)
+            {
+                signals.Add($"writeScope spans {writeScopeCount} paths (wide blast radius; a one-line " +
+                    "guardrail miss re-does the whole multi-file change)");
+            }
+
+            // (iii) a fan-in sink: many upstream producers composed into a multi-file composition root.
+            if (dependsOnCount >= 5 && writeScopeCount >= 3)
+            {
+                signals.Add($"dependsOn fans in {dependsOnCount} upstream producers into a " +
+                    $"{writeScopeCount}-path writeScope (a fan-in / composition-root sink)");
+            }
+
+            if (signals.Count == 0) continue;
+
+            diagnostics.Add(Warning(DiagnosticCodes.StructuralOverScope, task.Directory,
+                $"Task '{task.Id}' carries the structural over-scope fingerprint of a fan-in / " +
+                $"composition-root-wiring sink: {string.Join("; ", signals)}. Such a task thrashes at run " +
+                "time — every guardrail miss re-runs the whole oversized action, the most likely " +
+                "needs-human in a run. Split it into one task per collaborator wiring (factory " +
+                "registration, scheduler call-site, CLI plumbing — each a separately-verifiable " +
+                "integration point), isolating the turn-expensive composition-root proof to a thin sink " +
+                "(SSOT §3.4, #378). 'It's just wiring' is a rationalization that dodges the split; this is " +
+                "a WARN for /guardrails-review to resolve, not a hard failure."));
         }
     }
 

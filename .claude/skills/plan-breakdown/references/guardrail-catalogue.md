@@ -731,6 +731,58 @@ both go green over an unwired feature. A full-suite-green gate over seam-injecte
 The .NET realization (the reflection-on-factory pattern + the drive-the-real-factory integration
 test) is `stacks/dotnet.md §10`.
 
+## Drive-the-real-seam — the component is proven through the ACTUAL seam, not a fake of it (#382)
+
+**Passing but blind.** A per-task TDD guardrail proves a component **in isolation, against a FAKE for
+the very seam the real run drives** — a fake `IPromptRunner` injected into a `CriticalityJudge`, a fake
+executor, a fake scheduler, a fake factory. The guardrail goes **GREEN over a component that is broken
+through the real composition root**: the fake never touches the `StreamLogPath` the real
+`ClaudePromptRunner` throws on; the test never drives the executor's real `TransientBackoff`, so a
+class-(b) transient that should record `blocker-retried` is silently swallowed. Both were **certified
+green by their own guardrails while broken through the real run path** (the `autonomous-mode-impl` wave-3
+dogfood). The whole value proposition is "a deterministic gate certifies" — but *a unit test that fakes a
+seam the real run exercises, with no paired real-seam test, certifies nothing about the run.*
+
+This is the **per-component** root cause whose **per-wave** symptom is #120's terminal wiring sink: when
+every component is proven only against fakes, the ONLY thing that exercises the real wiring is one
+end-of-wave "drive the real factory" task — which then surfaces **every** masked integration bug at once,
+late, in a task that is over-scoped by construction (#378) and **cannot fix** them (each bug lives in a
+different upstream task's file, outside its `writeScope`). "Big-bang integration at the end" is exactly
+the anti-pattern TDD/CI methodology warns against; the wave decomposition must not bake it in.
+
+**Decision rule — when does this fire?** When an `author-tests-*` task **injects a fake of an in-process
+seam the production run drives** (a prompt runner, the executor, the scheduler, a factory / DI-resolved
+collaborator) AND no task provides a **paired real-seam / contract test** for that component.
+
+**The archetype: a real-seam contract test on the IMPLEMENT task.** The component's implement task carries
+a test (author it RED via the TDD pair) that drives the **ACTUAL** seam the run uses — the real
+`IPromptRunner` / executor / scheduler / factory — and asserts the behaviour the real seam exposes (the
+`StreamLogPath` is honoured; the transient path records `blocker-retried`). Its `# catches:` sentence
+follows this template:
+
+```
+# catches: a component that passes its unit tests against a faked <seam> but is broken
+#          through the real <seam> (passing-but-blind) - e.g. CriticalityJudge green against a
+#          fake IPromptRunner but throwing on the real ClaudePromptRunner's StreamLogPath.
+```
+
+**The boundary rule — fake the process, NEVER the in-process seam.** Faking the **CLI / process /
+subprocess** boundary is legitimate and expected: the #120 wiring test itself runs the real factory while
+the underlying agent CLI is stubbed, and a real-seam test may still shell out to a fake external binary.
+What is FORBIDDEN is faking **the in-process seam the component under test collaborates with** — that is
+the exact substitution that blinds the guardrail. Rule of thumb: *fake what crosses a process boundary;
+drive the real thing for everything that stays in-process.*
+
+**Distribute, don't concentrate.** Prefer proving each component through the real factory **at the task
+that builds it** (so a bug surfaces in-scope and early) over deferring all real-path proof to a terminal
+sink. Keep a final full-path wiring test, but as a **thin join-check over already-integration-proven
+parts** — not the first place the real path is ever exercised. Concentrating it is the #378 over-scope
+fingerprint; the two share a root.
+
+This archetype is a candidate for the **#350 vetted-guardrail-library** — the "drive-the-real-seam"
+contract-test shape is reusable across plans rather than hand-authored once per wave. The .NET realization
+is `stacks/dotnet.md §10e`.
+
 ## Dispatch / factory wiring — the CORRECT concrete type is paired with the CORRECT mode (#158)
 
 The **next failure past #120.** #120 asks "is the component wired at all?"; this asks "is it wired to

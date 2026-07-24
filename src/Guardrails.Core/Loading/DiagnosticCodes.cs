@@ -442,6 +442,32 @@ public static class DiagnosticCodes
     /// </summary>
     public const string MissingWriteScope = "GR2041";
 
-    // CURRENT next-free code: GR2042. GR2041 (MissingWriteScope) is the last taken code
-    // above. When allocating a new code, take GR2042 and update this line (issue #320).
+    // --- structural over-scope lint (issue #378, SSOT §3.4) ------------------------------------------
+
+    /// <summary>
+    /// A task's emitted <c>task.json</c> carries the co-occurring STRUCTURAL over-scope fingerprint of a
+    /// fan-in / composition-root-wiring SINK (issue #378, SSOT §3.4). A WARNING, not an error: the signals
+    /// are mechanically checkable from the task graph, but "over-scoped" is a judgement the author may have
+    /// a defensible reason for, so this surfaces it for <c>/guardrails-review</c> to acknowledge or resolve
+    /// rather than hard-failing <c>validate</c>. Fires when ANY of the following holds — each is a profile
+    /// that thrashes and times out mid-run, re-running the whole oversized action on every guardrail miss:
+    /// <list type="bullet">
+    ///   <item>(i) <c>action.maxTurns &gt;= </c><see cref="Loading.PlanValidator.OverScopeTurnThreshold"/>
+    ///     AND <c>writeScope.Count &gt;= 4</c> — the author's own turn-heavy budget bump co-occurring with a
+    ///     multi-file surface is the exact thrash-and-timeout profile (the motivating task-15 shape);</item>
+    ///   <item>(ii) <c>writeScope.Count &gt;= 6</c> regardless of budget — a wide blast radius whose retry
+    ///     re-does the whole multi-file change;</item>
+    ///   <item>(iii) <c>dependsOn.Count &gt;= 5</c> AND <c>writeScope.Count &gt;= 3</c> — a fan-in sink that
+    ///     composes ≥5 upstream producers into a multi-file composition root.</item>
+    /// </list>
+    /// The message names the offending signals and the split remedy (one task per collaborator wiring, with
+    /// the turn-expensive composition-root proof isolated to a thin sink). Post-#389 every task has a
+    /// <c>writeScope</c>, so cardinality is always present; a non-writing task's <c>[]</c> (Count 0) never
+    /// trips any clause. Keys on a NAMED turn threshold (≈60), NOT the current literal max (75), so the lint
+    /// does not silently break when the #94 max budget bump moves.
+    /// </summary>
+    public const string StructuralOverScope = "GR2042";
+
+    // CURRENT next-free code: GR2043. GR2042 (StructuralOverScope) is the last taken code
+    // above. When allocating a new code, take GR2043 and update this line (issue #320).
 }
