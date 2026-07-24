@@ -1960,7 +1960,7 @@ public sealed class Scheduler
                 await ClassifyAndActAsync(
                     GateSignal.AgentNeedsHuman(question), gate: "needs-human", subject: task.Id, boundary: "task",
                     question: question, definitionHash: definitionHash, criticalityGate: CriticalityGate.NeedsHuman,
-                    ct).ConfigureAwait(false);
+                    ct, options: result.NeedsHumanOptions).ConfigureAwait(false);
             }
             else if (result.Outcome == TaskOutcome.RateLimited)
             {
@@ -2000,12 +2000,14 @@ public sealed class Scheduler
     /// </summary>
     private async Task ClassifyAndActAsync(
         GateSignal signal, string gate, string subject, string boundary, string? question,
-        string definitionHash, CriticalityGate criticalityGate, CancellationToken ct)
+        string definitionHash, CriticalityGate criticalityGate, CancellationToken ct,
+        IReadOnlyList<string>? options = null)
     {
+        options ??= [];
         switch (GateClassifier.Classify(signal))
         {
             case GateClass.JudgmentCall:
-                await ActOnJudgmentCallAsync(gate, subject, boundary, question, definitionHash, criticalityGate, ct)
+                await ActOnJudgmentCallAsync(gate, subject, boundary, question, definitionHash, criticalityGate, options, ct)
                     .ConfigureAwait(false);
                 break;
 
@@ -2015,7 +2017,7 @@ public sealed class Scheduler
 
             default: // HardBlockerPermanent or Floor — no best-guess, no retry clears it: halt-and-escalate.
                 EscalateGate(gate, subject, boundary, question, definitionHash, "hard-blocker-permanent",
-                    criticality: null);
+                    criticality: null, options: options);
                 break;
         }
     }
@@ -2027,11 +2029,12 @@ public sealed class Scheduler
     /// </summary>
     private async Task ActOnJudgmentCallAsync(
         string gate, string subject, string boundary, string? question, string definitionHash,
-        CriticalityGate criticalityGate, CancellationToken ct)
+        CriticalityGate criticalityGate, IReadOnlyList<string> options, CancellationToken ct)
     {
         if (_criticalityJudge is null)
         {
-            EscalateGate(gate, subject, boundary, question, definitionHash, "judgment-call", criticality: null);
+            EscalateGate(gate, subject, boundary, question, definitionHash, "judgment-call", criticality: null,
+                options: options);
             return;
         }
 
@@ -2053,7 +2056,8 @@ public sealed class Scheduler
                 Context = BuildGateContext(gate, subject, question),
                 Criticality = criticality,
                 DefinitionHash = definitionHash,
-                At = DateTimeOffset.UtcNow
+                At = DateTimeOffset.UtcNow,
+                Options = options
             });
             // The sink already appended the 'escalated' decisions[] entry + emitted DecisionRecorded; add the
             // run-level autonomy.jsonl detail line (§6.3).
@@ -2178,7 +2182,7 @@ public sealed class Scheduler
     /// </summary>
     private void EscalateGate(
         string gate, string subject, string boundary, string? question, string definitionHash,
-        string classification, string? criticality)
+        string classification, string? criticality, IReadOnlyList<string>? options = null)
     {
         _escalationSink!.Escalate(new EscalationRequest
         {
@@ -2188,7 +2192,8 @@ public sealed class Scheduler
             Context = BuildGateContext(gate, subject, question),
             Criticality = criticality,
             DefinitionHash = definitionHash,
-            At = DateTimeOffset.UtcNow
+            At = DateTimeOffset.UtcNow,
+            Options = options ?? []
         });
         AppendAutonomyRecord(gate, boundary, subject, classification, DecisionTokens.Escalated,
             criticality, confidence: null, threshold: null, question: question, bestGuess: null, rationale: null);

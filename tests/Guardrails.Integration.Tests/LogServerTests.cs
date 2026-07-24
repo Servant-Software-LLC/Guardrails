@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Model;
@@ -614,11 +615,163 @@ public sealed class LogServerTests
             File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(1));
         }
 
+        /// <summary>
+        /// Author an escalation record under this run's <c>logs/&lt;runId&gt;/escalations/</c> in the
+        /// FileEscalationSink shape (nested <c>id</c> + top-level fields + <c>options</c>), so the #387 v2
+        /// pick endpoints have something to read. <paramref name="options"/> empty ⇒ a free-text escalation.
+        /// </summary>
+        public void WriteEscalation(
+            int seq, string gate, string subject, IReadOnlyList<string> options,
+            string? criticality = "moderate", string status = "open")
+        {
+            string escDir = Path.Combine(Dir, "logs", RunId, "escalations");
+            Directory.CreateDirectory(escDir);
+            var record = new
+            {
+                gate,
+                subject,
+                question = $"[{gate}] which option should '{subject}' take?",
+                context = "logs pointer + failure detail",
+                criticality,
+                definitionHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                at = "2026-07-24T09:59:00Z",
+                id = new { runId = RunId, seq, gate, subject },
+                status,
+                options
+            };
+            File.WriteAllText(Path.Combine(escDir, $"{seq}-{gate}.json"),
+                JsonSerializer.Serialize(record, new JsonSerializerOptions { WriteIndented = true }));
+        }
+
+        public bool AnswerFileExists(int seq, string gate) =>
+            File.Exists(Path.Combine(Dir, "logs", RunId, "escalations", $"{seq}-{gate}.answer.json"));
+
         public void Dispose()
         {
             // UnauthorizedAccessException is NOT a subtype of IOException on .NET — catch both
             // so a locked file on Windows doesn't mask the original test failure.
             try { Directory.Delete(Dir, recursive: true); } catch (Exception) { /* best effort */ }
         }
+    }
+
+    // --- #387 v2: the web-clickable pick surface ---------------------------------------------
+
+    private static LogServer StartWithEscalations(string planDir, IReadOnlyList<TaskNode> tasks, bool proceedUnreviewed)
+    {
+        LogServer? server = LogServer.TryStart(planDir, TempPlan.RunId, tasks, port: 0, TextWriter.Null, proceedUnreviewed);
+        Assert.NotNull(server);
+        return server!;
+    }
+
+    private static readonly string[] PickOptions = ["a pre-authored unreviewed wave", "the JIT BreakdownComplete path"];
+
+    [Fact]
+    public async Task Escalations_ListsThisTasksOpenAnswerableOptions()
+    {
+        using var temp = new TempPlan();
+        temp.WriteEscalation(seq: 3, gate: "needs-human", subject: "01-alpha", options: PickOptions);
+        await using LogServer server = StartWithEscalations(temp.Dir, [Task("01-alpha", "First")], proceedUnreviewed: false);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/escalations");
+        using JsonDocument doc = JsonDocument.Parse(json);
+
+        JsonElement e = Assert.Single(doc.RootElement.GetProperty("escalations").EnumerateArray().ToArray());
+        Assert.Equal(3, e.GetProperty("seq").GetInt32());
+        Assert.True(e.GetProperty("answerable").GetBoolean());
+        string[] options = e.GetProperty("options").EnumerateArray().Select(o => o.GetString()!).ToArray();
+        Assert.Equal(PickOptions, options);
+    }
+
+    [Fact]
+    public async Task Escalations_ClampedHardCallUnderProceedUnreviewed_IsNonAnswerable_NoButtons()
+    {
+        using var temp = new TempPlan();
+        temp.WriteEscalation(seq: 5, gate: "needs-human", subject: "01-alpha", options: PickOptions, criticality: "critical");
+        await using LogServer server = StartWithEscalations(temp.Dir, [Task("01-alpha", "First")], proceedUnreviewed: true);
+
+        string json = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha/escalations");
+        using JsonDocument doc = JsonDocument.Parse(json);
+
+        JsonElement e = Assert.Single(doc.RootElement.GetProperty("escalations").EnumerateArray().ToArray());
+        Assert.False(e.GetProperty("answerable").GetBoolean());
+        Assert.Contains("proceed-unreviewed", e.GetProperty("reason").GetString());
+    }
+
+    [Fact]
+    public async Task AnswerPost_ValidChoice_WritesReplyFile_AndReturns200()
+    {
+        using var temp = new TempPlan();
+        temp.WriteEscalation(seq: 7, gate: "needs-human", subject: "01-alpha", options: PickOptions, criticality: "high");
+        await using LogServer server = StartWithEscalations(temp.Dir, [Task("01-alpha", "First")], proceedUnreviewed: false);
+
+        HttpResponseMessage response = await PostAnswer(server, "01-alpha", 7, "needs-human", PickOptions[1]);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(temp.AnswerFileExists(7, "needs-human"));
+    }
+
+    [Fact]
+    public async Task AnswerPost_NonAnswerableReviewGate_IsRejected_NoReplyFile()
+    {
+        // The v2 non-answerable floor: a POST for a review-gate escalation is REJECTED (403), not written —
+        // the SAME floor the interactive pick and the resume consumer enforce (never forge a review marker).
+        using var temp = new TempPlan();
+        temp.WriteEscalation(seq: 9, gate: "review-gate", subject: "01-alpha", options: PickOptions, criticality: "high");
+        await using LogServer server = StartWithEscalations(temp.Dir, [Task("01-alpha", "First")], proceedUnreviewed: false);
+
+        HttpResponseMessage response = await PostAnswer(server, "01-alpha", 9, "review-gate", PickOptions[0]);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.False(temp.AnswerFileExists(9, "review-gate"));
+    }
+
+    [Fact]
+    public async Task AnswerPost_ClampedHardCallUnderProceedUnreviewed_IsRejected_NoReplyFile()
+    {
+        using var temp = new TempPlan();
+        temp.WriteEscalation(seq: 11, gate: "needs-human", subject: "01-alpha", options: PickOptions, criticality: "critical");
+        await using LogServer server = StartWithEscalations(temp.Dir, [Task("01-alpha", "First")], proceedUnreviewed: true);
+
+        HttpResponseMessage response = await PostAnswer(server, "01-alpha", 11, "needs-human", PickOptions[0]);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.False(temp.AnswerFileExists(11, "needs-human"));
+    }
+
+    [Fact]
+    public async Task AnswerPost_OffMenuChoice_IsRejected_NoReplyFile()
+    {
+        using var temp = new TempPlan();
+        temp.WriteEscalation(seq: 13, gate: "needs-human", subject: "01-alpha", options: PickOptions, criticality: "high");
+        await using LogServer server = StartWithEscalations(temp.Dir, [Task("01-alpha", "First")], proceedUnreviewed: false);
+
+        HttpResponseMessage response = await PostAnswer(server, "01-alpha", 13, "needs-human", "arbitrary off-menu string");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.False(temp.AnswerFileExists(13, "needs-human"));
+    }
+
+    [Fact]
+    public async Task TaskPage_CarriesTheDecisionPickHooks()
+    {
+        // JS isn't executed in tests: assert the task page carries the #387 v2 pick hooks — the decision panel,
+        // the escalations fetch, and the POST /answer submit.
+        using var temp = new TempPlan();
+        temp.WriteLog("01-alpha", attempt: 1, "action-stdout.log", "x");
+        await using LogServer server = StartWithEscalations(temp.Dir, [Task("01-alpha", "First")], proceedUnreviewed: false);
+
+        string html = await GetStringAsync($"{server.BaseUrl}tasks/01-alpha");
+
+        Assert.Contains("id=\"decision\"", html);              // the pick panel
+        Assert.Contains("/escalations", html);                 // it fetches this task's open escalations
+        Assert.Contains("/answer", html);                      // and POSTs the chosen option
+        Assert.Contains("Awaiting your decision", html);       // the panel heading
+    }
+
+    private static async Task<HttpResponseMessage> PostAnswer(LogServer server, string taskId, int seq, string gate, string choice)
+    {
+        var content = new StringContent(
+            JsonSerializer.Serialize(new { seq, gate, choice }), Encoding.UTF8, "application/json");
+        return await Http.PostAsync($"{server.BaseUrl}tasks/{taskId}/answer", content, TestContext.Current.CancellationToken);
     }
 }

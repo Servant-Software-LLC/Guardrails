@@ -39,22 +39,10 @@ namespace Guardrails.Core.Execution;
 /// </summary>
 public sealed class AnswerFileConsumer
 {
-    /// <summary>The two ANSWERABLE gates (§7.3): only these bind an answer file. Everything else is terminal.</summary>
-    private static readonly HashSet<string> AnswerableGates = new(StringComparer.Ordinal)
-    {
-        AnswerFileConsumer.NeedsHumanGate,
-        AnswerFileConsumer.WaveCheckpointGate
-    };
-
-    /// <summary>The clamped hard-call criticalities (§5.2/§7.3, Blocker 1): NON-answerable under <c>proceed-unreviewed</c>.</summary>
-    private static readonly HashSet<string> ClampedCriticalities = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "high",
-        "critical"
-    };
-
-    private const string NeedsHumanGate = "needs-human";
-    private const string WaveCheckpointGate = "wave-checkpoint";
+    // The two ANSWERABLE gates (§7.3) and the proceed-unreviewed clamp (§5.2/§7.3) now live in the shared
+    // AnswerableGates predicate so the pick surfaces (#387) enforce the SAME non-answerable floor this consumer
+    // does — a pick can never write an answer the consumer would reject. This class references those constants.
+    private const string WaveCheckpointGate = AnswerableGates.WaveCheckpointGate;
     private const string ConsumedStatus = "consumed";
 
     /// <summary>
@@ -187,7 +175,7 @@ public sealed class AnswerFileConsumer
 
         // 6. Answerable gate (§7.3): only needs-human / wave-checkpoint bind. review-gate (no answer kind
         //    exists, §7.5), a hard blocker, and any terminal gate are NON-answerable → reject.
-        if (!AnswerableGates.Contains(gate))
+        if (!AnswerableGates.IsAnswerable(gate))
         {
             return ReEscalate(AnswerOutcome.Rejected, $"gate '{gate}' is not answerable by an answer file (§7.3)");
         }
@@ -196,7 +184,7 @@ public sealed class AnswerFileConsumer
         //    inside an explicitly-unreviewed wave is NON-answerable — it keeps a HUMAN, not a firstmate
         //    auto-answer, in the loop (else the "Guardrails without Guardrails" loop re-opens).
         string? criticality = ReadString(escalation, "criticality");
-        if (proceedUnreviewed && criticality is not null && ClampedCriticalities.Contains(criticality))
+        if (AnswerableGates.IsClampedHardCall(criticality, proceedUnreviewed))
         {
             return ReEscalate(AnswerOutcome.Rejected,
                 $"'{criticality}' hard call is non-answerable under proceed-unreviewed (clamp, §7.3 Blocker 1)");

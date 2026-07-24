@@ -35,6 +35,14 @@ public sealed record TaskResult
     public required string Summary { get; init; }
 
     /// <summary>
+    /// The bounded, enumerated options a structured <c>needsHuman</c> escape carried (issue #387), in order.
+    /// Empty for a free-text <c>needsHuman</c> and for any non-needs-human outcome. Read by the autonomous
+    /// classify-then-act dispatch (<see cref="Scheduler.ClassifyTaskGateAsync"/>) so the raised escalation
+    /// record carries the options a pick surface later presents.
+    /// </summary>
+    public IReadOnlyList<string> NeedsHumanOptions { get; init; } = [];
+
+    /// <summary>
     /// In worktree mode, the path to the validated fragment file for deferred B1 settle in the
     /// Scheduler. Null in serial mode (AttemptJournaler handles the merge immediately).
     /// </summary>

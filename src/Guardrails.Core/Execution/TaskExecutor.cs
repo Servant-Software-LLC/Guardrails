@@ -687,7 +687,7 @@ public sealed class TaskExecutor : ITaskExecutor
         // --- needsHuman short-circuit (SSOT §9): record + escalate IMMEDIATELY -----------
         if (action.NeedsHumanQuestion is { } question)
         {
-            return _journaler.NeedsHuman(task, attemptNumber, startedAt, relativeLogDir, logDir, action, question);
+            return _journaler.NeedsHuman(task, attemptNumber, startedAt, relativeLogDir, logDir, action, question, action.NeedsHumanOptions);
         }
 
         // --- permission wall observation (issues #86 / #104 / #325) ----------------------

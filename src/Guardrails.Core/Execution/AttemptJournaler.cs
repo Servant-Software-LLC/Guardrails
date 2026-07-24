@@ -342,7 +342,8 @@ internal sealed class AttemptJournaler
         string relativeLogDir,
         string logDir,
         ActionRun action,
-        string question)
+        string question,
+        IReadOnlyList<string> options)
     {
         string feedback =
             $"# Task '{task.Id}' needs a human\n\n" +
@@ -367,7 +368,8 @@ internal sealed class AttemptJournaler
             TaskId = task.Id,
             Outcome = TaskOutcome.NeedsHuman,
             ActionExitCode = action.ExitCode,
-            Summary = $"needs human: {question}"
+            Summary = $"needs human: {question}",
+            NeedsHumanOptions = options
         }, FeedbackPath: null);
     }
 
