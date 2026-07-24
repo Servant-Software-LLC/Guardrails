@@ -209,6 +209,120 @@ public sealed class SchedulerEscalationWiringTests
         Assert.Equal("consumed", (string?)after["status"]);
     }
 
+    // ── (4b) Resume under proceed-unreviewed: a CLAMPED critical answer is REJECTED (#375 Blocker 1) ─────
+
+    [Fact]
+    public async Task Resume_ProceedUnreviewed_ClampedCriticalAnswer_IsRejected_StatusStaysOpen_NoInjection()
+    {
+        // A high-dial run under review-gate: proceed-unreviewed. The overwatch judge assesses the needs-human
+        // call CRITICAL, so it escalates. Under proceed-unreviewed a high/critical hard call is NON-answerable
+        // (the clamp, doc 12 §5.2/§7.3 Blocker 1): even a perfectly-bound answer file must be REJECTED on
+        // resume — the escalation stays open and nothing is injected. This drives the REAL
+        // ConsumePendingAnswers caller (the #382 fake-masks-integration fix): the unit test passes
+        // proceedUnreviewed BY HAND, so ONLY this proves the Scheduler computes+passes the flag in production.
+        // Revert the Scheduler's flag-passing and this test fails (the answer would inject) — the discriminator.
+        using var plan = new EscalationPlanBuilder(
+                escalationThreshold: "high", overwatchAssessment: AssessCritical, reviewGate: "proceed-unreviewed")
+            .AddNeedsHumanTask("01-design", "should I drop and recreate the production schema");
+
+        // Run 1: reach the needs-human gate → escalate, writing an OPEN escalation record (criticality critical).
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        string escDir = EscalationsDir(plan.PlanDir);
+        string[] records = Directory.Exists(escDir)
+            ? Directory.GetFiles(escDir, "*-needs-human.json") : Array.Empty<string>();
+        string recordPath = Assert.Single(records);
+
+        DropValidAnswer(recordPath, escDir, "01-design");
+
+        // Resume: the wired consumer runs under proceedUnreviewed=true and must REJECT the clamped answer.
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        // No answer-injected decision for this subject — the clamp held.
+        Assert.DoesNotContain(Decisions(plan.PlanDir),
+            d => d.Decision == DecisionTokens.AnswerInjected && d.Subject == "01-design");
+
+        // The answered record's status stays OPEN (never flipped to consumed).
+        var after = (JsonObject)JsonNode.Parse(File.ReadAllText(recordPath))!;
+        Assert.Equal("open", (string?)after["status"]);
+
+        // And the answer text never reached a composed prompt — no injection into the next attempt.
+        Assert.False(ComposedPromptsContain(plan.PlanDir, "01-design", AnswerSentinel),
+            "the clamped answer text must NOT be injected into any composed prompt");
+    }
+
+    // ── (4c) Contrast: the SAME proceed-unreviewed posture at a NON-clamped criticality STILL injects ────
+
+    [Fact]
+    public async Task Resume_ProceedUnreviewed_NonClampedAnswer_IsInjected_ProvingClampIsTheDiscriminator()
+    {
+        // The SAME proceed-unreviewed + high-dial posture, but the needs-human gate carries a per-gate 'low'
+        // floor so a LOW overwatch assessment still ESCALATES (an answerable, non-clamped criticality). The
+        // clamp keys ONLY on high/critical, so under the identical proceed-unreviewed flag a 'low' escalation
+        // still consumes+injects — proving the clamp is a criticality DISCRIMINATOR, not a blanket block of
+        // every answer under proceed-unreviewed.
+        using var plan = new EscalationPlanBuilder(
+                escalationThreshold: "high", overwatchAssessment: AssessLow("keep the existing default"),
+                reviewGate: "proceed-unreviewed", needsHumanThreshold: "low")
+            .AddNeedsHumanTask("01-design", "which accent color should the banner use");
+
+        // Run 1: reach the needs-human gate → escalate, writing an OPEN escalation record (criticality low).
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        string escDir = EscalationsDir(plan.PlanDir);
+        string[] records = Directory.Exists(escDir)
+            ? Directory.GetFiles(escDir, "*-needs-human.json") : Array.Empty<string>();
+        string recordPath = Assert.Single(records);
+
+        DropValidAnswer(recordPath, escDir, "01-design");
+
+        // Resume: proceedUnreviewed=true is still passed, but a 'low' criticality is not clamped ⇒ consume+inject.
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        Assert.Contains(Decisions(plan.PlanDir),
+            d => d.Decision == DecisionTokens.AnswerInjected && d.Gate == "needs-human" && d.Subject == "01-design");
+
+        var after = (JsonObject)JsonNode.Parse(File.ReadAllText(recordPath))!;
+        Assert.Equal("consumed", (string?)after["status"]);
+
+        Assert.True(ComposedPromptsContain(plan.PlanDir, "01-design", AnswerSentinel),
+            "a non-clamped answer under proceed-unreviewed must be injected into a later composed prompt");
+    }
+
+    // A firstmate writes the reply file beside the escalation record, out of band (the legitimate answer channel
+    // — NOT forging a review attestation, NOT touching the record's status). The answer echoes {runId, seq, gate,
+    // subject} VERBATIM plus the definitionHash it was raised at, all read from the REAL record.
+    private static void DropValidAnswer(string recordPath, string escDir, string subject)
+    {
+        var record = (JsonObject)JsonNode.Parse(File.ReadAllText(recordPath))!;
+        var id = (JsonObject)record["id"]!;
+        string escRunId = (string)id["runId"]!;
+        int escSeq = (int)id["seq"]!;
+        string definitionHash = (string)record["definitionHash"]!;
+
+        var answer = new JsonObject
+        {
+            ["runId"] = escRunId,
+            ["seq"] = escSeq,
+            ["gate"] = "needs-human",
+            ["subject"] = subject,
+            ["definitionHash"] = definitionHash,
+            ["answeredBy"] = "integration-test-human",
+            ["answeredAt"] = DateTimeOffset.UtcNow.ToString("O"),
+            ["answer"] = new JsonObject { ["kind"] = "needs-human", ["text"] = AnswerSentinel }
+        };
+        File.WriteAllText(Path.Combine(escDir, $"{escSeq}-needs-human.answer.json"), answer.ToJsonString());
+    }
+
+    /// <summary>Whether any composed prompt written for <paramref name="taskId"/> this run contains <paramref name="needle"/>.</summary>
+    private static bool ComposedPromptsContain(string planDir, string taskId, string needle)
+    {
+        string taskLogRoot = Path.Combine(planDir, "logs", RunId(planDir), taskId);
+        return Directory.Exists(taskLogRoot)
+            && Directory.EnumerateFiles(taskLogRoot, "composed-prompt.md", SearchOption.AllDirectories)
+                .Any(f => File.ReadAllText(f).Contains(needle, StringComparison.Ordinal));
+    }
+
     // ── (5) Exit code: an unresolved escalation is DISTINCT from a plain needs-human ──────────────
 
     [Fact]
@@ -242,11 +356,32 @@ public sealed class SchedulerEscalationWiringTests
 
         private readonly string _root;
 
-        public EscalationPlanBuilder(string escalationThreshold, string overwatchAssessment, int defaultRetries = 0)
+        public EscalationPlanBuilder(
+            string escalationThreshold, string overwatchAssessment, int defaultRetries = 0,
+            string? reviewGate = null, string? needsHumanThreshold = null)
         {
             _root = Path.Combine(Path.GetTempPath(), "gr-escwire-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(_root);
             Directory.CreateDirectory(Path.Combine(_root, "tasks"));
+
+            // Optional per-gate overrides (doc 12 §3.5): a review-gate acknowledgment (escalate |
+            // proceed-unreviewed) and/or a needs-human criticality floor. Both absent ⇒ no gateThresholds block
+            // (the run-wide dial applies), so existing callers are byte-unchanged. JSON is whitespace-insensitive,
+            // so the interpolated fragment's own indentation does not matter.
+            var gates = new List<string>();
+            if (needsHumanThreshold is not null)
+            {
+                gates.Add($"\"needs-human\": \"{needsHumanThreshold}\"");
+            }
+
+            if (reviewGate is not null)
+            {
+                gates.Add($"\"review-gate\": \"{reviewGate}\"");
+            }
+
+            string gateThresholds = gates.Count == 0
+                ? ""
+                : ",\n    \"gateThresholds\": { " + string.Join(", ", gates) + " }";
 
             // The default/action runner: emits {"needsHuman": ...} or a transient signal per FAKE_MODE.
             string actionCli = WriteFakeCli("action", ActionPsBody(), ActionBashBody());
@@ -279,7 +414,7 @@ public sealed class SchedulerEscalationWiringTests
                   "transientPauseBudgetSeconds": 30,
                   "autonomyPolicy": "auto",
                   "autonomy": {
-                    "escalationThreshold": "{{escalationThreshold}}"
+                    "escalationThreshold": "{{escalationThreshold}}"{{gateThresholds}}
                   },
                   "promptRunners": {
                     "default": "claude",

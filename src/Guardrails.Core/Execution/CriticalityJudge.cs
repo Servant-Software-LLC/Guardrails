@@ -29,10 +29,6 @@ namespace Guardrails.Core.Execution;
 ///   (tracked in the injected <see cref="WideningLedger"/>); once spent, a further unknown failure escalates
 ///   deterministically. The recorded widening rationale is advisory self-report, not an independent check.</item>
 /// </list>
-///
-/// <para><b>STUB (TDD red).</b> <see cref="AssessAsync"/> THROWS so the tests in
-/// <c>CriticalityAssessmentTests</c> compile but fail; the real assessment / threshold / clamp / widening
-/// logic is authored by the implement task. Do NOT implement it here.</para>
 /// </summary>
 public sealed class CriticalityJudge
 {

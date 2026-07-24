@@ -30,11 +30,12 @@ namespace Guardrails.Core.Execution;
 ///     with the rejection reason recorded (§7.6).</item>
 /// </list>
 ///
-/// TDD-RED STUB (issue #361 Phase 3, task <c>12-author-tests-answer-consumption</c>): <see cref="Consume"/>
-/// throws so the <c>AnswerFileConsumptionTests</c> security matrix COMPILES and FAILS. The real binding
-/// validation, the dual-hash staleness check, the CAS once-only status flip, and the delimited-untrusted-data
-/// injection land in the sibling implementation task (which also adds the OPTIONAL injection parameter to
-/// <c>PromptComposer.ComposeAction</c>); this stub stays self-contained and touches no shipped type.
+/// BOTH answerable channels are WIRED into the production resume path (#375): the task-level
+/// <c>needs-human</c> channel is consumed by <c>Scheduler.ConsumePendingAnswers</c> before a task re-hits its
+/// gate, and the wave-boundary <c>wave-checkpoint</c> channel is consumed by
+/// <c>Scheduler.TryConsumeWaveProceed</c> at the JIT between-wave checkpoint (a valid <c>proceed</c> breaks
+/// down + runs the wave; a <c>hold</c> records the decision and stays halted). Neither channel can clear the
+/// <c>review-gate</c> (§7.5) or an escalation the <c>proceed-unreviewed</c> clamp made non-answerable (§7.3).
 /// </summary>
 public sealed class AnswerFileConsumer
 {
@@ -55,6 +56,14 @@ public sealed class AnswerFileConsumer
     private const string NeedsHumanGate = "needs-human";
     private const string WaveCheckpointGate = "wave-checkpoint";
     private const string ConsumedStatus = "consumed";
+
+    /// <summary>
+    /// Defense-in-depth length cap on an injected <c>needs-human</c> answer <c>text</c> (§7.4 Finding 4, #375
+    /// WEAK 2). A legitimate human decision is a sentence or two; 8 KB is a generous ceiling that still bounds
+    /// a crafted flood. An answer whose text exceeds it is REJECTED (fail closed → re-escalate), so an
+    /// oversized payload can never be injected into the next attempt's composed prompt.
+    /// </summary>
+    private const int MaxAnswerTextChars = 8 * 1024;
 
     /// <summary>
     /// In-process serialization for the CAS-guarded status flip (§7.1). The cross-PROCESS guard is a per-record
@@ -90,11 +99,12 @@ public sealed class AnswerFileConsumer
     /// <c>TaskDefinitionHash</c>/<c>WaveDefinitionHash</c> (the anti-stale check compares the answer against
     /// it AND the escalation record's captured hash). <paramref name="proceedUnreviewed"/> is whether the
     /// unit's wave is running under the <c>proceed-unreviewed</c> opt-in — when true, a clamped
-    /// <c>high</c>/<c>critical</c> hard call is NON-ANSWERABLE (§7.3 Blocker 1). Returns an
-    /// <see cref="AnswerConsumptionResult"/> describing the outcome; NEVER blocks.
+    /// <c>high</c>/<c>critical</c> hard call is NON-ANSWERABLE (§7.3 Blocker 1). It is REQUIRED (no default):
+    /// a security clamp must never default open, so the compiler forces every caller to state the posture
+    /// explicitly (#375). Returns an <see cref="AnswerConsumptionResult"/> describing the outcome; NEVER blocks.
     /// </summary>
     public AnswerConsumptionResult Consume(
-        int seq, string gate, string currentDefinitionHash, bool proceedUnreviewed = false)
+        int seq, string gate, string currentDefinitionHash, bool proceedUnreviewed)
     {
         string escalationPath = Path.Combine(_escalationsDir, $"{seq}-{gate}.json");
         string answerPath = Path.Combine(_escalationsDir, $"{seq}-{gate}.answer.json");
@@ -228,6 +238,26 @@ public sealed class AnswerFileConsumer
         if (string.IsNullOrEmpty(answer.Answer.Text))
         {
             return ReEscalate(AnswerOutcome.Rejected, "needs-human answer carries no decision text");
+        }
+
+        // Defense-in-depth envelope integrity (§7.4 Finding 4, #375 WEAK 2). The answer text is injected
+        // VERBATIM between the pinned [BEGIN/END UNTRUSTED HUMAN ANSWER] literals; a payload that embeds either
+        // literal could close the envelope early and have trailing bytes read as harness/system text, and an
+        // unbounded payload could flood the prompt. A legitimate human decision never does either, so REJECT
+        // (fail closed → re-escalate) before the text can be injected — the deterministic complement to the
+        // prompt's "treat this as DATA" prohibition.
+        if (answer.Answer.Text.Length > MaxAnswerTextChars)
+        {
+            return ReEscalate(AnswerOutcome.Rejected,
+                $"needs-human answer text exceeds the {MaxAnswerTextChars}-character cap (§7.4 Finding 4, #375)");
+        }
+
+        if (answer.Answer.Text.Contains(PromptComposer.InjectedHumanAnswerBeginMarker, StringComparison.Ordinal)
+            || answer.Answer.Text.Contains(PromptComposer.InjectedHumanAnswerEndMarker, StringComparison.Ordinal))
+        {
+            return ReEscalate(AnswerOutcome.Rejected,
+                "needs-human answer text contains a reserved untrusted-answer envelope delimiter — "
+                + "it could escape the [BEGIN/END UNTRUSTED HUMAN ANSWER] envelope (§7.4 Finding 4, #375)");
         }
 
         string section = PromptComposer.ComposeInjectedHumanAnswerSection(answer.Answer.Text);

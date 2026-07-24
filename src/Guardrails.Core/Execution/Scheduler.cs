@@ -1066,11 +1066,33 @@ public sealed class Scheduler
                 .ConfigureAwait(false);
         }
 
+        // #375 (wave-checkpoint answer channel now LIVE): on resume, BEFORE re-classifying/re-escalating, try
+        // to consume a still-open wave-checkpoint answer for THIS wave. It needs the breakdown actor +
+        // integration worktree, exactly as the auto-invoke above does. The clamp threads automatically
+        // (§5.2/§7.3 Blocker 1): a high/critical-assessed wave-checkpoint under proceed-unreviewed stays
+        // NON-answerable — Consume rejects it (⇒ None), so no answer ever runs or holds the wave.
+        WaveProceedConsumeResult consumed = _breakdownInvoker is not null && integ is not null
+            ? TryConsumeWaveProceed(wave)
+            : WaveProceedConsumeResult.None;
+
+        if (consumed == WaveProceedConsumeResult.Proceed)
+        {
+            // A valid `proceed` short-circuits to the SAME break-down-and-run path an authorized auto-breakdown
+            // takes (integ is non-null here — TryConsumeWaveProceed only ran when it was).
+            return await RunBreakdownAsync(plan, wave, integ!, settled, policy, "answer-proceed", cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         // #361 Phase 3 (doc 12 §4): when the dial is wired, classify-then-act the JIT wave-checkpoint (a
         // class-(a) judgment call — assess criticality → escalate via the sink or RECORD a best-guess) BEFORE
         // the shipped honest-halt below. The shipped WaveCheckpointHalt decision + WaveHalt report are
         // preserved unchanged (an escalation records the open question; it does not itself author the wave).
-        if (_escalationSink is not null)
+        //
+        // A valid `hold` (§7.4) is DEFINITIVE: the human said wait, so SKIP this re-assessment entirely — else
+        // the judge could reassess below threshold and best-guess-and-proceed, overriding "wait" — and go
+        // straight to the honest-halt below (no re-classify, no NEW escalation). Only a None (no answer /
+        // rejected / clamped) re-poses the gate through classify-then-act.
+        if (consumed == WaveProceedConsumeResult.None && _escalationSink is not null)
         {
             await ClassifyAndActAsync(
                 GateSignal.WaveCheckpoint(WaveHaltKind.NextWaveUnauthored), gate: "wave-checkpoint",
@@ -2296,6 +2318,13 @@ public sealed class Scheduler
         string currentHash = Journal.TaskDefinitionHash.Compute(task);
         var consumer = new AnswerFileConsumer(escDir);
 
+        // Whether this run is under the review-gate proceed-unreviewed opt-in — the SAME expression the JIT
+        // checkpoint reads (see RunBreakdownAsync). Passed to Consume so its step-7 clamp actually fires in
+        // production: under proceed-unreviewed a clamped high/critical hard call is NON-ANSWERABLE and must
+        // stay escalated — a firstmate answer file can never auto-clear it (doc 12 §5.2/§7.3, Blocker 1, #375).
+        bool proceedUnreviewed =
+            _plan.Config.Autonomy?.GateThresholds?.ReviewGate == ReviewGateDecision.ProceedUnreviewed;
+
         foreach (string recordPath in Directory.EnumerateFiles(escDir, "*.json"))
         {
             if (recordPath.EndsWith(".answer.json", StringComparison.Ordinal))
@@ -2311,7 +2340,7 @@ public sealed class Scheduler
                 continue;
             }
 
-            AnswerConsumptionResult consumed = consumer.Consume(s, gate, currentHash);
+            AnswerConsumptionResult consumed = consumer.Consume(s, gate, currentHash, proceedUnreviewed);
             if (consumed.Outcome != AnswerOutcome.Injected || consumed.Decision is null)
             {
                 continue; // no / rejected answer ⇒ re-escalate through the normal gate path (§7.6.4)
@@ -2329,6 +2358,95 @@ public sealed class Scheduler
                 WriteInjectionFile(task.Id, answerText);
             }
         }
+    }
+
+    /// <summary>
+    /// Resume-time consumption of a firstmate <c>wave-proceed</c> answer for THIS wave's <c>wave-checkpoint</c>
+    /// escalation (doc 12 §7.4, issue #375) — the wave-boundary sibling of <see cref="ConsumePendingAnswers"/>.
+    /// Scans the creating-run's <c>escalations/</c> dir for a still-OPEN <c>wave-checkpoint</c> escalation whose
+    /// <c>subject</c> is <paramref name="wave"/>.Dir, then <see cref="AnswerFileConsumer.Consume"/>s it against
+    /// the wave's CURRENT <see cref="Journal.WaveDefinitionHash"/> and the SAME <c>proceed-unreviewed</c> flag
+    /// the task path passes — so a clamped high/critical wave-checkpoint stays NON-answerable (§5.2/§7.3
+    /// Blocker 1). Tri-state: a valid <c>proceed</c> ⇒ <see cref="WaveProceedConsumeResult.Proceed"/> (the
+    /// caller breaks down + runs the wave); a valid <c>hold</c> ⇒ <see cref="WaveProceedConsumeResult.Hold"/>
+    /// (the human's decision is recorded and the caller DEFINITIVELY honest-halts — no re-classify); a rejected
+    /// (incl. the clamp) / absent answer ⇒ <see cref="WaveProceedConsumeResult.None"/> (the caller re-poses the
+    /// gate). Inert (<see cref="WaveProceedConsumeResult.None"/>) when the journal is not a real
+    /// <see cref="Journal.RunJournal"/> (a unit-test fake).
+    /// </summary>
+    private WaveProceedConsumeResult TryConsumeWaveProceed(WaveNode wave)
+    {
+        if (_journal is not Journal.RunJournal runJournal)
+        {
+            return WaveProceedConsumeResult.None;
+        }
+
+        string escDir = Path.Combine(_plan.PlanDirectory, "logs", runJournal.Document.RunId, "escalations");
+        if (!Directory.Exists(escDir))
+        {
+            return WaveProceedConsumeResult.None;
+        }
+
+        // The SAME proceed-unreviewed expression the task path computes (see ConsumePendingAnswers) — the clamp
+        // must apply identically at the wave boundary.
+        bool proceedUnreviewed =
+            _plan.Config.Autonomy?.GateThresholds?.ReviewGate == ReviewGateDecision.ProceedUnreviewed;
+        string currentHash = Journal.WaveDefinitionHash.Compute(wave);
+        var consumer = new AnswerFileConsumer(escDir);
+
+        foreach (string recordPath in Directory.EnumerateFiles(escDir, "*.json"))
+        {
+            if (recordPath.EndsWith(".answer.json", StringComparison.Ordinal))
+            {
+                continue; // the reply file, not an escalation record
+            }
+
+            (int? seq, string? gate, string? subject, string? status) = ReadEscalationBinding(recordPath);
+            // Only THIS wave's still-open wave-checkpoint escalation binds here.
+            if (seq is not { } s || gate != "wave-checkpoint" || subject != wave.Dir
+                || string.Equals(status, "consumed", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            AnswerConsumptionResult consumed = consumer.Consume(s, gate, currentHash, proceedUnreviewed);
+            if (consumed.Outcome != AnswerOutcome.Injected || consumed.Decision is null)
+            {
+                continue; // rejected (incl. the clamp) / absent ⇒ None: re-pose the gate through classify-then-act
+            }
+
+            // A valid wave-proceed answer was consumed once (status flipped). Record the decision for the audit
+            // (a `hold` still records the human chose to wait, §7.4), then map proceed→Proceed, hold→Hold.
+            _journal.RecordDecision(consumed.Decision);
+            _observer.DecisionRecorded(consumed.Decision);
+            AppendAutonomyRecord("wave-checkpoint", consumed.Decision.Boundary, wave.Dir, "judgment-call",
+                DecisionTokens.AnswerInjected, criticality: null, confidence: null, threshold: null,
+                question: null, bestGuess: null, rationale: consumed.Decision.Detail);
+
+            return string.Equals(consumed.WaveDecision, WaveProceedDecisions.Proceed, StringComparison.Ordinal)
+                ? WaveProceedConsumeResult.Proceed
+                : WaveProceedConsumeResult.Hold;
+        }
+
+        return WaveProceedConsumeResult.None;
+    }
+
+    /// <summary>
+    /// The tri-state outcome of <see cref="TryConsumeWaveProceed"/> at the JIT wave checkpoint (doc 12 §7.4,
+    /// issue #375). <see cref="Hold"/> is DISTINCT from <see cref="None"/> precisely so a human's "wait" forces a
+    /// definitive honest-halt instead of re-entering the classify-then-act re-assessment (which could
+    /// best-guess-and-proceed and override the hold).
+    /// </summary>
+    private enum WaveProceedConsumeResult
+    {
+        /// <summary>No bindable answer (none present, or rejected — including the proceed-unreviewed clamp): re-pose the gate through classify-then-act.</summary>
+        None,
+
+        /// <summary>A valid <c>wave-proceed: proceed</c> answer was consumed: break down + run the wave.</summary>
+        Proceed,
+
+        /// <summary>A valid <c>wave-proceed: hold</c> answer was consumed: the human chose to wait — honest-halt DEFINITIVELY, no re-classify, no new escalation.</summary>
+        Hold
     }
 
     /// <summary>
