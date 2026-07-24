@@ -215,4 +215,58 @@ public sealed class SchedulerAutoBreakdownTests
         Assert.Contains(journal.Document.Decisions ?? [],
             d => d.Boundary == "wave" && d.Policy == AutonomyPolicies.Token(policy) && d.Subject == Wave2);
     }
+
+    // --- 5. #385 REGRESSION: the invocation runs under the raised, brief-scaled turn budget ----------------
+
+    [Fact]
+    public async Task Breakdown_RunsUnder_RaisedTurnBudget_AboveOldTruncatingCap()
+    {
+        // The default plan's brief is small (a title + one prose line → zero work-item signals), so the
+        // invocation must run under the generous BASE budget — well above the old fixed 120 that truncated (#385).
+        (WavePlanBuilder b, PlanDefinition plan) = WavedPlanWithStubWave2();
+        using WavePlanBuilder _ = b;
+
+        int? capturedMaxTurns = null;
+        var stub = new StubBreakdownRunner(inv => { capturedMaxTurns = inv.Settings.MaxTurns; AuthorValidWave(inv); });
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+
+        await NewScheduler(plan, journal, new RecordingWorktreeProvider(), new WaveBreakdownInvoker(stub), confirmations: null)
+            .RunAsync(plan, Ct);
+
+        Assert.Equal(1, stub.Invocations);
+        Assert.NotNull(capturedMaxTurns);
+        // The number handed to the runner is EXACTLY the computed base budget (no brief signals) — and > the old 120.
+        Assert.Equal(WaveBreakdownInvoker.ComputeMaxTurns(0), capturedMaxTurns);
+        Assert.True(capturedMaxTurns > 120, $"the breakdown must run above the old truncating cap; got {capturedMaxTurns}");
+    }
+
+    // --- 6. #385 REGRESSION: a LARGE-wave brief scales the invocation's budget UP (and it reaches the runner) --
+
+    [Fact]
+    public async Task Breakdown_LargeWaveBrief_ScalesTurnBudgetUp_AndReachesTheRunner()
+    {
+        (WavePlanBuilder b, PlanDefinition plan) = WavedPlanWithStubWave2();
+        using WavePlanBuilder _ = b;
+
+        // Overwrite the wave's brief with a LARGE one (~11 enumerated work items) — the #385 wave size. The
+        // invoker reads brief.md from disk at invocation time, so this content drives the scaled budget.
+        string largeBrief = "## Tasks\n\n" +
+            string.Join("\n", Enumerable.Range(1, 11).Select(i => $"- Task {i}: author the thing"));
+        File.WriteAllText(Path.Combine(b.PlanDir, Wave2, WaveNode.BriefFileName), largeBrief);
+
+        int? capturedMaxTurns = null;
+        var stub = new StubBreakdownRunner(inv => { capturedMaxTurns = inv.Settings.MaxTurns; AuthorValidWave(inv); });
+        RunJournal journal = RunJournal.LoadOrCreate(plan);
+
+        await NewScheduler(plan, journal, new RecordingWorktreeProvider(), new WaveBreakdownInvoker(stub), confirmations: null)
+            .RunAsync(plan, Ct);
+
+        Assert.NotNull(capturedMaxTurns);
+        int expected = WaveBreakdownInvoker.ComputeMaxTurns(WaveBreakdownInvoker.EstimateBriefSignalCount(largeBrief));
+        Assert.Equal(expected, capturedMaxTurns);
+        // A large wave gets MORE than the base (scaling actually reached the runner) and far above the old cap.
+        Assert.True(capturedMaxTurns > WaveBreakdownInvoker.ComputeMaxTurns(0),
+            $"a large-wave brief must scale the budget above the base; got {capturedMaxTurns}");
+        Assert.True(capturedMaxTurns > 120 * 4, $"far above the old truncating cap; got {capturedMaxTurns}");
+    }
 }
