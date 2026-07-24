@@ -474,7 +474,7 @@ public static class RunCommand
                 // BEFORE constructing LiveRunObserver — its ctor starts the Spectre AnsiConsole.Live
                 // region, and any console write into an active Live region corrupts the table (#145 Bug 1).
                 // So both static writes + their links must precede the live region.
-                OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
+                OnTheFlyLogSiteObserver.WriteInitialIndex(logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
                 PrintStaticIndexLink(logsRoot, io);    // "all tasks" page link at run START
                 OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed);
                 PrintDiagramLink(logsRoot, io);        // live status diagram link at run START
@@ -482,7 +482,7 @@ public static class RunCommand
                 await using var liveObserver = new LiveRunObserver(
                     probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
                     probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
-                var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
+                var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
                 // Stack the diagram observer AROUND the log-site observer: it forwards every event down
                 // the chain and re-renders logs/<runId>/diagram.html after each.
                 diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
@@ -491,7 +491,7 @@ public static class RunCommand
             else
             {
                 var siteObserver = new OnTheFlyLogSiteObserver(
-                    new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
+                    new ConsoleRunObserver(io.Out), logsRoot, runId, probe.Plan.Tasks, logUrlForTask, probe.Plan.Waves);
                 diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
                 siteObserver.WriteInitialIndex();
                 PrintStaticIndexLink(logsRoot, io);
@@ -1551,7 +1551,7 @@ public static class RunCommand
         try
         {
             JournalDocument document = JournalReader.Read(journalPath);
-            LogSiteRenderer.ExportSite(logsRoot, plan.Tasks, document);
+            LogSiteRenderer.ExportSite(logsRoot, plan.Tasks, plan.Waves, document);
         }
         catch (IOException)
         {

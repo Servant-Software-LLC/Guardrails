@@ -93,14 +93,28 @@ public static class LogSiteRenderer
     }
 
     /// <summary>
+    /// Export the whole DURABLE static site for one FLAT run (no waves) — see the waves-aware overload
+    /// <see cref="ExportSite(string, IReadOnlyList{TaskNode}, IReadOnlyList{WaveNode}, JournalDocument)"/>.
+    /// </summary>
+    public static string ExportSite(string logsRoot, IReadOnlyList<TaskNode> tasks, JournalDocument journal) =>
+        ExportSite(logsRoot, tasks, Array.Empty<WaveNode>(), journal);
+
+    /// <summary>
     /// Export the whole DURABLE static site for one run into <paramref name="logsRoot"/>
     /// (<c>&lt;planDir&gt;/logs/&lt;runId&gt;/</c>): a per-task <c>index.html</c> for every task that
     /// has attempts on disk, plus a site <c>index.html</c> with NO refresh and ALL-static links. Idempotent
     /// — regenerates everything each call (like <c>guardrails graph</c>). Returns the path to the site index.
     /// A task with no attempts on disk is listed (as plain text, not a link) in the index but writes no page.
     /// This is the post-hoc <c>logs --export</c> surface (SSOT §12.3) — preserved verbatim.
+    ///
+    /// <para>For a WAVED plan (SSOT §14, issue #380) <paramref name="waves"/> is non-empty and each wave
+    /// additionally gets its own <c>&lt;waveDir&gt;/index.html</c> — a wave-scoped drill-down listing that
+    /// wave's tasks (status + a link to each task's static page) with a breadcrumb back to the plan index,
+    /// and the plan-wide index links to each wave's index. A FLAT plan passes an empty
+    /// <paramref name="waves"/>, so no wave index is written and the plan index is byte-for-byte unchanged.</para>
     /// </summary>
-    public static string ExportSite(string logsRoot, IReadOnlyList<TaskNode> tasks, JournalDocument journal)
+    public static string ExportSite(
+        string logsRoot, IReadOnlyList<TaskNode> tasks, IReadOnlyList<WaveNode> waves, JournalDocument journal)
     {
         Directory.CreateDirectory(logsRoot);
 
@@ -111,12 +125,18 @@ public static class LogSiteRenderer
 
         // Durable export: a settled-with-attempts task links to its static page, a not-yet-run task is
         // plain text. No live URLs, no meta-refresh (#103 / SSOT §12.3).
+        Func<string, string> statusResolver = id => StatusWord(journal, id);
+        Func<string, IndexLink> linkResolver =
+            id => AttemptDirs(logsRoot, id).Count > 0 ? IndexLink.Static : IndexLink.Plain;
+
+        // Per-wave index (issue #380): one durable index per wave, all-static links, no refresh.
+        foreach (WaveNode wave in waves)
+        {
+            WriteWaveIndex(logsRoot, journal.RunId, wave, statusResolver, linkResolver, includeRefresh: false);
+        }
+
         string index = IndexHtml(
-            journal.RunId,
-            tasks,
-            statusResolver: id => StatusWord(journal, id),
-            linkResolver: id => AttemptDirs(logsRoot, id).Count > 0 ? IndexLink.Static : IndexLink.Plain,
-            includeRefresh: false);
+            journal.RunId, tasks, waves, statusResolver, linkResolver, includeRefresh: false);
 
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
@@ -138,9 +158,10 @@ public static class LogSiteRenderer
         IReadOnlyList<TaskNode> tasks,
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
-        bool includeRefresh)
+        bool includeRefresh,
+        IReadOnlyList<WaveNode>? waves = null)
     {
-        string index = IndexHtml(runId, tasks, statusResolver, linkResolver, includeRefresh);
+        string index = IndexHtml(runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver, includeRefresh);
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
@@ -175,6 +196,7 @@ public static class LogSiteRenderer
     private static string IndexHtml(
         string runId,
         IReadOnlyList<TaskNode> tasks,
+        IReadOnlyList<WaveNode> waves,
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh)
@@ -201,6 +223,11 @@ public static class LogSiteRenderer
             ? "Live run — this page refreshes itself. Running tasks tail their log; settled tasks link to a static page; not-yet-run tasks are plain text."
             : "Static export of this run. Settled tasks link to their inlined log page; not-yet-run tasks are plain text.";
 
+        // Waves drill-down (issue #380): for a WAVED plan, a nav section linking each wave's own index —
+        // the wave-scoped drill-down target #379's collapsed completed-wave line points at. A FLAT plan
+        // (empty waves) renders nothing here, so its index bytes are unchanged.
+        string wavesNav = WavesNav(waves, statusResolver);
+
         return $"""
 <!doctype html>
 <html lang="en">
@@ -214,6 +241,119 @@ public static class LogSiteRenderer
 </head>
 <body>
 <h1>Guardrails run — task logs</h1>
+<p>{Enc(note)}</p>{wavesNav}
+<table>
+<thead><tr><th>Task</th><th>Status</th><th>Description</th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+</body>
+</html>
+""";
+    }
+
+    /// <summary>
+    /// The plan-wide index's "Waves" drill-down nav (issue #380): one link per wave to its own
+    /// <c>&lt;waveDir&gt;/index.html</c>, each with a task-progress count. Empty string for a FLAT plan
+    /// (no waves) so the plan index is byte-for-byte unchanged. Rendered with a leading newline so it slots
+    /// cleanly under the intro paragraph.
+    /// </summary>
+    private static string WavesNav(IReadOnlyList<WaveNode> waves, Func<string, string> statusResolver)
+    {
+        if (waves.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append("\n<h2>Waves</h2>\n<div class=\"bar\">");
+        for (int i = 0; i < waves.Count; i++)
+        {
+            WaveNode wave = waves[i];
+            if (i > 0)
+            {
+                sb.Append(" &middot; ");
+            }
+
+            sb.Append("<a href=\"").Append(Uri.EscapeDataString(wave.Dir)).Append("/index.html\">")
+                .Append(Enc(wave.Dir)).Append("</a> (").Append(Enc(WaveProgress(wave, statusResolver))).Append(')');
+        }
+
+        sb.Append("</div>");
+        return sb.ToString();
+    }
+
+    // --- per-wave index (issue #380) --------------------------------------------------------
+
+    /// <summary>
+    /// Render and atomically write one wave's index (<c>&lt;logsRoot&gt;/&lt;waveDir&gt;/index.html</c>,
+    /// issue #380) — the wave-scoped drill-down that lists ONLY that wave's tasks (status + a link to each
+    /// task's static page) with a progress count and a breadcrumb back to the plan-wide index. It reuses the
+    /// SAME shared shell (<see cref="SharedStyle"/> + status colours + table layout) as the plan index — no
+    /// forked template (#103 Request 2). The caller supplies the status word and per-task link target keyed
+    /// by the WAVE-QUALIFIED task id (identical resolvers to the plan index), so it serves both the
+    /// during-run wave index (live URLs + refresh) and the durable final one (all-static, no refresh). A
+    /// task's link is rendered relative to THIS wave folder (its wave-relative folder name), because the
+    /// wave index sits one level up from its task pages. Atomic temp+rename. Returns the path written.
+    /// </summary>
+    public static string WriteWaveIndex(
+        string logsRoot,
+        string runId,
+        WaveNode wave,
+        Func<string, string> statusResolver,
+        Func<string, IndexLink> linkResolver,
+        bool includeRefresh)
+    {
+        string html = WaveIndexHtml(runId, wave, statusResolver, linkResolver, includeRefresh);
+        string waveDir = Path.Combine(logsRoot, wave.Dir);
+        Directory.CreateDirectory(waveDir); // the wave folder may not exist yet (all tasks still pending)
+        string indexPath = Path.Combine(waveDir, "index.html");
+        AtomicFile.WriteAllText(indexPath, html);
+        return indexPath;
+    }
+
+    private static string WaveIndexHtml(
+        string runId,
+        WaveNode wave,
+        Func<string, string> statusResolver,
+        Func<string, IndexLink> linkResolver,
+        bool includeRefresh)
+    {
+        var rows = new StringBuilder();
+        foreach (TaskNode task in wave.Tasks)
+        {
+            string status = statusResolver(task.Id);
+            string cell = WaveIndexCell(task, linkResolver(task.Id));
+
+            rows.Append("<tr><td>").Append(cell).Append("</td>")
+                .Append("<td class=\"status\" data-status=\"").Append(Enc(status)).Append("\">")
+                .Append(Enc(status)).Append("</td>")
+                .Append("<td>").Append(Enc(task.Description)).Append("</td></tr>");
+        }
+
+        string refresh = includeRefresh
+            ? "\n<meta http-equiv=\"refresh\" content=\"2\">"
+            : string.Empty;
+
+        string note = includeRefresh
+            ? "Live run — this wave page refreshes itself. Running tasks tail their log; settled tasks link to a static page; not-yet-run tasks are plain text."
+            : "Static export of this wave. Settled tasks link to their inlined log page; not-yet-run tasks are plain text.";
+
+        return $"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">{refresh}
+<title>{Enc(wave.Dir)} — Guardrails wave log ({Enc(runId)})</title>
+<style>
+{SharedStyle}
+</style>
+</head>
+<body>
+<h1>{Enc(wave.Dir)} — wave log</h1>
+<div class="bar"><a href="../index.html">&larr; all waves</a> &middot; {Enc(WaveProgress(wave, statusResolver))}</div>
 <p>{Enc(note)}</p>
 <table>
 <thead><tr><th>Task</th><th>Status</th><th>Description</th></tr></thead>
@@ -224,6 +364,53 @@ public static class LogSiteRenderer
 </body>
 </html>
 """;
+    }
+
+    /// <summary>
+    /// The per-task cell for a WAVE index: like <see cref="IndexCell"/> but the static-page href and the
+    /// displayed id are the task's WAVE-RELATIVE folder name (the segment after the last <c>/</c> of the
+    /// wave-qualified id, e.g. <c>01-author-tests</c> for <c>wave-02-provision/01-author-tests</c>) — because
+    /// the wave index lives INSIDE the wave folder, one level up from its task pages, so the relative path is
+    /// just <c>&lt;taskFolder&gt;/index.html</c>. A live URL is absolute (unchanged); plain text otherwise.
+    /// </summary>
+    private static string WaveIndexCell(TaskNode task, IndexLink link)
+    {
+        string folder = WaveRelativeFolder(task.Id);
+        return link.Kind switch
+        {
+            LinkKind.StaticPage => $"<a href=\"{Uri.EscapeDataString(folder)}/index.html\">{Enc(folder)}</a>",
+            LinkKind.Live when link.LiveUrl is { } url => $"<a href=\"{Enc(url)}\">{Enc(folder)}</a>",
+            _ => Enc(folder), // PlainText, or a Live link with no URL (no server) → not a link
+        };
+    }
+
+    /// <summary>The wave-relative task folder name — the segment after the last <c>/</c> of a wave-qualified id.</summary>
+    private static string WaveRelativeFolder(string taskId)
+    {
+        int slash = taskId.LastIndexOf('/');
+        return slash >= 0 ? taskId[(slash + 1)..] : taskId;
+    }
+
+    /// <summary>
+    /// A wave's task-progress count for the wave heading / plan-index nav: "<c>N/M complete</c>", where a
+    /// task counts as complete when its status word is <c>succeeded</c> or <c>skipped</c> (a resumed
+    /// already-green task). Read through the SAME status resolver the rows use, so it is always consistent
+    /// with the table below it.
+    /// </summary>
+    private static string WaveProgress(WaveNode wave, Func<string, string> statusResolver)
+    {
+        int total = wave.Tasks.Count;
+        int complete = 0;
+        foreach (TaskNode task in wave.Tasks)
+        {
+            string status = statusResolver(task.Id);
+            if (status is "succeeded" or "skipped")
+            {
+                complete++;
+            }
+        }
+
+        return $"{complete}/{total} complete";
     }
 
     private static string IndexCell(string taskId, IndexLink link) => link.Kind switch

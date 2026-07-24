@@ -474,6 +474,129 @@ public sealed class LogSiteExportTests
         }
     }
 
+    [Fact]
+    public void Export_WavedPlan_WritesPerWaveIndex_WithTaskLinksAndBreadcrumb_AndPlanIndexLinksWaves()
+    {
+        // Issue #380: a WAVED plan gets a per-wave index.html at each wave's log dir, listing THAT wave's
+        // tasks (status + a wave-relative link to each task's static page) with a breadcrumb back to the
+        // plan index; the plan-wide index links to each wave's index (drill-down). Driven directly through
+        // the renderer with hand-written attempt logs so the projection is asserted over the rendered HTML.
+        string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            Core.Model.TaskNode a = WaveTask("wave-01-alpha", "01-a", "Alpha first");
+            Core.Model.TaskNode b = WaveTask("wave-01-alpha", "02-b", "Alpha second");
+            Core.Model.TaskNode c = WaveTask("wave-02-beta", "01-c", "Beta first");
+
+            // Every task has an attempt on disk (so each is a LINK, not plain text). The dirs are keyed by
+            // the WAVE-QUALIFIED id, so they nest under logs/<runId>/wave-NN-slug/<taskFolder>/.
+            foreach (Core.Model.TaskNode t in new[] { a, b, c })
+            {
+                string attemptDir = Path.Combine(logsRoot, t.Id, "attempt-1");
+                Directory.CreateDirectory(attemptDir);
+                File.WriteAllText(Path.Combine(attemptDir, "action-stdout.log"), $"{t.Id} output");
+            }
+
+            var waves = new[] { Wave("wave-01-alpha", 1, "alpha", a, b), Wave("wave-02-beta", 2, "beta", c) };
+            var journal = new JournalDocument
+            {
+                RunId = "run-waved",
+                PlanHash = "sha256:deadbeef",
+                Tasks = new Dictionary<string, TaskJournalEntry>
+                {
+                    ["wave-01-alpha/01-a"] = new() { Status = Core.Journal.TaskStatus.Succeeded },
+                    ["wave-01-alpha/02-b"] = new() { Status = Core.Journal.TaskStatus.Succeeded },
+                    ["wave-02-beta/01-c"] = new() { Status = Core.Journal.TaskStatus.Succeeded },
+                },
+            };
+
+            LogSiteRenderer.ExportSite(logsRoot, new[] { a, b, c }, waves, journal);
+
+            // (a) Each wave gets its OWN index at logs/<runId>/wave-NN-slug/index.html.
+            string wave1Index = Path.Combine(logsRoot, "wave-01-alpha", "index.html");
+            string wave2Index = Path.Combine(logsRoot, "wave-02-beta", "index.html");
+            Assert.True(File.Exists(wave1Index), $"expected wave index at {wave1Index}");
+            Assert.True(File.Exists(wave2Index), $"expected wave index at {wave2Index}");
+
+            string w1 = File.ReadAllText(wave1Index);
+            // (b) It lists THAT wave's task ids and links each to its static page RELATIVE to the wave folder
+            // (just <taskFolder>/index.html — the wave index sits one level up from its task pages).
+            Assert.Contains("wave-01-alpha — wave log", w1);
+            Assert.Contains("href=\"01-a/index.html\"", w1);
+            Assert.Contains("href=\"02-b/index.html\"", w1);
+            Assert.Contains(">01-a</a>", w1);
+            Assert.Contains(">02-b</a>", w1);
+            // It does NOT leak the OTHER wave's task.
+            Assert.DoesNotContain("01-c", w1);
+            // (c) A breadcrumb back to the plan-wide index, a progress count, and NO refresh (durable).
+            Assert.Contains("<a href=\"../index.html\">&larr; all waves</a>", w1);
+            Assert.Contains("2/2 complete", w1);
+            Assert.DoesNotContain("http-equiv=\"refresh\"", w1);
+
+            string w2 = File.ReadAllText(wave2Index);
+            Assert.Contains("wave-02-beta — wave log", w2);
+            Assert.Contains("href=\"01-c/index.html\"", w2);
+            Assert.Contains("1/1 complete", w2);
+            Assert.DoesNotContain("01-a", w2);
+
+            // (d) The plan-wide index links to each wave's index (the #379 drill-down target).
+            string planIndex = File.ReadAllText(Path.Combine(logsRoot, "index.html"));
+            Assert.Contains("<h2>Waves</h2>", planIndex);
+            Assert.Contains("href=\"wave-01-alpha/index.html\"", planIndex);
+            Assert.Contains("href=\"wave-02-beta/index.html\"", planIndex);
+
+            // The per-task static pages still exist under their wave-qualified path.
+            Assert.True(File.Exists(Path.Combine(logsRoot, "wave-01-alpha", "01-a", "index.html")));
+        }
+        finally
+        {
+            try { Directory.Delete(logsRoot, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void Export_FlatPlan_WritesNoWaveIndex_AndNoWavesNav()
+    {
+        // Issue #380: a NON-waved plan has no waves, so NO wave index is written and the plan-wide index
+        // carries no "Waves" nav — its bytes are unchanged. Proven by the flat (waveless) ExportSite overload.
+        string logsRoot = Path.Combine(Path.GetTempPath(), "gr-export-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(logsRoot);
+        try
+        {
+            var tasks = new[] { FakeTask("01-first", "First"), FakeTask("02-second", "Second") };
+            string attemptDir = Path.Combine(logsRoot, "01-first", "attempt-1");
+            Directory.CreateDirectory(attemptDir);
+            File.WriteAllText(Path.Combine(attemptDir, "action-stdout.log"), "did it");
+
+            var journal = new JournalDocument
+            {
+                RunId = "run-flat",
+                PlanHash = "sha256:deadbeef",
+                Tasks = new Dictionary<string, TaskJournalEntry>
+                {
+                    ["01-first"] = new() { Status = Core.Journal.TaskStatus.Succeeded },
+                    ["02-second"] = new() { Status = Core.Journal.TaskStatus.Pending },
+                },
+            };
+
+            LogSiteRenderer.ExportSite(logsRoot, tasks, journal);
+
+            string index = File.ReadAllText(Path.Combine(logsRoot, "index.html"));
+            Assert.DoesNotContain("<h2>Waves</h2>", index);
+            // No wave-shaped subfolder index exists.
+            List<string> waveDirs = Directory.EnumerateDirectories(logsRoot)
+                .Select(d => Path.GetFileName(d) ?? string.Empty)
+                .Where(name => name.StartsWith("wave-", StringComparison.Ordinal))
+                .ToList();
+            Assert.Empty(waveDirs);
+        }
+        finally
+        {
+            try { Directory.Delete(logsRoot, recursive: true); } catch (IOException) { }
+        }
+    }
+
     private static Core.Model.TaskNode FakeTask(string id, string description) => new()
     {
         Id = id,
@@ -481,5 +604,25 @@ public sealed class LogSiteExportTests
         Description = description,
         Action = new Core.Model.ActionDefinition { Path = "action.ps1", Kind = Core.Model.ActionKind.Script },
         Guardrails = [new Core.Model.GuardrailDefinition { Name = "01-x", Path = "01-x.ps1", Kind = Core.Model.ActionKind.Script }],
+    };
+
+    /// <summary>A wave-qualified task: <c>Id = {waveDir}/{folder}</c>, mirroring SSOT §14.2.</summary>
+    private static Core.Model.TaskNode WaveTask(string waveDir, string folder, string description) => new()
+    {
+        Id = $"{waveDir}/{folder}",
+        WaveDir = waveDir,
+        Directory = folder,
+        Description = description,
+        Action = new Core.Model.ActionDefinition { Path = "action.ps1", Kind = Core.Model.ActionKind.Script },
+        Guardrails = [new Core.Model.GuardrailDefinition { Name = "01-x", Path = "01-x.ps1", Kind = Core.Model.ActionKind.Script }],
+    };
+
+    private static Core.Model.WaveNode Wave(string dir, int number, string slug, params Core.Model.TaskNode[] tasks) => new()
+    {
+        Dir = dir,
+        Number = number,
+        Slug = slug,
+        Directory = dir,
+        Tasks = tasks,
     };
 }

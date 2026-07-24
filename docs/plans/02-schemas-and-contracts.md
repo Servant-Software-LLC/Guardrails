@@ -37,6 +37,7 @@ plan-name/
 │   ├── <runId>/<task-id>/attempt-N/   # per-attempt artifacts (§8) — divided by runId, sibling of state/
 │   ├── <runId>/<task-id>/index.html   # static per-task log page — non-authored (§12.2/§12.3)
 │   ├── <runId>/index.html       # static log-site index — written on the fly during a run + by --export (§12.3)
+│   ├── <runId>/wave-NN-slug/index.html # WAVED plans only: per-wave index — that wave's tasks + drill-down (§12.3, #380)
 │   └── <runId>/diagram.html     # live status overlay on the DAG — written on the fly during a run (§10.1); non-authored, --fresh-cleared
 └── tasks/
     └── <NN-verb-object>/        # task id = folder name, kebab-case, NN = topological hint
@@ -3774,9 +3775,11 @@ paths, since a `file://` "all tasks" page is useful headless too. A decorator `I
 `logs/<runId>/index.html` via the same `LogSiteRenderer`: at run start an all-pending index; on a
 task **starting** it flips to `running` and (when the live server is up) links to the live URL; on a
 task **finishing** it writes that task's static page and the index links to it. The during-run index
-carries a `meta refresh` so a `file://` view picks up the rewrites. At run **end**, the durable final
-site is written (`ExportSite` — all-static links, **no** refresh, every task page), so the artifact
-left on disk is complete and self-contained — identical to `logs --export`. The run prints a
+carries a `meta refresh` so a `file://` view picks up the rewrites. For a **waved plan** (§14) the same
+decorator also rewrites each wave's own `logs/<runId>/wave-NN-slug/index.html` (§12.3, #380) on every
+event, so a wave's drill-down page refreshes as the wave progresses. At run **end**, the durable final
+site is written (`ExportSite` — all-static links, **no** refresh, every task page, every wave index), so
+the artifact left on disk is complete and self-contained — identical to `logs --export`. The run prints a
 clickable `file://` link to this static "all tasks" index at **start and end**, alongside the live
 URL. A finished task's terminal `logs` link (the live table's post-mortem link) targets that task's
 **static page** `logs/<runId>/<task-id>/index.html` — a rendered HTML page — not the log directory
@@ -3864,7 +3867,19 @@ which holds mutable run state):
   **link** to its page, a not-yet-run task is **plain text** (the #103 linkability rule). The
   **during-run** index additionally carries a `meta refresh` and links a *running* task to the live
   server; the **final / `--export`** index has **no** refresh and **all-static** links (durable,
-  non-flickering).
+  non-flickering). For a **waved plan** (§14) it also carries a **Waves** drill-down nav — one link per
+  wave to that wave's own index (below) with a task-progress count (#380). A **flat** plan renders no
+  such nav (its bytes are unchanged).
+- `logs/<runId>/wave-NN-slug/index.html` — **waved plans only** (§14, #380): a **per-wave index**
+  at each wave's log directory, listing **only that wave's** tasks (status + a link to each task's
+  static page, rendered **wave-relative** as `<taskFolder>/index.html` because the wave index sits one
+  level up from its task pages), a wave-progress count, and a breadcrumb `../index.html` back to the
+  plan-wide index. It is the wave-scoped drill-down target the plan index's Waves nav points at (and the
+  target #379's collapsed completed-wave console line links to). Written the **same two ways** as the
+  plan index — on the fly during a run (with the `meta refresh`, links a *running* task to the live
+  server) and durably by `--export` / at run end (no refresh, all-static) — through the **same
+  `LogSiteRenderer` shared shell** (CSS + status colours + table layout), no forked template. A **flat**
+  plan writes no wave index (there are no waves) — its site is unchanged.
 
 Pages are produced by the **same renderer** the live/post-mortem server uses (`LogSiteRenderer`,
 which owns the shared page shell — CSS, layout, status colours — that the live `LogServer` templates

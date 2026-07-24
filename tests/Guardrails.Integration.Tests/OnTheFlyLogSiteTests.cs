@@ -97,6 +97,42 @@ public sealed class OnTheFlyLogSiteTests
             inner.Events);
     }
 
+    [Fact]
+    public void DuringRun_WavedPlan_WritesPerWaveIndex_ThatRefreshesAndLinksTasks()
+    {
+        // Issue #380: a WAVED run keeps a per-wave index.html up to date as the wave progresses. Assert the
+        // wave index exists all-pending at start (with the during-run refresh), then links a task's static
+        // page once it settles, and that the plan-wide index gains the wave drill-down nav.
+        using var temp = new TempSite();
+        TaskNode a = temp.WaveTask("wave-01-alpha", "01-a");
+        WaveNode wave = temp.Wave("wave-01-alpha", 1, "alpha", a);
+
+        var observer = new OnTheFlyLogSiteObserver(
+            IRunObserver.Null, temp.LogsRoot, TempSite.RunId, [a], liveUrlForTask: null, waves: [wave]);
+
+        observer.WriteInitialIndex();
+        string wave0 = temp.ReadWaveIndex("wave-01-alpha");
+        Assert.Contains("http-equiv=\"refresh\"", wave0);        // during-run wave page refreshes itself
+        Assert.Contains("wave-01-alpha — wave log", wave0);
+        Assert.DoesNotContain("href=\"01-a/index.html\"", wave0); // pending → no static link yet
+        Assert.Contains("0/1 complete", wave0);
+
+        // The wave's task runs and settles → the wave index now links its static page (wave-relative).
+        temp.WriteAttempt("wave-01-alpha/01-a", 1, "action-stdout.log", "done");
+        observer.TaskStarting(a);
+        observer.TaskFinished(Result("wave-01-alpha/01-a", TaskOutcome.Succeeded));
+
+        string wave1 = temp.ReadWaveIndex("wave-01-alpha");
+        Assert.Contains("href=\"01-a/index.html\"", wave1);
+        Assert.Contains("data-status=\"succeeded\"", wave1);
+        Assert.Contains("1/1 complete", wave1);
+
+        // The plan-wide index gained the wave drill-down nav (the #379 collapsed-wave target).
+        string planIndex = temp.ReadIndex();
+        Assert.Contains("<h2>Waves</h2>", planIndex);
+        Assert.Contains("href=\"wave-01-alpha/index.html\"", planIndex);
+    }
+
     private static TaskResult Result(string id, TaskOutcome outcome) =>
         new() { TaskId = id, Outcome = outcome, Summary = $"{id} {outcome}" };
 
@@ -129,6 +165,29 @@ public sealed class OnTheFlyLogSiteTests
             Action = new ActionDefinition { Path = "action.ps1", Kind = ActionKind.Script },
             Guardrails = [new GuardrailDefinition { Name = "01-x", Path = "01-x.ps1", Kind = ActionKind.Script }],
         };
+
+        /// <summary>A wave-qualified task (<c>Id = {waveDir}/{folder}</c>, SSOT §14.2).</summary>
+        public TaskNode WaveTask(string waveDir, string folder) => new()
+        {
+            Id = $"{waveDir}/{folder}",
+            WaveDir = waveDir,
+            Directory = Path.Combine(Dir, waveDir, "tasks", folder),
+            Description = "task " + folder,
+            Action = new ActionDefinition { Path = "action.ps1", Kind = ActionKind.Script },
+            Guardrails = [new GuardrailDefinition { Name = "01-x", Path = "01-x.ps1", Kind = ActionKind.Script }],
+        };
+
+        public WaveNode Wave(string dir, int number, string slug, params TaskNode[] tasks) => new()
+        {
+            Dir = dir,
+            Number = number,
+            Slug = slug,
+            Directory = Path.Combine(Dir, dir),
+            Tasks = tasks,
+        };
+
+        public string ReadWaveIndex(string waveDir) =>
+            File.ReadAllText(Path.Combine(LogsRoot, waveDir, "index.html"));
 
         public void WriteAttempt(string taskId, int attempt, string fileName, string content)
         {
