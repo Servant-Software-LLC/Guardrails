@@ -1013,6 +1013,14 @@ The maintainer accepted the recommendations below verbatim; each is DECIDED as s
   distinct non-zero exit + reporting flag (§5 floor 3), NOT a deterministic runtime gate. Promoting it to a
   runtime halt (`autonomy.reviewGate: "enforce"`) waits on **#366** making the marker a trustworthy, authorized
   signal — a runtime gate on a currently-forgeable file would gate on nothing.
+  **Update — #366 has now resolved Open K in the negative (close / rescope to audit-only):**
+
+  > **Open K — resolved by #366: close / rescope to audit-only.** A runtime halt on the review marker cannot be a
+  > real boundary (the marker is write-forgeable at ~zero cost; there is no unforgeable option in a plain-file /
+  > same-machine model — #366 §3). Do **not** add `autonomy.reviewGate: enforce`. The review floor stays a GR2025
+  > advisory; #366 adds a recorded, deterministic `attestation.source` (`review-artifact | bare | machine |
+  > legacy`) that an autonomous run's **post-hoc report / audit** can surface (e.g. "this wave was marked
+  > `machine`, never human-reviewed") — but it does not gate the run.
 - **L (DECIDED) — file-based `IEscalationSink`** writing `logs/<runId>/escalations/<seq>-<gate>.json` +
   `decisions[]` + observer (fire-and-record), plus the v1 answer-file `…​.answer.json` **co-located** beside it,
   consumed by resume for **`needs-human` + `wave-checkpoint` only** (no `review-attested` kind, Blocker 2/#366),

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Core.Execution;
@@ -35,6 +36,90 @@ public sealed record DecisionEntry
 
     /// <summary>Fuller free-text detail (e.g. the per-task old→new hash breakdown for a drift resolution); may be empty.</summary>
     public string Detail { get; init; } = "";
+
+    // --- Autonomous-mode additive fields (issue #361 Phase 3, doc 12 §6.2) ---------------
+    // All OPTIONAL and additive: an autonomous gate records them; a shipped drift/task/wave entry OMITS
+    // them (JsonIgnore.WhenWritingNull ⇒ no null noise), so an existing decisions[] consumer is unaffected
+    // and the back-compat guarantee holds. The dial NEVER touches the required members above.
+
+    /// <summary>The specific gate this decision concerned: <c>needs-human</c> · <c>wave-checkpoint</c> · <c>review-gate</c> · <c>blocker</c>. Null on a shipped drift/task/wave entry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Gate { get; init; }
+
+    /// <summary>How the stop was classified (§4): <c>judgment-call</c> · <c>hard-blocker-retryable</c> · <c>hard-blocker-permanent</c>. Null on a shipped entry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Classification { get; init; }
+
+    /// <summary>The assessed criticality level (<c>low</c>·<c>moderate</c>·<c>high</c>·<c>critical</c>) for a judgment call; null for a hard blocker or a shipped entry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Criticality { get; init; }
+
+    /// <summary>The judge's confidence (<c>low</c>·<c>moderate</c>·<c>high</c>) in the assessment; null for a hard blocker or a shipped entry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Confidence { get; init; }
+
+    /// <summary>The <c>escalationThreshold</c> (the dial) in force at this gate after any per-gate override; null on a shipped entry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Threshold { get; init; }
+
+    /// <summary>The recorded best-guess taken when <see cref="Decision"/> is <see cref="DecisionTokens.ProceededBestGuess"/>; null otherwise.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? BestGuess { get; init; }
+
+    /// <summary>Class-(b) hard-blocker retries before resolution/escalation; null when the decision was not a blocker retry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? BlockerAttempts { get; init; }
+
+    /// <summary>Class-(b) cumulative wall-clock wait (seconds) before resolution/escalation; null when the decision was not a blocker retry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? BlockerWaitedSeconds { get; init; }
+
+    /// <summary>Relative path to the <c>autonomy.jsonl</c> record backing this entry (the multi-fire detail behind the audit); null on a shipped entry.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AssessmentRef { get; init; }
+
+    /// <summary>On an <see cref="DecisionTokens.AnswerInjected"/> entry: relative path to the consumed <c>…​.answer.json</c> file; null otherwise.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AnswerRef { get; init; }
+
+    /// <summary>On an <see cref="DecisionTokens.AnswerInjected"/> entry: the free-text author string the answer declared (unauthenticated self-report, §7.7); null otherwise.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AnsweredBy { get; init; }
+}
+
+/// <summary>
+/// The SSOT §2.1/§7 <c>decision</c> tokens for a <see cref="DecisionEntry"/> — the single source of truth for
+/// their kebab spelling so a consumer asserts against the constant, never a bare string literal. The first
+/// four are the shipped tokens; the rest are the autonomous-mode additions (issue #361 Phase 3, doc 12 §6.2).
+/// </summary>
+public static class DecisionTokens
+{
+    /// <summary>The boundary honest-halted (the interactive/non-interactive stop). Shipped.</summary>
+    public const string Halted = "halted";
+
+    /// <summary>An interactive <c>prompt</c> approval (the CLI captured an operator <c>y</c>). Shipped.</summary>
+    public const string PromptedApproved = "prompted-approved";
+
+    /// <summary>An interactive <c>prompt</c> declination (the operator answered <c>n</c>). Shipped.</summary>
+    public const string PromptedDeclined = "prompted-declined";
+
+    /// <summary>A provably-safe resolution applied with no prompt (under <c>auto</c> or a manual reset). Shipped.</summary>
+    public const string AutoApplied = "auto-applied";
+
+    /// <summary>Criticality ≥ threshold (a judgment call) OR a hard-blocker escalation (doc 12 §6.2).</summary>
+    public const string Escalated = "escalated";
+
+    /// <summary>Criticality &lt; threshold: a best-guess was recorded and taken (doc 12 §6.2).</summary>
+    public const string ProceededBestGuess = "proceeded-best-guess";
+
+    /// <summary>The review-gate opt-in (§5.2, Option P): the wave ran explicitly unreviewed (doc 12 §6.2).</summary>
+    public const string ProceededUnreviewed = "proceeded-unreviewed";
+
+    /// <summary>A class-(b) transient blocker resolved within the retry ceiling (doc 12 §6.2).</summary>
+    public const string BlockerRetried = "blocker-retried";
+
+    /// <summary>A resume consumed a firstmate answer file for this escalation (§7.4–§7.6, doc 12 §6.2).</summary>
+    public const string AnswerInjected = "answer-injected";
 }
 
 /// <summary>One task rebuilt by a Part C drift resolution: its id and its old→new definition hash. A helper

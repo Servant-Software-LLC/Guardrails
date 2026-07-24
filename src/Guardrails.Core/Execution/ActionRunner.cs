@@ -114,6 +114,14 @@ internal sealed class ActionRunner
         string stagingStateOutPath = PromptOutputStaging.PrepareStagingPath(
             effectiveWorkspaceRoot, task.Id, attemptFolder, fragmentOutPath);
 
+        // #361 Phase 3 (doc 12 §7.4/§7.6): the autonomous reply channel. When a resume consumed a firstmate
+        // answer for this unit's escalated needs-human gate, or a below-threshold judgment call recorded a
+        // best-guess, the Scheduler stages the raw text in a per-task injected-human-answer file beside the
+        // task's log dir. Read (and CONSUME once) it here so it flows into ComposeAction's injectedHumanAnswer
+        // section as clearly-delimited UNTRUSTED DATA (never a harness instruction, §7.4 Finding 4). Absent in
+        // the overwhelming common case (and whenever the dial is not wired) ⇒ null ⇒ the prompt is unchanged.
+        string? injectedHumanAnswer = ReadAndConsumeInjectedAnswer(logDir);
+
         // §3.5: the staging dir + from→to map are embedded verbatim in the prompt (agents read
         // instructions, not env vars) — only when the task declares stagingOutputs and a staging dir
         // was provisioned (the executor passes null otherwise). The output-contract path embedded in
@@ -121,7 +129,7 @@ internal sealed class ActionRunner
         // write to via GUARDRAILS_STATE_OUT below.
         string composed = PromptComposer.ComposeAction(
             promptFile.Body, snapshotPath, stagingStateOutPath, previousFeedbackPath, dependencies, priorAttempts,
-            stagingDir, stagingDir is not null ? task.StagingOutputs : null, isWorktreeMode);
+            stagingDir, stagingDir is not null ? task.StagingOutputs : null, isWorktreeMode, injectedHumanAnswer);
         AtomicFile.WriteAllText(Path.Combine(logDir, "composed-prompt.md"), composed);
 
         PromptRunnerSettings settings = PromptExecutionSupport.ApplyPromptOverrides(
@@ -184,6 +192,48 @@ internal sealed class ActionRunner
         HarnessWriteRequest? harnessWrite = HarnessWrite.RequestFrom(fragmentOutPath);
 
         return ActionRun.FromPrompt(result, needsHuman, harnessWrite);
+    }
+
+    /// <summary>
+    /// The per-task reply-channel injection file (doc 12 §7.4/§7.6): the raw human-answer / best-guess text the
+    /// Scheduler stages for the NEXT attempt. Lives at the TASK log level (<c>logs/&lt;runId&gt;/&lt;taskId&gt;/</c>),
+    /// one directory above an attempt dir, so it is found regardless of the next attempt number. The literal is
+    /// the coupling with <see cref="Scheduler"/>'s writer — kept identical there.
+    /// </summary>
+    private const string InjectedAnswerFileName = "injected-human-answer.txt";
+
+    /// <summary>
+    /// Read (and CONSUME once) the per-task <see cref="InjectedAnswerFileName"/> the Scheduler drops beside the
+    /// task's log dir when a resume consumed a firstmate answer (§7.6) or a below-threshold best-guess was
+    /// recorded (§4.1) for this unit. The value is threaded into this attempt's composed prompt via
+    /// <see cref="PromptComposer.ComposeAction"/>'s <c>injectedHumanAnswer</c> section (which wraps it in the
+    /// delimited UNTRUSTED envelope). It is DELETED after reading so it is injected into exactly ONE attempt
+    /// (consume-once) and never leaks into a later, unrelated one. Absent ⇒ null (the common path).
+    /// </summary>
+    private static string? ReadAndConsumeInjectedAnswer(string logDir)
+    {
+        if (Path.GetDirectoryName(logDir) is not { } taskLogDir)
+        {
+            return null;
+        }
+
+        string injectionPath = Path.Combine(taskLogDir, InjectedAnswerFileName);
+        if (!File.Exists(injectionPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            string text = File.ReadAllText(injectionPath);
+            File.Delete(injectionPath);
+            return string.IsNullOrEmpty(text) ? null : text;
+        }
+        catch (IOException)
+        {
+            // A best-effort reply-channel read must never abort the attempt — treat an unreadable file as absent.
+            return null;
+        }
     }
 
     /// <summary>

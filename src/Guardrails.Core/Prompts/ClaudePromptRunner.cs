@@ -66,8 +66,18 @@ public sealed class ClaudePromptRunner : IPromptRunner
         // live (issue #41). Dropping atomicity is acceptable for these two append-only log artifacts
         // because nothing hashes or guardrail-gates them: the verdict never comes from these files —
         // it comes from the parsed `result` line + exit code (see `completed` below).
-        Directory.CreateDirectory(Path.GetDirectoryName(invocation.StreamLogPath)!);
-        await using var streamWriter = new StreamWriter(invocation.StreamLogPath, append: false, Utf8NoBom) { AutoFlush = true };
+        //
+        // An EMPTY / null StreamLogPath means "don't write a stream log" (issue #381), NOT "abort": the
+        // advisory criticality assessment (CriticalityJudge.BuildInvocation) and any other caller that
+        // wants no raw debug tee leaves it empty. SKIP the writer (and its Directory.CreateDirectory)
+        // rather than crashing on Path.GetDirectoryName("") == null. The file is a debug/log artifact
+        // no code hashes or gates, so its absence is benign — the Tee below guards the writer with `?.`.
+        StreamWriter? streamWriter = null;
+        if (!string.IsNullOrEmpty(invocation.StreamLogPath))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(invocation.StreamLogPath)!);
+            streamWriter = new StreamWriter(invocation.StreamLogPath, append: false, Utf8NoBom) { AutoFlush = true };
+        }
 
         // transcript.md is rendered incrementally from the same lines via StreamingWriter, which
         // parses each line independently and is byte-identical to a batch Render at Complete().
@@ -84,7 +94,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
             {
                 parser.Feed(line);
                 permissionScanner.Feed(line);
-                streamWriter.WriteLine(line);
+                streamWriter?.WriteLine(line);
                 transcript?.Feed(line);
             }
 
@@ -125,6 +135,13 @@ public sealed class ClaudePromptRunner : IPromptRunner
         }
         finally
         {
+            // streamWriter is no longer an `await using var` (it is skipped for an empty StreamLogPath,
+            // issue #381), so it — like transcriptFile — is disposed explicitly here.
+            if (streamWriter is not null)
+            {
+                await streamWriter.DisposeAsync().ConfigureAwait(false);
+            }
+
             if (transcriptFile is not null)
             {
                 await transcriptFile.DisposeAsync().ConfigureAwait(false);

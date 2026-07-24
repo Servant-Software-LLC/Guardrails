@@ -129,6 +129,19 @@ decision (issue #275) and is deliberately NOT done here.
   "runOnCurrentBranch": false,        // OPTIONAL; if true the plan branch IS the current branch (still integrated via a harness-owned worktree)
   "mergeOnSuccess": true,             // OPTIONAL; DEFAULT true (#340). When the whole run goes green, merge plan branch guardrails/<plan-name> into the user's original branch at run end (ff-only when possible; AI-merge is NOT used here). Set false (or pass --no-merge-on-success) to leave the work on the plan branch for manual review
   "autonomyPolicy": "prompt",         // OPTIONAL; the UNIFIED autonomy knob (§2.1). "prompt" (DEFAULT): interactive TTY prompts, non-interactive HALTS. "auto": apply a SAFE decision with no prompt (CLI --autonomy auto, or the legacy alias --reprocess-drift). "halt": always halt. An UNSAFE/UNSOUND action ALWAYS halts regardless. GR2031 if unrecognized. In M1 the only wired boundary is the on-resume definition-drift gate (§7.2)
+  "autonomy": {                       // OPTIONAL, NEW (§2.1; design of record doc 12). The criticality dial — a NEW ORTHOGONAL axis composing with autonomyPolicy. Whole block ABSENT ⇒ the dial is inert ⇒ behaviour is byte-identical to today. Engages ONLY under autonomyPolicy:"auto" in a non-interactive context; NEVER lowers a floor
+    "escalationThreshold": "high",    // run-wide dial over the ordered enum low < moderate < high < critical; value = "lowest criticality that still escalates" (escalate ⟺ assessed ≥ threshold). Default "high" when the block is present. GR2039 if unrecognized
+    "gateThresholds": {               // OPTIONAL per-gate overrides; any key absent ⇒ the run-wide escalationThreshold applies
+      "needs-human":     "moderate",  // a criticality level
+      "wave-checkpoint": "high",      // a criticality level
+      "review-gate":     "escalate"   // SPECIAL — a FLOOR, NOT a criticality level: the acknowledgment "escalate" (default) or "proceed-unreviewed" (§2.1). GR2039 on any other value; GR2040 when "proceed-unreviewed" reaches a best-guessed hard call
+    },
+    "blockerRetry": {                 // OPTIONAL bounded wait for a RETRYABLE hard blocker (§2.1), floored by transientPauseBudgetSeconds
+      "maxAttempts": 5,               // ceiling on retries before escalating a retryable blocker
+      "totalWaitSeconds": 900         // ceiling on cumulative wait before escalating
+    },
+    "maxJudgeWidenings": 3            // OPTIONAL run-level cap on how many times a judge may reclassify an unknown failure as retryable; once spent, every unknown failure escalates deterministically
+  },
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issues #195/#306). Default true. Stashes ANY rolled-back non-final worktree attempt to a git ref + applyable patch (exposed to the retry) instead of pure discard; set false to disable
   "interpreters": {                   // EXTENDS/OVERRIDES built-in defaults (§5.2)
@@ -203,6 +216,9 @@ decision (issue #275) and is deliberately NOT done here.
   wholly-green worktree-mode run instead prints the **loud green-but-undelivered warning** at run end
   (`RunReport.WhollyGreenButUndelivered`; §7 "Run end") — the backstop so verified work left on
   `guardrails/<plan-name>` is never one `--fresh`/`reset -y` away from silent loss.
+  **Autonomous-mode default (issue #361):** a run that recorded any `proceeded-best-guess` or
+  `proceeded-unreviewed` decision (§7 `decisions[]`) **defaults `mergeOnSuccess` to OFF** — machine-decided
+  work is never auto-delivered; only an explicit `--merge-on-success` re-enables delivery (mechanics in §5.3).
 - `autonomyPolicy` (default `"prompt"`) is the **unified autonomy knob** governing every prompt/halt/auto
   decision boundary — the full contract, and the shared `decisions[]` reporting surface it feeds, is
   **§2.1** below. In M1 the only wired boundary is the on-resume **definition-drift** gate (§7.2); its
@@ -210,6 +226,38 @@ decision (issue #275) and is deliberately NOT done here.
   `"auto"` (CLI `--autonomy auto`, or the legacy alias `--reprocess-drift`) → auto-resolve a safe drift
   with no prompt; `"halt"` → always HALT. An **UNSAFE** drift ALWAYS halts (exit 2) regardless. An
   unrecognized value is a validation error (**GR2031**).
+- `autonomy` (**OPTIONAL, absent by default**) is the **criticality dial** — a NEW config block, orthogonal
+  to `autonomyPolicy`, that lets an **unattended `auto`** run proceed past a *judgment* gate on a recorded
+  best-guess instead of honest-halting. **Every field is optional and the whole block absent ⇒ the dial is
+  inert ⇒ behaviour is byte-identical to today** (the backward-compatibility guarantee). The full contract —
+  how the dial composes with `autonomyPolicy`, the floors it may never lower, and the `gateThresholds` value
+  spaces — is **§2.1** (design of record `docs/plans/12-autonomous-mode.md`). In brief:
+  - `escalationThreshold` — the run-wide dial over the coarse ordered enum `low < moderate < high < critical`;
+    the value is the **lowest criticality that still escalates** (`escalate ⟺ assessedCriticality ≥
+    escalationThreshold`), so `low` = most cautious (escalate ~everything) and `critical` = most autonomous
+    (best-guess all but critical judgment calls). Defaults to `high` when the block is present. An
+    unrecognized value is a validation error (**GR2039**).
+  - `gateThresholds` — OPTIONAL per-gate overrides keyed `needs-human` / `wave-checkpoint` / `review-gate`;
+    any key absent falls back to `escalationThreshold`. The first two take a criticality level; the
+    **`review-gate` key is special — its value is NOT a criticality level but the `escalate` (default) /
+    `proceed-unreviewed` acknowledgment** (a floor, §2.1). An invalid `escalationThreshold`/`gateThresholds`
+    value is **GR2039**.
+  - `blockerRetry` (`maxAttempts` default `5`, `totalWaitSeconds` default `900`, floored by
+    `transientPauseBudgetSeconds`) — the bounded wait/backoff ceiling for a *retryable hard blocker* (rate
+    limit / 503) before it escalates; and `maxJudgeWidenings` (default `3`) — a run-level cap on how many
+    times a judge may reclassify an unknown failure as retryable, after which every unknown failure escalates
+    deterministically.
+  - **`--autonomous` (alias `--unattended`) REQUIRES an effective `maxCostUsd`.** `maxCostUsd` is optional in
+    general (absent ⇒ no cap), but an unattended run has no human to notice a runaway spend and autonomous
+    mode adds spend the interactive flow does not (each criticality assessment + each breakdown invocation,
+    ~$1–5, charged to `overheadCostUsd`). So if neither the config nor `--max-cost-usd` sets one, the CLI
+    emits a **loud warning** and applies a conservative built-in default of **$20** rather than running
+    uncapped.
+  - **GR2040** (the compound-config incompatibility — a cross-field load-time error, §2.1): fires when
+    `gateThresholds.review-gate == "proceed-unreviewed"` **AND** a reachable `critical` end-state
+    (`escalationThreshold == "critical"` **OR** any in-wave `gateThresholds` value —
+    `needs-human`/`wave-checkpoint` — `== "critical"`). *Skip the review pass OR best-guess the hard design
+    calls — never both.*
 - `maxParallelism` defaults to **3** because chain-reuse keeps a linear chain to one worktree; the
   peak tree count is the DAG's max antichain width + the integration worktree. Drop to 2 on a
   disk-constrained box; raise on a fast/large `worktreeRoot` volume.
@@ -289,6 +337,40 @@ drift), `task` (#269 overwatcher per-task attempts-vs-fix-vs-halt); `decision` i
 (the on-resume definition-drift gate, §7.2); the schema + discriminator already accommodate all three so
 the `wave` (M2) and `task` (M3) boundaries just append. #269's design of record reuses this policy + log
 verbatim.
+
+**The criticality dial (`autonomy` block) — a NEW ORTHOGONAL axis (issue #361; design of record
+`docs/plans/12-autonomous-mode.md`).** Autonomous mode adds the OPTIONAL `autonomy` config block (§2:
+`escalationThreshold`, `gateThresholds`, `blockerRetry`, `maxJudgeWidenings`). It is a **separate axis from
+`autonomyPolicy`, not an extension of it** — `autonomyPolicy`'s **three values and its `GR2031` check are
+UNCHANGED**. `autonomyPolicy` decides the *posture* (may I prompt / must I halt / may I apply a known-safe
+action); the dial decides, **only at a JUDGMENT gate under `autonomyPolicy: auto` in a NON-INTERACTIVE
+context**, whether to *escalate* or *proceed past that gate on a recorded best-guess*. Under `prompt`/`halt`,
+or interactively, the dial is inert — which is why an existing run's behaviour is unchanged.
+
+- **The dial NEVER lowers a floor.** A denylist/**verdict-surface** change, an **unsound drift rewind**
+  (§7.2), the **review gate** (§13; the harness never self-attests a review), and a **terminal-exhaustion
+  `needs-human`** (§9.2.1) always halt/escalate regardless of the dial — including at `escalationThreshold:
+  critical`. The dial only ever converts an *honest-halt-at-a-soft-judgment-gate* into a *recorded best-guess
+  below threshold*; a wrong best-guess still fails its own deterministic guardrails → honest halt.
+- **The value spaces.** `escalationThreshold` is the run-wide dial (`low < moderate < high < critical`, value
+  = lowest criticality that still escalates); `gateThresholds` overrides it per gate. The two dial-eligible
+  gates (`needs-human`, `wave-checkpoint`) take a criticality level; the **`review-gate` key is a FLOOR**
+  whose value is the `escalate` (default) / `proceed-unreviewed` acknowledgment — deliberately NOT a
+  criticality level, so turning the run-wide dial to `critical` can never accidentally clear review. An
+  invalid `escalationThreshold`/`gateThresholds` value is a load-time validation error (**GR2039**).
+- **The compound-config gate (GR2040) — a settled invariant.** *Skip the review pass OR best-guess the hard
+  design calls — never both.* `gateThresholds.review-gate == "proceed-unreviewed"` combined with a reachable
+  `critical` end-state (`escalationThreshold == "critical"` **OR** any in-wave `gateThresholds` value
+  `== "critical"`) is a **load-time error (GR2040)**, keyed on the reachable end-state — so a per-gate
+  override like `{ "needs-human": "critical", "review-gate": "proceed-unreviewed" }` under
+  `escalationThreshold: high` is caught, not just a run-wide `critical`. (Distinct from GR2039, the
+  single-invalid-*value* check.) `proceed-unreviewed` stays a valid opt-in at the cautious/`high` dials; only
+  its intersection with a best-guessed hard call is forbidden.
+- **The overwatcher `auto`-tier gate keys on the PRESENCE of the `autonomy` block, NOT `autonomyPolicy: auto`
+  alone.** Under autonomous mode the overwatcher's ALLOWLIST levers become dial-governed silent auto-apply —
+  but *only when an `autonomy` block is present*. An existing `autonomyPolicy: auto` run with **no** `autonomy`
+  block keeps today's behaviour byte-for-byte (the overwatcher still degrades an allowlist fix to *propose*),
+  so the new axis never silently changes a shipped `auto` consumer.
 
 ## 3. `tasks/<id>/task.json`
 
@@ -1157,6 +1239,16 @@ and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed 
 after a prior run already delivered re-issues an ff-only merge that git reports "Already up to date"
 (→ `FastForwarded`, exit 0) — never a double-merge or error.
 
+**Autonomous mode reconciles delivery with the #340 default (issue #361, `docs/plans/12-autonomous-mode.md`
+§1/§5.2).** A run that recorded **any** `proceeded-best-guess` **or** `proceeded-unreviewed` decision (§7
+`decisions[]`) **defaults `mergeOnSuccess` to OFF** — once a machine judgment shaped the result, the
+verified work is **never auto-delivered** to the user's branch. It stays on the plan branch
+`guardrails/<plan>` for a human to inspect, and the shipped **green-but-undelivered warning** (below) fires.
+This default-OFF is overridable **only** by an explicit **`--merge-on-success`** (an operator deliberately
+forcing delivery of machine-judged work); neither a `guardrails.json` `mergeOnSuccess: true` nor the #340
+delivered-by-default posture silently re-enables it. Delivery is thus never automatic once a best-guess or
+an unreviewed wave shaped the result.
+
 > **BREAKING DEFAULT (#340, no CHANGELOG in-repo — recorded here + in `docs/plans/13-merge-on-success-default.md`).**
 > `mergeOnSuccess` flipped from **OFF → ON**: on upgrade, an existing plan that OMITS the key now delivers to
 > the user's branch on a wholly-green run instead of leaving the work on `guardrails/<plan-name>`. Two
@@ -1450,6 +1542,39 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   "overheadCostUsd": 0.0123
 }
 ```
+
+**Autonomous-mode `decisions[]` deltas (issue #361 Phase 3 — OPTIONAL, additive; `docs/plans/12-autonomous-mode.md`).**
+An unattended run records every judgment gate it auto-clears as a `decisions[]` entry. It **reuses the
+existing `boundary` discriminator** — `task` for a `needs-human` gate, `wave` for a JIT wave-checkpoint or
+review-gate gate (no new boundary is added) — and **adds these OPTIONAL fields** to a `DecisionEntry`:
+
+| Field (optional) | Type | Meaning |
+|---|---|---|
+| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` |
+| `classification` | string | `judgment-call` \| `hard-blocker-retryable` \| `hard-blocker-permanent` |
+| `criticality` | string | the assessed level (`low`\|`moderate`\|`high`\|`critical`); null for a hard blocker |
+| `confidence` | string | the judge's confidence (`low`\|`moderate`\|`high`); null for a hard blocker |
+| `threshold` | string | the `escalationThreshold` in force at this gate (after any per-gate override) |
+| `bestGuess` | string | the recorded best-guess taken when `decision = proceeded-best-guess`; null otherwise |
+| `blockerAttempts` | int | class-(b) blocker retries before resolution/escalation; null otherwise |
+| `blockerWaitedSeconds` | int | class-(b) cumulative wait (seconds) before resolution/escalation; null otherwise |
+| `assessmentRef` | string | relative path to the `autonomy.jsonl` record (§8) backing this entry |
+| `answerRef` | string | (answer-injection only) relative path to the consumed `….answer.json` reply (§8) |
+| `answeredBy` | string | (answer-injection only) the free-text author string the answer declared (trusted self-report) |
+
+New **`decision`** tokens extend the shipped `halted | prompted-approved | prompted-declined | auto-applied`:
+
+| New token | When |
+|---|---|
+| `escalated` | criticality ≥ threshold (a judgment call), OR a hard-blocker escalation |
+| `proceeded-best-guess` | criticality < threshold; the recorded `bestGuess` was taken and injected |
+| `proceeded-unreviewed` | the review-gate `proceed-unreviewed` opt-in (`docs/plans/12-autonomous-mode.md` §5.2) |
+| `blocker-retried` | a class-(b) transient blocker resolved within the `blockerRetry` ceiling |
+| `answer-injected` | a resume consumed a firstmate answer file for this escalation (§7.2); the entry carries `answerRef` + `answeredBy` + the bound escalation id |
+
+All additions are **OPTIONAL / additive** — the shipped `drift` / `task` / `wave` entries and the existing
+`halted` / `prompted-approved` / `prompted-declined` / `auto-applied` tokens are **UNCHANGED**, and an
+existing `decisions[]` consumer (the CLI renderer, the log viewer) ignores the new fields.
 
 **Attempt outcomes** (the per-attempt `outcome` field; distinct from task `status`):
 - `action-failed` — a generic non-zero action / `is_error` with no recognized signal.
@@ -1779,7 +1904,30 @@ user's branch was **halted** (a `Conflict`, `DirtyWorkingTree`, or `HookRejected
 diagram is stale or missing (the "regenerate" signal); for `lock --check`: the folder has drifted from
 the baseline or the baseline is missing (the "re-baseline" signal); for `merge`: there are unresolved
 conflicts to resolve, or the BASE baseline is missing and must be established first (§11.5) · `3`
-cancelled.
+cancelled · `4` **`EscalationsPending`** — an autonomous run (`docs/plans/12-autonomous-mode.md`, issue
+#361 Phase 3) ended with **unresolved escalations** (an answer-required halt: one or more
+`logs/<runId>/escalations/<seq>-<gate>.json` records left `open`/`answered`, §8). This is a **NEW, DISTINCT
+non-zero code** — the next free value after the shipped `0`/`1`/`2`/`3` — so an automated firstmate consumer
+**never** reads an answer-required halt as clean green AND can tell it apart from a plain needs-human halt.
+Code `2` is deliberately **NOT** reused here: `2` is indistinguishable from a normal needs-human, whereas
+`EscalationsPending` signals "a firstmate answer file (§7.2/§7.4) can unblock this on the next resume." ·
+`5` **`ProceededUnreviewed`** — an autonomous run (`docs/plans/12-autonomous-mode.md` §5.2, issue #361
+Phase 4) that took a **`proceeded-unreviewed`** decision (§7 `decisions[]`, the Option P review-gate
+opt-in): it ran one or more waves **without a review marker**. This is the **next free value after
+`EscalationsPending = 4`** and is deliberately DISTINCT from both `2` (a plain needs-human halt) and `4` (an
+answer-required escalation halt), so an automated firstmate consumer can **never** read "ran with N
+unreviewed waves" as clean green AND can tell an unreviewed-but-green run apart from a needs-human or an
+answer-required halt.
+
+**Autonomous-mode exit-code note.** Both autonomous-mode non-zero codes are **pinned**:
+`EscalationsPending = 4` (unresolved answer-required escalations) and **`ProceededUnreviewed = 5`** (a
+`proceeded-unreviewed` decision was taken — the §5.2 Option P opt-in); `5` is the **next free value after
+`4`**. A `proceeded-unreviewed` run exits **`5`** when it would otherwise have drained green — so it is
+never read as clean green and stays tell-apart from both `2` and `4`. The run is also **permanently flagged
+*"ran with N unreviewed waves"*** in its final verdict — a marker durable **independent of the exit code**:
+it remains set even when the run ALSO ends with unconsumed escalations, where `EscalationsPending = 4` takes
+exit-code precedence as the resume-able halt while the unreviewed-waves flag stays recorded for the report.
+Such a run also defaults `mergeOnSuccess` to OFF (§5.3).
 
 **Plan-file → task-folder argument fixup** (all commands taking a plan folder as their first
 positional: `run`, `validate`, `plan`, `graph`, `lock`, `merge`, `logs`). Before the folder's existence
@@ -2068,6 +2216,59 @@ always sound because Part B tears down the whole plan branch (§6.1). In serial 
 there is no plan branch to carry a stale commit, so both consumers degrade to a sound **journal-only** reset
 of `S` (no rewind). Same primitive, same floor; only the entry point and the authorization surface differ.
 
+#### Resume answer-injection binding (issue #361 Phase 3, autonomous mode)
+
+Autonomous mode's firstmate reply channel (`docs/plans/12-autonomous-mode.md` §7.4–§7.7) reuses **this
+section's #274 dual-hash drift discipline** to bind a firstmate answer file to the exact escalation it
+answers. This is the CONTRACT the binding must satisfy (the resume algorithm itself is doc 12 §7.6).
+
+**What the escalation captures.** An escalation record (`logs/<runId>/escalations/<seq>-<gate>.json`, §8)
+carries a **`definitionHash`** captured at escalation time — the **`TaskDefinitionHash`** for a
+`needs-human` gate, the **`WaveDefinitionHash`** for a `wave-checkpoint` gate (the same anti-stale binding a
+drift halt uses, §7 wire example) — plus the escalation identity `{ runId, seq, gate, subject }`. The `seq`
+is a **durably monotonic, never-reused run counter**: it is allocated from a persisted, journaled run-level
+counter (never derived from a directory listing), so the identity tuple is **unique for the life of the
+run** and a stale unconsumed answer can never bind to a later escalation that happens to reuse the same
+shape.
+
+**When a resume consumes an answer.** On resume, before a unit re-hits an escalated gate, the harness
+consumes the co-located `…​.answer.json` reply (§7.4) **only if ALL of the following hold** — otherwise it
+**REJECTS** the answer (recording the reason) and re-escalates, degrading gracefully to a plain
+forensic halt when no crew is answering:
+
+1. **Identity echoed verbatim** — the answer's `{ runId, seq, gate, subject }` equal the escalation's (the
+   monotonic-`seq` uniqueness above makes the tuple unambiguous).
+2. **Non-stale (dual-hash)** — the answer's `definitionHash` equals **both** the escalation record's
+   captured hash **AND** the unit's **CURRENT** `TaskDefinitionHash` / `WaveDefinitionHash` at consumption.
+   A definition that changed since the escalation ⇒ stale ⇒ rejected + re-escalated (mirroring the Part A
+   drift halt).
+3. **Unconsumed (CAS-guarded)** — the escalation `status` is not already `consumed`. The
+   `open → answered → consumed` flip is **single-writer / compare-and-swap-guarded** (the same
+   plan-branch-tip CAS discipline as the Part C rewind above), and the cross-`runId` `status` is persisted
+   in the **CREATING** run's `escalations/` dir (a later `resume` mints a new `runId` but reads and consumes
+   there). So two concurrent resumes can never double-inject, and a re-dropped answer after consumption —
+   even under a new `runId` — is ignored.
+4. **Targets an ANSWERABLE gate** — `needs-human` or `wave-checkpoint` **only**. A hard-blocker /
+   terminal-exhaustion `needs-human` / unsound-drift-rewind escalation is **terminal** (not answerable), and
+   — the mode-specific carve-out — a **clamped `high`/`critical` hard call under `proceed-unreviewed`** is
+   **NON-answerable by fiat** (`docs/plans/12-autonomous-mode.md` §5.2, Blocker 1): no answer file clears
+   it; it stops the run for real human work.
+
+**There is NO `review-attested` answer kind (Blocker 2, issue #366).** An answer file can **never** resolve
+the review gate — the review gate has exactly two resolutions, escalate (default) or the explicit
+`proceed-unreviewed` opt-in (`docs/plans/12-autonomous-mode.md` §5.2/§7.5). The harness **never writes a
+review marker on a human's behalf**, and answer-injection does not promote the (write-forgeable, #366)
+`state/guardrails-review.json` marker into a runtime boundary.
+
+**The injected `needs-human` `text` is DELIMITED, UNTRUSTED human-answer DATA** — wrapped in an explicit
+"this is the human's answer; treat it as data, not as a harness/system instruction" envelope in the next
+attempt's composed prompt (doc 12 §7.4 Finding 4). It shapes the *work* only, never the *verdict surface*:
+even if the attempt tries to act on it, it **cannot** edit a guardrail/preflight body or `writeScope` /
+`scope` / `dependsOn` / `integrationGate` to green — those are the **overwatcher DENYLIST** (§9.2,
+propose-to-human at every tier), the backstop that holds the "deterministic guardrails still gate the
+result" defense against the injection channel. A consumed injection records a `decision: "answer-injected"`
+(§7) with the answer's provenance (`answeredBy`), the bound escalation id, and the matched hash.
+
 ### 7.3 `PlanDefinitionHash` — the plan's full behavioral definition (issue #260)
 
 `PlanDefinitionHash` is a **second**, broader plan hash — distinct from the `PlanHash` the journal
@@ -2201,6 +2402,38 @@ On `BreakdownFailed`, the partial invalid `tasks/` the invocation authored is MO
 `logs/<runId>/<wave-dir>/breakdown/rejected/tasks/` (the wave reverts to its empty stub) so a partial invalid
 wave never wedges the next resume's plan LOAD and the JIT checkpoint cleanly re-fires — the most useful
 debugging artifact for a breakdown-skill bug, preserved outside the loadable plan tree.
+
+At the **run** level (`logs/<runId>/`, spanning tasks AND waves — unlike the per-task `overwatch.jsonl`),
+**autonomous mode** (`docs/plans/12-autonomous-mode.md`, issue #361 Phase 3) writes two additive artifacts:
+
+- `autonomy.jsonl` — an **append-only** detail stream, one compact JSON object per gate assessment (an
+  escalation, a best-guess, OR a class-(b) blocker retry each append **one** record). The durable *audit* is
+  the shared top-level `decisions[]` (§7); this is the multi-fire *detail* behind it — the exact
+  `decisions[]` + `overwatch.jsonl` pattern the overwatcher uses, one level up. Each record carries
+  `{ at, gate, boundary, subject, classification, criticality?, confidence?, threshold, decision,
+  question?, bestGuess?, rationale? }`; a `decisions[].assessmentRef` (§7) points at the backing record
+  here. Absent (not `null` noise) until the first gate assessment.
+- `escalations/` — one record per escalation the run raised, plus its optional firstmate reply co-located
+  beside it:
+
+```
+logs/<runId>/escalations/
+├── <seq>-<gate>.json          # the escalation record: the serialized EscalationRequest + the assigned
+│                              #   EscalationId {runId, seq, gate, subject} + the DefinitionHash captured
+│                              #   at escalation time (TaskDefinitionHash for needs-human, WaveDefinitionHash
+│                              #   for wave-checkpoint) + a `status` (open → answered → consumed, §7.2)
+└── <seq>-<gate>.answer.json   # OPTIONAL firstmate reply, co-located beside the record it answers (§7.2/§7.4);
+                               #   present once a crew has written an answer for an ANSWERABLE gate
+```
+
+The escalation record's **`status` lifecycle** is `open` (written by `Escalate`) → `answered` (a
+`…​.answer.json` reply was dropped beside it) → `consumed` (a resume validated + injected the reply, §7.2).
+`seq` is a **durably monotonic, never-reused** run counter, and the cross-`runId` `status` is persisted in
+this **creating** run's `escalations/` dir even across later resumes (§7.2). The `.answer.json` reply is the
+firstmate answer-file contract (`docs/plans/12-autonomous-mode.md` §7.4); a resume consumes it under the
+dual-hash / CAS binding rules in §7.2. Only the two **answerable** gates (`needs-human`, `wave-checkpoint`)
+ever carry a reply — there is **no `review-gate` answer file** (no `review-attested` kind, §7.2). A run that
+ends with any escalation still `open`/`answered` (unconsumed) exits `4 = EscalationsPending` (§7.1).
 
 **`feedback.md` header is action-kind AND rollback/salvage aware (issues #264 / #167 / #306).** The
 `feedback.md` opens with retry guidance chosen first by action kind, then — for a PROMPT action — by what
@@ -2521,6 +2754,17 @@ remain the **floor** (they always fire); the overwatcher only un-halts one by in
 so "no observable change + byte-identical failure" no longer describes the next attempt. In v1 production
 (non-interactive), no grant ever happens — the floor stands and the overwatcher makes halts *earlier and
 richer*, never softer.
+
+**Autonomous mode lights up the `auto`-tier ALLOWLIST lever — dial-governed silent auto-apply (issue #361
+Phase 4).** When a run carries an `autonomy` block (§2.1), the overwatcher's **ALLOWLIST** levers (guidance
+injection + the `maxTurns`/`retries`/`timeoutSeconds` budget overrides) stop degrading to *propose* and are
+**silently auto-applied**, dial-governed — realizing the action/budget half of the overwatcher's v2 `auto`
+bet (#6). This is **gated on the PRESENCE of the `autonomy` block, NOT `autonomyPolicy: auto` alone** (the
+anti-Option-(c) back-compat guarantee, §2.1): an `autonomyPolicy: auto` run with **no** `autonomy` block
+still degrades the allowlist lever to *propose* (honest-halt when non-interactive), **byte-identical to
+today**, so no shipped `auto` consumer silently gains overwatcher auto-application on upgrade. The
+**DENYLIST (the verdict surface) is unchanged** — it stays propose-to-human-plus-a-`/guardrails-review`
+re-run at every tier, dial or no dial. (Design of record: `docs/plans/12-autonomous-mode.md` §9 Phase 4.)
 
 **Reporting — the shared `decisions[]` + a per-task `overwatch.jsonl`.** Each overwatcher fire appends a
 `decisions[]` entry with **`boundary: "task"`** (reusing the M1 `DecisionEntry` / `IRunObserver.DecisionRecorded`,
@@ -3546,9 +3790,18 @@ under `state/`:
 
 ```jsonc
 {
-  "version": 1,
-  "reviewedAt": "2026-06-22T14:03:11Z",   // ISO-8601 UTC, review time
-  "planHash": "sha256:…"                   // PlanDefinitionHash (§7.3) at review time — the plan's full behavioral definition (wire name kept for back-compat)
+  "version": 2,                            // bump; readers NEVER gate on version — classify by the attestation block
+  "reviewedAt": "2026-06-22T14:03:11Z",   // ISO-8601 UTC, review time — UNCHANGED
+  "planHash": "sha256:…",                  // PlanDefinitionHash (§7.3) at review time — the plan's full behavioral definition (wire name kept for back-compat) — UNCHANGED
+  "attestation": {                         // OPTIONAL, NEW (issue #366); absent on a v1 marker ⇒ read as `legacy`
+    "source": "review-artifact",           // evidence class: review-artifact | bare | machine
+    "tool": "guardrails 1.0.0-preview.43", // self-reported CLI build that stamped it (informational, non-authoritative)
+    "actor": "david.maltby@hotmail.com",   // OPTIONAL, self-reported, NON-AUTHORITATIVE reviewer id
+    "evidence": {                          // present ONLY for source: "review-artifact"
+      "reportPath": "state/reviews/review-1a2b3c4d5e6f-2026-06-22T140311Z.md",  // plan-folder-relative, under the hash-excluded state/reviews/ tree
+      "reportDigest": "sha256:…"           // sha256 of the report bytes, newline-normalized (F7), at stamp time
+    }
+  }
 }
 ```
 
@@ -3568,7 +3821,8 @@ review's edits. It is an attestation about the **committed plan content** — no
 checkout — and because it is `PlanDefinitionHash`-keyed (§7.3) it **self-invalidates the instant any
 reviewed file — `task.json`, `guardrails.json`, an `action.*`, or any guardrail/preflight body or
 sidecar — changes the `PlanDefinitionHash`** (the GR2025 nudge returns), so a committed marker can never
-falsely vouch for changed content. That self-invalidation is exactly what makes committing it safe and
+falsely vouch for **changed** content — a **staleness** property only (see the *Evidence hygiene* trust
+boundary below), **not** a claim that the marker is unforgeable. That self-invalidation is exactly what makes committing it safe and
 correct: it travels with the plan it attests to, and any edit that the `PlanDefinitionHash` covers reads
 as un-reviewed rather than as a false green. It is therefore **NOT wiped by `--fresh`** (§6.1) —
 `--fresh` clears genuine per-run runtime state (`run.json`, `state.json`, `merge-conflicts.log`,
@@ -3589,12 +3843,68 @@ bodies. Re-running `/guardrails-review` (or `guardrails mark-reviewed`) clears i
 The marker is **written by the `/guardrails-review` skill**; the harness only reads it
 (`ReviewMarker.Read`/`Evaluate`), computes staleness, and surfaces the warning.
 
+### Evidence hygiene (issue #366)
+
+The marker carries an **OPTIONAL `attestation` block** recording a deterministic **evidence class** — what
+the CLI could actually verify at stamp time — additively over the three unchanged fields. It is **additive
+and back-compat**: a pre-#366 marker (no `attestation` block) reads as `legacy`, and a v2 marker read by an
+older tool ignores the unknown block and behaves exactly as a v1 marker. Full rationale, threat model, and
+scope live in `docs/plans/16-review-attestation-provenance.md`.
+
+**`source` — the evidence class the CLI can verify** (it cannot authenticate an *actor*: a human and a
+machine invoke the same `mark-reviewed`):
+- **`review-artifact`** — a `/guardrails-review` report artifact was present, **passed the F2 stamp-time
+  checks**, and was digested. `evidence` is present **iff** `source: review-artifact`.
+- **`bare`** — `mark-reviewed` invoked with **no** valid review artifact: the current unconditional
+  behavior — a human's manual "I read it," **or** a `review-artifact` attempt that failed F2 and was
+  downgraded. Clears GR2025 exactly as today.
+- **`machine`** — explicitly stamped by an **automated** flow (auto-breakdown / autonomous mode, via
+  `--source machine`); never masquerades as human review.
+- **`legacy`** — **read-time only, never written**: a marker with no `attestation` block (a v1 marker).
+
+**F2 — stamp-time hygiene checks** (what makes `review-artifact` mean anything): when `mark-reviewed` would
+write `source: review-artifact`, it MUST assert, at stamp time — **(a) plan-binding:** the report **embeds a
+`Plan-Definition-Hash:` line that equals the marker's `planHash`** (the current `PlanDefinitionHash`; the
+skill obtains the hash from a read-only `plan-hash` affordance and writes it into the report — it cannot
+compute the hash itself); and **(b) path containment:** `reportPath` **resolves under
+`<plan>/state/reviews/`** (full-path containment, not a substring match — rejects `..` escapes and
+out-of-tree paths). **On failure of either, `mark-reviewed` downgrades to `source: bare` — it never
+fabricates an evidence class it cannot substantiate.** F2 is a **hygiene check, not a security check**: it
+closes the accidental/mechanical failures (cross-plan misfiling, replay of a foreign report) so the class
+reliably means "a report for *this* plan exists" to a cooperating reader; it does **not** stop a determined
+forger (who can author a report with the correct embedded hash at ~zero cost).
+
+**`reportPath`** lives under **`state/reviews/`**, which §7.3 **excludes** from `PlanDefinitionHash`, so the
+report **cannot re-stale the marker** — no circularity, the same reason the marker itself lives under the
+excluded `state/`. **`reportDigest`** is the `sha256` of the report bytes under the **same newline
+normalization as `PlanDefinitionHash`** (CRLF/CR → LF), applied **symmetrically across writer and reader
+(F7)**, so an audit tool that re-checks the digest agrees byte-for-byte with the stamp on any checkout.
+**`actor` and `tool` are self-reported and non-authoritative** — surfaced only as audit richness (label them,
+e.g. `reviewer (self-reported): …`), never as trust.
+
+**Reader rule: never gate on `version`; classify by the `attestation` block** — its presence + `source`,
+never the integer. Bumping to `2` is a signal, not a gate.
+
+**Trust boundary.** The review floor is only as strong as **write-access to the plan folder**: an agent that
+can author the plan can write any marker, and there is **no unforgeable option** in a plain-file /
+same-machine model — not provenance, not a digest chain, not even a GPG-signed commit (the autonomous agent
+holds the signing key). #366 records a **deterministic evidence class + an audit trail for the
+non-adversarial case** — it **does not prove a human and is not a forgery deterrent** (invariant 6). The
+self-invalidation property above scopes strictly to *staleness*; it is not a forgeability claim.
+
+**Read for AUDIT, not by the Scheduler.** There is **no runtime gate** on the review marker — enforce-mode
+(an `autonomy.reviewGate: enforce` halt) was considered and **rejected** as security theater on a forgeable
+file (see `docs/plans/16-review-attestation-provenance.md` §6). **GR2025 stays an advisory warning** (per
+*Surfacing* above); the recorded `source` exists for humans and tooling to inspect after the fact — the
+Scheduler never reads it.
+
 **Multi-wave plans (§14):** the review marker + its `PlanDefinitionHash` are **per-wave** — each wave
 subfolder carries its own `<plan>/<wave>/state/guardrails-review.json`, keyed on that wave's own
 `PlanDefinitionHash` (computed over the wave's own authored files; the shared `guardrails.json` is
 **excluded** so an upstream wave's marker stays stable, Open Decision C). GR2025 is surfaced **JIT per wave**
 — checked before that wave runs — so an already-reviewed + run upstream wave never re-stales when a
-downstream wave is authored later.
+downstream wave is authored later. The **`attestation` block (issue #366) is per-wave** exactly as the
+marker is, and a wave's review report lives under **`<plan>/<wave>/state/reviews/`**. No new wave semantics.
 
 ---
 
@@ -3726,6 +4036,11 @@ after the run, unchanged.
 
 The `DependencyGraph`'s existing topological-level accessor is renamed **`Waves()` → `Tiers()`** (a wave
 *contains* tiers) to free the word "wave" for this plan-stage concept.
+
+> **Autonomous-mode dial (issue #361, doc 12 §5.2).** Under `autonomyPolicy: auto` + an `autonomy` block
+> (§2.1), the criticality dial governs the step-2 `wave-checkpoint` gate — a below-threshold best-guess
+> auto-invokes the breakdown actor instead of honest-halting; the **review half stays a floor** (the harness
+> never self-attests a review, §5.2 of doc 12). Cross-reference only — the wave mechanics above are unchanged.
 
 ### 14.5 The recursive completion-unit model — durable wave completion + `WaveDefinitionHash`
 
