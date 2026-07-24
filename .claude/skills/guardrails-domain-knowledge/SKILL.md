@@ -555,6 +555,16 @@ guardrails will run -- with tests-fail-on-current-code proving non-tautology) ->
 BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
 (`guardrails graph --check`) and regenerates if the human's edits made it stale.
 
+**Charter `.charter.md` input, INTERACTIVE breakdown only (#390–393).** The interactive `/plan-breakdown`
+can consume a Charter *living-document* `.charter.md` directly (richer than the flatten): it detects Charter
+input, interprets `:::` blocks by **citing the top-level `charter-format` skill** (no Charter binary
+dependency, no vendored catalog fork), gates the file's `charter-format-version` marker against the skill's
+range (absent ⇒ reject), folds a **resolved** `:::question`'s inline `answer` in as a settled decision, and
+**surfaces an open** one (`AskUserQuestion`, or a deferred agent-needs-human task the #361 dial then governs
+at run time — no new gate type). The **headless/autonomous path is UNAFFECTED**: it keeps consuming
+Charter's *flattened* plain-markdown `charter handoff` output, never parses `:::`, never loads
+`charter-format`. Procedure in `plan-breakdown` Step 0c.
+
 **Two authoring/review disciplines the skills enforce (know these when touching plan-breakdown /
 guardrails-review):**
 - **Drive-the-real-seam / passing-but-blind (#382).** A per-task TDD guardrail that injects a FAKE of an
