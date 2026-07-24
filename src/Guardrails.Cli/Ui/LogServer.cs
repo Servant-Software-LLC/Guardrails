@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
 namespace Guardrails.Cli.Ui;
@@ -58,6 +59,12 @@ public sealed class LogServer : IAsyncDisposable
     private readonly CancellationTokenSource _shutdown = new();
     private Task? _acceptLoop;
 
+    // #387 v2: the run's escalations/ dir (logs/<runId>/escalations/) and whether the run is under the
+    // proceed-unreviewed opt-in — read for the /tasks/{id}/escalations pick panel and the POST /answer writer,
+    // which enforce the SAME non-answerable floor the resume-time consumer does (via EscalationPick).
+    private readonly string _escalationsDir;
+    private readonly bool _proceedUnreviewed;
+
     // Per-task source files (the action + every guardrail script + any .json sidecar), precomputed from
     // the plan's TaskNode definitions so the source routes (#141 item 3) resolve a requested name ONLY
     // against this known set — path-safe by construction (an unknown name never resolves to a path).
@@ -78,7 +85,8 @@ public sealed class LogServer : IAsyncDisposable
         HttpListener listener,
         string baseUrl,
         string logsRoot,
-        IReadOnlyList<TaskNode> tasks)
+        IReadOnlyList<TaskNode> tasks,
+        bool proceedUnreviewed)
     {
         _listener = listener;
         _baseUrl = baseUrl;
@@ -86,6 +94,8 @@ public sealed class LogServer : IAsyncDisposable
         _tasks = tasks;
         _taskIds = new HashSet<string>(tasks.Select(t => t.Id), StringComparer.Ordinal);
         _sourcesByTask = BuildSourceMap(tasks);
+        _escalationsDir = Path.Combine(logsRoot, "escalations");
+        _proceedUnreviewed = proceedUnreviewed;
     }
 
     /// <summary>
@@ -148,7 +158,8 @@ public sealed class LogServer : IAsyncDisposable
         string runId,
         IReadOnlyList<TaskNode> tasks,
         int port,
-        TextWriter warn)
+        TextWriter warn,
+        bool proceedUnreviewed = false)
     {
         try
         {
@@ -190,7 +201,7 @@ public sealed class LogServer : IAsyncDisposable
                 // run is selected by the journal's runId (the live run owns it; the post-mortem reads
                 // it for the Status column), so the server walks exactly that run's tree.
                 string logsRoot = Path.Combine(planDirectory, "logs", runId);
-                var server = new LogServer(listener, baseUrl, logsRoot, tasks);
+                var server = new LogServer(listener, baseUrl, logsRoot, tasks, proceedUnreviewed);
                 server._acceptLoop = Task.Run(server.AcceptLoopAsync);
                 return server;
             }
@@ -247,9 +258,11 @@ public sealed class LogServer : IAsyncDisposable
     {
         string path = context.Request.Url?.AbsolutePath ?? "/";
         string[] segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        bool isPost = string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase);
 
         if (segments.Length == 0)
         {
+            if (isPost) { TrySetStatus(context, HttpStatusCode.MethodNotAllowed); return; }
             WriteHtml(context, PointerNoteHtml());
             return;
         }
@@ -260,7 +273,7 @@ public sealed class LogServer : IAsyncDisposable
             return;
         }
 
-        // /tasks/{id}[/files|/file]
+        // /tasks/{id}[/files|/file|/escalations|/answer]
         if (segments.Length < 2)
         {
             TrySetStatus(context, HttpStatusCode.NotFound);
@@ -271,6 +284,22 @@ public sealed class LogServer : IAsyncDisposable
         if (!_taskIds.Contains(taskId))
         {
             TrySetStatus(context, HttpStatusCode.NotFound);
+            return;
+        }
+
+        // #387 v2: POST /tasks/{id}/answer writes the operator's chosen option as the firstmate reply file
+        // (the FILE stays the single source of truth — no daemon state/socket/queue); every other route is GET.
+        if (isPost)
+        {
+            if (segments.Length == 3 && segments[2] == "answer")
+            {
+                HandleAnswerPost(context, taskId);
+            }
+            else
+            {
+                TrySetStatus(context, HttpStatusCode.MethodNotAllowed);
+            }
+
             return;
         }
 
@@ -296,10 +325,138 @@ public sealed class LogServer : IAsyncDisposable
             case "sourcefile":
                 WriteSourceFile(context, taskId, context.Request.QueryString["name"]);
                 return;
+            case "escalations":
+                WriteJson(context, EscalationsJson(taskId));
+                return;
             default:
                 TrySetStatus(context, HttpStatusCode.NotFound);
                 return;
         }
+    }
+
+    /// <summary>
+    /// JSON for <c>GET /tasks/{id}/escalations</c> (#387 v2): this task's OPEN, options-carrying
+    /// <c>needs-human</c> escalations — each <c>{ seq, gate, question, options[], answerable, reason }</c>. The
+    /// task page renders an ANSWERABLE one's options as buttons; a NON-answerable one (a clamped hard call under
+    /// proceed-unreviewed, §7.3) renders NO buttons and shows its halt <c>reason</c> instead. Reuses the SAME
+    /// <see cref="EscalationPick.ReadOpen"/> the interactive pick does, so both surfaces present identically.
+    /// </summary>
+    private string EscalationsJson(string taskId)
+    {
+        IReadOnlyList<PickableEscalation> escalations = EscalationPick.ReadOpen(_escalationsDir, _proceedUnreviewed)
+            .Where(e => string.Equals(e.Subject, taskId, StringComparison.Ordinal))
+            .ToList();
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartArray("escalations");
+            foreach (PickableEscalation e in escalations)
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("seq", e.Seq);
+                writer.WriteString("gate", e.Gate);
+                writer.WriteString("question", e.Question);
+                writer.WriteBoolean("answerable", e.Answerable);
+                if (e.NonAnswerableReason is { } reason)
+                {
+                    writer.WriteString("reason", reason);
+                }
+
+                writer.WriteStartArray("options");
+                foreach (string option in e.Options)
+                {
+                    writer.WriteStringValue(option);
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>
+    /// Handle <c>POST /tasks/{id}/answer</c> (#387 v2): parse <c>{ seq, gate, choice }</c> from the request body,
+    /// confirm the escalation's subject is THIS task, and write the choice through the shared
+    /// <see cref="EscalationPick.WriteChoice"/> — the HARD floor that validates identity, REFUSES a non-answerable
+    /// gate / clamped hard call (§7.3), and rejects an off-menu choice. The reply FILE it writes is the single
+    /// source of truth, consumed unchanged on the next resume. The <see cref="PickWriteResult"/> maps to an HTTP
+    /// status so a non-answerable POST is REJECTED (403), not written.
+    /// </summary>
+    private void HandleAnswerPost(HttpListenerContext context, string taskId)
+    {
+        AnswerPostBody? body = ReadAnswerPostBody(context);
+        if (body is null || body.Gate is null || body.Choice is null || body.Seq is null)
+        {
+            TrySetStatus(context, HttpStatusCode.BadRequest);
+            return;
+        }
+
+        // EscalationPick.WriteChoice is the SINGLE authority on seq+gate: it validates the record exists + is
+        // unconsumed, enforces the non-answerable floor (a review-gate / clamped hard call is REFUSED, never
+        // written), and rejects an off-menu choice. The URL taskId only routes to the page the button lives on
+        // (a needs-human escalation's subject IS its task id); the JSON body carries the authoritative binding.
+        PickWriteOutcome outcome = EscalationPick.WriteChoice(
+            _escalationsDir, body.Seq.Value, body.Gate, body.Choice, "log-viewer-pick", _proceedUnreviewed);
+        WriteAnswerOutcome(context, outcome);
+    }
+
+    /// <summary>Map an <see cref="EscalationPick.WriteChoice"/> outcome to an HTTP status + a JSON <c>{ result, message }</c> body.</summary>
+    private static void WriteAnswerOutcome(HttpListenerContext context, PickWriteOutcome outcome)
+    {
+        HttpStatusCode status = outcome.Result switch
+        {
+            PickWriteResult.Written => HttpStatusCode.OK,
+            PickWriteResult.NotFound => HttpStatusCode.NotFound,
+            PickWriteResult.AlreadyConsumed => HttpStatusCode.Conflict,
+            PickWriteResult.RefusedNonAnswerable => HttpStatusCode.Forbidden,
+            PickWriteResult.OptionNotOffered => HttpStatusCode.BadRequest,
+            _ => HttpStatusCode.BadRequest
+        };
+
+        string json = JsonSerializer.Serialize(new { result = outcome.Result.ToString(), message = outcome.Message });
+        byte[] bytes = Encoding.UTF8.GetBytes(json);
+        context.Response.StatusCode = (int)status;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.ContentLength64 = bytes.Length;
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        context.Response.Headers["X-Frame-Options"] = "DENY";
+        context.Response.OutputStream.Write(bytes, 0, bytes.Length);
+    }
+
+    /// <summary>Read + parse the <c>POST /answer</c> JSON body <c>{ seq, gate, choice }</c>; null on any read/parse failure.</summary>
+    private static AnswerPostBody? ReadAnswerPostBody(HttpListenerContext context)
+    {
+        try
+        {
+            using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
+            string raw = reader.ReadToEnd();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<AnswerPostBody>(raw,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The <c>POST /tasks/{id}/answer</c> request body (#387 v2): the escalation <c>seq</c> + <c>gate</c> and the chosen <c>choice</c>.</summary>
+    private sealed record AnswerPostBody
+    {
+        public int? Seq { get; init; }
+        public string? Gate { get; init; }
+        public string? Choice { get; init; }
     }
 
     // --- payloads ---------------------------------------------------------------------------
@@ -742,6 +899,7 @@ __STYLE__
   &middot; <span id="tick">live</span>
   &middot; <a id="resume" href="#" hidden>&#8617; back to live log</a></div>
 <pre id="log">waiting for log output…</pre>
+<div id="decision" hidden></div>
 <h2>Source</h2>
 <div class="bar" id="source">loading source…</div>
 <script>
@@ -896,9 +1054,76 @@ document.getElementById('attempt').addEventListener('change', () => {
   refreshFiles().then(refreshLog);
 });
 
+// #387 v2: the "awaiting your decision" panel. Poll /escalations for THIS task's open, options-carrying
+// needsHuman escalations. An ANSWERABLE one renders its options as buttons; a NON-answerable one (a clamped
+// hard call under proceed-unreviewed, §7.3) renders NO buttons and shows its halt reason instead. A click
+// POSTs { seq, gate, choice } to /answer, which writes the reply file (consumed on the next resume).
+let answered = {};  // seq-keyed: locally-picked escalations we stop re-rendering as open
+
+async function refreshEscalations() {
+  try {
+    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/escalations`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const host = document.getElementById('decision');
+    const open = (d.escalations ?? []).filter(e => !answered[e.seq]);
+    if (open.length === 0) { host.hidden = true; host.innerHTML = ''; return; }
+
+    host.innerHTML = '<h2>Awaiting your decision</h2>';
+    for (const e of open) {
+      const block = document.createElement('div');
+      block.className = 'decision-block';
+      const q = document.createElement('p');
+      q.textContent = e.question;
+      block.appendChild(q);
+      if (e.answerable) {
+        for (const opt of (e.options ?? [])) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'pick';
+          btn.textContent = opt;
+          btn.addEventListener('click', () => submitPick(e.seq, e.gate, opt, block));
+          block.appendChild(btn);
+        }
+      } else {
+        const halt = document.createElement('p');
+        halt.className = 'halt-reason';
+        halt.textContent = e.reason || 'This gate is not answerable — resolve it with real human work, not a pick.';
+        block.appendChild(halt);
+      }
+      host.appendChild(block);
+    }
+    host.hidden = false;
+  } catch (e) { /* server stopped — run probably ended */ }
+}
+
+async function submitPick(seq, gate, choice, block) {
+  try {
+    const r = await fetch(`/tasks/${encodeURIComponent(TASK)}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seq, gate, choice })
+    });
+    const d = await r.json().catch(() => ({ message: r.ok ? 'recorded' : 'rejected' }));
+    const note = document.createElement('p');
+    note.className = r.ok ? 'pick-ok' : 'pick-err';
+    note.textContent = d.message || (r.ok ? 'recorded — resume to apply' : 'rejected');
+    block.querySelectorAll('button.pick').forEach(b => b.disabled = true);
+    block.appendChild(note);
+    if (r.ok) answered[seq] = true;
+  } catch (e) {
+    const note = document.createElement('p');
+    note.className = 'pick-err';
+    note.textContent = 'could not reach the log server';
+    block.appendChild(note);
+  }
+}
+
 setInterval(refreshFiles, 2000);
 setInterval(refreshLog, 1000);
+setInterval(refreshEscalations, 2000);
 loadSource();
+refreshEscalations();
 refreshFiles().then(refreshLog);
 </script>
 </body>

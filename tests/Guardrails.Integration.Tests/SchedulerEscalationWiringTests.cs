@@ -112,6 +112,42 @@ public sealed class SchedulerEscalationWiringTests
             d => d.Decision == DecisionTokens.Escalated && d.Gate == "needs-human" && d.Subject == "01-design");
     }
 
+    // ── (1b) #387: a STRUCTURED needsHuman carries its options into the escalation record ──────────
+
+    [Fact]
+    public async Task StructuredNeedsHuman_WithOptions_EscalationRecordCarriesOptions()
+    {
+        // dial=high; assess CRITICAL ⇒ escalate. A task that emitted the STRUCTURED form
+        // {"needsHuman": {"question": …, "options": […]}} must have those options parsed and carried verbatim
+        // onto the escalation record (so a resume + both pick surfaces can present them). Proves the #387 parse
+        // + escalation-record plumbing END-TO-END through the REAL factory.
+        string[] options = ["Postgres", "MySQL"];
+        using var plan = new EscalationPlanBuilder(escalationThreshold: "high", overwatchAssessment: AssessCritical)
+            .AddNeedsHumanOptionsTask("01-design", "which database engine should I target", options);
+
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        string record = Assert.Single(Directory.GetFiles(EscalationsDir(plan.PlanDir), "*-needs-human.json"));
+        JsonNode doc = JsonNode.Parse(File.ReadAllText(record))!;
+        string[] recorded = doc["options"]!.AsArray().Select(n => (string)n!).ToArray();
+        Assert.Equal(options, recorded);
+    }
+
+    [Fact]
+    public async Task FreeTextNeedsHuman_EscalationRecordHasNoOptions_BackCompatUnchanged()
+    {
+        // The free-text form {"needsHuman": "…"} still works unchanged — it carries NO options, so the record's
+        // options[] is empty (back-compat: the pick surfaces simply have nothing to offer for it).
+        using var plan = new EscalationPlanBuilder(escalationThreshold: "high", overwatchAssessment: AssessCritical)
+            .AddNeedsHumanTask("01-design", "which database engine should I target");
+
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        string record = Assert.Single(Directory.GetFiles(EscalationsDir(plan.PlanDir), "*-needs-human.json"));
+        JsonNode doc = JsonNode.Parse(File.ReadAllText(record))!;
+        Assert.Empty(doc["options"]!.AsArray());
+    }
+
     // ── (2) Below threshold: PROCEED on a recorded best-guess, injected into the next attempt ─────
 
     [Fact]
@@ -437,10 +473,17 @@ public sealed class SchedulerEscalationWiringTests
 
         public string PlanDir => _root;
 
-        /// <summary>An agent-emitted <c>{"needsHuman": ...}</c> class-(a) judgment call.</summary>
+        /// <summary>An agent-emitted <c>{"needsHuman": ...}</c> class-(a) judgment call (free-text form).</summary>
         public EscalationPlanBuilder AddNeedsHumanTask(string id, string question)
         {
             WriteTask(id, mode: "needshuman", question: question);
+            return this;
+        }
+
+        /// <summary>An agent-emitted STRUCTURED <c>{"needsHuman": {"question": …, "options": […]}}</c> enumerated decision (issue #387).</summary>
+        public EscalationPlanBuilder AddNeedsHumanOptionsTask(string id, string question, IReadOnlyList<string> options)
+        {
+            WriteTask(id, mode: "needshuman-options", question: question, optionsJson: JsonSerializer.Serialize(options));
             return this;
         }
 
@@ -451,10 +494,17 @@ public sealed class SchedulerEscalationWiringTests
             return this;
         }
 
-        private void WriteTask(string id, string mode, string question)
+        private void WriteTask(string id, string mode, string question, string? optionsJson = null)
         {
             string taskDir = Path.Combine(_root, "tasks", id);
             Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+
+            // The structured-needsHuman options ride into the action env as a JSON-array literal (issue #387).
+            // It is embedded in the task.json (itself JSON), so its inner quotes are escaped once here; the shell
+            // then hands the un-escaped array to the fragment printf.
+            string optionsEnv = optionsJson is null
+                ? ""
+                : $", \"FAKE_OPTIONS\": \"{optionsJson.Replace("\"", "\\\"")}\"";
 
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
                 $$"""
@@ -464,7 +514,7 @@ public sealed class SchedulerEscalationWiringTests
                   "dependsOn": [],
                   "action": {
                     "path": "action.prompt.md",
-                    "env": { "FAKE_MODE": "{{mode}}", "FAKE_QUESTION": "{{question}}" }
+                    "env": { "FAKE_MODE": "{{mode}}", "FAKE_QUESTION": "{{question}}"{{optionsEnv}} }
                   }
                 }
                 """);
@@ -518,6 +568,12 @@ public sealed class SchedulerEscalationWiringTests
                 }
                 Write-Output '{"type":"result","is_error":false,"result":"asked a human","num_turns":1}'
             }
+            elseif ($mode -eq 'needshuman-options') {
+                if ($env:GUARDRAILS_STATE_OUT) {
+                    Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value ('{"needsHuman": {"question": "' + $env:FAKE_QUESTION + '", "options": ' + $env:FAKE_OPTIONS + '}}')
+                }
+                Write-Output '{"type":"result","is_error":false,"result":"asked a human (options)","num_turns":1}'
+            }
             elseif ($mode -eq 'transient') {
                 $counter = Join-Path $env:GUARDRAILS_PLAN_DIR 'transient.count'
                 Add-Content -Path $counter -Value 'x'
@@ -549,6 +605,11 @@ public sealed class SchedulerEscalationWiringTests
                 printf '{"needsHuman": "%s"}' "$FAKE_QUESTION" > "$GUARDRAILS_STATE_OUT"
               fi
               printf '{"type":"result","is_error":false,"result":"asked a human","num_turns":1}\n'
+            elif [ "$mode" = "needshuman-options" ]; then
+              if [ -n "$GUARDRAILS_STATE_OUT" ]; then
+                printf '{"needsHuman": {"question": "%s", "options": %s}}' "$FAKE_QUESTION" "$FAKE_OPTIONS" > "$GUARDRAILS_STATE_OUT"
+              fi
+              printf '{"type":"result","is_error":false,"result":"asked a human (options)","num_turns":1}\n'
             elif [ "$mode" = "transient" ]; then
               counter="$GUARDRAILS_PLAN_DIR/transient.count"
               echo x >> "$counter"

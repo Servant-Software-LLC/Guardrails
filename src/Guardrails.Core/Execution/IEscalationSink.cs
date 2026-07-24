@@ -39,6 +39,15 @@ public sealed record EscalationRequest
     /// <summary>The human-answerable question.</summary>
     public required string Question { get; init; }
 
+    /// <summary>
+    /// The bounded, enumerated options a structured <c>needsHuman</c> carried (issue #387), in order. Empty for
+    /// a free-text <c>needsHuman</c> and for a non-answerable gate. When present on an ANSWERABLE, un-clamped
+    /// escalation, a pick surface (interactive <c>SelectionPrompt</c> / web button) presents them and writes the
+    /// chosen one as the answer <c>text</c> — the choice is injected through the SAME <see cref="AnswerFileConsumer"/>
+    /// envelope as any answer (delimited untrusted data), never a trusted directive.
+    /// </summary>
+    public IReadOnlyList<string> Options { get; init; } = [];
+
     /// <summary>Full context to reconstruct the gate: logs pointers, failure detail, and the best-guess considered.</summary>
     public required string Context { get; init; }
 

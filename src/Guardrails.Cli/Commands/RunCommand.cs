@@ -436,9 +436,12 @@ public static class RunCommand
 
         // The log server is a companion to the live table: start it only in the interactive path
         // (nobody clicks links in CI / redirected output), and never let a binding failure abort
-        // the run — TryStart returns null and prints one warning.
+        // the run — TryStart returns null and prints one warning. It is passed the proceed-unreviewed
+        // posture so the #387 v2 pick endpoints enforce the same non-answerable floor as the resume consumer.
+        bool proceedUnreviewed =
+            probe.Plan.Config.Autonomy?.GateThresholds?.ReviewGate == Core.Model.ReviewGateDecision.ProceedUnreviewed;
         LogServer? logServer = (live && !noLogServer)
-            ? LogServer.TryStart(probe.Plan.PlanDirectory, runId, probe.Plan.Tasks, logPort, io.Out)
+            ? LogServer.TryStart(probe.Plan.PlanDirectory, runId, probe.Plan.Tasks, logPort, io.Out, proceedUnreviewed)
             : null;
 
         try
@@ -550,6 +553,12 @@ public static class RunCommand
 
                 int exitCode = Finish(report, probe.Plan, runId, io); // also writes the durable final log site
                 finalSitesSettled = true; // both final pages are now settled on the normal path
+
+                // #387 v1: in an attended TTY, offer a one-click pick for any OPEN, options-carrying needsHuman
+                // escalation this run raised — the choice is written to the SAME reply channel (an answer file)
+                // and injected on the next resume (halt/resume). A no-op when not interactive or nothing is
+                // pickable; a NON-answerable escalation is never offered a pick (§7.3).
+                EscalationPickPrompt.OfferPicksInteractive(probe.Plan, runId, io);
 
                 // Issue #361 Phase 4 (doc 12 §5.2 Option P / §7.1): a run that PROCEEDED THROUGH one or more
                 // waves unreviewed is INDELIBLY flagged — render the permanent "ran with N unreviewed wave(s)"

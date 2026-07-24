@@ -61,7 +61,7 @@ internal sealed class ActionRunner
                 task.Action.Path, task.Action.Args, workspace, env,
                 Extend(_resolveTimeout(task, task.Action.TimeoutSeconds), timeoutMultiplier),
                 cancellationToken).ConfigureAwait(false);
-            return ActionRun.FromScript(script, NeedsHumanFrom(fragmentOutPath), HarnessWrite.RequestFrom(fragmentOutPath));
+            return ActionRun.FromScript(script, ParseNeedsHuman(fragmentOutPath), HarnessWrite.RequestFrom(fragmentOutPath));
         }
 
         return await RunPromptActionAsync(
@@ -188,7 +188,7 @@ internal sealed class ActionRunner
 
         // A prompt action's fragment may carry the needsHuman escape (SSOT §9) or a needsHarnessWrite
         // request (SSOT §9, issue #191) — both read from the same already-written fragment file.
-        string? needsHuman = NeedsHumanFrom(fragmentOutPath);
+        NeedsHumanSignal? needsHuman = ParseNeedsHuman(fragmentOutPath);
         HarnessWriteRequest? harnessWrite = HarnessWrite.RequestFrom(fragmentOutPath);
 
         return ActionRun.FromPrompt(result, needsHuman, harnessWrite);
@@ -237,10 +237,21 @@ internal sealed class ActionRunner
     }
 
     /// <summary>
-    /// Read the (already-written) action fragment and, if its root is an object with a string
-    /// <c>needsHuman</c> key, return the question (SSOT §9). Anything else returns null.
+    /// Read the (already-written) action fragment and parse a <c>needsHuman</c> escape (SSOT §9), in EITHER
+    /// shape (issue #387):
+    /// <list type="bullet">
+    ///   <item><b>Free-text (back-compat):</b> <c>{"needsHuman": "&lt;question&gt;"}</c> — the string is the
+    ///     question, with no options.</item>
+    ///   <item><b>Structured (enumerated decision):</b>
+    ///     <c>{"needsHuman": {"question": "…", "options": ["A","B"]}}</c> — the <c>question</c> plus a bounded
+    ///     <c>options[]</c> the operator can PICK from (interactive SelectionPrompt / web button), instead of
+    ///     hand-authoring a reply. Only string <c>options</c> entries are kept; a missing/empty array yields no
+    ///     options (behaviourally the free-text form).</item>
+    /// </list>
+    /// Returns null (no short-circuit) for any other shape — no <c>needsHuman</c> key, a structured object with
+    /// no string <c>question</c>, or unparseable JSON (the merge step rejects a malformed fragment later).
     /// </summary>
-    private static string? NeedsHumanFrom(string fragmentOutPath)
+    private static NeedsHumanSignal? ParseNeedsHuman(string fragmentOutPath)
     {
         if (!File.Exists(fragmentOutPath))
         {
@@ -253,11 +264,25 @@ internal sealed class ActionRunner
                 File.ReadAllText(fragmentOutPath),
                 new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
 
-            if (document.RootElement.ValueKind == JsonValueKind.Object &&
-                document.RootElement.TryGetProperty("needsHuman", out JsonElement question) &&
-                question.ValueKind == JsonValueKind.String)
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("needsHuman", out JsonElement needsHuman))
             {
-                return question.GetString();
+                return null;
+            }
+
+            // Free-text form: needsHuman is a bare string (the question); no options.
+            if (needsHuman.ValueKind == JsonValueKind.String)
+            {
+                return needsHuman.GetString() is { Length: > 0 } q ? new NeedsHumanSignal(q, []) : null;
+            }
+
+            // Structured form: needsHuman is an object carrying the question + an optional bounded options[].
+            if (needsHuman.ValueKind == JsonValueKind.Object &&
+                needsHuman.TryGetProperty("question", out JsonElement question) &&
+                question.ValueKind == JsonValueKind.String &&
+                question.GetString() is { Length: > 0 } structuredQuestion)
+            {
+                return new NeedsHumanSignal(structuredQuestion, ReadOptions(needsHuman));
             }
         }
         catch (JsonException)
@@ -267,7 +292,35 @@ internal sealed class ActionRunner
 
         return null;
     }
+
+    /// <summary>Read the structured <c>needsHuman.options</c> array — the string entries only, in order; empty when absent / not an array.</summary>
+    private static IReadOnlyList<string> ReadOptions(JsonElement needsHuman)
+    {
+        if (!needsHuman.TryGetProperty("options", out JsonElement options) ||
+            options.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var list = new List<string>();
+        foreach (JsonElement option in options.EnumerateArray())
+        {
+            if (option.ValueKind == JsonValueKind.String && option.GetString() is { Length: > 0 } value)
+            {
+                list.Add(value);
+            }
+        }
+
+        return list;
+    }
 }
+
+/// <summary>
+/// A parsed <c>needsHuman</c> escape (SSOT §9, issue #387): the human-answerable <see cref="Question"/> plus an
+/// optional bounded <see cref="Options"/> list an operator can PICK from. <see cref="Options"/> is empty for the
+/// free-text form (<c>{"needsHuman": "…"}</c>) and carries the enumerated choices for the structured form.
+/// </summary>
+internal sealed record NeedsHumanSignal(string Question, IReadOnlyList<string> Options);
 
 /// <summary>
 /// A normalized view of an action run — script OR prompt — carrying exactly what the
@@ -281,6 +334,14 @@ internal sealed record ActionRun
     public required bool TimedOut { get; init; }
     public decimal? CostUsd { get; init; }
     public string? NeedsHumanQuestion { get; init; }
+
+    /// <summary>
+    /// The bounded, enumerated options a structured <c>needsHuman</c> carried (issue #387,
+    /// <c>{"needsHuman": {"question": …, "options": […]}}</c>), in order. Empty for the free-text form and for
+    /// any non-needsHuman action. Rides into the escalation record so a resume + both pick surfaces (interactive
+    /// SelectionPrompt / web button) can present the choices.
+    /// </summary>
+    public IReadOnlyList<string> NeedsHumanOptions { get; init; } = [];
 
     /// <summary>
     /// A <c>needsHarnessWrite</c> request parsed from the action's fragment (issue #191, SSOT §9), or
@@ -329,14 +390,15 @@ internal sealed record ActionRun
         Duration = TimeSpan.Zero
     };
 
-    public static ActionRun FromScript(ProcessResult result, string? needsHuman, HarnessWriteRequest? harnessWrite = null) => new()
+    public static ActionRun FromScript(ProcessResult result, NeedsHumanSignal? needsHuman, HarnessWriteRequest? harnessWrite = null) => new()
     {
         Succeeded = result.Succeeded,
         ExitCode = result.ExitCode,
         TimedOut = result.TimedOut,
         StandardOutput = result.StandardOutput,
         StandardError = result.StandardError,
-        NeedsHumanQuestion = needsHuman,
+        NeedsHumanQuestion = needsHuman?.Question,
+        NeedsHumanOptions = needsHuman?.Options ?? [],
         HarnessWriteRequest = harnessWrite,
         // A script timeout is classified Timeout so it shares the timeout-specific retry handling
         // (issue #119); any other non-zero exit is a generic action failure (no Claude signals apply).
@@ -346,7 +408,7 @@ internal sealed record ActionRun
         FailureSummary = result.TimedOut ? "action timed out" : $"action exited {result.ExitCode}"
     };
 
-    public static ActionRun FromPrompt(PromptResult result, string? needsHuman, HarnessWriteRequest? harnessWrite = null)
+    public static ActionRun FromPrompt(PromptResult result, NeedsHumanSignal? needsHuman, HarnessWriteRequest? harnessWrite = null)
     {
         bool succeeded = result.Completed && !result.IsError;
         string? feedback = succeeded ? null : BuildPromptFeedback(result);
@@ -357,7 +419,8 @@ internal sealed record ActionRun
             ExitCode = succeeded ? 0 : 1,
             TimedOut = result.FailureKind == PromptFailureKind.Timeout,
             CostUsd = result.CostUsd,
-            NeedsHumanQuestion = needsHuman,
+            NeedsHumanQuestion = needsHuman?.Question,
+            NeedsHumanOptions = needsHuman?.Options ?? [],
             HarnessWriteRequest = harnessWrite,
             FailureFeedback = feedback,
             FailureKind = succeeded ? PromptFailureKind.None : result.FailureKind,

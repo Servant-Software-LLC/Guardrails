@@ -88,7 +88,8 @@ public sealed class FileEscalationSink : IEscalationSink
             DefinitionHash = request.DefinitionHash,
             At = request.At,
             Id = id,
-            Status = OpenStatus
+            Status = OpenStatus,
+            Options = request.Options
         };
         AtomicFile.WriteAllText(recordPath, JsonSerializer.Serialize(record, RecordJson));
 
@@ -150,5 +151,8 @@ public sealed class FileEscalationSink : IEscalationSink
         public required DateTimeOffset At { get; init; }
         public required EscalationId Id { get; init; }
         public required string Status { get; init; }
+
+        /// <summary>The structured-<c>needsHuman</c> options (issue #387), in order; empty (omitted via the omit-null policy is NOT applied to an empty list, so it serializes as <c>[]</c>) for a free-text or non-answerable escalation.</summary>
+        public IReadOnlyList<string> Options { get; init; } = [];
     }
 }
