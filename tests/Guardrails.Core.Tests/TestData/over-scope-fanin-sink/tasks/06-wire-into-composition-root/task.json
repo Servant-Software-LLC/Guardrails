@@ -1,0 +1,18 @@
+{
+  "description": "Wire the escalation machinery at the composition root: a fan-in sink composing the outputs of 5 upstream producers into SchedulerFactory + Scheduler + ActionRunner + the CLI (the over-scoped task-15 shape #378 detects).",
+  "dependsOn": [
+    "01-produce-gate-classifier",
+    "02-produce-blocker-retry",
+    "03-produce-criticality-judge",
+    "04-produce-escalation-sink",
+    "05-produce-answer-consumption"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/SchedulerFactory.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs",
+    "src/Guardrails.Cli/ExitCodes.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

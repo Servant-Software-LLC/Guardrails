@@ -1,0 +1,6 @@
+{
+  "description": "A task deliberately just UNDER every over-scope threshold: 4 writeScope paths, a sub-threshold maxTurns (50 < 60), and no fan-in.",
+  "dependsOn": [],
+  "writeScope": ["src/A.cs", "src/B.cs", "src/C.cs", "src/D.cs"],
+  "action": { "maxTurns": 50 }
+}

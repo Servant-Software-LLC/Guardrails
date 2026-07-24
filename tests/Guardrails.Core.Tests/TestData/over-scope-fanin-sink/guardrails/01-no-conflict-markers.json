@@ -1,0 +1,4 @@
+{
+  "description": "Terminal gate: the fan-in merged cleanly (no git conflict markers in src/)",
+  "scope": "integration"
+}

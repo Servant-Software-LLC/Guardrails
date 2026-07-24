@@ -803,6 +803,16 @@ membership-implies-overlap AND `Overlaps`-completeness). It is read-only, so a m
 false-red or miss-catch ONE task's own verdict — never write another task's files; `Overlaps` (the
 scheduler hint) retains cross-task reach and keeps the full fuzz rigor.
 
+**Structural over-scope hint (`GR2042`, WARN — issue #378).** `writeScope` cardinality is also a
+mechanically-checkable over-scope signal. `validate` emits a **`GR2042` warning** on the co-occurring
+fan-in / composition-root-wiring-sink fingerprint sitting in the emitted `task.json` — any of: (i)
+`action.maxTurns >= OverScopeTurnThreshold` (a NAMED constant ≈ 60, NOT the literal 75 max, so the lint
+survives a max-budget bump) **AND** `writeScope.Count >= 4`; (ii) `writeScope.Count >= 6` regardless of
+budget; (iii) `dependsOn.Count >= 5` **AND** `writeScope.Count >= 3` (a fan-in sink). It is a WARN, not an
+error, that `/guardrails-review` must acknowledge or resolve with a split (one task per collaborator
+wiring, the turn-expensive composition-root proof isolated to a thin sink), moving the thrash-and-timeout
+class left of the run deterministically. A non-writing task's `[]` (Count 0) never trips it.
+
 When a task declares `stagingOutputs` (§3.5), the write-scope check runs on the **post-move**
 surface: it gates the real `.claude/` destination paths (which the task's `writeScope` must
 authorize), not the pre-move staging writes — the surface the check protects (what reaches the

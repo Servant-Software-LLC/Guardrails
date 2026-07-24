@@ -555,6 +555,27 @@ guardrails will run -- with tests-fail-on-current-code proving non-tautology) ->
 BREAK ends by generating `diagram.md` (`guardrails graph`); REVIEW re-checks it
 (`guardrails graph --check`) and regenerates if the human's edits made it stale.
 
+**Two authoring/review disciplines the skills enforce (know these when touching plan-breakdown /
+guardrails-review):**
+- **Drive-the-real-seam / passing-but-blind (#382).** A per-task TDD guardrail that injects a FAKE of an
+  in-process seam the real run drives (an `IPromptRunner`, the executor, the scheduler, a factory) can go
+  GREEN over a component that is broken through the real composition root -- a green light over a broken
+  wire. The discipline: the implement task carries a **real-seam contract test** that drives the ACTUAL
+  seam (faking only the process/CLI boundary underneath, NEVER the in-process seam itself), and real-path
+  proof is DISTRIBUTED to each component's task rather than concentrated in one terminal wiring sink.
+  `plan-breakdown` inserts it; `guardrails-review` flags its absence (BLOCKER on a composition-root /
+  production path, WEAK when only a thin terminal join-check covers it). Extends the #120 lesson
+  ("reachable from a unit test != wired into the run path") from a per-wave convention to a per-component
+  structural concern. (Catalogue -> "drive-the-real-seam"; `stacks/dotnet.md 10e`.)
+- **Structural over-scope lint (`GR2042`, WARN, #378).** `guardrails validate` emits a WARN on the
+  fan-in-sink / composition-root-wiring fingerprint in the emitted `task.json`: (i) `action.maxTurns >=
+  OverScopeTurnThreshold` (a NAMED constant ~60, NOT the literal 75 max, so it survives a max-budget bump)
+  AND `writeScope.Count >= 4`; (ii) `writeScope.Count >= 6`; (iii) `dependsOn.Count >= 5` AND
+  `writeScope.Count >= 3`. `guardrails-review` must RESOLVE the WARN with a split (one task per collaborator
+  wiring; composition-root proof isolated to a thin sink), not merely re-report it. **The two share one
+  root:** the over-scoped sink is over-scoped *because* it concentrates the deferred real-seam proof #382
+  would distribute -- #378 detects the over-scope, #382 prevents the concentration.
+
 ## Multi-wave plans (nested layout, M2 v1 -- SSOT section 14)
 
 The recursion is **`task ⊂ wave ⊂ plan`**: a **wave** is a first-class completion unit -- a task DAG plus
@@ -804,13 +825,15 @@ total order driven by the wave folder's numeric prefix.
   (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
-  HEAD-independence). Next-free GR code: **GR1010 / GR2038** (GR2035 = DuplicateCheckName — two checks in one
+  HEAD-independence). Next-free GR code: **GR1010 / GR2043** (GR2035 = DuplicateCheckName — two checks in one
   folder sharing a `Name`, #332/SSOT §4.5; GR2036 = ExpectedDurationNonPositive — the optional guardrail
   `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1 / §12.1, issue #331 — the long-running-guardrail
   heartbeat; **GR2037 = BannedGuardrailPattern** — a generated guardrail SCRIPT contains a known-bad regex
   construction from the data-driven banned-pattern registry beside the catalogue, #346/SSOT §4.6; seeded #73
   hollow-assertion + #187a unanchored-conflict-marker, complements — does not replace — the #302 smoke-test +
-  `/guardrails-review`).
+  `/guardrails-review`; **GR2038** = WorktreePathTooLong #383/#384; **GR2039/GR2040** = autonomy-dial value +
+  forbidden-compound-config #361; **GR2041** = MissingWriteScope #389; **GR2042** = StructuralOverScope, the
+  fan-in-sink / composition-root over-scope WARN, #378/SSOT §3.4).
 - **M3 the overwatcher v1 (diagnose + propose) -- LANDED** (#269, design of record
   `docs/plans/11-overwatcher.md`, contract SSOT §9.2/§9.2.1/§8, #305 decisions baked in). The `Overwatch`
   component (`Guardrails.Core/Execution/Overwatch.cs`) SUBSUMES `NeedsHumanTriage` (now the §9.2.1
@@ -831,8 +854,10 @@ total order driven by the wave folder's numeric prefix.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: GR2038 (GR2035 =
-  DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331; GR2037 = BannedGuardrailPattern #346).
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: GR2043 (GR2035 =
+  DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331; GR2037 = BannedGuardrailPattern #346;
+  GR2038 = WorktreePathTooLong #384; GR2039/GR2040 = autonomy-dial value + compound-config #361; GR2041 =
+  MissingWriteScope #389; GR2042 = StructuralOverScope over-scope WARN #378).
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

@@ -1,0 +1,5 @@
+{
+  "description": "Produce the 01-produce-gate-classifier component (an upstream producer of the fan-in sink).",
+  "dependsOn": [],
+  "writeScope": ["src/Guardrails.Core/Execution/GateClassifier.cs"]
+}

@@ -1,0 +1,5 @@
+{
+  "description": "Produce the 04-produce-escalation-sink component (an upstream producer of the fan-in sink).",
+  "dependsOn": [],
+  "writeScope": ["src/Guardrails.Core/Execution/FileEscalationSink.cs"]
+}

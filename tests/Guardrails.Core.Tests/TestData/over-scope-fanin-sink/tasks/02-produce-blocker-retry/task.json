@@ -1,0 +1,5 @@
+{
+  "description": "Produce the 02-produce-blocker-retry component (an upstream producer of the fan-in sink).",
+  "dependsOn": [],
+  "writeScope": ["src/Guardrails.Core/Execution/BlockerRetry.cs"]
+}
