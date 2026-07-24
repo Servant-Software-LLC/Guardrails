@@ -19,6 +19,7 @@ internal sealed class RawRunConfig
     public bool? MergeOnSuccess { get; set; }
     public bool? TriageAutoFile { get; set; }
     public string? AutonomyPolicy { get; set; }
+    public bool? AutoBreakdown { get; set; }
     public bool? PreserveAttemptsForSalvage { get; set; }
 
     // The optional criticality-dial block (issue #361, doc 12 §3.4). null ⇒ the block was ABSENT ⇒ the dial

@@ -366,11 +366,33 @@ public static class DiagnosticCodes
     /// </summary>
     public const string BannedGuardrailPattern = "GR2037";
 
+    // Historical: as of issue #383, GR2037 (BannedGuardrailPattern) was the last taken code, so GR2038
+    // was next-free at that point.
+
+    /// <summary>
+    /// A WORKTREE-mode run's segment path would exceed the Windows MAX_PATH limit of 260 characters
+    /// (issue #383, SSOT §2). Unlike <see cref="MaxPathRisk"/> (GR2016 — a validate-time WARNING against a
+    /// deep <em>configured</em> <c>worktreeRoot</c>), this is the RUN-START authoritative check: it is
+    /// computed against the machine's ACTUAL worktree root (the <c>GUARDRAILS_WORKTREE_ROOT</c>-aware
+    /// <see cref="SchedulerFactory.WorktreeRootFor"/>), so it cannot live in <c>guardrails validate</c>
+    /// alone. For each task the harness measures the segment base
+    /// <c>&lt;root&gt;/&lt;runId&gt;/&lt;taskId&gt;/attempt-1</c> and adds a reserved build-output budget
+    /// (<see cref="Execution.WorktreePathPreflight.BuildOutputReserve"/>, ~90 chars, sized for
+    /// <c>\bin\Debug\net8.0\&lt;assembly&gt;.exe</c>); if the total exceeds 260 the run FAILS FAST before
+    /// any task executes. The real #383 case: a built test-exe hit 264 chars and CreateProcessW failed with
+    /// Win32 206 (ERROR_FILENAME_EXCED_RANGE) — which Windows LongPathsEnabled does NOT prevent (it does not
+    /// lift CreateProcess's application-name ceiling). An ERROR, Windows-only + worktree-only; the remedy is
+    /// to point <c>GUARDRAILS_WORKTREE_ROOT</c> at a short path (e.g. <c>C:\gw</c>).
+    /// </summary>
+    public const string WorktreePathTooLong = "GR2038";
+
     // --- Autonomy criticality dial (the OPTIONAL `autonomy` block, issue #361 / doc 12 §3.4/§3.5/§5.2,
     //     decided §10 M) ---------------------------------------------------------------------------------
-    // GR2038 is deliberately SKIPPED here and RESERVED for design-360 (the #360 inter-wave adjustment
-    // work); do NOT re-allocate it to an unrelated rule. The two autonomy-block checks below take the next
-    // codes after it — the value check (GR2039) and the compound-config gate (GR2040).
+    // Historical: GR2038 (WorktreePathTooLong, #383/#384) is the last taken code above; the two
+    // autonomy-block checks below take the next codes — the value check (GR2039) and the compound-config
+    // gate (GR2040). (The #361 branch had provisionally reserved GR2038 for design-360 and placed these at
+    // GR2039/GR2040; #384 landed WorktreePathTooLong at GR2038 first, so that reservation is void and the
+    // GR2039/GR2040 numbering stands unchanged.)
 
     /// <summary>
     /// A value in the OPTIONAL <c>autonomy</c> criticality-dial block (issue #361, doc 12 §3.4/§3.5;
@@ -403,6 +425,5 @@ public static class DiagnosticCodes
     public const string IncompatibleAutonomyCompoundConfig = "GR2040";
 
     // CURRENT next-free code: GR2041. GR2040 (IncompatibleAutonomyCompoundConfig) is the last taken code
-    // above; GR2038 stays RESERVED for design-360 (see the note above). When allocating a new code, take
-    // GR2041 and update this line (issue #320).
+    // above. When allocating a new code, take GR2041 and update this line (issue #320).
 }

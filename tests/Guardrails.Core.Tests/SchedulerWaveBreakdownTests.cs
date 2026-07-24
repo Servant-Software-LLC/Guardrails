@@ -14,6 +14,12 @@ namespace Guardrails.Core.Tests;
 /// STUB <see cref="IPromptRunner"/> that SIMULATES the plan-breakdown sub-process by writing a valid (or
 /// invalid) <c>tasks/</c> — exactly how the overwatcher's tests stub its diagnose runner. NO real Claude call
 /// is ever made (the stub returns a canned <see cref="PromptResult"/>).
+///
+/// <para><b>These tests exercise the LEGACY <c>autoBreakdown:false</c> path</b> (the #368 <c>autonomyPolicy</c>-gated
+/// invocation, preserved verbatim behind the flag — SSOT §14.4). Every plan here is pinned to
+/// <see cref="RunConfig.AutoBreakdown"/> = <c>false</c> (see <see cref="WavedPlanWithStubWave2"/> / <see cref="With"/>).
+/// The NEW default (<c>autoBreakdown:true</c> auto-fires with no prompt, decoupled from <c>autonomyPolicy</c>)
+/// is covered by <c>SchedulerAutoBreakdownTests</c>.</para>
 /// </summary>
 public sealed class SchedulerWaveBreakdownTests
 {
@@ -78,7 +84,10 @@ public sealed class SchedulerWaveBreakdownTests
             worktreeProvider: provider, observer: IRunObserver.Null, maxParallelism: 4,
             reVerifier: null, breakdownInvoker: invoker, breakdownConfirmations: confirmations);
 
-    /// <summary>A plan with wave-01 authored + wave-02 an empty JIT stub carrying an OPTIONAL brief.md.</summary>
+    /// <summary>
+    /// A plan with wave-01 authored + wave-02 an empty JIT stub carrying an OPTIONAL brief.md. Pinned to the
+    /// LEGACY <c>autoBreakdown:false</c> path (the #368 <c>autonomyPolicy</c>-gated invocation this class covers).
+    /// </summary>
     private static (WavePlanBuilder Builder, PlanDefinition Plan) WavedPlanWithStubWave2(bool withBrief = true)
     {
         var b = new WavePlanBuilder();
@@ -91,11 +100,16 @@ public sealed class SchedulerWaveBreakdownTests
                 "# wave-02-build\nBuild the compiled artifact from wave-01's config.\n");
         }
 
-        return (b, b.Load().Plan!);
+        PlanDefinition plan = b.Load().Plan!;
+        return (b, Legacy(plan));
     }
 
+    /// <summary>Pin a plan to the legacy <c>autoBreakdown:false</c> path (this class's whole concern).</summary>
+    private static PlanDefinition Legacy(PlanDefinition plan) =>
+        plan with { Config = plan.Config with { AutoBreakdown = false } };
+
     private static PlanDefinition With(PlanDefinition plan, AutonomyPolicy policy) =>
-        plan with { Config = plan.Config with { AutonomyPolicy = policy } };
+        plan with { Config = plan.Config with { AutonomyPolicy = policy, AutoBreakdown = false } };
 
     /// <summary>Author a VALID single-task wave into <c>&lt;plan&gt;/wave-02-build/tasks/</c> (task.json + action + a guardrail).</summary>
     private static void AuthorValidWave(PromptInvocation inv)

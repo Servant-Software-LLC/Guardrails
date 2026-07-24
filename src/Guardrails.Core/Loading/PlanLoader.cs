@@ -171,6 +171,10 @@ public sealed class PlanLoader
             TriageAutoFile = raw.TriageAutoFile ?? false,
             AutonomyPolicy = autonomyPolicy,
             Autonomy = autonomy,
+            // #360 §14.4/§14.10: between-wave breakdown auto-invocation, DEFAULT true and decoupled from
+            // autonomyPolicy. An omitted key resolves the true default (a present brief.md auto-fires the
+            // JIT-checkpoint breakdown); set false to restore the #368 autonomyPolicy-gated invocation.
+            AutoBreakdown = raw.AutoBreakdown ?? true,
             PreserveAttemptsForSalvage = raw.PreserveAttemptsForSalvage ?? true,
             Interpreters = interpreters,
             PromptRunnerNames = runners.Names,

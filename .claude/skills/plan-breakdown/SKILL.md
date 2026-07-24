@@ -2058,45 +2058,70 @@ prior wave runs**. Guessing them produces stale line-number pointers and unhedge
 
 **The one-ahead invariant (#365).** At every JIT step **until the final wave**, **exactly one** un-authored
 stub wave exists — the immediate next one. That single stub is what makes the wave-aware diagram show a
-future-wave node and what makes `guardrails run` **honest-halt** (`NextWaveUnauthored`, exit 2) to trigger the
-next breakdown. So the stub must be **maintained one-at-a-time, not stubbed all up front**: author a wave and
-you MUST re-create the next stub in the same step (step 3) if any planned wave remains. Authoring a wave
-WITHOUT re-creating the next stub silently drops the forward signal — the diagram stops showing future waves
-and the run drains to the terminal gate **as if the plan were complete** (the #365 regression). The **final**
-wave is the sole exception: nothing is stubbed after it, and the run then completes at its terminal gate.
+future-wave node and what makes `guardrails run` reach the JIT checkpoint for the next breakdown. **By default
+the stub is auto-seeded with a `brief.md`** (its intent, drawn from that wave's section of the parent plan —
+step 1), so the checkpoint **auto-fires the next breakdown** (`autoBreakdown` default-on, SSOT §14.4/§14.10)
+and then halts for the human review gate; a stub left brief-less instead **honest-halts**
+(`NextWaveUnauthored`, exit 2) for a manual re-invocation. Either way the single stub must be **maintained
+one-at-a-time, not stubbed all up front**: author a wave and you MUST re-create (and re-seed) the next stub in
+the same step (step 3) if any planned wave remains. Authoring a wave WITHOUT re-creating the next stub
+silently drops the forward signal — the diagram stops showing future waves and the run drains to the terminal
+gate **as if the plan were complete** (the #365 regression). The **final** wave is the sole exception: nothing
+is stubbed after it, and the run then completes at its terminal gate.
 
 **The documented JIT workflow (state it in the Step 7 report when you leave a wave stubbed):**
 
 1. **Break down + review the ready waves.** Author waves `01..K`, `guardrails validate`, then
-   `/guardrails-review` them (§9.6). Leave **only wave `K+1`** as a single JIT stub (declared
-   `wave-NN-<slug>/` dir, empty `tasks/`) — one wave visible ahead. **Do NOT stub `K+2..N` up front**: each
-   subsequent stub is (re-)created one at a time as its predecessor is JIT-authored (step 3), which keeps the
-   numbering contiguous (GR2033) and the diagram uncluttered (one stub, not N).
-2. **Run.** `guardrails run <plan>` executes wave 1 … wave K behind the barrier. When it reaches the
-   empty wave `K+1`, it **halts (exit 2)** and prints the **integration worktree path** (the plan's
-   materialized upstream — `<worktreeRoot>/<runId>/_integration`, the `#197` "materialized workspace"
-   location; the user's own checkout stays read-only for the whole run, SSOT §14 Decision D).
-3. **Author wave K+1 against the MATERIALIZED workspace — then re-stub K+2 (#365).** Re-invoke
-   `/plan-breakdown` in JIT mode: break down stage `K+1` **reading the integration worktree** — inspect the
+   `/guardrails-review` them (§9.6). Leave **only wave `K+1`** as a single JIT stub — the declared
+   `wave-NN-<slug>/` dir with an **empty `tasks/`** plus an **auto-seeded `brief.md`** at the wave root.
+   **Seed `brief.md` from that wave's section of the parent plan `.md`** (the reviewed plan-breakdown input):
+   the stage/wave heading and prose describing what `wave-K+1` must accomplish and the upstream artifacts it
+   builds on — the wave's **INTENT**, not its tasks (those are authored JIT in step 3 against the materialized
+   workspace). If the parent plan has **no identifiable section** for that wave, seed a **minimal template**
+   `brief.md` — the wave's title + a `> TODO: describe this wave's intent (what it must accomplish; the
+   upstream artifacts it builds on)` placeholder — and **flag it in the report** so the human fleshes it out
+   before the checkpoint is reached. **Never leave the stub brief-less by default.** The seeded `brief.md` is
+   what makes the JIT checkpoint **auto-fire the next breakdown** (`autoBreakdown` default-on, SSOT
+   §14.4/§14.10) and then halt for the human review gate. **Do NOT stub `K+2..N` up front**: each subsequent
+   stub is (re-)created — and re-seeded — one at a time as its predecessor is JIT-authored (step 3), which
+   keeps the numbering contiguous (GR2033) and the diagram uncluttered (one stub, not N).
+2. **Run → the checkpoint auto-fires the next breakdown.** `guardrails run <plan>` executes wave 1 … wave K
+   behind the barrier. When it reaches the wave-`K+1` checkpoint, the stub's **seeded `brief.md`** makes the
+   harness **AUTO-FIRE `plan-breakdown`** against that brief plus the **materialized integration worktree**
+   (`autoBreakdown` default-on, SSOT §14.4/§14.10; the plan's materialized upstream —
+   `<worktreeRoot>/<runId>/_integration`, the `#197` "materialized workspace" location; the user's own
+   checkout stays read-only for the whole run, SSOT §14 Decision D). The breakdown authors the wave (step 3),
+   re-runs `guardrails validate`, and the run then **halts at `BreakdownComplete`** for the human review gate —
+   it never auto-satisfies review. *(Opt-out: a stub whose `brief.md` was removed instead **honest-halts**
+   (exit 2, `NextWaveUnauthored`) at the same integration-worktree path, for a manual `/plan-breakdown`
+   re-invocation.)*
+3. **Author wave K+1 against the MATERIALIZED workspace — then re-stub + re-seed K+2 (#365).** The breakdown
+   that fires at the checkpoint — **auto-fired by the harness by default**, or your manual `/plan-breakdown`
+   re-invocation on the opt-out path — breaks down stage `K+1` **reading the integration worktree**: inspect the
    real files/signatures wave K produced there, so the wave's tasks and guardrails reference bytes that
    ACTUALLY exist. This removes the guesswork (no stale markers, no hedged claims) that the whole-plan-up-front
    path can't avoid. Write the result into `wave-K+1-<slug>/tasks/` (+ its entry/exit gates). **Then restore
    the one-ahead invariant:** if any planned stage beyond `K+1` remains in the plan of record, **create the
    next stub `wave-(K+2)-<slug>/`** (declared dir, empty `tasks/`, contiguous NN) so exactly one wave stays
-   visible ahead. The re-stub is a **bare** stub — dir + empty `tasks/`, **no `brief.md`**: `brief.md` is the
-   human's OPTIONAL opt-in for future auto-breakdown (SSOT §14.10; its mere presence is the signal), so the
-   skill **never seeds it** — note in the report that the human MAY drop a `brief.md` into the stub to enable
-   that. If `K+1` is the **final** planned wave, create **no** stub (the run then drains to the terminal gate
-   and completes). **Regenerate the diagram** (`guardrails graph <plan>`) as part of this step so it shows the
+   visible ahead — and **auto-seed its `brief.md`** exactly as step 1 does: populate it from **`wave-(K+2)`'s
+   section of the parent plan `.md`** (its intent + the upstream artifacts it builds on), or, if the plan has
+   no identifiable section for it, a **minimal template** (`wave-(K+2)`'s title + a `> TODO: describe this
+   wave's intent` placeholder) flagged in the report. **Never leave the re-stub brief-less by default** — the
+   seeded `brief.md` is what makes the checkpoint **auto-fire** the `wave-(K+2)` breakdown by default
+   (`autoBreakdown` default-on, SSOT §14.4/§14.10), still halting for the human review gate; a human MAY edit
+   the seeded brief before the run reaches that checkpoint (or remove it to force a manual re-invocation). If
+   `K+1` is the **final** planned wave, create **no** stub (the run then drains to the terminal gate and
+   completes). **Regenerate the diagram** (`guardrails graph <plan>`) as part of this step so it shows the
    freshly-authored wave plus the new one-ahead stub node (the `graph`/`plan`/`validate` refresh of §9.6).
 4. **Review the freshly-authored wave.** Run `/guardrails-review <plan>/wave-K+1-<slug>` on JUST that
    wave (§9.6 supports a single-wave review) — the same adversarial pass, keyed on that wave's own
    review marker. (Review the authored wave, not the fresh empty `K+2` stub — an empty wave has nothing to
    attack.)
 5. **Resume.** `guardrails run <plan>` again — cross-wave resume skips the completed waves and drains the
-   newly-authored wave `K+1`, then **honest-halts at the `wave-(K+2)` stub** step 3 created (pointing at the
-   integration worktree again). Repeat **step 3 → step 5** for each remaining stub. The loop ends when the
-   **final** wave is authored (step 3 created no stub after it) and the run drains to the terminal gate.
+   newly-authored wave `K+1`, then reaches the `wave-(K+2)` checkpoint step 3 seeded and **auto-fires the next
+   breakdown** against the further-materialized integration worktree (halting again at `BreakdownComplete` for
+   review). Repeat **step 3 → step 5** for each remaining stub. The loop ends when the **final** wave is
+   authored (step 3 created no stub after it) and the run drains to the terminal gate.
 
 **Reading the integration worktree is READ-ONLY input to breakdown** — you inspect it to author
 correct evidence; you never write into it (the harness owns it). The materialized upstream is the
@@ -2115,11 +2140,15 @@ authority for every path/signature the new wave references.
   the wave list with each wave's entry gate (what materialized artifacts it asserts) and exit gate
   (the terminal check, LOCAL vs union-safe `scope:"integration"`); per wave, the ordinary task
   table; **which waves were authored up front vs left as JIT stubs**, and for each stub the documented
-  JIT workflow (§9.5) so the human knows the run will halt there for the next breakdown. On a JIT
+  JIT workflow (§9.5) so the human knows what happens at that checkpoint. On a JIT
   re-invocation (step 3), also state that the freshly-authored wave's **one-ahead stub `wave-(K+2)` was
-  (re-)created** (or that `K+1` was the final wave, so no stub was created) and that the human may add an
-  OPTIONAL `brief.md` to the stub to opt into future auto-breakdown (#365/§14.10). Keep the
-  draft-not-done closing (Step 7.5) unchanged.
+  (re-)created and its `brief.md` auto-seeded** — name the content source (that wave's parent-plan section,
+  or the minimal template + a flag when no section was identifiable) — or that `K+1` was the final wave, so
+  no stub was created. **State the new default plainly:** each JIT stub carries a seeded `brief.md`, so the
+  run will **auto-break-down** that wave at its checkpoint and then **halt for `/guardrails-review`** (the
+  human review gate is never auto-satisfied at any policy — #360/§14.10); a human MAY edit the seeded brief
+  (or remove it to force a manual re-invocation) before that checkpoint is reached. Keep the draft-not-done
+  closing (Step 7.5) unchanged.
 
 <!-- END ADDED SECTION #254 -->
 
@@ -2162,6 +2191,6 @@ authority for every path/signature the new wave references.
 - [ ] (#254) FLAT vs WAVED decided in Step 0.8: a plan of ordered STAGES whose later stages build on the prior stage's *materialized* artifacts is emitted as the nested `<plan>/<wave-NN-slug>/{preflights,guardrails,tasks}/` layout (wave dirs match `^wave-([0-9]+)-[a-z0-9-]+$`, contiguous NN, no root `tasks/`); a single-stage/flat plan is NOT waved (fine-grained parallelism is a task DAG inside ONE wave). Steps 1–8 ran per wave (Step 9).
 - [ ] (#254) Each wave carries an ENTRY gate (`<plan>/<wave>/preflights/` — a POSITIVE "prior wave's outputs materialized" check, the #181 archetype at the wave boundary, positive-monotone-safe) and, where multi-leaf/fan-in, an EXIT gate (`<plan>/<wave>/guardrails/`) with ≥1 real integration re-run (GR2028 per wave); every intermediate wave's exit gate keeps whole-build/whole-suite checks LOCAL and any `scope:"integration"` guardrail union-safe/conditional (#125/#165 per wave). The last wave's exit gate is the whole-plan terminal boundary (no duplicate plan-root gate).
 - [ ] (#254) `dependsOn` is INTRA-WAVE only — no cross-wave edge (GR2034); a wave-2 dependency on a wave-1 artifact is expressed as the wave-2 entry gate + the action reading the real path. Every waved-plan prompt action's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (not the bare folder name — a bare key is rejected as foreign every attempt); the harness-contract header, the example, and the state-output guardrail's index all use that wave-qualified id.
-- [ ] (#254) JIT staged breakdown: a downstream wave whose tasks reference not-yet-existing artifacts is left as a declared stub (empty `tasks/`), and the Step 7 report documents the workflow (run → honest halt at the empty wave pointing at the integration worktree → author the wave against the MATERIALIZED workspace → `/guardrails-review` that wave → resume). A wave that IS designable up front is authored up front. Every generated waved script guardrail (task-level AND wave entry/exit gates) got the #302 author-time smoke-test (Step 7.0d).
-- [ ] (#365) One-ahead invariant held: the initial JIT breakdown left **only wave `K+1`** stubbed (not `K+1..N`), and every JIT re-invocation (§9.5 step 3) that authored a wave **re-created the next `wave-(K+2)` bare stub** (dir + empty `tasks/`, NO auto-seeded `brief.md` — §14.10 human opt-in) whenever a planned wave remained, then **regenerated the diagram** (`guardrails graph`); the FINAL wave got no stub after it. The forward-signal / honest-halt is thereby preserved across every JIT step, not just the first.
+- [ ] (#254/#360) JIT staged breakdown: a downstream wave whose tasks reference not-yet-existing artifacts is left as a declared stub (empty `tasks/` + an **auto-seeded `brief.md`** — never brief-less by default, §14.4/§14.10), and the Step 7 report documents the workflow (run → the seeded stub **auto-breaks-down at its checkpoint** against the MATERIALIZED integration worktree → **halt for review** → `/guardrails-review` that wave → resume; a brief-less/opt-out stub honest-halts for a manual `/plan-breakdown` re-invocation instead). A wave that IS designable up front is authored up front. Every generated waved script guardrail (task-level AND wave entry/exit gates) got the #302 author-time smoke-test (Step 7.0d).
+- [ ] (#365/#360) One-ahead invariant held: the initial JIT breakdown left **only wave `K+1`** stubbed (not `K+1..N`), and every JIT re-invocation (§9.5 step 3) that authored a wave **re-created AND auto-seeded the next `wave-(K+2)` stub** (dir + empty `tasks/` + a `brief.md` populated from that wave's parent-plan section — or a minimal template flagged in the report when no section was identifiable; NEVER brief-less by default, §14.4/§14.10 auto-breakdown-default) whenever a planned wave remained, then **regenerated the diagram** (`guardrails graph`); the FINAL wave got no stub after it. The forward signal is thereby preserved across every JIT step (not just the first), and each seeded stub auto-breaks-down at its checkpoint — still halting for the human review gate.
 <!-- END ADDED QUALITY-BAR ITEMS -->

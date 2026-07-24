@@ -80,6 +80,19 @@ public sealed record JournalDocument
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public decimal? OverheadCostUsd { get; init; }
+
+    /// <summary>
+    /// OPTIONAL Windows short-junction worktree root (issue #383, SSOT §2). In worktree mode on Windows the
+    /// harness roots segment worktrees under a short directory JUNCTION (<c>&lt;drive&gt;:\.a</c>..<c>\.z</c>
+    /// → the real worktree root) so each task's child-process cwd — and thus <c>dotnet test</c>'s built exe
+    /// path — stays clear of Windows MAX_PATH (260). git CANONICALIZES the junction back to the real path in
+    /// its own <c>git worktree</c> registrations, so the chosen link exists nowhere but HERE — this journal
+    /// field is the SOLE durable record that lets a resume restore the SAME link before any git worktree op,
+    /// and lets <c>--fresh</c> tear the link down (link-only). Additive/backward-compatible: absent (not
+    /// <c>null</c> noise) on a non-Windows run, a serial run, or the graceful no-junction fallback.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WorktreeJunctionRoot { get; init; }
 }
 
 /// <summary>

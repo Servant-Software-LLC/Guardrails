@@ -277,7 +277,9 @@ distinct between-wave actor the wave loop (`Scheduler.RunWavedAsync`) invokes at
 carries a human-authored `wave-NN-slug/brief.md` (the `.md` plan-breakdown already expects as input). Its
 presence is the opt-in: **absent ⇒ the current honest-halt** (`WaveHalt` kind `NextWaveUnauthored`) with an
 updated message naming the `brief.md` convention; **present ⇒ auto-breakdown-eligible**, gated by
-`autonomyPolicy` (and, unattended, the dial's `wave-checkpoint` gate — doc 12 §5.1). `brief.md` is committed,
+**`autoBreakdown`** (SSOT §2/§14.4, DEFAULT `true`, **decoupled from `autonomyPolicy`** — a present `brief.md`
+auto-fires the breakdown with no prompt at any policy; `autoBreakdown:false` restores the `autonomyPolicy`-gated
+path below) (and, unattended, the dial's `wave-checkpoint` gate — doc 12 §5.1). `brief.md` is committed,
 excluded from `PlanDefinitionHash` (it is breakdown *input*, not reviewed output) but included in
 `WaveDefinitionHash` (a changed brief on a completed wave is legitimate drift). Contents: what the wave must
 accomplish, the materialized upstream it builds on, any intra-wave constraints (design-360 Q1).
@@ -363,9 +365,13 @@ Auto-breakdown may **invoke** breakdown and (per dial) proceed past *some* gates
 This is §3.1's asymmetry at the wave boundary: the mandatory `/guardrails-review` pass on the freshly-authored
 wave IS the verdict-surface protection, and the harness never self-attests it (SSOT §13; invariant 5).
 
-The `autonomyPolicy` table applies to **invocation** (design-360 Q5), NOT to the review gate:
+**Reconciliation (LANDED, SSOT §14.4):** breakdown INVOCATION is now gated by the dedicated **`autoBreakdown`**
+knob (§2, DEFAULT `true`), **decoupled from `autonomyPolicy`** — with the default a present `brief.md`
+auto-fires the breakdown (no prompt, at any policy). The `autonomyPolicy` table below is the **`autoBreakdown:false`
+fallback** (the original #368 invocation gating); it applies to **invocation** (design-360 Q5), NOT to the
+review gate — and the review-gate invariant above holds under BOTH knobs:
 
-| `autonomyPolicy` | `brief.md` | Behavior |
+| `autonomyPolicy` (when `autoBreakdown:false`) | `brief.md` | Behavior |
 |---|---|---|
 | `halt` | any | honest-halt, `brief.md` named in the message |
 | `prompt` (default), interactive TTY | present | prompt "invoke plan-breakdown for wave-NN? [y/N]" → invoke / halt |
