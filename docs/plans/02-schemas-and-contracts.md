@@ -2166,6 +2166,15 @@ key on it, and a body-only edit re-flagging those would false-halt an otherwise-
 3. Every file under `<plan>/guardrails/**` — the terminal-gate folder (§3.3), recursive, sorted.
 4. Every file under `<plan>/preflights/**` — the pre-DAG full-flight-checks folder (§1/§7), recursive,
    sorted.
+5. For a **waved plan** (§14) — where the gates live at `<plan>/<wave>/guardrails/**` (the wave EXIT gate)
+   and `<plan>/<wave>/preflights/**` (the wave ENTRY gate), which match **neither** the plan-root folders
+   of steps 3–4 **nor** any task's file-set of step 2 — every file under **each wave's** `guardrails/**`
+   then `preflights/**`, waves in ordinal wave-dir order, each folder recursive + sorted. Labels are
+   relative to the **plan root** (e.g. `wave-01-scaffold/guardrails/01-exit.sh`) so they never collide with
+   the plan-root gate labels of steps 3–4. A **flat plan has no waves**, so this step contributes nothing
+   and a flat plan's hash is byte-identical to before this step existed (issue #386). The wave `brief.md`
+   is **excluded** here (breakdown *input*, folded only into `WaveDefinitionHash` below — never the review
+   marker).
 
 **Excludes** `state/` (circular — the review marker it keys is itself written there, §13), the
 generated `diagram.md`/`diagram.html` (§10), `guardrails.baseline` (§11), `logs/`, and `captured/` —
@@ -2190,7 +2199,12 @@ iff a task hash changes or a wave-gate file changes, so the levels cannot drift.
 journal `waves[]` record. In a waved plan the review marker (§13) and its `PlanDefinitionHash` are
 **per-wave** (each wave subfolder carries its own, computed over that wave's authored files with the shared
 plan-root `guardrails.json` **excluded**, Open Decision C), so an already-reviewed + run upstream wave never
-re-stales when a downstream wave is authored later.
+re-stales when a downstream wave is authored later. The **whole-plan** `PlanDefinitionHash` computed over a
+loaded waved `PlanDefinition` also folds **every wave's** `guardrails/**` + `preflights/**` gate folders
+(step 5 above), so a post-review edit that weakens a wave EXIT gate (`exit 0`) or breaks a wave ENTRY
+preflight re-stales the plan-level review marker — without step 5 those wave-level gates fell through the
+whole-plan hash entirely and the marker kept vouching for a waved plan whose gates were ALL wave-level
+(issue #386).
 
 > **Coordination note (#260 / #274 Part A).** #260 introduced BOTH `PlanDefinitionHash` AND the shared
 > per-task file-set enumeration primitive it folds over — `Guardrails.Core.Journal.TaskDefinitionFiles`
