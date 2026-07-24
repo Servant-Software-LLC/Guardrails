@@ -19,9 +19,20 @@ namespace Guardrails.Core.Journal;
 ///   <item><c>guardrails.json</c>.</item>
 ///   <item>For each task (sorted by <see cref="TaskNode.Id"/> ordinal), the SHARED per-task file set
 ///     from <see cref="TaskDefinitionFiles"/>: <c>task.json</c> + resolved action + <c>guardrails/**</c>
-///     + <c>preflights/**</c> (recursive, catching <c>.json</c> sidecars).</item>
+///     + <c>preflights/**</c> (recursive, catching <c>.json</c> sidecars). For a WAVED plan
+///     <see cref="PlanDefinition.Tasks"/> is the flattened union of every wave's tasks, so wave TASK
+///     bodies are covered here.</item>
 ///   <item>Every file under <c>&lt;plan&gt;/guardrails/**</c> (terminal gate, §3.3), recursive, sorted.</item>
 ///   <item>Every file under <c>&lt;plan&gt;/preflights/**</c> (pre-DAG full-flight checks, §7), recursive, sorted.</item>
+///   <item>For a WAVED plan (SSOT §14) — where the gates live at <c>&lt;plan&gt;/&lt;wave&gt;/guardrails/**</c>
+///     and <c>&lt;plan&gt;/&lt;wave&gt;/preflights/**</c> (the wave EXIT and ENTRY gates) and match NEITHER
+///     the plan-root folders above NOR any task's file set — every file under each wave's
+///     <c>guardrails/**</c> then <c>preflights/**</c>, waves in ordinal <see cref="WaveNode.Dir"/> order,
+///     recursive, sorted. Labels are relative to the plan root (e.g.
+///     <c>wave-01-scaffold/guardrails/01-exit.sh</c>) so they never collide with the plan-root folders.
+///     A FLAT plan has no waves, so this segment is empty and its hash is byte-identical to before this
+///     fix (issue #386). The wave <c>brief.md</c> is DELIBERATELY excluded (breakdown INPUT, not reviewed
+///     output — it is folded only into <see cref="WaveDefinitionHash"/>).</item>
 /// </list>
 ///
 /// <para>Excludes <c>state/</c> (circular — the review marker it keys lives there), the generated
@@ -59,17 +70,34 @@ public static class PlanDefinitionHash
         }
 
         // 3. Plan-level terminal-gate folder, then 4. plan-level preflights folder.
-        AppendFolder(builder, plan.PlanDirectory, GuardrailsDirName);
-        AppendFolder(builder, plan.PlanDirectory, PreflightsDirName);
+        AppendFolder(builder, plan.PlanDirectory, plan.PlanDirectory, GuardrailsDirName);
+        AppendFolder(builder, plan.PlanDirectory, plan.PlanDirectory, PreflightsDirName);
+
+        // 5. For a WAVED plan the gates live under each wave (<plan>/<wave>/guardrails|preflights) — they
+        //    match neither the plan-root folders (step 3/4) nor any task's file set (step 2), so without
+        //    this loop a post-review edit to a wave gate escaped the hash and the review nudge (issue #386).
+        //    Labels are relative to the PLAN root so they never collide with the plan-root folders above.
+        //    Waves in ordinal Dir order for a reproducible hash. No-op for a flat plan (Waves is empty), so
+        //    a flat plan's hash is byte-identical to before this fix.
+        foreach (WaveNode wave in plan.Waves.OrderBy(w => w.Dir, StringComparer.Ordinal))
+        {
+            AppendFolder(builder, plan.PlanDirectory, wave.Directory, GuardrailsDirName);
+            AppendFolder(builder, plan.PlanDirectory, wave.Directory, PreflightsDirName);
+        }
 
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
         return Prefix + Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private static void AppendFolder(StringBuilder builder, string planDirectory, string folderName)
+    /// <summary>
+    /// Append every file under <c>&lt;folderParent&gt;/&lt;folderName&gt;/**</c> as labeled segments, each
+    /// label being the file's <c>/</c>-normalized path relative to <paramref name="labelRoot"/> (kept as the
+    /// PLAN root so wave-gate labels are wave-qualified and cannot collide with the plan-root gate labels).
+    /// </summary>
+    private static void AppendFolder(StringBuilder builder, string labelRoot, string folderParent, string folderName)
     {
         foreach ((string Label, string AbsolutePath) file in
-                 HashText.EnumerateFolderFiles(planDirectory, Path.Combine(planDirectory, folderName)))
+                 HashText.EnumerateFolderFiles(labelRoot, Path.Combine(folderParent, folderName)))
         {
             HashText.AppendFile(builder, file.Label, file.AbsolutePath);
         }
