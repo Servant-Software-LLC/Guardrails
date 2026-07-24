@@ -79,6 +79,11 @@ public static class RunCommand
             Description = "Suppress the warning when the plan hasn't been through /guardrails-review (or has changed since) (SSOT §13, issue #79)."
         };
 
+        var allTasksOption = new Option<bool>("--all-tasks")
+        {
+            Description = "Live table only (issue #379): show EVERY task's row across ALL waves, even completed ones. By default a waved run collapses each COMPLETED wave to a one-line summary so the active wave stays on-screen; this restores the full flat table. No effect on a flat plan or under --no-ui."
+        };
+
         // ── Autonomous-mode flags (issue #361, doc 12 §3.4; decided §10 I/N) ──────────────────────────
         // Task 06-author-tests-autonomous-cli added these option stubs so `--autonomous`, `--dial <level>`,
         // and `--max-cost-usd <n>` PARSE; task 07 (this one) wires their RESOLUTION in ResolveAutonomousMode
@@ -113,6 +118,7 @@ public static class RunCommand
         command.Add(reprocessDriftOption);
         command.Add(revalidateTaskOption);
         command.Add(skipReviewCheckOption);
+        command.Add(allTasksOption);
 
         // Autonomous-mode options (see the block where they are declared): resolved in ResolveAutonomousMode
         // and applied to the executing run in RunAsync.
@@ -134,6 +140,7 @@ public static class RunCommand
             bool reprocessDrift = parseResult.GetValue(reprocessDriftOption);
             string? revalidateTask = parseResult.GetValue(revalidateTaskOption);
             bool skipReviewCheck = parseResult.GetValue(skipReviewCheckOption);
+            bool allTasks = parseResult.GetValue(allTasksOption);
             bool autonomous = parseResult.GetValue(autonomousOption);
             string? dial = parseResult.GetValue(dialOption);
             decimal? maxCostUsd = parseResult.GetValue(maxCostUsdOption);
@@ -181,14 +188,14 @@ public static class RunCommand
                 return DryRun.Execute(folder, io, skipReviewCheck);
             }
 
-            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, io, cancellationToken).ConfigureAwait(false);
+            return await RunAsync(folder, fresh, noUi, noLogServer, logPort, mergeOnSuccessOverride, autonomy, reprocessDrift, autonomous, dialOverride, maxCostOverride, skipReviewCheck, allTasks, io, cancellationToken).ConfigureAwait(false);
         });
 
         return command;
     }
 
     private static async Task<int> RunAsync(
-        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, IConsoleIo io, CancellationToken cancellationToken)
+        string folder, bool fresh, bool noUi, bool noLogServer, int logPort, bool? mergeOnSuccessOverride, string? autonomy, bool reprocessDrift, bool autonomous, Core.Model.EscalationThreshold? dialOverride, decimal? maxCostOverride, bool skipReviewCheck, bool allTasks, IConsoleIo io, CancellationToken cancellationToken)
     {
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
         if (probe.HasErrors || probe.Plan is null)
@@ -472,7 +479,9 @@ public static class RunCommand
                 OnTheFlyDiagramObserver.WriteInitialDiagram(logsRoot, probe.Plan, diagramSeed);
                 PrintDiagramLink(logsRoot, io);        // live status diagram link at run START
 
-                await using var liveObserver = new LiveRunObserver(probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId);
+                await using var liveObserver = new LiveRunObserver(
+                    probe.Plan.Tasks, logUrlForTask, probe.Plan.PlanDirectory, runId,
+                    probe.Plan.Waves, allTasks); // #379: collapse completed waves unless --all-tasks
                 var siteObserver = new OnTheFlyLogSiteObserver(liveObserver, logsRoot, runId, probe.Plan.Tasks, logUrlForTask);
                 // Stack the diagram observer AROUND the log-site observer: it forwards every event down
                 // the chain and re-renders logs/<runId>/diagram.html after each.
