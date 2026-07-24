@@ -91,7 +91,7 @@ public static class LogsCommand
         if (export)
         {
             string logsRoot = Path.Combine(probe.Plan.PlanDirectory, "logs", document.RunId);
-            string indexPath = LogSiteRenderer.ExportSite(logsRoot, probe.Plan.Tasks, document);
+            string indexPath = LogSiteRenderer.ExportSite(logsRoot, probe.Plan.Tasks, probe.Plan.Waves, document);
             bool linkable = !Console.IsOutputRedirected && Spectre.Console.AnsiConsole.Profile.Capabilities.Links;
             output.WriteLine($"Static log site written: {RunCommand.Hyperlink(Path.GetFullPath(indexPath), linkable)}");
             return ExitCodes.Success;
@@ -102,7 +102,7 @@ public static class LogsCommand
         // the journal as it stands now, then advertise its file:// path. The live server below is the
         // active-task tailing backend the static index links a running task to.
         string siteRoot = Path.Combine(probe.Plan.PlanDirectory, "logs", document.RunId);
-        string staticIndexPath = Path.GetFullPath(LogSiteRenderer.ExportSite(siteRoot, probe.Plan.Tasks, document));
+        string staticIndexPath = Path.GetFullPath(LogSiteRenderer.ExportSite(siteRoot, probe.Plan.Tasks, probe.Plan.Waves, document));
 
         LogServer? server = LogServer.TryStart(
             probe.Plan.PlanDirectory, document.RunId, probe.Plan.Tasks, port, output);

@@ -33,6 +33,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     private readonly string _logsRoot;
     private readonly string _runId;
     private readonly IReadOnlyList<TaskNode> _tasks;
+    private readonly IReadOnlyList<WaveNode> _waves;
     private readonly IReadOnlyDictionary<string, TaskNode> _tasksById;
     private readonly Func<string, string?>? _liveUrlForTask;
 
@@ -49,17 +50,24 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// Resolver mapping a task id to its live-server URL, or null when no server is up. A RUNNING task
     /// links to this URL (a click tails it) when non-null; null = the running task is plain text.
     /// </param>
+    /// <param name="waves">
+    /// The plan's waves (SSOT §14), or null/empty for a FLAT plan. When non-empty, each wave's own
+    /// <c>&lt;waveDir&gt;/index.html</c> (issue #380) is rewritten alongside the plan index on every event,
+    /// and the plan index gains a wave drill-down nav. Empty ⇒ no wave index, plan index unchanged.
+    /// </param>
     public OnTheFlyLogSiteObserver(
         IRunObserver inner,
         string logsRoot,
         string runId,
         IReadOnlyList<TaskNode> tasks,
-        Func<string, string?>? liveUrlForTask)
+        Func<string, string?>? liveUrlForTask,
+        IReadOnlyList<WaveNode>? waves = null)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
         _logsRoot = logsRoot;
         _runId = runId;
         _tasks = tasks;
+        _waves = waves ?? Array.Empty<WaveNode>();
         _tasksById = tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
         _liveUrlForTask = liveUrlForTask;
         _statusByTask = tasks.ToDictionary(
@@ -69,9 +77,9 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// <summary>
     /// Write the initial all-pending index at run start (every task pending, plain text), so the "all
     /// tasks" page exists and is browsable the moment the run begins. Best-effort. Delegates to the
-    /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?})"/>.
+    /// static <see cref="WriteInitialIndex(string, string, IReadOnlyList{TaskNode}, Func{string, string?}, IReadOnlyList{WaveNode})"/>.
     /// </summary>
-    public void WriteInitialIndex() => WriteInitialIndex(_logsRoot, _runId, _tasks, _liveUrlForTask);
+    public void WriteInitialIndex() => WriteInitialIndex(_logsRoot, _runId, _tasks, _liveUrlForTask, _waves);
 
     /// <summary>
     /// Write the initial all-pending index (every task <c>pending</c>, plain link, with the during-run
@@ -86,21 +94,39 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     /// <param name="tasks">The plan's tasks, in plan order — the rows of the index.</param>
     /// <param name="liveUrlForTask">Unused at the all-pending start (no task is running yet); accepted
     /// so the static signature matches the instance's link-resolution surface for callers.</param>
+    /// <param name="waves">The plan's waves (issue #380), or null/empty for a FLAT plan — each wave's own
+    /// all-pending <c>&lt;waveDir&gt;/index.html</c> is seeded too so a wave page is browsable from run start.</param>
     public static void WriteInitialIndex(
         string logsRoot,
         string runId,
         IReadOnlyList<TaskNode> tasks,
-        Func<string, string?>? liveUrlForTask)
+        Func<string, string?>? liveUrlForTask,
+        IReadOnlyList<WaveNode>? waves = null)
     {
         _ = liveUrlForTask; // no task is running at the all-pending start, so no live link is resolved yet
         string pending = LogSiteRenderer.StatusText(Core.Journal.TaskStatus.Pending);
+        IReadOnlyList<WaveNode> waveList = waves ?? Array.Empty<WaveNode>();
         TryRender(() => LogSiteRenderer.WriteIndex(
             logsRoot,
             runId,
             tasks,
             statusResolver: _ => pending,
             linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
-            includeRefresh: true));
+            includeRefresh: true,
+            waves: waveList));
+
+        // Seed each wave's own all-pending index (issue #380) so a wave page exists from run start.
+        foreach (WaveNode wave in waveList)
+        {
+            WaveNode w = wave;
+            TryRender(() => LogSiteRenderer.WriteWaveIndex(
+                logsRoot,
+                runId,
+                w,
+                statusResolver: _ => pending,
+                linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
+                includeRefresh: true));
+        }
     }
 
     public void TaskStarting(TaskNode task)
@@ -173,13 +199,31 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         {
             // Snapshot the statuses inside the lock so the resolver closures read a stable view.
             var statuses = new Dictionary<string, string>(_statusByTask, StringComparer.Ordinal);
+            string StatusOf(string id) => statuses.TryGetValue(id, out string? s) ? s : "unknown";
+            LogSiteRenderer.IndexLink LinkOf(string id) => ResolveLink(id, statuses);
+
             TryRender(() => LogSiteRenderer.WriteIndex(
                 _logsRoot,
                 _runId,
                 _tasks,
-                statusResolver: id => statuses.TryGetValue(id, out string? s) ? s : "unknown",
-                linkResolver: id => ResolveLink(id, statuses),
-                includeRefresh: true));
+                statusResolver: StatusOf,
+                linkResolver: LinkOf,
+                includeRefresh: true,
+                waves: _waves));
+
+            // Rewrite each wave's own index too (issue #380), from the same status snapshot, so a
+            // waved run's per-wave drill-down refreshes as the wave progresses.
+            foreach (WaveNode wave in _waves)
+            {
+                WaveNode w = wave;
+                TryRender(() => LogSiteRenderer.WriteWaveIndex(
+                    _logsRoot,
+                    _runId,
+                    w,
+                    statusResolver: StatusOf,
+                    linkResolver: LinkOf,
+                    includeRefresh: true));
+            }
         }
     }
 
