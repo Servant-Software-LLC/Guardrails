@@ -470,6 +470,83 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
+    /// Issue #407 (junction lifecycle): remove EVERY git worktree registered in <paramref name="repoPath"/>
+    /// whose path resolves UNDER <paramref name="worktreeRoot"/>, prune the dangling registrations, then
+    /// delete the root directory itself. Unlike <see cref="TeardownPlanBranch"/> it NEVER deletes a branch
+    /// (plan OR segment): a green-delivered run's plan branch must survive on the user's repo, and a foreign
+    /// leak's branches are none of our business — this reclaims the on-disk worktree TREE + its git
+    /// registrations ONLY. Used by BOTH the terminal-completion cleanup (A) and the startup GC (B) via
+    /// <see cref="WorktreeReclaim"/>. Static (no run-scoped provider needed) and best-effort — every git
+    /// step is swallowed so a partial/non-git/foreign repo never aborts the run. A worktree whose
+    /// registration lives in a DIFFERENT repo is not found by the list here, so only its DIRECTORY is swept;
+    /// that repo's own <c>git worktree prune</c> later clears the harmless dangling entry.
+    /// </summary>
+    public static void RemoveWorktreeRoot(string repoPath, string worktreeRoot)
+    {
+        if (string.IsNullOrWhiteSpace(worktreeRoot)) return;
+
+        // Unregister any worktrees under the root FIRST — a checked-out worktree cannot simply be rm-rf'd
+        // without leaving git's bookkeeping inconsistent. Located git-authoritatively (git stores the REAL
+        // path even when a #383 junction aliased it during the run), so this keys on the real root.
+        try
+        {
+            foreach (string wt in RegisteredWorktreesUnder(repoPath, worktreeRoot))
+            {
+                try { GitIn(repoPath, "worktree", "remove", "--force", wt); }
+                catch (InvalidOperationException) { /* not removable / already gone; pruned below */ }
+                // Issue #109: clear any tree git left on disk (Windows read-only loose objects).
+                SafeDelete.DeleteDirectory(wt);
+            }
+
+            try { GitIn(repoPath, "worktree", "prune"); } catch (InvalidOperationException) { /* best-effort */ }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Not a git repo, or git unavailable / off PATH — still sweep the directory below (harness-owned).
+        }
+
+        SafeDelete.DeleteDirectory(worktreeRoot);
+    }
+
+    /// <summary>
+    /// The absolute paths of git worktrees registered in <paramref name="repoPath"/> whose path is under
+    /// <paramref name="worktreeRoot"/> (issue #407), parsing <c>git worktree list --porcelain</c>. The main
+    /// worktree (the repo itself, outside the harness-owned root) is naturally excluded — it is never under
+    /// <paramref name="worktreeRoot"/>. Empty on any git failure (best-effort).
+    /// </summary>
+    private static IReadOnlyList<string> RegisteredWorktreesUnder(string repoPath, string worktreeRoot)
+    {
+        string listing;
+        try { listing = GitIn(repoPath, "worktree", "list", "--porcelain"); }
+        catch (InvalidOperationException) { return []; }
+
+        var under = new List<string>();
+        foreach (string rawLine in listing.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (!line.StartsWith("worktree ", StringComparison.Ordinal)) continue;
+            string path = line["worktree ".Length..].Trim();
+            if (PathIsUnder(path, worktreeRoot)) under.Add(path);
+        }
+
+        return under;
+    }
+
+    /// <summary>True when <paramref name="path"/> equals or is nested under <paramref name="ancestor"/> (full-path, case-insensitive on Windows). Issue #407.</summary>
+    private static bool PathIsUnder(string path, string ancestor)
+    {
+        try
+        {
+            string p = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            string a = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ancestor));
+            StringComparison cmp = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return p.Equals(a, cmp) || p.StartsWith(a + Path.DirectorySeparatorChar, cmp);
+        }
+        catch (ArgumentException) { return false; }
+    }
+
+    /// <summary>
     /// Issue #274 (part B): fully tear down THIS plan's durable cross-run resume record so a
     /// <c>--fresh</c> run or a full <c>reset</c> genuinely starts over. The plan branch
     /// <c>guardrails/&lt;planName&gt;</c> and its integration worktree carry the <c>Guardrails-Task:</c>
