@@ -41,6 +41,14 @@ and only then does `guardrails run` execute it.
 
 ## Step 0 — Preconditions
 
+> **Interactive Charter `.charter.md` input — check this FIRST (#390–393):** if the input filename ends
+> **`.charter.md`** (or — only when ATTENDED — a `.md` whose **column-0 `:::` blocks you confirm are
+> Charter**, not a Mermaid `classDef` or a fenced example), run **Step 0c** (discover `charter-format` → gate
+> the format-version marker → interpret `:::` → fold a resolved `:::question` / surface an open one) BEFORE
+> the preconditions below, then continue with the interpreted content. A plain `.md` (no confirmed `:::`)
+> skips Step 0c (existing path, unchanged). Step 0c needs the Skill tool AND — for its prompts — an attended
+> human; the headless/autonomous path consumes Charter's flattened `handoff` markdown and never triggers it.
+
 1. Resolve the plan path. If the file doesn't exist, stop and say so. The `<plan-name>/` task
    folder is generated **beside the source `.md`** by default; a repo that prefers one consolidated
    footprint MAY instead keep plan folders under a `.guardrails/` home (the same optional home
@@ -155,6 +163,13 @@ criteria, "done when" language, and dependency words ("after", "requires", "once
 exists"). Build a scratch table:
 
 | item | deliverable artifact(s) | completion evidence available in the plan | hinted deps |
+
+**Charter input (`$charter`, Step 0c):** if the plan was a `.charter.md`, you already interpreted its
+`:::` blocks and gated the format version in Step 0c — build this table from the *interpreted* content: a
+resolved `:::question`'s folded `answer` is a **settled decision** (an input/constraint, not a work item),
+an open one was already asked (`AskUserQuestion`) or became an agent-needs-human task, and the
+`:::note/warn/comparison/diagram/diff/custom-html` blocks ride along as **context/rationale** for the rows
+they inform. Everything else on this page is unchanged.
 
 Anything with **no observable deliverable** ("think about performance", "consider
 edge cases") is flagged: it either merges into a neighboring task's guardrail or is
@@ -1971,6 +1986,106 @@ Extend the Step 7.0 UI exit-criteria self-review with the interaction dimension:
 <!-- END ADDED SECTION #41/#78 -->
 
 <!-- BEGIN ADDED SECTION #254 — waved plans: nested layout + JIT staged breakdown (auto-merge friendly; do not merge into prose above) -->
+## Step 0c — Charter `.charter.md` living-document ingestion (INTERACTIVE only, #390–393)
+
+**Where this runs — attended vs unattended.** Only a session with the **Skill tool** reaches here (the
+headless/autonomous harness has none — it consumes Charter's *flattened* plain-markdown `charter handoff`
+output, so it never sees a `.charter.md`, never parses `:::`, never needs `charter-format`; **no Charter
+dependency in the headless path**). But **"has the Skill tool" ≠ "a human is present"**: the JIT
+between-wave breakdown auto-fires `plan-breakdown` **unattended** (`autoBreakdown` default, SSOT §14). So the
+steps that need a human — the **soft-detection confirm** below, and an **open question's `AskUserQuestion`**
+(0c.5) — fire **only when ATTENDED** (a human at a TTY); an **unattended** breakdown never prompts and takes
+the deferred branch.
+
+**Detection — `.charter.md` is the trigger; a bare `:::` is only a hint (no-regression-critical).**
+- **Primary, authoritative: the input filename ends `.charter.md`** → it is Charter input; run Step 0c and
+  set **`$charter = true`**.
+- **Secondary, a soft hint only: a `.md` NOT named `.charter.md`** whose body has a directive block **at
+  column 0 (`^:::name`) that is NOT inside a fenced code block (```` ``` ````/`~~~`)**. A real plan
+  legitimately carries `:::` in a Mermaid `classDef`, a fenced `charter-format` example, or prose — so this
+  is a *hint, never a detection on its own*. **Attended:** CONFIRM — *"this looks like a Charter document;
+  interpret its `:::` blocks as Charter, or break it down as plain markdown?"*; only a **yes** sets
+  `$charter = true`. **Unattended:** never confirm → the unchanged plain path.
+- Everything else — a `.md` with no column-0 `:::`, or `:::` only inside fences / as a Mermaid `classDef` —
+  is **NOT** Charter input → skip this whole section; **Step 1 runs byte-for-byte as before (no regression).**
+
+**Why interpret via a skill, not a parser (the decoupling).** Guardrails takes **no Charter binary
+dependency** and never reimplements Charter's parse. The `:::` block catalog and the `:::question`
+open/resolved schema are the **single source of truth in Charter's `charter-format` skill** — a
+documentation contract Charter publishes and drift-tests against its own renderer. **Do NOT vendor or
+fork that catalog into `references/`**; cite the installed `charter-format` skill.
+
+1. **Discover `charter-format` (G3, #393).** The invoking session loads `charter-format` as a
+   **top-level** skill (installed via `charter skills install`, which mirrors `guardrails skills install`
+   and drops it into `~/.claude/skills/`). Do NOT reach into another skill's `references/` mid-run — that
+   is not how the harness loads references. **If Charter input is detected and `charter-format` is NOT
+   available in this session → STOP** with *"run `charter skills install` so plan-breakdown can interpret
+   Charter blocks."* Do not guess directive semantics from the block names.
+
+2. **Gate the format version (G1, #391) — a FILE-MARKER check, not CLI drift.** Read the plain-YAML
+   frontmatter marker **`charter-format-version: F`** (readable without the skill). Against the loaded
+   `charter-format` skill's frontmatter range `[format-min, format-version]`:
+   - **A `.charter.md`-named file with the marker ABSENT ⇒ REJECT and stop** (#391): *"this plan has no
+     `charter-format-version` marker; re-author it with a current `charter-format`, or hand a plain `.md`."*
+     Never silently assume a version.
+   - **A soft-detected `.md` (confirmed above) with no marker ⇒ the `:::` was most likely incidental →
+     warn and fall through to the plain path.** Do NOT hard-stop a file the user handed as a `.md`.
+   - **`F > format-version`** (file newer than the installed skill understands) ⇒ stop: *"run
+     `charter skills install` to update `charter-format`."*
+   - **`F < format-min`** (file older than the skill still reads) ⇒ stop: *"re-author this plan against a
+     current `charter-format`."*
+   - **`format-min ≤ F ≤ format-version`** ⇒ proceed.
+   This is NOT a `guardrails --version` check — do not compare against the Guardrails CLI; the only
+   staleness that matters is the file's format vs the installed `charter-format` range.
+
+3. **Interpret the blocks (G1) — the LOADED catalog is authoritative.** Read each `:::` block's meaning from
+   the loaded `charter-format` catalog. **For orientation only (as of `charter-format` v1)** the blocks are
+   `:::note`/`:::warn`/`:::comparison`/`:::diagram`/`:::diff`/`:::custom-html`/`:::question` (no
+   `:::file-tree`, no `:::annotated-code`) — but **the loaded `charter-format` skill is authoritative**: if it
+   defines a block not shown here, trust IT (this inline list has no drift test; the loaded skill does).
+   A directive the loaded catalog does NOT define is an **unknown directive**: **warn the human and parse its
+   body through as prose context — never silently drop it, and never treat it as a known block.** CommonMark
+   prose/headings/lists/tables/code extract exactly as in Step 1. The callout/comparison/diagram/diff/
+   custom-html blocks **parse-through as context** — carry their content into the Step 1 work-item table as
+   rationale/context, the same as the surrounding prose.
+
+4. **A RESOLVED `:::question` is a settled decision (G1).** A `:::question` whose JSON body carries a
+   **non-empty `answer`** array is resolved. **Fold its `answer` in as a decision the human already made** —
+   treat it exactly like a choice stated in the plan prose, keeping `options` as rationale. Do NOT re-ask
+   it. (Schema is normative in `charter-format`: `id`/`title`/`mode`/`options`/`target`/`answer`; `mode` ∈
+   `single`/`multi`/`free-text`/`bool`/`number`; `answer` absent/empty ⇒ open, non-empty ⇒ resolved.)
+
+5. **An OPEN `:::question` is surfaced, never defaulted (G2, #392) — routed by `target` AND attendance.** A
+   `:::question` with **absent/empty `answer`** is open — resolve it with the "surface it, never default it"
+   idiom this skill uses for a greenfield unmade decision (Step 5 / `references/stacks/dotnet.md`), routed by
+   the question's `target`:
+   - **`target: human` (or unsure), ATTENDED (a human at a TTY):** `AskUserQuestion` with the question's
+     `title` + `mode` + `options`; fold the answer in exactly like a resolved `:::question`.
+   - **`target: human`, UNATTENDED (auto-fired between-wave breakdown, no human):** emit a task whose action
+     prompt writes `{"needsHuman": "<title + options>"}` to the state-out path and stops (the shipped runtime
+     escape hatch). **NEVER call `AskUserQuestion` unattended.**
+   - **`target: agent`:** the author routed the decision to an agent — the breakdown agent resolves it within
+     its authoring judgment and **RECORDS the choice + rationale as a visible decision**. **Never synthesize a
+     silent default** for any open question.
+   - **No new gate type.** At run time that emitted `{"needsHuman": …}` is an *agent-emitted needs-human*,
+     which the autonomous classifier ALREADY governs as a **dial-eligible judgment call**
+     (`docs/plans/12-autonomous-mode.md` §4.1): criticality **<** the dial → **proceed with a recorded
+     best-guess** (`decisions[]` `proceeded-best-guess` + `autonomy.jsonl`); criticality **≥** the dial →
+     **escalate** (honest halt enriched with the question; firstmate answers async via an answer file; run
+     exits **`EscalationsPending = 4`**, not `2`). It is not an unconditional halt.
+
+6. **Trust asymmetry (load-bearing — never conflate the two "answers").** A `:::question` resolved **at
+   breakdown time** — inline in the `.charter.md`, OR via `AskUserQuestion` — is **trusted authoring
+   input**: it shapes the DAG the human then reviews. A `:::question` answered **at run time** through the
+   escalation answer channel is **untrusted, delimited data** (`docs/plans/12-autonomous-mode.md` §7.4,
+   Finding 4): it only composes the next attempt's prompt and can **never** reach the verdict surface, whose
+   deterministic guardrails still gate the result. Fold a breakdown-time answer into the DAG; never treat a
+   run-time answer as authoring-trust.
+
+**Then** continue with Step 0's remaining preconditions and Steps 1–8 (or Step 9 if waved) using the
+interpreted content: the resolved/asked decisions are now settled inputs to the work-item table, and the
+`:::` context rides along as rationale. The produced folder must still pass `guardrails validate` (Step 7).
+
 ## Step 9 — Waved plans: nested layout + JIT staged breakdown (#254)
 
 Fires when Step 0.8 set `$waved = true` (the plan is authored as ordered STAGES, each building on the
