@@ -186,6 +186,10 @@ public static class DiagnosticCodes
     /// plan, SSOT §13, issue #79). A WARNING, never an error: the review is a token-costing Claude skill and
     /// a quick/intentional run is legitimate, so this is an honest nudge — run <c>/guardrails-review</c>, or
     /// pass <c>--skip-review-check</c> on <c>run</c> to proceed. (GR2024 is reserved elsewhere.)
+    ///
+    /// <para>The remediation is SURFACE-SPECIFIC (<see cref="Review.ReviewNudgeSurface"/>, issue #410):
+    /// <c>--skip-review-check</c> exists only on <c>run</c>, so the <c>validate</c> wording points at
+    /// <c>guardrails mark-reviewed</c> instead of a flag that command would reject.</para>
     /// </summary>
     public const string ReviewMarkerMissingOrStale = "GR2025";
 

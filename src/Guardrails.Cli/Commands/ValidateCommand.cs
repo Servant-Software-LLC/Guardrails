@@ -34,7 +34,8 @@ public static class ValidateCommand
         // validate's exit code (HasErrors counts errors only).
         var diagnostics = new List<Core.Loading.Diagnostic>(result.Diagnostics);
         if (result.Plan is not null &&
-            Core.Loading.PlanValidator.ReviewMarkerDiagnostic(result.Plan) is { } reviewNudge)
+            Core.Loading.PlanValidator.ReviewMarkerDiagnostic(
+                result.Plan, Core.Review.ReviewNudgeSurface.Validate) is { } reviewNudge)
         {
             diagnostics.Add(reviewNudge);
         }

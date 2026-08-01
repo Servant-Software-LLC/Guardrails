@@ -48,7 +48,61 @@ public sealed class ReviewMarkerTests : IDisposable
 
         Assert.Equal(ReviewState.Missing, result.State);
         Assert.True(result.ShouldWarn);
-        Assert.Contains("/guardrails-review", result.NudgeMessage);
+        Assert.Contains("/guardrails-review", result.NudgeMessage(ReviewNudgeSurface.Run));
+    }
+
+    // ── #410: the remediation must name only what the EMITTING command actually accepts ─────────────
+
+    [Theory]
+    [InlineData(ReviewState.Missing)]
+    [InlineData(ReviewState.Stale)]
+    public void NudgeMessage_ValidateSurface_NeverRecommendsTheRunOnlyFlag(ReviewState state)
+    {
+        // `--skip-review-check` is a `run` option. Recommending it to a `validate` user produced
+        // "Unrecognized command or argument" when they followed the printed instruction (#410).
+        ReviewEvaluation result = EvaluateAs(state);
+
+        string? message = result.NudgeMessage(ReviewNudgeSurface.Validate);
+
+        Assert.NotNull(message);
+        Assert.DoesNotContain("--skip-review-check", message);
+        Assert.Contains("mark-reviewed", message);      // the remedy validate DOES have
+        Assert.Contains("/guardrails-review", message);
+    }
+
+    [Theory]
+    [InlineData(ReviewState.Missing)]
+    [InlineData(ReviewState.Stale)]
+    public void NudgeMessage_RunSurface_KeepsTheFlagItActuallyHas(ReviewState state)
+    {
+        ReviewEvaluation result = EvaluateAs(state);
+
+        Assert.Contains("--skip-review-check", result.NudgeMessage(ReviewNudgeSurface.Run));
+    }
+
+    [Fact]
+    public void NudgeMessage_Reviewed_IsNullOnBothSurfaces()
+    {
+        ReviewMarker.Write(PlanHere(), DateTimeOffset.UtcNow);
+        ReviewEvaluation result = ReviewMarker.Evaluate(PlanHere());
+
+        Assert.Null(result.NudgeMessage(ReviewNudgeSurface.Validate));
+        Assert.Null(result.NudgeMessage(ReviewNudgeSurface.Run));
+    }
+
+    /// <summary>Produce a real <see cref="ReviewEvaluation"/> in the requested warn state.</summary>
+    private ReviewEvaluation EvaluateAs(ReviewState state)
+    {
+        if (state is ReviewState.Stale)
+        {
+            ReviewMarker.Write(PlanHere(), DateTimeOffset.UtcNow);
+            File.WriteAllText(Path.Combine(_planDir, "tasks", "01-task", "task.json"),
+                """{ "description": "edited after review" }""");
+        }
+
+        ReviewEvaluation result = ReviewMarker.Evaluate(PlanHere());
+        Assert.Equal(state, result.State);
+        return result;
     }
 
     [Fact]
@@ -60,7 +114,7 @@ public sealed class ReviewMarkerTests : IDisposable
 
         Assert.Equal(ReviewState.Reviewed, result.State);
         Assert.False(result.ShouldWarn);
-        Assert.Null(result.NudgeMessage);
+        Assert.Null(result.NudgeMessage(ReviewNudgeSurface.Run));
     }
 
     [Fact]
@@ -76,7 +130,7 @@ public sealed class ReviewMarkerTests : IDisposable
 
         Assert.Equal(ReviewState.Stale, result.State);
         Assert.True(result.ShouldWarn);
-        Assert.Contains("changed since", result.NudgeMessage);
+        Assert.Contains("changed since", result.NudgeMessage(ReviewNudgeSurface.Run));
         Assert.NotEqual(result.ReviewedHash, result.CurrentHash);
     }
 
