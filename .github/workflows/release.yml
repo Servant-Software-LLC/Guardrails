@@ -161,6 +161,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The osx-* legs MUST stay on a macOS runner: `codesign` is macOS-only, and the ad-hoc
+          # signing step below is required for the binary to exec at all on Apple Silicon (#415).
+          # Moving them to ubuntu to save cost would need `rcodesign` (the Rust apple-codesign
+          # crate) wired in first — it ad-hoc signs Mach-O from Linux, also free, also no account.
           - { runner: macos-latest,   rid: osx-arm64,   archive: tar, smoke: true  }
           - { runner: macos-latest,   rid: osx-x64,     archive: tar, smoke: false } # x64 cross-built on arm mac
           - { runner: ubuntu-latest,  rid: linux-x64,   archive: tar, smoke: true  }
@@ -197,6 +201,30 @@ jobs:
           else
             mv "$DIR/Guardrails.Cli" "$DIR/guardrails" && chmod +x "$DIR/guardrails"
           fi
+
+      # Ad-hoc sign the macOS binaries — free, no certificate, no Apple Developer account (#415).
+      #
+      # Apple Silicon's kernel refuses to exec a Mach-O carrying NO signature at all. This is
+      # separate from notarization: an ad-hoc signature (`codesign -s -`) satisfies it. Until now
+      # the release satisfied it BY ACCIDENT — the osx-* legs run on macos-latest, so the .NET SDK
+      # ad-hoc signs the apphost during publish, and nothing said the runner OS was load-bearing.
+      # A change that looked purely like a cost optimisation could have shipped an arm64 binary
+      # that dies with a bare `zsh: killed` on every Apple Silicon Mac, and the smoke would not
+      # reliably catch it (it runs the binary on the machine that built it — the case most likely
+      # to still work).
+      #
+      # `--verify --strict` is the real value here: it turns "signature silently absent" into a
+      # FAILED release. This runs BEFORE the Developer ID step, which re-signs with --force when
+      # its secrets are present — so the two never conflict, and the ad-hoc signature is simply
+      # the floor that always holds.
+      - name: Ad-hoc sign (macOS — satisfies the Apple Silicon exec requirement)
+        if: startsWith(matrix.rid, 'osx-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="publish/${{ matrix.rid }}/guardrails"
+          codesign --force --sign - "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
 
       - name: Codesign + notarize (macOS — auto-skips until signing secrets exist)
         if: startsWith(matrix.rid, 'osx-')
