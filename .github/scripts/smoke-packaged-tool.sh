@@ -134,24 +134,43 @@ done
 echo
 
 # 4c. `guardrails --version` from the install CWD reports NO drift / no `unversioned` warning
-#     for the freshly-installed skills. stdout must be the version; stderr must NOT contain
-#     `unversioned` or the drift WARNING block. This transitively proves the installed skill
+#     for the freshly-installed skills. stdout must be the version; stderr must carry no drift
+#     line naming OUR isolated skills root. This transitively proves the installed skill
 #     version matches the harness version (no drift).
+#
+#     Scoped to the isolated root ON PURPOSE. `--version` scans TWO roots: the user-level
+#     ~/.claude/skills and the project-level ./.claude/skills under the CWD. Only the second is
+#     ours. A blanket "no WARNING at all" check passes on a CI runner (the user root is empty)
+#     but fails on any maintainer box that has the tool installed globally — it fires on THEIR
+#     skills and reports SMOKE FAIL on an otherwise-green package. This script's header
+#     advertises a local Git Bash run as supported, so that blanket check made the documented
+#     local mode unusable. (The user root cannot be redirected: it resolves via
+#     Environment.GetFolderPath(SpecialFolder.UserProfile), which on Windows ignores $USERPROFILE.)
 echo "-- assert: --version reports no drift for freshly-installed skills --"
 VER_STDOUT="${WORK_DIR}/version.out"
 VER_STDERR="${WORK_DIR}/version.err"
 ( cd "${CWD_DIR}" && "${LAUNCHER}" --version ) >"${VER_STDOUT}" 2>"${VER_STDERR}"
 
 echo "  --version stdout: $(cat "${VER_STDOUT}")"
-if grep -qi "unversioned" "${VER_STDERR}"; then
-  echo "  --- stderr ---" >&2
-  cat "${VER_STDERR}" >&2
-  fail "'--version' reported an 'unversioned' skill — the #169 drift regression"
+
+# The CLI prints native paths; on Git Bash the isolated root is a POSIX path. Match either form.
+SKILLS_ROOT_NATIVE="${SKILLS_ROOT}"
+if command -v cygpath >/dev/null 2>&1; then
+  SKILLS_ROOT_NATIVE="$(cygpath -w "${SKILLS_ROOT}")"
 fi
+
+ISOLATED_DRIFT="$(grep -F -e "${SKILLS_ROOT}" -e "${SKILLS_ROOT_NATIVE}" "${VER_STDERR}" || true)"
+if [[ -n "${ISOLATED_DRIFT}" ]]; then
+  echo "  --- drift lines naming the isolated skills root ---" >&2
+  echo "${ISOLATED_DRIFT}" >&2
+  fail "'--version' reported drift/'unversioned' for the FRESHLY-INSTALLED skills — the #169 regression"
+fi
+
+# Anything still warned about lives in a DIFFERENT root (a globally-installed tool on a dev
+# box). Not this smoke's business — surface it so it is never silently swallowed, then move on.
 if grep -q "WARNING:" "${VER_STDERR}"; then
-  echo "  --- stderr ---" >&2
-  cat "${VER_STDERR}" >&2
-  fail "'--version' emitted a drift WARNING for the freshly-installed skills"
+  echo "  note: --version warned about skills OUTSIDE the isolated root (other installs on this machine):"
+  sed 's/^/    /' "${VER_STDERR}"
 fi
 # stdout must echo the version we packed (the harness reports its own AssemblyInformationalVersion).
 if ! grep -q "${VERSION}" "${VER_STDOUT}"; then
