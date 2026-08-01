@@ -44,10 +44,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Restore
         run: dotnet restore Guardrails.sln --locked-mode
@@ -73,10 +73,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Smoke (pack tag version → install → assert)
         # Strip the leading `v` from the tag so it packs/installs the exact version the
@@ -97,10 +97,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Restore
         run: dotnet restore Guardrails.sln --locked-mode
@@ -169,10 +169,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Publish self-contained single-file
         shell: bash

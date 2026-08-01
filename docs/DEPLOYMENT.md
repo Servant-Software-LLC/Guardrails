@@ -80,7 +80,7 @@ warns (on stderr) about any installed skill still on an older stamp — see
 
 | Requirement | Why | Windows | macOS / Linux |
 |---|---|---|---|
-| **.NET 8+ SDK** | Build/install the tool; `RollForward LatestMajor` runs it on 8/9/10 | `winget install Microsoft.DotNet.SDK.8` | `brew install dotnet` / distro package |
+| **.NET 10+ SDK** | Build/install the tool; `RollForward LatestMajor` runs it on 10 and later | `winget install Microsoft.DotNet.SDK.10` | `brew install dotnet` / distro package |
 | **git** | Clone the public repo | `winget install Git.Git` | usually present |
 | **Claude Code CLI**, authenticated | Prompt **actions/guardrails** shell out to `claude -p`. Deterministic-only plans don't need it. | [claude.com/claude-code](https://claude.com/claude-code) | same |
 | **PowerShell** | Only if your plan uses `.ps1` guardrails | built-in (`powershell.exe`) | **install `pwsh` (PowerShell 7)** — `.ps1` resolves to `pwsh` off-Windows |
@@ -152,7 +152,7 @@ guardrails skills install
 on nothing and no one. Do **Option B in parallel** when you want the one-line install
 for the demo and for eventual Mac/Linux boxes. It is *not* much extra work (one secret
 + one tag), and it does not change a single line of code — the tool is already
-`net8.0` and CI already proves it green on windows/ubuntu/macos.
+`net10.0` and CI already proves it green on windows/ubuntu/macos.
 
 ---
 

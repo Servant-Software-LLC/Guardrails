@@ -57,7 +57,7 @@ dotnet tool install --global ServantSoftware.Guardrails --prerelease
 guardrails skills install        # installs plan-breakdown + guardrails-review into ~/.claude/skills
 ```
 
-**Prerequisites:** the [.NET 8+ SDK](https://dotnet.microsoft.com/download), and — for
+**Prerequisites:** the [.NET 10+ SDK](https://dotnet.microsoft.com/download), and — for
 prompt tasks — [Claude Code](https://claude.com/claude-code) installed and authenticated
 (the headless `claude -p` runner the harness drives). Deterministic-only plans need
 nothing but .NET. Restart Claude Code after `skills install` so it picks up the skills.
@@ -133,9 +133,13 @@ them into `~/.claude/skills/` via `guardrails skills install` (no manual copy):
 | **Every schema & contract (SSOT)** | `docs/plans/02-schemas-and-contracts.md` |
 | Roadmap, Reality Gate, v2 bets | `docs/plans/03-roadmap.md` |
 | Golden example | `examples/hello-guardrails/` |
-| Harness source | `src/Guardrails.Core`, `src/Guardrails.Cli` (net8.0 dotnet tool) |
+| Harness source | `src/Guardrails.Core`, `src/Guardrails.Cli` (net10.0 dotnet tool) |
 
 ## From source (contributors)
+
+Requires the **.NET 10 SDK or newer** — `global.json` accepts any SDK from 10.0.100 up, so a
+current SDK is fine. The SDK carries the matching runtime, so `dotnet test` launches the
+`net10.0` test host with no extra install and no roll-forward opt-in.
 
 Working on Guardrails itself, or want to try the bundled example end-to-end?
 
