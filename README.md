@@ -57,10 +57,36 @@ dotnet tool install --global ServantSoftware.Guardrails --prerelease
 guardrails skills install        # installs plan-breakdown + guardrails-review into ~/.claude/skills
 ```
 
-**Prerequisites:** the [.NET 10+ SDK](https://dotnet.microsoft.com/download), and — for
-prompt tasks — [Claude Code](https://claude.com/claude-code) installed and authenticated
-(the headless `claude -p` runner the harness drives). Deterministic-only plans need
-nothing but .NET. Restart Claude Code after `skills install` so it picks up the skills.
+No .NET on the machine? The prebuilt self-contained binaries bundle their own runtime:
+
+```bash
+brew install servant-software-llc/tap/guardrails      # macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.sh | bash
+```
+
+**Prerequisites:** for the `dotnet tool` route, the
+[.NET 10+ SDK](https://dotnet.microsoft.com/download) — the Homebrew and `install.sh`
+routes need no .NET at all. For prompt tasks, [Claude Code](https://claude.com/claude-code)
+installed and authenticated (the headless `claude -p` runner the harness drives).
+Deterministic-only plans need nothing but .NET. Restart Claude Code after `skills install`
+so it picks up the skills.
+
+### macOS: downloaded the tarball in a browser?
+
+The install routes above need no extra steps. Gatekeeper's notarization check fires on the
+`com.apple.quarantine` extended attribute, which browsers, Mail, and AirDrop apply — but
+`curl`, `git clone`, `dotnet tool install`, and `brew install` do not.
+
+The one path that does hit it is clicking a release `.tar.gz` on the GitHub Releases page:
+macOS quarantines it and you get *"cannot be opened because the developer cannot be
+verified"*. Clear the attribute after extracting:
+
+```sh
+xattr -dr com.apple.quarantine ./guardrails
+```
+
+macOS 15 removed the Control-click → Open bypass; the GUI route is now
+System Settings → Privacy & Security → **Open Anyway**.
 
 ## Quick Start
 
