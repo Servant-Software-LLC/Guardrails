@@ -137,6 +137,24 @@ them into `~/.claude/skills/` via `guardrails skills install` (no manual copy):
 
 ## From source (contributors)
 
+Requires the **.NET 8 SDK or newer** — `global.json` accepts any SDK from 8.0.100 up, so a
+current SDK is fine.
+
+The projects target `net8.0`, so `dotnet test` needs the **.NET 8 runtime** to launch the test
+host — a newer SDK alone is not enough, because .NET's default roll-forward policy does not cross
+a major version. If your machine has only a newer runtime, either install the .NET 8 runtime
+alongside it (they coexist), or opt into roll-forward for the session:
+
+```bash
+export DOTNET_ROLL_FORWARD=LatestMajor     # PowerShell: $env:DOTNET_ROLL_FORWARD = "LatestMajor"
+```
+
+That runs the `net8.0` test assemblies on your newer runtime. It is deliberately a local
+convenience rather than a repo setting — this repo pins its analyzer wave and locks its full
+transitive graph precisely so local and CI agree, and baking runtime roll-forward into
+`Directory.Build.props` would commit exactly the divergence that machinery exists to prevent.
+CI pins 8.0.x and remains the authority.
+
 Working on Guardrails itself, or want to try the bundled example end-to-end?
 
 ```bash
