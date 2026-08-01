@@ -65,3 +65,45 @@ jobs:
 
       - name: Smoke (pack → install → assert)
         run: .github/scripts/smoke-packaged-tool.sh
+
+  sdk-drift:
+    # ADVISORY early-warning leg — not a gate.
+    #
+    # `global.json` accepts any SDK >= 8.0.100 (rollForward: latestMajor), so a contributor on a
+    # current SDK compiles with a newer Roslyn and MSBuild than the pinned 8.0.x legs above.
+    # `AnalysisLevel 8.0` pins the SDK's CA analyzer wave but NOT the compiler's own warnings, and
+    # TreatWarningsAsErrors is on repo-wide — so a new diagnostic in a future SDK would break a
+    # contributor's very first build while every pinned leg stayed green. This job surfaces that
+    # here instead of in their terminal.
+    #
+    # It deliberately installs ONLY the newest SDK and sets DOTNET_ROLL_FORWARD, reproducing the
+    # modern-SDK-only contributor machine documented in the README. That makes this job the
+    # continuous proof that those README instructions still work.
+    #
+    # Restore runs WITHOUT --locked-mode here on purpose: this leg asks "does a newer SDK still
+    # build and pass?", not "is the committed graph byte-identical?" — the pinned legs above own
+    # that question and remain the authority.
+    #
+    # continue-on-error: a new SDK wave is not a code defect and must not block a PR. A red box
+    # here means "open an issue", not "fix this PR".
+    #
+    # Bump dotnet-version when a new major ships — setup-dotnet has no floating "latest".
+    name: sdk drift (newest SDK only, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      DOTNET_ROLL_FORWARD: LatestMajor
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup .NET (newest major only — no 8.0 runtime present)
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+      - name: Report resolved SDK
+        run: dotnet --info
+      - name: Build
+        run: dotnet build Guardrails.sln --configuration Release
+      - name: Test (Core)
+        run: dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --configuration Release --no-build
+      - name: Test (Integration)
+        run: dotnet test tests/Guardrails.Integration.Tests/Guardrails.Integration.Tests.csproj --configuration Release --no-build
