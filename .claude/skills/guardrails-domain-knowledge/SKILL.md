@@ -722,7 +722,7 @@ total order driven by the wave folder's numeric prefix.
 ## Status (update as milestones complete)
 
 - M1 Foundations: **complete** (docs + golden example committed).
-- M2 Walking skeleton: **complete**. Solution (`Guardrails.Core`/`.Cli`, net8.0 dotnet
+- M2 Walking skeleton: **complete**. Solution (`Guardrails.Core`/`.Cli`, net10.0 dotnet
   tool), `PlanLoader`/`PlanValidator` with precise diagnostic codes (GR10xx loading,
   GR20xx validation), `InterpreterMap` (SSOT section 5.2, injectable PATH probe),
   `ProcessRunner` (ArgumentList, tree-kill timeout), `SerialExecutor` (serial, ordinal

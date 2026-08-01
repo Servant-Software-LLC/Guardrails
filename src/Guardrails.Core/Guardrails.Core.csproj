@@ -3,7 +3,7 @@
   <!-- Build policy (ImplicitUsings, Nullable, TreatWarningsAsErrors, analyzer/restore
        determinism) is centralised in the repo-root Directory.Build.props. -->
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>

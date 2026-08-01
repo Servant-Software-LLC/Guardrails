@@ -47,6 +47,9 @@ class Guardrails < Formula
   end
 
   test do
-    assert_match "guardrails", shell_output("#{bin}/guardrails --version")
+    # `guardrails --version` prints the BARE version (e.g. "1.0.0-preview.48"), not the tool
+    # name — asserting on "guardrails" here could never match. Pin it to the formula's own
+    # version so `brew test` proves the installed binary is the one this formula declares.
+    assert_match version.to_s, shell_output("#{bin}/guardrails --version")
   end
 end

@@ -96,6 +96,68 @@ public sealed class ReviewMarkerCliTests
         Assert.DoesNotContain(DiagnosticCodes.ReviewMarkerMissingOrStale, quiet);
     }
 
+    // ── #410: the printed remediation must be one the EMITTING command accepts ───────────────────
+
+    [Fact]
+    public async Task Validate_Unreviewed_DoesNotRecommendTheRunOnlyFlag()
+    {
+        // The reported bug: `validate` was the FIRST output a user saw on a fresh plan folder, and it
+        // told them to pass `--skip-review-check` — an option that exists only on `run`. Following the
+        // instruction produced "Unrecognized command or argument '--skip-review-check'", exit 1.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeAsync("validate", plan.PlanDir);
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, output);
+        Assert.DoesNotContain("--skip-review-check", output);
+        Assert.Contains("mark-reviewed", output);   // the remedy `validate` genuinely has
+    }
+
+    [Fact]
+    public async Task Validate_StillRejectsSkipReviewCheck_WhichIsWhyItMustNotSuggestIt()
+    {
+        // Pins the OTHER half of #410: the flag really is `run`-only. If someone later adds it to
+        // `validate` as a no-op alias, this test fails and the wording decision gets revisited
+        // deliberately rather than drifting back.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, _) = await InvokeAsync("validate", plan.PlanDir, "--skip-review-check");
+
+        Assert.NotEqual(ExitCodes.Success, exit);
+    }
+
+    [Fact]
+    public async Task Run_Unreviewed_RecommendsSkipReviewCheck_AndRunAcceptsIt()
+    {
+        // The positive twin: on `run` the flag suggestion is correct, and the suggested command works.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+
+        (int exit, string output) = await InvokeAsync("run", plan.PlanDir, "--no-ui");
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains("--skip-review-check", output);
+
+        (int followed, string quiet) = await InvokeAsync("run", plan.PlanDir, "--no-ui", "--skip-review-check");
+        Assert.Equal(ExitCodes.Success, followed);
+        Assert.DoesNotContain(DiagnosticCodes.ReviewMarkerMissingOrStale, quiet);
+    }
+
+    [Fact]
+    public async Task Validate_StaleMarker_AlsoAvoidsTheRunOnlyFlag()
+    {
+        // Both warn states shared the one bad string, so both need pinning.
+        using var plan = new ScriptPlanBuilder().AddTask("01-first");
+        await InvokeAsync("mark-reviewed", plan.PlanDir);
+        plan.AddTask("02-second");   // re-stales the marker
+
+        (int exit, string output) = await InvokeAsync("validate", plan.PlanDir);
+
+        Assert.Equal(ExitCodes.Success, exit);
+        Assert.Contains(DiagnosticCodes.ReviewMarkerMissingOrStale, output);
+        Assert.Contains("changed since", output);
+        Assert.DoesNotContain("--skip-review-check", output);
+    }
+
     // ── mark-reviewed (the writer, issue #131) ──────────────────────────────────────────────────
 
     [Fact]

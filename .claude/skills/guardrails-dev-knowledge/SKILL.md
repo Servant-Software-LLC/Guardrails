@@ -16,8 +16,8 @@ description: |
 ## Solution layout
 
 ```
-Guardrails.sln                  # classic .sln (NOT .slnx — CI's .NET 8 SDK can't read it)
-global.json                     # pins SDK 8.0.100, rollForward latestFeature — local == CI
+Guardrails.sln                  # classic .sln (NOT .slnx — kept for tooling compatibility)
+global.json                     # floor SDK 10.0.100, rollForward latestMajor — local == CI
 src/Guardrails.Core/            # Model, Loading, Graph, Execution, State, Journal, Prompts — NO UI deps
 src/Guardrails.Cli/             # the dotnet tool: PackAsTool, ToolCommandName=guardrails
 tests/Guardrails.Core.Tests/    # unit — fake runners/probes, TestData fixture folders
@@ -26,8 +26,10 @@ examples/hello-guardrails/      # golden example: runnable demo + acceptance fix
 .github/workflows/ci.yml        # 3-OS matrix: windows/ubuntu/macos-latest
 ```
 
-TFM `net8.0` everywhere; CLI has `<RollForward>LatestMajor</RollForward>`.
-`TreatWarningsAsErrors` everywhere. NuGet: System.CommandLine 2.0.9 (GA API:
+TFM `net10.0` everywhere (retargeted from `net8.0` in #417 — .NET 8 LTS ends Nov 2026);
+CLI has `<RollForward>LatestMajor</RollForward>`, which future-proofs against .NET 11+.
+`TreatWarningsAsErrors` everywhere, with the SDK analyzer wave pinned at `AnalysisLevel 10.0`
+in `Directory.Build.props`. NuGet: System.CommandLine 2.0.9 (GA API:
 `SetAction`/`GetRequiredValue`), Spectre.Console (CLI only, behind `IRunObserver`),
 YamlDotNet (Core, frontmatter), xunit.v3.
 
@@ -62,7 +64,7 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   as `Content` with `CopyToOutputDirectory=PreserveNewest` and a
   `<Link>skills\<name>\%(RecursiveDir)…</Link>`. They land in the build output under
   `skills/` AND — because the dotnet-tool packer sweeps copy-to-output content — inside the
-  nupkg at `tools/net8.0/any/skills/...`, i.e. next to the entry assembly
+  nupkg at `tools/net10.0/any/skills/...`, i.e. next to the entry assembly
   (`AppContext.BaseDirectory`) for the installed global tool. **Do NOT add explicit
   `Pack=true`/`PackagePath` on those items** — the packer already includes them, so doing so
   duplicates the path and trips NU5118 (warning-as-error). `guardrails skills install` reads

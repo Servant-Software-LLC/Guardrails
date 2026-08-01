@@ -20,12 +20,15 @@
          shipping. This is only safe alongside a DETERMINISTIC analyzer set (see below). -->
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-    <!-- Pin the SDK code-quality analyzer wave to the 8.0 band so an SDK roll-forward cannot
-         silently introduce new diagnostics that break a previously-green build.
+    <!-- Pin the SDK code-quality analyzer wave to the 10.0 band so an SDK roll-forward cannot
+         silently introduce new diagnostics that break a previously-green build. Moved 8.0 -> 10.0
+         with the net10.0 retarget (#417): the two are independent knobs, but the retarget was
+         measured first and the 9.x + 10.x analyzer waves produced ZERO new diagnostics here, so
+         holding at 8.0 would have pinned the repo to a stale band for no benefit.
          Note: this pins only SDK-shipped CA-rule analyzers (Microsoft.CodeAnalysis.NetAnalyzers).
          Third-party NuGet-shipped analyzers such as xunit.analyzers are not affected by
          AnalysisLevel — those are pinned by the packages.lock.json files below. -->
-    <AnalysisLevel>8.0</AnalysisLevel>
+    <AnalysisLevel>10.0</AnalysisLevel>
 
     <!-- Deterministic restore: lock the FULL transitive NuGet graph (including analyzer packages
          such as xunit.analyzers, which is what turns warnings on) into a committed

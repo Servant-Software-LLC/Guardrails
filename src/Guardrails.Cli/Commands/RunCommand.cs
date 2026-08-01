@@ -815,7 +815,8 @@ public static class RunCommand
             return;
         }
 
-        if (Core.Loading.PlanValidator.ReviewMarkerDiagnostic(plan) is { } nudge)
+        if (Core.Loading.PlanValidator.ReviewMarkerDiagnostic(
+                plan, Core.Review.ReviewNudgeSurface.Run) is { } nudge)
         {
             io.Out.WriteLine(nudge.ToString());
             io.Out.WriteLine();

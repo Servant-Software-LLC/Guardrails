@@ -76,11 +76,18 @@ public sealed class PlanValidator
     /// validation, and keeps the check a deliberate command-layer concern). The <c>validate</c> and
     /// <c>run</c> CLI commands call THIS to surface the same warning; both reuse the one deterministic
     /// <see cref="Review.ReviewMarker.Evaluate"/> computation. Returns null when freshly reviewed.
+    ///
+    /// <para><paramref name="surface"/> is REQUIRED (no default) on purpose: issue #410 was exactly a
+    /// caller silently inheriting the other command's remediation, printing a <c>--skip-review-check</c>
+    /// suggestion that <c>validate</c> rejects. Making every call site name its surface means a new
+    /// caller cannot re-introduce that by omission.</para>
     /// </summary>
-    public static Diagnostic? ReviewMarkerDiagnostic(PlanDefinition plan)
+    /// <param name="plan">The plan whose review marker is evaluated.</param>
+    /// <param name="surface">The command emitting the nudge; selects the remediation clause.</param>
+    public static Diagnostic? ReviewMarkerDiagnostic(PlanDefinition plan, Review.ReviewNudgeSurface surface)
     {
         Review.ReviewEvaluation evaluation = Review.ReviewMarker.Evaluate(plan);
-        return evaluation.ShouldWarn && evaluation.NudgeMessage is { } message
+        return evaluation.ShouldWarn && evaluation.NudgeMessage(surface) is { } message
             ? Warning(DiagnosticCodes.ReviewMarkerMissingOrStale, plan.PlanDirectory, message)
             : null;
     }

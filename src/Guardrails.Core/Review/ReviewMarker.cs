@@ -222,6 +222,24 @@ public enum ReviewState
 }
 
 /// <summary>
+/// Which command surface is emitting the review nudge. It selects the REMEDIATION clause, because the
+/// two surfaces do not offer the same escape hatch: <c>--skip-review-check</c> exists only on
+/// <c>run</c>, so telling a <c>validate</c> user to pass it printed an instruction that errors with
+/// "Unrecognized command or argument" when followed (issue #410).
+/// </summary>
+public enum ReviewNudgeSurface
+{
+    /// <summary>
+    /// <c>guardrails validate</c>. Advisory only — the warning never fails the command, so there is
+    /// nothing to suppress and no <c>--skip-review-check</c> flag to offer.
+    /// </summary>
+    Validate,
+
+    /// <summary><c>guardrails run</c>, whose pre-flight nudge IS suppressible with <c>--skip-review-check</c>.</summary>
+    Run
+}
+
+/// <summary>
 /// The result of <see cref="ReviewMarker.Evaluate"/>: the <see cref="State"/> plus the reviewed and
 /// current <c>sha256:</c> hashes (short forms are surfaced in the GR2025 warning / run nudge).
 /// </summary>
@@ -237,15 +255,32 @@ public readonly record struct ReviewEvaluation(ReviewState State, string? Review
     /// The one-line, human-actionable nudge for <see cref="ShouldWarn"/> states (shared by the GR2025
     /// validate warning and the run pre-flight nudge), or null when freshly reviewed. Names the
     /// reviewed-vs-current short hash on a stale plan so the change is visible.
+    ///
+    /// <para>The DIAGNOSIS half is identical on both surfaces; only the remediation differs, because
+    /// only <c>run</c> has a <c>--skip-review-check</c> flag (issue #410 — the shared string used to
+    /// recommend that flag to <c>validate</c> users, whose shell then rejected it).</para>
     /// </summary>
-    public string? NudgeMessage => State switch
+    /// <param name="surface">The command emitting the nudge; selects the remediation clause.</param>
+    public string? NudgeMessage(ReviewNudgeSurface surface) => State switch
     {
         ReviewState.Missing =>
-            "this plan hasn't been through /guardrails-review — run it, or pass --skip-review-check to proceed.",
+            $"this plan hasn't been through /guardrails-review — run it{Remedy(surface)}",
         ReviewState.Stale =>
             $"this plan has changed since /guardrails-review (reviewed {Short(ReviewedHash)}, now {Short(CurrentHash)}) — " +
-            "re-run /guardrails-review, or pass --skip-review-check to proceed.",
+            $"re-run it{Remedy(surface)}",
         _ => null
+    };
+
+    /// <summary>
+    /// The surface-specific remediation tail. <c>run</c> keeps the suppression flag it actually has;
+    /// <c>validate</c> is pointed at the real remedy instead — <c>guardrails mark-reviewed</c>, the
+    /// writer half that clears GR2025 — plus the fact that this warning does not fail the command,
+    /// so there is nothing to suppress in the first place.
+    /// </summary>
+    private static string Remedy(ReviewNudgeSurface surface) => surface switch
+    {
+        ReviewNudgeSurface.Run => ", or pass --skip-review-check to proceed.",
+        _ => ", then record it with `guardrails mark-reviewed`. This warning is advisory — validate still succeeds."
     };
 
     /// <summary>A short, display-friendly form of a <c>sha256:</c> hash (the first 12 hex chars).</summary>
