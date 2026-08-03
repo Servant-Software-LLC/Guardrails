@@ -219,19 +219,29 @@ decision (issue #275) and is deliberately NOT done here.
   MAX_PATH (260) **regardless of `LongPathsEnabled`**, so `dotnet test`'s out-of-process test-exe launch
   fails (Win32 206) when the built `…\bin\…\<assembly>.exe` path is deep; a segment cwd of `C:\.a\…` keeps
   it short — MSBuild/`Path.GetFullPath` leave the reparse point intact, so the build output stays under the
-  short alias. **Resume:** `git worktree add` **canonicalizes** the junction back to the real path in its
-  OWN registrations, so the chosen link exists nowhere in git — it is recorded in the run journal
-  (`run.json`'s optional `worktreeJunctionRoot`, §7) as the SOLE durable record. A resume RESTORES that
-  exact link before any git worktree op: recreate if missing, reuse if it already junctions to the real
-  root, and **hard-fail** (`could not restore worktree junction <link>; it points elsewhere — is another
-  run active?`) if it points to a different target (a concurrency collision). Because git stores real
-  paths, PRUNE / `--fresh` teardown key on the **real** root (git-authoritative) unchanged — only the
-  junction LINK is removed, via `Directory.Delete(link, recursive:false)` (removes the reparse point ONLY,
-  never the target's contents; guarded so a non-reparse-point path is never touched — the data-loss guard).
-  The link is torn down at the authoritative full-worktree teardown (RunReset `--fresh` / `reset -y`) and
-  **reused across normal runs / halts** (a halt/needs-human keeps it for resume, exactly like the plan
-  branch + integration worktree), so the readable `<drive>:\.a\<runId>\<task>\attempt-N` folders stay
-  browsable between runs. **Graceful fallback:** if the junction cannot be created for ANY reason (a
+  short alias. **The link is a PROCESS-SCOPED ALIAS, not run state (issue #419).** `git worktree add`
+  **canonicalizes** the junction back to the real path in its OWN registrations, so the chosen link exists
+  nowhere in git — and because the deterministic segment subpath (`<root>/<runId>/<taskId>/attempt-N`)
+  resolves to the SAME physical tree under ANY letter that junctions to the real root, a resume does **not**
+  need the same `.a`…`.z` letter. So the link is **NOT journaled**: each run ALLOCATES A FRESH first-free
+  letter, and a `WorktreeJunctionLifetime` **releases it on every recoverable process exit** — the run's
+  `finally`/`using`, plus `AppDomain.ProcessExit`, `Console.CancelKeyPress`, and
+  `PosixSignalRegistration` for SIGINT/SIGTERM — under an `Interlocked` at-most-once guard (so the Ctrl-C
+  double-fire is safe) and an `IsJunctionTo` target guard (so a link a successor run has re-pointed is never
+  removed). **Resume** simply allocates its own free letter and re-derives the segments; the reused
+  integration worktree — which git reports at its REAL (long) path — is **RE-ALIASED** onto the fresh
+  junction so the terminal-gate / union-reverify cwd stays short exactly like a fresh run's. Because git
+  stores real paths, PRUNE / `--fresh` teardown key on the **real** root (git-authoritative) unchanged —
+  `--fresh` finds THIS plan's link by sweeping the drive-root `.a`…`.z` for a junction whose target is the
+  plan's real root and removes it link-only, via `Directory.Delete(link, recursive:false)` (removes the
+  reparse point ONLY, never the target's contents; guarded so a non-reparse-point path is never touched —
+  the data-loss guard). **The bound (never an absolute):** the live-junction count is ≤ the number of
+  concurrently-running guardrails processes (normally 1) — exhaustion is structurally impossible; a hard
+  kill (SIGKILL / power loss) that runs none of the handlers leaks AT MOST ONE link, reclaimed by the
+  startup GC. The **worktree ROOT is NOT process-scoped** (a resumable outcome needs it): it is reclaimed
+  by the terminal-completion cleanup (A, on a wholly-green delivered run) and by the GC — which now ALSO
+  runs a count-capped root-only sweep at the run's EXIT path, so a session's last run reclaims its
+  abandoned roots on the way out. **Graceful fallback:** if the junction cannot be created for ANY reason (a
   locked-down `<drive>:\` ACL, a non-NTFS or sandboxed root, all 26 names taken), the harness logs a note
   and falls back to the real (non-junction) root — the run proceeds exactly as without the feature, relying
   on the short default + GR2038 backstop. The junction is an optimization that must never block an
@@ -257,7 +267,8 @@ decision (issue #275) and is deliberately NOT done here.
   which Windows `LongPathsEnabled` does **not** prevent (it does not lift CreateProcess's application-name
   ceiling), so a short root is the durable fix. Remedy the diagnostic points at: set
   `GUARDRAILS_WORKTREE_ROOT` to a short path (e.g. `C:\gw`). Non-Windows and serial / in-place
-  (non-worktree) mode are a no-op.
+  (non-worktree) mode are a no-op. On **resume** the reused integration worktree is re-aliased to the fresh
+  junction (issue #419), so its effective cwd is measured short exactly like a fresh run's.
 - `mergeOnSuccess` (**default `true`, #340**) delivers the plan branch into the user's original
   branch at run end when the whole run goes green — so **"green" means "delivered."** **AI-merge is
   withheld at this boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts
@@ -1637,6 +1648,15 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
   "overheadCostUsd": 0.0123
 }
 ```
+
+**Removed field — `worktreeJunctionRoot` (issue #419).** Earlier revisions journaled the Windows
+short-junction root here (it was the field that made the junction durable RUN STATE — forcing a resume onto
+the same `.a`…`.z` letter and a sweep as the only reclaim, the #407/#419 leak). The junction is now a
+**process-scoped cwd alias** (§2): allocated fresh per run, released on every recoverable exit, and
+re-derived by the deterministic segment subpath on resume — so it is **no longer journaled**. `run.json`
+carries no such field; an OLD journal still containing `worktreeJunctionRoot` is **tolerated on read and
+ignored** (the reader has no `JsonUnmappedMemberHandling.Disallow`, so the unknown member is skipped — no
+migration needed).
 
 **Autonomous-mode `decisions[]` deltas (issue #361 Phase 3 — OPTIONAL, additive; `docs/plans/12-autonomous-mode.md`).**
 An unattended run records every judgment gate it auto-clears as a `decisions[]` entry. It **reuses the

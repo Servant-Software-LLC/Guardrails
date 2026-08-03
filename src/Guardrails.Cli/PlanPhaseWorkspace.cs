@@ -21,14 +21,22 @@ namespace Guardrails.Cli;
 /// </summary>
 internal static class PlanPhaseWorkspace
 {
-    public static string Resolve(PlanDefinition plan, CancellationToken cancellationToken)
+    /// <param name="junctionRoot">
+    /// The short Windows worktree JUNCTION root allocated for THIS run (issue #383/#419), or null. Passed to
+    /// the provider as the effective root so the adopted integration worktree's cwd is RE-ALIASED short — git
+    /// canonicalized the junction away, so <c>WorktreeForBranch</c> returns the real (long) path, and this
+    /// keeps the terminal-gate / plan-guardrail whole-repo cwd short on resume exactly like a fresh run's.
+    /// </param>
+    public static string Resolve(PlanDefinition plan, CancellationToken cancellationToken, string? junctionRoot = null)
     {
         if (!SchedulerFactory.WouldUseWorktreeMode(plan))
         {
             return plan.Workspace;
         }
 
-        var worktreeProvider = new GitWorktreeProvider(plan.Workspace, SchedulerFactory.WorktreeRootFor(plan));
+        string realRoot = SchedulerFactory.WorktreeRootFor(plan);
+        string effectiveRoot = junctionRoot is { Length: > 0 } link ? link : realRoot;
+        var worktreeProvider = new GitWorktreeProvider(plan.Workspace, effectiveRoot, realRoot);
         string runId = Guid.NewGuid().ToString("N")[..8];
         IntegrationHandle integ = worktreeProvider.CreateIntegration(
             planName: Path.GetFileName(plan.PlanDirectory),

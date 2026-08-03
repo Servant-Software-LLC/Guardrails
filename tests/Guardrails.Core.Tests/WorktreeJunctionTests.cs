@@ -199,99 +199,61 @@ public sealed class WorktreeJunctionTests : IDisposable
         Assert.True(File.Exists(Path.Combine(target, "file.txt"))); // target intact
     }
 
-    // ── ResolveForRun: fresh allocate / resume restore / mismatch / fallback ──────────────────
+    // ── ResolveForRun: FRESH allocate / skip-foreign / fallback (#419 — no resume restore) ────────
 
     [Fact]
-    public void ResolveForRun_Fresh_AllocatesJunctionAndReturnsRecordRoot()
+    public void ResolveForRun_Fresh_AllocatesJunction()
     {
         string realRoot = Path.Combine(_root, "realroot");
         string baseDir = Path.Combine(_root, "base");
 
-        WorktreeJunction.JunctionResolution r =
-            WorktreeJunction.ResolveForRun(realRoot, recordedRoot: null, baseDir, TextWriter.Null);
+        string effective = WorktreeJunction.ResolveForRun(realRoot, baseDir, TextWriter.Null);
 
-        Assert.Null(r.RestoreError);
         if (!OperatingSystem.IsWindows())
         {
-            // Non-Windows: junctions are a no-op; the effective root is the real root, nothing recorded.
-            Assert.Equal(realRoot, r.EffectiveRoot);
-            Assert.Null(r.RecordRoot);
+            // Non-Windows: junctions are a no-op; the effective root is the real root.
+            Assert.Equal(realRoot, effective);
             return;
         }
 
-        Assert.Equal(Track(r.EffectiveRoot), r.RecordRoot);          // the chosen link is recorded for resume
-        Assert.Equal(".a", Path.GetFileName(r.EffectiveRoot));
-        Assert.True(WorktreeJunction.IsJunctionTo(r.EffectiveRoot, realRoot));
+        Track(effective);
+        Assert.Equal(".a", Path.GetFileName(effective));
+        Assert.True(WorktreeJunction.IsJunctionTo(effective, realRoot));
     }
 
     [Fact]
-    public void ResolveForRun_Resume_ReusesMatchingJunction_NoReRecord()
+    public void ResolveForRun_Fresh_ForeignDotA_AllocatesDotB()
     {
         if (!OperatingSystem.IsWindows())
         {
             return;
         }
 
-        string realRoot = Path.Combine(_root, "realroot");
-        string link = Path.Combine(_root, "base", ".a");
-        Assert.True(TrackCreate(link, realRoot));
-
-        WorktreeJunction.JunctionResolution r =
-            WorktreeJunction.ResolveForRun(realRoot, recordedRoot: link, Path.Combine(_root, "base"), TextWriter.Null);
-
-        Assert.Null(r.RestoreError);
-        Assert.Equal(link, r.EffectiveRoot);
-        Assert.Null(r.RecordRoot); // already recorded — nothing to re-persist
-    }
-
-    [Fact]
-    public void ResolveForRun_Resume_MissingJunction_Recreates()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
-        string realRoot = Path.Combine(_root, "realroot");
-        string link = Track(Path.Combine(_root, "base", ".a"))!; // recorded but NOT on disk
-
-        WorktreeJunction.JunctionResolution r =
-            WorktreeJunction.ResolveForRun(realRoot, recordedRoot: link, Path.Combine(_root, "base"), TextWriter.Null);
-
-        Assert.Null(r.RestoreError);
-        Assert.Equal(link, r.EffectiveRoot);
-        Assert.True(WorktreeJunction.IsJunctionTo(link, realRoot));
-    }
-
-    [Fact]
-    public void ResolveForRun_Resume_MismatchedJunction_HardFails()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-
+        // #419: EVERY run allocates fresh — a foreign .a (a concurrent run's link to another target) is
+        // skipped to the next free letter. This first-free allocation is the collision-safety that REPLACES
+        // the removed same-letter-restore hard-fail: no resume can ever be dropped into another run's tree.
         string realRoot = Path.Combine(_root, "realroot");
         string otherRoot = Path.Combine(_root, "otherroot");
-        string link = Path.Combine(_root, "base", ".a");
-        Assert.True(TrackCreate(link, otherRoot)); // the recorded link now points ELSEWHERE (a concurrent run)
+        string baseDir = Path.Combine(_root, "base");
+        string foreignA = Path.Combine(baseDir, ".a");
+        Track(foreignA);
+        Assert.True(WorktreeJunction.TryCreateJunction(foreignA, otherRoot)); // .a belongs to someone else
 
-        WorktreeJunction.JunctionResolution r =
-            WorktreeJunction.ResolveForRun(realRoot, recordedRoot: link, Path.Combine(_root, "base"), TextWriter.Null);
+        string effective = WorktreeJunction.ResolveForRun(realRoot, baseDir, TextWriter.Null);
+        Track(effective);
 
-        Assert.NotNull(r.RestoreError);
-        Assert.Contains("points elsewhere", r.RestoreError!, StringComparison.Ordinal);
-        Assert.Contains(link, r.RestoreError!, StringComparison.Ordinal);
-        Assert.Equal(realRoot, r.EffectiveRoot); // no junction adopted
+        Assert.Equal(".b", Path.GetFileName(effective));
+        Assert.True(WorktreeJunction.IsJunctionTo(effective, realRoot));
+        Assert.True(WorktreeJunction.IsJunctionTo(foreignA, otherRoot)); // the foreign link is untouched
     }
 
     [Fact]
-    public void ResolveForRun_Fresh_AllNamesTaken_FallsBackToRealRoot_NoRecord()
+    public void ResolveForRun_Fresh_AllNamesTaken_FallsBackToRealRoot()
     {
         // Graceful fallback: when a junction cannot be allocated (here: all 26 names are held by real dirs,
-        // simulating exhaustion / a locked-down root), the effective root is the REAL root and nothing is
-        // recorded — the run-config path is unchanged and the run proceeds (GR2038 backstop). Cross-OS: on
-        // non-Windows ResolveForRun short-circuits to the same real-root result.
+        // simulating exhaustion / a locked-down root), the effective root is the REAL root — the run-config
+        // path is unchanged and the run proceeds (GR2038 backstop). Cross-OS: on non-Windows ResolveForRun
+        // short-circuits to the same real-root result.
         string realRoot = Path.Combine(_root, "realroot");
         string baseDir = Path.Combine(_root, "base");
         Directory.CreateDirectory(baseDir);
@@ -300,12 +262,7 @@ public sealed class WorktreeJunctionTests : IDisposable
             Directory.CreateDirectory(Path.Combine(baseDir, leaf));
         }
 
-        WorktreeJunction.JunctionResolution r =
-            WorktreeJunction.ResolveForRun(realRoot, recordedRoot: null, baseDir, TextWriter.Null);
-
-        Assert.Null(r.RestoreError);
-        Assert.Equal(realRoot, r.EffectiveRoot);
-        Assert.Null(r.RecordRoot);
+        Assert.Equal(realRoot, WorktreeJunction.ResolveForRun(realRoot, baseDir, TextWriter.Null));
     }
 
     // ── #407 C: lazy / predictive junction creation ──────────────────────────────────────────
@@ -363,21 +320,18 @@ public sealed class WorktreeJunctionTests : IDisposable
     }
 
     [Fact]
-    public void ResolveForRun_Fresh_ShortRootWithHeadroom_SkipsJunction_NoRecord()
+    public void ResolveForRun_Fresh_ShortRootWithHeadroom_SkipsJunction()
     {
         // #407 C: a fresh run whose real root fits every task with margin creates NO junction — the effective
-        // root IS the real root and nothing is recorded. Cross-OS: non-Windows short-circuits to the same
-        // real-root result; Windows takes the lazy-skip branch BEFORE AllocateUnder (nothing is created, so
-        // no Windows gate is needed and no link needs tracking for cleanup).
+        // root IS the real root. Cross-OS: non-Windows short-circuits to the same real-root result; Windows
+        // takes the lazy-skip branch BEFORE AllocateUnder (nothing is created, so no Windows gate is needed).
         const string realRoot = @"C:\gw\abc12345";
         string baseDir = Path.Combine(_root, "base");
 
-        WorktreeJunction.JunctionResolution r = WorktreeJunction.ResolveForRun(
-            realRoot, recordedRoot: null, baseDir, TextWriter.Null, runId: "abcd1234", taskIds: ["01-a", "02-b"]);
+        string effective = WorktreeJunction.ResolveForRun(
+            realRoot, baseDir, TextWriter.Null, runId: "abcd1234", taskIds: ["01-a", "02-b"]);
 
-        Assert.Null(r.RestoreError);
-        Assert.Equal(realRoot, r.EffectiveRoot);
-        Assert.Null(r.RecordRoot);                       // nothing created ⇒ nothing to persist
+        Assert.Equal(realRoot, effective);
         Assert.False(Directory.Exists(Path.Combine(baseDir, ".a"))); // no junction allocated
     }
 
@@ -389,7 +343,7 @@ public sealed class WorktreeJunctionTests : IDisposable
             return;
         }
 
-        // A real root too long for a deep task → the lazy predicate CREATES the junction (allocates .a).
+        // A real root too long for a deep task → the lazy predicate CREATES a fresh junction (allocates .a).
         string realRoot = Path.Combine(_root, "realroot");
         string baseDir = Path.Combine(_root, "base");
         const string deepTask = "wave-03-classify-and-escalate/17-wire-classifier-into-executor";
@@ -397,71 +351,74 @@ public sealed class WorktreeJunctionTests : IDisposable
         // Self-validating precondition: this shape genuinely needs a junction (independent of temp length).
         Assert.True(WorktreeJunction.RealRootNeedsJunction(realRoot, "abcd1234", [deepTask]));
 
-        WorktreeJunction.JunctionResolution r = WorktreeJunction.ResolveForRun(
-            realRoot, recordedRoot: null, baseDir, TextWriter.Null, runId: "abcd1234", taskIds: [deepTask]);
-        Track(r.RecordRoot); // register the created link for LINK-FIRST cleanup
+        string effective = WorktreeJunction.ResolveForRun(
+            realRoot, baseDir, TextWriter.Null, runId: "abcd1234", taskIds: [deepTask]);
+        Track(effective); // register the created link for LINK-FIRST cleanup
 
-        Assert.Null(r.RestoreError);
-        Assert.Equal(".a", Path.GetFileName(r.EffectiveRoot));
-        Assert.Equal(r.EffectiveRoot, r.RecordRoot);
-        Assert.True(WorktreeJunction.IsJunctionTo(r.EffectiveRoot, realRoot));
+        Assert.Equal(".a", Path.GetFileName(effective));
+        Assert.True(WorktreeJunction.IsJunctionTo(effective, realRoot));
     }
 
-    // ── journal field: the sole durable record (git canonicalizes the junction away) ─────────
+    // ── RemoveJunctionsTo: --fresh tears down THIS plan's link with NO journal record (#419) ───────
 
     [Fact]
-    public void JournalDocument_WorktreeJunctionRoot_RoundTrips_AndIsOmittedWhenNull()
+    public void RemoveJunctionsTo_RemovesOnlyLinksToTarget_LinkOnly()
     {
-        var withRoot = new JournalDocument
+        if (!OperatingSystem.IsWindows())
         {
-            RunId = "r1", PlanHash = "sha256:abc", WorktreeJunctionRoot = @"C:\.a"
-        };
-        string json = JsonSerializer.Serialize(withRoot, JournalJson.Options);
-        Assert.Contains("worktreeJunctionRoot", json, StringComparison.Ordinal);
-        JournalDocument back = JsonSerializer.Deserialize<JournalDocument>(json, JournalJson.Options)!;
-        Assert.Equal(@"C:\.a", back.WorktreeJunctionRoot);
+            return;
+        }
 
-        // Additive/backward-compatible: absent (not null noise) when unset.
-        var without = new JournalDocument { RunId = "r2", PlanHash = "sha256:def" };
+        // #419: the junction is no longer journaled, so --fresh sweeps the drive-root candidates for a
+        // junction pointing at THIS plan's real root and removes it (link-only), leaving a link to a DIFFERENT
+        // target (a concurrent run / another plan) untouched.
+        string baseDir = Path.Combine(_root, "drive");
+        string target = Path.Combine(_root, "realroot");
+        string other = Path.Combine(_root, "otherroot");
+        File.WriteAllText(Path.Combine(Directory.CreateDirectory(target).FullName, "keep.txt"), "KEEP");
+
+        string toTargetA = Path.Combine(baseDir, ".a"); Track(toTargetA);
+        string toTargetB = Path.Combine(baseDir, ".b"); Track(toTargetB);
+        string toOther = Path.Combine(baseDir, ".c"); Track(toOther);
+        Assert.True(WorktreeJunction.TryCreateJunction(toTargetA, target));
+        Assert.True(WorktreeJunction.TryCreateJunction(toTargetB, target));
+        Assert.True(WorktreeJunction.TryCreateJunction(toOther, other));
+
+        WorktreeJunction.RemoveJunctionsTo(baseDir, target);
+
+        Assert.False(Directory.Exists(toTargetA)); // links to THIS target → removed
+        Assert.False(Directory.Exists(toTargetB));
+        Assert.True(WorktreeJunction.IsReparsePoint(toOther)); // a link to another target → untouched
+        Assert.Equal("KEEP", File.ReadAllText(Path.Combine(target, "keep.txt"))); // link-only, target intact
+    }
+
+    // ── journal back-compat: an OLD run.json carrying worktreeJunctionRoot deserializes clean (#419) ──
+
+    [Fact]
+    public void OldJournalWithWorktreeJunctionRoot_DeserializesClean_FieldIgnored()
+    {
+        // #419 removed the journal field. JournalJson sets no JsonUnmappedMemberHandling.Disallow (default =
+        // Skip), so an old run.json still carrying the key deserializes clean (the unknown member is skipped)
+        // and resumes with no migration — the whole point of the decouple's back-compat guarantee.
+        const string oldJournal =
+            """
+            {
+              "version": 1,
+              "runId": "r1",
+              "planHash": "sha256:abc",
+              "worktreeJunctionRoot": "C:\\.a",
+              "tasks": {}
+            }
+            """;
+
+        JournalDocument doc = JsonSerializer.Deserialize<JournalDocument>(oldJournal, JournalJson.Options)!;
+
+        Assert.Equal("r1", doc.RunId);
+        Assert.Equal("sha256:abc", doc.PlanHash);
+
+        // Round-trips WITHOUT re-emitting the retired key.
         Assert.DoesNotContain(
-            "worktreeJunctionRoot", JsonSerializer.Serialize(without, JournalJson.Options), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void RunJournal_RecordWorktreeJunctionRoot_PersistsAcrossReload()
-    {
-        string planDir = Path.Combine(_root, "plan");
-        Directory.CreateDirectory(planDir);
-        File.WriteAllText(Path.Combine(planDir, "guardrails.json"), """{ "version": 1 }""");
-        string taskDir = Path.Combine(planDir, "tasks", "01-task");
-        Directory.CreateDirectory(taskDir);
-        File.WriteAllText(Path.Combine(taskDir, "task.json"), """{ "description": "t", "dependsOn": [] }""");
-
-        var plan = new PlanDefinition
-        {
-            PlanDirectory = planDir,
-            Workspace = planDir,
-            Config = new RunConfig { Version = 1 },
-            Tasks =
-            [
-                new TaskNode
-                {
-                    Id = "01-task",
-                    Directory = taskDir,
-                    Description = "t",
-                    Action = new ActionDefinition { Path = Path.Combine(taskDir, "action.sh"), Kind = ActionKind.Script },
-                    Guardrails = [new GuardrailDefinition { Name = "01-check", Path = "x", Kind = ActionKind.Script }]
-                }
-            ]
-        };
-
-        RunJournal journal = RunJournal.LoadOrCreate(plan);
-        Assert.Null(journal.Document.WorktreeJunctionRoot); // absent on a fresh run
-
-        journal.RecordWorktreeJunctionRoot(@"C:\.a");
-
-        RunJournal reloaded = RunJournal.LoadOrCreate(plan);
-        Assert.Equal(@"C:\.a", reloaded.Document.WorktreeJunctionRoot); // survived the reload (resume record)
+            "worktreeJunctionRoot", JsonSerializer.Serialize(doc, JournalJson.Options), StringComparison.Ordinal);
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────

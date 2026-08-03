@@ -15,16 +15,28 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 {
     private readonly string _repoPath;
     private readonly string _worktreeRoot;
+    private readonly string _realRoot;
     private IntegrationHandle? _integration;
 
     // Saved before a non-FF --no-commit merge so RollbackMerge can reset --hard to this sha.
     // Safe as a field because Integrate is serialized by the Scheduler's _integrationLock.
     private string _preMergeIntegHead = "";
 
-    public GitWorktreeProvider(string repoPath, string worktreeRoot)
+    /// <param name="repoPath">The user's workspace repo (git top-level).</param>
+    /// <param name="worktreeRoot">The EFFECTIVE root segments/integration are built under — the short Windows junction when one is in effect (issue #383), else the real root.</param>
+    /// <param name="realRoot">
+    /// The REAL (git-canonical) worktree root (issue #419). git canonicalizes the junction away in its own
+    /// registrations, so <see cref="WorktreeForBranch"/> returns the real path even when this run launches
+    /// under the junction. On RESUME the reused integration worktree is adopted via that real path — so it
+    /// must be RE-ALIASED onto <paramref name="worktreeRoot"/> (<see cref="AliasForLaunch"/>) to keep the
+    /// terminal-gate / plan-guardrail / union-reverify cwd short. Null (or equal to
+    /// <paramref name="worktreeRoot"/>) ⇒ no junction ⇒ aliasing is the identity.
+    /// </param>
+    public GitWorktreeProvider(string repoPath, string worktreeRoot, string? realRoot = null)
     {
         _repoPath = repoPath;
         _worktreeRoot = worktreeRoot;
+        _realRoot = string.IsNullOrWhiteSpace(realRoot) ? worktreeRoot : realRoot;
     }
 
     /// <inheritdoc />
@@ -55,9 +67,14 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
         // Reuse an integration worktree already checked out on the plan branch (a prior run's,
         // surviving the journal reset) — git refuses to check the same branch out twice, so a
-        // resume must adopt the existing checkout rather than add a second one.
-        string integPath = WorktreeForBranch(_repoPath, planBranch)
-            ?? AddIntegrationWorktree(runId, planBranch);
+        // resume must adopt the existing checkout rather than add a second one. git canonicalized the
+        // junction away when the ORIGINAL run created it, so WorktreeForBranch returns the REAL (long) path
+        // — RE-ALIAS it onto this run's junction (issue #419) so the terminal-gate / union-reverify cwd
+        // stays short on resume. A fresh AddIntegrationWorktree already builds under _worktreeRoot (the
+        // junction), so it needs no aliasing.
+        string integPath = WorktreeForBranch(_repoPath, planBranch) is { } existing
+            ? AliasForLaunch(existing)
+            : AddIntegrationWorktree(runId, planBranch);
 
         _integration = new IntegrationHandle
         {
@@ -1464,6 +1481,39 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Re-alias a git-canonical (REAL-root) path onto this run's launch root (issue #419): map
+    /// <c>&lt;realRoot&gt;/…</c> → <c>&lt;worktreeRoot&gt;/…</c> so the reused integration worktree's cwd is the
+    /// SHORT junction on resume, matching a fresh run's. The IDENTITY when no junction is in effect
+    /// (<c>_realRoot == _worktreeRoot</c> — non-Windows or a lazy-skip / fallback run) or when
+    /// <paramref name="path"/> is not under the real root. Both roots are the harness's own worktree roots
+    /// (no user metacharacters); the comparison is full-path + case-insensitive, matching git's
+    /// letter-agnostic canonicalization on Windows.
+    /// </summary>
+    private string AliasForLaunch(string path)
+    {
+        if (WorktreeJunction.SamePath(_realRoot, _worktreeRoot))
+        {
+            return path; // no junction in effect — nothing to re-alias
+        }
+
+        string real = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_realRoot));
+        string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+
+        if (string.Equals(full, real, StringComparison.OrdinalIgnoreCase))
+        {
+            return _worktreeRoot;
+        }
+
+        string prefix = real + Path.DirectorySeparatorChar;
+        if (full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return Path.Combine(_worktreeRoot, full[prefix.Length..]);
+        }
+
+        return path; // not under the real root — leave as-is
     }
 
     /// <summary>Add a fresh integration worktree on <paramref name="planBranch"/> and return its path.</summary>

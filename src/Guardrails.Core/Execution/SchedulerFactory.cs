@@ -94,6 +94,13 @@ public static class SchedulerFactory
     /// that (verifying it still matches + a tip compare-and-swap). Null (the default) for <c>auto</c>
     /// (auto-resolves on its own fresh decision) and <c>halt</c> / an unconfirmed <c>prompt</c> (halts).
     /// </param>
+    /// <param name="junctionRoot">
+    /// The short Windows worktree JUNCTION root the CLI allocated for THIS run (issue #383/#419), or null
+    /// (non-Windows, a serial run, a lazy-skip, or a graceful no-junction fallback). It is a process-scoped
+    /// ALIAS threaded IN-MEMORY — no longer journaled (#419) — so the worktree provider builds segment/
+    /// integration cwds under it (short) while git canonicalizes it back to the real root in its own
+    /// registrations. Null ⇒ segments are built under the real <see cref="WorktreeRootFor"/> result.
+    /// </param>
     public static Scheduler Create(
         PlanDefinition plan,
         ProcessRunner processRunner,
@@ -102,7 +109,8 @@ public static class SchedulerFactory
         DriftAuthorization? driftAuthorization = null,
         IReadOnlySet<string>? waveDriftAuthorized = null,
         IOverwatchInteraction? overwatchInteraction = null,
-        IReadOnlyDictionary<string, bool>? breakdownConfirmations = null)
+        IReadOnlyDictionary<string, bool>? breakdownConfirmations = null,
+        string? junctionRoot = null)
     {
         (TaskExecutor executor, RunJournal journal) = CreateExecutor(plan, processRunner, probe, observer, overwatchInteraction);
 
@@ -136,7 +144,9 @@ public static class SchedulerFactory
             // the serial path does not construct it.
             PromptRunnerRegistry registry = PromptRunnerRegistry.FromConfig(plan.Config, processRunner);
 
-            worktreeProvider = new GitWorktreeProvider(plan.Workspace, EffectiveWorktreeRoot(plan, journal));
+            string realRoot = WorktreeRootFor(plan);
+            worktreeProvider = new GitWorktreeProvider(
+                plan.Workspace, EffectiveWorktreeRoot(plan, junctionRoot), realRoot);
 
             // Plan 08 §9.1 / defect #120-followup: the AI-merge worker is the conflict-resolution
             // path for a non-FF union. Without it the Scheduler's `_aiMergeWorker != null && …`
@@ -390,16 +400,17 @@ public static class SchedulerFactory
 
     /// <summary>
     /// The worktree root the <see cref="GitWorktreeProvider"/> builds segment/integration paths under: the
-    /// short Windows JUNCTION root recorded at run start (issue #383, <see cref="WorktreeJunction"/>) when
-    /// present, else the real <see cref="WorktreeRootFor"/> result. Segments created under the junction keep
-    /// their child-process cwd — and thus <c>dotnet test</c>'s built exe path — clear of Windows MAX_PATH.
-    /// git canonicalizes the junction back to the real path in its OWN worktree registrations, so PRUNE /
-    /// resume-teardown still key on the real root; only the FORWARD segment-creation path uses the junction
-    /// alias. The value is read from the run journal — the CLI resolves + records it before this runs (a
-    /// non-CLI caller, or a run that took the graceful no-junction fallback, simply gets the real root).
+    /// short Windows JUNCTION root the CLI allocated for THIS run (issue #383, <see cref="WorktreeJunction"/>)
+    /// when present, else the real <see cref="WorktreeRootFor"/> result. Segments created under the junction
+    /// keep their child-process cwd — and thus <c>dotnet test</c>'s built exe path — clear of Windows
+    /// MAX_PATH. git canonicalizes the junction back to the real path in its OWN worktree registrations, so
+    /// PRUNE / resume-teardown still key on the real root; only the FORWARD segment-creation path uses the
+    /// junction alias. The value is threaded IN-MEMORY from the CLI's run-start resolution (issue #419 — it
+    /// is no longer journaled); a non-CLI caller, or a run that took the graceful no-junction fallback,
+    /// passes null and simply gets the real root.
     /// </summary>
-    private static string EffectiveWorktreeRoot(PlanDefinition plan, RunJournal journal) =>
-        journal.Document.WorktreeJunctionRoot is { Length: > 0 } junctionRoot
-            ? junctionRoot
+    private static string EffectiveWorktreeRoot(PlanDefinition plan, string? junctionRoot) =>
+        junctionRoot is { Length: > 0 } link
+            ? link
             : WorktreeRootFor(plan);
 }

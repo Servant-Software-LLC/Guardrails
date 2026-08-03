@@ -216,6 +216,40 @@ public static class WorktreeReclaim
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort */ }
     }
 
+    /// <summary>
+    /// The default cap on how many stale roots the EXIT sweep (<see cref="ReclaimRootsOnExit"/>) reclaims in
+    /// one run — small so it never delays the visible exit. The rest are mopped up by the next run's startup
+    /// GC (<see cref="Reclaim"/>), so the two together still bound the accumulation.
+    /// </summary>
+    public const int ExitSweepCap = 16;
+
+    /// <summary>
+    /// Issue #419 — reclaim LEAKED worktree ROOTS at a run's EXIT path (the run's <c>finally</c>), so a
+    /// dogfood session's LAST run reclaims the session's abandoned roots ON ITS WAY OUT rather than leaving
+    /// them for a future run (the exact #408 gap — the startup GC B fires only at the START of a
+    /// worktree-mode run, so the final run of a session never swept). ROOT-ONLY (the junction LINK is
+    /// released by <see cref="WorktreeJunctionLifetime"/>), cross-OS, best-effort, and COUNT-CAPPED
+    /// (<paramref name="maxReclaims"/>, default <see cref="ExitSweepCap"/>) so it never delays exit. Safety
+    /// is identical to B: <paramref name="currentRealRoot"/> is EXCLUDED (this run's own root — kept for a
+    /// resumable outcome, and doubly protected by its still-live process lock since this process is alive in
+    /// its own finally), a live-locked or fresh (&lt; <see cref="StalenessThreshold"/>) tree is KEPT, and
+    /// only a STALE, unlocked, non-current root is reclaimed.
+    /// </summary>
+    public static void ReclaimRootsOnExit(
+        string workspace, string currentRealRoot, TextWriter log, int maxReclaims = ExitSweepCap)
+    {
+        DateTime cutoffUtc = DateTime.UtcNow - StalenessThreshold;
+        try
+        {
+            SweepRoots(
+                CandidateRootParents(currentRealRoot), workspace, currentRealRoot, cutoffUtc, log, maxReclaims);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort — a sweep hiccup never changes the run's verdict or exit code.
+        }
+    }
+
     private static void ReclaimStaleJunctions(
         string currentRealRoot, string? currentJunctionRoot, DateTime cutoffUtc, TextWriter log)
     {
@@ -285,10 +319,13 @@ public static class WorktreeReclaim
     /// a controlled temp parent — never the real <c>gr-wt</c> / <c>guardrails-worktrees</c> dirs. Cross-OS.
     /// </summary>
     internal static void SweepRoots(
-        IEnumerable<string> parents, string workspace, string? currentRealRoot, DateTime cutoffUtc, TextWriter log)
+        IEnumerable<string> parents, string workspace, string? currentRealRoot, DateTime cutoffUtc,
+        TextWriter log, int maxReclaims = int.MaxValue)
     {
+        int reclaimed = 0;
         foreach (string parent in parents)
         {
+            if (reclaimed >= maxReclaims) return;   // #419: honor the exit-sweep cap
             if (!Directory.Exists(parent)) continue;
 
             string[] children;
@@ -297,6 +334,7 @@ public static class WorktreeReclaim
 
             foreach (string root in children)
             {
+                if (reclaimed >= maxReclaims) return; // #419: stop once the cap is hit (never delay the exit)
                 try
                 {
                     // Never THIS run's root (a resume's root is legitimately old yet in-use).
@@ -306,6 +344,7 @@ public static class WorktreeReclaim
                     if (!TreeIsStale(root, cutoffUtc)) continue; // fresh → maybe active → KEEP
 
                     GitWorktreeProvider.RemoveWorktreeRoot(workspace, root);
+                    reclaimed++;
                     log.WriteLine(
                         $"[guardrails] GC: reclaimed leaked worktree root '{root}' "
                         + $"(idle > {StalenessThreshold.TotalHours:0}h, no live run) (issue #407 B).");

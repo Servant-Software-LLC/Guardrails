@@ -124,7 +124,13 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   - Fan-in: **forks one** upstream and merges the others in (union settle, SSOT section 5.3).
   Worktrees are created under a harness-owned root outside the workspace (default
   `<temp>/gr-wt/<hash>/<runId>/` — shortened for Windows MAX_PATH, #383; overridable via the
-  `GUARDRAILS_WORKTREE_ROOT` env var or `worktreeRoot` in `guardrails.json`). `maxParallelism` defaults to **3**. The user's checkout is **read-only
+  `GUARDRAILS_WORKTREE_ROOT` env var or `worktreeRoot` in `guardrails.json`). On **Windows** the harness may
+  additionally alias that root with a short `<drive>:\.a` **directory junction** for MAX_PATH (#383); that
+  junction is a **PROCESS-SCOPED cwd alias, not run state (#419)** — allocated fresh per run, released on
+  every recoverable exit (finally / ProcessExit / Ctrl-C / SIGINT-SIGTERM), and re-derived by the
+  deterministic segment subpath on resume (so it is never journaled; a hard-kill leaks ≤ 1 link, GC-reclaimed).
+  The worktree ROOT is not process-scoped — a resumable outcome keeps it (reclaimed by completion-cleanup +
+  the GC's exit sweep). `maxParallelism` defaults to **3**. The user's checkout is **read-only
   for the entire run**; the only optional write to the user's branch is `--merge-on-success`
   (AI-merge is withheld at that boundary).
 - **Runtime containment hook + stash safety (issues #199/#192, SSOT section 9.4):** the write-scope

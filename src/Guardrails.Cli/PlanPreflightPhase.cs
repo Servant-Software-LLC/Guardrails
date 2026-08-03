@@ -48,7 +48,8 @@ public static class PlanPreflightPhase
         RunJournal journal,
         ProcessRunner processRunner,
         TextWriter? heartbeatOut,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? junctionRoot = null)
     {
         if (plan.PlanPreflights.Count == 0)
         {
@@ -66,7 +67,7 @@ public static class PlanPreflightPhase
             return true;
         }
 
-        string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken);
+        string evalWorkspace = PlanPhaseWorkspace.Resolve(plan, cancellationToken, junctionRoot);
 
         var interpreterMap = InterpreterMap.CreateDefault(plan.Config);
         var reVerifier = new GuardrailReVerifier(processRunner, interpreterMap);
