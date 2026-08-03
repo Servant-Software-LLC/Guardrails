@@ -158,9 +158,16 @@ public static class WorktreeJunction
                 + $"(all {CandidateLeaves.Count} names are taken or creation was refused)");
         }
 
-        log.WriteLine(
-            $"[guardrails] worktree junction: '{chosen}' -> '{realRoot}' — a short root keeps build/test "
-            + "paths clear of Windows MAX_PATH (issue #383); released on exit (issue #419).");
+        // Best-effort (issue #419 review WEAK-1): the junction is already on disk but the caller's
+        // WorktreeJunctionLifetime does not hold it yet, so a throw HERE (e.g. a closed stdout pipe —
+        // `guardrails run | head`) would leak the link. Swallow the log fault; the link is returned + held.
+        try
+        {
+            log.WriteLine(
+                $"[guardrails] worktree junction: '{chosen}' -> '{realRoot}' — a short root keeps build/test "
+                + "paths clear of Windows MAX_PATH (issue #383); released on exit (issue #419).");
+        }
+        catch (IOException) { /* the caller still receives + lifetime-holds 'chosen' */ }
         return chosen;
     }
 
@@ -344,8 +351,8 @@ public static class WorktreeJunction
     {
         try
         {
-            string na = Path.TrimEndingDirectorySeparator(Path.GetFullPath(a));
-            string nb = Path.TrimEndingDirectorySeparator(Path.GetFullPath(b));
+            string na = Path.TrimEndingDirectorySeparator(Path.GetFullPath(StripDevicePrefix(a)));
+            string nb = Path.TrimEndingDirectorySeparator(Path.GetFullPath(StripDevicePrefix(b)));
             return string.Equals(na, nb, StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException)
@@ -353,6 +360,18 @@ public static class WorktreeJunction
             return false;
         }
     }
+
+    /// <summary>
+    /// Strip a Windows device prefix (<c>\??\</c> or <c>\\?\</c>) that <see cref="System.IO.DirectoryInfo.LinkTarget"/>
+    /// may surface for an <c>mklink /J</c> junction on some OS/runtime combinations (#419 review WEAK-4). Without
+    /// this, a prefixed target would fail <see cref="SamePath"/> — and since the process-scoped release keys the
+    /// ONLY reclaim on <see cref="IsJunctionTo"/>, a false negative there silently leaks the link (GC-backstop
+    /// only). Normalizing here makes the release robust across environments.
+    /// </summary>
+    private static string StripDevicePrefix(string path) =>
+        path.StartsWith(@"\??\", StringComparison.Ordinal) || path.StartsWith(@"\\?\", StringComparison.Ordinal)
+            ? path[4..]
+            : path;
 
     /// <summary>Log the graceful fallback (junction unavailable) and return the real root as the effective root.</summary>
     private static string Fallback(string realRoot, TextWriter log, string why)

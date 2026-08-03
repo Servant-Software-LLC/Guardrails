@@ -31,6 +31,15 @@ namespace Guardrails.Core.Execution;
 /// handler NEVER sets <c>e.Cancel</c> — it leaves the CLI's own graceful-cancellation handling untouched and
 /// only releases the link.
 /// </para>
+/// <para>
+/// <b>Precondition — distinct real roots (#419 review WEAK-3).</b> The target guard is non-destructive only
+/// across processes owning DIFFERENT real roots — the normal case, since each PlanDirectory hashes to its own
+/// root. Two CONCURRENT runs of the SAME plan share one real root and reuse one letter, so the first to exit
+/// releases the link under the second. That configuration is ALREADY unsupported independent of junctions
+/// (both adopt the same <c>guardrails/&lt;plan&gt;</c> integration worktree — git refuses a second checkout —
+/// and overwrite each other's run-lock), so this adds no new SUPPORTED hazard; do not rely on the guard for
+/// concurrent same-plan runs.
+/// </para>
 /// </summary>
 public sealed class WorktreeJunctionLifetime : IDisposable
 {
