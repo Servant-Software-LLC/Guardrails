@@ -89,18 +89,26 @@ public sealed class WorktreeJunctionReAliasTests : IDisposable
         // path unchanged. Cross-OS.
         var run1 = new GitWorktreeProvider(_repoPath, _realRoot); // realRoot == worktreeRoot ⇒ no junction
         IntegrationHandle integ1 = run1.CreateIntegration("plan-b", "run-1", CancellationToken.None);
-        Assert.StartsWith(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(_realRoot)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(integ1.IntegrationWorktreePath)),
-            StringComparison.OrdinalIgnoreCase);
+        AssertUnderRealRoot(integ1.IntegrationWorktreePath);
 
         var run2 = new GitWorktreeProvider(_repoPath, _realRoot);
         IntegrationHandle integ2 = run2.CreateIntegration("plan-b", "run-2", CancellationToken.None);
-        Assert.StartsWith(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(_realRoot)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(integ2.IntegrationWorktreePath)),
-            StringComparison.OrdinalIgnoreCase);
+        AssertUnderRealRoot(integ2.IntegrationWorktreePath);
     }
+
+    /// <summary>
+    /// Assert an integration path is under the real root, tolerating the macOS temp-dir symlink: git
+    /// canonicalizes <c>/var/folders/…</c> to <c>/private/var/folders/…</c>, so normalize a leading
+    /// <c>/private</c> on both sides before the prefix check. Linux/Windows are unaffected (no such prefix).
+    /// </summary>
+    private void AssertUnderRealRoot(string integrationPath) =>
+        Assert.StartsWith(
+            StripMacPrivate(Path.TrimEndingDirectorySeparator(Path.GetFullPath(_realRoot))),
+            StripMacPrivate(Path.TrimEndingDirectorySeparator(Path.GetFullPath(integrationPath))),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static string StripMacPrivate(string p) =>
+        p.StartsWith("/private/", StringComparison.Ordinal) ? p["/private".Length..] : p;
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────
 
