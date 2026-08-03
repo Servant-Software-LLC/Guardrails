@@ -15,15 +15,20 @@ namespace Guardrails.Core.Execution;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>git canonicalizes the junction away.</b> Empirically (git 2.53), <c>git worktree add</c> resolves a
-/// junction path back to its real target and stores the REAL long path in its own worktree registrations —
-/// so the chosen short link exists NOWHERE in git's records. Two consequences: (1) the junction cannot be
-/// re-derived from <c>git worktree list</c>, so the chosen link is recorded in the run journal
-/// (<see cref="Journal.JournalDocument.WorktreeJunctionRoot"/>) — the SOLE durable record that lets a
-/// resume restore the SAME link and lets <c>--fresh</c> tear it down; (2) PRUNE/teardown already key on the
-/// real root (git-authoritative), so only the FORWARD segment-creation path uses the junction alias. The
-/// junction functions exactly as the "child-process cwd only" short alias — which is precisely why the fix
-/// holds: the harness, not git, chooses the cwd string it launches build/test under.
+/// <b>git canonicalizes the junction away — so the link is a PROCESS-SCOPED ALIAS, never run state (issue
+/// #419).</b> Empirically (git 2.53), <c>git worktree add</c> resolves a junction path back to its real
+/// target and stores the REAL long path in its own worktree registrations — so the chosen short link exists
+/// NOWHERE in git's records. Two consequences: (1) PRUNE/teardown already key on the real root
+/// (git-authoritative), so only the FORWARD segment-creation path (the child-process cwd) uses the junction
+/// alias; (2) because the deterministic segment subpath (<c>&lt;root&gt;/&lt;runId&gt;/&lt;taskId&gt;/attempt-N</c>)
+/// resolves to the SAME physical tree under ANY letter that junctions to the real root, a resume does NOT
+/// need the same <c>.a</c>..<c>.z</c> letter. So the link is NOT journaled: each run ALLOCATES A FRESH
+/// first-free letter, and <see cref="WorktreeJunctionLifetime"/> RELEASES it on every recoverable process
+/// exit. The live-junction count therefore collapses to the number of concurrently-running processes
+/// (normally 1); a hard-kill that skips the release leaks at most ONE link, reclaimed by the startup GC
+/// (<see cref="WorktreeReclaim"/> B). The junction functions exactly as the "child-process cwd only" short
+/// alias — which is precisely why the fix holds: the harness, not git, chooses the cwd string it launches
+/// build/test under.
 /// </para>
 /// <para>
 /// <b>Safety.</b> Teardown removes the LINK ONLY — <see cref="RemoveJunctionLink"/> deletes a reparse point
@@ -98,70 +103,48 @@ public static class WorktreeJunction
     }
 
     /// <summary>
-    /// The result of <see cref="ResolveForRun"/> — the worktree root the run should use, the value (if any)
-    /// to persist for resume, and a resume-restore hard-failure message (if any).
-    /// </summary>
-    public sealed record JunctionResolution
-    {
-        /// <summary>The worktree root the run should actually use: the short junction path when one was created/restored, else the real root (fallback / non-Windows). Never null.</summary>
-        public required string EffectiveRoot { get; init; }
-
-        /// <summary>The value to PERSIST via <see cref="Journal.RunJournal.RecordWorktreeJunctionRoot"/>, or null to leave the record unchanged (a restore-reuse/recreate, or a fallback).</summary>
-        public string? RecordRoot { get; init; }
-
-        /// <summary>Non-null ⇒ a resume-restore HARD FAILURE (the recorded junction points elsewhere): the CLI halts the run with this message rather than dropping this run's segments into another run's tree.</summary>
-        public string? RestoreError { get; init; }
-    }
-
-    /// <summary>
-    /// Resolve the run's effective worktree root (Windows worktree mode). On a FRESH run (no recorded
-    /// junction) allocate the first-free <c>&lt;baseDir&gt;\.a</c>..<c>\.z</c> junction to
-    /// <paramref name="realRoot"/> and return it as both the effective root and the value to record. On a
-    /// RESUME (<paramref name="recordedRoot"/> set) restore that SPECIFIC link: recreate it if missing,
-    /// reuse it if it already junctions to <paramref name="realRoot"/>, and HARD-FAIL (via
-    /// <see cref="JunctionResolution.RestoreError"/>) if it exists but points elsewhere. Any junction
-    /// creation failure (locked-down root ACL, non-NTFS, sandbox) degrades GRACEFULLY to the real root —
-    /// the run proceeds, relying on the short default + GR2038 backstop; the junction is an optimization
-    /// that must never block an otherwise-workable run.
+    /// Resolve the run's effective worktree root (Windows worktree mode), ALLOCATING A FRESH junction every
+    /// run (issue #419 — the link is a process-scoped alias, never resume state). Returns the first-free
+    /// <c>&lt;baseDir&gt;\.a</c>..<c>\.z</c> junction to <paramref name="realRoot"/> when one is created, else
+    /// <paramref name="realRoot"/> itself (non-Windows, the #407 C lazy-skip, or a graceful create failure).
+    /// The caller detects "a junction was created" by <c>result != realRoot</c> and constructs a
+    /// <see cref="WorktreeJunctionLifetime"/> to release it on exit. There is NO resume restore and NO
+    /// same-letter reuse: a resume just allocates its own free letter, and the deterministic segment subpath
+    /// resolves the SAME tree under it (git canonicalized the junction away). Any junction creation failure
+    /// (locked-down root ACL, non-NTFS, sandbox) degrades GRACEFULLY to the real root — the run proceeds,
+    /// relying on the short default + GR2038 backstop; the junction is an optimization that must never block
+    /// an otherwise-workable run.
     /// </summary>
     /// <param name="realRoot">The real worktree root (<see cref="SchedulerFactory.WorktreeRootFor"/>): the env/config/short-default result and the junction's target.</param>
-    /// <param name="recordedRoot">The junction root recorded by a prior run (resume), or null for a fresh run.</param>
     /// <param name="baseDir">The directory the short link is allocated under — the drive root in production (<c>Path.GetPathRoot(realRoot)</c>); a temp dir in tests.</param>
-    /// <param name="log">Best-effort operator log (a one-line note on create/restore/fallback).</param>
+    /// <param name="log">Best-effort operator log (a one-line note on create/skip/fallback).</param>
     /// <param name="runId">The run id (issue #407 C — the lazy-creation predicate's segment shape); null skips the lazy decision (always create).</param>
     /// <param name="taskIds">The run's task ids (issue #407 C); null/absent skips the lazy decision — err toward CREATING when the run shape is unknown.</param>
-    public static JunctionResolution ResolveForRun(
-        string realRoot, string? recordedRoot, string baseDir, TextWriter log,
+    public static string ResolveForRun(
+        string realRoot, string baseDir, TextWriter log,
         string? runId = null, IReadOnlyCollection<string>? taskIds = null)
     {
         // Junctions are a Windows-only optimization; elsewhere the effective root is the real root.
         if (!OperatingSystem.IsWindows())
         {
-            return new JunctionResolution { EffectiveRoot = realRoot };
+            return realRoot;
         }
 
-        // RESUME: restore the SPECIFIC link a prior run chose (git canonicalizes it away, so it is knowable
-        // only from the journal — it cannot be re-derived). A recorded junction is honored regardless of the
-        // lazy predicate: the run already committed to it, its segments already live under it.
-        if (!string.IsNullOrWhiteSpace(recordedRoot))
-        {
-            return RestoreRecorded(recordedRoot.Trim(), realRoot, log);
-        }
-
-        // FRESH + issue #407 C (lazy / predictive creation): most runs' real root already clears MAX_PATH
-        // with room to spare, so creating a junction just adds churn (the #407 leak). Only create one when a
-        // segment path under the real root would be at risk. Err toward CREATING when the run shape is
-        // unknown (null runId/taskIds) — a false negative is a MAX_PATH halt, not a leak.
+        // Issue #407 C (lazy / predictive creation): most runs' real root already clears MAX_PATH with room
+        // to spare, so creating a junction just adds churn. Only create one when a segment path under the
+        // real root would be at risk. Err toward CREATING when the run shape is unknown (null runId/taskIds)
+        // — a false negative is a MAX_PATH halt, not a leak.
         if (runId is not null && taskIds is not null
             && !RealRootNeedsJunction(realRoot, runId, taskIds))
         {
             log.WriteLine(
                 $"[guardrails] worktree junction not needed — the real root '{realRoot}' leaves MAX_PATH "
                 + "headroom for every task; using it directly, no junction created (issue #407 C).");
-            return new JunctionResolution { EffectiveRoot = realRoot };
+            return realRoot;
         }
 
-        // FRESH: allocate the first-free short junction under the drive root.
+        // Allocate a FRESH first-free short junction under the drive root (issue #419 — no same-letter
+        // restore; the link is released on exit and re-allocated fresh next run).
         if (string.IsNullOrWhiteSpace(baseDir))
         {
             return Fallback(realRoot, log, "no drive root is available to allocate a short junction under");
@@ -177,42 +160,34 @@ public static class WorktreeJunction
 
         log.WriteLine(
             $"[guardrails] worktree junction: '{chosen}' -> '{realRoot}' — a short root keeps build/test "
-            + "paths clear of Windows MAX_PATH (issue #383).");
-        return new JunctionResolution { EffectiveRoot = chosen, RecordRoot = chosen };
+            + "paths clear of Windows MAX_PATH (issue #383); released on exit (issue #419).");
+        return chosen;
     }
 
-    /// <summary>Restore a recorded junction on resume (recreate-if-missing / reuse-if-ours / hard-fail-if-elsewhere).</summary>
-    private static JunctionResolution RestoreRecorded(string link, string realRoot, TextWriter log)
+    /// <summary>
+    /// Remove every <c>&lt;baseDir&gt;\.a</c>..<c>\.z</c> junction whose target resolves to
+    /// <paramref name="target"/> (LINK-ONLY, reparse-point-guarded). Used by <c>--fresh</c>
+    /// (<see cref="State.RunReset"/>) to tear down THIS plan's short link without any journal record — the
+    /// link is no longer journaled (issue #419), so <c>--fresh</c> sweeps the drive-root candidates for a
+    /// junction pointing at the plan's real root instead. Best-effort and a no-op on non-Windows (junctions
+    /// exist only there) or a missing/whitespace argument.
+    /// </summary>
+    public static void RemoveJunctionsTo(string baseDir, string target)
     {
-        if (!Directory.Exists(link))
+        if (!OperatingSystem.IsWindows()
+            || string.IsNullOrWhiteSpace(baseDir) || string.IsNullOrWhiteSpace(target))
         {
-            // Missing (a reboot cleared it, or a prior --fresh) → recreate to the recomputed real root.
-            if (TryCreateJunction(link, realRoot))
+            return;
+        }
+
+        foreach (string leaf in CandidateLeaves)
+        {
+            string link = Path.Combine(baseDir, leaf);
+            if (IsJunctionTo(link, target))
             {
-                log.WriteLine($"[guardrails] worktree junction restored: recreated '{link}' -> '{realRoot}' (issue #383).");
-                return new JunctionResolution { EffectiveRoot = link };
+                RemoveJunctionLink(link); // link-only; the target (the real worktree root) survives
             }
-
-            return Fallback(realRoot, log, $"could not recreate the recorded worktree junction '{link}'");
         }
-
-        // Present and already OUR junction → reuse (already recorded, nothing to re-persist).
-        if (IsJunctionTo(link, realRoot))
-        {
-            return new JunctionResolution { EffectiveRoot = link };
-        }
-
-        // Present but NOT ours — a real directory squatting the name, or a junction to a DIFFERENT target
-        // (a concurrent run grabbed it). HARD FAIL: repointing/adopting it would drop this run's new
-        // segments into another run's tree.
-        return new JunctionResolution
-        {
-            EffectiveRoot = realRoot,
-            RestoreError =
-                $"could not restore worktree junction '{link}'; it points elsewhere — is another run active? "
-                + $"(expected it to junction to '{realRoot}'). Remove or resolve the conflicting '{link}', or "
-                + "set GUARDRAILS_WORKTREE_ROOT to a different short root, then re-run."
-        };
     }
 
     /// <summary>
@@ -380,12 +355,12 @@ public static class WorktreeJunction
     }
 
     /// <summary>Log the graceful fallback (junction unavailable) and return the real root as the effective root.</summary>
-    private static JunctionResolution Fallback(string realRoot, TextWriter log, string why)
+    private static string Fallback(string realRoot, TextWriter log, string why)
     {
         log.WriteLine(
             $"[guardrails] worktree junction unavailable ({why}); using the real worktree root '{realRoot}'. "
             + "The run proceeds; if a path-length halt (GR2038) follows, set GUARDRAILS_WORKTREE_ROOT to a "
             + "short path (issue #383).");
-        return new JunctionResolution { EffectiveRoot = realRoot };
+        return realRoot;
     }
 }

@@ -38,12 +38,6 @@ public static class RunReset
         ArgumentException.ThrowIfNullOrWhiteSpace(planDirectory);
         string stateDir = Path.Combine(planDirectory, "state");
 
-        // #383 (Windows short-junction worktree root): capture the recorded junction root BEFORE run.json is
-        // deleted — git canonicalizes the junction away in its own worktree registrations, so the journal is
-        // the ONLY record of the chosen short link. Threaded into the prune below so the junction LINK is
-        // removed (link-only, never the target) after the worktrees are pruned.
-        string? junctionRoot = TryReadRecordedJunctionRoot(planDirectory);
-
         DeleteFileIfExists(Path.Combine(stateDir, "run.json"));
         DeleteFileIfExists(Path.Combine(stateDir, "state.json"));
         DeleteFileIfExists(Path.Combine(stateDir, "merge-conflicts.log"));
@@ -66,7 +60,7 @@ public static class RunReset
         // and, crucially, the plan branch whose trailers drive resume — would survive --fresh, silently
         // reusing already-succeeded segments even for edited tasks. Best-effort: a non-git workspace or a
         // load failure must not abort the reset.
-        PruneStaleWorktreesAndBranches(planDirectory, junctionRoot);
+        PruneStaleWorktreesAndBranches(planDirectory);
 
         // Re-seed immediately so a subsequent run starts from the seed-derived state.
         new StateManager(planDirectory).Initialize();
@@ -469,18 +463,19 @@ public static class RunReset
     /// tear down the plan branch <c>guardrails/&lt;plan-name&gt;</c> itself (issue #274, part B). Swallows
     /// every failure (unloadable plan, non-git workspace) so <c>--fresh</c> never aborts.
     /// </summary>
-    private static void PruneStaleWorktreesAndBranches(string planDirectory, string? junctionRoot)
+    private static void PruneStaleWorktreesAndBranches(string planDirectory)
     {
         try
         {
             PlanLoadResult load = new PlanLoader().Load(planDirectory);
             if (load.Plan is { } plan)
             {
+                string realRoot = SchedulerFactory.WorktreeRootFor(plan);
+
                 // Prune with the REAL root: git canonicalizes the short #383 junction back to the real
                 // worktree path in its own registrations, so the git-authoritative teardown already keys on
                 // the real root regardless of whether a junction aliased it during the run.
-                GitWorktreeProvider.PruneStaleSegmentBranches(
-                    plan.Workspace, SchedulerFactory.WorktreeRootFor(plan));
+                GitWorktreeProvider.PruneStaleSegmentBranches(plan.Workspace, realRoot);
 
                 // Issue #274 (part B): tear down the plan branch itself. It is the DURABLE cross-run resume
                 // record — its Guardrails-Task: trailers drive the "already succeeded, skip it" pre-pass — and
@@ -491,51 +486,25 @@ public static class RunReset
                 // plan branch is preserved and resumed against exactly as before. The plan name matches the
                 // Scheduler's branch-creating derivation (Path.GetFileName(plan.PlanDirectory)).
                 GitWorktreeProvider.TeardownPlanBranch(
-                    plan.Workspace, SchedulerFactory.WorktreeRootFor(plan), Path.GetFileName(plan.PlanDirectory));
+                    plan.Workspace, realRoot, Path.GetFileName(plan.PlanDirectory));
 
                 // #195 retry-salvage pruning (deliverable 6): a --fresh reset also clears every preserved
                 // salvage ref across the whole repo, alongside the existing stale segment/fork branch
                 // prune — a fresh run's tasks get fresh attempt numbers, so any surviving salvage ref would
                 // be orphaned bookkeeping with no corresponding attempt to reference it.
                 GitWorktreeProvider.PruneAllSalvageRefs(plan.Workspace);
+
+                // #419: remove THIS plan's short worktree junction LINK (link-only — the target/real
+                // worktrees were just pruned above via the real root). The link is no longer journaled
+                // (process-scoped), so --fresh sweeps the drive-root .a..z candidates for a junction whose
+                // target is this plan's real root and removes it. RemoveJunctionsTo is a no-op on non-Windows
+                // and only ever deletes a reparse point, so it can never recurse into or delete a real dir.
+                WorktreeJunction.RemoveJunctionsTo(Path.GetPathRoot(realRoot) ?? string.Empty, realRoot);
             }
         }
         catch
         {
             // Best-effort cleanup — a fresh reset must succeed even if the prune cannot run.
-        }
-
-        // #383: remove the short worktree junction LINK itself (link-only — the target/real worktrees were
-        // just pruned above via the real root). Runs even if the prune could not load the plan: the link is
-        // recorded independently in the journal, and RemoveJunctionLink is a no-op unless the path is an
-        // actual reparse point, so it can never recurse into or delete a real directory.
-        if (!string.IsNullOrWhiteSpace(junctionRoot))
-        {
-            WorktreeJunction.RemoveJunctionLink(junctionRoot);
-        }
-    }
-
-    /// <summary>
-    /// Read the recorded Windows short-junction worktree root (#383) from <c>state/run.json</c> without
-    /// loading the whole plan. Null when the journal is absent/unreadable or the field was never written (a
-    /// run that used the real root, a non-Windows run). Best-effort — a corrupt journal must never abort
-    /// <c>--fresh</c>.
-    /// </summary>
-    private static string? TryReadRecordedJunctionRoot(string planDirectory)
-    {
-        string journalPath = RunJournal.PathFor(planDirectory);
-        if (!File.Exists(journalPath))
-        {
-            return null;
-        }
-
-        try
-        {
-            return JournalReader.Read(journalPath).WorktreeJunctionRoot;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
-        {
-            return null;
         }
     }
 

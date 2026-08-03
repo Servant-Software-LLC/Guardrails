@@ -193,6 +193,33 @@ public sealed class WorktreeReclaimTests : IDisposable
         Assert.True(Directory.Exists(freshTarget)); // untouched
     }
 
+    // ── #419 — the EXIT root-sweep is count-capped (never delays the visible exit) ────────────────
+    // (Its keeps-own / keeps-fresh / keeps-live-locked / reclaims-stale semantics ARE SweepRoots, proven by
+    //  the two tests above + SweepRoots_StaleButLiveLocked_IsKept_F1 below — ReclaimRootsOnExit delegates to
+    //  SweepRoots with the same exclusions; only the count cap is new.)
+
+    [Fact]
+    public void SweepRoots_HonorsMaxReclaimsCap_LeavesTheRestForTheStartupGc()
+    {
+        // Five stale, reclaimable roots but a cap of 2 → exactly 2 reclaimed this exit; the rest wait for a
+        // later run's startup GC. The cap is what keeps the exit sweep from delaying the visible exit (#419).
+        string parent = Path.Combine(_root, "capped");
+        Directory.CreateDirectory(parent);
+        for (int i = 0; i < 5; i++)
+        {
+            MakeChild(parent, $"stale{i}", DateTime.UtcNow - TimeSpan.FromDays(3));
+        }
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-cap");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null,
+            DateTime.UtcNow - TimeSpan.FromHours(24), TextWriter.Null, maxReclaims: 2);
+
+        Assert.Equal(3, Directory.GetDirectories(parent).Length); // 5 - 2 = 3 left for the startup GC
+    }
+
     // ── B — the #407 Finding-1 live-process LOCK (idle-run protection + PID-reuse guard) ─────────
 
     [Fact]

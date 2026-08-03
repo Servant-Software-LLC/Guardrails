@@ -81,18 +81,13 @@ public sealed record JournalDocument
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public decimal? OverheadCostUsd { get; init; }
 
-    /// <summary>
-    /// OPTIONAL Windows short-junction worktree root (issue #383, SSOT §2). In worktree mode on Windows the
-    /// harness roots segment worktrees under a short directory JUNCTION (<c>&lt;drive&gt;:\.a</c>..<c>\.z</c>
-    /// → the real worktree root) so each task's child-process cwd — and thus <c>dotnet test</c>'s built exe
-    /// path — stays clear of Windows MAX_PATH (260). git CANONICALIZES the junction back to the real path in
-    /// its own <c>git worktree</c> registrations, so the chosen link exists nowhere but HERE — this journal
-    /// field is the SOLE durable record that lets a resume restore the SAME link before any git worktree op,
-    /// and lets <c>--fresh</c> tear the link down (link-only). Additive/backward-compatible: absent (not
-    /// <c>null</c> noise) on a non-Windows run, a serial run, or the graceful no-junction fallback.
-    /// </summary>
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? WorktreeJunctionRoot { get; init; }
+    // NOTE (issue #419): the Windows short-junction root is NO LONGER journaled. It was the field that made
+    // the junction durable RUN STATE (forcing a resume onto the same .a..z letter and a sweep as the only
+    // reclaim), which is the leak #407/#419 chased. The junction is now a process-scoped cwd alias
+    // (WorktreeJunction/WorktreeJunctionLifetime): fresh per run, released on every recoverable exit, and
+    // re-derived by the deterministic segment subpath on resume. An OLD run.json that still carries a
+    // "worktreeJunctionRoot" key deserializes clean under this model (JournalJson has no
+    // JsonUnmappedMemberHandling.Disallow → the unknown member is skipped) and is simply ignored.
 }
 
 /// <summary>
