@@ -5,7 +5,7 @@ description: |
   tree is fully pushed and green, pick the next version, tag it at master HEAD, and let
   the `release.yml` pipeline publish to NuGet.org via Trusted Publishing (OIDC — no API
   key to handle). Use when the maintainer says "cut a release", "publish a new version",
-  "ship a NuGet package", or "release preview.N".
+  "ship a NuGet package", or "cut v1.2.0".
 
   MAINTAINER-ONLY: this skill is NOT packed into the shipped tool (the csproj bundles only
   plan-breakdown / guardrails-review / guardrails-domain-knowledge). It lives in the repo
@@ -19,7 +19,7 @@ description: |
 
 Cutting a release of the `ServantSoftware.Guardrails` dotnet tool **is one action: push a
 `v*` git tag.** Everything else is the `release.yml` pipeline. The version is derived from
-the tag (leading `v` stripped): tag `v1.0.0-preview.36` publishes `1.0.0-preview.36`.
+the tag (leading `v` stripped): tag `v1.2.0` publishes `1.2.0`.
 
 **This is outward-facing and effectively irreversible** — NuGet refuses to republish an
 existing version, and a published version can be *unlisted* but never truly deleted (it may
@@ -54,17 +54,51 @@ Use `git -C <repo-root>` for every git command (never `cd … && git …`).
    live key — that's normal).
 3. **Working tree clean** apart from any long-lived untracked plan-folder drafts under
    `docs/plans/` that were never part of the release.
+4. **Nothing to edit before tagging.** The shipped version comes from the TAG
+   (`-p:Version=${GITHUB_REF_NAME#v}`), not from a file. `src/Guardrails.Cli/Guardrails.Cli.csproj`'s
+   `<Version>` is only the default a *locally built* tool reports (and stamps into installed skills);
+   keeping it roughly current is hygiene, but bumping it is **not** a step of cutting a release —
+   do not open a PR for it and do not block the tag on it.
 
 ## Pick the version
 
 ```bash
 git -C <repo> tag --sort=-creatordate | head -5
 ```
-The scheme is `v1.0.0-preview.N`, monotonically increasing. **Default: bump the preview
-number by one** (`preview.35` → `preview.36`). A stable `v1.0.0` or a minor/major bump is a
-**deliberate human decision** — if the maintainer hasn't said otherwise, use the next
-preview and state which version you're cutting. NuGet won't let you republish, so a typo'd
-or reused version wastes a number.
+
+The scheme is **`vX.Y.0` — a STABLE version with NO prerelease suffix**, monotonically
+increasing. **Default: bump the MINOR by one and leave the patch at `0`**
+(`v1.1.0` → `v1.2.0` → `v1.3.0`). Exactly one component moves per release:
+
+| Component | When it moves |
+|---|---|
+| **minor** `Y` | **every release** — this is the default; no permission needed |
+| **major** `X` | only when the maintainer explicitly says "cut a major" *in words* |
+| **patch** (third) | **never** — it stays `0` under this scheme |
+
+A **major** bump is a deliberate maintainer call, stated out loud. Do NOT infer one from the
+changelog ("this change looks breaking"), and do NOT invent a patch release for a small fix —
+a small fix is simply the next minor. If the maintainer hasn't said otherwise, cut the next
+minor and **state which version you're cutting** before you tag.
+
+**The `1.0.0-preview.N` line is CLOSED — do not continue it.** `git tag --sort=-creatordate`
+still lists those preview tags (they remain the chronologically newest until `v1.1.0` exists),
+so do not pattern-match them into a `preview.50`. **If the newest tag you see is a `preview.*`,
+the version to cut is `v1.1.0`** — the first release under this scheme.
+
+**Why the line starts at 1.1.0, and why you must not "fix" it back to 0.x.** The published
+history ends at `1.0.0-preview.49`; `1.0.0` itself was never formally cut and never will be.
+The intuitive successor for a pre-1.0 product — restarting at `0.13.0` — is **wrong, and
+unfixable once published**: under SemVer `0.13.0 < 1.0.0-preview.49` (major 0 sorts below
+major 1), so NuGet would read the "new" release as a DOWNGRADE. Two concrete breakages:
+`dotnet tool update` would refuse to move an existing `1.0.0-preview.*` install forward onto
+`0.13.0`; and `--prerelease` would resolve `1.0.0-preview.49` — an OLDER build — while a plain
+install resolved the newer `0.13.0`. Starting the stable line at **`1.1.0`** puts every future release
+strictly above every published preview, which is the whole point. A future maintainer who
+wants 0.x cannot have it without abandoning the package id — this paragraph is the answer,
+not a bug to file.
+
+NuGet won't let you republish, so a typo'd or reused version wastes a number permanently.
 
 ## Cut it
 
@@ -72,11 +106,14 @@ Annotate the tag with the headline changes since the previous tag (helps the rel
 and the git history read well):
 
 ```bash
-git -C <repo> log v1.0.0-preview.<PREV>..origin/master --oneline    # source the summary
-git -C <repo> tag -a v1.0.0-preview.<N> -m "v1.0.0-preview.<N> — <one-line theme>
+# v1.2.0 below is a WORKED EXAMPLE — substitute the version you picked above.
+# <PREV-TAG> is the previous tag verbatim, whatever its scheme — for the first stable cut
+# that is still v1.0.0-preview.49.
+git -C <repo> log <PREV-TAG>..origin/master --oneline    # source the summary
+git -C <repo> tag -a v1.2.0 -m "v1.2.0 — <one-line theme>
 
 <short bullet summary of the notable #issue fixes since the last tag>"
-git -C <repo> push origin v1.0.0-preview.<N>
+git -C <repo> push origin v1.2.0
 ```
 
 The tag push is the trigger. **Do not** create a GitHub "Release" object by hand — this
@@ -116,16 +153,22 @@ couple of minutes**, so an immediate `dotnet tool install` may not resolve yet. 
 consumer:
 
 ```bash
-dotnet tool install --global ServantSoftware.Guardrails --version 1.0.0-preview.<N>
-# (or `dotnet tool update --global …` to move an existing install forward)
+dotnet tool install --global ServantSoftware.Guardrails          # newest stable
+dotnet tool update  --global ServantSoftware.Guardrails          # move an existing install forward
+dotnet tool install --global ServantSoftware.Guardrails --version 1.2.0   # pin exactly
 ```
+
+**No `--prerelease` anywhere.** Releases carry no prerelease suffix now, so a plain
+`install`/`update` resolves the newest release. If you find `--prerelease` in an instruction,
+a README, or an install script, it is stale — drop it (leaving it in is not fatal, but it
+teaches users a flag that no longer means anything for this package).
 
 ## If it fails
 
 - **A `test` or `packaged-tool-smoke` job fails** → the code/package has a real problem on
   the tagged commit. The version is NOT published (the `publish` job `needs:` both). Fix on
-  `master` via the normal PR flow, then cut a **new** tag (`preview.<N+1>`) — you cannot
-  re-use `<N>`.
+  `master` via the normal PR flow, then cut a **new** tag — the next minor (`v1.2.0` failed →
+  cut `v1.3.0`). You cannot re-use a tagged version, and you do not "retry" it as a patch.
 - **Only the `publish` job fails, on NuGet login/auth** → a nuget.org Trusted-Publishing
   policy or `NUGET_USER` secret issue; the code is fine. Escalate to the maintainer (it's
   their nuget.org account config). Re-running just the failed job after they fix it can
@@ -134,7 +177,7 @@ dotnet tool install --global ServantSoftware.Guardrails --version 1.0.0-preview.
   you can delete the tag locally and on origin (`git -C <repo> tag -d v…; git -C <repo>
   push origin :refs/tags/v…`) to abort, then re-tag correctly. Once the `publish` job has
   pushed to NuGet, the version is permanent — do NOT try to "fix" it by republishing; cut
-  the next preview instead.
+  the next minor instead.
 
 ## Do not
 
@@ -143,3 +186,6 @@ dotnet tool install --global ServantSoftware.Guardrails --version 1.0.0-preview.
   credential operation.
 - Do **not** tag a commit that isn't on `origin/master` or isn't CI-green.
 - Do **not** reuse or hand-edit an already-published version to "patch" it.
+- Do **not** re-open the `1.0.0-preview.N` line, add a prerelease suffix to a release tag, or
+  renumber down to `0.x` — all three are SemVer *downgrades* against the published
+  `1.0.0-preview.49` and are irreversible once pushed (see **Pick the version**).

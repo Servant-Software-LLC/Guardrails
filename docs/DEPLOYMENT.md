@@ -37,9 +37,12 @@ curl -fsSL https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/mas
 Prefer the explicit two-liner? It does exactly the same thing:
 
 ```bash
-dotnet tool install --global ServantSoftware.Guardrails --prerelease
+dotnet tool install --global ServantSoftware.Guardrails
 guardrails skills install
 ```
+
+No `--prerelease` flag: releases are stable `vX.Y.0`, so a plain install resolves the
+newest one. (See [Version scheme](#version-scheme--why-the-line-starts-at-v110).)
 
 `guardrails skills install` copies the bundled skills into `~/.claude/skills`
 (`--target <dir>` to override, `--force` to overwrite existing skill folders).
@@ -64,8 +67,8 @@ Doing it by hand is two steps, and the second needs `--force` — a plain `skill
 stale after a tool update:
 
 ```bash
-dotnet tool update --global ServantSoftware.Guardrails --prerelease   # harness + bundled skills
-guardrails skills install --force                                      # refresh the deployed skill copies
+dotnet tool update --global ServantSoftware.Guardrails   # harness + bundled skills
+guardrails skills install --force                        # refresh the deployed skill copies
 ```
 
 `dotnet tool update` cleanly replaces the harness binary and the skills bundled *inside*
@@ -104,7 +107,7 @@ cd Guardrails
 dotnet pack src/Guardrails.Cli -c Release -o nupkg
 ./install.ps1 -Source ./nupkg          # Windows: installs the tool + the skills
 # or, explicitly / on macOS-Linux:
-dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails --prerelease
+dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails
 guardrails skills install
 ```
 
@@ -114,8 +117,13 @@ guardrails skills install
 guardrails validate examples/hello-guardrails/hello-guardrails   # → "OK: plan is valid."
 ```
 
-To update later: `dotnet tool update --global --add-source ./nupkg ServantSoftware.Guardrails --prerelease`
+To update later: `dotnet tool update --global --add-source ./nupkg ServantSoftware.Guardrails`
 (then re-run `guardrails skills install --force` to refresh the skills).
+
+> A **local** pack takes its version from `<Version>` in
+> `src/Guardrails.Cli/Guardrails.Cli.csproj`, not from a release tag. If you have pinned that
+> to a prerelease value on your branch, add `--prerelease` (or `--version <exact>`) to the two
+> commands above — published releases are stable and need neither.
 
 ### Option B — Public NuGet (the clean one-liner, ~15 min one-time setup)
 
@@ -132,19 +140,19 @@ store, or rotate. Done once, by whoever owns the Servant Software NuGet account:
    - Policy owner = the account/org that will own the `ServantSoftware.Guardrails` package
 2. Add **one** repo secret `NUGET_USER` = your nuget.org **profile name** (not email).
    It is not sensitive — it only tells the workflow which account to mint a key for.
-3. Push the release tag: `git tag v1.0.0-preview.1 && git push origin v1.0.0-preview.1`.
+3. Push the release tag: `git tag v1.1.0 && git push origin v1.1.0`.
    The workflow runs the 3-OS test matrix, then (in the publish job) mints a GitHub OIDC
    token, exchanges it for a short-lived NuGet key via the policy, and pushes.
 
-> The package version comes from the **tag** (`v1.2.3` → `1.2.3`), so each subsequent
-> release is just `git tag vX.Y.Z && git push origin vX.Y.Z` — no key, no csproj edit.
+> The package version comes from the **tag** (`v1.2.0` → `1.2.0`), so each subsequent
+> release is just `git tag vX.Y.0 && git push origin vX.Y.0` — no key, no csproj edit.
 > (Public repos activate the policy immediately; a *private* repo's policy is provisional
 > for 7 days and locks in on the first successful publish.)
 
 Then, on any machine:
 
 ```bash
-dotnet tool install --global ServantSoftware.Guardrails --prerelease
+dotnet tool install --global ServantSoftware.Guardrails
 guardrails skills install
 ```
 
@@ -153,6 +161,34 @@ on nothing and no one. Do **Option B in parallel** when you want the one-line in
 for the demo and for eventual Mac/Linux boxes. It is *not* much extra work (one secret
 + one tag), and it does not change a single line of code — the tool is already
 `net10.0` and CI already proves it green on windows/ubuntu/macos.
+
+---
+
+## Version scheme — why the line starts at `v1.1.0`
+
+Releases are **stable `vX.Y.0`** — `v1.1.0`, `v1.2.0`, … — with **no prerelease suffix**.
+That is why every install command in this document is a plain `dotnet tool install`: NuGet
+resolves the newest *stable* version by default, so users no longer need `--prerelease`.
+
+The retired scheme was `1.0.0-preview.N` (last published: `1.0.0-preview.49`). A pre-1.0
+`0.X.0` line would read as the more honest "not yet 1.0" signal, and a future maintainer will
+be tempted to "correct" the numbering down to it. **Don't** — it breaks upgrades:
+
+- SemVer orders by major first, so `0.13.0` sorts **below** `1.0.0-preview.49`.
+- `dotnet tool update` would therefore refuse to move an existing install off the old
+  preview: from its point of view, 0.x is a **downgrade**.
+- Worse, `--prerelease` would resolve to an *older* build than a plain install.
+
+Starting above `1.0` is the only numbering that moves already-installed users forward.
+`1.0.0` itself was never formally cut and will not be — hence `v1.1.0` as the first release
+under this scheme.
+
+The release **mechanism is unchanged**: the version is still derived from the tag
+(`${GITHUB_REF_NAME#v}` in `.github/workflows/release.yml`), and the csproj `<Version>`
+remains a local-`dotnet pack` default only. Only the numbering changed. Throwaway `-ci.`
+dry-run tags (e.g. `v0.0.0-ci.1`) also keep working exactly as before: they exercise the
+pipeline, are flagged as GitHub prereleases by the hyphen in the tag, and are skipped by both
+the NuGet publish job and the Homebrew tap bump.
 
 ---
 
@@ -190,7 +226,7 @@ and reported as skipped. Restart Claude Code (or start a new session) and confir
 ### Skill versioning and drift detection
 
 Each bundled skill's `SKILL.md` carries the harness version **inside its own
-frontmatter**, under `metadata.guardrails-version` (e.g. `1.0.0-preview.27`):
+frontmatter**, under `metadata.guardrails-version` (e.g. `1.2.0`):
 
 ```yaml
 ---
@@ -198,7 +234,7 @@ name: plan-breakdown
 description: |
   Break a reviewed markdown plan into a Guardrails task folder …
 metadata:
-  guardrails-version: 1.0.0-preview.27
+  guardrails-version: 1.2.0
 ---
 ```
 
@@ -232,10 +268,10 @@ warning block is written to **stderr** naming each skill, its location, its inst
 informational):
 
 ```text
-1.0.0-preview.27
+1.2.0
 
-WARNING: 1 installed Guardrails skill(s) do not match this harness (v1.0.0-preview.27):
-  - plan-breakdown [v1.0.0-preview.26] in C:\Users\you\.claude\skills
+WARNING: 1 installed Guardrails skill(s) do not match this harness (v1.2.0):
+  - plan-breakdown [v1.1.0] in C:\Users\you\.claude\skills
 A stale skill can silently produce output for an older harness.
 Remedy: run `guardrails skills install --force`.
 ```

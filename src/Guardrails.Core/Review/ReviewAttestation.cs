@@ -30,7 +30,7 @@ public sealed record ReviewAttestation
     public string Source { get; init; } = string.Empty;
 
     /// <summary>
-    /// Self-reported CLI build that stamped the marker (e.g. <c>guardrails 1.0.0-preview.43</c>).
+    /// Self-reported CLI build that stamped the marker (e.g. <c>guardrails 1.1.0</c>).
     /// Informational and NON-authoritative — audit richness, not trust (§4). Omitted from the wire
     /// when null (F7 <see cref="JsonIgnoreCondition.WhenWritingNull"/>).
     /// </summary>

@@ -15,7 +15,7 @@ namespace Guardrails.Integration.Tests;
 /// </summary>
 public sealed class SkillsInstallerTests : IDisposable
 {
-    private const string Version = "1.0.0-preview.30";
+    private const string Version = "1.2.0";
 
     private readonly string _root;
     private readonly string _source;
@@ -62,11 +62,28 @@ public sealed class SkillsInstallerTests : IDisposable
     public void InstallAll_WithForce_ReStampsToTheNewVersion()
     {
         // First install at X stamps X; a --force reinstall at Y must re-stamp to Y.
-        SkillsInstaller.InstallAll(_source, _target, force: false, "1.0.0-preview.29");
-        Assert.Equal("1.0.0-preview.29", ReadInstalledVersion("plan-breakdown"));
+        SkillsInstaller.InstallAll(_source, _target, force: false, "1.1.0");
+        Assert.Equal("1.1.0", ReadInstalledVersion("plan-breakdown"));
 
-        SkillsInstaller.InstallAll(_source, _target, force: true, "1.0.0-preview.30");
-        Assert.Equal("1.0.0-preview.30", ReadInstalledVersion("plan-breakdown"));
+        SkillsInstaller.InstallAll(_source, _target, force: true, "1.2.0");
+        Assert.Equal("1.2.0", ReadInstalledVersion("plan-breakdown"));
+    }
+
+    [Fact]
+    public void InstallAll_WithForce_ReStampsFromLegacyPrereleaseToStableVersion()
+    {
+        // The real upgrade path off the preview line (issue #421): a skill stamped by a published
+        // 1.0.0-preview.N tool, re-installed by a stable 1.1.0 tool. The stable value must fully
+        // REPLACE the prerelease one — no leftover '-preview.N' segment, and exactly one key.
+        SkillsInstaller.InstallAll(_source, _target, force: false, "1.0.0-preview.49");
+        Assert.Equal("1.0.0-preview.49", ReadInstalledVersion("plan-breakdown"));
+
+        SkillsInstaller.InstallAll(_source, _target, force: true, "1.1.0");
+
+        Assert.Equal("1.1.0", ReadInstalledVersion("plan-breakdown"));
+        string skillMd = File.ReadAllText(Path.Combine(_target, "plan-breakdown", "SKILL.md"));
+        Assert.DoesNotContain("preview", skillMd, StringComparison.Ordinal);
+        Assert.Equal(1, skillMd.Split("guardrails-version:").Length - 1);
     }
 
     [Fact]

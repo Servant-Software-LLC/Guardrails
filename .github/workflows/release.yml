@@ -1,10 +1,17 @@
 # Release pipeline for the `ServantSoftware.Guardrails` dotnet tool.
 #
-# Trigger: pushing a tag of the form `v*` (e.g. `v1.0.0-preview.1`). The package Version is
-# derived FROM the tag (the leading `v` is stripped): tag `v1.2.3` publishes version `1.2.3`,
-# tag `v1.0.0-preview.2` publishes `1.0.0-preview.2`. The <Version> in the csproj is only a
-# default for local `dotnet pack`; the tag is the source of truth for a published release.
+# Trigger: pushing a tag of the form `v*` (e.g. `v1.1.0`). The package Version is derived
+# FROM the tag (the leading `v` is stripped): tag `v1.1.0` publishes version `1.1.0`, tag
+# `v1.2.0` publishes `1.2.0`. The <Version> in the csproj is only a default for local
+# `dotnet pack`; the tag is the source of truth for a published release.
 # NuGet refuses to republish an existing version, so cutting a new release = pushing a new tag.
+#
+# VERSION SCHEME (#421): releases are STABLE `vX.Y.0` — no prerelease suffix — so users install
+# with a plain `dotnet tool install -g ServantSoftware.Guardrails`, no `--prerelease` flag. The
+# line starts at v1.1.0, NOT a pre-1.0 v0.X.0: SemVer sorts `0.13.0` BELOW the already-published
+# `1.0.0-preview.49`, so a 0.x release would be a downgrade that `dotnet tool update` refuses to
+# take. Don't "fix" it back to 0.x — see docs/DEPLOYMENT.md for the full reasoning. Only the
+# NUMBERING changed here; the tag-derivation mechanism below is exactly as it was.
 #
 # Flow: the 3-OS test matrix AND the packaged-tool smoke (#171) must pass on the tagged
 # commit; only then does the `publish` job pack and push to NuGet.org. The smoke packs the
@@ -80,7 +87,7 @@ jobs:
 
       - name: Smoke (pack tag version → install → assert)
         # Strip the leading `v` from the tag so it packs/installs the exact version the
-        # publish job will push (tag v1.0.0-preview.2 → 1.0.0-preview.2).
+        # publish job will push (tag v1.1.0 → 1.1.0).
         run: .github/scripts/smoke-packaged-tool.sh "${GITHUB_REF_NAME#v}"
 
   publish:
@@ -106,7 +113,7 @@ jobs:
         run: dotnet restore Guardrails.sln --locked-mode
 
       - name: Pack (version from tag)
-        # Strip the leading `v` from the tag so `v1.0.0-preview.1` → package version 1.0.0-preview.1.
+        # Strip the leading `v` from the tag so `v1.1.0` → package version 1.1.0.
         run: dotnet pack src/Guardrails.Cli -c Release --no-restore -o nupkg -p:Version="${GITHUB_REF_NAME#v}"
 
       - name: NuGet login (OIDC → short-lived API key)
@@ -147,7 +154,10 @@ jobs:
             echo "Release $TAG already exists — reusing."
           else
             PRE=""
-            case "$TAG" in *-*) PRE="--prerelease" ;; esac   # v1.0.0-preview.1 → prerelease
+            # A tag carrying ANY prerelease suffix is flagged a GitHub prerelease; a stable
+            # vX.Y.0 tag becomes a full release. This is what keeps throwaway `-ci.` dry-run
+            # tags out of "latest" now that real releases no longer carry a suffix.
+            case "$TAG" in *-*) PRE="--prerelease" ;; esac   # v0.0.0-ci.1 → prerelease; v1.1.0 → full release
             gh release create "$TAG" --title "$TAG" --generate-notes $PRE
           fi
 

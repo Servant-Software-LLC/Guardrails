@@ -774,7 +774,8 @@ total order driven by the wave folder's numeric prefix.
   Run-level cost aggregation (`JournalCost.Total`). `guardrails run --dry-run`: validates,
   prints waves preview + per-task resolution (kind/runner/retry-budget) + journal-aware
   resume SKIPs, exits 0 having touched no state. Packaging: PackageId
-  `ServantSoftware.Guardrails`, version `1.0.0-preview.1`, MIT LICENSE, README packed;
+  `ServantSoftware.Guardrails`, csproj version `1.1.0` (released versions are tag-derived
+  stable `vX.Y.0` with no prerelease suffix, #421 -- see `cut-release`), MIT LICENSE, README packed;
   release pipeline `.github/workflows/release.yml` (tag `v*` -> 3-OS matrix -> pack ->
   `dotnet nuget push` via Trusted Publishing/OIDC). Clean-machine pack/install acceptance
   passed. **Dogfood artifact authored, not executed**: `docs/plans/04-dogfood-cost-cap.md`

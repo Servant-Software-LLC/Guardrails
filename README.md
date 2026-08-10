@@ -53,7 +53,7 @@ skills:
 irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.ps1 | iex
 
 # or explicitly (any OS):
-dotnet tool install --global ServantSoftware.Guardrails --prerelease
+dotnet tool install --global ServantSoftware.Guardrails
 guardrails skills install        # installs plan-breakdown + guardrails-review into ~/.claude/skills
 ```
 

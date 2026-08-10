@@ -10,7 +10,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.sh | bash
 #   ./install.sh                 # install the latest release
-#   ./install.sh 1.0.0-preview.1 # install a specific version
+#   ./install.sh 1.1.0           # install a specific version
 #
 # Env overrides:
 #   GUARDRAILS_HOME  install dir for binary + skills   (default: ~/.guardrails)
@@ -40,8 +40,10 @@ RID="$os_rid-$arch_rid"
 if [ "${1:-}" != "" ]; then
   VER="${1#v}"
 else
-  # /releases lists newest-first and INCLUDES prereleases (unlike /releases/latest,
-  # which skips them — and current builds are -preview). No jq dependency.
+  # /releases lists newest-first and INCLUDES prereleases, so it resolves the newest
+  # release whether or not GitHub flagged it as one. Releases are now stable vX.Y.0, but
+  # /releases/latest skips prereleases entirely and would 404 until the first stable one
+  # is cut — this endpoint works across that transition. No jq dependency.
   VER="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" \
         | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"v?([^"]+)".*/\1/')"
 fi

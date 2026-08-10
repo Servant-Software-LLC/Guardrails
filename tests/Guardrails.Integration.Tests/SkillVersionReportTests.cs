@@ -9,6 +9,13 @@ namespace Guardrails.Integration.Tests;
 /// is injected for the pure cases (matching vs mismatched, missing key/frontmatter/file), with a
 /// couple of on-disk cases proving the real <c>SKILL.md</c> read end to end. Also: a skill absent
 /// in a root (not reported), both scan roots scanned, and <c>+build</c> metadata ignored.
+///
+/// <para>Versions here are the STABLE <c>X.Y.0</c> release scheme (issue #421). One case
+/// deliberately keeps a legacy <c>1.0.0-preview.N</c> value on the installed side
+/// (<see cref="LegacyPrereleaseInstall_AgainstStableHarness_IsDrifted_NotUnversioned"/>): that
+/// MIXED pair — a prerelease-stamped skill against a stable harness — is exactly what a user
+/// upgrading off the preview line has on disk, and it proves the comparison never assumes both
+/// sides share a shape.</para>
 /// </summary>
 public sealed class SkillVersionReportTests
 {
@@ -68,29 +75,66 @@ public sealed class SkillVersionReportTests
     {
         using var sb = new Sandbox();
         string root = sb.MakeRoot("skills");
-        sb.MakeSkill(root, "plan-breakdown", "1.0.0-preview.27");
+        sb.MakeSkill(root, "plan-breakdown", "1.1.0");
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.27", KnownSkills, new[] { root });
+            SkillVersionReport.Build("1.1.0", KnownSkills, new[] { root });
 
         SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
-        Assert.Equal("1.0.0-preview.27", status.InstalledVersion);
+        Assert.Equal("1.1.0", status.InstalledVersion);
         Assert.False(status.Drifted);
     }
 
     [Fact]
     public void MismatchedVersion_IsDrifted()
     {
+        // Stable-vs-stable: an older stable install against a newer stable harness.
         using var sb = new Sandbox();
         string root = sb.MakeRoot("skills");
-        sb.MakeSkill(root, "plan-breakdown", "1.0.0-preview.26");
+        sb.MakeSkill(root, "plan-breakdown", "1.1.0");
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.27", KnownSkills, new[] { root });
+            SkillVersionReport.Build("1.2.0", KnownSkills, new[] { root });
 
         SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
-        Assert.Equal("1.0.0-preview.26", status.InstalledVersion);
+        Assert.Equal("1.1.0", status.InstalledVersion);
         Assert.True(status.Drifted);
+    }
+
+    [Fact]
+    public void LegacyPrereleaseInstall_AgainstStableHarness_IsDrifted_NotUnversioned()
+    {
+        // The real upgrade path off the preview line (issue #421): skills stamped by a published
+        // 1.0.0-preview.N tool, scanned by a stable 1.1.0 harness. The two shapes differ
+        // structurally (one carries a prerelease segment, the other does not), so this pins that
+        // the comparison handles a MIXED pair — reporting real drift with the actual stale value,
+        // never 'unversioned' and never a false match.
+        using var sb = new Sandbox();
+        string root = sb.MakeRoot("skills");
+        sb.MakeSkill(root, "plan-breakdown", "1.0.0-preview.49");
+
+        IReadOnlyList<SkillVersionStatus> report =
+            SkillVersionReport.Build("1.1.0", KnownSkills, new[] { root });
+
+        SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
+        Assert.Equal("1.0.0-preview.49", status.InstalledVersion);
+        Assert.True(status.Drifted);
+    }
+
+    [Fact]
+    public void StableHarness_MatchingStableInstall_IsNotDrifted_AcrossBuildMetadata()
+    {
+        // A stable version has NO prerelease segment, so '+build' metadata is the only thing the
+        // normaliser may strip. Pinned on the stable shape specifically: under the preview scheme
+        // this path only ever compared letter-bearing strings.
+        using var sb = new Sandbox();
+        string root = sb.MakeRoot("skills");
+        sb.MakeSkill(root, "plan-breakdown", "1.1.0");
+
+        IReadOnlyList<SkillVersionStatus> report =
+            SkillVersionReport.Build("1.1.0+9f2c1ab", KnownSkills, new[] { root });
+
+        Assert.False(report.Single(s => s.Name == "plan-breakdown").Drifted);
     }
 
     [Fact]
@@ -101,7 +145,7 @@ public sealed class SkillVersionReportTests
         sb.MakeSkillNoVersionKey(root, "plan-breakdown");
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.27", KnownSkills, new[] { root });
+            SkillVersionReport.Build("1.1.0", KnownSkills, new[] { root });
 
         SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
         Assert.Null(status.InstalledVersion);
@@ -118,7 +162,7 @@ public sealed class SkillVersionReportTests
         sb.MakeSkill(root, "plan-breakdown", version: null); // folder only, no SKILL.md
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.27", KnownSkills, new[] { root });
+            SkillVersionReport.Build("1.1.0", KnownSkills, new[] { root });
 
         SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
         Assert.Null(status.InstalledVersion);
@@ -135,7 +179,7 @@ public sealed class SkillVersionReportTests
         File.WriteAllText(Path.Combine(skillDir, "SKILL.md"), "# plan-breakdown\nNo frontmatter here.\n");
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.27", KnownSkills, new[] { root });
+            SkillVersionReport.Build("1.1.0", KnownSkills, new[] { root });
 
         SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
         Assert.Null(status.InstalledVersion);
@@ -148,10 +192,10 @@ public sealed class SkillVersionReportTests
         using var sb = new Sandbox();
         string root = sb.MakeRoot("skills");
         // Only plan-breakdown is installed; guardrails-review is absent.
-        sb.MakeSkill(root, "plan-breakdown", "1.0.0-preview.27");
+        sb.MakeSkill(root, "plan-breakdown", "1.1.0");
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.27", KnownSkills, new[] { root });
+            SkillVersionReport.Build("1.1.0", KnownSkills, new[] { root });
 
         Assert.Single(report);
         Assert.Equal("plan-breakdown", report[0].Name);
@@ -164,12 +208,12 @@ public sealed class SkillVersionReportTests
         using var sb = new Sandbox();
         string userRoot = sb.MakeRoot("user");
         string projectRoot = sb.MakeRoot("project");
-        sb.MakeSkill(userRoot, "plan-breakdown", "1.0.0-preview.27");      // matches
-        sb.MakeSkill(projectRoot, "plan-breakdown", "1.0.0-preview.26");   // drifted
+        sb.MakeSkill(userRoot, "plan-breakdown", "1.1.0");      // matches
+        sb.MakeSkill(projectRoot, "plan-breakdown", "1.2.0");   // drifted
 
         IReadOnlyList<SkillVersionStatus> report =
             SkillVersionReport.Build(
-                "1.0.0-preview.27", KnownSkills, new[] { userRoot, projectRoot });
+                "1.1.0", KnownSkills, new[] { userRoot, projectRoot });
 
         Assert.Equal(2, report.Count);
         Assert.False(report.Single(s => s.Root == userRoot).Drifted);
@@ -182,11 +226,11 @@ public sealed class SkillVersionReportTests
         using var sb = new Sandbox();
         string root = sb.MakeRoot("skills");
         // Same semantic version, different +build metadata on each side.
-        sb.MakeSkill(root, "plan-breakdown", "1.0.0-preview.27+abc123");
+        sb.MakeSkill(root, "plan-breakdown", "1.1.0+abc123");
 
         IReadOnlyList<SkillVersionStatus> report =
             SkillVersionReport.Build(
-                "1.0.0-preview.27+def456", KnownSkills, new[] { root });
+                "1.1.0+def456", KnownSkills, new[] { root });
 
         SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
         Assert.False(status.Drifted);
@@ -201,10 +245,10 @@ public sealed class SkillVersionReportTests
         sb.MakeSkill(root, "plan-breakdown", version: null); // folder only, no SKILL.md
 
         IReadOnlyList<SkillVersionStatus> report = SkillVersionReport.Build(
-            "1.0.0-preview.27",
+            "1.1.0",
             new[] { "plan-breakdown" },
             new[] { root },
-            readVersion: _ => "1.0.0-preview.27");
+            readVersion: _ => "1.1.0");
 
         Assert.False(report.Single().Drifted);
     }
@@ -220,15 +264,15 @@ public sealed class SkillVersionReportTests
         WriteUnstampedSource(source, "plan-breakdown");
         WriteUnstampedSource(source, "guardrails-review");
 
-        SkillsInstaller.InstallAll(source, install, force: false, "1.0.0-preview.30");
+        SkillsInstaller.InstallAll(source, install, force: false, "1.2.0");
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.30", KnownSkills, new[] { install });
+            SkillVersionReport.Build("1.2.0", KnownSkills, new[] { install });
 
         Assert.Equal(2, report.Count);
         Assert.All(report, s =>
         {
-            Assert.Equal("1.0.0-preview.30", s.InstalledVersion);
+            Assert.Equal("1.2.0", s.InstalledVersion);
             Assert.False(s.Drifted);
         });
     }
@@ -243,13 +287,13 @@ public sealed class SkillVersionReportTests
         string install = sb.MakeRoot("install");
         WriteUnstampedSource(source, "plan-breakdown");
 
-        SkillsInstaller.InstallAll(source, install, force: false, "1.0.0-preview.29");
+        SkillsInstaller.InstallAll(source, install, force: false, "1.1.0");
 
         IReadOnlyList<SkillVersionStatus> report =
-            SkillVersionReport.Build("1.0.0-preview.30", KnownSkills, new[] { install });
+            SkillVersionReport.Build("1.2.0", KnownSkills, new[] { install });
 
         SkillVersionStatus status = report.Single(s => s.Name == "plan-breakdown");
-        Assert.Equal("1.0.0-preview.29", status.InstalledVersion); // a real value, not null
+        Assert.Equal("1.1.0", status.InstalledVersion); // a real value, not null
         Assert.True(status.Drifted);
     }
 
@@ -262,14 +306,14 @@ public sealed class SkillVersionReportTests
         // colliding root string.
         using var sb = new Sandbox();
         string root = sb.MakeRoot("skills");
-        sb.MakeSkill(root, "plan-breakdown", "1.0.0-preview.26"); // drifted
+        sb.MakeSkill(root, "plan-breakdown", "1.2.0"); // drifted
 
         // Two distinct strings that resolve to the exact same directory: a trailing separator
         // variant, and the literal same string again.
         string rootWithTrailingSeparator = root + Path.DirectorySeparatorChar;
 
         IReadOnlyList<SkillVersionStatus> report = SkillVersionReport.Build(
-            "1.0.0-preview.27",
+            "1.1.0",
             KnownSkills,
             new[] { root, rootWithTrailingSeparator, root });
 
@@ -286,11 +330,11 @@ public sealed class SkillVersionReportTests
         using var sb = new Sandbox();
         string userRoot = sb.MakeRoot("user");
         string projectRoot = sb.MakeRoot("project");
-        sb.MakeSkill(userRoot, "plan-breakdown", "1.0.0-preview.27");
-        sb.MakeSkill(projectRoot, "plan-breakdown", "1.0.0-preview.26");
+        sb.MakeSkill(userRoot, "plan-breakdown", "1.1.0");
+        sb.MakeSkill(projectRoot, "plan-breakdown", "1.2.0");
 
         IReadOnlyList<SkillVersionStatus> report = SkillVersionReport.Build(
-            "1.0.0-preview.27", KnownSkills, new[] { userRoot, projectRoot });
+            "1.1.0", KnownSkills, new[] { userRoot, projectRoot });
 
         Assert.Equal(2, report.Count);
     }
