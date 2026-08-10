@@ -8,7 +8,7 @@
   Usage:
     irm https://raw.githubusercontent.com/Servant-Software-LLC/Guardrails/master/install.ps1 | iex
     .\install.ps1                  # latest release
-    .\install.ps1 1.0.0-preview.1  # specific version
+    .\install.ps1 1.1.0            # specific version
 #>
 [CmdletBinding()]
 param([string]$Version)

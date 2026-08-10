@@ -39,18 +39,31 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   `ToolCommandName` stays `guardrails` (that is the invoked command). Package metadata
   (Authors/Company `Servant Software LLC`, Description, `PackageLicenseExpression` MIT with
   a root `LICENSE`, RepositoryUrl, PackageTags, README packed) lives in
-  `src/Guardrails.Cli/Guardrails.Cli.csproj`. Version: `1.0.0-preview.1`.
+  `src/Guardrails.Cli/Guardrails.Cli.csproj`. Version: `1.1.0` — the default a *locally built*
+  tool reports (and stamps into installed skills); the RELEASED version is tag-derived
+  (`-p:Version=${GITHUB_REF_NAME#v}`) and overrides it.
+- **Release versioning: stable `vX.Y.0`, no prerelease suffix** (issue #421). The tag is the
+  scheme; `cut-release` is the procedure. Consumers install with a plain
+  `dotnet tool install -g ServantSoftware.Guardrails` — **`--prerelease` is no longer needed
+  anywhere**. The line starts at `1.1.0` because the published history ends at
+  `1.0.0-preview.49` and a `0.x` restart would sort BELOW it (major 0 < major 1) — i.e. a
+  downgrade `dotnet tool update` would refuse. Full rationale: `.claude/skills/cut-release/SKILL.md`
+  → *Pick the version*.
 - Local pack + acceptance (leaves the machine clean):
   ```powershell
-  dotnet pack src/Guardrails.Cli -c Release -o nupkg          # nupkg/ is gitignored
-  dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails --version 1.0.0-preview.1
+  dotnet pack src/Guardrails.Cli -c Release -o nupkg -p:Version=1.1.0-local   # nupkg/ is gitignored
+  dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails --version 1.1.0-local
   guardrails validate examples/hello-guardrails/hello-guardrails   # via the INSTALLED tool
   guardrails plan     examples/hello-guardrails/hello-guardrails
   dotnet tool uninstall -g ServantSoftware.Guardrails
   ```
-  (Prerelease → pass `--version 1.0.0-preview.1` or `--prerelease`; use `dotnet tool
-  update` if a version is already installed.) Do NOT run the example's prompt tasks via the
-  installed tool — no token spend.
+  **Stamp the local pack with a `-local` suffix** (`-p:Version=<csproj version>-local`): with
+  `--add-source ./nupkg` the restore sees the local folder AND nuget.org, so a bare
+  `--version 1.1.0` can silently install the PUBLISHED package instead of the bits you just
+  built — which makes the acceptance run prove nothing. A suffix that was never published
+  cannot collide. (Use `dotnet tool update` if a version is already installed.) The `-local`
+  suffix is a dev-pack convention only — **release tags never carry a suffix**. Do NOT run the
+  example's prompt tasks via the installed tool — no token spend.
 - Publish pipeline: `.github/workflows/release.yml` — on a pushed tag `v*`, the 3-OS test
   matrix gates, then the publish job packs with the version derived FROM the tag
   (`-p:Version=${GITHUB_REF_NAME#v}`) and pushes via **Trusted Publishing** (OIDC): the job
@@ -73,7 +86,7 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   `guardrails skills install`.
 - **Skill-version stamping + `--version` drift (#152/#156/#169, `docs/DEPLOYMENT.md` §Skill versioning
   and drift detection)**: each skill's version now lives **inside its own `SKILL.md`
-  frontmatter**, under `metadata.guardrails-version` (e.g. `1.0.0-preview.27`) — NOT in the
+  frontmatter**, under `metadata.guardrails-version` (e.g. `1.1.0`) — NOT in the
   separate `.guardrails-skill-version` sidecar of #152, which #156 replaced. The key is
   **stamped at INSTALL time** by `guardrails skills install` (via `SkillFrontmatterStamper`,
   using the tool's own version `GuardrailsVersion.Current` — a release fact, not author-typed):

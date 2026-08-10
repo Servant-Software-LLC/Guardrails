@@ -11,10 +11,15 @@ namespace Guardrails.Integration.Tests;
 /// <see cref="VersionWithDriftAction"/> through a System.CommandLine pipeline with injected
 /// version, bundled-skills dir, and scan roots so nothing touches the user's real
 /// <c>~/.claude/skills</c>.
+///
+/// <para>The harness version is the STABLE <c>X.Y.0</c> release scheme (issue #421). The drifted
+/// installs are deliberately legacy <c>1.0.0-preview.N</c> values: that mixed pair — a
+/// prerelease-stamped skill against a stable harness — is exactly what a user upgrading off the
+/// preview line has on disk, and it is the drift the warning most needs to surface correctly.</para>
 /// </summary>
 public sealed class VersionDriftCliTests : IDisposable
 {
-    private const string HarnessVersion = "1.0.0-preview.27";
+    private const string HarnessVersion = "1.1.0";
 
     private readonly string _root;
     private readonly string _bundledSkills;
@@ -72,7 +77,7 @@ public sealed class VersionDriftCliTests : IDisposable
     [Fact]
     public async Task Version_StaleFrontmatter_WarnsOnStderr_ExitZero()
     {
-        InstallSkill("plan-breakdown", "1.0.0-preview.26"); // drifted
+        InstallSkill("plan-breakdown", "1.0.0-preview.49"); // drifted
 
         (int exitCode, string outText, string errText) = await InvokeVersionAsync();
 
@@ -81,9 +86,26 @@ public sealed class VersionDriftCliTests : IDisposable
 
         Assert.Contains("WARNING", errText);
         Assert.Contains("plan-breakdown", errText);
-        Assert.Contains("1.0.0-preview.26", errText);            // the stale version
+        Assert.Contains("1.0.0-preview.49", errText);            // the stale version
         Assert.Contains(_scanRoot, errText);                    // the root location
         Assert.Contains("guardrails skills install --force", errText);
+    }
+
+    [Fact]
+    public async Task Version_StableButOlderInstall_WarnsOnStderr_ExitZero()
+    {
+        // Stable-vs-stable drift: both sides are X.Y.0 with no prerelease segment. Pinned
+        // separately from the legacy case above so a stable version is proven to survive the
+        // stamp → read → compare → report path intact (it is echoed verbatim in the warning).
+        InstallSkill("plan-breakdown", "1.0.0");
+
+        (int exitCode, string outText, string errText) = await InvokeVersionAsync();
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Equal(HarnessVersion, outText.Trim());
+        Assert.Contains("WARNING", errText);
+        Assert.Contains("[v1.0.0]", errText);      // the stale version, verbatim and un-mangled
+        Assert.DoesNotContain("unversioned", errText);
     }
 
     [Fact]
@@ -129,7 +151,7 @@ public sealed class VersionDriftCliTests : IDisposable
         // legitimately collapse to the same physical directory when the cwd resolves under the
         // user's profile. Before the fix, every installed skill under that one directory was
         // warned about twice — once per (identical) root string.
-        InstallSkill("plan-breakdown", "1.0.0-preview.26"); // drifted
+        InstallSkill("plan-breakdown", "1.0.0-preview.49"); // drifted
         InstallSkill("guardrails-review", version: null);   // unversioned
 
         var io = new StringConsoleIo();
@@ -168,7 +190,7 @@ public sealed class VersionDriftCliTests : IDisposable
     {
         // A build that does not carry skills: the bundled dir is absent.
         Directory.Delete(_bundledSkills, recursive: true);
-        InstallSkill("plan-breakdown", "1.0.0-preview.26"); // would be drift, but unknown skill
+        InstallSkill("plan-breakdown", "1.0.0-preview.49"); // would be drift, but unknown skill
 
         (int exitCode, string outText, string errText) = await InvokeVersionAsync();
 

@@ -11,10 +11,17 @@ namespace Guardrails.Cli;
 /// frontmatter (<c>metadata.guardrails-version</c>, at install) and the harness version compared
 /// against it both derive from the same running tool, so they stay consistent.
 ///
-/// A local Debug build reports the csproj placeholder (e.g. <c>1.0.0-preview.1</c>); a packed
-/// tool reports the real package version. The pure drift logic
-/// (<see cref="SkillVersionReport"/>) never reads this attribute — versions are injected — so
-/// tests do not depend on the build's stamped value.
+/// A local Debug build reports the csproj default (e.g. <c>1.1.0</c>); a packed tool reports the
+/// real, tag-derived package version. The pure drift logic (<see cref="SkillVersionReport"/>)
+/// never reads this attribute — versions are injected — so tests do not depend on the build's
+/// stamped value.
+///
+/// <para>Releases are STABLE <c>X.Y.0</c> versions with no prerelease suffix (issue #421), but
+/// nothing here assumes that: <see cref="Normalize"/> is prerelease-agnostic (it only strips
+/// <c>+build</c> metadata) and the drift comparison is exact string equality, so a stable
+/// <c>1.1.0</c>, a legacy <c>1.0.0-preview.49</c>, and a mismatch between the two all behave
+/// correctly. That matters in practice: a user upgrading from the preview line has
+/// preview-stamped skills installed against a stable harness.</para>
 /// </summary>
 public static class GuardrailsVersion
 {

@@ -60,7 +60,7 @@ public sealed class ReviewAttestationTests : IDisposable
             Attestation = new ReviewAttestation
             {
                 Source = "review-artifact",
-                Tool = "guardrails 1.0.0-preview.43",
+                Tool = "guardrails 1.1.0",
                 Actor = "david.maltby@hotmail.com",
                 Evidence = new ReviewEvidence
                 {
@@ -79,7 +79,7 @@ public sealed class ReviewAttestationTests : IDisposable
 
         Assert.NotNull(back.Attestation);
         Assert.Equal("review-artifact", back.Attestation!.Source);
-        Assert.Equal("guardrails 1.0.0-preview.43", back.Attestation.Tool);
+        Assert.Equal("guardrails 1.1.0", back.Attestation.Tool);
         Assert.Equal("david.maltby@hotmail.com", back.Attestation.Actor);
 
         Assert.NotNull(back.Attestation.Evidence);
@@ -139,7 +139,7 @@ public sealed class ReviewAttestationTests : IDisposable
             Attestation = new ReviewAttestation
             {
                 Source = "review-artifact",
-                Tool = "guardrails 1.0.0-preview.43",
+                Tool = "guardrails 1.1.0",
                 Evidence = new ReviewEvidence { ReportPath = "state/reviews/r.md", ReportDigest = "sha256:d" }
             }
         };
@@ -170,7 +170,7 @@ public sealed class ReviewAttestationTests : IDisposable
             Attestation = new ReviewAttestation
             {
                 Source = "bare",
-                Tool = "guardrails 1.0.0-preview.43"
+                Tool = "guardrails 1.1.0"
                 // Actor + Evidence null — must NOT appear on the wire.
             }
         };

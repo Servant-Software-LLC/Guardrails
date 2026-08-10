@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to bump to (e.g. v1.0.0-preview.2)"
+        description: "Release tag to bump to (e.g. v1.1.0)"
         required: true
 
 permissions:

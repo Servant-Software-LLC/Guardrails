@@ -10,7 +10,16 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>guardrails</ToolCommandName>
     <PackageId>ServantSoftware.Guardrails</PackageId>
-    <Version>1.0.0-preview.1</Version>
+    <!--
+      Stable versioning (issue #421): releases are vX.Y.0 with NO prerelease suffix, so
+      `dotnet tool install/update -g ServantSoftware.Guardrails` resolves them without the
+      prerelease opt-in flag. The first release under the scheme is 1.1.0 — it must sort
+      ABOVE the last published 1.0.0-preview.49 under SemVer, which a 0.x line would not.
+
+      This value is only the default for a LOCAL `dotnet pack`; a real release is
+      TAG-DERIVED (release.yml packs with the version taken from the pushed v* tag).
+    -->
+    <Version>1.1.0</Version>
 
     <Authors>Servant Software LLC</Authors>
     <Company>Servant Software LLC</Company>

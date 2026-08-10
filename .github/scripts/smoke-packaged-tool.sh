@@ -36,7 +36,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # --- version to pack/install (arg > env > default test value) -----------------------------
-VERSION="${1:-${GUARDRAILS_SMOKE_VERSION:-0.0.0-smoke}}"
+# The default is deliberately STABLE (no prerelease suffix), matching the `vX.Y.0` release
+# scheme (#421). It used to be `0.0.0-smoke`, whose suffix meant the PR-time smoke only ever
+# exercised a PRERELEASE version end-to-end — so the first stable pack->install->stamp->assert
+# run would have been the release itself, which is the wrong place to discover a problem.
+# `release.yml` always passes the real tag version, so that path is unaffected either way.
+VERSION="${1:-${GUARDRAILS_SMOKE_VERSION:-0.0.0}}"
 
 # --- expected bundled skills (the three the CLI csproj globs into the package) -------------
 EXPECTED_SKILLS=(plan-breakdown guardrails-review guardrails-domain-knowledge)
