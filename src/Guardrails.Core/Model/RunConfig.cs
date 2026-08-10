@@ -152,7 +152,7 @@ public sealed record RunConfig
     /// The next attempt still starts from the clean <c>taskBase</c> — this does NOT change — but its retry
     /// feedback exposes the stash as a first-class, agent-controlled input: a <c>git diff --stat</c>
     /// summary, the applyable patch (<c>git apply</c> for ALL the prior work), and the ref
-    /// (<c>git checkout &lt;ref&gt; -- &lt;path&gt;</c> for SOME), so the agent can pull all/some/none instead of
+    /// (<c>git show &lt;ref&gt;:&lt;path&gt;</c> for SOME), so the agent can pull all/some/none instead of
     /// re-deriving from a summary. <b>Issue #306</b> extends this beyond #195's original non-logic
     /// outcomes: salvage now fires for EVERY non-final worktree failure kind — guardrail-fail, action-fail,
     /// timeout, max-turns, output-cap, write-scope — because the agent (informed by the per-guardrail

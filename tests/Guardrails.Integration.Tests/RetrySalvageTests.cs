@@ -111,7 +111,7 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
 
         Assert.Contains("## Prior attempt work is salvageable", feedback);
         Assert.Contains(RefAttempt1, feedback);
-        Assert.Contains($"git checkout \"{RefAttempt1}\" -- <path>", feedback);
+        Assert.Contains($"git show \"{RefAttempt1}:<path>\"", feedback);
         Assert.Contains("output.txt", feedback); // the diff-stat summary names the changed file
     }
 

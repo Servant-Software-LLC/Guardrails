@@ -78,11 +78,62 @@ public sealed class RetryPolicyTests
         // The stash is exposed directly as an applyable patch AND a per-file ref (all/some/none).
         Assert.Contains("## Prior attempt work is salvageable", feedback);
         Assert.Contains("git apply \"/plan/logs/run/10-author-tests/attempt-1/prior-attempt.patch\"", feedback);
-        Assert.Contains("git checkout \"refs/guardrails/10-author-tests/attempt-1\" -- <path>", feedback);
+        Assert.Contains("git show \"refs/guardrails/10-author-tests/attempt-1:<path>\"", feedback);
         // The per-guardrail verdicts tell it exactly what already passes.
         Assert.Contains("- ✅ 01-imports-clean", feedback);
         Assert.Contains("- ✅ 02-tests-fail-on-stubs", feedback);
         Assert.Contains("- ❌ 03-covers-key-behaviors — add a test referencing `ingress`", feedback);
+    }
+
+    [Fact]
+    public void SalvageSection_NeverRecommendsAStateMutatingGitCommandAsThePerFileRoute()
+    {
+        // Issue #374 (regression). The salvage section used to tell the agent to run
+        // `git checkout "<ref>" -- <path>`, but the #252 allowedTools default grants READ-ONLY git
+        // (log/diff/show/status) and DELIBERATELY withholds state-mutating git — plan-breakdown's own
+        // guidance lists `restore`/`reset`/`checkout`/`push`/`commit`/`stash` as ungranted. So the harness
+        // was recommending a command its own permission layer refuses; observed live, the agent gave up on
+        // it and re-applied the changes by hand, burning turns.
+        //
+        // The per-file route must therefore stay inside the read-only set. This pins the DIRECTION (no
+        // ungranted verb is offered as the way to recover a file), not merely today's wording — a future
+        // edit that reintroduces `git checkout`/`git restore` as the recommended per-file command fails
+        // here even if it phrases it differently. Widening the #252 allow-list is a maintainer policy call;
+        // until it is made, the feedback must not presuppose it.
+        var salvage = new SalvageRef(
+            "refs/guardrails/07-impl/attempt-1", " src/A.cs | 2 +-",
+            Attempt: 1, PatchPath: "/plan/logs/run/07-impl/attempt-1/prior-attempt.patch");
+
+        string feedback = RetryPolicy.ForActionFailure(
+            PromptTask("07-impl"), attempt: 2,
+            new ProcessResult
+            {
+                ExitCode = 1,
+                StandardOutput = string.Empty,
+                StandardError = "boom",
+                TimedOut = false,
+                Duration = TimeSpan.FromSeconds(1)
+            },
+            fileWritesRolledBack: true, salvageRef: salvage);
+
+        Assert.Contains("## Prior attempt work is salvageable", feedback);
+
+        // The recovery route actually offered is the allow-listed read-only one.
+        Assert.Contains("git show \"refs/guardrails/07-impl/attempt-1:<path>\"", feedback);
+
+        // No state-mutating git verb is handed over as a RUNNABLE command. The prose may still name the
+        // write-side verbs to warn they are ungranted (that warning is the point — it stops the agent
+        // burning turns discovering the refusal); what it must never contain is a copy-pasteable
+        // `git <verb> …` invocation, which is exactly the shape an agent acts on.
+        foreach (string ungranted in new[] { "git checkout", "git restore", "git reset", "git stash" })
+        {
+            Assert.DoesNotContain(ungranted, feedback);
+        }
+
+        // `git apply` may still be MENTIONED, but only hedged on the permission actually being granted —
+        // it must never read as an unconditional instruction the way it did before #374.
+        Assert.Contains("allowedTools", feedback);
+        Assert.Contains("only if", feedback);
     }
 
     [Fact]
@@ -184,7 +235,7 @@ public sealed class RetryPolicyTests
             Task("12-implement"), attempt: 3, fileWritesRolledBack: true, salvageRef: salvage);
 
         Assert.Contains("git apply \"/plan/logs/run/12-implement/attempt-2/prior-attempt.patch\"", feedback);
-        Assert.Contains("git checkout \"refs/guardrails/12-implement/attempt-2\" -- <path>", feedback);
+        Assert.Contains("git show \"refs/guardrails/12-implement/attempt-2:<path>\"", feedback);
     }
 
     [Fact]
@@ -556,7 +607,7 @@ public sealed class RetryPolicyTests
 
         Assert.Contains("## Prior attempt work is salvageable", feedback);
         Assert.Contains("refs/guardrails/12-implement/attempt-2", feedback);
-        Assert.Contains("git checkout \"refs/guardrails/12-implement/attempt-2\" -- <path>", feedback);
+        Assert.Contains("git show \"refs/guardrails/12-implement/attempt-2:<path>\"", feedback);
         Assert.Contains("src/Foo.cs | 40", feedback);
         Assert.Contains("writeScope", feedback);
         // The rollback disclosure still fires (files WERE rolled back from the working tree) but the

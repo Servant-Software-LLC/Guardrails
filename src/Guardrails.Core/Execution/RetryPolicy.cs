@@ -424,7 +424,7 @@ public static class RetryPolicy
     /// Append the retry-salvage adoption section (issues #195 / #306): the prior attempt's rolled-back
     /// working tree was stashed before the F2 reset discarded it, and this exposes it as a FIRST-CLASS,
     /// agent-controlled retry input — the agent decides whether to pull ALL of it (<c>git apply</c> the
-    /// patch), SOME of it (<c>git checkout &lt;ref&gt; -- &lt;path&gt;</c> per file), or NONE (re-author). The
+    /// patch), SOME of it (<c>git show &lt;ref&gt;:&lt;path&gt;</c> per file), or NONE (re-author). The
     /// framing is deliberately outcome-NEUTRAL: #306 offers this on EVERY non-final worktree failure
     /// (guardrail-fail, action-fail, timeout, max-turns, output-cap, write-scope), not only the #195
     /// non-logic budget-exhaustion outcomes, so it must not claim the attempt "was making real progress"
@@ -452,11 +452,26 @@ public static class RetryPolicy
             // Forward slashes so the command works verbatim on every OS: git accepts `C:/…` on Windows,
             // and it avoids a bash backslash-escape hazard in the emitted command.
             string applyPath = patchPath.Replace('\\', '/');
-            text.AppendLine($"- Pull in EVERYTHING, then edit: `git apply \"{applyPath}\"` re-applies the whole prior");
-            text.AppendLine("  attempt on top of the clean base. (Or open that patch file to read exactly what changed.)");
+            text.AppendLine($"- Pull in EVERYTHING: READ the patch file `{applyPath}` to see exactly what the prior");
+            text.AppendLine("  attempt changed, then re-apply the parts you want with your file-editing tool. (If — and");
+            text.AppendLine($"  only if — this task's `allowedTools` grants it, `git apply \"{applyPath}\"` does that in one");
+            text.AppendLine("  step; it is NOT granted by default, so do not burn turns retrying it when it is refused.)");
         }
 
-        text.AppendLine($"- Pull in ONE file that is correct as-is: `git checkout \"{salvageRef.RefName}\" -- <path>`.");
+        // Issue #374: this section used to recommend `git apply` and `git checkout <ref> -- <path>` flatly,
+        // while the #252 allowedTools default deliberately grants READ-ONLY git (log/diff/show/status) and
+        // explicitly keeps state-mutating git (restore/reset/checkout/push/commit/stash) ungranted. So the
+        // harness was recommending commands its own permission layer refuses, and the agent burned turns
+        // rediscovering a workaround (observed live: it fell back to re-applying edits by hand).
+        // The recommendations now LEAD with the route that always works under the read-only default —
+        // `git show <ref>:<path>` (allow-listed) piped into the agent's own editing tool, which has the
+        // added benefit of being writeScope-enforced at write time rather than caught retroactively.
+        // Widening the #252 allow-list to include the one-liners is a maintainer policy call, deliberately
+        // NOT made here.
+        text.AppendLine($"- Pull in ONE file that is correct as-is: `git show \"{salvageRef.RefName}:<path>\"` prints that");
+        text.AppendLine("  file's prior contents — write them back with your file-editing tool. This works under the");
+        text.AppendLine("  default read-only git permissions; the write-side verbs (checkout/restore) are NOT granted,");
+        text.AppendLine("  so do not spend turns trying them.");
         text.AppendLine($"- Inspect before adopting: `git show --stat \"{salvageRef.RefName}\"` or `git diff <taskBase> \"{salvageRef.RefName}\"`.");
         text.AppendLine("- Re-author, from scratch, only what is INCOMPLETE or wrong — judge each file; do not blindly");
         text.AppendLine("  restore everything.");
