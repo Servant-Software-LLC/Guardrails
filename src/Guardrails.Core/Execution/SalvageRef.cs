@@ -7,7 +7,7 @@ namespace Guardrails.Core.Execution;
 /// patch file. Produced by <see cref="TaskExecutor"/> immediately before the F2 rollback discards the
 /// attempt's uncommitted writes, and consumed by <see cref="RetryPolicy"/> to compose the next attempt's
 /// feedback so the retry agent can, at its own discretion, pull ALL of the prior work (<c>git apply</c>
-/// the patch), SOME of it (<c>git checkout &lt;ref&gt; -- &lt;path&gt;</c> per file), or NONE (re-author) —
+/// the patch), SOME of it (<c>git show &lt;ref&gt;:&lt;path&gt;</c> per file), or NONE (re-author) —
 /// instead of re-deriving everything from a summary. Issue #306 extends this beyond #195's non-logic
 /// outcomes to EVERY non-final worktree failure (guardrail-fail, action-fail, timeout, max-turns,
 /// output-cap, write-scope, …); the clean-slate reset to <c>taskBase</c> remains the DEFAULT starting
