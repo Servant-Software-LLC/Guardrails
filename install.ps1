@@ -20,10 +20,15 @@ $HomeDir = Join-Path $env:LOCALAPPDATA "Programs\Guardrails"
 # --- 1. RID (win-x64 today; extend if you publish win-arm64) ----------------
 $rid = "win-x64"
 
-# --- 2. resolve version (latest release, prereleases included) --------------
+# --- 2. resolve version (latest STABLE release) -----------------------------
 if (-not $Version) {
-  $rel = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases" -Headers @{ "User-Agent" = "guardrails-install" }
-  $Version = ($rel | Select-Object -First 1).tag_name
+  # /releases/latest returns the newest NON-prerelease release — correct now that releases
+  # are stable vX.Y.0 (#421/#423). Do NOT swap back to plain /releases + `Select-Object
+  # -First 1`: create-release in release.yml is NOT gated on `-ci.`, so a throwaway dry-run
+  # tag (v0.0.0-ci.1) publishes a prerelease GitHub release that newest-first would pick,
+  # installing a CI build. /releases/latest skips prereleases entirely.
+  $rel = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ "User-Agent" = "guardrails-install" }
+  $Version = $rel.tag_name
 }
 $Version = $Version -replace '^v',''
 $tag   = "v$Version"

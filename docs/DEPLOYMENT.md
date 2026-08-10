@@ -104,12 +104,20 @@ identically on Windows/macOS/Linux.
 ```bash
 git clone https://github.com/Servant-Software-LLC/Guardrails.git
 cd Guardrails
-dotnet pack src/Guardrails.Cli -c Release -o nupkg
-./install.ps1 -Source ./nupkg          # Windows: installs the tool + the skills
-# or, explicitly / on macOS-Linux:
-dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails
+dotnet pack src/Guardrails.Cli -c Release -o nupkg -p:Version=1.1.0-local
+dotnet tool install --global --add-source ./nupkg ServantSoftware.Guardrails --version 1.1.0-local
 guardrails skills install
 ```
+
+The `-local` suffix and the explicit `--version` are both load-bearing: `--add-source` *adds*
+a feed rather than replacing nuget.org, so packing the csproj's plain version and installing
+without pinning could silently resolve the **published** package instead of the bits you just
+built — and prove nothing. `-local` is a dev-pack convention only; release tags never carry a
+suffix (see [Version scheme](#version-scheme--why-the-line-starts-at-v110)).
+
+> `install.ps1` / `install.sh` are **not** part of this flow — they are the SDK-free
+> bootstrap that downloads a published self-contained binary from GitHub Releases, and they
+> take `-Version` / a version argument, not a local package source.
 
 `guardrails` is now on PATH and the skills are installed. Verify:
 

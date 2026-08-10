@@ -36,15 +36,29 @@ case "$arch" in
 esac
 RID="$os_rid-$arch_rid"
 
-# --- 2. resolve version/tag (latest release, prereleases included) ----------
+# --- 2. resolve version/tag (latest STABLE release) -------------------------
 if [ "${1:-}" != "" ]; then
   VER="${1#v}"
 else
-  # /releases lists newest-first and INCLUDES prereleases, so it resolves the newest
-  # release whether or not GitHub flagged it as one. Releases are now stable vX.Y.0, but
-  # /releases/latest skips prereleases entirely and would 404 until the first stable one
-  # is cut — this endpoint works across that transition. No jq dependency.
-  VER="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" \
+  # /releases/latest returns the newest NON-prerelease release, which is exactly what we
+  # want now that releases are stable vX.Y.0 (#421/#423).
+  #
+  # It must NOT be swapped back to plain /releases (newest-first, prereleases included):
+  # `release.yml`'s create-release job is NOT gated on `-ci.`, so a throwaway dry-run tag
+  # like v0.0.0-ci.1 DOES publish a GitHub release (flagged prerelease). Under newest-first
+  # that CI junk would be the newest entry and this installer would hand a user a dry-run
+  # build. /releases/latest skips prereleases, so it ignores those entirely.
+  #
+  # (Before v1.1.0 every release was a prerelease and this endpoint 404'd, which is why the
+  # old newest-first form existed. That transition is over.) No jq dependency.
+  #
+  # The response is captured to a variable BEFORE grepping rather than piped straight into
+  # `grep -m1`. Piping is what the old code did and it is unsafe under `set -o pipefail`:
+  # grep exits at the first match, closing the pipe, and curl then dies with exit 23
+  # ("Failure writing output") — which pipefail propagates, aborting the whole install.
+  # Verified failing that way; assigning first removes the pipe from curl entirely.
+  RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")"
+  VER="$(printf '%s' "$RELEASE_JSON" \
         | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name" *: *"v?([^"]+)".*/\1/')"
 fi
 [ -n "$VER" ] || { echo "ERROR: could not resolve a release version." >&2; exit 1; }
