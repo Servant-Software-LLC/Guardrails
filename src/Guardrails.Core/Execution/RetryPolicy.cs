@@ -463,15 +463,20 @@ public static class RetryPolicy
         // explicitly keeps state-mutating git (restore/reset/checkout/push/commit/stash) ungranted. So the
         // harness was recommending commands its own permission layer refuses, and the agent burned turns
         // rediscovering a workaround (observed live: it fell back to re-applying edits by hand).
-        // The recommendations now LEAD with the route that always works under the read-only default —
-        // `git show <ref>:<path>` (allow-listed) piped into the agent's own editing tool, which has the
-        // added benefit of being writeScope-enforced at write time rather than caught retroactively.
+        // The recommendations now LEAD with `git show <ref>:<path>` piped into the agent's own editing
+        // tool. The reason is REACH, not enforcement: reading a blob and writing it back with the editing
+        // tool is the only per-file route still available to a plan whose allowedTools grant no git WRITE
+        // verbs at all. It is NOT more strongly enforced than a git write — neither route is checked
+        // against writeScope at write time. `WriteScope.IsInScope` is consulted in exactly three places:
+        // `HarnessWrite` (the harness's OWN write), `StagingMover` (a path match) and the RETROSPECTIVE
+        // `WriteScopeCheck`; `WorktreeContainmentHook` enforces worktree containment only. Whichever route
+        // the agent takes, the same retroactive check over the attempt's FINAL state catches it.
         // Widening the #252 allow-list to include the one-liners is a maintainer policy call, deliberately
         // NOT made here.
         text.AppendLine($"- Pull in ONE file that is correct as-is: `git show \"{salvageRef.RefName}:<path>\"` prints that");
-        text.AppendLine("  file's prior contents — write them back with your file-editing tool. This works under the");
-        text.AppendLine("  default read-only git permissions; the write-side verbs (checkout/restore) are NOT granted,");
-        text.AppendLine("  so do not spend turns trying them.");
+        text.AppendLine("  file's prior contents — write them back with your file-editing tool. This is the per-file");
+        text.AppendLine("  route to prefer; the write-side verbs (checkout/restore) are not granted by default, so do");
+        text.AppendLine("  not spend turns trying them.");
         text.AppendLine($"- Inspect before adopting: `git show --stat \"{salvageRef.RefName}\"` or `git diff <taskBase> \"{salvageRef.RefName}\"`.");
         text.AppendLine("- Re-author, from scratch, only what is INCOMPLETE or wrong — judge each file; do not blindly");
         text.AppendLine("  restore everything.");
