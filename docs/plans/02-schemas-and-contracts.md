@@ -2743,8 +2743,8 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
     produces a `needs-human` answer `text` (there is no answer kind that resolves the review gate), and an
     off-menu choice (one not among the escalation's own options) is rejected (a bounded pick).
 
-**`needsHarnessWrite` — harness-mediated write escape hatch for `.claude/` (issues #191, #437).** In
-worktree mode, a task action running as a Claude Code subprocess can **never** write under
+**`needsHarnessWrite` — harness-mediated write escape hatch for `.claude/` (issues #191, #437, #445).**
+In worktree mode, a task action running as a Claude Code subprocess can **never** write under
 `.claude/` — the runtime's tool-permission layer refuses `.claude/` writes unconditionally in a
 fresh, never-interactively-approved segment worktree (broader than the new-subdirectory-only gap
 issue #101 fixed: this affects EXISTING files too), and the refusal survives every write mechanism
@@ -2759,25 +2759,63 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
 // anchored-edit form — for MODIFYING an existing file (issue #437):
 { "needsHarnessWrite": { "path": ".claude/skills/guardrails-review/SKILL.md", "reason": "...",
     "edits": [ { "old": "<verbatim anchor text>", "new": "<replacement text>" } ] } }
+
+// ARRAY form — SEVERAL files in ONE attempt, applied atomically (issue #445). Entries mix freely:
+{ "needsHarnessWrite": [
+    { "path": ".claude/skills/plan-breakdown/SKILL.md",           "reason": "...", "edits": [ ... ] },
+    { "path": ".claude/skills/plan-breakdown/references/x.md",    "reason": "...", "edits": [ ... ] },
+    { "path": ".claude/skills/plan-breakdown/references/new.md",  "reason": "...", "content": "..." } ] }
 ```
 
 - **Wire contract.** A root fragment key, read from the SAME already-written `GUARDRAILS_STATE_OUT`
-  file `needsHuman` uses, via the same "read once" shape. `path` is workspace-relative (the same
-  convention `writeScope` entries use — the segment worktree in worktree mode, the plan workspace in
-  serial mode); `reason` is optional and human-readable. The request carries **exactly one of two
-  mutually exclusive payloads**:
+  file `needsHuman` uses, via the same "read once" shape. The key's value is **either a single ENTRY
+  object or an ARRAY of entry objects** — the array is additive and the single-object form is
+  unchanged, byte for byte, including its failure messages. Each entry has a `path`, workspace-relative
+  (the same convention `writeScope` entries use — the segment worktree in worktree mode, the plan
+  workspace in serial mode), an optional human-readable `reason`, and **exactly one of two mutually
+  exclusive payloads**:
   - **`content`** (string) — the literal, complete file content. The form for **CREATING** a file.
   - **`edits`** (non-empty array of `{"old": string, "new": string}`) — anchored old→new replacements
     the harness performs against the EXISTING file. The form for **MODIFYING** one (issue #437).
 
-  A fragment carrying BOTH, NEITHER, no `path`, an empty `edits` array, a non-string `old`/`new`, or an
+  An entry carrying BOTH, NEITHER, no `path`, an empty `edits` array, a non-string `old`/`new`, or an
   empty `old` is **rejected with an actionable message naming the mistake** — it is not silently
   dropped (which would surface only as a cryptic foreign-key merge error). An `edits` payload against a
-  path that does not exist is likewise rejected, pointing at `content` for creation.
-
-  **Singular only in v1** — one harness-write REQUEST per attempt (though that one request may carry
-  many `edits` to the ONE file it names). A task needing multiple `.claude/` FILES touched does so
-  across multiple attempts/retries; this is a documented v1 limitation, not solved here.
+  path that does not exist is likewise rejected, pointing at `content` for creation. In the array form
+  every message is **index-qualified** (`needsHarnessWrite[2].path is missing …`) so the agent fixes the
+  one element rather than re-authoring the request; **one bad entry invalidates the whole array** —
+  the batch is atomic, so there is no "apply the entries that parsed".
+- **Why the array exists (issue #445) — the CARDINALITY dimension.** #437 fixed the SIZE dimension
+  (a large file became reachable); a request was still **singular per attempt**, so a task whose
+  deliverable spans **two or more** `.claude/` files **could not converge at all**. The documented
+  pre-#445 fallback ("a task producing several `.claude/` files does so across attempts") **does not
+  work**: a guardrail failure rolls the segment back to a clean base and discards the previous
+  attempt's write, so attempt N+1 begins exactly where attempt N did. Observed live (run
+  `2026-08-11T14-23-39Z-76a7`): a task correcting one stale sentence in three files under
+  `.claude/skills/plan-breakdown/` fixed the one file it could, failed its guardrail ("withholding
+  wording still present in: …"), and on attempt 2 honestly halted — *"Three files match **in the clean
+  base**"*. The array lets one attempt deliver the whole set. Splitting one deliverable across N tasks
+  is also NOT an adequate answer: it shards by FILE rather than by deliverable (cutting against #87's
+  one-skill-directory-per-task sizing), costs N agent invocations / worktrees / merges, and leaves a
+  shared guardrail that fails until the last of them merges.
+- **The batch is ATOMIC ACROSS ALL ENTRIES (issue #445) — two strictly ordered phases.** **Phase 1**
+  resolves EVERY entry — every safety check, every anchor in every file — against IN-MEMORY copies;
+  **not one target is opened for writing until the LAST entry of the LAST file has resolved.** Any
+  failure, in any entry, for any reason, returns immediately with **nothing written and every target
+  byte-identical**. Only then does **phase 2** write. A partial multi-file write is *strictly worse
+  than a rejection*: it leaves a half-corrected tree the next rollback may or may not clean up, and the
+  agent cannot tell which files it still owes. (An IO fault during phase 2 — disk full, a genuinely
+  unwritable location — is the one case phase 1 cannot pre-empt; the entries already written are then
+  restored on a best-effort basis from the originals captured in phase 1.) A multi-entry failure
+  message states plainly that the whole batch was abandoned, so the retry re-emits the WHOLE array.
+- **Duplicate destinations are REJECTED, never last-wins (issue #445).** Two entries resolving to the
+  same file (compared on the RESOLVED path, so `a/b.md` and `a/./b.md` are caught; case-insensitively
+  on Windows/macOS) fail the batch: the order a model happened to list them in is not a contract, so
+  "which one wins?" has no defensible answer, and silently discarding one set of changes is exactly the
+  class of failure this hatch must not have. The remedy is one entry per file, carrying every change to
+  it. An **EMPTY array** is likewise rejected with an actionable message rather than treated as a
+  silent no-op (which would surface, several steps later, as an unrelated "deliverable missing"
+  guardrail failure).
 - **Why the anchored form exists (issue #437).** Full-content mode requires the agent to emit the
   ENTIRE file in its state fragment, so it is **unusable above a certain size**: a 204 KB skill file is
   ~60k tokens once JSON-escaped — at or over a runner's `maxOutputTokens` cap — which made a task whose
@@ -2809,7 +2847,8 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
     A half-applied set is worse than a rejected one. Edits apply **sequentially** (edit N+1 matches the
     result of edits 1..N, as any editor would), which is fail-safe in both directions: an earlier edit
     that destroyed a later anchor yields zero matches, one that duplicated it yields two, and both are
-    rejected before anything is written.
+    rejected before anything is written. Since #445 this holds **across the whole batch**: one bad
+    anchor in file 3 leaves files 1 and 2 byte-identical too (see the two-phase contract above).
   - **Byte fidelity.** A UTF-8 BOM on the target is preserved (the harness otherwise writes BOM-less
     UTF-8, which would change three bytes the edit never touched). A target that is **not valid UTF-8**
     is refused outright rather than decoded lossily — the default decoder would turn undecodable bytes
@@ -2833,17 +2872,19 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   only, never verification — the task's guardrails still run afterward. If a fragment carries BOTH
   `needsHuman` and `needsHarnessWrite`, `needsHuman` wins (checked first; a human-decision halt
   trumps a mechanical write request).
-- **Three load-bearing safety checks, ALL run BEFORE the write — and, since #437, before the target
-  file is so much as READ (a security boundary — otherwise any task could claim "I'm blocked, please
-  write this for me" and bypass `writeScope` entirely). All three are form-agnostic: `edits` is subject
-  to exactly the same three checks as `content`, so the anchored form cannot reach a path the
-  full-content form could not:**
+- **Three load-bearing safety checks, run PER ENTRY and ALL BEFORE the write — and, since #437, before
+  that entry's target file is so much as READ (a security boundary — otherwise any task could claim
+  "I'm blocked, please write this for me" and bypass `writeScope` entirely). All three are
+  form-agnostic: `edits` is subject to exactly the same three checks as `content`, so the anchored form
+  cannot reach a path the full-content form could not. Since #445 they are also **array-agnostic**: one
+  offending entry anywhere in the array fails the WHOLE batch, so an array can never be used to land
+  legitimate writes alongside a rejected or denied one:**
   1. **Workspace-escape check — ALWAYS runs, independent of `writeScope`.** Reuses
      `WorkspaceContainment.Escapes` (the same "does this path escape the boundary" predicate used
      elsewhere). An absolute path or a `../` climb-out is rejected even for a task with NO declared
      `writeScope` — the segment-worktree containment is the boundary in that case.
-  2. **Permission-file carve-out — ALWAYS runs (issue #321).** A request whose path resolves to
-     `.claude/settings.json` or `.claude/settings.local.json` is **DENIED**: the harness will never
+  2. **Permission-file carve-out — ALWAYS runs, for EVERY entry (issue #321).** An entry whose path
+     resolves to `.claude/settings.json` or `.claude/settings.local.json` is **DENIED**: the harness will never
      write a permission-granting settings file on an agent's behalf, because honoring it would let a
      prompt widen its OWN tool-permission surface (the exact escalation the escape hatch must not
      enable). A human must author these. Checked BEFORE the `writeScope`-membership check so a task
@@ -2875,11 +2916,12 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
      ask a human to widen it.
   2. **Denied** — the #321 permission-file carve-out. Retrying the same path can never clear a policy,
      so the feedback routes to a human.
-  3. **Not applied** (issue #437) — in bounds and permitted, but inapplicable AS WRITTEN: an unusable
-     payload, an anchor that matched zero or several times, `edits` against a missing file, `content`
-     against a too-large existing target, or a no-op edit set. **The target is byte-identical** — the
-     feedback says so, restates BOTH accepted forms in full, and names the exactly-once anchor rule,
-     because this class is fixable by simply re-emitting a corrected request.
+  3. **Not applied** (issues #437, #445) — in bounds and permitted, but inapplicable AS WRITTEN: an
+     unusable payload, an anchor that matched zero or several times, `edits` against a missing file,
+     `content` against a too-large existing target, a no-op edit set, an EMPTY entry array, or two
+     entries targeting one file. **EVERY target is byte-identical** — the
+     feedback says so, restates BOTH payload forms AND the multi-file array form in full, and names the
+     exactly-once anchor rule, because this class is fixable by simply re-emitting a corrected request.
 - **The escape hatch is honored even after a direct-write PROBE (issues #321 / #325).** An agent that
   probed a direct `.claude/` write first (getting refused, which the permission scanner captures into
   the attempt's blocked-write paths) and THEN emitted `needsHarnessWrite` is served, because the
@@ -3257,7 +3299,8 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
 path(s) and the concrete fix. For a `.claude/` wall the **PRIMARY** remedy is `needsHarnessWrite`
 (#191, §9): re-author the task's action prompt to hand the file to the harness process (which is not
 subject to the tool-permission layer) via a `{"needsHarnessWrite": {"path","edits","reason"}}` fragment
-(or `{"path","content","reason"}` when CREATING the file — #437) instead of writing `.claude/` directly
+(or `{"path","content","reason"}` when CREATING the file — #437; or an ARRAY of those entries when the
+deliverable spans SEVERAL files, applied atomically — #445) instead of writing `.claude/` directly
 — `plan-breakdown` now injects this instruction for any
 `.claude/` deliverable (Step 5b). The autonomous alternative is `stagingOutputs` (§3.5): write the
 deliverable to a staging path OUTSIDE `.claude/` and let the harness move it into place. A session-wide

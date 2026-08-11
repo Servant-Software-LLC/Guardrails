@@ -5,12 +5,13 @@ using Guardrails.Core.Execution;
 namespace Guardrails.Core.Tests;
 
 /// <summary>
-/// Unit tests for the <c>needsHarnessWrite</c> escape hatch (issues #191, #437, SSOT §9): parsing both
-/// wire forms, the prospective safety checks (workspace-escape ALWAYS; the #321 permission-file
-/// carve-out ALWAYS; writeScope membership only when declared), and performing the write —
-/// full-content or anchored-edit. <see cref="HarnessWrite"/> is pure filesystem logic with no process
-/// spawning, so these are plain Core unit tests against a real temp directory standing in for the
-/// effective workspace.
+/// Unit tests for the <c>needsHarnessWrite</c> escape hatch (issues #191, #437, #445, SSOT §9): parsing
+/// every wire form (single object, ARRAY of entries; full-content, anchored-edit), the prospective
+/// safety checks applied PER ENTRY (workspace-escape ALWAYS; the #321 permission-file carve-out ALWAYS;
+/// writeScope membership only when declared), and performing the write(s) — including the #445
+/// cross-file atomicity guarantee that a batch is applied in full or not at all.
+/// <see cref="HarnessWrite"/> is pure filesystem logic with no process spawning, so these are plain
+/// Core unit tests against a real temp directory standing in for the effective workspace.
 /// </summary>
 public sealed class HarnessWriteTests : IDisposable
 {
@@ -32,15 +33,18 @@ public sealed class HarnessWriteTests : IDisposable
             { "needsHarnessWrite": { "path": ".claude/skills/foo/SKILL.md", "content": "hello", "reason": "runtime blocks .claude/ writes" } }
             """);
 
-        HarnessWriteRequest? request = HarnessWrite.RequestFrom(fragmentPath);
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(fragmentPath);
 
-        Assert.NotNull(request);
-        Assert.Null(request!.InvalidReason);
+        Assert.NotNull(batch);
+        Assert.Null(batch!.InvalidReason);
+        // A single-object payload is a batch of ONE — this is what keeps the pre-#445 wire form working.
+        HarnessWriteRequest request = Assert.Single(batch.Requests);
         Assert.Equal(".claude/skills/foo/SKILL.md", request.Path);
         Assert.Equal("hello", request.Content);
         Assert.Equal("runtime blocks .claude/ writes", request.Reason);
         Assert.False(request.IsEditForm);
         Assert.Empty(request.Edits);
+        Assert.Equal(".claude/skills/foo/SKILL.md", batch.PathForDisplay);
     }
 
     [Fact]
@@ -48,10 +52,10 @@ public sealed class HarnessWriteTests : IDisposable
     {
         string fragmentPath = WriteFragment("""{ "needsHarnessWrite": { "path": "a.txt", "content": "x" } }""");
 
-        HarnessWriteRequest? request = HarnessWrite.RequestFrom(fragmentPath);
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(fragmentPath);
 
-        Assert.NotNull(request);
-        Assert.Null(request!.Reason);
+        Assert.NotNull(batch);
+        Assert.Null(Assert.Single(batch!.Requests).Reason);
     }
 
     [Theory]
@@ -60,8 +64,8 @@ public sealed class HarnessWriteTests : IDisposable
     [InlineData("not json at all")]
     public void RequestFrom_ReturnsNull_ForAbsentOrNonObjectKey(string fragmentContent)
     {
-        // Only "there is no harness-write REQUEST here" yields null. A key that IS an object but whose
-        // payload is unusable is surfaced with an InvalidReason instead (see below) — #437.
+        // Only "there is no harness-write REQUEST here" yields null. A key that IS an object or an ARRAY
+        // but whose payload is unusable is surfaced with an InvalidReason instead (see below) — #437/#445.
         string fragmentPath = WriteFragment(fragmentContent);
 
         Assert.Null(HarnessWrite.RequestFrom(fragmentPath));
@@ -81,10 +85,11 @@ public sealed class HarnessWriteTests : IDisposable
               "edits": [ { "old": "alpha", "new": "beta" }, { "old": "gamma", "new": "" } ] } }
             """);
 
-        HarnessWriteRequest? request = HarnessWrite.RequestFrom(fragmentPath);
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(fragmentPath);
 
-        Assert.NotNull(request);
-        Assert.Null(request!.InvalidReason);
+        Assert.NotNull(batch);
+        Assert.Null(batch!.InvalidReason);
+        HarnessWriteRequest request = Assert.Single(batch.Requests);
         Assert.True(request.IsEditForm);
         Assert.Null(request.Content);
         Assert.Equal("too big for full content", request.Reason);
@@ -114,21 +119,22 @@ public sealed class HarnessWriteTests : IDisposable
         // #437: a needsHarnessWrite OBJECT the parser can read but not USE must not be silently dropped —
         // dropping it left the agent facing a generic foreign-key merge error with no clue what it got
         // wrong. It comes back with an InvalidReason naming the mistake.
-        HarnessWriteRequest? request = HarnessWrite.RequestFrom(WriteFragment(fragment));
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(WriteFragment(fragment));
 
-        Assert.NotNull(request);
-        Assert.NotNull(request!.InvalidReason);
-        Assert.Contains(expectedFragmentOfReason, request.InvalidReason, StringComparison.Ordinal);
+        Assert.NotNull(batch);
+        Assert.NotNull(batch!.InvalidReason);
+        Assert.Contains(expectedFragmentOfReason, batch.InvalidReason, StringComparison.Ordinal);
+        Assert.Empty(batch.Requests);
     }
 
     [Fact]
     public void ValidateAndApply_UnusablePayload_NotApplied_WritesNothing()
     {
-        HarnessWriteRequest? request = HarnessWrite.RequestFrom(WriteFragment("""
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(WriteFragment("""
             { "needsHarnessWrite": { "path": "both.txt", "content": "x", "edits": [{"old":"a","new":"b"}] } }
             """));
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request!, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch!, _workspace, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -172,10 +178,10 @@ public sealed class HarnessWriteTests : IDisposable
     {
         var request = new HarnessWriteRequest { Path = ".claude/skills/foo/SKILL.md", Content = "# Foo\n" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.True(outcome.Succeeded);
-        Assert.Equal(".claude/skills/foo/SKILL.md", outcome.WrittenPath);
+        Assert.Equal(".claude/skills/foo/SKILL.md", Assert.Single(outcome.WrittenPaths));
         string written = File.ReadAllText(Path.Combine(_workspace, ".claude", "skills", "foo", "SKILL.md"));
         Assert.Equal("# Foo\n", written);
     }
@@ -188,7 +194,7 @@ public sealed class HarnessWriteTests : IDisposable
         File.WriteAllText(Path.Combine(existing, "SKILL.md"), "OLD");
 
         var request = new HarnessWriteRequest { Path = ".claude/skills/foo/SKILL.md", Content = "NEW" };
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.True(outcome.Succeeded);
         Assert.Equal("NEW", File.ReadAllText(Path.Combine(existing, "SKILL.md")));
@@ -201,7 +207,7 @@ public sealed class HarnessWriteTests : IDisposable
     {
         var request = new HarnessWriteRequest { Path = "src/Sneaky.cs", Content = "class Sneaky {}" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.WasRejected);
@@ -220,7 +226,7 @@ public sealed class HarnessWriteTests : IDisposable
 
         // Even an extremely permissive writeScope must not let a workspace-escaping path through —
         // the workspace-escape check is INDEPENDENT of writeScope (issue #191).
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: ["**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: ["**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.WasRejected);
@@ -233,7 +239,7 @@ public sealed class HarnessWriteTests : IDisposable
         string absolute = OperatingSystem.IsWindows() ? @"C:\Windows\System32\evil.dll" : "/etc/passwd";
         var request = new HarnessWriteRequest { Path = absolute, Content = "pwned" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: ["**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: ["**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.WasRejected);
@@ -244,7 +250,7 @@ public sealed class HarnessWriteTests : IDisposable
     {
         var request = new HarnessWriteRequest { Path = "../outside.txt", Content = "pwned" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.WasRejected);
@@ -261,7 +267,7 @@ public sealed class HarnessWriteTests : IDisposable
         // containment + the worktree-containment hook are the backstops in that case.
         var request = new HarnessWriteRequest { Path = ".claude/skills/foo/SKILL.md", Content = "# Foo\n" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.True(outcome.Succeeded);
         Assert.True(File.Exists(Path.Combine(_workspace, ".claude", "skills", "foo", "SKILL.md")));
@@ -274,7 +280,7 @@ public sealed class HarnessWriteTests : IDisposable
         // "in scope" of, so there is nothing to reject against (still workspace-contained).
         var request = new HarnessWriteRequest { Path = "anywhere.txt", Content = "x" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: []);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: []);
 
         Assert.True(outcome.Succeeded);
     }
@@ -291,7 +297,7 @@ public sealed class HarnessWriteTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_workspace, ".claude", "occupied"));
         var request = new HarnessWriteRequest { Path = ".claude/occupied", Content = "x" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.False(outcome.WasRejected, "a write failure after passing validation is NOT a rejection");
@@ -303,7 +309,7 @@ public sealed class HarnessWriteTests : IDisposable
     {
         var request = new HarnessWriteRequest { Path = "   ", Content = "x" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.WasRejected);
@@ -320,7 +326,7 @@ public sealed class HarnessWriteTests : IDisposable
     {
         var request = new HarnessWriteRequest { Path = settingsPath, Content = "{\"permissions\":{}}" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsPolicyDenied);
@@ -344,7 +350,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "\"allow\":[]", New = "\"allow\":[\"Write(.claude/**)\"]" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsPolicyDenied);
@@ -365,7 +371,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "THE ANCHOR", New = "THE REPLACEMENT" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.True(outcome.Succeeded, outcome.FailureReason);
         Assert.Equal("line one\nline two\nTHE REPLACEMENT\nline four\nline five\n", File.ReadAllText(full));
@@ -386,7 +392,7 @@ public sealed class HarnessWriteTests : IDisposable
             ]
         };
 
-        Assert.True(HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null).Succeeded);
+        Assert.True(Apply(request, writeScope: null).Succeeded);
         Assert.Equal("ALPHA\nbravo\nCHARLIE\n", File.ReadAllText(full));
     }
 
@@ -401,7 +407,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "DELETE ME\n", New = "" }]
         };
 
-        Assert.True(HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null).Succeeded);
+        Assert.True(Apply(request, writeScope: null).Succeeded);
         Assert.Equal("keep\nkeep\n", File.ReadAllText(full));
     }
 
@@ -421,7 +427,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = anchorLine, New = "CORRECTED-PASSAGE: fixed." }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.True(outcome.Succeeded, outcome.FailureReason);
         string after = File.ReadAllText(full);
@@ -444,7 +450,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "NOT IN THE FILE", New = "whatever" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -467,7 +473,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "repeat", New = "CHANGED" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -490,7 +496,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "aa", New = "b" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.Contains("AMBIGUOUS", outcome.FailureReason, StringComparison.Ordinal);
@@ -516,7 +522,7 @@ public sealed class HarnessWriteTests : IDisposable
             ]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -542,7 +548,7 @@ public sealed class HarnessWriteTests : IDisposable
             ]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.Contains("edits[1]", outcome.FailureReason, StringComparison.Ordinal);
@@ -565,7 +571,7 @@ public sealed class HarnessWriteTests : IDisposable
             ]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.Contains("AMBIGUOUS", outcome.FailureReason, StringComparison.Ordinal);
@@ -586,7 +592,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "indented  anchor line", New = "x" }]  // double space
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.Contains("VERBATIM", outcome.FailureReason, StringComparison.Ordinal);
@@ -605,7 +611,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "exact case anchor", New = "x" }]
         };
 
-        Assert.False(HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null).Succeeded);
+        Assert.False(Apply(request, writeScope: null).Succeeded);
         Assert.Equal(original, File.ReadAllText(full));
     }
 
@@ -618,7 +624,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "a", New = "b" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -638,7 +644,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "unchanged", New = "unchanged" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -661,7 +667,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "class Sneaky", New = "public class Sneaky" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.WasRejected);
@@ -678,7 +684,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "a", New = "b" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: ["**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: ["**"]);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.WasRejected);
@@ -702,7 +708,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "THE\nANCHOR", New = "THE\nREPLACEMENT" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.True(outcome.Succeeded, outcome.FailureReason);
         Assert.Equal("alpha\r\nTHE\r\nREPLACEMENT\r\nomega\r\n", File.ReadAllText(full));
@@ -720,7 +726,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "THE\r\nANCHOR", New = "THE\r\nREPLACEMENT" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.True(outcome.Succeeded, outcome.FailureReason);
         Assert.Equal("alpha\nTHE\nREPLACEMENT\nomega\n", File.ReadAllText(full));
@@ -739,7 +745,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "THE\nANCHOR", New = "x" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.Contains("AMBIGUOUS", outcome.FailureReason, StringComparison.Ordinal);
@@ -762,7 +768,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "ANCHOR", New = "REPLACED" }]
         };
 
-        Assert.True(HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null).Succeeded);
+        Assert.True(Apply(request, writeScope: null).Succeeded);
 
         byte[] after = File.ReadAllBytes(full);
         Assert.Equal([(byte)0xEF, (byte)0xBB, (byte)0xBF], after[..3]);
@@ -787,7 +793,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "ANCHOR", New = "REPLACED" }]
         };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -807,7 +813,7 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "ANCHOR", New = "café" }]
         };
 
-        Assert.True(HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null).Succeeded);
+        Assert.True(Apply(request, writeScope: null).Succeeded);
         Assert.Equal("prélude — naïve\ncafé\n", File.ReadAllText(full));
     }
 
@@ -823,7 +829,7 @@ public sealed class HarnessWriteTests : IDisposable
 
         var request = new HarnessWriteRequest { Path = TargetRelative, Content = "oops, truncated" };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: null);
 
         Assert.False(outcome.Succeeded);
         Assert.True(outcome.IsNotApplied);
@@ -839,7 +845,7 @@ public sealed class HarnessWriteTests : IDisposable
 
         var request = new HarnessWriteRequest { Path = TargetRelative, Content = "replaced" };
 
-        Assert.True(HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null).Succeeded);
+        Assert.True(Apply(request, writeScope: null).Succeeded);
         Assert.Equal("replaced", File.ReadAllText(full));
     }
 
@@ -851,7 +857,7 @@ public sealed class HarnessWriteTests : IDisposable
         string big = new string('y', HarnessWrite.FullContentMaxBytes * 2);
         var request = new HarnessWriteRequest { Path = ".claude/skills/new/SKILL.md", Content = big };
 
-        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(request, _workspace, writeScope: [".claude/**"]);
+        HarnessWriteOutcome outcome = Apply(request, writeScope: [".claude/**"]);
 
         Assert.True(outcome.Succeeded, outcome.FailureReason);
         Assert.Equal(big.Length, new FileInfo(Path.Combine(_workspace, ".claude", "skills", "new", "SKILL.md")).Length);
@@ -870,22 +876,393 @@ public sealed class HarnessWriteTests : IDisposable
             Edits = [new HarnessWriteEdit { Old = "ANCHOR", New = "FIXED" }]
         };
 
-        Assert.True(HarnessWrite.ValidateAndApply(request, _workspace, writeScope: null).Succeeded);
+        Assert.True(Apply(request, writeScope: null).Succeeded);
         Assert.Equal(original.Replace("ANCHOR", "FIXED", StringComparison.Ordinal), File.ReadAllText(full));
+    }
+
+    // ── #445 parsing: the ARRAY form ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void RequestFrom_ParsesAnArrayOfEntries_MixedForms()
+    {
+        string fragmentPath = WriteFragment("""
+            { "needsHarnessWrite": [
+              { "path": ".claude/skills/foo/SKILL.md", "reason": "correct the wording",
+                "edits": [ { "old": "alpha", "new": "beta" } ] },
+              { "path": ".claude/skills/foo/references/schemas.md", "reason": "create it", "content": "hello" } ] }
+            """);
+
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(fragmentPath);
+
+        Assert.NotNull(batch);
+        Assert.Null(batch!.InvalidReason);
+        Assert.Collection(batch.Requests,
+            first =>
+            {
+                Assert.Equal(".claude/skills/foo/SKILL.md", first.Path);
+                Assert.True(first.IsEditForm);
+                Assert.Equal("alpha", Assert.Single(first.Edits).Old);
+            },
+            second =>
+            {
+                Assert.Equal(".claude/skills/foo/references/schemas.md", second.Path);
+                Assert.False(second.IsEditForm);
+                Assert.Equal("hello", second.Content);
+            });
+        // Both paths are named in the display string the retry feedback headlines with.
+        Assert.Contains("SKILL.md", batch.PathForDisplay, StringComparison.Ordinal);
+        Assert.Contains("schemas.md", batch.PathForDisplay, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RequestFrom_SingleElementArray_IsJustABatchOfOne()
+    {
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(WriteFragment("""
+            { "needsHarnessWrite": [ { "path": "a.txt", "content": "x" } ] }
+            """));
+
+        Assert.NotNull(batch);
+        Assert.Null(batch!.InvalidReason);
+        Assert.Equal("a.txt", Assert.Single(batch.Requests).Path);
+    }
+
+    [Fact]
+    public void RequestFrom_EmptyArray_RejectedWithAnActionableReason_NotASilentNoOp()
+    {
+        // A silent no-op here would be the worst outcome: the attempt would sail on to guardrails that
+        // fail for a reason ("the deliverable is missing") disconnected from the actual mistake.
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(WriteFragment("""{ "needsHarnessWrite": [] }"""));
+
+        Assert.NotNull(batch);
+        Assert.NotNull(batch!.InvalidReason);
+        Assert.Contains("EMPTY array", batch.InvalidReason, StringComparison.Ordinal);
+        Assert.Empty(batch.Requests);
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: null);
+        Assert.False(outcome.Succeeded);
+        Assert.True(outcome.IsNotApplied);
+    }
+
+    [Theory]
+    [InlineData("""{ "needsHarnessWrite": [ { "path": "a.txt", "content": "x" }, "nope" ] }""", "needsHarnessWrite[1] is not an object")]
+    [InlineData("""{ "needsHarnessWrite": [ { "path": "a.txt", "content": "x" }, { "content": "y" } ] }""", "needsHarnessWrite[1].path is missing")]
+    [InlineData("""{ "needsHarnessWrite": [ { "path": "a.txt", "content": "x" }, { "path": "b.txt" } ] }""", "needsHarnessWrite[1] carries neither")]
+    [InlineData("""{ "needsHarnessWrite": [ { "path": "a.txt", "content": "x" }, { "path": "b.txt", "content": "y", "edits": [{"old":"a","new":"b"}] } ] }""", "needsHarnessWrite[1] carries BOTH")]
+    [InlineData("""{ "needsHarnessWrite": [ { "path": "a.txt", "content": "x" }, { "path": "b.txt", "edits": [{"old":"","new":"b"}] } ] }""", "needsHarnessWrite[1].edits[0].old is empty")]
+    public void RequestFrom_OneBadEntry_InvalidatesTheWholeArray_WithAnIndexQualifiedReason(
+        string fragment, string expectedFragmentOfReason)
+    {
+        // The batch is ATOMIC, so there is no such thing as "apply the entries that parsed". The reason
+        // is index-qualified so the agent fixes the one element rather than re-authoring the array.
+        HarnessWriteBatch? batch = HarnessWrite.RequestFrom(WriteFragment(fragment));
+
+        Assert.NotNull(batch);
+        Assert.NotNull(batch!.InvalidReason);
+        Assert.Contains(expectedFragmentOfReason, batch.InvalidReason, StringComparison.Ordinal);
+        Assert.Empty(batch.Requests);
+    }
+
+    // ── #445 the whole point: MANY files in ONE attempt, atomically ───────────────────────────────
+
+    [Fact]
+    public void Array_MultipleFiles_MixedEditsAndContent_AllWritten()
+    {
+        // The #445 shape: one deliverable spanning three .claude/ files, delivered by ONE attempt.
+        // Before the array this was impossible to converge — a guardrail failure rolls the segment back
+        // to a clean base, so the previous attempt's single-file write was discarded every time.
+        string skill = SeedFile(".claude/skills/pb/SKILL.md", "intro\nWITHHOLDING WORDING\noutro\n");
+        string schemas = SeedFile(".claude/skills/pb/references/schemas.md", "a\nWITHHOLDING WORDING\nb\n");
+
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest
+            {
+                Path = ".claude/skills/pb/SKILL.md",
+                Edits = [new HarnessWriteEdit { Old = "WITHHOLDING WORDING", New = "CORRECTED WORDING" }]
+            },
+            new HarnessWriteRequest
+            {
+                Path = ".claude/skills/pb/references/schemas.md",
+                Edits = [new HarnessWriteEdit { Old = "WITHHOLDING WORDING", New = "CORRECTED WORDING" }]
+            },
+            new HarnessWriteRequest
+            {
+                Path = ".claude/skills/pb/references/example-breakdown.md",
+                Content = "CORRECTED WORDING\n"
+            });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: [".claude/**"]);
+
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
+        Assert.Equal(
+            [".claude/skills/pb/SKILL.md",
+             ".claude/skills/pb/references/schemas.md",
+             ".claude/skills/pb/references/example-breakdown.md"],
+            outcome.WrittenPaths);
+        Assert.Equal("intro\nCORRECTED WORDING\noutro\n", File.ReadAllText(skill));
+        Assert.Equal("a\nCORRECTED WORDING\nb\n", File.ReadAllText(schemas));
+        Assert.Equal("CORRECTED WORDING\n",
+            File.ReadAllText(Path.Combine(_workspace, ".claude", "skills", "pb", "references", "example-breakdown.md")));
+    }
+
+    [Fact]
+    public void Array_BadAnchorInTheSecondFile_LeavesBOTHFilesByteIdentical()
+    {
+        // CROSS-FILE ATOMICITY — the whole point of #445. File 1's edit is perfectly good and would have
+        // been written by any naive per-entry loop; file 2's anchor does not exist. Nothing may land: a
+        // half-corrected tree is strictly worse than a rejection, because the next rollback may or may
+        // not clean it up and the agent cannot tell which files it still has to fix.
+        const string firstOriginal = "alpha\nGOOD ANCHOR\nomega\n";
+        const string secondOriginal = "one\ntwo\n";
+        string first = SeedFile(".claude/a.md", firstOriginal);
+        string second = SeedFile(".claude/b.md", secondOriginal);
+
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest
+            {
+                Path = ".claude/a.md",
+                Edits = [new HarnessWriteEdit { Old = "GOOD ANCHOR", New = "REPLACED" }]
+            },
+            new HarnessWriteRequest
+            {
+                Path = ".claude/b.md",
+                Edits = [new HarnessWriteEdit { Old = "NOT IN THE FILE", New = "boom" }]
+            });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: [".claude/**"]);
+
+        Assert.False(outcome.Succeeded);
+        Assert.True(outcome.IsNotApplied);
+        Assert.Contains("needsHarnessWrite[1]", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.Contains("NOTHING was written", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.Contains("NOT FOUND", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.Equal(firstOriginal, File.ReadAllText(first));
+        Assert.Equal(secondOriginal, File.ReadAllText(second));
+    }
+
+    [Fact]
+    public void Array_OutOfScopeSecondEntry_LeavesTheFirstFileUnwritten()
+    {
+        // The writeScope guard runs PER ENTRY in the resolve phase, so an out-of-scope entry anywhere in
+        // the array stops the batch before the in-scope entries are written. An array must never be a way
+        // to land some writes alongside a rejected one.
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest { Path = ".claude/allowed.md", Content = "allowed" },
+            new HarnessWriteRequest { Path = "src/Sneaky.cs", Content = "class Sneaky {}" });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: [".claude/**"]);
+
+        Assert.False(outcome.Succeeded);
+        Assert.True(outcome.WasRejected);
+        Assert.False(outcome.IsNotApplied, "an out-of-scope path is a scope REJECTION, not an application failure");
+        Assert.Contains("src/Sneaky.cs", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(_workspace, ".claude", "allowed.md")));
+        Assert.False(File.Exists(Path.Combine(_workspace, "src", "Sneaky.cs")));
+    }
+
+    [Fact]
+    public void Array_WorkspaceEscapingEntry_LeavesTheOtherEntryUnwritten()
+    {
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest { Path = ".claude/allowed.md", Content = "allowed" },
+            new HarnessWriteRequest { Path = "../outside.txt", Content = "pwned" });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: ["**"]);
+
+        Assert.False(outcome.Succeeded);
+        Assert.True(outcome.WasRejected);
+        Assert.Contains("escapes", outcome.FailureReason, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(Path.Combine(_workspace, ".claude", "allowed.md")));
+    }
+
+    [Fact]
+    public void Array_SettingsFileAnywhereInTheBatch_DeniesEverything_Issue321HoldsPerEntry()
+    {
+        // #321 must hold for EVERY entry: an array is not a way to smuggle a permission-granting settings
+        // file in alongside legitimate deliverables. The denial classification survives (it is a policy,
+        // not a fixable payload), and — crucially — the legitimate sibling entry is NOT written either.
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest { Path = ".claude/commands/legit.md", Content = "# legit\n" },
+            new HarnessWriteRequest { Path = ".claude/settings.json", Content = "{\"permissions\":{\"allow\":[\"Write(.claude/**)\"]}}" });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: [".claude/**"]);
+
+        Assert.False(outcome.Succeeded);
+        Assert.True(outcome.IsPolicyDenied);
+        Assert.Contains("permission-granting files", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(_workspace, ".claude", "settings.json")));
+        Assert.False(File.Exists(Path.Combine(_workspace, ".claude", "commands", "legit.md")),
+            "nothing else in the array may be written when one entry is denied");
+    }
+
+    [Theory]
+    [InlineData(".claude/dup.md", ".claude/dup.md")]                  // literally the same spelling
+    [InlineData(".claude/dup.md", ".claude/./dup.md")]                // the same file by a different spelling
+    [InlineData(".claude/dup.md", ".claude\\dup.md")]                 // ... and by a different separator
+    public void Array_DuplicatePathEntries_Rejected_NeverSilentlyLastWins(string firstPath, string secondPath)
+    {
+        // Two entries for one file is AMBIGUOUS: the order a model happened to list them in is not a
+        // contract, so "which one wins?" has no defensible answer. Rejecting is the only honest option —
+        // last-wins would silently discard one of the two sets of changes the agent asked for.
+        const string original = "alpha\nbravo\n";
+        string full = SeedFile(".claude/dup.md", original);
+
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest
+            {
+                Path = firstPath,
+                Edits = [new HarnessWriteEdit { Old = "alpha", New = "ALPHA" }]
+            },
+            new HarnessWriteRequest
+            {
+                Path = secondPath,
+                Edits = [new HarnessWriteEdit { Old = "bravo", New = "BRAVO" }]
+            });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: [".claude/**"]);
+
+        Assert.False(outcome.Succeeded);
+        Assert.True(outcome.IsNotApplied);
+        Assert.Contains("SAME file", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.Equal(original, File.ReadAllText(full));
+    }
+
+    [Fact]
+    public void Array_TheSameFileIsFineWhenSplitAcrossTwoBatches_TheRejectionIsAboutONEBatch()
+    {
+        // Guards against over-reach in the duplicate check: it is per-BATCH bookkeeping, not a global
+        // "this path was written once already" rule.
+        string full = SeedFile(".claude/seq.md", "alpha\nbravo\n");
+
+        Assert.True(HarnessWrite.ValidateAndApply(
+            HarnessWriteBatch.Of(new HarnessWriteRequest
+            {
+                Path = ".claude/seq.md",
+                Edits = [new HarnessWriteEdit { Old = "alpha", New = "ALPHA" }]
+            }), _workspace, writeScope: null).Succeeded);
+
+        Assert.True(HarnessWrite.ValidateAndApply(
+            HarnessWriteBatch.Of(new HarnessWriteRequest
+            {
+                Path = ".claude/seq.md",
+                Edits = [new HarnessWriteEdit { Old = "bravo", New = "BRAVO" }]
+            }), _workspace, writeScope: null).Succeeded);
+
+        Assert.Equal("ALPHA\nBRAVO\n", File.ReadAllText(full));
+    }
+
+    [Fact]
+    public void Array_SizeWallOnASecondEntry_LeavesTheFirstFileUnwritten()
+    {
+        // Every per-entry #437 rule keeps its teeth inside an array — and, being resolved in phase 1,
+        // still costs the first file nothing.
+        const string firstOriginal = "alpha\n";
+        string first = SeedFile(".claude/small.md", firstOriginal);
+        string oversize = new string('x', HarnessWrite.FullContentMaxBytes + 1);
+        string second = SeedFile(".claude/big.md", oversize);
+
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest
+            {
+                Path = ".claude/small.md",
+                Edits = [new HarnessWriteEdit { Old = "alpha", New = "ALPHA" }]
+            },
+            new HarnessWriteRequest { Path = ".claude/big.md", Content = "oops, truncated" });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: [".claude/**"]);
+
+        Assert.False(outcome.Succeeded);
+        Assert.True(outcome.IsNotApplied);
+        Assert.Contains("`edits`", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.Equal(firstOriginal, File.ReadAllText(first));
+        Assert.Equal(oversize, File.ReadAllText(second));
+    }
+
+    [Fact]
+    public void Array_EveryEntryIsResolvedBeforeAnyIsWritten_ProvenByALateNonUtf8Target()
+    {
+        // A direct proof of the phase ordering: the LAST entry's target cannot even be decoded, and the
+        // two perfectly good entries before it are still untouched afterwards. A per-entry loop would
+        // have written both of them before ever reading the third.
+        const string firstOriginal = "one\n";
+        const string secondOriginal = "two\n";
+        string first = SeedFile(".claude/one.md", firstOriginal);
+        string second = SeedFile(".claude/two.md", secondOriginal);
+
+        string binaryPath = Path.Combine(_workspace, ".claude", "three.bin");
+        byte[] binary = [0x41, 0x4E, 0x43, 0x48, 0x4F, 0x52, 0xFF, 0xFE, 0x00, 0x80];
+        File.WriteAllBytes(binaryPath, binary);
+
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest { Path = ".claude/one.md", Edits = [new HarnessWriteEdit { Old = "one", New = "ONE" }] },
+            new HarnessWriteRequest { Path = ".claude/two.md", Edits = [new HarnessWriteEdit { Old = "two", New = "TWO" }] },
+            new HarnessWriteRequest { Path = ".claude/three.bin", Edits = [new HarnessWriteEdit { Old = "ANCHOR", New = "X" }] });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: null);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Contains("not valid UTF-8", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.Equal(firstOriginal, File.ReadAllText(first));
+        Assert.Equal(secondOriginal, File.ReadAllText(second));
+        Assert.Equal(binary, File.ReadAllBytes(binaryPath));
+    }
+
+    [Fact]
+    public void Array_MultiEntryFailure_SaysNothingWasWritten_SoTheAgentDoesNotHuntForPartialWork()
+    {
+        var batch = HarnessWriteBatch.Of(
+            new HarnessWriteRequest { Path = ".claude/x.md", Content = "x" },
+            new HarnessWriteRequest { Path = ".claude/y.md", Edits = [new HarnessWriteEdit { Old = "a", New = "b" }] });
+
+        HarnessWriteOutcome outcome = HarnessWrite.ValidateAndApply(batch, _workspace, writeScope: null);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Contains("needsHarnessWrite[1] (of 2 entries)", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.Contains("byte-identical", outcome.FailureReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Array_SingleEntryFailure_KeepsThePre445Wording_NoIndexNoise()
+    {
+        // Backward compatibility of the MESSAGE, not just the behaviour: a one-entry request must not
+        // suddenly grow "needsHarnessWrite[0] (of 1 entries)" noise in its retry feedback.
+        SeedTarget("line one\n");
+
+        HarnessWriteOutcome outcome = Apply(
+            new HarnessWriteRequest
+            {
+                Path = TargetRelative,
+                Edits = [new HarnessWriteEdit { Old = "NOT IN THE FILE", New = "x" }]
+            },
+            writeScope: null);
+
+        Assert.False(outcome.Succeeded);
+        Assert.DoesNotContain("needsHarnessWrite[", outcome.FailureReason, StringComparison.Ordinal);
+        Assert.StartsWith($"'{TargetRelative}' was left UNCHANGED", outcome.FailureReason, StringComparison.Ordinal);
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Validate + apply a SINGLE-entry batch — the pre-#445 wire form, which must keep behaving exactly
+    /// as it always did. Every test above this line exercises one entry's semantics; the multi-entry
+    /// tests build their own batches so the array shape is explicit at the call site.
+    /// </summary>
+    private HarnessWriteOutcome Apply(HarnessWriteRequest request, IReadOnlyList<string>? writeScope) =>
+        HarnessWrite.ValidateAndApply(HarnessWriteBatch.Of(request), _workspace, writeScope);
+
     private const string TargetRelative = ".claude/skills/target/SKILL.md";
 
-    /// <summary>Write <paramref name="content"/> to the standard in-scope target and return its full path.</summary>
-    private string SeedTarget(string content)
+    /// <summary>Write <paramref name="content"/> at a workspace-relative path and return its full path.</summary>
+    private string SeedFile(string relativePath, string content)
     {
-        string full = Path.Combine(_workspace, TargetRelative.Replace('/', Path.DirectorySeparatorChar));
+        string full = Path.Combine(_workspace, relativePath.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
         File.WriteAllText(full, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         return full;
     }
+
+    /// <summary>Write <paramref name="content"/> to the standard in-scope target and return its full path.</summary>
+    private string SeedTarget(string content) => SeedFile(TargetRelative, content);
 
     /// <summary>~250 KB of filler prose with exactly ONE unique anchor line buried in the middle.</summary>
     private static string BuildLargeDocument(out string anchorLine)

@@ -13,8 +13,8 @@ namespace Guardrails.Core.Execution;
 /// PROCESS ITSELF — never subject to Claude Code's tool-permission layer — to perform the write on its
 /// behalf.
 /// <para>
-/// TWO MUTUALLY EXCLUSIVE FORMS (issue #437). A root fragment key, parsed the SAME way as
-/// <c>needsHuman</c> — see <see cref="ActionRunner"/>:
+/// TWO MUTUALLY EXCLUSIVE PAYLOAD FORMS PER ENTRY (issue #437). A root fragment key, parsed the SAME
+/// way as <c>needsHuman</c> — see <see cref="ActionRunner"/>:
 /// <code>
 /// // full-content form — for CREATING a file (or replacing a small one):
 /// { "needsHarnessWrite": { "path": ".claude/skills/foo/SKILL.md", "content": "...", "reason": "..." } }
@@ -31,9 +31,26 @@ namespace Guardrails.Core.Execution;
 /// than by trusting a model to retype thousands of lines of normative text byte-for-byte.
 /// </para>
 /// <para>
-/// Singular only in v1 (one harness-write REQUEST per attempt, though that request may carry many
-/// edits to the ONE file it names) — an action needing multiple <c>.claude/</c> files touched does so
-/// across multiple attempts/retries. This is a documented v1 limitation.
+/// AN ARRAY OF ENTRIES, ONE PER FILE (issue #445). The key's value may be a single object (above) OR an
+/// ARRAY of such objects — additive and backward-compatible:
+/// <code>
+/// { "needsHarnessWrite": [
+///     { "path": ".claude/skills/foo/SKILL.md",        "reason": "...", "edits": [ ... ] },
+///     { "path": ".claude/skills/foo/references/x.md", "reason": "...", "content": "..." } ] }
+/// </code>
+/// #437 fixed the SIZE dimension; the array fixes the CARDINALITY one. A singular request made a task
+/// whose deliverable spans two or more <c>.claude/</c> files IMPOSSIBLE TO CONVERGE: the documented
+/// fallback ("do it across attempts") does not work, because a guardrail failure rolls the segment back
+/// to a clean base and discards the previous attempt's write, so attempt N+1 starts exactly where
+/// attempt N did. The array lets one attempt deliver the whole set.
+/// </para>
+/// <para>
+/// <b>The batch is ATOMIC ACROSS ALL ENTRIES.</b> Every entry — every anchor in every file — is
+/// resolved against in-memory copies FIRST; not one target is opened for writing until the LAST entry
+/// of the LAST file has resolved. If any entry fails for any reason, NOTHING is written and every
+/// target is byte-identical. A partial multi-file write is strictly worse than a rejection: it leaves a
+/// half-corrected tree the next rollback may or may not clean up. (Should an IO fault strike during the
+/// write phase itself, the entries already written are restored on a best-effort basis.)
 /// </para>
 /// </summary>
 public static class HarnessWrite
@@ -58,19 +75,32 @@ public static class HarnessWrite
     private const int AnchorPreviewChars = 160;
 
     /// <summary>
+    /// How two entries' RESOLVED destinations are compared for the duplicate-path rejection (issue
+    /// #445). Case-insensitive where the filesystem is (Windows, macOS), so a casing variant cannot
+    /// smuggle two entries onto one file; ordinal elsewhere, where <c>a.md</c> and <c>A.md</c> genuinely
+    /// are two different files and rejecting the pair would be wrong.
+    /// </summary>
+    private static readonly StringComparer DestinationComparer =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+
+    /// <summary>
     /// Read the (already-written) action fragment and, if its root is an object with a
-    /// <c>needsHarnessWrite</c> key whose value is an OBJECT, return the parsed request. Anything else —
-    /// key absent, value not an object (e.g. a <c>needsHuman</c>-style bare string), unparseable JSON —
-    /// returns null (never throws); the normal fragment-validation path then reports the real problem.
+    /// <c>needsHarnessWrite</c> key whose value is an OBJECT or an ARRAY of objects, return the parsed
+    /// batch. Anything else — key absent, value neither object nor array (e.g. a <c>needsHuman</c>-style
+    /// bare string), unparseable JSON — returns null (never throws); the normal fragment-validation path
+    /// then reports the real problem.
     /// <para>
-    /// A key that IS an object but whose payload is unusable (no <c>path</c>; neither <c>content</c> nor
-    /// <c>edits</c>; BOTH of them; a malformed <c>edits</c> entry) is NOT silently dropped — it comes back
-    /// as a request carrying <see cref="HarnessWriteRequest.InvalidReason"/>, so
-    /// <see cref="ValidateAndApply"/> fails the attempt with an actionable message naming the mistake
-    /// instead of letting the agent puzzle over a generic foreign-key merge error (issue #437).
+    /// A key that IS an object/array but whose payload is unusable (an entry with no <c>path</c>; neither
+    /// <c>content</c> nor <c>edits</c>; BOTH of them; a malformed <c>edits</c> entry; an EMPTY array) is
+    /// NOT silently dropped — it comes back as a batch carrying
+    /// <see cref="HarnessWriteBatch.InvalidReason"/>, so <see cref="ValidateAndApply"/> fails the attempt
+    /// with an actionable message naming the mistake instead of letting the agent puzzle over a generic
+    /// foreign-key merge error (issues #437, #445).
     /// </para>
     /// </summary>
-    public static HarnessWriteRequest? RequestFrom(string fragmentOutPath)
+    public static HarnessWriteBatch? RequestFrom(string fragmentOutPath)
     {
         if (!File.Exists(fragmentOutPath))
         {
@@ -85,12 +115,12 @@ public static class HarnessWrite
 
             if (document.RootElement.ValueKind != JsonValueKind.Object
                 || !document.RootElement.TryGetProperty("needsHarnessWrite", out JsonElement request)
-                || request.ValueKind != JsonValueKind.Object)
+                || (request.ValueKind != JsonValueKind.Object && request.ValueKind != JsonValueKind.Array))
             {
                 return null;
             }
 
-            return ParsePayload(request);
+            return ParseBatch(request);
         }
         catch (JsonException)
         {
@@ -101,24 +131,86 @@ public static class HarnessWrite
     }
 
     /// <summary>
-    /// Turn a <c>needsHarnessWrite</c> object into a request. Never throws and never returns null: an
-    /// unusable payload becomes a request carrying <see cref="HarnessWriteRequest.InvalidReason"/>.
+    /// Turn a <c>needsHarnessWrite</c> value — a single object (the pre-#445 form, unchanged) or an
+    /// array of them — into a batch. Never throws and never returns null: an unusable payload becomes a
+    /// batch carrying <see cref="HarnessWriteBatch.InvalidReason"/>.
+    /// <para>
+    /// ONE bad entry invalidates the WHOLE batch rather than being skipped, because the batch is atomic:
+    /// there is no such thing as "apply the entries that parsed". The reason is index-qualified
+    /// (<c>needsHarnessWrite[2].path …</c>) so the agent knows which array element to fix.
+    /// </para>
     /// </summary>
-    private static HarnessWriteRequest ParsePayload(JsonElement request)
+    private static HarnessWriteBatch ParseBatch(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            // The single-object form: messages keep their exact pre-#445 wording (no index qualifier).
+            (HarnessWriteRequest? single, string? singleInvalid) = ParsePayload(value, "needsHarnessWrite");
+            return singleInvalid is null
+                ? HarnessWriteBatch.Of(single!)
+                : HarnessWriteBatch.Invalid(singleInvalid, [PathOf(value)]);
+        }
+
+        var entries = new List<HarnessWriteRequest>();
+        var paths = new List<string>();
+        int index = 0;
+
+        foreach (JsonElement element in value.EnumerateArray())
+        {
+            string prefix = $"needsHarnessWrite[{index}]";
+
+            if (element.ValueKind != JsonValueKind.Object)
+            {
+                return HarnessWriteBatch.Invalid(
+                    $"{prefix} is not an object — every entry of the needsHarnessWrite array is " +
+                    "{\"path\": \"...\", \"reason\": \"...\", and exactly one of \"content\" or \"edits\"}",
+                    paths);
+            }
+
+            paths.Add(PathOf(element));
+
+            (HarnessWriteRequest? entry, string? invalid) = ParsePayload(element, prefix);
+            if (invalid is not null)
+            {
+                return HarnessWriteBatch.Invalid(invalid, paths);
+            }
+
+            entries.Add(entry!);
+            index++;
+        }
+
+        return entries.Count == 0
+            ? HarnessWriteBatch.Invalid(
+                "needsHarnessWrite is an EMPTY array — there is nothing for the harness to write. Provide " +
+                "at least one {\"path\", \"content\"|\"edits\"} entry, or omit the needsHarnessWrite key " +
+                "entirely if this attempt needs no harness-mediated write.",
+                paths)
+            : HarnessWriteBatch.Of(entries);
+    }
+
+    /// <summary>The entry's <c>path</c> as written, or an empty string — for failure-message display only.</summary>
+    private static string PathOf(JsonElement entry) =>
+        entry.TryGetProperty("path", out JsonElement pathEl) && pathEl.ValueKind == JsonValueKind.String
+            ? pathEl.GetString() ?? ""
+            : "";
+
+    /// <summary>
+    /// Parse ONE entry. Returns either the entry or an actionable reason it is unusable, never both and
+    /// never neither. <paramref name="prefix"/> names the entry in every message it produces —
+    /// <c>needsHarnessWrite</c> for the single-object form, <c>needsHarnessWrite[N]</c> for an array
+    /// element — so the agent is told exactly which element to fix.
+    /// </summary>
+    private static (HarnessWriteRequest? Entry, string? Invalid) ParsePayload(JsonElement request, string prefix)
     {
         string? reason = request.TryGetProperty("reason", out JsonElement reasonEl) && reasonEl.ValueKind == JsonValueKind.String
             ? reasonEl.GetString()
             : null;
 
-        string path = request.TryGetProperty("path", out JsonElement pathEl) && pathEl.ValueKind == JsonValueKind.String
-            ? pathEl.GetString() ?? ""
-            : "";
-
-        HarnessWriteRequest Invalid(string why) => new() { Path = path, Reason = reason, InvalidReason = why };
+        string path = PathOf(request);
 
         if (path.Length == 0)
         {
-            return Invalid("needsHarnessWrite.path is missing or is not a string");
+            return (null, $"{prefix}.path is missing or is not a string");
         }
 
         bool hasContent = request.TryGetProperty("content", out JsonElement contentEl);
@@ -126,28 +218,28 @@ public static class HarnessWrite
 
         if (hasContent && hasEdits)
         {
-            return Invalid(
-                "needsHarnessWrite carries BOTH `content` and `edits` — they are mutually exclusive. Use " +
+            return (null,
+                $"{prefix} carries BOTH `content` and `edits` — they are mutually exclusive. Use " +
                 "`edits` to MODIFY an existing file, or `content` to CREATE one");
         }
 
         if (!hasContent && !hasEdits)
         {
-            return Invalid(
-                "needsHarnessWrite carries neither `content` nor `edits` — exactly one is required. Use " +
+            return (null,
+                $"{prefix} carries neither `content` nor `edits` — exactly one is required. Use " +
                 "`edits` to MODIFY an existing file, or `content` to CREATE one");
         }
 
         if (hasContent)
         {
             return contentEl.ValueKind == JsonValueKind.String
-                ? new HarnessWriteRequest { Path = path, Content = contentEl.GetString() ?? "", Reason = reason }
-                : Invalid("needsHarnessWrite.content must be a string (the complete file text)");
+                ? (new HarnessWriteRequest { Path = path, Content = contentEl.GetString() ?? "", Reason = reason }, null)
+                : (null, $"{prefix}.content must be a string (the complete file text)");
         }
 
         if (editsEl.ValueKind != JsonValueKind.Array)
         {
-            return Invalid("needsHarnessWrite.edits must be an array of {\"old\": \"...\", \"new\": \"...\"} objects");
+            return (null, $"{prefix}.edits must be an array of {{\"old\": \"...\", \"new\": \"...\"}} objects");
         }
 
         var edits = new List<HarnessWriteEdit>();
@@ -156,23 +248,23 @@ public static class HarnessWrite
         {
             if (edit.ValueKind != JsonValueKind.Object)
             {
-                return Invalid($"needsHarnessWrite.edits[{index}] is not an object; each edit is {{\"old\": \"...\", \"new\": \"...\"}}");
+                return (null, $"{prefix}.edits[{index}] is not an object; each edit is {{\"old\": \"...\", \"new\": \"...\"}}");
             }
 
             if (!edit.TryGetProperty("old", out JsonElement oldEl) || oldEl.ValueKind != JsonValueKind.String)
             {
-                return Invalid($"needsHarnessWrite.edits[{index}].old is missing or is not a string");
+                return (null, $"{prefix}.edits[{index}].old is missing or is not a string");
             }
 
             if (!edit.TryGetProperty("new", out JsonElement newEl) || newEl.ValueKind != JsonValueKind.String)
             {
-                return Invalid($"needsHarnessWrite.edits[{index}].new is missing or is not a string (use \"\" to delete the anchored text)");
+                return (null, $"{prefix}.edits[{index}].new is missing or is not a string (use \"\" to delete the anchored text)");
             }
 
             string oldText = oldEl.GetString() ?? "";
             if (oldText.Length == 0)
             {
-                return Invalid($"needsHarnessWrite.edits[{index}].old is empty — an empty anchor cannot identify a unique location");
+                return (null, $"{prefix}.edits[{index}].old is empty — an empty anchor cannot identify a unique location");
             }
 
             edits.Add(new HarnessWriteEdit { Old = oldText, New = newEl.GetString() ?? "" });
@@ -180,8 +272,8 @@ public static class HarnessWrite
         }
 
         return edits.Count == 0
-            ? Invalid("needsHarnessWrite.edits is an empty array — provide at least one {\"old\", \"new\"} edit")
-            : new HarnessWriteRequest { Path = path, Edits = edits, Reason = reason };
+            ? (null, $"{prefix}.edits is an empty array — provide at least one {{\"old\", \"new\"}} edit")
+            : (new HarnessWriteRequest { Path = path, Edits = edits, Reason = reason }, null);
     }
 
     /// <summary>
@@ -218,15 +310,33 @@ public static class HarnessWrite
     }
 
     /// <summary>
-    /// Validate <paramref name="request"/>'s path against <paramref name="workspaceRoot"/> (the
+    /// Validate every entry of <paramref name="batch"/> against <paramref name="workspaceRoot"/> (the
     /// effective workspace — the segment worktree in worktree mode, the plan workspace in serial mode)
-    /// and, when in scope, perform the write via the harness process itself
-    /// (<see cref="AtomicFile.WriteAllText"/> — a plain atomic-enough write; this is not a
+    /// and, when ALL of them are in bounds and resolvable, perform their writes via the harness process
+    /// itself (<see cref="AtomicFile.WriteAllText"/> — a plain atomic-enough write; this is not a
     /// resume-critical file, but atomicity is free and consistent with every other harness write).
     /// </summary>
     /// <remarks>
-    /// Three INDEPENDENT safety checks, all load-bearing (a security boundary, SSOT §9) and all run
-    /// BEFORE the target file is so much as read:
+    /// <b>TWO STRICTLY ORDERED PHASES (issue #445) — resolve everything, then write everything.</b>
+    /// <list type="number">
+    /// <item><b>Phase 1 — RESOLVE, touching nothing.</b> Every entry, in order, runs the three safety
+    /// checks below, the duplicate-destination check, and its mode-specific resolution (an <c>edits</c>
+    /// entry reads its target and applies every anchor to an IN-MEMORY copy; a <c>content</c> entry is
+    /// weighed against the size wall). The resulting bytes are held in memory. The FIRST failure — in any
+    /// entry, for any reason — returns immediately, and because no target has been opened for writing,
+    /// EVERY file in the batch is byte-identical.</item>
+    /// <item><b>Phase 2 — WRITE.</b> Only once the LAST entry of the LAST file has resolved does the
+    /// first byte reach disk. An IO fault here (disk full, a genuinely unwritable location) is the one
+    /// case phase 1 cannot pre-empt; the entries already written are then restored on a best-effort
+    /// basis from the originals captured in phase 1, so the workspace is not left half-corrected.</item>
+    /// </list>
+    /// A partial multi-file write is strictly worse than a rejection — it leaves a half-corrected tree
+    /// the next rollback may or may not clean up — which is why the ordering above is the whole point of
+    /// #445, not an implementation detail.
+    /// <para>
+    /// Three INDEPENDENT safety checks run PER ENTRY, all load-bearing (a security boundary, SSOT §9) and
+    /// all run BEFORE that entry's target file is so much as read:
+    /// </para>
     /// <list type="bullet">
     /// <item><b>Workspace-escape check (always runs, regardless of <c>writeScope</c>).</b> Reuses
     /// <see cref="WorkspaceContainment.Escapes"/> — the same "does this path escape the boundary"
@@ -234,12 +344,14 @@ public static class HarnessWrite
     /// <c>../../etc/passwd</c> or an absolute path is rejected before it is even a writeScope
     /// question. This protects a task with NO declared writeScope too (the segment-worktree
     /// containment is the boundary in that case).</item>
-    /// <item><b>Permission-file carve-out (always runs, issue #321).</b> A request whose path resolves
+    /// <item><b>Permission-file carve-out (always runs, issue #321).</b> An entry whose path resolves
     /// to <c>.claude/settings.json</c> or <c>.claude/settings.local.json</c> is DENIED — the harness
     /// never writes permission-granting files on an agent's behalf (a prompt must not widen its own
     /// permission surface). Checked before writeScope so declaring <c>.claude/**</c> in scope cannot
     /// bypass it. NOT a broad <c>.claude/</c> denylist — every other <c>.claude/</c> deliverable stays
-    /// writable. Applies to BOTH forms: <c>edits</c> cannot be used to sneak into a settings file.</item>
+    /// writable. Applies to BOTH forms and to EVERY entry: one settings-file entry anywhere in the
+    /// array denies the whole batch, so an array can never be used to smuggle one past the carve-out
+    /// alongside legitimate files.</item>
     /// <item><b>writeScope-membership check (only when the task DECLARES a writeScope).</b> Reuses
     /// <see cref="WriteScope.IsInScope"/> — the SAME scope-matching predicate the POST-HOC
     /// write-scope CHECK (SSOT §3.4) uses, so the two enforcement points can never drift. A task
@@ -247,27 +359,67 @@ public static class HarnessWrite
     /// for the existing retrospective check, SSOT §3.4) — the segment-worktree containment + the
     /// worktree-containment hook (#199/#192) are the backstops in that case.</item>
     /// </list>
-    /// Only once all three pass does the MODE-SPECIFIC application run (issue #437): <c>edits</c> resolves
-    /// every anchor in memory and writes ONCE if and only if every one of them resolved
-    /// (<see cref="ApplyEdits"/>); <c>content</c> writes the supplied text, unless the target already
-    /// exists and exceeds <see cref="FullContentMaxBytes"/>, in which case the request is refused and
-    /// routed to <c>edits</c>.
+    /// Two entries resolving to the SAME destination are REJECTED rather than silently last-wins: the
+    /// order in which a model listed them is not a contract, so "which of the two survived?" would have
+    /// no defensible answer. The remedy is to merge them into one entry.
     /// </remarks>
     public static HarnessWriteOutcome ValidateAndApply(
-        HarnessWriteRequest request, string workspaceRoot, IReadOnlyList<string>? writeScope)
+        HarnessWriteBatch batch, string workspaceRoot, IReadOnlyList<string>? writeScope)
     {
-        // A payload the parser could read but not USE (no path, both/neither mode, a malformed edit).
-        // Reported as NotApplied so the retry feedback can restate the accepted schema (issue #437).
-        if (request.InvalidReason is { } invalidReason)
+        // A payload the parser could read but not USE (an entry with no path, both/neither mode, a
+        // malformed edit, an empty array). Reported as NotApplied so the retry feedback can restate the
+        // accepted schema (issues #437, #445).
+        if (batch.InvalidReason is { } invalidReason)
         {
             return HarnessWriteOutcome.NotApplied(invalidReason);
         }
 
+        if (batch.Requests.Count == 0)
+        {
+            return HarnessWriteOutcome.NotApplied(
+                "needsHarnessWrite carries no write requests — there is nothing for the harness to write");
+        }
+
+        // ── Phase 1: resolve EVERY entry in memory. Nothing is opened for writing in this loop. ──
+        var planned = new List<PlannedWrite>(batch.Requests.Count);
+        var claimed = new Dictionary<string, string>(DestinationComparer);
+
+        for (int i = 0; i < batch.Requests.Count; i++)
+        {
+            (PlannedWrite? plan, HarnessWriteOutcome? failure) =
+                Resolve(batch.Requests[i], workspaceRoot, writeScope, claimed);
+
+            if (failure is not null)
+            {
+                // Phase 2 has not started, so every target — including those of the entries that DID
+                // resolve — is still byte-identical. Say so explicitly for a multi-entry batch, and name
+                // the array index, so the agent fixes the one entry instead of re-authoring all of them.
+                return batch.Requests.Count == 1 ? failure : WithBatchContext(failure, i, batch.Requests.Count);
+            }
+
+            planned.Add(plan!);
+        }
+
+        // ── Phase 2: every entry resolved — now, and only now, write. ──
+        return Commit(planned);
+    }
+
+    /// <summary>
+    /// Run one entry's safety checks + duplicate-destination check + mode-specific resolution, returning
+    /// either the bytes to write in phase 2 or the failure that aborts the whole batch. Purely
+    /// read-only with respect to the workspace.
+    /// </summary>
+    private static (PlannedWrite? Plan, HarnessWriteOutcome? Failure) Resolve(
+        HarnessWriteRequest request,
+        string workspaceRoot,
+        IReadOnlyList<string>? writeScope,
+        Dictionary<string, string> claimed)
+    {
         string normalizedPath = request.Path.Replace('\\', '/');
 
         if (string.IsNullOrWhiteSpace(normalizedPath))
         {
-            return HarnessWriteOutcome.Rejected("needsHarnessWrite.path is empty");
+            return (null, HarnessWriteOutcome.Rejected("needsHarnessWrite.path is empty"));
         }
 
         // Workspace-escape check: ALWAYS runs, independent of writeScope (SSOT §9 / issue #191). An
@@ -275,9 +427,9 @@ public static class HarnessWrite
         // declared writeScope at all.
         if (WorkspaceContainment.Escapes(workspaceRoot, normalizedPath))
         {
-            return HarnessWriteOutcome.Rejected(
+            return (null, HarnessWriteOutcome.Rejected(
                 $"path '{request.Path}' escapes the task's effective workspace — absolute paths and " +
-                "'..' climb-outs are never allowed, regardless of writeScope");
+                "'..' climb-outs are never allowed, regardless of writeScope"));
         }
 
         // Permission-file carve-out (issue #321): the harness will NEVER write a Claude Code
@@ -286,15 +438,16 @@ public static class HarnessWrite
         // would let a prompt widen its OWN permission surface — the exact escalation the escape hatch
         // must not enable. A human must author these. Checked BEFORE the writeScope membership check so
         // declaring `.claude/**` in scope can never bypass it, and BEFORE the mode split so the anchored
-        // `edits` form of #437 is denied on exactly the same paths as `content`. NOT a broad `.claude/`
-        // denylist: every other `.claude/` deliverable (commands, skills, hooks, agents) is a reviewed
-        // artifact and stays writable — the safety boundary there is plan-review + opt-in merge-back,
-        // not a filename block.
+        // `edits` form of #437 is denied on exactly the same paths as `content`. Because it runs per
+        // ENTRY inside the atomic batch (#445), one settings-file entry denies the WHOLE array — no
+        // legitimate sibling entry is written alongside it. NOT a broad `.claude/` denylist: every other
+        // `.claude/` deliverable (commands, skills, hooks, agents) is a reviewed artifact and stays
+        // writable — the safety boundary there is plan-review + opt-in merge-back, not a filename block.
         if (IsClaudeSettingsFile(normalizedPath))
         {
-            return HarnessWriteOutcome.Denied(
+            return (null, HarnessWriteOutcome.Denied(
                 "the harness will not write permission-granting files on an agent's behalf; a human must " +
-                $"author `.claude/settings.json` (or `.claude/settings.local.json`) — requested '{request.Path}'");
+                $"author `.claude/settings.json` (or `.claude/settings.local.json`) — requested '{request.Path}'"));
         }
 
         // writeScope-membership check: only when the task declares one. Absent ⇒ allowed (mirrors the
@@ -302,75 +455,99 @@ public static class HarnessWrite
         // containment + the worktree-containment hook are the backstops in that case).
         if (writeScope is { Count: > 0 } scope && !WriteScope.IsInScope(normalizedPath, scope))
         {
-            return HarnessWriteOutcome.Rejected(
-                $"path '{request.Path}' is outside this task's declared writeScope");
+            return (null, HarnessWriteOutcome.Rejected(
+                $"path '{request.Path}' is outside this task's declared writeScope"));
         }
 
         string fullPath = Path.GetFullPath(Path.Combine(workspaceRoot, normalizedPath));
 
+        // Duplicate-destination check (issue #445): two entries targeting one file is AMBIGUOUS, not a
+        // last-wins merge. Keyed on the RESOLVED full path, so `a/b.md` and `a/./b.md` are caught too.
+        if (claimed.TryGetValue(fullPath, out string? firstSpelling))
+        {
+            return (null, HarnessWriteOutcome.NotApplied(
+                $"two needsHarnessWrite entries target the SAME file — '{firstSpelling}' and " +
+                $"'{request.Path}' resolve to one path. The order you listed them in is not a contract, " +
+                "so the harness will not guess which one wins. Merge them into a SINGLE entry for that " +
+                "file (one `content`, or one `edits` array carrying every change to it)"));
+        }
+
+        claimed[fullPath] = request.Path;
+
         return request.IsEditForm
-            ? ApplyEditForm(request, normalizedPath, fullPath)
-            : ApplyContentForm(request, normalizedPath, fullPath);
+            ? ResolveEditForm(request, normalizedPath, fullPath)
+            : ResolveContentForm(request, normalizedPath, fullPath);
     }
 
     /// <summary>
-    /// Full-content mode: write <c>content</c> verbatim. The ONLY new restriction (issue #437) is the
-    /// size wall — an EXISTING target larger than <see cref="FullContentMaxBytes"/> is refused and routed
-    /// to the anchored <c>edits</c> form, because a full re-emission at that size is both liable to blow
-    /// the runner's output budget and unverifiable (nothing proves the untouched lines came back
-    /// byte-identical). Creating a NEW file is unrestricted.
+    /// Full-content mode, resolve phase: the bytes to write are the supplied <c>content</c> verbatim. The
+    /// ONLY restriction (issue #437) is the size wall — an EXISTING target larger than
+    /// <see cref="FullContentMaxBytes"/> is refused and routed to the anchored <c>edits</c> form, because
+    /// a full re-emission at that size is both liable to blow the runner's output budget and unverifiable
+    /// (nothing proves the untouched lines came back byte-identical). Creating a NEW file is unrestricted.
     /// </summary>
-    private static HarnessWriteOutcome ApplyContentForm(
+    private static (PlannedWrite? Plan, HarnessWriteOutcome? Failure) ResolveContentForm(
         HarnessWriteRequest request, string normalizedPath, string fullPath)
     {
+        bool exists;
         long existingBytes;
         try
         {
             var existing = new FileInfo(fullPath);
-            existingBytes = existing.Exists ? existing.Length : 0;
+            exists = existing.Exists;
+            existingBytes = exists ? existing.Length : 0;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            exists = false;
             existingBytes = 0;
         }
 
         if (existingBytes > FullContentMaxBytes)
         {
-            return HarnessWriteOutcome.NotApplied(
+            return (null, HarnessWriteOutcome.NotApplied(
                 $"'{request.Path}' already exists and is {existingBytes:N0} bytes — too large for full-content " +
                 $"`content` mode (the limit is {FullContentMaxBytes:N0} bytes). Re-emitting a file this size " +
                 "risks exhausting the runner's output budget mid-write, and nothing can verify that the lines " +
                 "you did not mean to change came back byte-identical. Use the anchored `edits` form instead — " +
                 "its cost scales with the CHANGE, not the file, and the untouched bytes stay untouched by " +
-                "construction. `content` is for CREATING a file; `edits` is for MODIFYING one");
+                "construction. `content` is for CREATING a file; `edits` is for MODIFYING one"));
         }
 
-        try
+        // Capture the pre-batch bytes so a phase-2 IO fault on a LATER entry can put this one back. The
+        // size wall above bounds this read to at most FullContentMaxBytes.
+        byte[]? original = null;
+        if (exists)
         {
-            AtomicFile.WriteAllText(fullPath, request.Content ?? "");
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return HarnessWriteOutcome.Failed($"the harness could not write '{request.Path}': {ex.Message}");
+            try { original = File.ReadAllBytes(fullPath); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { original = null; }
         }
 
-        return HarnessWriteOutcome.Ok(normalizedPath);
+        return (new PlannedWrite
+        {
+            NormalizedPath = normalizedPath,
+            DisplayPath = request.Path,
+            FullPath = fullPath,
+            Text = request.Content ?? "",
+            ExistedBefore = exists,
+            OriginalBytes = original
+        }, null);
     }
 
     /// <summary>
-    /// Anchored-edit mode (issue #437): resolve EVERY edit against an in-memory copy first, and write
-    /// exactly once only if all of them resolved. ATOMIC BY CONSTRUCTION — the file on disk is not opened
-    /// for writing until the last anchor has been located, so a set with one bad anchor leaves the target
-    /// byte-identical (a half-applied set is worse than a rejected one).
+    /// Anchored-edit mode, resolve phase (issue #437): resolve EVERY edit against an in-memory copy and
+    /// hand the finished text to phase 2. ATOMIC BY CONSTRUCTION — the file on disk is never opened for
+    /// writing here, so a set with one bad anchor leaves the target byte-identical (a half-applied set is
+    /// worse than a rejected one), and under #445 the same is true across the whole multi-file batch.
     /// </summary>
-    private static HarnessWriteOutcome ApplyEditForm(
+    private static (PlannedWrite? Plan, HarnessWriteOutcome? Failure) ResolveEditForm(
         HarnessWriteRequest request, string normalizedPath, string fullPath)
     {
         if (!File.Exists(fullPath))
         {
-            return HarnessWriteOutcome.NotApplied(
+            return (null, HarnessWriteOutcome.NotApplied(
                 $"`edits` requires an EXISTING file, and '{request.Path}' does not exist. Use `content` to " +
-                "CREATE the file (the anchored form can only modify text that is already there)");
+                "CREATE the file (the anchored form can only modify text that is already there)"));
         }
 
         byte[] raw;
@@ -380,7 +557,8 @@ public static class HarnessWrite
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return HarnessWriteOutcome.Failed($"the harness could not read '{request.Path}' to edit it: {ex.Message}");
+            return (null, HarnessWriteOutcome.Failed(
+                $"the harness could not read '{request.Path}' to edit it: {ex.Message}"));
         }
 
         // Preserve a UTF-8 BOM if the file has one: File.ReadAllText would silently swallow it and
@@ -400,39 +578,122 @@ public static class HarnessWrite
         }
         catch (DecoderFallbackException)
         {
-            return HarnessWriteOutcome.NotApplied(
+            return (null, HarnessWriteOutcome.NotApplied(
                 $"'{request.Path}' is not valid UTF-8 text, so it cannot be edited by text anchors — the " +
                 "harness will not rewrite a binary or mis-encoded file, because bytes it could not decode " +
-                "would be silently replaced. Route this deliverable to a script action or a human");
+                "would be silently replaced. Route this deliverable to a script action or a human"));
         }
 
         (string? edited, string? failure) = ApplyEdits(original, request.Edits);
         if (edited is null)
         {
-            return HarnessWriteOutcome.NotApplied($"'{request.Path}' was left UNCHANGED — {failure}");
+            return (null, HarnessWriteOutcome.NotApplied($"'{request.Path}' was left UNCHANGED — {failure}"));
         }
 
         if (string.Equals(edited, original, StringComparison.Ordinal))
         {
-            return HarnessWriteOutcome.NotApplied(
+            return (null, HarnessWriteOutcome.NotApplied(
                 $"every edit resolved but the result is byte-identical to '{request.Path}' — each `new` " +
                 "repeats its own `old`, so the request would change nothing. Emit the intended replacement " +
-                "text, or drop the harness-write request");
+                "text, or drop the harness-write request"));
         }
 
-        try
+        return (new PlannedWrite
         {
+            NormalizedPath = normalizedPath,
+            DisplayPath = request.Path,
+            FullPath = fullPath,
             // AtomicFile writes BOM-less UTF-8, so a file that HAD a BOM gets it back as an explicit
             // leading U+FEFF — otherwise an edit would silently strip three bytes it never touched.
-            AtomicFile.WriteAllText(fullPath, hasByteOrderMark ? "\uFEFF" + edited : edited);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            Text = hasByteOrderMark ? "\uFEFF" + edited : edited,
+            ExistedBefore = true,
+            OriginalBytes = raw
+        }, null);
+    }
+
+    /// <summary>
+    /// Phase 2: write every resolved entry. The first byte only reaches disk once every entry of the
+    /// batch has resolved, so the only failure possible here is a genuine IO fault — and when one strikes
+    /// mid-batch the earlier writes are rolled back on a best-effort basis from the originals phase 1
+    /// captured, so the workspace is not left half-corrected.
+    /// </summary>
+    private static HarnessWriteOutcome Commit(IReadOnlyList<PlannedWrite> planned)
+    {
+        var written = new List<string>(planned.Count);
+
+        for (int i = 0; i < planned.Count; i++)
         {
-            return HarnessWriteOutcome.Failed($"the harness could not write '{request.Path}': {ex.Message}");
+            try
+            {
+                AtomicFile.WriteAllText(planned[i].FullPath, planned[i].Text);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                string note = i == 0
+                    ? ""
+                    : Rollback(planned, i)
+                        ? $" (the {i} file(s) written earlier in this batch were rolled back to their previous contents)"
+                        : $" (WARNING: the {i} file(s) written earlier in this batch could NOT all be rolled back — inspect the workspace)";
+
+                return HarnessWriteOutcome.Failed(
+                    $"the harness could not write '{planned[i].DisplayPath}': {ex.Message}{note}");
+            }
+
+            written.Add(planned[i].NormalizedPath);
         }
 
-        return HarnessWriteOutcome.Ok(normalizedPath);
+        return HarnessWriteOutcome.Ok(written);
     }
+
+    /// <summary>
+    /// Best-effort restore of the first <paramref name="count"/> entries after a phase-2 IO fault:
+    /// a file that existed is put back byte-for-byte, one this batch created is deleted. A target whose
+    /// original bytes could NOT be captured in phase 1 is deliberately LEFT ALONE — never delete a file
+    /// that cannot be put back. Returns true when every entry was restored.
+    /// </summary>
+    private static bool Rollback(IReadOnlyList<PlannedWrite> planned, int count)
+    {
+        bool complete = true;
+
+        for (int i = 0; i < count; i++)
+        {
+            PlannedWrite entry = planned[i];
+            try
+            {
+                if (entry.OriginalBytes is { } bytes)
+                {
+                    File.WriteAllBytes(entry.FullPath, bytes);
+                }
+                else if (!entry.ExistedBefore)
+                {
+                    File.Delete(entry.FullPath);
+                }
+                else
+                {
+                    complete = false;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                complete = false;
+            }
+        }
+
+        return complete;
+    }
+
+    /// <summary>
+    /// Re-word a per-entry failure for a MULTI-entry batch: name the array index, and state plainly that
+    /// the whole batch was abandoned so nothing was written. Without this the agent reads a message about
+    /// one file and cannot tell whether its siblings landed.
+    /// </summary>
+    private static HarnessWriteOutcome WithBatchContext(HarnessWriteOutcome failure, int index, int total) =>
+        failure with
+        {
+            FailureReason =
+                $"needsHarnessWrite[{index}] (of {total} entries) failed, so the WHOLE batch was abandoned — " +
+                $"NOTHING was written and all {total} target files are byte-identical. {failure.FailureReason}"
+        };
 
     /// <summary>
     /// Apply <paramref name="edits"/> to <paramref name="original"/> in order, returning the edited text
@@ -604,6 +865,35 @@ public static class HarnessWrite
         string parentName = parentSlash < 0 ? parent : parent[(parentSlash + 1)..];
         return parentName.Equals(".claude", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// One entry's fully resolved write, produced by phase 1 and consumed by phase 2. Holding the
+    /// finished text (and the target's pre-batch bytes) in memory is what makes the batch atomic: no
+    /// target is opened for writing until every entry has produced one of these.
+    /// </summary>
+    private sealed record PlannedWrite
+    {
+        /// <summary>Workspace-relative, forward-slashed destination — the path reported on success.</summary>
+        public required string NormalizedPath { get; init; }
+
+        /// <summary>The path exactly as the agent spelled it, for failure messages.</summary>
+        public required string DisplayPath { get; init; }
+
+        /// <summary>The absolute destination.</summary>
+        public required string FullPath { get; init; }
+
+        /// <summary>The complete text to write (BOM already re-attached where the target had one).</summary>
+        public required string Text { get; init; }
+
+        /// <summary>Whether the target existed before this batch — drives rollback by delete vs restore.</summary>
+        public required bool ExistedBefore { get; init; }
+
+        /// <summary>
+        /// The target's bytes before this batch, captured for a best-effort phase-2 rollback. Null when
+        /// the file did not exist (rollback deletes) or could not be read (rollback leaves it alone).
+        /// </summary>
+        public byte[]? OriginalBytes { get; init; }
+    }
 }
 
 /// <summary>
@@ -620,7 +910,10 @@ public sealed record HarnessWriteEdit
     public required string New { get; init; }
 }
 
-/// <summary>A parsed <c>needsHarnessWrite</c> request (issues #191, #437).</summary>
+/// <summary>
+/// ONE file's write within a <c>needsHarnessWrite</c> request (issues #191, #437, #445) — a destination
+/// plus exactly one of the two mutually exclusive payloads.
+/// </summary>
 public sealed record HarnessWriteRequest
 {
     /// <summary>Workspace-relative destination path (same convention as <c>writeScope</c> entries).</summary>
@@ -641,25 +934,69 @@ public sealed record HarnessWriteRequest
     /// <summary>Optional human-readable reason the action could not write this itself.</summary>
     public string? Reason { get; init; }
 
-    /// <summary>
-    /// Set when the fragment carried a <c>needsHarnessWrite</c> OBJECT whose payload could not be used
-    /// (no <c>path</c>, both or neither of <c>content</c>/<c>edits</c>, a malformed edit entry). The
-    /// request is still surfaced — rather than dropped — so the attempt fails with this actionable reason
-    /// instead of a generic foreign-key merge error (issue #437).
-    /// </summary>
-    public string? InvalidReason { get; init; }
-
-    /// <summary>True when this request uses the anchored-edit form.</summary>
+    /// <summary>True when this entry uses the anchored-edit form.</summary>
     public bool IsEditForm => Edits.Count > 0;
 
     /// <summary>The path to name in a message, with a placeholder when the payload never supplied one.</summary>
     public string PathForDisplay => string.IsNullOrWhiteSpace(Path) ? "(no path given)" : Path;
 }
 
-/// <summary>The outcome of validating + performing a <see cref="HarnessWriteRequest"/>.</summary>
+/// <summary>
+/// A parsed <c>needsHarnessWrite</c> value (issue #445): ONE OR MORE <see cref="HarnessWriteRequest"/>
+/// entries that the harness applies ATOMICALLY — all of them or none. A single-object payload is simply
+/// a batch of one, which is why the pre-#445 wire form keeps working byte-for-byte.
+/// </summary>
+public sealed record HarnessWriteBatch
+{
+    /// <summary>The entries to apply, in the order the agent listed them. Empty iff <see cref="InvalidReason"/> is set.</summary>
+    public IReadOnlyList<HarnessWriteRequest> Requests { get; init; } = [];
+
+    /// <summary>
+    /// Set when the fragment carried a <c>needsHarnessWrite</c> value the parser could READ but not USE
+    /// (an entry with no <c>path</c>, both or neither of <c>content</c>/<c>edits</c>, a malformed edit, a
+    /// non-object array element, an EMPTY array). The batch is still surfaced — rather than dropped — so
+    /// the attempt fails with this actionable reason instead of a generic foreign-key merge error
+    /// (issues #437, #445). One bad entry invalidates the whole batch: the batch is atomic, so there is
+    /// no "apply the entries that parsed".
+    /// </summary>
+    public string? InvalidReason { get; init; }
+
+    /// <summary>
+    /// The path(s) the payload named, joined for a failure-message header. Stored rather than derived so
+    /// an INVALID batch (which carries no usable <see cref="Requests"/>) can still name what was asked
+    /// for.
+    /// </summary>
+    public required string PathForDisplay { get; init; }
+
+    /// <summary>A batch of usable entries.</summary>
+    public static HarnessWriteBatch Of(params HarnessWriteRequest[] requests) =>
+        Of((IReadOnlyList<HarnessWriteRequest>)requests);
+
+    /// <summary>A batch of usable entries.</summary>
+    public static HarnessWriteBatch Of(IReadOnlyList<HarnessWriteRequest> requests) => new()
+    {
+        Requests = requests,
+        PathForDisplay = Join(requests.Select(r => r.PathForDisplay))
+    };
+
+    /// <summary>An unusable payload, carrying the actionable reason and whatever paths it named.</summary>
+    public static HarnessWriteBatch Invalid(string reason, IEnumerable<string> paths) => new()
+    {
+        InvalidReason = reason,
+        PathForDisplay = Join(paths.Select(p => string.IsNullOrWhiteSpace(p) ? "(no path given)" : p))
+    };
+
+    private static string Join(IEnumerable<string> paths)
+    {
+        string joined = string.Join(", ", paths);
+        return joined.Length == 0 ? "(no path given)" : joined;
+    }
+}
+
+/// <summary>The outcome of validating + performing a <see cref="HarnessWriteBatch"/>.</summary>
 public sealed record HarnessWriteOutcome
 {
-    /// <summary>True when the write was validated AND performed.</summary>
+    /// <summary>True when every entry was validated AND written.</summary>
     public bool Succeeded { get; init; }
 
     /// <summary>True when the failure was a VALIDATION rejection (out of scope / escapes workspace / policy-denied) rather than an IO failure.</summary>
@@ -673,21 +1010,23 @@ public sealed record HarnessWriteOutcome
     public bool IsPolicyDenied { get; init; }
 
     /// <summary>
-    /// True when the request was in bounds and permitted but could NOT BE APPLIED as written (issue
-    /// #437): an unusable payload, an anchor that matched zero or several times, `edits` against a file
-    /// that does not exist, or full-content mode against a target too large for it. Implies
-    /// <see cref="WasRejected"/> (nothing was written, the target is byte-identical); drives feedback that
-    /// restates the accepted schema so the agent can re-emit a correct request.
+    /// True when the request was in bounds and permitted but could NOT BE APPLIED as written (issues
+    /// #437, #445): an unusable payload, an anchor that matched zero or several times, `edits` against a
+    /// file that does not exist, full-content mode against a target too large for it, an empty entry
+    /// array, or two entries targeting one file. Implies <see cref="WasRejected"/> (nothing was written,
+    /// every target is byte-identical); drives feedback that restates the accepted schema so the agent
+    /// can re-emit a correct request.
     /// </summary>
     public bool IsNotApplied { get; init; }
 
-    /// <summary>The workspace-relative path written, when <see cref="Succeeded"/>.</summary>
-    public string? WrittenPath { get; init; }
+    /// <summary>The workspace-relative path(s) written, when <see cref="Succeeded"/>.</summary>
+    public IReadOnlyList<string> WrittenPaths { get; init; } = [];
 
     /// <summary>An actionable reason, set when NOT <see cref="Succeeded"/>.</summary>
     public string? FailureReason { get; init; }
 
-    public static HarnessWriteOutcome Ok(string writtenPath) => new() { Succeeded = true, WrittenPath = writtenPath };
+    public static HarnessWriteOutcome Ok(IReadOnlyList<string> writtenPaths) =>
+        new() { Succeeded = true, WrittenPaths = writtenPaths };
 
     public static HarnessWriteOutcome Rejected(string reason) =>
         new() { Succeeded = false, WasRejected = true, FailureReason = reason };
@@ -697,8 +1036,8 @@ public sealed record HarnessWriteOutcome
         new() { Succeeded = false, WasRejected = true, IsPolicyDenied = true, FailureReason = reason };
 
     /// <summary>
-    /// A permitted request the harness could not apply (issue #437). Nothing was written — the target is
-    /// exactly as it was — and the agent can fix it by re-emitting a corrected request.
+    /// A permitted request the harness could not apply (issues #437, #445). Nothing was written — every
+    /// target is exactly as it was — and the agent can fix it by re-emitting a corrected request.
     /// </summary>
     public static HarnessWriteOutcome NotApplied(string reason) =>
         new() { Succeeded = false, WasRejected = true, IsNotApplied = true, FailureReason = reason };

@@ -628,14 +628,15 @@ public static class RetryPolicy
 
     /// <summary>
     /// Compose feedback for a <c>needsHarnessWrite</c> request that was in bounds and permitted but could
-    /// NOT BE APPLIED as written (issue #437, SSOT §9): an unusable payload (no <c>path</c>, both or
+    /// NOT BE APPLIED as written (issues #437, #445, SSOT §9): an unusable payload (no <c>path</c>, both or
     /// neither of <c>content</c>/<c>edits</c>, a malformed edit), an anchor that matched zero times or
-    /// several, <c>edits</c> against a file that does not exist, or full-content mode against a target too
-    /// large for it. Distinct from the scope rejection and the permission denial because it is FIXABLE by
-    /// re-emitting a corrected request — so the feedback restates the accepted schema in full and names
-    /// the anchor rule, which is the single most common way to get this wrong. The target file is
-    /// byte-identical (nothing was written), which the feedback states so the agent does not re-read a
-    /// file expecting half an edit to have landed.
+    /// several, <c>edits</c> against a file that does not exist, full-content mode against a target too
+    /// large for it, an EMPTY entry array, or two entries targeting one file. Distinct from the scope
+    /// rejection and the permission denial because it is FIXABLE by re-emitting a corrected request — so
+    /// the feedback restates the accepted schema in full and names the anchor rule, which is the single
+    /// most common way to get this wrong. Every target file is byte-identical (nothing was written, in
+    /// ANY of the entries), which the feedback states so the agent does not re-read a file expecting half
+    /// an edit to have landed.
     /// </summary>
     public static string ForHarnessWriteNotApplied(
         TaskNode task, int attempt, string requestedPath, string reason,
@@ -645,12 +646,12 @@ public static class RetryPolicy
         AppendHeader(text, task, attempt, ActionKind.Prompt, fileWritesRolledBack, salvageRef);
         text.AppendLine("## needsHarnessWrite could not be applied");
         text.AppendLine();
-        text.AppendLine($"Your `needsHarnessWrite` request for `{requestedPath}` was NOT applied — the file on disk is");
-        text.AppendLine("UNCHANGED, exactly as it was before this attempt:");
+        text.AppendLine($"Your `needsHarnessWrite` request for `{requestedPath}` was NOT applied — every file it named");
+        text.AppendLine("is UNCHANGED on disk, exactly as it was before this attempt:");
         text.AppendLine();
         text.AppendLine($"> {reason}");
         text.AppendLine();
-        text.AppendLine("`needsHarnessWrite` accepts two MUTUALLY EXCLUSIVE forms — send exactly one:");
+        text.AppendLine("Each entry carries a `path` plus exactly ONE of two MUTUALLY EXCLUSIVE payloads:");
         text.AppendLine();
         text.AppendLine("**`edits` — to MODIFY an existing file. Prefer this.** Its cost scales with the CHANGE, not");
         text.AppendLine("the file, so it works no matter how large the target is:");
@@ -672,6 +673,23 @@ public static class RetryPolicy
         text.AppendLine("**`content` — to CREATE a file** (or replace a small one): the complete file text. Do not use");
         text.AppendLine("it to modify a large existing file — re-emitting thousands of lines risks exhausting the output");
         text.AppendLine("budget, and nothing can verify the lines you did not mean to change came back unaltered.");
+        text.AppendLine();
+        text.AppendLine("**SEVERAL files in ONE attempt — send an ARRAY of entries.** Do NOT split them across attempts:");
+        text.AppendLine("a failed attempt rolls the workspace back to a clean base, so a write from a previous attempt is");
+        text.AppendLine("gone and progress cannot accumulate. Put every file this task must deliver in one request:");
+        text.AppendLine();
+        text.AppendLine("```json");
+        text.AppendLine("{\"needsHarnessWrite\": [");
+        text.AppendLine("  {\"path\": \"<file A>\", \"reason\": \"<why>\", \"edits\": [{\"old\": \"...\", \"new\": \"...\"}]},");
+        text.AppendLine("  {\"path\": \"<file B>\", \"reason\": \"<why>\", \"content\": \"<full file content>\"}]}");
+        text.AppendLine("```");
+        text.AppendLine();
+        text.AppendLine("- The array is ATOMIC ACROSS ALL ENTRIES: if any entry fails, NOTHING is written anywhere, so");
+        text.AppendLine("  you never have to reason about a half-corrected tree. Fix the named entry and re-emit the");
+        text.AppendLine("  WHOLE array.");
+        text.AppendLine("- One entry per file. Two entries naming the SAME file are rejected as ambiguous — merge their");
+        text.AppendLine("  changes into a single `edits` array for that file.");
+        text.AppendLine("- An empty array is rejected: omit the key entirely if this attempt needs no harness write.");
         text.AppendLine();
         text.AppendLine("Fix the request and emit it again. If the change genuinely cannot be expressed either way,");
         text.AppendLine("write `{\"needsHuman\": \"<why>\"}` to GUARDRAILS_STATE_OUT instead.");
@@ -784,7 +802,7 @@ public static class RetryPolicy
             text.AppendLine("grant — will let a prompt action write there directly. To make this task completable");
             text.AppendLine("autonomously, do ONE of:");
             text.AppendLine();
-            text.AppendLine("1. (Primary) Hand the write to the harness via `needsHarnessWrite` (issues #191/#437). The");
+            text.AppendLine("1. (Primary) Hand the write to the harness via `needsHarnessWrite` (issues #191/#437/#445). The");
             text.AppendLine("   action prompt should NOT write the `.claude/` file directly — instead write ONE of");
             text.AppendLine("   these to the state-out path:");
             text.AppendLine("     • MODIFYING an existing file (prefer this — cost scales with the change, not the");
@@ -793,6 +811,9 @@ public static class RetryPolicy
             text.AppendLine("       \"new\": \"<replacement>\"}]}}` — each `old` must match exactly once.");
             text.AppendLine("     • CREATING a file: `{\"needsHarnessWrite\": {\"path\": \"<workspace-relative path>\",");
             text.AppendLine("       \"content\": \"<full file content>\", \"reason\": \"<why>\"}}`.");
+            text.AppendLine("     • SEVERAL files: send an ARRAY of those entries in ONE request (#445) — the whole");
+            text.AppendLine("       array is applied atomically. Never split the files across attempts: a failed");
+            text.AppendLine("       attempt rolls the workspace back, so an earlier attempt's write is discarded.");
             text.AppendLine("   The .NET harness process — not subject to the tool-permission layer — performs the");
             text.AppendLine("   write, then your guardrails still run against the result. `/plan-breakdown` now injects");
             text.AppendLine("   this instruction into any task whose deliverable is under `.claude/`; re-author this");
