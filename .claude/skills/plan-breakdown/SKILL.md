@@ -1750,6 +1750,16 @@ Add it as an escape-hatch header, parallel to the `needsHuman` header, **verbati
 >   existing target over 64 KB, and re-emitting thousands of lines you did not mean to change risks
 >   silently corrupting them.
 >
+> **If your deliverable spans SEVERAL files, send an ARRAY of those entries in ONE request** — one
+> entry per file, mixing `edits` and `content` freely:
+> `{"needsHarnessWrite": [{"path": "<file A>", "reason": "<why>", "edits": [...]}, {"path": "<file B>",
+> "reason": "<why>", "content": "..."}]}`.
+> Do NOT deliver them one per attempt: a failed attempt rolls the workspace back to a clean base, so
+> an earlier attempt's write is DISCARDED and progress cannot accumulate. The array is applied
+> ATOMICALLY — if any entry fails, nothing is written anywhere and every file is unchanged, so fix the
+> entry the message names and re-emit the WHOLE array. One entry per file: two entries naming the same
+> file are rejected as ambiguous (merge their changes into a single `edits` array).
+>
 > If you already attempted a direct write and it was refused, do NOT retry it or try workarounds
 > (PowerShell, `dangerouslyDisableSandbox`) — just emit `needsHarnessWrite` as above.
 
@@ -1767,13 +1777,26 @@ count, blast radius, skill-directory count). The one size rule that remains: a t
 very large `.claude/` file from scratch still pays full-content cost, so keep those genuinely small or
 seed the file in a script task first and let the prompt task `edits` it.
 
-`needsHarnessWrite` is **singular per attempt** (v1): one REQUEST per attempt — though that one request
-may carry MANY `edits` to the ONE file it names. A task producing several `.claude/` FILES does so
-across attempts, or is split one deliverable per task. Unlike `needsHuman` it does NOT short-circuit —
-the guardrails still run against the harness-written result — so the task's normal `guardrails/`
-(file-exists, content checks) stay exactly as they would for any deliverable. (`stagingOutputs`, SSOT
-§3.5, is an alternative mechanism the harness also honours; prefer `needsHarnessWrite` — it needs no
-extra `task.json` contract and the guardrails verify the real `.claude/` path directly.)
+**Cardinality (#445) — a multi-file `.claude/` deliverable is ONE fragment with N entries, never one
+file per attempt or one file per task.** `needsHarnessWrite` accepts an ARRAY of entries, applied
+atomically, so a task correcting the same passage in `SKILL.md`, `references/schemas.md` and
+`references/example-breakdown.md` emits ONE request carrying three entries and converges in ONE
+attempt. Two things this replaces:
+- **Do NOT tell the agent to spread the files across attempts.** That advice was wrong even before the
+  array existed: a guardrail failure rolls the segment back to a clean base, discarding the previous
+  attempt's write, so the task burns its whole retry budget and lands on `needs-human` every time
+  (observed live — attempt 2 reported *"Three files match in the clean base"*).
+- **Do NOT split one deliverable into one task per FILE.** That shards by file rather than by
+  deliverable — cutting against Step 2c/#87, which sizes by skill DIRECTORY precisely because a skill
+  folder is one coherent unit — and buys three agent invocations, three worktrees and three merges plus
+  a shared guardrail that fails until the last one lands. Split only for the usual Step 2 / #87 / #111
+  reasons.
+Unlike `needsHuman` it does NOT short-circuit — the guardrails still run against the harness-written
+result — so the task's normal `guardrails/` (file-exists, content checks) stay exactly as they would
+for any deliverable, and a guardrail that asserts across ALL of the files (the "still present in: …"
+shape) is now satisfiable in a single attempt. (`stagingOutputs`, SSOT §3.5, is an alternative
+mechanism the harness also honours; prefer `needsHarnessWrite` — it needs no extra `task.json` contract
+and the guardrails verify the real `.claude/` path directly.)
 
 **Rule 2 — ONLY for a brand-new subdirectory: also seed the directory (the #101 mechanism, kept).**
 When the target subdirectory does not yet exist (`Test-Path .claude/skills/<name>/` is false at

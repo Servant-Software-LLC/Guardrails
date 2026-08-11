@@ -503,11 +503,11 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   3 cancelled. See SSOT section 7.1.
 - A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
   no retry burn on a genuine human decision.
-- **`needsHarnessWrite` (issues #191, #437)**: a SECOND fragment escape hatch, parallel to `needsHuman`
+- **`needsHarnessWrite` (issues #191, #437, #445)**: a SECOND fragment escape hatch, parallel to `needsHuman`
   -- asks the .NET HARNESS PROCESS ITSELF (never subject to Claude Code's tool-permission layer) to
   write a `.claude/` file the action's own subprocess can never write (broader than #101's
-  new-subdirectory-only gap; survives `dangerouslyDisableSandbox`). **TWO mutually exclusive forms
-  (#437)** -- `{ "needsHarnessWrite": { "path", "content", "reason"? } }` to CREATE a file, or
+  new-subdirectory-only gap; survives `dangerouslyDisableSandbox`). **TWO mutually exclusive payload forms
+  per entry (#437)** -- `{ "needsHarnessWrite": { "path", "content", "reason"? } }` to CREATE a file, or
   `{ "needsHarnessWrite": { "path", "edits": [{ "old", "new" }], "reason"? } }` to MODIFY one. `edits` is
   the fix for the size wall: full-content mode required re-emitting the WHOLE file, so a ~100KB+
   deliverable exceeded `maxOutputTokens` and the task was structurally impossible however small the
@@ -534,12 +534,25 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   populated (the `.claude/` wall carried as SECONDARY context in the summary/`feedback.md`), NOT
   `permission-denied` with an empty list. Only a wall with no guardrail failure to report -- an
   action-failed #104 first-attempt wall, or the eager #86 repeat -- stays `permission-denied`. The halt
-  DECISION is unchanged; only the reported outcome/message/`failedGuardrails` differ. Singular per attempt
-  in v1 -- one REQUEST, though it may carry many `edits` to the ONE file it names. A request that is in
+  DECISION is unchanged; only the reported outcome/message/`failedGuardrails` differ. **MANY FILES IN ONE
+  ATTEMPT (#445, the CARDINALITY dimension):** the key's value may be a single entry object OR an ARRAY of
+  them (`{ "needsHarnessWrite": [ {...}, {...} ] }`), additive and backward-compatible. It exists because a
+  SINGULAR request made a task whose deliverable spans 2+ `.claude/` files **unable to converge at all** --
+  the old "do it across attempts" fallback does not work, since a guardrail failure rolls the segment back
+  to a clean base and DISCARDS the previous attempt's write (observed live: attempt 2 halted with "Three
+  files match in the clean base"). **The batch is ATOMIC ACROSS ALL ENTRIES, in two strictly ordered
+  phases:** every entry -- every guard, every anchor in every file -- resolves against IN-MEMORY copies
+  FIRST, and NOT ONE target is opened for writing until the LAST entry of the LAST file resolves; any
+  failure leaves every target byte-identical (a partial multi-file write is strictly worse than a
+  rejection). All three safety checks run PER ENTRY, so **#321 denies the WHOLE batch** when any entry
+  targets a settings file -- no legitimate sibling lands beside it. Duplicate `path` entries (compared on
+  the RESOLVED path) are REJECTED, never last-wins; an EMPTY array is rejected with an actionable message,
+  never a silent no-op; array-form parse errors are index-qualified (`needsHarnessWrite[2].path ...`) and
+  ONE bad entry invalidates the whole array. A request that is in
   bounds but inapplicable AS WRITTEN (bad/ambiguous anchor, `edits` on a missing file, `content` over the
-  size wall, an unusable payload) is a THIRD failure class alongside rejected/denied: **not applied** --
-  the file is byte-identical and the feedback restates both accepted forms so the agent can re-emit.
-  SSOT section 9 / 9.3.
+  size wall, an unusable payload, an empty array, a duplicate path) is a THIRD failure class alongside
+  rejected/denied: **not applied** -- every target is byte-identical and the feedback restates both payload
+  forms AND the array form so the agent can re-emit. SSOT section 9 / 9.3.
 - **The overwatcher (active AI supervisor, #269, SSOT §9.2, design `docs/plans/11-overwatcher.md`)**: an
   **advisory** AI supervisor consulted DURING a run when a task struggles. It **subsumes** the shipped
   one-shot needs-human triage (now the §9.2.1 `TerminalExhaustion` case, invariants preserved verbatim) and

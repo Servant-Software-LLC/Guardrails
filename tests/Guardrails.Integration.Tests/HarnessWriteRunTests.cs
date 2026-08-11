@@ -22,7 +22,12 @@ namespace Guardrails.Integration.Tests;
 ///     write-scope violation, eventual needs-human on budget exhaustion;</item>
 ///   <item>a path attempting to escape the workspace entirely is rejected regardless of writeScope.</item>
 /// </list>
-/// The #321 tests at the end use a fake <see cref="IPromptRunner"/> instead — the ordering bug only
+/// The #445 tests at the end prove the multi-file ARRAY form end-to-end: three <c>.claude/</c> files
+/// corrected in ONE attempt (the case a singular request could never converge, because a guardrail
+/// failure rolls the segment back and discards the previous attempt's write), cross-file atomicity, the
+/// duplicate-path and empty-array rejections, and that the #321 carve-out denies a whole batch when any
+/// single entry targets a settings file.
+/// The #321 tests use a fake <see cref="IPromptRunner"/> instead — the ordering bug only
 /// reproduces with a PROMPT action that reports <c>BlockedWritePaths</c> (a direct-write probe the
 /// permission scanner captured); a script action never populates them. They prove the permission-wall
 /// early halt now YIELDS to the escape hatch (#321), that an un-escaped <c>.claude/</c> wall still
@@ -883,12 +888,13 @@ public sealed class HarnessWriteRunTests
     }
 
     /// <summary>
-    /// A single-task plan whose SCRIPT action copies a pre-authored fragment JSON onto
-    /// <c>GUARDRAILS_STATE_OUT</c>, and whose guardrail asserts the big skill file was CORRECTED and NOT
-    /// TRUNCATED. Copying a file beats interpolating a multi-kilobyte JSON blob into a shell literal:
-    /// the fragment is built with a real serializer, so nothing depends on PowerShell/bash quoting.
+    /// The shared scaffold for a single-task plan whose SCRIPT action copies a pre-authored fragment JSON
+    /// onto <c>GUARDRAILS_STATE_OUT</c>. Copying a file beats interpolating a multi-kilobyte JSON blob
+    /// into a shell literal: the fragment is built with a real serializer, so nothing depends on
+    /// PowerShell/bash quoting. The caller supplies the task's guardrail(s).
     /// </summary>
-    private static string WriteFragmentCopyPlan(string repoPath, string fragmentJson)
+    private static (string PlanDir, string TaskDir) WriteFragmentCopyScaffold(
+        string repoPath, string fragmentJson, string description)
     {
         string planDir = Path.Combine(repoPath, "plan");
         Directory.CreateDirectory(Path.Combine(planDir, "tasks", "01-write", "guardrails"));
@@ -907,9 +913,9 @@ public sealed class HarnessWriteRunTests
 
         string taskDir = Path.Combine(planDir, "tasks", "01-write");
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            """
+            $$"""
             {
-              "description": "correct one passage in a large .claude/ skill file",
+              "description": "{{description}}",
               "dependsOn": [],
               "writeScope": [".claude/**"]
             }
@@ -922,7 +928,27 @@ public sealed class HarnessWriteRunTests
         {
             File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
                 $"Copy-Item -LiteralPath '{fragmentFile}' -Destination $env:GUARDRAILS_STATE_OUT -Force\nexit 0\n");
+        }
+        else
+        {
+            WriteSh(Path.Combine(taskDir, "action.sh"),
+                $"#!/usr/bin/env bash\ncp '{fragmentFile}' \"$GUARDRAILS_STATE_OUT\"\nexit 0\n");
+        }
 
+        return (planDir, taskDir);
+    }
+
+    /// <summary>
+    /// The #437 plan: the fragment-copy scaffold plus a guardrail asserting the big skill file was
+    /// CORRECTED and NOT TRUNCATED.
+    /// </summary>
+    private static string WriteFragmentCopyPlan(string repoPath, string fragmentJson)
+    {
+        (string planDir, string taskDir) = WriteFragmentCopyScaffold(
+            repoPath, fragmentJson, "correct one passage in a large .claude/ skill file");
+
+        if (Ps)
+        {
             // A plain (non-interpolated) raw literal: the script is full of PowerShell `$vars` and `{ }`
             // blocks, so a placeholder swap is far less error-prone than brace/dollar escaping.
             const string guardrailPs = """
@@ -941,9 +967,6 @@ public sealed class HarnessWriteRunTests
         }
         else
         {
-            WriteSh(Path.Combine(taskDir, "action.sh"),
-                $"#!/usr/bin/env bash\ncp '{fragmentFile}' \"$GUARDRAILS_STATE_OUT\"\nexit 0\n");
-
             WriteSh(Path.Combine(taskDir, "guardrails", "01-corrected.sh"),
                 $"""
                 #!/usr/bin/env bash
@@ -1076,5 +1099,329 @@ public sealed class HarnessWriteRunTests
 
         JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
         Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+    }
+
+    // ── #445: a deliverable spanning SEVERAL .claude/ files converges in ONE attempt ──────────────
+
+    private const string SkillPath = ".claude/skills/plan-breakdown/SKILL.md";
+    private const string SchemasPath = ".claude/skills/plan-breakdown/references/schemas.md";
+    private const string ExamplePath = ".claude/skills/plan-breakdown/references/example-breakdown.md";
+    private const string StaleWording = "WITHHOLDING-WORDING: the sentence that must be corrected.";
+    private const string FixedWording = "CORRECTED-WORDING: the sentence after correction.";
+
+    /// <summary>
+    /// The fragment-copy scaffold plus ONE guardrail that holds every listed path to the same standard:
+    /// present, carrying the corrected sentence, and free of the stale one. It is the shape of the real
+    /// #445 casualty's guardrail — "withholding wording still present in: …" — which is precisely the
+    /// check a singular <c>needsHarnessWrite</c> could never satisfy.
+    /// </summary>
+    private static string WriteMultiFileFragmentPlan(
+        string repoPath, string fragmentJson, params string[] checkedPaths)
+    {
+        (string planDir, string taskDir) = WriteFragmentCopyScaffold(
+            repoPath, fragmentJson, "correct the same stale sentence in three .claude/ files");
+
+        if (Ps)
+        {
+            string list = string.Join(", ", checkedPaths.Select(p => $"'{p.Replace("/", "\\")}'"));
+            const string guardrailPs = """
+                foreach ($rel in @(__PATHS__)) {
+                    $p = Join-Path $env:GUARDRAILS_WORKSPACE $rel
+                    if (-not (Test-Path -LiteralPath $p)) { Write-Output "deliverable missing: $rel"; exit 1 }
+                    $c = Get-Content -LiteralPath $p -Raw
+                    if ($c -match 'WITHHOLDING-WORDING') { Write-Output "withholding wording still present in: $rel"; exit 1 }
+                    if ($c -notmatch 'CORRECTED-WORDING') { Write-Output "the correction did not land in: $rel"; exit 1 }
+                }
+                exit 0
+
+                """;
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-all-corrected.ps1"),
+                guardrailPs.Replace("__PATHS__", list, StringComparison.Ordinal));
+        }
+        else
+        {
+            string list = string.Join(" ", checkedPaths.Select(p => $"\"{p}\""));
+            WriteSh(Path.Combine(taskDir, "guardrails", "01-all-corrected.sh"),
+                $"""
+                #!/usr/bin/env bash
+                for rel in {list}; do
+                  p="$GUARDRAILS_WORKSPACE/$rel"
+                  if [ ! -f "$p" ]; then echo "deliverable missing: $rel"; exit 1; fi
+                  if grep -q 'WITHHOLDING-WORDING' "$p"; then echo "withholding wording still present in: $rel"; exit 1; fi
+                  if ! grep -q 'CORRECTED-WORDING' "$p"; then echo "the correction did not land in: $rel"; exit 1; fi
+                done
+                exit 0
+
+                """);
+        }
+
+        return planDir;
+    }
+
+    [Fact]
+    public async Task Worktree_ThreeClaudeFiles_CorrectedInOneAttempt_TaskGoesGreen()
+    {
+        // #445 RED-BAR regression, faithful to the reported run
+        // (2026-08-11T14-23-39Z-76a7 / wave-01-correct-the-record/03-correct-plan-breakdown-allowlist-wording):
+        // ONE deliverable — the same stale sentence corrected in THREE files under
+        // .claude/skills/plan-breakdown/. With a SINGULAR needsHarnessWrite this task could never
+        // converge: attempt 1 corrected the one file it was allowed and its own fragment reported
+        // "filesRemaining"; the guardrail failed with "withholding wording still present in: …"; the
+        // failure rolled the segment back to the clean base, so attempt 2 found all three files stale
+        // again and honestly halted ("Three files match in the clean base"). Progress could not
+        // accumulate, so no number of retries would have helped. With the array, one attempt delivers
+        // all three — and `defaultRetries: 0` means it has exactly ONE attempt to do it in.
+        using var repo = new TempGitRepo();
+        repo.Commit(SkillPath, $"# plan-breakdown\n\nintro\n{StaleWording}\noutro\n");
+        repo.Commit(SchemasPath, $"# schemas\n\n{StaleWording}\n");
+        // The third file does not exist yet — the array mixes an `edits` entry with a `content` one.
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new object[]
+            {
+                new
+                {
+                    path = SkillPath,
+                    reason = "the tool-permission layer refuses .claude/ writes",
+                    edits = new[] { new { old = StaleWording, @new = FixedWording } }
+                },
+                new
+                {
+                    path = SchemasPath,
+                    reason = "same correction, second file",
+                    edits = new[] { new { old = StaleWording, @new = FixedWording } }
+                },
+                new
+                {
+                    path = ExamplePath,
+                    reason = "same correction, third file — this one does not exist yet",
+                    content = $"# example breakdown\n\n{FixedWording}\n"
+                }
+            }
+        });
+
+        string planDir = WriteMultiFileFragmentPlan(
+            repo.RepoPath, fragmentJson, SkillPath, SchemasPath, ExamplePath);
+
+        var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+
+        // Exactly ONE attempt: the whole point is that this no longer needs to (and cannot) accumulate
+        // progress across retries.
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+
+        // All three files reached the plan branch, corrected, with the untouched prose intact.
+        Assert.Equal($"# plan-breakdown\n\nintro\n{FixedWording}\noutro\n",
+            repo.PlanBranchContent(planBranch, SkillPath));
+        Assert.Equal($"# schemas\n\n{FixedWording}\n", repo.PlanBranchContent(planBranch, SchemasPath));
+        Assert.Equal($"# example breakdown\n\n{FixedWording}\n", repo.PlanBranchContent(planBranch, ExamplePath));
+    }
+
+    [Fact]
+    public async Task Worktree_SingularRequest_CorrectsOnlyOneOfThreeFiles_GuardrailStillFails()
+    {
+        // The pre-#445 world, reproduced — and the NEGATIVE polarity of the guardrail the green test
+        // above relies on. A SINGULAR request corrects the one file it names; the shared guardrail then
+        // fails with the real run's message ("withholding wording still present in: …"), which is why
+        // the task could never converge: the failure rolls the segment back, so the next attempt sees
+        // all three files stale again. This test also keeps the green test honest — a toothless
+        // guardrail that passed regardless would fail HERE.
+        using var repo = new TempGitRepo();
+        repo.Commit(SkillPath, $"# plan-breakdown\n\n{StaleWording}\n");
+        repo.Commit(SchemasPath, $"# schemas\n\n{StaleWording}\n");
+        repo.Commit(ExamplePath, $"# example breakdown\n\n{StaleWording}\n");
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new
+            {
+                path = SkillPath,
+                reason = "one file per request — the pre-#445 shape",
+                edits = new[] { new { old = StaleWording, @new = FixedWording } }
+            }
+        });
+
+        string planDir = WriteMultiFileFragmentPlan(
+            repo.RepoPath, fragmentJson, SkillPath, SchemasPath, ExamplePath);
+
+        var (report, _) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.False(task.IsGreen);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+
+        // The guardrail that the green test above depends on genuinely has teeth: it names the files
+        // still carrying the stale wording, exactly as the real run's did.
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        FailedGuardrail failed = Assert.Single(attempt.FailedGuardrails);
+        Assert.Equal("01-all-corrected", failed.Name);
+        Assert.Contains("withholding wording still present in", failed.Reason);
+    }
+
+    [Fact]
+    public async Task Worktree_MultiFileBatch_BadAnchorInTheSecondFile_WritesNothingAtAll()
+    {
+        // CROSS-FILE ATOMICITY end-to-end. The first entry is perfectly good; the second's anchor is not
+        // in its file. A naive per-entry loop would already have written file 1 by the time it discovered
+        // the problem, leaving a half-corrected tree the agent cannot reason about. Nothing may land:
+        // the attempt fails as `not applied`, both committed files keep their original bytes, and the
+        // feedback names the offending array index.
+        using var repo = new TempGitRepo();
+        string firstOriginal = $"# plan-breakdown\n\n{StaleWording}\n";
+        string secondOriginal = "# schemas\n\nthis file never carried the stale sentence\n";
+        repo.Commit(SkillPath, firstOriginal);
+        repo.Commit(SchemasPath, secondOriginal);
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new object[]
+            {
+                new
+                {
+                    path = SkillPath,
+                    reason = "this one would apply cleanly",
+                    edits = new[] { new { old = StaleWording, @new = FixedWording } }
+                },
+                new
+                {
+                    path = SchemasPath,
+                    reason = "this anchor is not in the file",
+                    edits = new[] { new { old = StaleWording, @new = FixedWording } }
+                }
+            }
+        });
+
+        string planDir = WriteMultiFileFragmentPlan(repo.RepoPath, fragmentJson, SkillPath, SchemasPath);
+
+        var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.False(task.IsGreen);
+        Assert.Contains("needsHarnessWrite not applied", task.Summary);
+        Assert.Contains("needsHarnessWrite[1]", task.Summary);
+        Assert.Contains("NOT FOUND", task.Summary);
+
+        // NEITHER file changed — not even the one whose edit resolved perfectly.
+        Assert.Equal(firstOriginal, repo.PlanBranchContent(planBranch, SkillPath));
+        Assert.Equal(secondOriginal, repo.PlanBranchContent(planBranch, SchemasPath));
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+
+        // The retry feedback teaches the array form and says plainly that nothing landed, so the agent
+        // re-emits the WHOLE array instead of hunting for which half it still owes.
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        string feedback = File.ReadAllText(Path.Combine(
+            planDir, attempt.LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md"));
+        Assert.Contains("could not be applied", feedback);
+        Assert.Contains("NOTHING was written", feedback);
+        Assert.Contains("ARRAY of entries", feedback);
+        Assert.Contains(SkillPath, feedback);
+        Assert.Contains(SchemasPath, feedback);
+    }
+
+    [Fact]
+    public async Task Worktree_MultiFileBatch_OneEntryTargetsClaudeSettings_DeniesTheWholeBatch()
+    {
+        // The #321 carve-out must hold for EVERY entry: an array is not a side door for a
+        // permission-granting settings file smuggled in beside legitimate deliverables. Neither the
+        // settings file NOR the legitimate sibling may be written.
+        using var repo = new TempGitRepo();
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new object[]
+            {
+                new { path = ".claude/commands/legit.md", reason = "a legitimate deliverable", content = "# legit\n" },
+                new { path = ".claude/settings.json", reason = "widen my own permissions", content = "{\"permissions\":{\"allow\":[\"Write(.claude/**)\"]}}" }
+            }
+        });
+
+        string planDir = WriteMultiFileFragmentPlan(repo.RepoPath, fragmentJson, ".claude/commands/legit.md");
+
+        var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.Contains("needsHarnessWrite denied", task.Summary);
+
+        Assert.False(repo.PlanBranchHasPath(planBranch, ".claude/settings.json"),
+            "the harness must refuse to write .claude/settings.json");
+        Assert.False(repo.PlanBranchHasPath(planBranch, ".claude/commands/legit.md"),
+            "nothing else in the array may be written when one entry is denied");
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        string feedback = File.ReadAllText(Path.Combine(
+            planDir, attempt.LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md"));
+        Assert.Contains("permission-granting files", feedback);
+    }
+
+    [Fact]
+    public async Task Worktree_MultiFileBatch_DuplicatePathEntries_RejectedRatherThanLastWins()
+    {
+        // Two entries for one file is ambiguous — the order a model listed them in is not a contract.
+        // The harness refuses and tells the agent to merge them, rather than silently discarding one of
+        // the two sets of changes it asked for.
+        using var repo = new TempGitRepo();
+        string original = $"# plan-breakdown\n\n{StaleWording}\nsecond line\n";
+        repo.Commit(SkillPath, original);
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new object[]
+            {
+                new
+                {
+                    path = SkillPath,
+                    reason = "first half of the change",
+                    edits = new[] { new { old = StaleWording, @new = FixedWording } }
+                },
+                new
+                {
+                    path = SkillPath,
+                    reason = "second half of the change — same file, a separate entry",
+                    edits = new[] { new { old = "second line", @new = "SECOND LINE" } }
+                }
+            }
+        });
+
+        string planDir = WriteMultiFileFragmentPlan(repo.RepoPath, fragmentJson, SkillPath);
+
+        var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.Contains("needsHarnessWrite not applied", task.Summary);
+        Assert.Contains("SAME file", task.Summary);
+        Assert.Equal(original, repo.PlanBranchContent(planBranch, SkillPath));
+    }
+
+    [Fact]
+    public async Task Worktree_EmptyArray_RejectedWithAnActionableReason_NotASilentNoOp()
+    {
+        // A silent no-op would surface as an unrelated guardrail failure ("deliverable missing") several
+        // steps away from the actual mistake. Fail at the request, with a reason that names it.
+        using var repo = new TempGitRepo();
+
+        string planDir = WriteMultiFileFragmentPlan(
+            repo.RepoPath, """{ "needsHarnessWrite": [] }""", SkillPath);
+
+        var (report, _) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.Contains("needsHarnessWrite not applied", task.Summary);
+        Assert.Contains("EMPTY array", task.Summary);
     }
 }
