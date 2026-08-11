@@ -871,10 +871,13 @@ public sealed class TaskExecutor : ITaskExecutor
         // FAILURE (skip guardrails, retry with actionable feedback) — this escape hatch unblocks write
         // MECHANICS only, never verification: an in-scope write still falls through to the write-scope
         // check (which will also see the just-written file — expected, not redundant) and the task's own
-        // guardrails, exactly as any other successful action does.
+        // guardrails, exactly as any other successful action does. #437: the request may carry EITHER
+        // full `content` (create/replace) OR an anchored `edits` array (modify) — the harness resolves
+        // every anchor in memory and writes once, so an unresolvable anchor leaves the target
+        // byte-identical and fails the attempt with feedback instead of half-applying.
         if (action.HarnessWriteRequest is { } harnessWriteRequest)
         {
-            HarnessWriteOutcome writeOutcome = HarnessWrite.Validate(
+            HarnessWriteOutcome writeOutcome = HarnessWrite.ValidateAndApply(
                 harnessWriteRequest, effectiveWorkspace, task.WriteScope);
 
             // The control key is consumed either way — it must never reach the fragment-merge check
@@ -885,13 +888,19 @@ public sealed class TaskExecutor : ITaskExecutor
             {
                 (bool fileWritesRolledBack, SalvageRef? salvageRef) =
                     StashIfRollingBack(task, worktree, attemptNumber, isFinal);
+                string requestedPath = harnessWriteRequest.PathForDisplay;
                 // #321: a permission-file DENIAL (a .claude/settings*.json) gets its own actionable
                 // feedback ("a human must author it") distinct from the generic out-of-scope rejection.
+                // #437: a NOT-APPLIED request (bad/ambiguous anchor, wrong mode for the target, an
+                // unusable payload) is neither — it is fixable by re-emitting, so its feedback restates
+                // the accepted schema. Ordered most-specific first; IsNotApplied/IsPolicyDenied both
+                // imply WasRejected, so the generic scope arm must come last.
                 string feedback = writeOutcome switch
                 {
-                    { IsPolicyDenied: true } => RetryPolicy.ForHarnessWriteDenied(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
-                    { WasRejected: true } => RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
-                    _ => RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, harnessWriteRequest.Path, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef)
+                    { IsPolicyDenied: true } => RetryPolicy.ForHarnessWriteDenied(task, attemptNumber, requestedPath, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
+                    { IsNotApplied: true } => RetryPolicy.ForHarnessWriteNotApplied(task, attemptNumber, requestedPath, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
+                    { WasRejected: true } => RetryPolicy.ForHarnessWriteOutOfScope(task, attemptNumber, requestedPath, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef),
+                    _ => RetryPolicy.ForHarnessWriteFailed(task, attemptNumber, requestedPath, writeOutcome.FailureReason!, fileWritesRolledBack, salvageRef)
                 };
                 return _journaler.FailedAttempt(
                     task, attemptNumber, startedAt, relativeLogDir, logDir, feedback, isFinal,
@@ -904,6 +913,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         Summary = writeOutcome switch
                         {
                             { IsPolicyDenied: true } => $"needsHarnessWrite denied: {writeOutcome.FailureReason}",
+                            { IsNotApplied: true } => $"needsHarnessWrite not applied: {writeOutcome.FailureReason}",
                             { WasRejected: true } => $"needsHarnessWrite rejected: {writeOutcome.FailureReason}",
                             _ => $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
                         }

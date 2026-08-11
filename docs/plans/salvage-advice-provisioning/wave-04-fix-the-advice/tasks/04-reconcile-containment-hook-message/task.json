@@ -1,0 +1,7 @@
+{
+  "description": "Reconcile the containment hook's own block message so it stops recommending the same unusable recovery recipe",
+  "dependsOn": ["02-implement-salvage-advice"],
+  "stableId": "seo4b7",
+  "writeScope": ["src/Guardrails.Core/Prompts/WorktreeContainmentHook.cs"],
+  "action": { "maxTurns": 75 }
+}

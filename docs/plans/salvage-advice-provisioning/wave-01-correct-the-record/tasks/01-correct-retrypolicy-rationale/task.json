@@ -1,0 +1,10 @@
+{
+  "description": "Remove the false 'writeScope-enforced at write time' rationale and the unconditional 'works under the default read-only git permissions' claim from the salvage advice and its doc comments",
+  "dependsOn": [],
+  "stableId": "s1a7k2",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/RetryPolicy.cs",
+    "src/Guardrails.Core/Execution/SalvageRef.cs",
+    "src/Guardrails.Core/Model/RunConfig.cs"
+  ]
+}

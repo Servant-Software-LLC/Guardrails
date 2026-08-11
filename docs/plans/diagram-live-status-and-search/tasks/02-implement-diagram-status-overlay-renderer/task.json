@@ -1,0 +1,6 @@
+{
+  "description": "Implement the per-node status-overlay rendering capability in HtmlDiagramRenderer so the authored tests pass",
+  "dependsOn": ["01-author-tests-diagram-status-overlay-renderer"],
+  "stableId": "d4e5f6",
+  "writeScope": ["src/Guardrails.Core/Graph/HtmlDiagramRenderer.cs"]
+}

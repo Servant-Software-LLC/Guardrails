@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests asserting the harness injects Bash(git show*) unconditionally and never injects a write verb, plus the minimal surfacing stub they compile against",
+  "dependsOn": [],
+  "stableId": "s8h7v9",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ToolGrantInjectionTests.cs",
+    "src/Guardrails.Core/Prompts/ClaudePromptRunner.cs"
+  ]
+}

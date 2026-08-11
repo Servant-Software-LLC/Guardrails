@@ -1,0 +1,7 @@
+{
+  "description": "Construct OnTheFlyDiagramObserver and inject it into RunCommand.cs's composition root, at both call sites the analogous OnTheFlyLogSiteObserver is wired into",
+  "dependsOn": ["04-implement-diagram-observer", "05-author-tests-diagramobserver-wiring"],
+  "stableId": "p7q8r9",
+  "writeScope": ["src/Guardrails.Cli/Commands/RunCommand.cs"],
+  "action": { "maxTurns": 75 }
+}

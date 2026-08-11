@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests + a RunReport stub for the models-used run summary",
+  "dependsOn": [
+    "03-author-tests-provenance-model"
+  ],
+  "stableId": "psm09a",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ReportModelsUsedTests.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs"
+  ]
+}

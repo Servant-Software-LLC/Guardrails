@@ -1,0 +1,3 @@
+{
+  "description": "Plan-level Full Flight Check (POSITIVE baseline): every OTHER test in Guardrails.Core.Tests is green before this plan's task runs, excluding the one test this plan is about to modify (its pass/fail is the very flakiness under investigation, so it is excluded rather than treated as a stable precondition)."
+}

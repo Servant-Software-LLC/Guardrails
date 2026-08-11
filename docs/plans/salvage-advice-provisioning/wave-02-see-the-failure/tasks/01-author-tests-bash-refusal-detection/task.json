@@ -1,0 +1,6 @@
+{
+  "description": "Author failing tests pinning the REAL Bash refusal phrases the permission scanner must detect",
+  "dependsOn": [],
+  "stableId": "s6f5t8",
+  "writeScope": ["tests/Guardrails.Core.Tests/ClaudePermissionScannerBashRefusalTests.cs"]
+}

@@ -40,6 +40,115 @@ public sealed class FakeClaudeRunTests
     private static string AttemptDir(string planDir, string taskId, int attempt) =>
         Path.Combine(planDir, "logs", Journal(planDir).RunId, taskId, $"attempt-{attempt}");
 
+    /// <summary>
+    /// Invokes a builder's fake CLI through the REAL <see cref="ClaudePromptRunner"/> +
+    /// <see cref="ProcessRunner"/> the harness uses, with a caller-supplied environment. Handing the
+    /// env in <see cref="PromptInvocation.Environment"/> is byte-identical from the CHILD's point of
+    /// view to inheriting it (ProcessRunner overlays the dictionary onto the inherited block), so this
+    /// models an ambient-env escape without any process-global mutation — deterministic and
+    /// parallel-safe.
+    /// </summary>
+    private static async Task<PromptResult> InvokeFakeCliAsync(
+        FakeClaudePlanBuilder plan, string cwd, IReadOnlyDictionary<string, string> env) =>
+        await new ClaudePromptRunner("claude", plan.FakeCliPath, new ProcessRunner()).RunAsync(
+            new PromptInvocation
+            {
+                ComposedPrompt = "analyze this failure",
+                WorkingDirectory = cwd,
+                PlanDirectory = plan.PlanDir,
+                Environment = env,
+                Settings = new PromptRunnerSettings { MaxTurns = 5 },
+                Timeout = TimeSpan.FromMinutes(2),
+                StreamLogPath = Path.Combine(cwd, $"stream-{Guid.NewGuid():N}.jsonl")
+            },
+            TestContext.Current.CancellationToken);
+
+    [Fact]
+    public async Task FakeCli_WritesNothing_WhenNotThisPlansInvocation_Issue253()
+    {
+        // #253 RED-BAR for the shared builder. The harness invokes the prompt runner with a
+        // deliberately EMPTY env for its advisory steps (NeedsHumanTriage, Overwatch,
+        // WaveBreakdownInvoker), so those children inherit GUARDRAILS_* from whatever launched
+        // `dotnet test`. Inside an outer `guardrails run` that is the OUTER run's own state/verdict
+        // paths — and this fake happily wrote a fragment to them, injecting state into a live run.
+        using var plan = new FakeClaudePlanBuilder();
+        plan.AddPromptTask("01-a");
+
+        string probe = Path.Combine(Path.GetTempPath(), "gr-253-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(probe);
+        try
+        {
+            string outerFragment = Path.Combine(probe, "outer-action-out-fragment.json");
+            string outerVerdict = Path.Combine(probe, "outer-guardrail.verdict.json");
+
+            PromptResult result = await InvokeFakeCliAsync(plan, probe,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    // No FakeClaudePlanBuilder.ActionTokenVar — not one of this plan's invocations.
+                    ["GUARDRAILS_STATE_OUT"] = outerFragment,
+                    ["GUARDRAILS_TASK_ID"] = "outer-run-task"
+                });
+            Assert.True(result.Completed, $"the fake must still return a terminal result: {result.Summary}");
+            Assert.False(File.Exists(outerFragment),
+                "the fake CLI wrote a state fragment to an INHERITED GUARDRAILS_STATE_OUT (issue #253) — " +
+                "in a real nested run that path belongs to the enclosing run's own log dir");
+
+            // The verdict path is the same class of escape, and worse: a forged PASS.
+            result = await InvokeFakeCliAsync(plan, probe,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["GUARDRAILS_VERDICT_OUT"] = outerVerdict,
+                    ["FAKE_VERDICT"] = "pass"
+                });
+            Assert.True(result.Completed, $"the fake must still return a terminal result: {result.Summary}");
+            Assert.False(File.Exists(outerVerdict),
+                "the fake CLI wrote a verdict to an INHERITED GUARDRAILS_VERDICT_OUT (issue #253)");
+        }
+        finally
+        {
+            Directory.Delete(probe, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task FakeCli_StillWrites_ForThisPlansInvocation_Issue253()
+    {
+        // Positive twin: the #253 gate must not be satisfiable by neutering the fake. With this plan's
+        // token present the fake still produces the fragment and the verdict every other test here needs.
+        using var plan = new FakeClaudePlanBuilder();
+        plan.AddPromptTask("01-a");
+
+        string probe = Path.Combine(Path.GetTempPath(), "gr-253-probe-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(probe);
+        try
+        {
+            string fragment = Path.Combine(probe, "action-out-fragment.json");
+            string verdict = Path.Combine(probe, "guardrail.verdict.json");
+
+            await InvokeFakeCliAsync(plan, probe,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    [FakeClaudePlanBuilder.ActionTokenVar] = plan.ActionToken,
+                    ["GUARDRAILS_STATE_OUT"] = fragment,
+                    ["GUARDRAILS_TASK_ID"] = "01-a"
+                });
+            Assert.Contains("\"produced\": true", File.ReadAllText(fragment));
+
+            await InvokeFakeCliAsync(plan, probe,
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    [FakeClaudePlanBuilder.ActionTokenVar] = plan.ActionToken,
+                    ["GUARDRAILS_VERDICT_OUT"] = verdict,
+                    ["FAKE_VERDICT"] = "pass"
+                });
+            Assert.Contains("\"pass\": true", File.ReadAllText(verdict));
+        }
+        finally
+        {
+            Directory.Delete(probe, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task PromptAction_Green_FragmentMerged_AndCostRecorded()
     {

@@ -1,0 +1,3 @@
+{
+  "description": "The whole solution compiles after wiring OnTheFlyDiagramObserver into RunCommand.cs"
+}

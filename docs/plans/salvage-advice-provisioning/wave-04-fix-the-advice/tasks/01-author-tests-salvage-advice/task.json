@@ -1,0 +1,7 @@
+{
+  "description": "Author failing tests pinning the corrected salvage advice: patch-route first, DiffStat-routed, and every emitted command inside the granted set",
+  "dependsOn": [],
+  "stableId": "sbl1y4",
+  "writeScope": ["tests/Guardrails.Core.Tests/RetryPolicySalvageAdviceTests.cs"],
+  "action": { "maxTurns": 75 }
+}

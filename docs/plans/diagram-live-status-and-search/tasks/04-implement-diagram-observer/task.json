@@ -1,0 +1,6 @@
+{
+  "description": "Implement OnTheFlyDiagramObserver so the authored tests pass",
+  "dependsOn": ["03-author-tests-diagram-observer"],
+  "stableId": "j1k2l3",
+  "writeScope": ["src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs"]
+}

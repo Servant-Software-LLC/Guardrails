@@ -15,12 +15,52 @@ namespace Guardrails.Integration.Tests;
 /// shape a task takes when a reset + re-run produces a later succeeded attempt that does not
 /// touch <c>state.json</c>.
 /// </summary>
+/// <remarks>
+/// <b>Issue #253 containment.</b> Every path this fake writes comes from the child's ENVIRONMENT
+/// (<c>$GUARDRAILS_STATE_OUT</c>, <c>$GUARDRAILS_VERDICT_OUT</c>), which the harness sets per
+/// invocation — but which a child INHERITS whenever the harness does not. <c>NeedsHumanTriage</c>
+/// (and <c>Overwatch</c> / <c>WaveBreakdownInvoker</c>) invoke the prompt runner with a deliberately
+/// EMPTY env, so running this suite inside an outer <c>guardrails run</c> (a plan preflight doing
+/// <c>dotnet test</c>) made those invocations inherit the OUTER run's <c>GUARDRAILS_STATE_OUT</c> and
+/// write a fragment into that run's own log dir — silently injecting state into a live run. Neither
+/// path can be contained by "is the target under my temp root?", because both are legitimately staged
+/// under the effective workspace (a segment worktree in worktree mode), which lives OUTSIDE
+/// <see cref="PlanDir"/>. So the fake instead proves the INVOCATION is one of THIS plan's, via a
+/// per-instance token in <c>action.env</c> (which the harness also propagates to task guardrails).
+/// <para>
+/// <b>KNOWN RESIDUAL (pre-existing, needs a production change — do not "fix" it here).</b> The token
+/// proves WHO invoked us, but the action-vs-guardrail BRANCH below is still chosen by the presence of
+/// <c>$GUARDRAILS_VERDICT_OUT</c> / <c>$GUARDRAILS_STATE_OUT</c>, and either can be AMBIENT. So if an
+/// enclosing run exports <c>GUARDRAILS_VERDICT_OUT</c> (i.e. the outer step is a PROMPT guardrail
+/// whose agent shells out to <c>dotnet test</c>), even a legitimate action invocation of this plan
+/// takes the verdict branch and writes a passing verdict to the OUTER path. No fixture-side fix
+/// exists: neither prompt frontmatter nor a guardrail sidecar can carry an <c>env</c> the fixture
+/// could use as an ambient-proof role marker, and every <c>GUARDRAILS_*</c> name is inheritable.
+/// The real fix is to make the child's §5.1 env HERMETIC — the harness explicitly clearing the
+/// <c>GUARDRAILS_*</c> keys it does not set — which would also make <c>TaskExecutor</c>'s
+/// <c>BuildGuardrailEnvironment</c> <c>env.Remove("GUARDRAILS_STATE_OUT")</c> actually effective
+/// (removing a key from the overlay dictionary does NOT unset an inherited variable). Reachability
+/// is low here because test-running gates are SCRIPT guardrails by doctrine, and this residual is
+/// strictly narrower than the two vectors above, which fired from an ordinary script preflight.
+/// </para>
+/// </remarks>
 public sealed class FakeClaudePlanBuilder : IDisposable
 {
     private static readonly bool Windows = OperatingSystem.IsWindows();
 
+    /// <summary>
+    /// Name of the fixture-private proof-of-origin variable stamped into every task's
+    /// <c>action.env</c> (issue #253). Deliberately outside the <c>GUARDRAILS_</c> namespace — it is
+    /// fixture plumbing, not part of the §5.1 contract, and no real harness ever sets it.
+    /// </summary>
+    public const string ActionTokenVar = "GR_FAKE_CLAUDE_ACTION";
+
     private readonly string _root;
     private readonly string _fakeCliPath;
+
+    /// <summary>Per-instance value for <see cref="ActionTokenVar"/> — unguessable, so an enclosing
+    /// run's ambient environment can never match it.</summary>
+    private readonly string _actionToken = Guid.NewGuid().ToString("N");
 
     public FakeClaudePlanBuilder(int defaultRetries = 0, int maxParallelism = 1)
     {
@@ -66,6 +106,14 @@ public sealed class FakeClaudePlanBuilder : IDisposable
     /// <summary>Absolute path to <c>state/run.json</c> after a run.</summary>
     public string RunJsonPath => Path.Combine(_root, "state", "run.json");
 
+    /// <summary>Absolute path to the generated fake CLI. Exposed so the issue #253 regression test can
+    /// spawn it directly with a synthetic environment instead of provoking a whole needs-human run.</summary>
+    public string FakeCliPath => _fakeCliPath;
+
+    /// <summary>This instance's <see cref="ActionTokenVar"/> value (issue #253) — exposed for the same
+    /// reason as <see cref="FakeCliPath"/>: to prove BOTH sides of the gate, not just the closed one.</summary>
+    public string ActionToken => _actionToken;
+
     /// <summary>
     /// Add a prompt-action task. <paramref name="mode"/> drives the fake action; <paramref name="cost"/>
     /// is the reported cost; <paramref name="env"/> adds extra control vars (e.g. a guardrail's
@@ -86,7 +134,14 @@ public sealed class FakeClaudePlanBuilder : IDisposable
             ? "[]"
             : "[" + string.Join(", ", dependsOn.Select(d => $"\"{d}\"")) + "]";
 
-        var envEntries = new List<string> { $"\"FAKE_MODE\": \"{mode}\"", $"\"FAKE_COST\": \"{cost}\"" };
+        // The #253 token goes FIRST so it is never crowded out by a caller-supplied key, and so every
+        // task this builder emits carries it (the harness propagates action.env to task guardrails too).
+        var envEntries = new List<string>
+        {
+            $"\"{ActionTokenVar}\": \"{_actionToken}\"",
+            $"\"FAKE_MODE\": \"{mode}\"",
+            $"\"FAKE_COST\": \"{cost}\""
+        };
         if (env is not null)
         {
             envEntries.AddRange(env.Select(kv => $"\"{kv.Key}\": \"{kv.Value}\""));
@@ -139,7 +194,11 @@ public sealed class FakeClaudePlanBuilder : IDisposable
               "dependsOn": [],
               "action": {
                 "path": "action.prompt.md",
-                "env": { "FAKE_MODE": "{{mode}}", "FAKE_COST": "{{cost}}" }
+                "env": {
+                  "{{ActionTokenVar}}": "{{_actionToken}}",
+                  "FAKE_MODE": "{{mode}}",
+                  "FAKE_COST": "{{cost}}"
+                }
               }
             }
             """);
@@ -155,23 +214,35 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         {
             // The directly-spawnable .cmd forwards to a sibling .ps1 (clean, no inline quoting).
             string ps1 = Path.ChangeExtension(path, ".ps1");
-            File.WriteAllText(ps1, FakePowerShellBody());
+            File.WriteAllText(ps1, FakePowerShellBody(_actionToken));
             string ps1Quoted = ps1.Replace("\"", "");
             File.WriteAllText(path,
                 $"@echo off\r\npwsh -NoProfile -ExecutionPolicy Bypass -File \"{ps1Quoted}\"\r\n");
         }
         else
         {
-            File.WriteAllText(path, FakeBashBody());
+            File.WriteAllText(path, FakeBashBody(_actionToken));
             File.SetUnixFileMode(path,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
                 UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         }
     }
 
-    private static string FakePowerShellBody() =>
+    // The #253 gate is prepended by concatenation rather than interpolated into the raw string below:
+    // that body contains bare `{`/`}` (and a literal `}}`) which an interpolated raw string would
+    // reinterpret as holes/escapes. Keeping the body verbatim keeps this edit provably behaviour-neutral
+    // for every legitimate invocation.
+    private static string FakePowerShellBody(string actionToken) =>
+        "$null = [Console]::In.ReadToEnd()\n" +
+        "# Issue #253 containment gate: unless this is one of THIS plan's invocations, every path below\n" +
+        "# would be an INHERITED one belonging to an enclosing run - so write nothing at all.\n" +
+        "if ($env:" + ActionTokenVar + " -cne '" + actionToken + "') {\n" +
+        "    Write-Output '{\"type\":\"result\",\"is_error\":false," +
+        "\"result\":\"fake claude: not this plans invocation - nothing written\"," +
+        "\"total_cost_usd\":0,\"num_turns\":1}'\n" +
+        "    exit 0\n" +
+        "}\n" +
         """
-        $null = [Console]::In.ReadToEnd()
         $cost = $env:FAKE_COST; if (-not $cost) { $cost = '0' }
         if ($env:GUARDRAILS_VERDICT_OUT) {
             if ($env:FAKE_VERDICT -eq 'fail') {
@@ -207,10 +278,17 @@ public sealed class FakeClaudePlanBuilder : IDisposable
         }
         """;
 
-    private static string FakeBashBody() =>
+    /// <summary>Twin of <see cref="FakePowerShellBody"/>, gate included (issue #253).</summary>
+    private static string FakeBashBody(string actionToken) =>
+        "#!/usr/bin/env bash\n" +
+        "cat > /dev/null\n" +
+        "if [ \"$" + ActionTokenVar + "\" != \"" + actionToken + "\" ]; then\n" +
+        "  printf '{\"type\":\"result\",\"is_error\":false," +
+        "\"result\":\"fake claude: not this plans invocation - nothing written\"," +
+        "\"total_cost_usd\":0,\"num_turns\":1}\\n'\n" +
+        "  exit 0\n" +
+        "fi\n" +
         """
-        #!/usr/bin/env bash
-        cat > /dev/null
         cost="${FAKE_COST:-0}"
         if [ -n "$GUARDRAILS_VERDICT_OUT" ]; then
           if [ "$FAKE_VERDICT" = "fail" ]; then

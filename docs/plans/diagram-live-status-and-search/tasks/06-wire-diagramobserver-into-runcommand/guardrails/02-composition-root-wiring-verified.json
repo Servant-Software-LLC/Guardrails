@@ -1,0 +1,3 @@
+{
+  "description": "OnTheFlyDiagramObserver is genuinely wired into RunCommand.cs's composition root, proven by driving the real CLI end-to-end"
+}

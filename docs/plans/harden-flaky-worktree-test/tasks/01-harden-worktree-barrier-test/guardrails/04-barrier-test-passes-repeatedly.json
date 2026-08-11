@@ -1,0 +1,3 @@
+{
+  "description": "The barrier test passes 20 consecutive times, without weakened assertions or a retry-until-pass wrapper (raises empirical confidence against the CI-load race; does not prove its absence)"
+}

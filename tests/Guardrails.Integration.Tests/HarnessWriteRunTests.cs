@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Loading;
@@ -48,9 +50,46 @@ public sealed class HarnessWriteRunTests
             Git(RepoPath, "init");
             Git(RepoPath, "config", "user.email", "test@guardrails.local");
             Git(RepoPath, "config", "user.name", "Guardrails Test");
+            // Pin line endings so a segment worktree checks out exactly the bytes committed — the #437
+            // anchored-edit tests assert on file content, and an autocrlf-driven CRLF rewrite on the way
+            // into the worktree would make them machine-dependent. (The CRLF↔LF anchor tolerance itself
+            // is unit-tested directly in HarnessWriteTests.)
+            Git(RepoPath, "config", "core.autocrlf", "false");
             File.WriteAllText(Path.Combine(RepoPath, "README.md"), "# needsHarnessWrite test");
             Git(RepoPath, "add", ".");
             Git(RepoPath, "commit", "-m", "Initial commit");
+        }
+
+        /// <summary>Commit <paramref name="content"/> at <paramref name="relativePath"/> so a segment worktree checks it out.</summary>
+        public void Commit(string relativePath, string content)
+        {
+            string full = Path.Combine(RepoPath, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            File.WriteAllText(full, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            Git(RepoPath, "add", "--", relativePath);
+            Git(RepoPath, "commit", "-m", $"Seed {relativePath}");
+        }
+
+        /// <summary>The committed content of <paramref name="relativePath"/> on <paramref name="planBranch"/>.</summary>
+        public string PlanBranchContent(string planBranch, string relativePath)
+        {
+            var psi = new ProcessStartInfo("git")
+            {
+                WorkingDirectory = RepoPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                StandardOutputEncoding = new UTF8Encoding(false)
+            };
+            psi.ArgumentList.Add("show");
+            psi.ArgumentList.Add($"{planBranch}:{relativePath}");
+            using var proc = Process.Start(psi)!;
+            string stdout = proc.StandardOutput.ReadToEnd();
+            string stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            return proc.ExitCode == 0
+                ? stdout
+                : throw new InvalidOperationException($"git show {planBranch}:{relativePath} failed: {stderr.Trim()}");
         }
 
         public static void Git(string workingDir, params string[] args)
@@ -819,5 +858,223 @@ public sealed class HarnessWriteRunTests
         Assert.True(File.Exists(feedbackPath));
         string feedback = File.ReadAllText(feedbackPath);
         Assert.Contains("permission-granting files", feedback);
+    }
+
+    // ── #437: a LARGE .claude/ deliverable is completable via the anchored `edits` form ───────────
+
+    private const string BigSkillPath = ".claude/skills/big/SKILL.md";
+    private const string OriginalPassage = "ORIGINAL-PASSAGE: the sentence that must be corrected.";
+    private const string CorrectedPassage = "CORRECTED-PASSAGE: the sentence after correction.";
+
+    /// <summary>
+    /// ~250 KB of filler prose with exactly ONE unique anchor line buried in the middle — the shape of
+    /// the real #437 casualties (`plan-breakdown/SKILL.md` was 204,136 bytes).
+    /// </summary>
+    private static string BuildBigSkillFile()
+    {
+        var text = new StringBuilder();
+        for (int i = 0; i < 4_000; i++)
+        {
+            text.Append(i == 2_000 ? OriginalPassage : $"Line {i:D5}: filler prose that must survive the edit untouched.");
+            text.Append('\n');
+        }
+
+        return text.ToString();
+    }
+
+    /// <summary>
+    /// A single-task plan whose SCRIPT action copies a pre-authored fragment JSON onto
+    /// <c>GUARDRAILS_STATE_OUT</c>, and whose guardrail asserts the big skill file was CORRECTED and NOT
+    /// TRUNCATED. Copying a file beats interpolating a multi-kilobyte JSON blob into a shell literal:
+    /// the fragment is built with a real serializer, so nothing depends on PowerShell/bash quoting.
+    /// </summary>
+    private static string WriteFragmentCopyPlan(string repoPath, string fragmentJson)
+    {
+        string planDir = Path.Combine(repoPath, "plan");
+        Directory.CreateDirectory(Path.Combine(planDir, "tasks", "01-write", "guardrails"));
+        Directory.CreateDirectory(Path.Combine(planDir, "state"));
+
+        File.WriteAllText(Path.Combine(planDir, "guardrails.json"),
+            """
+            {
+              "version": 1,
+              "guardrailMode": "failFast",
+              "workspace": "..",
+              "defaultRetries": 0,
+              "maxParallelism": 1
+            }
+            """);
+
+        string taskDir = Path.Combine(planDir, "tasks", "01-write");
+        File.WriteAllText(Path.Combine(taskDir, "task.json"),
+            """
+            {
+              "description": "correct one passage in a large .claude/ skill file",
+              "dependsOn": [],
+              "writeScope": [".claude/**"]
+            }
+            """);
+
+        string fragmentFile = Path.Combine(planDir, "fragment.json");
+        File.WriteAllText(fragmentFile, fragmentJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+        if (Ps)
+        {
+            File.WriteAllText(Path.Combine(taskDir, "action.ps1"),
+                $"Copy-Item -LiteralPath '{fragmentFile}' -Destination $env:GUARDRAILS_STATE_OUT -Force\nexit 0\n");
+
+            // A plain (non-interpolated) raw literal: the script is full of PowerShell `$vars` and `{ }`
+            // blocks, so a placeholder swap is far less error-prone than brace/dollar escaping.
+            const string guardrailPs = """
+                $p = Join-Path $env:GUARDRAILS_WORKSPACE '__TARGET__'
+                if (-not (Test-Path -LiteralPath $p)) { Write-Output 'deliverable missing'; exit 1 }
+                $c = Get-Content -LiteralPath $p -Raw
+                if ($c -notmatch 'CORRECTED-PASSAGE') { Write-Output 'the correction did not land'; exit 1 }
+                if ($c -match 'ORIGINAL-PASSAGE') { Write-Output 'the old passage is still present'; exit 1 }
+                $len = (Get-Item -LiteralPath $p).Length
+                if ($len -lt 200000) { Write-Output "the file was TRUNCATED to $len bytes"; exit 1 }
+                exit 0
+
+                """;
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-corrected.ps1"),
+                guardrailPs.Replace("__TARGET__", BigSkillPath.Replace("/", "\\"), StringComparison.Ordinal));
+        }
+        else
+        {
+            WriteSh(Path.Combine(taskDir, "action.sh"),
+                $"#!/usr/bin/env bash\ncp '{fragmentFile}' \"$GUARDRAILS_STATE_OUT\"\nexit 0\n");
+
+            WriteSh(Path.Combine(taskDir, "guardrails", "01-corrected.sh"),
+                $"""
+                #!/usr/bin/env bash
+                p="$GUARDRAILS_WORKSPACE/{BigSkillPath}"
+                if [ ! -f "$p" ]; then echo 'deliverable missing'; exit 1; fi
+                if ! grep -q 'CORRECTED-PASSAGE' "$p"; then echo 'the correction did not land'; exit 1; fi
+                if grep -q 'ORIGINAL-PASSAGE' "$p"; then echo 'the old passage is still present'; exit 1; fi
+                len=$(wc -c < "$p")
+                if [ "$len" -lt 200000 ]; then echo "the file was TRUNCATED to $len bytes"; exit 1; fi
+                exit 0
+
+                """);
+        }
+
+        return planDir;
+    }
+
+    [Fact]
+    public async Task Worktree_LargeClaudeFile_CorrectedViaAnchoredEdits_TaskGoesGreen()
+    {
+        // #437 RED-BAR regression — the case that was structurally impossible before this change. The
+        // deliverable is a ~250 KB .claude/ skill file and the change is ONE line. Full-content mode
+        // would have required re-emitting ~60k tokens (at or over the runner's maxOutputTokens cap), so
+        // the task could not be completed autonomously no matter how small the edit. With the anchored
+        // form the request carries only the anchor and its replacement, the harness applies it, and the
+        // task's own guardrail then verifies BOTH halves of the safety claim: the correction landed AND
+        // the other ~4 000 lines are still there (the file was not truncated).
+        using var repo = new TempGitRepo();
+        string original = BuildBigSkillFile();
+        Assert.True(original.Length > 200_000);
+        repo.Commit(BigSkillPath, original);
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new
+            {
+                path = BigSkillPath,
+                reason = "the tool-permission layer refuses .claude/ writes and the file is far too large to re-emit",
+                edits = new[] { new { old = OriginalPassage, @new = CorrectedPassage } }
+            }
+        });
+
+        string planDir = WriteFragmentCopyPlan(repo.RepoPath, fragmentJson);
+
+        var (report, planBranch) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.Succeeded, task.Outcome);
+
+        // The committed plan-branch content is the ORIGINAL with exactly that one line replaced —
+        // byte-for-byte everywhere else. This is the assertion a full-content re-emission could never
+        // make good on, and it is what "untouched by construction" means in practice.
+        string committed = repo.PlanBranchContent(planBranch, BigSkillPath);
+        Assert.Equal(original.Replace(OriginalPassage, CorrectedPassage, StringComparison.Ordinal), committed);
+    }
+
+    [Fact]
+    public async Task Worktree_LargeClaudeFile_FullContentMode_RefusedEarly_FeedbackPointsAtEdits()
+    {
+        // #437 part 2 — fail early and clearly on the size wall. An agent that still reaches for
+        // full-content mode on a big EXISTING target gets an actionable refusal naming `edits`, instead
+        // of a silently truncated file (here the "content" is deliberately a stub, exactly what a
+        // budget-exhausted re-emission would leave behind) or a hunt for a permission workaround.
+        using var repo = new TempGitRepo();
+        string original = BuildBigSkillFile();
+        repo.Commit(BigSkillPath, original);
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new
+            {
+                path = BigSkillPath,
+                content = "# Big skill\n\n(truncated re-emission)\n",
+                reason = "rewriting the whole file"
+            }
+        });
+
+        string planDir = WriteFragmentCopyPlan(repo.RepoPath, fragmentJson);
+
+        var (report, _) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.False(task.IsGreen);
+        Assert.Contains("needsHarnessWrite not applied", task.Summary);
+        Assert.Contains("`edits`", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
+
+        // The retry feedback restates BOTH accepted forms and the exactly-once anchor rule, so the next
+        // attempt can re-emit a correct request rather than guessing.
+        AttemptRecord attempt = Assert.Single(journalAfter.Tasks["01-write"].Attempts);
+        string feedbackPath = Path.Combine(
+            planDir, attempt.LogDir.Replace('/', Path.DirectorySeparatorChar), "feedback.md");
+        string feedback = File.ReadAllText(feedbackPath);
+        Assert.Contains("could not be applied", feedback);
+        Assert.Contains("\"edits\"", feedback);
+        Assert.Contains("exactly once", feedback);
+        Assert.Contains("UNCHANGED", feedback);
+    }
+
+    [Fact]
+    public async Task Worktree_LargeClaudeFile_AmbiguousAnchor_RejectedWithoutTouchingTheFile()
+    {
+        // The safety semantic that makes the anchored form trustworthy, proven end-to-end: an anchor
+        // that occurs more than once is refused as AMBIGUOUS rather than silently applied to the first
+        // occurrence. The filler lines in the big file are deliberately non-unique.
+        using var repo = new TempGitRepo();
+        repo.Commit(BigSkillPath, BuildBigSkillFile());
+
+        string fragmentJson = JsonSerializer.Serialize(new
+        {
+            needsHarnessWrite = new
+            {
+                path = BigSkillPath,
+                reason = "correcting a passage",
+                edits = new[] { new { old = "filler prose that must survive the edit untouched.", @new = "x" } }
+            }
+        });
+
+        string planDir = WriteFragmentCopyPlan(repo.RepoPath, fragmentJson);
+
+        var (report, _) = await RunWorktreeAsync(planDir, repo, TestContext.Current.CancellationToken);
+
+        TaskResult task = Assert.Single(report.Tasks);
+        Assert.Equal(TaskOutcome.GuardrailFailed, task.Outcome);
+        Assert.Contains("needsHarnessWrite not applied", task.Summary);
+        Assert.Contains("AMBIGUOUS", task.Summary);
+
+        JournalDocument journalAfter = JournalReader.Read(RunJournal.PathFor(planDir));
+        Assert.Equal(Core.Journal.TaskStatus.NeedsHuman, journalAfter.Tasks["01-write"].Status);
     }
 }

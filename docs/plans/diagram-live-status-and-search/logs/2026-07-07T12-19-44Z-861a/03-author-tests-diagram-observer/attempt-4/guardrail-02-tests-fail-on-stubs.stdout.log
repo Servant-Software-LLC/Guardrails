@@ -1,0 +1,92 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  Guardrails.Core -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Core\bin\Release\net8.0\Guardrails.Core.dll
+  Guardrails.Cli -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\bin\Release\net8.0\Guardrails.Cli.dll
+  Guardrails.Integration.Tests -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\bin\Release\net8.0\Guardrails.Integration.Tests.dll
+Test run for C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\bin\Release\net8.0\Guardrails.Integration.Tests.dll (.NETCoreApp,Version=v8.0)
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:00.95]     Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.ARenderFailure_IsSwallowed_AndDoesNotThrow [FAIL]
+[xUnit.net 00:00:00.96]     Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(outcome: Succeeded, expectedStatus: "passed") [FAIL]
+[xUnit.net 00:00:00.96]     Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(outcome: GuardrailFailed, expectedStatus: "failed") [FAIL]
+[xUnit.net 00:00:00.96]     Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(outcome: NeedsHuman, expectedStatus: "needs-human") [FAIL]
+[xUnit.net 00:00:00.96]     Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskStarting_RerendersDiagramWithTheTaskMarkedRunning [FAIL]
+[xUnit.net 00:00:00.97]     Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.GuardrailFinished_RerendersDiagramWithThatChecksSettledStatus [FAIL]
+  Failed Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.ARenderFailure_IsSwallowed_AndDoesNotThrow [28 ms]
+  Error Message:
+   Assert.Null() Failure: Value is not null
+Expected: null
+Actual:   System.NotImplementedException: OnTheFlyDiagramObserver.WriteDiagram is a stub (04-implement-diagram-observer): path=C:\Users\David\AppData\Local\Temp\gr-otf-diagram-e458fc32be204c53ab7278b3d49f2bff\blocker-file\diagram.html, sourceHash=deadbeef, mermaidSourceLength=39, taskFolderTargetsCount=1, nodeStatusesCount=1.
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.WriteDiagram(IReadOnlyDictionary`2 nodeStatuses) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 187
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.<>c__DisplayClass19_0.<Render>b__0() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TryRender(Action render) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 204
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.Render() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TaskStarting(TaskNode task) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 114
+   at Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.<>c__DisplayClass4_0.<ARenderFailure_IsSwallowed_AndDoesNotThrow>b__0() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\OnTheFlyDiagramObserverTests.cs:line 131
+   at Xunit.Record.Exception(Action testCode) in /_/src/xunit.v3.core/Record.cs:line 30
+  Stack Trace:
+     at Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.ARenderFailure_IsSwallowed_AndDoesNotThrow() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\OnTheFlyDiagramObserverTests.cs:line 131
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(outcome: Succeeded, expectedStatus: "passed") [1 ms]
+  Error Message:
+   System.NotImplementedException : OnTheFlyDiagramObserver.WriteDiagram is a stub (04-implement-diagram-observer): path=C:\Users\David\AppData\Local\Temp\gr-otf-diagram-bf2ebc417da74378986fc7e223facaa4\diagram.html, sourceHash=deadbeef, mermaidSourceLength=39, taskFolderTargetsCount=1, nodeStatusesCount=1.
+  Stack Trace:
+     at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.WriteDiagram(IReadOnlyDictionary`2 nodeStatuses) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 187
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.<>c__DisplayClass19_0.<Render>b__0() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TryRender(Action render) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 204
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.Render() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TaskStarting(TaskNode task) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 114
+   at Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(TaskOutcome outcome, String expectedStatus) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\OnTheFlyDiagramObserverTests.cs:line 74
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeDirectByRefWithFewArgs(Object obj, Span`1 copyOfArgs, BindingFlags invokeAttr)
+  Failed Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(outcome: GuardrailFailed, expectedStatus: "failed") [< 1 ms]
+  Error Message:
+   System.NotImplementedException : OnTheFlyDiagramObserver.WriteDiagram is a stub (04-implement-diagram-observer): path=C:\Users\David\AppData\Local\Temp\gr-otf-diagram-b2a23a19a28f43bfb516485a8dd4182b\diagram.html, sourceHash=deadbeef, mermaidSourceLength=39, taskFolderTargetsCount=1, nodeStatusesCount=1.
+  Stack Trace:
+     at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.WriteDiagram(IReadOnlyDictionary`2 nodeStatuses) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 187
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.<>c__DisplayClass19_0.<Render>b__0() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TryRender(Action render) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 204
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.Render() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TaskStarting(TaskNode task) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 114
+   at Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(TaskOutcome outcome, String expectedStatus) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\OnTheFlyDiagramObserverTests.cs:line 74
+   at InvokeStub_OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(Object, Span`1)
+   at System.Reflection.MethodBaseInvoker.InvokeWithFewArgs(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(outcome: NeedsHuman, expectedStatus: "needs-human") [< 1 ms]
+  Error Message:
+   System.NotImplementedException : OnTheFlyDiagramObserver.WriteDiagram is a stub (04-implement-diagram-observer): path=C:\Users\David\AppData\Local\Temp\gr-otf-diagram-9fc4efdd422d490cab0163448c887ebb\diagram.html, sourceHash=deadbeef, mermaidSourceLength=39, taskFolderTargetsCount=1, nodeStatusesCount=1.
+  Stack Trace:
+     at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.WriteDiagram(IReadOnlyDictionary`2 nodeStatuses) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 187
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.<>c__DisplayClass19_0.<Render>b__0() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TryRender(Action render) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 204
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.Render() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TaskStarting(TaskNode task) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 114
+   at Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(TaskOutcome outcome, String expectedStatus) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\OnTheFlyDiagramObserverTests.cs:line 74
+   at InvokeStub_OnTheFlyDiagramObserverTests.TaskFinished_RerendersDiagramWithTheTasksSettledStatus(Object, Span`1)
+   at System.Reflection.MethodBaseInvoker.InvokeWithFewArgs(Object obj, BindingFlags invokeAttr, Binder binder, Object[] parameters, CultureInfo culture)
+  Failed Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskStarting_RerendersDiagramWithTheTaskMarkedRunning [< 1 ms]
+  Error Message:
+   System.NotImplementedException : OnTheFlyDiagramObserver.WriteDiagram is a stub (04-implement-diagram-observer): path=C:\Users\David\AppData\Local\Temp\gr-otf-diagram-b463f35a945d48b1aef90123997839ea\diagram.html, sourceHash=deadbeef, mermaidSourceLength=39, taskFolderTargetsCount=1, nodeStatusesCount=1.
+  Stack Trace:
+     at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.WriteDiagram(IReadOnlyDictionary`2 nodeStatuses) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 187
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.<>c__DisplayClass19_0.<Render>b__0() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TryRender(Action render) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 204
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.Render() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TaskStarting(TaskNode task) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 114
+   at Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.TaskStarting_RerendersDiagramWithTheTaskMarkedRunning() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\OnTheFlyDiagramObserverTests.cs:line 33
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.GuardrailFinished_RerendersDiagramWithThatChecksSettledStatus [1 ms]
+  Error Message:
+   System.NotImplementedException : OnTheFlyDiagramObserver.WriteDiagram is a stub (04-implement-diagram-observer): path=C:\Users\David\AppData\Local\Temp\gr-otf-diagram-e53b59a44f10437193592f2a73e5e2b8\diagram.html, sourceHash=deadbeef, mermaidSourceLength=39, taskFolderTargetsCount=1, nodeStatusesCount=1.
+  Stack Trace:
+     at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.WriteDiagram(IReadOnlyDictionary`2 nodeStatuses) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 187
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.<>c__DisplayClass19_0.<Render>b__0() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TryRender(Action render) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 204
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.Render() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 173
+   at Guardrails.Cli.Ui.OnTheFlyDiagramObserver.TaskStarting(TaskNode task) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\Ui\OnTheFlyDiagramObserver.cs:line 114
+   at Guardrails.Integration.Tests.OnTheFlyDiagramObserverTests.GuardrailFinished_RerendersDiagramWithThatChecksSettledStatus() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\OnTheFlyDiagramObserverTests.cs:line 46
+   at System.RuntimeMethodHandle.InvokeMethod(Object target, Void** arguments, Signature sig, Boolean isConstructor)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+Failed!  - Failed:     6, Passed:     1, Skipped:     0, Total:     7, Duration: 63 ms - Guardrails.Integration.Tests.dll (net8.0)

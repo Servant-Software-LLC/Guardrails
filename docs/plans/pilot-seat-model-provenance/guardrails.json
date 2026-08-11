@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "maxCostUsd": 25,
+  "defaultRetries": 2,
+  "promptRunners": {
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "maxTurns": 50,
+      "allowedTools": [
+        "Read", "Edit", "Write", "Grep", "Glob",
+        "Bash(dotnet *)",
+        "Bash(git log*)", "Bash(git diff*)", "Bash(git show*)", "Bash(git status*)"
+      ]
+    }
+  }
+}

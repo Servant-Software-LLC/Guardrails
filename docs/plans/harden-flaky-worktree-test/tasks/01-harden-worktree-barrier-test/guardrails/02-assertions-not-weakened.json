@@ -1,0 +1,3 @@
+{
+  "description": "Structural check that the barrier test's four load-bearing assertions (all 3-way, not weakened to tolerate 2) survive verbatim after the hardening edit"
+}

@@ -1,0 +1,14 @@
+{
+  "description": "Author a red integration test: a real prompt attempt fires AttemptModelResolved and records the resolved model in the attempt log",
+  "dependsOn": [
+    "02-implement-stream-model-capture",
+    "05-author-tests-observer-model-resolved"
+  ],
+  "action": {
+    "maxTurns": 75
+  },
+  "stableId": "psm07a",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelProvenanceFiringTests.cs"
+  ]
+}

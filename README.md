@@ -121,7 +121,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 | `guardrails validate [folder]` | Schema, DAG (cycles), file refs, interpreter/runner checks |
 | `guardrails plan [folder]` | Execution-wave preview — runs nothing |
 | `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness |
-| `guardrails run [folder] [--fresh] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>]` | Run to green; resume-aware; live progress table. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
+| `guardrails run [folder] [--fresh] [--no-merge-on-success] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>]` | Run to green; resume-aware; live progress table. **A green run DELIVERS to your branch by default** — see [Delivery on success](#delivery-on-success); `--no-merge-on-success` opts out. `--fresh` discards prior run state and starts over. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
 | `guardrails status [folder]` | Journal table: per-task status, attempts, last failure |
 | `guardrails lock [folder] [--check] [--diff]` | Record or compare a plan folder's breakdown manifest (`guardrails.baseline`); `--check` reports drift via exit code, `--diff` prints the per-file classification |
 | `guardrails merge [folder] --remote <dir> [--apply]` | Merge a freshly regenerated breakdown into the current folder, preserving human guardrail edits; `--apply` materializes it (otherwise dry-run report) |
@@ -134,6 +134,29 @@ can `cd` into a plan folder and run `guardrails validate` (etc.) with no path. T
 task in the current directory, pass `.` explicitly: `guardrails reset . <task>`.
 
 Exit codes: `0` green · `1` validation/harness error · `2` an actionable condition needing a human decision (e.g. `run` needs-human/blocked, stale `graph --check`, `lock --check` drift, `merge` conflicts) · `3` cancelled.
+
+### Delivery on success
+
+Tasks run in isolated git worktrees, never in your checkout. **When a run finishes green, the
+harness merges the result into the branch you launched from** — that is the default, so a
+successful run is a delivery, not just a report.
+
+```bash
+guardrails run <plan>/                          # green run -> merged into your branch
+guardrails run <plan>/ --no-merge-on-success    # green run -> left on the plan branch; inspect first
+```
+
+Use `--no-merge-on-success` whenever you want to inspect before anything lands — a first run of a
+freshly authored plan, a demo, or a plan that edits the repo you are working in. Nothing is merged
+on a run that does **not** reach green: a needs-human halt, a failed gate, or a cancellation leaves
+your branch untouched either way.
+
+To make a plan never auto-deliver, set it in the plan instead of remembering the flag every time —
+`"mergeOnSuccess": false` in its `guardrails.json`. Precedence, highest first: the CLI flag
+(`--merge-on-success` / `--no-merge-on-success`) → `guardrails.json` → the default (on).
+
+The AI-merge is still withheld at the boundary: the harness merges its own task branches, and hands
+you anything it cannot resolve rather than guessing.
 
 ## The skills
 

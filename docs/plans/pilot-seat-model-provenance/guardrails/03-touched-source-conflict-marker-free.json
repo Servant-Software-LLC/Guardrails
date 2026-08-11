@@ -1,0 +1,1 @@
+{ "description": "Union invariant: every source file this plan touches is conflict-marker-free at each integration union", "scope": "integration" }

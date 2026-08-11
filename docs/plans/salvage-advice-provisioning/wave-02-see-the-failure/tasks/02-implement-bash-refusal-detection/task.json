@@ -1,0 +1,6 @@
+{
+  "description": "Make ClaudePermissionScanner recognise Bash refusal phrases so a refused command is a countable permission wall",
+  "dependsOn": ["01-author-tests-bash-refusal-detection"],
+  "stableId": "s7g6u3",
+  "writeScope": ["src/Guardrails.Core/Prompts/ClaudePermissionScanner.cs"]
+}

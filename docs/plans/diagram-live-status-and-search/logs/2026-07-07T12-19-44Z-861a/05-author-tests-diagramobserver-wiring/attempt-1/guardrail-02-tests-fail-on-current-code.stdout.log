@@ -1,0 +1,18 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  Guardrails.Core -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\55da8a20\fork\05-author-tests-diagramobserver-wiring\attempt-1\src\Guardrails.Core\bin\Release\net8.0\Guardrails.Core.dll
+  Guardrails.Cli -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\55da8a20\fork\05-author-tests-diagramobserver-wiring\attempt-1\src\Guardrails.Cli\bin\Release\net8.0\Guardrails.Cli.dll
+  Guardrails.Integration.Tests -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\55da8a20\fork\05-author-tests-diagramobserver-wiring\attempt-1\tests\Guardrails.Integration.Tests\bin\Release\net8.0\Guardrails.Integration.Tests.dll
+Test run for C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\55da8a20\fork\05-author-tests-diagramobserver-wiring\attempt-1\tests\Guardrails.Integration.Tests\bin\Release\net8.0\Guardrails.Integration.Tests.dll (.NETCoreApp,Version=v8.0)
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+[xUnit.net 00:00:02.96]     Guardrails.Integration.Tests.DiagramLiveStatusWiringTests.SettledRun_LeavesDiagramHtml_WithoutLiveStatus_ComposingRootGap [FAIL]
+  Failed Guardrails.Integration.Tests.DiagramLiveStatusWiringTests.SettledRun_LeavesDiagramHtml_WithoutLiveStatus_ComposingRootGap [1 s]
+  Error Message:
+   diagram.html has no #node-statuses side-table — nothing wires a live status observer into RunCommand yet (issue #120 composition-root gap).
+  Stack Trace:
+     at Guardrails.Integration.Tests.DiagramLiveStatusWiringTests.ReadNodeStatuses(String html) in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\55da8a20\fork\05-author-tests-diagramobserver-wiring\attempt-1\tests\Guardrails.Integration.Tests\DiagramLiveStatusWiringTests.cs:line 84
+   at Guardrails.Integration.Tests.DiagramLiveStatusWiringTests.SettledRun_LeavesDiagramHtml_WithoutLiveStatus_ComposingRootGap() in C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\55da8a20\fork\05-author-tests-diagramobserver-wiring\attempt-1\tests\Guardrails.Integration.Tests\DiagramLiveStatusWiringTests.cs:line 66
+--- End of stack trace from previous location ---
+
+Failed!  - Failed:     1, Passed:     0, Skipped:     0, Total:     1, Duration: 2 s - Guardrails.Integration.Tests.dll (net8.0)

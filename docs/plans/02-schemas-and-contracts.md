@@ -2743,7 +2743,7 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
     produces a `needs-human` answer `text` (there is no answer kind that resolves the review gate), and an
     off-menu choice (one not among the escalation's own options) is rejected (a bounded pick).
 
-**`needsHarnessWrite` — harness-mediated write escape hatch for `.claude/` (issue #191).** In
+**`needsHarnessWrite` — harness-mediated write escape hatch for `.claude/` (issues #191, #437).** In
 worktree mode, a task action running as a Claude Code subprocess can **never** write under
 `.claude/` — the runtime's tool-permission layer refuses `.claude/` writes unconditionally in a
 fresh, never-interactively-approved segment worktree (broader than the new-subdirectory-only gap
@@ -2753,16 +2753,78 @@ parallel to `needsHuman`, that lets the action ask the **.NET harness process it
 subject to Claude Code's tool-permission layer — to perform the write on its behalf:
 
 ```jsonc
+// full-content form — for CREATING a file (or replacing a small one):
 { "needsHarnessWrite": { "path": ".claude/skills/guardrails-review/SKILL.md", "content": "...", "reason": "..." } }
+
+// anchored-edit form — for MODIFYING an existing file (issue #437):
+{ "needsHarnessWrite": { "path": ".claude/skills/guardrails-review/SKILL.md", "reason": "...",
+    "edits": [ { "old": "<verbatim anchor text>", "new": "<replacement text>" } ] } }
 ```
 
 - **Wire contract.** A root fragment key, read from the SAME already-written `GUARDRAILS_STATE_OUT`
   file `needsHuman` uses, via the same "read once" shape. `path` is workspace-relative (the same
   convention `writeScope` entries use — the segment worktree in worktree mode, the plan workspace in
-  serial mode); `content` is the literal file content; `reason` is optional and human-readable.
-  **Singular only in v1** — one harness-write per attempt (the issue's own example shows a single
-  object, not an array). A task needing multiple `.claude/` files touched does so across multiple
-  attempts/retries; this is a documented v1 limitation, not solved here.
+  serial mode); `reason` is optional and human-readable. The request carries **exactly one of two
+  mutually exclusive payloads**:
+  - **`content`** (string) — the literal, complete file content. The form for **CREATING** a file.
+  - **`edits`** (non-empty array of `{"old": string, "new": string}`) — anchored old→new replacements
+    the harness performs against the EXISTING file. The form for **MODIFYING** one (issue #437).
+
+  A fragment carrying BOTH, NEITHER, no `path`, an empty `edits` array, a non-string `old`/`new`, or an
+  empty `old` is **rejected with an actionable message naming the mistake** — it is not silently
+  dropped (which would surface only as a cryptic foreign-key merge error). An `edits` payload against a
+  path that does not exist is likewise rejected, pointing at `content` for creation.
+
+  **Singular only in v1** — one harness-write REQUEST per attempt (though that one request may carry
+  many `edits` to the ONE file it names). A task needing multiple `.claude/` FILES touched does so
+  across multiple attempts/retries; this is a documented v1 limitation, not solved here.
+- **Why the anchored form exists (issue #437).** Full-content mode requires the agent to emit the
+  ENTIRE file in its state fragment, so it is **unusable above a certain size**: a 204 KB skill file is
+  ~60k tokens once JSON-escaped — at or over a runner's `maxOutputTokens` cap — which made a task whose
+  deliverable is a large `.claude/` file **structurally impossible to complete autonomously, regardless
+  of how small the actual change was**. (Observed as a clean size gradient in one wave: 82 KB
+  succeeded, 104 KB failed with the agent hunting for a `.claude/settings.json` permission workaround,
+  204 KB halted honestly.) With `edits` the cost scales with the CHANGE, not the FILE — and the
+  untouched bytes are untouched **by construction** rather than by trusting a model to retype thousands
+  of lines of normative text byte-for-byte, which nothing downstream could verify.
+- **Anchored-edit semantics — the whole safety argument (issue #437).**
+  - **Exactly-once matching.** Each `old` must occur **exactly once**. Zero matches fails (the agent's
+    picture of the file is wrong; guessing would corrupt it). Two or more fails as **AMBIGUOUS** — the
+    harness never silently takes the first, which is the difference between "edited the passage you
+    meant" and "edited a passage that merely looked like it". Occurrences are counted **overlapping**
+    (advance by one character), so an anchor that overlaps itself is ambiguous too. The failure message
+    names the offending anchor (truncated, newline-escaped) and its match count.
+  - **Verbatim, ordinal matching.** No regex, no trimming, no whitespace collapsing, no case folding —
+    an anchor matches the file's characters exactly as written, indentation and blank lines included.
+    The **one** tolerance is LINE ENDINGS: if a multi-line anchor finds no verbatim match, it is
+    re-spelled in the file's own newline convention (CRLF↔LF) and matched verbatim again, with the
+    replacement re-spelled the same way. That tolerance is required of a cross-platform harness (a
+    Windows checkout can hand the agent CRLF that its JSON anchor carries as LF) and it cannot
+    mis-target: it changes only which newline bytes the anchor is *spelled* with, never which region is
+    chosen, and the exactly-once rule still applies to whichever spelling matched. A mixed-ending file
+    is treated as CRLF; the re-spelling is only ever a fallback after a verbatim miss, so a wrong guess
+    simply fails the edit.
+  - **Atomic application.** Every anchor is resolved against an IN-MEMORY copy and the file is written
+    **once, only if all of them resolved** — a set with one bad anchor leaves the target byte-identical.
+    A half-applied set is worse than a rejected one. Edits apply **sequentially** (edit N+1 matches the
+    result of edits 1..N, as any editor would), which is fail-safe in both directions: an earlier edit
+    that destroyed a later anchor yields zero matches, one that duplicated it yields two, and both are
+    rejected before anything is written.
+  - **Byte fidelity.** A UTF-8 BOM on the target is preserved (the harness otherwise writes BOM-less
+    UTF-8, which would change three bytes the edit never touched). A target that is **not valid UTF-8**
+    is refused outright rather than decoded lossily — the default decoder would turn undecodable bytes
+    into U+FFFD and round-trip that back to disk, silently corrupting bytes no anchor ever named. An
+    `edits` set whose result is byte-identical to the original is rejected as a no-op rather than
+    recorded as a successful write.
+  - An empty `new` is legal — it deletes the anchored text.
+- **Full-content size wall (issue #437).** A `content` request whose target **already exists** and
+  exceeds **`HarnessWrite.FullContentMaxBytes` (65,536 bytes)** is refused with a message routing the
+  agent to `edits`. Re-emitting a file that size both risks exhausting the runner's output budget
+  mid-write and is unverifiable — nothing proves the lines the model was not asked to change came back
+  byte-identical, so a truncated or subtly-mangled re-emission would land silently. Failing early here
+  converts that into an actionable, retryable failure. The wall applies **only to an existing target**:
+  CREATING a new file with `content` is unrestricted at any size, because there are no pre-existing
+  bytes to corrupt.
 - **Coexistence with a state fragment.** The key is CONSUMED (stripped from the fragment) before the
   normal fragment-merge validation runs, so any OTHER top-level key the action ALSO wrote (its own
   state contribution, keyed under its own task id) merges normally in the same attempt — a task can
@@ -2771,8 +2833,11 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   only, never verification — the task's guardrails still run afterward. If a fragment carries BOTH
   `needsHuman` and `needsHarnessWrite`, `needsHuman` wins (checked first; a human-decision halt
   trumps a mechanical write request).
-- **Three load-bearing safety checks, ALL run BEFORE the write (a security boundary — otherwise any
-  task could claim "I'm blocked, please write this for me" and bypass `writeScope` entirely):**
+- **Three load-bearing safety checks, ALL run BEFORE the write — and, since #437, before the target
+  file is so much as READ (a security boundary — otherwise any task could claim "I'm blocked, please
+  write this for me" and bypass `writeScope` entirely). All three are form-agnostic: `edits` is subject
+  to exactly the same three checks as `content`, so the anchored form cannot reach a path the
+  full-content form could not:**
   1. **Workspace-escape check — ALWAYS runs, independent of `writeScope`.** Reuses
      `WorkspaceContainment.Escapes` (the same "does this path escape the boundary" predicate used
      elsewhere). An absolute path or a `../` climb-out is rejected even for a task with NO declared
@@ -2803,6 +2868,18 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   narrower path. A request that PASSES validation but whose actual write fails (disk full, a genuinely
   unwritable location even for the harness process) is likewise treated as a failed attempt with
   actionable feedback, never a crash.
+- **Three failure classes, three distinct feedbacks** (all fail the attempt the same way — guardrails
+  skipped, retry with feedback, eventual `needs-human` on budget exhaustion — but the remedy differs, so
+  the wording must too):
+  1. **Rejected** — out of `writeScope`, or escapes the workspace. Remedy: request a path in scope, or
+     ask a human to widen it.
+  2. **Denied** — the #321 permission-file carve-out. Retrying the same path can never clear a policy,
+     so the feedback routes to a human.
+  3. **Not applied** (issue #437) — in bounds and permitted, but inapplicable AS WRITTEN: an unusable
+     payload, an anchor that matched zero or several times, `edits` against a missing file, `content`
+     against a too-large existing target, or a no-op edit set. **The target is byte-identical** — the
+     feedback says so, restates BOTH accepted forms in full, and names the exactly-once anchor rule,
+     because this class is fixable by simply re-emitting a corrected request.
 - **The escape hatch is honored even after a direct-write PROBE (issues #321 / #325).** An agent that
   probed a direct `.claude/` write first (getting refused, which the permission scanner captures into
   the attempt's blocked-write paths) and THEN emitted `needsHarnessWrite` is served, because the
@@ -3179,8 +3256,9 @@ runner-agnostic list. The harness routes on the LIST of paths only — never on 
 **`feedback.md` — task-level remediation.** The halt writes a `feedback.md` naming the exact blocked
 path(s) and the concrete fix. For a `.claude/` wall the **PRIMARY** remedy is `needsHarnessWrite`
 (#191, §9): re-author the task's action prompt to hand the file to the harness process (which is not
-subject to the tool-permission layer) via a `{"needsHarnessWrite": {"path","content","reason"}}`
-fragment instead of writing `.claude/` directly — `plan-breakdown` now injects this instruction for any
+subject to the tool-permission layer) via a `{"needsHarnessWrite": {"path","edits","reason"}}` fragment
+(or `{"path","content","reason"}` when CREATING the file — #437) instead of writing `.claude/` directly
+— `plan-breakdown` now injects this instruction for any
 `.claude/` deliverable (Step 5b). The autonomous alternative is `stagingOutputs` (§3.5): write the
 deliverable to a staging path OUTSIDE `.claude/` and let the harness move it into place. A session-wide
 fallback is re-running with `--permission-mode bypassPermissions` (disables ALL permission enforcement

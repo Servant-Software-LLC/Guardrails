@@ -1,0 +1,6 @@
+{
+  "description": "Correct the SSOT's SOME-recovery route from the ungranted 'git checkout <ref> -- <path>' to 'git show <ref>:<path>'",
+  "dependsOn": [],
+  "stableId": "s2b8m4",
+  "writeScope": ["docs/plans/02-schemas-and-contracts.md"]
+}

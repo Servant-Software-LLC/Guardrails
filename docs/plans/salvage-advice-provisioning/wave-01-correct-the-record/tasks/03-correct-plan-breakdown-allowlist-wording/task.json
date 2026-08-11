@@ -1,0 +1,6 @@
+{
+  "description": "Correct the plan-breakdown wording that claims state-mutating git 'stays outside allowedTools' - the list is a floor that grants, it cannot withhold",
+  "dependsOn": [],
+  "stableId": "s3c9p1",
+  "writeScope": [".claude/skills/plan-breakdown/"]
+}

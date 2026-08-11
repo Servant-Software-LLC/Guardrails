@@ -362,6 +362,15 @@ public static class RunCommand
 
         if (!preflightsPassed)
         {
+            // Issue #436: this phase halts BEFORE the log site is ever created below, so a failed Full
+            // Flight Check used to leave logs/<runId>/ holding the captured gate output (#432) and NO
+            // index.html at all — the entry point the rest of the harness advertises simply did not exist
+            // for the one outcome that most needs a post-mortem. Render the durable site now: all tasks
+            // pending (none was scheduled) behind the gate-halt banner that says exactly that. Best-effort
+            // and silent — the console lines below are unchanged.
+            WriteDurableFinalSite(
+                Path.Combine(probe.Plan.PlanDirectory, "logs", runId), probe.Plan, probe.Plan.PlanDirectory);
+
             io.Out.WriteLine();
             io.Out.WriteLine("Plan preflight FAILED — halting before scheduling any task (SSOT §7 planPreflights).");
             io.Out.WriteLine($"  See {RunJournal.PathFor(probe.Plan.PlanDirectory)} (\"planPreflights\") for the failed check(s).");

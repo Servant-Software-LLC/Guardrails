@@ -1729,12 +1729,29 @@ Add it as an escape-hatch header, parallel to the `needsHuman` header, **verbati
 > Your primary deliverable is a file under `.claude/`, which a Claude Code subprocess CANNOT write —
 > the tool-permission layer refuses every `.claude/` write unconditionally. Do NOT attempt a direct
 > `Write`/`Edit` to the `.claude/` path: a direct-write probe wastes a turn and populates the
-> harness's permission-wall tracker. Instead, FIRST write
-> `{"needsHarnessWrite": {"path": "<workspace-relative path>", "content": "<full file content>",
-> "reason": "<why>"}}` to the state-out path. The harness (which is NOT subject to that layer) performs
-> the write directly, then your guardrails still run normally against the result. If you already
-> attempted a direct write and it was refused, do NOT retry it or try workarounds (PowerShell,
-> `dangerouslyDisableSandbox`) — just emit `needsHarnessWrite` as above.
+> harness's permission-wall tracker. Instead, FIRST write a `needsHarnessWrite` request to the
+> state-out path. The harness (which is NOT subject to that layer) performs the write directly, then
+> your guardrails still run normally against the result. There are two forms, and they are mutually
+> exclusive — send exactly one:
+>
+> - **MODIFYING an existing file — use `edits` (prefer this):**
+>   `{"needsHarnessWrite": {"path": "<workspace-relative path>", "reason": "<why>", "edits":
+>   [{"old": "<verbatim anchor text>", "new": "<replacement text>"}]}}`.
+>   Each `old` must occur **exactly once** in the file — zero matches and two-or-more matches are both
+>   rejected, so include enough surrounding context to make each anchor unique. `old` is matched
+>   VERBATIM (exact indentation, punctuation and blank lines; only line endings are tolerated), so
+>   copy the passage out of the file rather than retyping it. Edits apply in order and ATOMICALLY: if
+>   any one fails, none are written and the file is unchanged. An empty `new` deletes the anchored
+>   text. Use `edits` **however large the file is** — its cost scales with your change, not the file.
+> - **CREATING a file — use `content`:**
+>   `{"needsHarnessWrite": {"path": "<workspace-relative path>", "content": "<full file content>",
+>   "reason": "<why>"}}`.
+>   Do NOT use `content` to modify a large existing file: the harness refuses full-content mode for an
+>   existing target over 64 KB, and re-emitting thousands of lines you did not mean to change risks
+>   silently corrupting them.
+>
+> If you already attempted a direct write and it was refused, do NOT retry it or try workarounds
+> (PowerShell, `dangerouslyDisableSandbox`) — just emit `needsHarnessWrite` as above.
 
 **Carve-out (#321) — permission files are NOT harness-writable.** `needsHarnessWrite` covers
 command/skill/hook/agent (and `contexts/`) deliverables only. The harness will NOT write
@@ -1742,7 +1759,16 @@ command/skill/hook/agent (and `contexts/`) deliverables only. The harness will N
 permission-granting settings files. If a task's PRIMARY deliverable IS one of those, do NOT inject
 this header (it cannot complete via `needsHarnessWrite`); route that deliverable to a human instead.
 
-`needsHarnessWrite` is **singular per attempt** (v1): a task producing several `.claude/` files does so
+**Sizing (#437) — the size wall is on the FILE, not the change.** Because `edits` exists, a task whose
+deliverable is a LARGE `.claude/` file is no longer structurally impossible: a five-line correction in a
+200 KB skill file is a two-anchor `edits` request. Do NOT split a task, or route it to a human, merely
+because the target file is big — split only for the usual Step 2 / #87 / #111 reasons (deliverable
+count, blast radius, skill-directory count). The one size rule that remains: a task that must CREATE a
+very large `.claude/` file from scratch still pays full-content cost, so keep those genuinely small or
+seed the file in a script task first and let the prompt task `edits` it.
+
+`needsHarnessWrite` is **singular per attempt** (v1): one REQUEST per attempt — though that one request
+may carry MANY `edits` to the ONE file it names. A task producing several `.claude/` FILES does so
 across attempts, or is split one deliverable per task. Unlike `needsHuman` it does NOT short-circuit —
 the guardrails still run against the harness-written result — so the task's normal `guardrails/`
 (file-exists, content checks) stay exactly as they would for any deliverable. (`stagingOutputs`, SSOT

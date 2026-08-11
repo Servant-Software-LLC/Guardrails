@@ -1,0 +1,9 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  Guardrails.Core -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\08-implement-diagram-search-box\attempt-1\src\Guardrails.Core\bin\Release\net8.0\Guardrails.Core.dll
+  Guardrails.Core.Tests -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\08-implement-diagram-search-box\attempt-1\tests\Guardrails.Core.Tests\bin\Release\net8.0\Guardrails.Core.Tests.dll
+Test run for C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\08-implement-diagram-search-box\attempt-1\tests\Guardrails.Core.Tests\bin\Release\net8.0\Guardrails.Core.Tests.dll (.NETCoreApp,Version=v8.0)
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+
+Passed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4, Duration: 72 ms - Guardrails.Core.Tests.dll (net8.0)
