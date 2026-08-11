@@ -853,8 +853,15 @@ produces and the repo doesn't already contain → a missing guardrail-enabling t
   diff*)`, `Bash(git show*)`, `Bash(git status*)`) **— a MINOR finding, not a blocker**
   (plan-breakdown Step 6, #252): without it a downstream task's prompt cannot cheaply
   inspect what an ancestor task already committed and falls back to broad `Grep`/`Glob`
-  sweeps. Do not suggest adding any state-mutating git command (`restore`, `reset`,
-  `checkout`, `push`, `commit`, `stash`) — those stay outside `allowedTools` by design.
+  sweeps. Still do not suggest adding a state-mutating git command (`restore`, `reset`,
+  `checkout`, `push`, `commit`, `stash`) — the read-only default is the right thing to
+  AUTHOR, because on a clean box or in CI the plan's list IS the whole grant. But do not
+  read the omission as a restriction: **`allowedTools` is a floor, not a ceiling** — Claude
+  Code MERGES the harness's `--allowedTools` with the operator's `~/.claude/settings.json`,
+  so a plan's list can only GRANT a capability, never WITHHOLD one. On a box whose settings
+  already allow `Bash(git checkout:*)`, a task's prompt can run `git checkout` even though
+  the plan lists no git at all. So never raise — or dismiss — a finding on the premise that
+  leaving a verb out of `allowedTools` makes it unavailable.
 
 ### 6. Report
 
