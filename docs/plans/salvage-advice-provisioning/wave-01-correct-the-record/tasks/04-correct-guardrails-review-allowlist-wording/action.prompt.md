@@ -15,12 +15,31 @@
 Your primary deliverable is a file under `.claude/`, which a Claude Code subprocess CANNOT write —
 the tool-permission layer refuses every `.claude/` write unconditionally. Do NOT attempt a direct
 `Write`/`Edit` to the `.claude/` path: a direct-write probe wastes a turn and populates the
-harness's permission-wall tracker. Instead, FIRST write
-`{"needsHarnessWrite": {"path": "<workspace-relative path>", "content": "<full file content>",
-"reason": "<why>"}}` to the state-out path. The harness (which is NOT subject to that layer) performs
-the write directly, then your guardrails still run normally against the result. If you already
-attempted a direct write and it was refused, do NOT retry it or try workarounds (PowerShell,
-`dangerouslyDisableSandbox`) — just emit `needsHarnessWrite` as above.
+harness's permission-wall tracker. Instead, FIRST write a `needsHarnessWrite` fragment to the
+state-out path; the harness (which is NOT subject to that layer) performs the write, and your
+guardrails then run normally against the result.
+
+**Use the ANCHORED EDIT form — you are MODIFYING a large existing file, not creating one:**
+
+`{"needsHarnessWrite": {"path": "<workspace-relative path>", "reason": "<why>", "edits":
+[{"old": "<verbatim anchor text>", "new": "<replacement text>"}]}}`
+
+- Each `old` must occur **exactly once** in the file — zero matches and two-or-more matches are both
+  rejected, so include enough surrounding context to make each anchor unique.
+- `old` is matched **VERBATIM** (exact indentation, punctuation and blank lines; only line endings are
+  tolerated). **Copy the passage out of the file rather than retyping it** — a retyped anchor that
+  differs by one character is a zero-match rejection.
+- Edits apply in order and **ATOMICALLY**: if any one fails, none are written and the file is unchanged.
+- An empty `new` deletes the anchored text.
+
+**Do NOT use the full-content (`"content"`) form here.** It is for CREATING a file. The files this
+task targets are large (one is over 200 KB), and a full-content write to an existing file over 64 KiB
+is now REFUSED outright (issue #437) — re-emitting thousands of lines of normative text to change a few
+also risks silently corrupting the parts you did not mean to touch, which nothing here would catch.
+`content` and `edits` are mutually exclusive; a fragment carrying both is rejected.
+
+If a direct write was already refused, do NOT retry it or try workarounds (PowerShell,
+`dangerouslyDisableSandbox`) — just emit the anchored `needsHarnessWrite` above.
 
 ## Task
 The #252 guidance in **SKILL.md** under `.claude/skills/guardrails-review/` states that state-mutating git commands
