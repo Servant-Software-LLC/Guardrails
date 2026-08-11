@@ -159,6 +159,46 @@ public sealed class ReVerifierSeamTests : IDisposable
     }
 
     // =========================================================================
+    // Issue #432 (same root cause as the gate capture, adjacent consumer): a failing re-verify result
+    // must carry the FULL captured output in GuardrailResult.Output, not just the one-line Reason.
+    // Scheduler.PersistUnionReVerifyFailure (#188) writes `Output ?? Reason` into
+    // union-reverify-<name>.stdout.log and tells the reader "Full output persisted to ..." — a promise
+    // this seam could not keep while it left Output null.
+    // =========================================================================
+
+    [Fact]
+    public async Task FailingGuardrail_CarriesFullOutput_NotJustTheOneLineReason()
+    {
+        // No quote characters in any line: these are emitted through a single-quoted PowerShell /
+        // bash literal, so a nested quote would silently corrupt the fixture rather than the assertion.
+        const string firstLine = "restoring packages";
+        const string middle = "error CS0101: duplicate definition of Launcher";
+        const string lastLine = "build FAILED";
+
+        string emit(string line) => OperatingSystem.IsWindows() ? $"Write-Output '{line}'\n" : $"echo '{line}'\n";
+        var body = new System.Text.StringBuilder();
+        if (!OperatingSystem.IsWindows())
+        {
+            body.Append("#!/usr/bin/env bash\n");
+        }
+        body.Append(emit(firstLine)).Append(emit(middle)).Append(emit(lastLine)).Append("exit 1");
+
+        IReVerifier verifier = CreateVerifier();
+        GuardrailDefinition g = WriteGuardrailScript("01-build", body.ToString());
+
+        ReVerifyResult result = await verifier.ReVerifyAsync(
+            _tempRoot, [g], TestContext.Current.CancellationToken);
+
+        GuardrailResult failed = Assert.Single(result.FailedGuardrails);
+        Assert.NotNull(failed.Output);
+        // EVERY line — including the middle error the one-line reason (a tail/first-line projection)
+        // necessarily drops. That is the whole point of the union-reverify evidence file.
+        Assert.Contains(firstLine, failed.Output!, StringComparison.Ordinal);
+        Assert.Contains(middle, failed.Output!, StringComparison.Ordinal);
+        Assert.Contains(lastLine, failed.Output!, StringComparison.Ordinal);
+    }
+
+    // =========================================================================
     // Issue #331: the optional IReVerifyProgress seam announces each guardrail as it STARTS and
     // COMPLETES — start→complete PAIRED even when the guardrail fails (the finally) — in plan order.
     // This is the Core signal the CLI turns into a wall-clock heartbeat for a long plan-level gate.
@@ -177,7 +217,10 @@ public sealed class ReVerifierSeamTests : IDisposable
         var spy = new RecordingProgress();
 
         ReVerifyResult result = await verifier.ReVerifyAsync(
-            _tempRoot, [pass1, fail, pass2], spy, TestContext.Current.CancellationToken);
+            _tempRoot,
+            [pass1, fail, pass2],
+            new ReVerifyOptions { Progress = spy },
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(
             [

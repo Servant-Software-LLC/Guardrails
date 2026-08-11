@@ -81,6 +81,17 @@ public sealed record JournalDocument
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public decimal? OverheadCostUsd { get; init; }
 
+    /// <summary>
+    /// OPTIONAL machine-readable reason the run STOPPED at a deterministic GATE (SSOT §7, issue #432): the
+    /// pre-DAG Full Flight Checks, a wave ENTRY/EXIT gate, or the terminal plan gate. A gate halt settles no
+    /// task, so without this section a halted run's <c>tasks{}</c> is a wall of silent <c>pending</c>
+    /// entries with the cause recorded only on the operator's terminal. Additive and backward-compatible:
+    /// absent (not <c>null</c> noise) on a run that did not halt at a gate, and CLEARED on resume by
+    /// <see cref="RunJournal.LoadOrCreate"/> so a stale halt is never mistaken for the current run's.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RunHalt? Halt { get; init; }
+
     // NOTE (issue #419): the Windows short-junction root is NO LONGER journaled. It was the field that made
     // the junction durable RUN STATE (forcing a resume onto the same .a..z letter and a sweep as the only
     // reclaim), which is the leak #407/#419 chased. The junction is now a process-scoped cwd alias
@@ -154,6 +165,16 @@ public sealed record PlanPreflightsSection
 
     /// <summary>The individual preflight checks that ran (name + pass/fail + optional reason).</summary>
     public IReadOnlyList<PlanPreflightCheck> Checks { get; init; } = [];
+
+    /// <summary>
+    /// OPTIONAL plan-relative, forward-slash path to this phase's captured per-check output (SSOT §8, issue
+    /// #432) — <c>logs/&lt;runId&gt;/preflights</c> for the plan-level phase, or
+    /// <c>logs/&lt;runId&gt;/&lt;waveDir&gt;/preflights</c> for a wave ENTRY gate. Each check's
+    /// <c>stdout.log</c>/<c>stderr.log</c>/<c>result.json</c> sits in a <c>&lt;check-name&gt;/</c>
+    /// subdirectory. Additive — absent on a marker written before #432 (or when no run id was available).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LogDir { get; init; }
 }
 
 /// <summary>One pre-DAG preflight check result (SSOT §7 <c>planPreflights.checks[]</c>).</summary>
@@ -184,6 +205,32 @@ public sealed record PlanGuardrailsSection
 
     /// <summary>The guardrail checks that failed (name + reason); empty unless <see cref="Status"/> is plan-guardrail-failed.</summary>
     public IReadOnlyList<FailedGuardrail> FailedChecks { get; init; } = [];
+
+    /// <summary>
+    /// OPTIONAL UTC time the gate was evaluated (ISO-8601), mirroring
+    /// <see cref="PlanPreflightsSection.EvaluatedAt"/> (issue #432): a halted run's journal must say WHEN
+    /// the gate ran, not only that it did. Additive — absent on a marker written before #432.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? EvaluatedAt { get; init; }
+
+    /// <summary>
+    /// OPTIONAL per-check results for EVERY check this gate ran — passing ones included — in the same
+    /// <c>{ name, passed, reason? }</c> shape as <see cref="PlanPreflightsSection.Checks"/> (issue #432).
+    /// <see cref="FailedChecks"/> (kept verbatim for existing readers) names only the failures, which
+    /// cannot distinguish "the gate ran three checks and the third failed" from "the gate ran one check";
+    /// this list can. Additive — empty on a marker written before #432.
+    /// </summary>
+    public IReadOnlyList<PlanPreflightCheck> Checks { get; init; } = [];
+
+    /// <summary>
+    /// OPTIONAL plan-relative, forward-slash path to this gate's captured per-check output (SSOT §8, issue
+    /// #432) — <c>logs/&lt;runId&gt;/guardrails</c> for the terminal plan gate, or
+    /// <c>logs/&lt;runId&gt;/&lt;waveDir&gt;/guardrails</c> for a wave EXIT gate. Additive — absent on a
+    /// marker written before #432 (or when no run id was available).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? LogDir { get; init; }
 
     /// <summary>
     /// The #175 merge-collision advisory (SSOT §3.3, issue #205): when the terminal gate fails and ≥2

@@ -1593,7 +1593,11 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     "status": "plan-preflight-failed",  // passed | plan-preflight-failed
     "planHash": "sha256:…",
     "evaluatedAt": "2026-06-10T16-22-30Z",
-    "checks": [ { "name": "git-top-level", "passed": false, "reason": "workspace is not a git top-level" } ]
+    "checks": [ { "name": "git-top-level", "passed": false, "reason": "workspace is not a git top-level" } ],
+    // OPTIONAL plan-relative path to this phase's CAPTURED per-check output (§8, #432): one
+    // <check-name>/ subdir per check holding stdout.log / stderr.log / result.json. Absent on a marker
+    // written before #432. Written for passing AND failing checks.
+    "logDir": "logs/2026-06-10T16-22-31Z-a1b2/preflights"
   },
   "planGuardrails": {                    // the TERMINAL <plan>/guardrails/ gate on the merged HEAD (OUTSIDE tasks{})
     "status": "plan-guardrail-failed",  // passed | plan-guardrail-failed
@@ -1602,6 +1606,13 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     // FIRST line (§7 plan-gate reason contract, #272 Part 1) — so npm-ci/dotnet-restore preamble noise
     // never masquerades as the reason.
     "failedChecks": [ { "name": "whole-repo-build", "reason": "…\nCS0111 duplicate member 'Launcher.Run'" } ],
+    // OPTIONAL (#432), all three additive — a pre-#432 marker omits them and existing readers of
+    // `failedChecks` are unaffected:
+    "evaluatedAt": "2026-06-10T16-49-02Z",  // mirrors planPreflights.evaluatedAt
+    // EVERY check the gate ran, passing ones included, in the planPreflights.checks[] shape.
+    // `failedChecks` alone cannot distinguish "3 ran and the 3rd failed" from "1 ran".
+    "checks": [ { "name": "whole-repo-build", "passed": false, "reason": "…" } ],
+    "logDir": "logs/2026-06-10T16-22-31Z-a1b2/guardrails",   // captured per-check output (§8)
     // OPTIONAL #175/#205 merge-collision advisory — present only on failure when ≥2 tasks have
     // OVERLAPPING writeScope on a shared file; names the offending task pair(s) + shared path(s). ABSENT
     // (never null noise) when the gate passed or no two writeScopes overlap. HEDGED, not a confident
@@ -1616,9 +1627,35 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
     "wave-01-scaffold": {
       "status": "completed",            // pending | running | completed | needs-human | blocked
       "definitionHash": "sha256:…",     // WaveDefinitionHash at completion (§7.2) — folds the wave's task hashes + wave-gate folders
-      "entry":  { "status": "passed", "planHash": "sha256:…", "checks": [ /* like planPreflights */ ] },
-      "exit":   { "status": "passed", "planHash": "sha256:…", "failedChecks": [] }   // like planGuardrails
+      // entry/exit mirror planPreflights/planGuardrails EXACTLY — including the #432 additions
+      // (evaluatedAt / checks[] / logDir), whose logDir nests under the wave dir.
+      "entry":  { "status": "passed", "planHash": "sha256:…", "evaluatedAt": "…",
+                  "checks": [ /* like planPreflights */ ],
+                  "logDir": "logs/2026-06-10T16-22-31Z-a1b2/wave-01-scaffold/preflights" },
+      "exit":   { "status": "passed", "planHash": "sha256:…", "evaluatedAt": "…",
+                  "failedChecks": [], "checks": [ /* like planPreflights */ ],
+                  "logDir": "logs/2026-06-10T16-22-31Z-a1b2/wave-01-scaffold/guardrails" }
     }
+  },
+
+  // OPTIONAL top-level HALT record (#432) — the machine-readable reason the run STOPPED at a
+  // deterministic GATE. Scoped deliberately to the four gate folders: those halts settle NO task, so
+  // without this section a halted run's tasks{} is a wall of silent `pending` entries and the cause
+  // exists only on the operator's terminal (the reported defect). A per-task needs-human/blocked halt is
+  // already self-describing inside tasks{} and is NOT recorded here.
+  //
+  // Additive: absent (never null noise) on a run that did not halt at a gate, and CLEARED on resume —
+  // the record describes THIS run, so a stale halt can never be read as current. The per-gate sections
+  // above remain the authority on per-check detail; this is the single uniformly-shaped pointer that
+  // says WHICH gate stopped the run and WHERE its captured output is.
+  "halt": {
+    "kind": "wave-entry-gate-failed",   // plan-preflight-failed | wave-entry-gate-failed
+                                        //   | wave-exit-gate-failed | plan-guardrail-failed
+    "haltedAt": "2026-06-10T16-25-03Z",
+    "headline": "Wave 'wave-01-scaffold' entry preflight FAILED: 01-baseline-tests-green",  // as printed
+    "waveDir": "wave-01-scaffold",      // wave-scoped gates only; ABSENT for a plan-scoped gate
+    "failedChecks": [ { "name": "01-baseline-tests-green", "reason": "…" } ],
+    "logDir": "logs/2026-06-10T16-22-31Z-a1b2/wave-01-scaffold/preflights"   // §8 captured output
   },
 
   // OPTIONAL, append-only, UNIFIED autonomy-policy decision log (§2.1 shared reporting surface). Additive:
@@ -2524,6 +2561,37 @@ Also at the **task** level, the **overwatcher** (§9.2, #269) writes:
 - `feedback.md` / `triage.json` — the terminal-exhaustion case (§9.2.1), unchanged.
 - `overwatch-guidance.md` — written only when a granted guidance injection could not be appended to the
   failed attempt's `feedback.md`; the fallback carrier of the sanctioned ephemeral guidance.
+
+### Gate captures — the four gate folders' per-check output (issue #432)
+
+A GATE (any of the four folders of §1/§3.3/§14.3) is **not** a task attempt: it has no attempt lifecycle
+and therefore no `attempt-N/` dir to write into. Each gate check's captured stdout/stderr is persisted
+under a predictable gate-scoped directory instead — mirroring the treatment a task attempt's guardrails
+get, and written for **passing and failing checks alike**:
+
+```
+logs/<runId>/preflights/<check-name>/               # plan-level Full Flight Checks (<plan>/preflights/)
+logs/<runId>/guardrails/<check-name>/               # plan-level Terminal Gate     (<plan>/guardrails/)
+logs/<runId>/<wave-dir>/preflights/<check-name>/    # wave ENTRY gate
+logs/<runId>/<wave-dir>/guardrails/<check-name>/    # wave EXIT gate
+├── stdout.log
+├── stderr.log
+└── result.json      # { name, passed, exitCode, timedOut, durationMs, reason }
+```
+
+`<check-name>` is the guardrail's `Name` (filename minus extension), sanitized by the same rule as the
+per-attempt guardrail logs above. The gate folder names `preflights`/`guardrails` can never collide with a
+sibling task dir — the loader reserves both names, so no task id ends in either segment.
+
+The owning journal section records the containing directory as its `logDir` (§7), and the top-level `halt`
+record repeats it for the gate that stopped the run, so a post-mortem is one lookup from the bytes.
+
+**Why this is contract, not convenience.** A failing gate halts the run with **no retry, no `feedback.md`
+and no attempt dir** — before #432 the one-line `reason` in `run.json` was the only durable trace, and the
+observed footprint of a halted run was a `logs/<runId>/` containing nothing but viewer HTML. That breaks
+the run's own printed promise: *"Logs (post-mortem any task — pass or fail)"*. Persisting is
+**best-effort**: a gate's verdict is a deterministic property of its child processes, so an IO failure
+while writing evidence never changes (or aborts) that verdict.
 
 At the **wave** level (`logs/<runId>/<wave-dir>/`), the **between-wave breakdown actor** (#360 Phase 1,
 §14.4/doc 11 §9) writes under a `breakdown/` sub-tree — the between-wave invocation is NOT a task attempt, so

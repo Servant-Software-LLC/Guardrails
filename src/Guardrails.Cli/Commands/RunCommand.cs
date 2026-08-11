@@ -523,7 +523,8 @@ public static class RunCommand
                 }
 
                 bool planGuardrailsPassed = !report.AllSucceeded
-                    || await PlanGuardrailPhase.EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, cancellationToken, junctionRootForRun)
+                    || await PlanGuardrailPhase
+                        .EvaluateAsync(probe.Plan, new ProcessRunner(), io.Out, runId, cancellationToken, junctionRootForRun)
                         .ConfigureAwait(false);
 
                 if (willEvaluateTerminalGate)

@@ -380,15 +380,16 @@ public sealed class Scheduler
             _observer.WaveStarting(wave, i + 1, waves.Count);
 
             // 3. Wave ENTRY preflight (skip-once-per-hash; SSOT §14.3/§14.6).
-            (bool entryPassed, IReadOnlyList<GuardrailResult> entryFailed) =
-                await RunWaveEntryGateAsync(plan, wave, integ, cancellationToken).ConfigureAwait(false);
-            if (!entryPassed)
+            GateOutcome entry = await RunWaveEntryGateAsync(plan, wave, integ, cancellationToken).ConfigureAwait(false);
+            if (!entry.Passed)
             {
                 _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
                 BlockLaterWaves(waves, i, wave, settled);
                 _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+                WaveHalt gateHalt = BuildGateHalt(wave, WaveHaltKind.EntryGateFailed, entry.Failed);
+                RecordGateHalt(Journal.RunHaltKind.WaveEntryGateFailed, wave.Dir, gateHalt, entry);
                 RunReport entryHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
-                    with { WaveHalt = BuildGateHalt(wave, WaveHaltKind.EntryGateFailed, entryFailed) };
+                    with { WaveHalt = gateHalt };
                 if (!cancellationToken.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
                 return entryHalt;
             }
@@ -436,15 +437,16 @@ public sealed class Scheduler
             }
 
             // 6. Wave EXIT / terminal gate (SSOT §14.3): on the merged HEAD-so-far.
-            (bool exitPassed, IReadOnlyList<GuardrailResult> exitFailed) =
-                await RunWaveExitGateAsync(plan, wave, integ, cancellationToken).ConfigureAwait(false);
-            if (!exitPassed)
+            GateOutcome exit = await RunWaveExitGateAsync(plan, wave, integ, cancellationToken).ConfigureAwait(false);
+            if (!exit.Passed)
             {
                 _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.NeedsHuman);
                 BlockLaterWaves(waves, i, wave, settled);
                 _observer.WaveFinished(wave, Journal.WaveStatus.NeedsHuman, skipped: false);
+                WaveHalt gateHalt = BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, exit.Failed);
+                RecordGateHalt(Journal.RunHaltKind.WaveExitGateFailed, wave.Dir, gateHalt, exit);
                 RunReport exitHalt = BuildReport(plan, settled, cancelled: cancellationToken.IsCancellationRequested)
-                    with { WaveHalt = BuildGateHalt(wave, WaveHaltKind.ExitGateFailed, exitFailed) };
+                    with { WaveHalt = gateHalt };
                 if (!cancellationToken.IsCancellationRequested) EndOfRunSweep(directoryOwner, settled, integ);
                 return exitHalt;
             }
@@ -756,27 +758,30 @@ public sealed class Scheduler
     /// Run a wave's ENTRY preflight gate (SSOT §14.3) against the plan-branch HEAD (= materialized prior
     /// wave), or the workspace in serial mode. Skip-once: a passed entry marker for this wave is not
     /// re-evaluated on resume (a negative-baseline entry check runs exactly once; the wave-drift/reset path
-    /// clears the marker so a changed wave re-runs it). Self-records the entry marker + sets the wave
-    /// <c>running</c>. Returns the pass verdict + failing checks.
+    /// clears the marker so a changed wave re-runs it). Self-records the entry marker — including, per
+    /// issue #432, WHERE each check's captured stdout/stderr landed — + sets the wave <c>running</c>.
     /// </summary>
-    private async Task<(bool Passed, IReadOnlyList<GuardrailResult> Failed)> RunWaveEntryGateAsync(
+    private async Task<GateOutcome> RunWaveEntryGateAsync(
         PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct)
     {
         if (wave.Preflights.Count == 0)
         {
             _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.Running);
-            return (true, []);
+            return GateOutcome.Pass;
         }
 
         if (_journal.WaveEntryOf(wave.Dir)?.Entry is { Status: Journal.PlanPhaseStatus.Passed })
         {
             _journal.RecordWaveStatus(wave.Dir, Journal.WaveStatus.Running);
-            return (true, []); // skip-once: already passed this run's journal.
+            return GateOutcome.Pass; // skip-once: already passed this run's journal.
         }
 
         string workspace = integ?.IntegrationWorktreePath ?? plan.Workspace;
+        (string? artifactDir, string? relativeLogDir) = GateLogLocation(wave.Dir, GateArtifacts.PreflightsFolder);
         ReVerifyResult result = _reVerifier is not null
-            ? await _reVerifier.ReVerifyAsync(workspace, wave.Preflights, ct).ConfigureAwait(false)
+            ? await _reVerifier
+                .ReVerifyAsync(workspace, wave.Preflights, new ReVerifyOptions { ArtifactDirectory = artifactDir }, ct)
+                .ConfigureAwait(false)
             : new ReVerifyResult { Passed = true };
 
         var checks = wave.Preflights.Select(g =>
@@ -791,43 +796,78 @@ public sealed class Scheduler
             Status = result.Passed ? Journal.PlanPhaseStatus.Passed : Journal.PlanPhaseStatus.PlanPreflightFailed,
             PlanHash = Journal.PlanHash.Compute(plan),
             EvaluatedAt = DateTimeOffset.UtcNow,
-            Checks = checks
+            Checks = checks,
+            LogDir = relativeLogDir
         });
 
-        return (result.Passed, result.FailedGuardrails);
+        return new GateOutcome(result.Passed, result.FailedGuardrails, relativeLogDir);
     }
 
     /// <summary>
     /// Run a wave's EXIT / terminal gate (SSOT §14.3) on the merged HEAD-so-far — the per-wave analogue of
     /// the plan-terminal <c>&lt;plan&gt;/guardrails/</c> phase. Always re-evaluated (never skipped). The LAST
-    /// wave's exit gate is the whole-plan terminal soundness boundary. Self-records the exit marker. Returns
-    /// the pass verdict + failing checks.
+    /// wave's exit gate is the whole-plan terminal soundness boundary. Self-records the exit marker —
+    /// including, per issue #432, every check's result and WHERE its captured stdout/stderr landed.
     /// </summary>
-    private async Task<(bool Passed, IReadOnlyList<GuardrailResult> Failed)> RunWaveExitGateAsync(
+    private async Task<GateOutcome> RunWaveExitGateAsync(
         PlanDefinition plan, WaveNode wave, IntegrationHandle? integ, CancellationToken ct)
     {
         if (wave.Guardrails.Count == 0)
         {
-            return (true, []);
+            return GateOutcome.Pass;
         }
 
         string workspace = integ?.IntegrationWorktreePath ?? plan.Workspace;
+        (string? artifactDir, string? relativeLogDir) = GateLogLocation(wave.Dir, GateArtifacts.GuardrailsFolder);
         ReVerifyResult result = _reVerifier is not null
-            ? await _reVerifier.ReVerifyAsync(workspace, wave.Guardrails, ct).ConfigureAwait(false)
+            ? await _reVerifier
+                .ReVerifyAsync(workspace, wave.Guardrails, new ReVerifyOptions { ArtifactDirectory = artifactDir }, ct)
+                .ConfigureAwait(false)
             : new ReVerifyResult { Passed = true };
 
         var failed = result.FailedGuardrails
             .Select(f => new Journal.FailedGuardrail { Name = f.Name, Reason = f.Reason ?? "failed" })
             .ToList();
+        var checks = wave.Guardrails.Select(g =>
+        {
+            GuardrailResult? failure = result.FailedGuardrails
+                .FirstOrDefault(f => string.Equals(f.Name, g.Name, StringComparison.Ordinal));
+            return new Journal.PlanPreflightCheck { Name = g.Name, Passed = failure is null, Reason = failure?.Reason };
+        }).ToList();
+
         _journal.RecordWaveExit(wave.Dir, new Journal.PlanGuardrailsSection
         {
             Status = result.Passed ? Journal.PlanPhaseStatus.Passed : Journal.PlanPhaseStatus.PlanGuardrailFailed,
             PlanHash = Journal.PlanHash.Compute(plan),
-            FailedChecks = failed
+            FailedChecks = failed,
+            EvaluatedAt = DateTimeOffset.UtcNow,
+            Checks = checks,
+            LogDir = relativeLogDir
         });
 
-        return (result.Passed, result.FailedGuardrails);
+        return new GateOutcome(result.Passed, result.FailedGuardrails, relativeLogDir);
     }
+
+    /// <summary>
+    /// The verdict of a wave ENTRY/EXIT gate plus WHERE its captured per-check output landed (issue #432):
+    /// the plan-relative <c>logs/&lt;runId&gt;/&lt;wave&gt;/&lt;preflights|guardrails&gt;</c> path the halt
+    /// record points a post-mortem at. Null <see cref="RelativeLogDir"/> means nothing was captured (the
+    /// gate declared no checks, was skipped, or no run id was available).
+    /// </summary>
+    private sealed record GateOutcome(bool Passed, IReadOnlyList<GuardrailResult> Failed, string? RelativeLogDir)
+    {
+        /// <summary>A gate that declared nothing to run (or was skipped on resume).</summary>
+        public static readonly GateOutcome Pass = new(true, [], null);
+    }
+
+    /// <summary>
+    /// Resolve a wave gate's capture directory (issue #432) as (absolute, plan-relative). Both are null
+    /// when the journal exposes no run id — a fake in a unit test — so nothing is ever written to a
+    /// mis-rooted path.
+    /// </summary>
+    private (string? Absolute, string? Relative) GateLogLocation(string waveDir, string gateFolder) =>
+        (GateArtifacts.DirectoryFor(_plan.PlanDirectory, _journal.RunId, waveDir, gateFolder),
+         GateArtifacts.RelativeDirectoryFor(_journal.RunId, waveDir, gateFolder));
 
     /// <summary>The outcome of a wave-drift rewind: a resolved <see cref="DecisionEntry"/>, or a REFUSE reason (halt).</summary>
     private sealed record WaveRewindResult(DecisionEntry? Decision, string? Refusal);
@@ -1423,6 +1463,26 @@ public sealed class Scheduler
             FailedGates = failed
         };
     }
+
+    /// <summary>
+    /// Persist the machine-readable reason a wave gate STOPPED the run (issue #432, SSOT §7 <c>halt</c>).
+    /// A gate halt settles no task, so without this the journal reads as "nothing happened" — every task
+    /// still <c>pending</c>, the cause only on the operator's terminal. Records the SAME headline the
+    /// console prints, the failing check names + reasons, and the plan-relative path to their captured
+    /// stdout/stderr. Purely additive: it does not touch the wave's own entry/exit marker or the report.
+    /// </summary>
+    private void RecordGateHalt(Journal.RunHaltKind kind, string waveDir, WaveHalt halt, GateOutcome outcome) =>
+        _journal.RecordHalt(new Journal.RunHalt
+        {
+            Kind = kind,
+            HaltedAt = DateTimeOffset.UtcNow,
+            Headline = halt.Headline,
+            WaveDir = waveDir,
+            FailedChecks = outcome.Failed
+                .Select(f => new Journal.FailedGuardrail { Name = f.Name, Reason = f.Reason ?? "failed" })
+                .ToList(),
+            LogDir = outcome.RelativeLogDir
+        });
 
     private static IReadOnlyDictionary<string, PlanBranchWaveRecord> WithWaveMarker(
         IReadOnlyDictionary<string, PlanBranchWaveRecord> map, string waveDir, PlanBranchWaveRecord record)
@@ -3003,18 +3063,11 @@ public sealed class Scheduler
         return feedbackPath;
     }
 
-    /// <summary>Filename-safe form of a guardrail name for the #188 union-reverify log artifacts.</summary>
-    private static string SanitizeGuardrailName(string name)
-    {
-        Span<char> buffer = stackalloc char[name.Length];
-        for (int i = 0; i < name.Length; i++)
-        {
-            char c = name[i];
-            buffer[i] = char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '_';
-        }
-
-        return new string(buffer);
-    }
+    /// <summary>
+    /// Filename-safe form of a guardrail name for the #188 union-reverify log artifacts — the SSOT §8
+    /// sanitization rule, shared with the gate captures rather than re-spelled here (issue #432).
+    /// </summary>
+    private static string SanitizeGuardrailName(string name) => GateArtifacts.Sanitize(name);
 
     /// <summary>
     /// Record a worktree-mode SUCCESS settle (issue #196): journal a real

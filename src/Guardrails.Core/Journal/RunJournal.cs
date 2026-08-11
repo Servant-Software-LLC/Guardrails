@@ -29,6 +29,13 @@ public sealed class RunJournal : Execution.ISchedulerJournal
     /// <summary>Absolute path to <c>state/run.json</c>.</summary>
     public string JournalPath => _journalPath;
 
+    /// <summary>
+    /// This run's id — the <c>logs/&lt;runId&gt;/</c> tree every attempt and gate writes its artifacts
+    /// under. Exposed on the <see cref="Execution.ISchedulerJournal"/> surface (issue #432) so the
+    /// Scheduler can locate a wave gate's capture directory without reaching for the whole document.
+    /// </summary>
+    public string RunId => Document.RunId;
+
     /// <summary>True if a previous journal existed and its plan hash differed from the current plan.</summary>
     public bool PlanHashMismatch { get; private init; }
 
@@ -76,7 +83,12 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         JournalDocument resumed = loaded with
         {
             PlanHash = currentHash, // adopt the current hash going forward
-            Tasks = ApplyResumeRules(plan, loaded.Tasks)
+            Tasks = ApplyResumeRules(plan, loaded.Tasks),
+            // Issue #432: the halt section describes why THIS run stopped. A resume is a new attempt at
+            // reaching green, so a halt carried over from the previous one would be read as current. Clear
+            // it; a gate that fails again re-records it (the per-gate planPreflights/planGuardrails/waves
+            // markers are NOT cleared — those are the durable per-phase record resume reasons about).
+            Halt = null
         };
 
         var resumedJournal = new RunJournal(journalPath, resumed)
@@ -431,6 +443,23 @@ public sealed class RunJournal : Execution.ISchedulerJournal
 
     // Issue #419: RecordWorktreeJunctionRoot is REMOVED. The Windows short-junction is a process-scoped cwd
     // alias (WorktreeJunctionLifetime), not resume state — nothing to persist.
+
+    /// <summary>
+    /// Record the machine-readable reason the run STOPPED at a deterministic gate (SSOT §7, issue #432).
+    /// Overwrites any previous halt — a run stops once, and the LAST gate to fail is the one that stopped
+    /// it. Nothing else about the journal is touched, so the per-gate phase markers (which carry the full
+    /// per-check detail) remain the authority on what each gate found.
+    /// </summary>
+    public void RecordHalt(RunHalt halt)
+    {
+        ArgumentNullException.ThrowIfNull(halt);
+
+        lock (_gate)
+        {
+            _document = _document with { Halt = halt };
+            Persist();
+        }
+    }
 
     // --- waves[] (SSOT §7/§14, #254 M2b) ----------------------------------------------
 

@@ -13,6 +13,20 @@ public interface ISchedulerJournal
     Journal.TaskStatus StatusOf(string taskId);
 
     /// <summary>
+    /// This run's id — the <c>logs/&lt;runId&gt;/</c> tree artifacts are written under (issue #432). Default
+    /// EMPTY for fakes that model no run id, which the callers read as "capture nothing" rather than
+    /// writing to a mis-rooted path; <see cref="Journal.RunJournal"/> returns the real id.
+    /// </summary>
+    string RunId => "";
+
+    /// <summary>
+    /// Record the machine-readable reason the run STOPPED at a deterministic gate (SSOT §7, issue #432).
+    /// Default no-op for fakes; <see cref="Journal.RunJournal"/> persists it as the top-level
+    /// <c>halt</c> section.
+    /// </summary>
+    void RecordHalt(Journal.RunHalt halt) { }
+
+    /// <summary>
     /// The <c>TaskDefinitionHash</c> recorded at a task's most recent successful settle (SSOT §7.2,
     /// issue #274 Part A), or null when none was recorded. Drives the resume definition-drift check.
     /// Default null for fakes that do not model it; <see cref="Journal.RunJournal"/> reads the real

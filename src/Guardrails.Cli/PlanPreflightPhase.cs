@@ -1,9 +1,7 @@
-using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
-using Guardrails.Core.State;
 
 namespace Guardrails.Cli;
 
@@ -74,8 +72,21 @@ public static class PlanPreflightPhase
 
         using GuardrailHeartbeat? heartbeat = heartbeatOut is null ? null : GuardrailHeartbeat.StartConsole(heartbeatOut);
 
+        // Issue #432: capture each Full Flight Check's stdout/stderr under logs/<runId>/preflights/<name>/.
+        // A failing check halts the run before ANY task is scheduled, so there is no attempt dir anywhere —
+        // without this the only trace of WHY is the operator's scrollback.
+        string runId = journal.Document.RunId;
+        string? artifactDir = GateArtifacts.DirectoryFor(
+            plan.PlanDirectory, runId, waveDir: null, GateArtifacts.PreflightsFolder);
+        string? relativeLogDir = GateArtifacts.RelativeDirectoryFor(
+            runId, waveDir: null, GateArtifacts.PreflightsFolder);
+
         ReVerifyResult result = await reVerifier
-            .ReVerifyAsync(evalWorkspace, plan.PlanPreflights, heartbeat, cancellationToken)
+            .ReVerifyAsync(
+                evalWorkspace,
+                plan.PlanPreflights,
+                new ReVerifyOptions { Progress = heartbeat, ArtifactDirectory = artifactDir },
+                cancellationToken)
             .ConfigureAwait(false);
 
         List<PlanPreflightCheck> checks = plan.PlanPreflights
@@ -97,27 +108,35 @@ public static class PlanPreflightPhase
             Status = result.Passed ? PlanPhaseStatus.Passed : PlanPhaseStatus.PlanPreflightFailed,
             PlanHash = currentHash,
             EvaluatedAt = DateTimeOffset.UtcNow,
-            Checks = checks
+            Checks = checks,
+            LogDir = relativeLogDir
         };
 
-        WriteMarker(plan.PlanDirectory, section);
+        // Issue #432: on FAILURE also record the uniform top-level `halt` — the one field a post-mortem
+        // reader can consult without knowing the four-folder model, so a halted run's journal never reads
+        // as a wall of silent pending tasks.
+        RunHalt? halt = result.Passed ? null : BuildHalt(result, relativeLogDir);
+
+        PlanPhaseJournalWriter.Update(plan.PlanDirectory, document => halt is null
+            ? document with { PlanPreflights = section }
+            : document with { PlanPreflights = section, Halt = halt });
 
         return result.Passed;
     }
 
     /// <summary>
-    /// Persist the <c>planPreflights</c> section straight to <c>state/run.json</c> (the
-    /// <see cref="JournalDocument.PlanPreflights"/> shape). Written directly to disk rather than through
-    /// a <see cref="RunJournal"/> mutator — the journal type exposes none for this OPTIONAL top-level
-    /// section — so this re-reads the document <see cref="RunJournal.LoadOrCreate"/> already persisted
-    /// (with every task seeded pending) and adds only the one field, leaving everything else untouched.
+    /// The machine-readable stop reason for a failed pre-DAG phase (SSOT §7 <c>halt</c>): the same headline
+    /// the console prints, the failing check names + reasons, and where their captured output landed.
     /// </summary>
-    private static void WriteMarker(string planDirectory, PlanPreflightsSection section)
+    private static RunHalt BuildHalt(ReVerifyResult result, string? relativeLogDir) => new()
     {
-        string path = RunJournal.PathFor(planDirectory);
-        JournalDocument document = JournalReader.Read(path);
-        JournalDocument updated = document with { PlanPreflights = section };
-        string json = JsonSerializer.Serialize(updated, JournalJson.Options);
-        AtomicFile.WriteAllText(path, json);
-    }
+        Kind = RunHaltKind.PlanPreflightFailed,
+        HaltedAt = DateTimeOffset.UtcNow,
+        Headline = "Plan preflight FAILED — halting before scheduling any task: "
+                   + string.Join(", ", result.FailedGuardrails.Select(f => f.Name)),
+        FailedChecks = result.FailedGuardrails
+            .Select(f => new FailedGuardrail { Name = f.Name, Reason = f.Reason ?? "failed" })
+            .ToList(),
+        LogDir = relativeLogDir
+    };
 }
