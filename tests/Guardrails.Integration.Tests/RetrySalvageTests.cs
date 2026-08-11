@@ -568,6 +568,23 @@ public sealed class HostRepoCleanlinessGuard : IDisposable
         // guard; this is a best-effort tripwire, not a hard requirement of the test environment.
         if (_hostRepoRoot is null) return;
 
+        // Issue #433: the tripwire's premise is that the enclosing repo is QUIESCENT for the duration of
+        // this class — only these tests could dirty it. That premise is FALSE when the suite runs inside
+        // a Guardrails-managed worktree (a plan whose guardrails run `dotnet test`): the harness is
+        // concurrently merging task branches, running `git add -A` write-scope checks, and dropping build
+        // output into that same tree, so `git status` legitimately gains lines that have nothing to do
+        // with these tests. Asserting there produced a CLASS-CLEANUP failure — surfacing as
+        // Xunit.Sdk.TestPipelineException with a NON-ZERO exit code and `Failed: 0` — which halted a real
+        // run at its baseline preflight while reporting that healthy tests were red.
+        //
+        // Discriminator: a LINKED git worktree has `.git` as a FILE ("gitdir: …"); a normal checkout has
+        // it as a DIRECTORY. Skip the tripwire in the linked-worktree case only, so it keeps full teeth
+        // for ordinary dev and CI runs (where #253's regression protection actually applies).
+        if (File.Exists(Path.Combine(_hostRepoRoot, ".git")))
+        {
+            return;
+        }
+
         HashSet<string> after = StatusLines(_hostRepoRoot);
         List<string> newEntries = after.Except(_before).ToList();
 
