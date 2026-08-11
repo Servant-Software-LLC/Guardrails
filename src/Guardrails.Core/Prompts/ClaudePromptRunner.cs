@@ -210,6 +210,25 @@ public sealed class ClaudePromptRunner : IPromptRunner
     }
 
     /// <summary>
+    /// Resolve the plan's DECLARED tool grants into the set the runner actually passes, reporting
+    /// separately what the HARNESS added — the read-only git inspection grant the retry-salvage
+    /// protocol (<see cref="RetryPolicy"/>'s salvage section) prescribes but has never provisioned.
+    /// The result is RETURNED rather than the settings list being mutated in place, so the attempt
+    /// provenance and the attempt log header can record the effective set beside the declared one
+    /// instead of the two silently diverging.
+    /// <para>
+    /// STUB — deliberately not implemented. The injection itself is the NEXT task's deliverable; this
+    /// member exists only so the tests that pin its contract
+    /// (<c>tests/Guardrails.Core.Tests/ToolGrantInjectionTests.cs</c>) COMPILE and fail for the right
+    /// reason. The seam it belongs on is the unconditional <c>--add-dir</c> append in
+    /// <see cref="BuildArguments"/> directly above — grep that marker, not a line number.
+    /// </para>
+    /// </summary>
+    internal static ToolGrantResolution ResolveToolGrants(IReadOnlyList<string> declaredTools) =>
+        throw new NotImplementedException(
+            "tool-grant injection is not implemented yet — see ToolGrantInjectionTests for the contract it must satisfy");
+
+    /// <summary>
     /// Classify a non-success run into a runner-agnostic <see cref="PromptFailureKind"/> (SSOT §9).
     /// Precedence: a process timeout is <see cref="PromptFailureKind.Timeout"/>; otherwise the error
     /// TEXT — the terminal result's error message, or, when no terminal result was produced (the
@@ -298,4 +317,25 @@ public sealed class ClaudePromptRunner : IPromptRunner
             ? $"claude reported is_error{cost}{turns}"
             : $"claude completed{cost}{turns}";
     }
+}
+
+/// <summary>
+/// The outcome of <see cref="ClaudePromptRunner.ResolveToolGrants"/>: the grants actually handed to
+/// the CLI, and — held separately, never folded away — the subset the HARNESS contributed. Keeping
+/// the two apart is what makes the effective permission set auditable: a run can show what the plan
+/// declared and what the harness added on top, instead of one merged list nobody can attribute.
+/// </summary>
+internal sealed record ToolGrantResolution
+{
+    /// <summary>
+    /// The effective grants passed via <c>--allowedTools</c>: the declared entries (relative order
+    /// preserved) plus <see cref="Injected"/>. Never empty — the harness always provisions its own grant.
+    /// </summary>
+    public required IReadOnlyList<string> Effective { get; init; }
+
+    /// <summary>
+    /// ONLY what the harness added on top of the declared list. Empty when the plan already declared
+    /// everything the harness needs — the grant is provisioned, never duplicated.
+    /// </summary>
+    public required IReadOnlyList<string> Injected { get; init; }
 }
