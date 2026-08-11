@@ -1,0 +1,7 @@
+{
+  "description": "Author a failing composition-root test proving diagram.html is NOT yet live-updated by a real guardrails run",
+  "dependsOn": ["02-implement-diagram-status-overlay-renderer"],
+  "stableId": "m4n5o6",
+  "writeScope": ["tests/Guardrails.Integration.Tests/DiagramLiveStatusWiringTests.cs"],
+  "action": { "maxTurns": 75 }
+}

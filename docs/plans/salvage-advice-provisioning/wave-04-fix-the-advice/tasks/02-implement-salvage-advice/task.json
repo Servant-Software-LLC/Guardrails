@@ -1,0 +1,10 @@
+{
+  "description": "Rewrite the salvage advice: patch route first, DiffStat-routed, correct invocation shape, drop the ungranted git diff alternative, and re-baseline the tests that pin the old text",
+  "dependsOn": ["01-author-tests-salvage-advice"],
+  "stableId": "scm2z8",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/RetryPolicy.cs",
+    "tests/Guardrails.Core.Tests/RetryPolicyTests.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

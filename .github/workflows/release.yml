@@ -192,12 +192,42 @@ jobs:
         shell: bash
         run: |
           VER="${GITHUB_REF_NAME#v}"
+
+          # Single-file COMPRESSION IS DISABLED ON macOS — it corrupts our own binary (#443).
+          #
+          # A compressed bundle entry is the ONLY case that routes image loading through
+          # `FlatImageLayout::LoadImageByCopyingParts` on Unix (coreclr `peimagelayout.cpp`:
+          # `PEImageLayout::Load` takes the direct-mmap `LoadedImageLayout` path when
+          # `!IsInBundle() || !IsCompressed()`). That copying path reserves the image with
+          # MEM_RESERVE_EXECUTABLE — MAP_JIT on macOS — as PAGE_READWRITE, copies the section
+          # bytes in, then promotes exec sections RW → RWX with a second mprotect. On Apple
+          # Silicon that transition intermittently reports success while leaving the pages
+          # NON-EXECUTABLE in the kernel, so the next call into that page dies with a fatal
+          # `AccessViolationException` at an arbitrary frame.
+          #
+          # It lands in FRAMEWORK code because a self-contained publish bundles Microsoft's
+          # ReadyToRun-precompiled framework assemblies — those are the images with executable
+          # sections. Our own IL is JIT-compiled at runtime and is never the crash site, which
+          # is why no Guardrails frame ever appears in the reported stacks.
+          #
+          # Upstream: dotnet/runtime#123324 (root cause) and dotnet/runtime#112167 / #88288
+          # (the child-spawn stacks that match ours exactly), fixed by dotnet/runtime#127355
+          # — merged 2026-04-29 into `main` (.NET 11) and NOT backported to release/10.0, so
+          # every binary published with the .NET 10 SDK still carries it.
+          #
+          # Cost of disabling: a larger download. Re-enable ONLY once we publish on an SDK
+          # carrying dotnet/runtime#127355, and re-check #443 before you do.
+          COMPRESS=true
+          case "${{ matrix.rid }}" in
+            osx-*) COMPRESS=false ;;   # arm64 natively; x64 can run under Rosetta on the same silicon
+          esac
+
           dotnet publish src/Guardrails.Cli -c Release -r "${{ matrix.rid }}" \
             --self-contained true \
             -p:RestoreLockedMode=false \
             -p:Version="$VER" \
             -p:PublishSingleFile=true \
-            -p:EnableCompressionInSingleFile=true \
+            -p:EnableCompressionInSingleFile="$COMPRESS" \
             -p:IncludeNativeLibrariesForSelfExtract=true \
             -p:DebugType=none \
             -p:DebugSymbols=false \

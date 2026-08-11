@@ -1,0 +1,3 @@
+{
+  "description": "Terminal Gate: the whole Guardrails.Core.Tests project passes on the merged result - catches any regression the hardening edit introduced elsewhere in the project"
+}

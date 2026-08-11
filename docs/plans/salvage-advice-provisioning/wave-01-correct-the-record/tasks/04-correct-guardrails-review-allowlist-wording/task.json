@@ -1,0 +1,6 @@
+{
+  "description": "Correct the guardrails-review wording that claims state-mutating git 'stays outside allowedTools' - the list is a floor that grants, it cannot withhold",
+  "dependsOn": [],
+  "stableId": "s4d1q7",
+  "writeScope": [".claude/skills/guardrails-review/"]
+}

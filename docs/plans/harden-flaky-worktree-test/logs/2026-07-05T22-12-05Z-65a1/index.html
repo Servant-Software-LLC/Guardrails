@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guardrails run 2026-07-05T22-12-05Z-65a1 — log site</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #0b0f14; color: #d6deeb; }
+  h1 { font-size: 1.2rem; }
+  h2 { font-size: 1rem; color: #8aa0b3; margin-top: 1.6rem; }
+  p { color: #8aa0b3; }
+  a { color: #7fdbff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .bar { color: #8aa0b3; margin-bottom: .8rem; }
+  table { border-collapse: collapse; margin-top: 1rem; width: 100%; }
+  td, th { padding: .45rem .8rem; border-bottom: 1px solid #1c2733; text-align: left; }
+  th { color: #8aa0b3; font-weight: 600; }
+  select { background: #121a24; color: #d6deeb; border: 1px solid #243343; border-radius: 4px; padding: .2rem .4rem; }
+  td.status, span.status { font-weight: 600; }
+  .status[data-status="succeeded"], .status[data-status="skipped"] { color: #3fb950; }
+  .status[data-status="needs-human"], .status[data-status="failed"] { color: #f85149; }
+  .status[data-status="running"] { color: #d29922; }
+  .status[data-status="pending"], .status[data-status="blocked"], .status[data-status="unknown"] { color: #8aa0b3; }
+  .empty, option.empty { color: #6b7a8d; }
+  pre { background: #06090d; border: 1px solid #1c2733; border-radius: 6px; padding: 1rem;
+        white-space: pre-wrap; word-break: break-word; font-size: .82rem; line-height: 1.35;
+        max-height: 70vh; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>Guardrails run — task logs</h1>
+<p>Static export of this run. Settled tasks link to their inlined log page; not-yet-run tasks are plain text.</p>
+<table>
+<thead><tr><th>Task</th><th>Status</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><a href="01-harden-worktree-barrier-test/index.html">01-harden-worktree-barrier-test</a></td><td class="status" data-status="succeeded">succeeded</td><td>Diagnose and harden Scheduler_DrivesThreeIndependentTasks_WithWorktreeHandles_OverlapProvenByBarrier (issue #214) against CI-load flakiness, without weakening what it proves</td></tr>
+</tbody>
+</table>
+</body>
+</html>

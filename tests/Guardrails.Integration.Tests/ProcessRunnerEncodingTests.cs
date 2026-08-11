@@ -26,27 +26,8 @@ public sealed class ProcessRunnerEncodingTests
 
     private static bool Windows => OperatingSystem.IsWindows();
 
-    /// <summary>
-    /// The Windows shell to launch: PowerShell 7 (<c>pwsh</c>) when present, else Windows
-    /// PowerShell 5.1 (<c>powershell</c>) — mirrors <see cref="InterpreterMap"/>'s fallback so a
-    /// box without pwsh still runs the test. Both expose <c>[Console]::OpenStandard*()</c> identically.
-    /// </summary>
-    private static readonly string WindowsShell = ResolveWindowsShell();
-
-    private static string ResolveWindowsShell()
-    {
-        string[] path = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
-        foreach (string exe in new[] { "pwsh.exe", "powershell.exe" })
-        {
-            if (path.Any(dir => File.Exists(Path.Combine(dir, exe))))
-            {
-                return Path.GetFileNameWithoutExtension(exe);
-            }
-        }
-
-        return "pwsh";
-    }
+    /// <summary>The Windows shell to launch — see <see cref="TestShell.WindowsShell"/>.</summary>
+    private static readonly string WindowsShell = TestShell.WindowsShell;
 
     /// <summary>A command that writes raw bytes <paramref name="bytes"/> to stdout or stderr.</summary>
     private static ResolvedCommand RawBytesCommand(byte[] bytes, bool toStderr)

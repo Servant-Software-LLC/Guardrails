@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + an IRunObserver.AttemptModelResolved stub proving the on-the-fly decorators forward the event",
+  "dependsOn": [],
+  "stableId": "psm05a",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ObserverModelResolvedTests.cs",
+    "src/Guardrails.Core/Execution/IRunObserver.cs"
+  ]
+}

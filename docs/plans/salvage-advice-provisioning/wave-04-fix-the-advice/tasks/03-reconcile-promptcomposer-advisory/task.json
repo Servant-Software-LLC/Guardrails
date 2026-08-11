@@ -1,0 +1,7 @@
+{
+  "description": "Reconcile the worktree-safety advisory shipped in every worktree prompt so it stops recommending three unusable commands",
+  "dependsOn": ["02-implement-salvage-advice"],
+  "stableId": "sdn3a1",
+  "writeScope": ["src/Guardrails.Core/Prompts/PromptComposer.cs", "tests/Guardrails.Core.Tests/PromptComposerTests.cs"],
+  "action": { "maxTurns": 75 }
+}

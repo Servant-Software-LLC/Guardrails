@@ -503,12 +503,23 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   3 cancelled. See SSOT section 7.1.
 - A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
   no retry burn on a genuine human decision.
-- **`needsHarnessWrite` (issue #191)**: a SECOND fragment escape hatch, parallel to `needsHuman` --
-  `{ "needsHarnessWrite": { "path", "content", "reason"? } }` asks the .NET HARNESS PROCESS ITSELF
-  (never subject to Claude Code's tool-permission layer) to write a `.claude/` file the action's own
-  subprocess can never write (broader than #101's new-subdirectory-only gap; survives
-  `dangerouslyDisableSandbox`). Unlike `needsHuman` it does NOT short-circuit -- guardrails still run
-  afterward. Validated BEFORE the write with THREE checks: `WorkspaceContainment.Escapes` (always);
+- **`needsHarnessWrite` (issues #191, #437)**: a SECOND fragment escape hatch, parallel to `needsHuman`
+  -- asks the .NET HARNESS PROCESS ITSELF (never subject to Claude Code's tool-permission layer) to
+  write a `.claude/` file the action's own subprocess can never write (broader than #101's
+  new-subdirectory-only gap; survives `dangerouslyDisableSandbox`). **TWO mutually exclusive forms
+  (#437)** -- `{ "needsHarnessWrite": { "path", "content", "reason"? } }` to CREATE a file, or
+  `{ "needsHarnessWrite": { "path", "edits": [{ "old", "new" }], "reason"? } }` to MODIFY one. `edits` is
+  the fix for the size wall: full-content mode required re-emitting the WHOLE file, so a ~100KB+
+  deliverable exceeded `maxOutputTokens` and the task was structurally impossible however small the
+  change; with anchored edits the cost scales with the CHANGE and the untouched bytes stay untouched by
+  construction. Each `old` must match **exactly once** (zero -> fail; 2+ -> fail AMBIGUOUS, never
+  first-wins), matching is VERBATIM/ordinal (only line endings tolerated, CRLF<->LF re-spelling as a
+  post-miss fallback), and the set applies ATOMICALLY (resolved in memory; one bad anchor leaves the
+  file byte-identical). `content` against an EXISTING target over `HarnessWrite.FullContentMaxBytes`
+  (64 KiB) is refused with a message routing to `edits`; CREATING a new file is unrestricted. Unlike
+  `needsHuman` it does NOT short-circuit -- guardrails still run
+  afterward. Validated BEFORE the write (and before the target is even read) with THREE
+  form-agnostic checks: `WorkspaceContainment.Escapes` (always);
   `WriteScope.IsInScope` (only when the task declares a `writeScope` -- absent means allowed, mirroring
   section 3.4); and (#321) a **permission-file carve-out** -- `.claude/settings.json` and
   `.claude/settings.local.json` are DENIED (the harness will not write permission-granting files on an
@@ -524,7 +535,11 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `permission-denied` with an empty list. Only a wall with no guardrail failure to report -- an
   action-failed #104 first-attempt wall, or the eager #86 repeat -- stays `permission-denied`. The halt
   DECISION is unchanged; only the reported outcome/message/`failedGuardrails` differ. Singular per attempt
-  in v1. SSOT section 9 / 9.3.
+  in v1 -- one REQUEST, though it may carry many `edits` to the ONE file it names. A request that is in
+  bounds but inapplicable AS WRITTEN (bad/ambiguous anchor, `edits` on a missing file, `content` over the
+  size wall, an unusable payload) is a THIRD failure class alongside rejected/denied: **not applied** --
+  the file is byte-identical and the feedback restates both accepted forms so the agent can re-emit.
+  SSOT section 9 / 9.3.
 - **The overwatcher (active AI supervisor, #269, SSOT §9.2, design `docs/plans/11-overwatcher.md`)**: an
   **advisory** AI supervisor consulted DURING a run when a task struggles. It **subsumes** the shipped
   one-shot needs-human triage (now the §9.2.1 `TerminalExhaustion` case, invariants preserved verbatim) and

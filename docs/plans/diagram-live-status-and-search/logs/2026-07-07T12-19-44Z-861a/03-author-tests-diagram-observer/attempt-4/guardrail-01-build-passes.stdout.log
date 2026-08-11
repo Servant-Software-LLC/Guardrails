@@ -1,0 +1,11 @@
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  Guardrails.Core -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Core\bin\Release\net8.0\Guardrails.Core.dll
+  Guardrails.Cli -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\src\Guardrails.Cli\bin\Release\net8.0\Guardrails.Cli.dll
+  Guardrails.Integration.Tests -> C:\Users\David\AppData\Local\Temp\guardrails-worktrees\diagram-live-status-and-search-80c8913d\33574b73\03-author-tests-diagram-observer\attempt-1\tests\Guardrails.Integration.Tests\bin\Release\net8.0\Guardrails.Integration.Tests.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:01.17

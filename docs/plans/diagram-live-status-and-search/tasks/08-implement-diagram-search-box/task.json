@@ -1,0 +1,6 @@
+{
+  "description": "Implement the client-side search-box behavior so the authored tests pass",
+  "dependsOn": ["07-author-tests-diagram-search-box"],
+  "stableId": "v4w5x6",
+  "writeScope": ["src/Guardrails.Core/Graph/HtmlDiagramRenderer.cs"]
+}

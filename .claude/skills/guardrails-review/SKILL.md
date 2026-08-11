@@ -921,10 +921,21 @@ guardrails mark-reviewed <folder> --evidence <report>
 `Plan-Definition-Hash:` equal to the current plan hash; **(b) path containment:** `<report>` must resolve
 under `<plan>/state/reviews/` — and on pass records `attestation.source: review-artifact` plus the
 report's `reportDigest`. **On failure of either check it downgrades to `source: bare`** (it never
-fabricates a class it can't substantiate) and never refuses the stamp. Watch for a
-`NOTE: … downgrading to source: bare` line: an F2a note usually means the plan changed after you ran
-`plan-hash` (re-run from move 1 with the fresh hash); an F2b note means `<report>` isn't under
-`state/reviews/`.
+fabricates a class it can't substantiate) and never refuses the stamp.
+
+**Either path form works** (issue #430): a relative `<report>` is resolved against the **current
+directory** first, as any shell path is — so `--evidence docs/plans/<plan>/state/reviews/<report>.md`
+from a repo root is correct — falling back to plan-relative (`--evidence state/reviews/<report>.md`)
+when you are standing inside the plan folder. Absolute paths work unchanged; `/` and `\` are
+interchangeable on Windows.
+
+A downgrade prints a **`WARNING: --evidence did NOT qualify … DOWNGRADING to source: bare` block on
+stderr** naming the resolved path and the reviews root it was checked against, and the `OK:` line ends
+with `DOWNGRADED: …`. **Never let that scroll past** — the stamp still exits 0, so the warning is the
+only signal your review was recorded as a bare stamp. An **F2a** downgrade usually means the plan
+changed after you ran `plan-hash` (re-run from move 1 with the fresh hash); an **F2b** downgrade means
+the resolved path (which the warning prints) isn't under `state/reviews/` — compare it with the root in
+the warning and re-run with the corrected path.
 
 #### Evidence classes — recorded for AUDIT, not a gate
 

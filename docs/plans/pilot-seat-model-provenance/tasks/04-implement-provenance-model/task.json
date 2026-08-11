@@ -1,0 +1,12 @@
+{
+  "description": "Implement model reconciliation helpers and populate AttemptProvenance in AttemptJournaler",
+  "dependsOn": [
+    "03-author-tests-provenance-model",
+    "02-implement-stream-model-capture"
+  ],
+  "stableId": "psm04i",
+  "writeScope": [
+    "src/Guardrails.Core/Execution/PromptExecutionSupport.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs"
+  ]
+}

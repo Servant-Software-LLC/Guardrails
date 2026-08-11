@@ -1,0 +1,4 @@
+{
+  "description": "No unresolved git conflict markers in the shared renderer/observer/wiring files after a non-FF union",
+  "scope": "integration"
+}

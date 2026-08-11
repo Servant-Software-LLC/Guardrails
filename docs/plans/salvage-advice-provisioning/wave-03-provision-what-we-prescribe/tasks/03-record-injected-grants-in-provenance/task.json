@@ -1,0 +1,7 @@
+{
+  "description": "Record harness-injected tool grants in attempt provenance and the attempt log header so the effective permission set stays auditable",
+  "dependsOn": ["02-implement-grant-injection"],
+  "stableId": "sak9x6",
+  "writeScope": ["src/Guardrails.Core/Journal/JournalModel.cs", "src/Guardrails.Core/Execution/TaskExecutor.cs"],
+  "action": { "maxTurns": 75 }
+}

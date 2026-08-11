@@ -1,0 +1,20 @@
+{
+  "Version": 1,
+  "Files": {
+    "guardrails.json": "38c994828eb508b6e6416537e174be8cfa58b8e3546381df952e44e03f553ca2",
+    "guardrails/01-core-tests-project-passes.json": "cc50e6db5d9bb3423737d620ec56bf942cb472a545df7292def316f667bb8728",
+    "guardrails/01-core-tests-project-passes.ps1": "72506492da38d00421c04d1062c688012a565b3ce0690077dcba81bcb5887ade",
+    "preflights/01-core-tests-green-excluding-target.json": "9f9f131341d406b6ba30907b16a059551044c15b168563a46ea9bebc9aca8c18",
+    "preflights/01-core-tests-green-excluding-target.ps1": "2f8a56bc622aa10a754634abc9052e2d920ab8c805c44e95838ddaf488c8512c",
+    "tasks/01-harden-worktree-barrier-test/action.prompt.md": "6d74d8ae9df3d65bdede09db6bc54a372a36200736eef0d71bd9d2d7468e2207",
+    "tasks/01-harden-worktree-barrier-test/guardrails/01-build-passes.json": "baf31aa7012ec457f427d4d0f8e96f10d918f8fe37df6c2e4e86886fc3a22f7c",
+    "tasks/01-harden-worktree-barrier-test/guardrails/01-build-passes.ps1": "23448d758ec0abce68e0e3d32bc708b048cf1db0d193d1b0a47176aacfbe43cd",
+    "tasks/01-harden-worktree-barrier-test/guardrails/02-assertions-not-weakened.json": "045ab81794ad3f79b3ce9d09d1f43c547f86f6e350036979aa882026ac4c9519",
+    "tasks/01-harden-worktree-barrier-test/guardrails/02-assertions-not-weakened.ps1": "3862375c1e84578fc034231c083fc93eed424f1b0876bab12e838c6c24c9b150",
+    "tasks/01-harden-worktree-barrier-test/guardrails/03-no-retry-wrapper.json": "a0222bd9a58dc09f9fc52c2ccff6e818c96035d2859a24c2b706d7ce52224c65",
+    "tasks/01-harden-worktree-barrier-test/guardrails/03-no-retry-wrapper.ps1": "d574cdbd1209f88d72521e34be75cdcee7d282896fb71703549d5c97b5d1184f",
+    "tasks/01-harden-worktree-barrier-test/guardrails/04-barrier-test-passes-repeatedly.json": "c8cd0d4a4e6aea50e6d24760b75d0775a10b9944e8e3c6316ae09fba549ca3fa",
+    "tasks/01-harden-worktree-barrier-test/guardrails/04-barrier-test-passes-repeatedly.ps1": "b728bae02530263cce24e10ba04b6bde05e07906748b3d734a8680d14e5efbb0",
+    "tasks/01-harden-worktree-barrier-test/task.json": "e34cbd65b0f1809a82e283e9f447094f1ca6013b7d4fa877afb245139df77179"
+  }
+}

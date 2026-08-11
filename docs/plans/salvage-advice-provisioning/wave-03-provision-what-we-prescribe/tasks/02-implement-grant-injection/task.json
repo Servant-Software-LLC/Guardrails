@@ -1,0 +1,7 @@
+{
+  "description": "Inject Bash(git show*) unconditionally in ClaudePromptRunner and land the contract line in the SSOT",
+  "dependsOn": ["01-author-tests-grant-injection"],
+  "stableId": "s9j8w5",
+  "writeScope": ["src/Guardrails.Core/Prompts/ClaudePromptRunner.cs", "docs/plans/02-schemas-and-contracts.md"],
+  "action": { "maxTurns": 75 }
+}

@@ -1,0 +1,3 @@
+{
+  "description": "The wiring test genuinely fails against unwired RunCommand.cs (TDD red)"
+}

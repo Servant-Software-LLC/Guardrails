@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using Guardrails.Core.Journal;
@@ -55,10 +56,43 @@ public static class LogSiteRenderer
         max-height: 70vh; overflow: auto; }
 """;
 
+    /// <summary>
+    /// The GATE-HALT banner's CSS (issue #436). Deliberately NOT part of <see cref="SharedStyle"/>: it is
+    /// appended to the page's one <c>&lt;style&gt;</c> element ONLY when that page actually renders a
+    /// banner, so a run that did NOT halt at a gate renders byte-for-byte the same page as before.
+    /// <para>
+    /// The look is intentionally unlike a task failure. A failed TASK is one red word in a table cell; a
+    /// gate halt is a full-width, red-bordered block above the table, because it means the DAG itself never
+    /// got to run (or never got to finish) — the state that otherwise reads as "nothing happened".
+    /// </para>
+    /// </summary>
+    private const string HaltStyle = """
+
+  section.halt { border: 1px solid #f85149; border-left: 8px solid #f85149; background: #1d1012;
+                 border-radius: 6px; padding: .9rem 1.1rem; margin: 1rem 0 1.5rem; }
+  section.halt h2.halt-title { color: #ff7b72; font-size: 1.05rem; margin: 0 0 .45rem;
+                               text-transform: uppercase; letter-spacing: .05em; }
+  section.halt h3.halt-sub { color: #f0b7b1; font-size: .82rem; margin: .9rem 0 .25rem;
+                             text-transform: uppercase; letter-spacing: .04em; }
+  section.halt p { margin: .25rem 0; color: #e8d7d5; }
+  section.halt p.halt-headline { color: #ffb4ab; font-weight: 600; }
+  section.halt code { color: #f0b7b1; }
+  .halt-meta { color: #a98b88; font-size: .85rem; margin-top: .55rem; }
+  ul.halt-checks { margin: .25rem 0 0 1.1rem; padding: 0; }
+  ul.halt-checks li { margin: .3rem 0; color: #e8d7d5; }
+  .halt-check { font-weight: 600; color: #ff7b72; }
+  .halt-files { color: #8aa0b3; }
+  .halt-logdir { margin-top: .7rem; font-size: .9rem; color: #8aa0b3; }
+""";
+
     // Per-attempt file the static page inlines FIRST (mirrors LogServer's PreferenceOrder): the groomed
     // transcript leads, then the raw stream, then script stdout.
     private static readonly string[] PreferenceOrder =
         ["transcript.md", "claude-stream.jsonl", "action-stdout.log"];
+
+    // The per-check files GateArtifacts.WriteCheck persists under <logDir>/<check-name>/ (issue #432).
+    // The halt banner links whichever of them actually exist, so it is one click from the evidence.
+    private static readonly string[] CapturedGateFiles = ["stdout.log", "stderr.log", "result.json"];
 
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
@@ -112,6 +146,11 @@ public static class LogSiteRenderer
     /// wave's tasks (status + a link to each task's static page) with a breadcrumb back to the plan index,
     /// and the plan-wide index links to each wave's index. A FLAT plan passes an empty
     /// <paramref name="waves"/>, so no wave index is written and the plan index is byte-for-byte unchanged.</para>
+    ///
+    /// <para>Issue #436: when the journal carries the <c>halt</c> record (SSOT §7, issue #432) the plan
+    /// index leads with the GATE-HALT banner, and a WAVE-scoped halt (<see cref="RunHalt.WaveDir"/>)
+    /// additionally leads that one wave's own index — the page whose tasks the gate stopped. Every other
+    /// wave's page, and every page of a run that did not halt at a gate, is unchanged.</para>
     /// </summary>
     public static string ExportSite(
         string logsRoot, IReadOnlyList<TaskNode> tasks, IReadOnlyList<WaveNode> waves, JournalDocument journal)
@@ -132,16 +171,27 @@ public static class LogSiteRenderer
         // Per-wave index (issue #380): one durable index per wave, all-static links, no refresh.
         foreach (WaveNode wave in waves)
         {
-            WriteWaveIndex(logsRoot, journal.RunId, wave, statusResolver, linkResolver, includeRefresh: false);
+            WriteWaveIndex(
+                logsRoot, journal.RunId, wave, statusResolver, linkResolver, includeRefresh: false,
+                halt: HaltForWave(journal.Halt, wave.Dir));
         }
 
         string index = IndexHtml(
-            journal.RunId, tasks, waves, statusResolver, linkResolver, includeRefresh: false);
+            logsRoot, journal.RunId, tasks, waves, statusResolver, linkResolver, includeRefresh: false,
+            halt: journal.Halt);
 
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
     }
+
+    /// <summary>
+    /// The halt to render on ONE wave's page (issue #436): the run's halt when it is scoped to exactly this
+    /// wave, otherwise null. A plan-scoped halt (Full Flight Checks / terminal gate) belongs on the plan
+    /// index only — repeating it on every wave page would claim each wave's own gate stopped the run.
+    /// </summary>
+    private static RunHalt? HaltForWave(RunHalt? halt, string waveDir) =>
+        halt is not null && string.Equals(halt.WaveDir, waveDir, StringComparison.Ordinal) ? halt : null;
 
     /// <summary>
     /// Render and atomically write the during-run / final site index to
@@ -151,6 +201,9 @@ public static class LogSiteRenderer
     /// while the run is in flight (so a <c>file://</c> browser re-reads it as it is rewritten) and false
     /// for the durable final write. Atomic temp+rename so a browser never reads a half-written file.
     /// Returns the path written.
+    /// <para><paramref name="halt"/> (issue #436) is the run's gate-halt record, when one has been made;
+    /// null — the during-run default, since a gate halt is only known once it has been journaled — renders
+    /// the page exactly as before.</para>
     /// </summary>
     public static string WriteIndex(
         string logsRoot,
@@ -159,9 +212,12 @@ public static class LogSiteRenderer
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
-        IReadOnlyList<WaveNode>? waves = null)
+        IReadOnlyList<WaveNode>? waves = null,
+        RunHalt? halt = null)
     {
-        string index = IndexHtml(runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver, includeRefresh);
+        string index = IndexHtml(
+            logsRoot, runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver,
+            includeRefresh, halt);
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
@@ -192,14 +248,18 @@ public static class LogSiteRenderer
     /// (never appended). When <paramref name="includeRefresh"/> is true a <c>meta refresh</c> makes a
     /// <c>file://</c> view re-read the file as the harness rewrites it ("updated on the fly"); the durable
     /// final / <c>--export</c> index omits it.
+    /// <para>When <paramref name="halt"/> is present (issue #436) the page LEADS with the gate-halt banner
+    /// and its CSS; when it is null not one byte of the page changes.</para>
     /// </summary>
     private static string IndexHtml(
+        string logsRoot,
         string runId,
         IReadOnlyList<TaskNode> tasks,
         IReadOnlyList<WaveNode> waves,
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
-        bool includeRefresh)
+        bool includeRefresh,
+        RunHalt? halt)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in tasks)
@@ -228,6 +288,11 @@ public static class LogSiteRenderer
         // (empty waves) renders nothing here, so its index bytes are unchanged.
         string wavesNav = WavesNav(waves, statusResolver);
 
+        // The gate-halt banner (issue #436) and its CSS — both empty strings when the run did not halt at
+        // a gate, so the no-halt page is byte-identical to the pre-#436 one.
+        string banner = HaltBanner(logsRoot, halt, runId, pageWaveDir: null);
+        string haltStyle = banner.Length == 0 ? string.Empty : HaltStyle;
+
         return $"""
 <!doctype html>
 <html lang="en">
@@ -236,11 +301,11 @@ public static class LogSiteRenderer
 <meta name="viewport" content="width=device-width, initial-scale=1">{refresh}
 <title>Guardrails run {Enc(runId)} — log site</title>
 <style>
-{SharedStyle}
+{SharedStyle}{haltStyle}
 </style>
 </head>
 <body>
-<h1>Guardrails run — task logs</h1>
+<h1>Guardrails run — task logs</h1>{banner}
 <p>{Enc(note)}</p>{wavesNav}
 <table>
 <thead><tr><th>Task</th><th>Status</th><th>Description</th></tr></thead>
@@ -284,6 +349,194 @@ public static class LogSiteRenderer
         return sb.ToString();
     }
 
+    // --- gate-halt banner (issue #436) ------------------------------------------------------
+
+    /// <summary>
+    /// The GATE-HALT banner (issue #436) — the render of the <c>halt</c> record #432 started persisting.
+    /// Empty string when <paramref name="halt"/> is null, which is the only reason the no-halt page stays
+    /// byte-identical.
+    /// <para>
+    /// Why it exists: a gate halt settles NO task, so the table below it is a wall of <c>pending</c> rows —
+    /// the exact page a maintainer opened after a failed wave-entry gate and concluded "nothing happened".
+    /// The banner therefore states, per gate kind, WHERE in the run the stop occurred (before the DAG /
+    /// before this wave's tasks / after them / after the whole DAG drained green), names every failing
+    /// check with its reason, and links straight into that check's captured
+    /// <c>stdout.log</c>/<c>stderr.log</c>/<c>result.json</c>.
+    /// </para>
+    /// <para>
+    /// Hrefs are relative to the PAGE being rendered: the plan index sits at
+    /// <c>logs/&lt;runId&gt;/index.html</c> and a wave index at <c>logs/&lt;runId&gt;/&lt;waveDir&gt;/index.html</c>,
+    /// while <see cref="RunHalt.LogDir"/> is PLAN-relative — so <paramref name="pageWaveDir"/> says which
+    /// prefix the page already stands in. Only artifacts that really exist on disk are linked (capture is
+    /// best-effort by contract, SSOT §8), and a zero-byte one is <c>(empty)</c>-marked exactly as the task
+    /// page marks an empty attempt file (#141 item 4) — a rendered link here is always a real file.
+    /// </para>
+    /// </summary>
+    private static string HaltBanner(string logsRoot, RunHalt? halt, string runId, string? pageWaveDir)
+    {
+        if (halt is null)
+        {
+            return string.Empty;
+        }
+
+        string kind = JournalJson.RunHaltToken(halt.Kind);
+        string? hrefBase = SiteRelativeLogDir(halt.LogDir, runId, pageWaveDir);
+        string? rootRelative = SiteRelativeLogDir(halt.LogDir, runId, pageWaveDir: null);
+        string? absoluteLogDir = rootRelative is null
+            ? null
+            : Path.Combine(logsRoot, rootRelative.Replace('/', Path.DirectorySeparatorChar));
+
+        var sb = new StringBuilder();
+        sb.Append("\n<section class=\"halt\" data-halt-kind=\"").Append(Enc(kind)).Append("\">");
+        sb.Append("<h2 class=\"halt-title\">Run halted at a gate &mdash; ")
+            .Append(Enc(GateLabel(halt.Kind))).Append("</h2>");
+        sb.Append("<p class=\"halt-headline\">").Append(Enc(halt.Headline)).Append("</p>");
+        sb.Append("<p class=\"halt-scope\">").Append(Enc(HaltScopeNote(halt.Kind))).Append("</p>");
+
+        sb.Append("<div class=\"halt-meta\">kind <code>").Append(Enc(kind)).Append("</code>");
+        if (!string.IsNullOrEmpty(halt.WaveDir))
+        {
+            // From the plan index the halted wave's own page is one click away; ON that page it IS the page.
+            sb.Append(" &middot; wave ").Append(pageWaveDir is null
+                ? $"<a href=\"{Href(halt.WaveDir + "/index.html")}\">{Enc(halt.WaveDir)}</a>"
+                : $"<code>{Enc(halt.WaveDir)}</code>");
+        }
+
+        sb.Append(" &middot; halted ").Append(Enc(FormatHaltedAt(halt.HaltedAt))).Append("</div>");
+
+        if (halt.FailedChecks.Count > 0)
+        {
+            sb.Append("<h3 class=\"halt-sub\">Failed check").Append(halt.FailedChecks.Count == 1 ? string.Empty : "s")
+                .Append("</h3><ul class=\"halt-checks\">");
+            foreach (FailedGuardrail check in halt.FailedChecks)
+            {
+                sb.Append("<li><span class=\"halt-check\">").Append(Enc(check.Name)).Append("</span> &mdash; ")
+                    .Append("<span class=\"halt-reason\">").Append(Enc(check.Reason)).Append("</span>");
+                AppendCapturedCheckLinks(sb, absoluteLogDir, hrefBase, check.Name);
+                sb.Append("</li>");
+            }
+
+            sb.Append("</ul>");
+        }
+
+        sb.Append("<div class=\"halt-logdir\">Captured gate output: ").Append(LogDirLink(halt.LogDir, hrefBase, absoluteLogDir))
+            .Append("</div></section>");
+
+        return sb.ToString();
+    }
+
+    /// <summary>The gate a halt kind names, in the words the four-folder model uses.</summary>
+    private static string GateLabel(RunHaltKind kind) => kind switch
+    {
+        RunHaltKind.PlanPreflightFailed => "plan preflight (Full Flight Checks)",
+        RunHaltKind.WaveEntryGateFailed => "wave entry gate",
+        RunHaltKind.WaveExitGateFailed => "wave exit gate",
+        RunHaltKind.PlanGuardrailFailed => "terminal plan gate",
+        _ => "gate"
+    };
+
+    /// <summary>
+    /// WHERE in the run the stop happened — the sentence that separates a gate halt from a task failure.
+    /// Each kind is stated precisely rather than blanket "no task ran": a wave EXIT gate and the terminal
+    /// plan gate fire AFTER work has run, and claiming otherwise would be a new lie in place of the silence.
+    /// </summary>
+    private static string HaltScopeNote(RunHaltKind kind) => kind switch
+    {
+        RunHaltKind.PlanPreflightFailed =>
+            "The run stopped BEFORE the task DAG: no task was scheduled and none ran, so every task below is "
+            + "still pending. This is not a task failure.",
+        RunHaltKind.WaveEntryGateFailed =>
+            "The run stopped BEFORE the tasks of this wave: the wave entry gate failed, so no task in the "
+            + "wave was scheduled and they are still pending. This is not a task failure.",
+        RunHaltKind.WaveExitGateFailed =>
+            "The run stopped AFTER the tasks of this wave drained: the wave exit gate failed, so no later "
+            + "wave ran. This is a gate failure, not a task failure.",
+        RunHaltKind.PlanGuardrailFailed =>
+            "The run stopped AFTER the task DAG drained green: the terminal plan gate failed on the merged "
+            + "HEAD. Every task can be green and the run still stopped here.",
+        _ => "The run stopped at a deterministic gate, not inside a task."
+    };
+
+    /// <summary>The halt time, rendered culture-invariantly so the page bytes never depend on the host locale.</summary>
+    private static string FormatHaltedAt(DateTimeOffset haltedAt) =>
+        haltedAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The <c>logDir</c> pointer itself: a link when that directory really is on disk under this site,
+    /// otherwise the recorded path as plain text (a halt whose capture never landed still says WHERE it
+    /// would have been). Empty-ish <c>logDir</c> (no run id at halt time) says so instead of linking nowhere.
+    /// </summary>
+    private static string LogDirLink(string? logDir, string? hrefBase, string? absoluteLogDir)
+    {
+        if (string.IsNullOrEmpty(logDir))
+        {
+            return "<code>(not captured)</code>";
+        }
+
+        return hrefBase is not null && absoluteLogDir is not null && Directory.Exists(absoluteLogDir)
+            ? $"<a href=\"{Href(hrefBase)}\">{Enc(logDir)}</a>"
+            : $"<code>{Enc(logDir)}</code>";
+    }
+
+    /// <summary>
+    /// Append the one-click links into a failing check's captured output —
+    /// <c>&lt;logDir&gt;/&lt;check-name&gt;/{stdout.log,stderr.log,result.json}</c> (issue #432's layout,
+    /// keyed through the SAME <see cref="Core.Execution.GateArtifacts.Sanitize"/> the writer used). Only
+    /// files that exist are linked; nothing is appended when the capture is missing entirely.
+    /// </summary>
+    private static void AppendCapturedCheckLinks(
+        StringBuilder sb, string? absoluteLogDir, string? hrefBase, string checkName)
+    {
+        if (absoluteLogDir is null || hrefBase is null)
+        {
+            return;
+        }
+
+        string folder = Core.Execution.GateArtifacts.Sanitize(checkName);
+        var links = new List<string>();
+        foreach (string file in CapturedGateFiles)
+        {
+            string path = Path.Combine(absoluteLogDir, folder, file);
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            bool empty = IsZeroByte(path);
+            string cls = empty ? " class=\"empty\"" : string.Empty;
+            string label = empty ? $"{file} (empty)" : file;
+            links.Add($"<a{cls} href=\"{Href($"{hrefBase}/{folder}/{file}")}\">{Enc(label)}</a>");
+        }
+
+        if (links.Count > 0)
+        {
+            sb.Append("<span class=\"halt-files\"> &mdash; ").Append(string.Join(" &middot; ", links)).Append("</span>");
+        }
+    }
+
+    /// <summary>
+    /// The journal's PLAN-relative <c>logDir</c> (<c>logs/&lt;runId&gt;/…</c>) re-expressed relative to the
+    /// page rendering it: the plan index (<paramref name="pageWaveDir"/> null) stands in
+    /// <c>logs/&lt;runId&gt;/</c>, a wave index in <c>logs/&lt;runId&gt;/&lt;waveDir&gt;/</c>. Null when the
+    /// record carries no <c>logDir</c>, or when it does not sit under the page's own tree — in which case
+    /// the banner shows the recorded path as text rather than inventing a traversal out of the site.
+    /// </summary>
+    private static string? SiteRelativeLogDir(string? logDir, string runId, string? pageWaveDir)
+    {
+        if (string.IsNullOrEmpty(logDir) || string.IsNullOrEmpty(runId))
+        {
+            return null;
+        }
+
+        string prefix = string.IsNullOrEmpty(pageWaveDir)
+            ? $"logs/{runId}/"
+            : $"logs/{runId}/{pageWaveDir}/";
+
+        return logDir.StartsWith(prefix, StringComparison.Ordinal) && logDir.Length > prefix.Length
+            ? logDir[prefix.Length..]
+            : null;
+    }
+
     // --- per-wave index (issue #380) --------------------------------------------------------
 
     /// <summary>
@@ -296,6 +549,9 @@ public static class LogSiteRenderer
     /// during-run wave index (live URLs + refresh) and the durable final one (all-static, no refresh). A
     /// task's link is rendered relative to THIS wave folder (its wave-relative folder name), because the
     /// wave index sits one level up from its task pages. Atomic temp+rename. Returns the path written.
+    /// <para><paramref name="halt"/> (issue #436) is THIS wave's gate halt — the entry or exit gate of
+    /// <paramref name="wave"/> — or null for every other page, which renders exactly as before. The caller
+    /// selects it; the renderer never guesses which wave a halt belongs to.</para>
     /// </summary>
     public static string WriteWaveIndex(
         string logsRoot,
@@ -303,9 +559,10 @@ public static class LogSiteRenderer
         WaveNode wave,
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
-        bool includeRefresh)
+        bool includeRefresh,
+        RunHalt? halt = null)
     {
-        string html = WaveIndexHtml(runId, wave, statusResolver, linkResolver, includeRefresh);
+        string html = WaveIndexHtml(logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt);
         string waveDir = Path.Combine(logsRoot, wave.Dir);
         Directory.CreateDirectory(waveDir); // the wave folder may not exist yet (all tasks still pending)
         string indexPath = Path.Combine(waveDir, "index.html");
@@ -314,11 +571,13 @@ public static class LogSiteRenderer
     }
 
     private static string WaveIndexHtml(
+        string logsRoot,
         string runId,
         WaveNode wave,
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
-        bool includeRefresh)
+        bool includeRefresh,
+        RunHalt? halt)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in wave.Tasks)
@@ -340,6 +599,11 @@ public static class LogSiteRenderer
             ? "Live run — this wave page refreshes itself. Running tasks tail their log; settled tasks link to a static page; not-yet-run tasks are plain text."
             : "Static export of this wave. Settled tasks link to their inlined log page; not-yet-run tasks are plain text.";
 
+        // This wave's own gate halt (issue #436); empty for every wave whose gates did not stop the run,
+        // so those pages keep their exact pre-#436 bytes.
+        string banner = HaltBanner(logsRoot, halt, runId, pageWaveDir: wave.Dir);
+        string haltStyle = banner.Length == 0 ? string.Empty : HaltStyle;
+
         return $"""
 <!doctype html>
 <html lang="en">
@@ -348,11 +612,11 @@ public static class LogSiteRenderer
 <meta name="viewport" content="width=device-width, initial-scale=1">{refresh}
 <title>{Enc(wave.Dir)} — Guardrails wave log ({Enc(runId)})</title>
 <style>
-{SharedStyle}
+{SharedStyle}{haltStyle}
 </style>
 </head>
 <body>
-<h1>{Enc(wave.Dir)} — wave log</h1>
+<h1>{Enc(wave.Dir)} — wave log</h1>{banner}
 <div class="bar"><a href="../index.html">&larr; all waves</a> &middot; {Enc(WaveProgress(wave, statusResolver))}</div>
 <p>{Enc(note)}</p>
 <table>
@@ -646,11 +910,15 @@ public static class LogSiteRenderer
         bool empty = IsZeroByte(file.Path);
         string label = empty ? $"{Enc(file.Label)} (empty)" : Enc(file.Label);
         string cls = empty ? " class=\"empty\"" : string.Empty;
-        // Encode each path segment so spaces / unusual chars survive as a file:// URL, but keep the
-        // slashes literal so the relative path stays navigable.
-        string href = string.Join('/', rel.Split('/').Select(Uri.EscapeDataString));
-        return $"<a{cls} href=\"{href}\">{label}</a>";
+        return $"<a{cls} href=\"{Href(rel)}\">{label}</a>";
     }
+
+    /// <summary>
+    /// A forward-slash relative path as an href: each SEGMENT is escaped so spaces / unusual characters
+    /// survive as a <c>file://</c> URL, while the slashes stay literal so the path remains navigable.
+    /// </summary>
+    private static string Href(string relativePath) =>
+        string.Join('/', relativePath.Split('/').Select(Uri.EscapeDataString));
 
     // --- source discovery (shared with the live LogServer) ----------------------------------
 

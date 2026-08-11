@@ -1,0 +1,12 @@
+{
+  "description": "Document the model-provenance contract in the SSOT (02-schemas-and-contracts.md)",
+  "dependsOn": [
+    "02-implement-stream-model-capture",
+    "04-implement-provenance-model",
+    "08-wire-firing-and-log"
+  ],
+  "stableId": "psm11u",
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

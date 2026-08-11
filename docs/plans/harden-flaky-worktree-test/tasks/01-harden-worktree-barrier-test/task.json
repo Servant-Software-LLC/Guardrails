@@ -1,0 +1,6 @@
+{
+  "description": "Diagnose and harden Scheduler_DrivesThreeIndependentTasks_WithWorktreeHandles_OverlapProvenByBarrier (issue #214) against CI-load flakiness, without weakening what it proves",
+  "stableId": "hz3k91",
+  "dependsOn": [],
+  "writeScope": ["tests/Guardrails.Core.Tests/WorktreeProviderSeamTests.cs"]
+}

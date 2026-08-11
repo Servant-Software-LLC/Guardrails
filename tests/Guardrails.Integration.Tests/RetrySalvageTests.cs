@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Loading;
+using Guardrails.Core.Model;
+using Guardrails.Core.Prompts;
 using Guardrails.Core.State;
 
 namespace Guardrails.Integration.Tests;
@@ -17,14 +19,24 @@ namespace Guardrails.Integration.Tests;
 /// settle-succeeded / <c>--fresh</c>.
 /// </summary>
 /// <remarks>
-/// Issue #253 tripwire: <see cref="HostRepoCleanlinessGuard"/> (an <see cref="IClassFixture{T}"/>)
-/// snapshots the REAL Guardrails repo checkout hosting this test run before the class's first test
-/// and re-checks it after the last. This class's fixtures use the exact literal filenames
-/// (<c>outside.txt</c>, <c>src/output.txt</c>) that a real dogfood run mysteriously saw attributed to
-/// two unrelated tasks with zero trace in either task's own transcript — every fixture root here is
-/// already isolated under <see cref="Path.GetTempPath"/>, and a thorough investigation (see the issue)
-/// could not reproduce a leak from running this suite, but the guard stands regardless as the tripwire
-/// that would catch ANY future regression reintroducing one.
+/// <para><b>Issue #253 — this class WAS the confirmed leaker.</b> A real dogfood run saw
+/// <c>outside.txt</c> and <c>src/output.txt</c> attributed to unrelated tasks with zero trace in their
+/// own transcripts; those are the exact literals <see cref="WriteFakeCli"/> writes. Rooting every
+/// fixture path under <see cref="Path.GetTempPath"/> was NOT sufficient, because the fake CLI resolved
+/// its write targets from the <b>environment</b> (<c>$GUARDRAILS_WORKSPACE</c>, <c>$GUARDRAILS_STATE_OUT</c>)
+/// and its <b>cwd</b> — both of which the harness sets per invocation, but which a child INHERITS from
+/// the enclosing process whenever the harness does not. <c>NeedsHumanTriage</c> invokes the prompt
+/// runner with a deliberately EMPTY env, so when this suite runs inside an outer <c>guardrails run</c>
+/// (a plan preflight doing <c>dotnet test</c>) the triage invocation of the fake CLI inherited the OUTER
+/// run's <c>GUARDRAILS_WORKSPACE</c> — its <c>_integration</c> worktree — and wrote the fixture files
+/// there. The outer write-scope check's <c>git add -A</c> then blamed whichever agent ran next.</para>
+/// <para>The fix is in <see cref="WriteFakeCli"/>: the fake writes only when it can positively prove it
+/// is THIS fixture's task action. Regression proofs:
+/// <see cref="FakeCli_WritesNothingOutsideThisFixturesAction_Issue253"/> (red before the fix) and
+/// <see cref="FakeCli_StillWritesForThisFixturesAction_Issue253"/> (guards against "fixing" the leak by
+/// neutering the fake).</para>
+/// <para><see cref="HostRepoCleanlinessGuard"/> (an <see cref="IClassFixture{T}"/>) remains as the
+/// belt-and-braces tripwire around the whole class.</para>
 /// </remarks>
 public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>, IDisposable
 {
@@ -35,6 +47,20 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
     private readonly string _counterPath;
 
     private const string RefAttempt1 = "refs/guardrails/01-implement/attempt-1";
+
+    /// <summary>
+    /// Name of the fixture-private proof-of-origin variable the plan injects into the TASK ACTION's
+    /// environment (SSOT §3 <c>action.env</c>). Deliberately OUTSIDE the <c>GUARDRAILS_</c> namespace —
+    /// it is fixture plumbing, not part of the §5.1 contract, and it must be a name no real harness
+    /// (inner or outer) ever sets.
+    /// </summary>
+    private const string ActionTokenVar = "GR_SALVAGE_FIXTURE_ACTION";
+
+    /// <summary>
+    /// A per-instance value for <see cref="ActionTokenVar"/>. Unguessable and unique per test instance,
+    /// so the ambient environment of an enclosing <c>guardrails run</c> can never match it (issue #253).
+    /// </summary>
+    private readonly string _actionToken = Guid.NewGuid().ToString("N");
 
     private enum FakeMode
     {
@@ -275,6 +301,115 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
     }
 
     [Fact]
+    public async Task FakeCli_WritesNothingOutsideThisFixturesAction_Issue253()
+    {
+        // #253 RED-BAR (this is the leak itself, not a proxy for it). The class's own tests all pass
+        // whether or not the fake CLI is contained, because standalone there is no ambient
+        // GUARDRAILS_WORKSPACE for it to escape into — which is exactly why the leak survived a
+        // "could not reproduce" investigation and why HostRepoCleanlinessGuard never tripped.
+        //
+        // This reproduces the ONE invocation that escaped: NeedsHumanTriage fires when a task settles
+        // needs-human (as SalvagedOutOfScopeFile_StillCaughtByWriteScopeCheck provokes) and builds
+        // `Environment = new Dictionary<string, string>()` on purpose, so the fake CLI ran with cwd and
+        // GUARDRAILS_* INHERITED from whatever launched `dotnet test`. Inside an outer `guardrails run`
+        // that is the run's own _integration worktree.
+        //
+        // Handing the outer values in `Environment` is byte-identical from the child's point of view to
+        // inheriting them (ProcessRunner overlays this dictionary onto the inherited block), and it keeps
+        // the test deterministic and parallel-safe — no process-global env mutation, no sleeps.
+        string cli = WriteFakeCli(FakeMode.MaxTurnsThenSucceedWithBadScope);
+
+        string outerWorktree = Path.Combine(_root, "outer-integration-worktree");
+        Directory.CreateDirectory(outerWorktree);
+        string outerFragment = Path.Combine(_root, "outer-state-fragment.json");
+
+        PromptResult result = await InvokeFakeCliAsync(
+            cli,
+            cwd: outerWorktree,
+            env: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                // No ActionTokenVar — this is NOT this fixture's action.
+                ["GUARDRAILS_WORKSPACE"] = outerWorktree,
+                ["GUARDRAILS_STATE_OUT"] = outerFragment,
+                ["GUARDRAILS_TASK_ID"] = "outer-run-task"
+            });
+
+        // The fake must still behave like a runner (triage is advisory but must not look broken).
+        Assert.True(result.Completed, $"the fake CLI must still return a terminal result: {result.Summary}");
+
+        // The contract: not one byte outside what THIS fixture's harness handed it. cwd is the outer
+        // worktree too, so this single probe covers both escape vectors — an inherited
+        // $GUARDRAILS_WORKSPACE and a path left relative to an inherited cwd.
+        string[] strays = Directory.GetFileSystemEntries(outerWorktree, "*", SearchOption.AllDirectories);
+        Assert.True(strays.Length == 0,
+            "the fake CLI leaked into a workspace it was never given by this fixture (issue #253): " +
+            string.Join(" | ", strays));
+
+        // An inherited GUARDRAILS_STATE_OUT points at the OUTER run's state fragment — writing it would
+        // corrupt that run's state, a strictly worse failure than the stray files.
+        Assert.False(File.Exists(outerFragment),
+            "the fake CLI wrote a state fragment to an inherited GUARDRAILS_STATE_OUT (issue #253)");
+
+        // Nothing at all happened: a non-action invocation must not even be counted as an attempt.
+        Assert.False(File.Exists(_counterPath),
+            "a non-action invocation must not bump the attempt counter (it is what made the leaked file " +
+            "read 'attempt-3-output' for a task that only ever ran 2 attempts)");
+    }
+
+    [Fact]
+    public async Task FakeCli_StillWritesForThisFixturesAction_Issue253()
+    {
+        // The positive twin of the red-bar above: the #253 gate must not be satisfiable by neutering the
+        // fake. For a genuine action invocation the fake still produces exactly the artifacts every other
+        // test in this class depends on — the in-scope file per attempt, the out-of-scope file on the
+        // succeeding attempt, and the state fragment.
+        string cli = WriteFakeCli(FakeMode.MaxTurnsThenSucceedWithBadScope);
+
+        string workspace = Path.Combine(_root, "segment-worktree");
+        Directory.CreateDirectory(workspace);
+        string fragment = Path.Combine(_root, "fragment.json");
+
+        var actionEnv = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [ActionTokenVar] = _actionToken,
+            ["GUARDRAILS_WORKSPACE"] = workspace,
+            ["GUARDRAILS_STATE_OUT"] = fragment,
+            ["GUARDRAILS_TASK_ID"] = "01-implement"
+        };
+
+        // Invocation 1 = the max-turns attempt: in-scope file only, no fragment.
+        await InvokeFakeCliAsync(cli, workspace, actionEnv);
+        Assert.Equal("attempt-1-output", File.ReadAllText(Path.Combine(workspace, "src", "output.txt")));
+        Assert.False(File.Exists(Path.Combine(workspace, "outside.txt")));
+
+        // Invocation 2 = the succeeding attempt: adds the out-of-scope file + the state fragment.
+        await InvokeFakeCliAsync(cli, workspace, actionEnv);
+        Assert.Equal("attempt-2-output", File.ReadAllText(Path.Combine(workspace, "src", "output.txt")));
+        Assert.Equal("out of scope", File.ReadAllText(Path.Combine(workspace, "outside.txt")));
+        Assert.Contains("\"done\": true", File.ReadAllText(fragment));
+    }
+
+    /// <summary>
+    /// Invokes the generated fake CLI through the REAL <see cref="ClaudePromptRunner"/> +
+    /// <see cref="ProcessRunner"/> the harness uses — no bespoke process-launch code under test, so the
+    /// #253 gate is proven against the same spawn path production takes.
+    /// </summary>
+    private async Task<PromptResult> InvokeFakeCliAsync(
+        string cli, string cwd, IReadOnlyDictionary<string, string> env) =>
+        await new ClaudePromptRunner("claude", cli, new ProcessRunner()).RunAsync(
+            new PromptInvocation
+            {
+                ComposedPrompt = "do the thing",
+                WorkingDirectory = cwd,
+                PlanDirectory = _planDir,
+                Environment = env,
+                Settings = new PromptRunnerSettings { MaxTurns = 5 },
+                Timeout = TimeSpan.FromMinutes(2),
+                StreamLogPath = Path.Combine(_root, $"stream-{Guid.NewGuid():N}.jsonl")
+            },
+            TestContext.Current.CancellationToken);
+
+    [Fact]
     public async Task SalvageRefs_PrunedOnTaskSettleSucceeded()
     {
         await RunAsync(FakeMode.MaxTurnsThenSucceed);
@@ -338,13 +473,20 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
 
         string taskDir = Path.Combine(_planDir, "tasks", "01-implement");
         Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+        // action.env carries the #253 proof-of-origin token. TaskExecutor.BuildEnvironment folds
+        // task.Action.Env into the ACTION process env, so the token reaches the fake CLI for a real
+        // attempt — and ONLY for a real attempt (advisory invocations like NeedsHumanTriage build their
+        // own empty env and never see it).
         File.WriteAllText(Path.Combine(taskDir, "task.json"),
-            """
+            $$"""
             {
               "description": "fake prompt task exercising retry salvage",
               "dependsOn": [],
               "writeScope": ["src/"],
-              "action": { "path": "action.prompt.md" }
+              "action": {
+                "path": "action.prompt.md",
+                "env": { "{{ActionTokenVar}}": "{{_actionToken}}" }
+              }
             }
             """);
         File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "Implement the thing.\n");
@@ -360,10 +502,10 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
     }
 
     /// <summary>
-    /// The fake Claude CLI. Every invocation increments a counter file kept OUTSIDE the repo (so it
-    /// survives the segment's F2 reset between attempts) and always writes an IN-SCOPE
-    /// <c>src/output.txt</c> so the action has SOME observable effect. Behavior then branches on
-    /// <paramref name="mode"/>:
+    /// The fake Claude CLI. Every ACTION invocation (see the containment gate below) increments a counter
+    /// file kept OUTSIDE the repo (so it survives the segment's F2 reset between attempts) and always
+    /// writes an IN-SCOPE <c>src/output.txt</c> so the action has SOME observable effect. Behavior then
+    /// branches on <paramref name="mode"/>:
     /// <list type="bullet">
     /// <item><see cref="FakeMode.MaxTurnsThenSucceed"/>: invocation 1 emits <c>error_max_turns</c> (no
     /// fragment); invocation 2+ writes the fragment and succeeds.</item>
@@ -374,6 +516,29 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
     /// <see cref="FakeMode.MaxTurnsThenSucceed"/>, but invocation 2+ ALSO writes an out-of-scope
     /// <c>outside.txt</c> (simulating an adopted salvage that pulled in a bad file).</item>
     /// </list>
+    /// <para>
+    /// <b>Issue #253 containment gate (the first thing every flavor does).</b> This script writes
+    /// nothing at all unless <see cref="ActionTokenVar"/> holds this instance's <see cref="_actionToken"/>.
+    /// Rooting the fixture under <see cref="Path.GetTempPath"/> does not contain it, because every write
+    /// target here is derived from the <b>child's</b> environment (<c>$GUARDRAILS_WORKSPACE</c>,
+    /// <c>$GUARDRAILS_STATE_OUT</c>) or its cwd — and a child INHERITS both from the enclosing process
+    /// for any invocation whose env the harness does not populate. <c>NeedsHumanTriage</c> is exactly
+    /// such an invocation: it fires when a task settles <c>needs-human</c> (which
+    /// <see cref="SalvagedOutOfScopeFile_StillCaughtByWriteScopeCheck"/> deliberately provokes) and
+    /// builds <c>Environment = new Dictionary&lt;string, string&gt;()</c> on purpose. Running this suite
+    /// standalone that invocation saw no <c>GUARDRAILS_WORKSPACE</c> and quietly wrote nothing — which is
+    /// why the leak went unreproduced for so long. Running it INSIDE a <c>guardrails run</c> (a plan
+    /// preflight doing <c>dotnet test</c>) it inherited the OUTER run's <c>GUARDRAILS_WORKSPACE</c> and
+    /// wrote <c>outside.txt</c> + <c>src/output.txt</c> straight into that run's <c>_integration</c>
+    /// worktree, where the write-scope <c>git add -A</c> blamed an innocent agent.
+    /// </para>
+    /// <para>
+    /// The gate is a POSITIVE identification, not a path denylist: the segment worktree the fake must
+    /// legitimately write to lives under the harness's own <c>gr-wt</c> root, NOT under
+    /// <see cref="_root"/>, so "is the target under my temp root?" cannot be the test. Proving the
+    /// INVOCATION is this fixture's action proves the whole §5.1 env set came from the inner harness,
+    /// which makes every path derived from it fixture-owned by construction.
+    /// </para>
     /// </summary>
     private string WriteFakeCli(FakeMode mode)
     {
@@ -389,6 +554,20 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
             File.WriteAllText(ps1,
                 $$"""
                 $null = [Console]::In.ReadToEnd()
+
+                # Issue #253 containment gate. Every path below is derived from the child environment,
+                # which is INHERITED (not harness-set) for any non-action invocation — so unless this is
+                # this fixture's own task action, touch nothing anywhere and return a benign result.
+                if ($env:{{ActionTokenVar}} -cne '{{_actionToken}}') {
+                    Write-Output '{"type":"result","is_error":false,"result":"fake claude: not this fixture task action - no files written","total_cost_usd":0,"num_turns":1}'
+                    exit 0
+                }
+                if ([string]::IsNullOrWhiteSpace($env:GUARDRAILS_WORKSPACE)) {
+                    # Fail LOUD rather than resolving a relative path against an inherited cwd.
+                    [Console]::Error.WriteLine('fake claude: GUARDRAILS_WORKSPACE unset for a task action')
+                    exit 9
+                }
+
                 $count = 0
                 if (Test-Path "{{counter}}") { $count = [int](Get-Content "{{counter}}" -Raw).Trim() }
                 $count++
@@ -420,6 +599,15 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
             string body =
                 "#!/usr/bin/env bash\n" +
                 "cat > /dev/null\n" +
+                // Issue #253 containment gate — see WriteFakeCli's remarks. Twin of the .ps1 branch.
+                $"if [ \"${ActionTokenVar}\" != \"{_actionToken}\" ]; then\n" +
+                "  printf '{\"type\":\"result\",\"is_error\":false,\"result\":\"fake claude: not this fixture task action - no files written\",\"total_cost_usd\":0,\"num_turns\":1}\\n'\n" +
+                "  exit 0\n" +
+                "fi\n" +
+                "if [ -z \"$GUARDRAILS_WORKSPACE\" ]; then\n" +
+                "  echo 'fake claude: GUARDRAILS_WORKSPACE unset for a task action' >&2\n" +
+                "  exit 9\n" +
+                "fi\n" +
                 "count=0\n" +
                 $"if [ -f \"{counter}\" ]; then count=$(cat \"{counter}\" | tr -d '[:space:]'); fi\n" +
                 "count=$((count + 1))\n" +
@@ -544,22 +732,53 @@ public sealed class RetrySalvageTests : IClassFixture<HostRepoCleanlinessGuard>,
 /// test run, then asserts on teardown that no NEW path appeared. A dogfood run once saw a live task's
 /// write-scope check (<c>git add -A</c> in its segment worktree) attribute two files —
 /// <c>outside.txt</c> and <c>src/output.txt</c> — to the agent with zero trace in its own transcript.
-/// Those are the exact literal fixture names <see cref="RetrySalvageTests.WriteFakeCli"/> uses, which
-/// made this suite a prime (if never confirmed) suspect; every fixture root in this file is already
-/// isolated under <see cref="Path.GetTempPath"/>, so this guard is currently a no-op tripwire, not a
-/// fix for a confirmed leak — its value is catching any FUTURE regression that reintroduces one,
-/// exactly matching the issue's own suggested regression test ("assert `git status` in the real repo
-/// stays clean around this test").
+/// Those are the exact literal fixture names <see cref="RetrySalvageTests.WriteFakeCli"/> uses — and
+/// that suspicion is now CONFIRMED (see <see cref="RetrySalvageTests"/>'s remarks for the mechanism).
+/// <para>
+/// The guard has two layers, because the <c>git status</c> layer alone had to stand down (#433) in
+/// precisely the environment where the leak was observed — a LINKED worktree, where the harness itself
+/// dirties the tree concurrently:
+/// </para>
+/// <list type="number">
+/// <item><b>Literal probe (always on, worktree included).</b> The two fixture filenames appear nowhere
+/// in a Guardrails checkout, so one of them APPEARING at the host root during this class is
+/// unambiguous evidence of the #253 leak with none of the ambient-noise problem that forced the
+/// carve-out. This is the layer that would have caught the live incident.</item>
+/// <item><b>Full <c>git status</c> diff (normal checkouts only).</b> Broad — catches a leak under any
+/// name — but only sound when the enclosing repo is quiescent, hence the #433 carve-out below.</item>
+/// </list>
+/// <para>
+/// Both layers are belt-and-braces around the deterministic proof, which lives in
+/// <see cref="RetrySalvageTests.FakeCli_WritesNothingOutsideThisFixturesAction_Issue253"/>: this guard
+/// can only fire when the ambient environment happens to aim the leak at the host repo root, whereas
+/// that test provokes the escape directly.
+/// </para>
 /// </summary>
 public sealed class HostRepoCleanlinessGuard : IDisposable
 {
+    /// <summary>
+    /// The literals <see cref="RetrySalvageTests.WriteFakeCli"/> writes, relative to a repo root. A
+    /// Guardrails checkout contains neither, so either one appearing is a leak — never a false positive
+    /// from ordinary build/harness activity.
+    /// </summary>
+    private static readonly string[] FixtureLiterals =
+    [
+        "outside.txt",
+        Path.Combine("src", "output.txt")
+    ];
+
     private readonly string? _hostRepoRoot;
     private readonly HashSet<string> _before;
+    private readonly HashSet<string> _literalsBefore;
 
     public HostRepoCleanlinessGuard()
     {
         _hostRepoRoot = FindEnclosingGitRepo(AppContext.BaseDirectory);
         _before = _hostRepoRoot is null ? [] : StatusLines(_hostRepoRoot);
+
+        // Pre-existing copies (e.g. left by an earlier poisoned run) are not THIS class's doing — only
+        // an APPEARANCE during the class is.
+        _literalsBefore = _hostRepoRoot is null ? [] : PresentLiterals(_hostRepoRoot);
     }
 
     public void Dispose()
@@ -567,6 +786,14 @@ public sealed class HostRepoCleanlinessGuard : IDisposable
         // Not running from within a git checkout (e.g. some future packaging context) — nothing to
         // guard; this is a best-effort tripwire, not a hard requirement of the test environment.
         if (_hostRepoRoot is null) return;
+
+        // Layer 1 — runs even inside a linked worktree, i.e. in the exact environment where the live
+        // #253 incident happened and where layer 2 must stand down. A plain file-existence check needs
+        // no `git status`, so the harness's concurrent churn cannot make it lie.
+        List<string> leaked = PresentLiterals(_hostRepoRoot).Except(_literalsBefore).ToList();
+        Assert.True(leaked.Count == 0,
+            "RetrySalvageTests leaked its fixture file(s) into the REAL repo/worktree hosting the test " +
+            "run (issue #253) -- appeared during this class: " + string.Join(" | ", leaked));
 
         // Issue #433: the tripwire's premise is that the enclosing repo is QUIESCENT for the duration of
         // this class — only these tests could dirty it. That premise is FALSE when the suite runs inside
@@ -580,6 +807,10 @@ public sealed class HostRepoCleanlinessGuard : IDisposable
         // Discriminator: a LINKED git worktree has `.git` as a FILE ("gitdir: …"); a normal checkout has
         // it as a DIRECTORY. Skip the tripwire in the linked-worktree case only, so it keeps full teeth
         // for ordinary dev and CI runs (where #253's regression protection actually applies).
+        //
+        // NOTE: this carve-out is scoped to the `git status` layer ONLY. Layer 1 above deliberately runs
+        // first and unconditionally — the linked-worktree case is where the leak actually bit, so the
+        // carve-out must not be allowed to swallow it.
         if (File.Exists(Path.Combine(_hostRepoRoot, ".git")))
         {
             return;
@@ -592,6 +823,12 @@ public sealed class HostRepoCleanlinessGuard : IDisposable
             "RetrySalvageTests must not leave any new untracked/modified path in the REAL repo " +
             "hosting the test run (issue #253) -- new git-status line(s): " + string.Join(" | ", newEntries));
     }
+
+    /// <summary>Which of <see cref="FixtureLiterals"/> currently exist at <paramref name="repoRoot"/>.</summary>
+    private static HashSet<string> PresentLiterals(string repoRoot) =>
+        FixtureLiterals
+            .Where(rel => File.Exists(Path.Combine(repoRoot, rel)))
+            .ToHashSet(StringComparer.Ordinal);
 
     /// <summary>Walks up from <paramref name="startDir"/> looking for a `.git` dir/file (a worktree's
     /// `.git` is a file, not a dir). Returns null if none is found (not running inside a checkout).</summary>

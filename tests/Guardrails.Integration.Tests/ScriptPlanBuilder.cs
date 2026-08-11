@@ -22,9 +22,23 @@ public sealed class ScriptPlanBuilder : IDisposable
     private readonly string _root;
     private readonly List<string> _taskFolders = [];
 
-    public ScriptPlanBuilder()
+    /// <summary>
+    /// Create a plan folder under <paramref name="rootParent"/>, or under the system temp directory
+    /// when null (the default every existing test uses).
+    /// <para>
+    /// The override exists for the <c>--evidence</c> path-form tests (issue #430), which need a plan
+    /// reachable by a genuinely RELATIVE path from the process working directory. Deriving one from a
+    /// temp path is not portable (a Windows temp dir on another volume has no relative path —
+    /// <see cref="Path.GetRelativePath"/> silently returns an absolute one, and the test would stop
+    /// testing the thing it names), and mutating the process working directory is not an option: it is
+    /// global state, and other tests running in parallel assert on
+    /// <see cref="Directory.GetCurrentDirectory"/>. Rooting the fixture under that directory instead
+    /// gives real relative paths with no shared state touched.
+    /// </para>
+    /// </summary>
+    public ScriptPlanBuilder(string? rootParent = null)
     {
-        _root = Path.Combine(Path.GetTempPath(), "guardrails-it-" + Guid.NewGuid().ToString("N"));
+        _root = Path.Combine(rootParent ?? Path.GetTempPath(), "guardrails-it-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_root);
         // defaultRetries 0: these fixtures assert single-attempt semantics exactly.
         File.WriteAllText(Path.Combine(_root, "guardrails.json"),
