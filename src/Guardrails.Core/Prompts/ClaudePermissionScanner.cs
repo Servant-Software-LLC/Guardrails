@@ -17,14 +17,23 @@ namespace Guardrails.Core.Prompts;
 /// and eventually exhausts turns/retries (exactly the #86 / #104 waste this detects). So the scanner
 /// reads the per-tool-result error text as the stream flows by.</para>
 ///
-/// <para><b>Why path extraction is from the error text, not tool-use pairing.</b> The Claude
-/// permission-denial message embeds the refused path verbatim
-/// (<c>"Claude requested permissions to write to &lt;path&gt;, but you haven't granted it yet."</c>),
-/// so the path is read straight from the error rather than by pairing a <c>tool_result</c> back to its
-/// <c>tool_use</c> by id/order (which is fragile across stream shapes). When a denial carries no path
-/// (a tool-level refusal such as <c>"…to use Write…"</c>) the scanner falls back to the most recent
-/// write-family <c>tool_use</c>'s <c>file_path</c>/<c>path</c> input, so a repeated tool-level wall is
-/// still attributable to a stable key.</para>
+/// <para><b>Why target extraction is from the error text, not tool-use pairing.</b> The Claude
+/// permission-denial message embeds the refused target verbatim
+/// (<c>"Claude requested permissions to write to &lt;path&gt;, but you haven't granted it yet."</c>, or
+/// <c>"…The following part requires approval: &lt;command&gt;"</c>), so it is read straight from the
+/// error rather than by pairing a <c>tool_result</c> back to its <c>tool_use</c> by id/order (which is
+/// fragile across stream shapes). When a denial carries no target — a tool-level refusal such as
+/// <c>"…to use Write…"</c>, or the bare <c>"This command requires approval"</c>, which names nothing at
+/// all — the scanner falls back to the most recent wall-capable <c>tool_use</c>'s
+/// <c>file_path</c>/<c>path</c>/<c>command</c> input, so a repeated tool-level wall is still
+/// attributable to a stable key.</para>
+///
+/// <para><b>A refused <c>Bash</c> command is a wall too.</b> It is the same failure as a refused
+/// <c>Write</c>: the call never runs and the agent burns its budget working around it. Leaving
+/// <c>Bash</c> out of the tracked tool set is what let a real run refuse 86 git calls and report ZERO
+/// permission walls, so it is included here and the refused COMMAND is the attribution key. The list is
+/// still surfaced as <c>BlockedWritePaths</c>: to the runner-agnostic tracker a path and a refused
+/// command are both just opaque, stable wall keys.</para>
 /// </summary>
 internal static class ClaudePermissionScanner
 {
@@ -36,7 +45,13 @@ internal static class ClaudePermissionScanner
     private static readonly Regex DenialPhrase = new(
         @"requested permissions?\s+to\s+(write|edit|use)|haven't granted it yet|" +
         @"permission to use .* was denied|permission denied by the runtime|" +
-        @"not granted permission|operation not permitted: \.claude",
+        @"not granted permission|operation not permitted: \.claude|" +
+        // The Bash/approval family: "This command requires approval" and "This <shell> command contains
+        // multiple operations. The following part requires approval: <command>". Deliberately anchored on
+        // the NOUN before "requires approval" rather than matching a bare "approval": tool output that
+        // merely mentions the word (a git-log hit over docs about the approval prompt) must not be
+        // manufactured into a wall.
+        @"(?:command|part|operation|call|tool)\s+requires\s+approval",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     /// <summary>
@@ -51,9 +66,23 @@ internal static class ClaudePermissionScanner
         @"(?:write|edit|create|access)\s+(?:to\s+)?(?<path>[^,\n]+?)(?:,\s*but\b|\s*$)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
-    /// <summary>Tools whose refusal is a WRITE wall (the ones #86 / #104 care about).</summary>
-    private static readonly HashSet<string> WriteFamilyTools =
-        new(StringComparer.OrdinalIgnoreCase) { "Write", "Edit", "MultiEdit", "NotebookEdit" };
+    /// <summary>
+    /// Extracts the refused COMMAND from the compound-Bash refusal, which names only the part it will
+    /// not run: <c>"This Bash command contains multiple operations. The following part requires
+    /// approval: git restore --staged src/Foo.cs"</c>. Preferred over the tracked <c>tool_use</c>
+    /// command because it is the precise thing that needs granting, not the whole chain around it.
+    /// Returns null for the bare <c>"This command requires approval"</c> (nothing named → fallback).
+    /// </summary>
+    private static readonly Regex RefusedCommandPart = new(
+        @"requires\s+approval:\s*(?<command>[^\r\n]+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Tools whose refusal registers a permission wall (the ones #86 / #104 care about) — the write
+    /// family PLUS <c>Bash</c>, whose refused commands were previously dropped on the floor.
+    /// </summary>
+    private static readonly HashSet<string> WallCapableTools =
+        new(StringComparer.OrdinalIgnoreCase) { "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash" };
 
     /// <summary>
     /// True when <paramref name="text"/> reads as a permission denial. Public so the harness-agnostic
@@ -65,15 +94,16 @@ internal static class ClaudePermissionScanner
     /// <summary>
     /// Stateful, streaming scan of a <c>stream-json</c> log. Feed each raw line as it arrives (the
     /// same lines teed to <c>claude-stream.jsonl</c>); call <see cref="BlockedWritePaths"/> at the
-    /// end. Tracks the most recent write-family <c>tool_use</c> path so a path-less denial is still
-    /// attributable. Not thread-safe (the runner's stdout callback is serialized).
+    /// end. Tracks the most recent wall-capable <c>tool_use</c>'s target (path, or Bash command) so a
+    /// denial that names nothing is still attributable. Not thread-safe (the runner's stdout callback
+    /// is serialized).
     /// </summary>
     public sealed class Scanner
     {
         // Ordinal-distinct, INSERTION-ORDERED so feedback lists the walls in the order they were hit.
         private readonly List<string> _blocked = new();
         private readonly HashSet<string> _seen = new(StringComparer.Ordinal);
-        private string? _lastWriteFamilyPath;
+        private string? _lastToolTarget;
 
         /// <summary>Feed one raw stream line (newline excluded). Non-JSON / irrelevant lines are skipped.</summary>
         public void Feed(string line)
@@ -115,7 +145,10 @@ internal static class ClaudePermissionScanner
             }
         }
 
-        /// <summary>The distinct write paths refused this scan, in first-seen order.</summary>
+        /// <summary>
+        /// The distinct refused targets this scan — write paths and refused Bash commands — in
+        /// first-seen order.
+        /// </summary>
         public IReadOnlyList<string> BlockedWritePaths => _blocked;
 
         private void TrackToolUse(JsonElement root)
@@ -125,7 +158,7 @@ internal static class ClaudePermissionScanner
                 if (!IsBlock(block, "tool_use") ||
                     !block.TryGetProperty("name", out JsonElement nameEl) ||
                     nameEl.ValueKind != JsonValueKind.String ||
-                    !WriteFamilyTools.Contains(nameEl.GetString() ?? string.Empty))
+                    !WallCapableTools.Contains(nameEl.GetString() ?? string.Empty))
                 {
                     continue;
                 }
@@ -133,10 +166,13 @@ internal static class ClaudePermissionScanner
                 if (block.TryGetProperty("input", out JsonElement input) &&
                     input.ValueKind == JsonValueKind.Object)
                 {
-                    string? path = StringProp(input, "file_path") ?? StringProp(input, "path") ?? StringProp(input, "notebook_path");
-                    if (!string.IsNullOrWhiteSpace(path))
+                    // The write family names a path; Bash names a command. Either is the key a
+                    // target-less denial gets attributed to.
+                    string? target = StringProp(input, "file_path") ?? StringProp(input, "path") ??
+                                     StringProp(input, "notebook_path") ?? StringProp(input, "command");
+                    if (!string.IsNullOrWhiteSpace(target))
                     {
-                        _lastWriteFamilyPath = path;
+                        _lastToolTarget = target;
                     }
                 }
             }
@@ -164,18 +200,35 @@ internal static class ClaudePermissionScanner
 
                 _ = isError; // is_error is advisory here; the phrase is the gate.
 
-                string? path = ExtractPath(text) ?? _lastWriteFamilyPath;
-                if (string.IsNullOrWhiteSpace(path))
+                // Prefer what the message NAMES (the refused path, or the refused part of a compound
+                // Bash command), and only then the tool_use it must have come from.
+                string? target = ExtractRefusedCommand(text) ?? ExtractPath(text) ?? _lastToolTarget;
+                if (string.IsNullOrWhiteSpace(target))
                 {
                     continue;
                 }
 
-                string normalized = path.Trim().Trim('"', '\'', '`');
+                string normalized = target.Trim().Trim('"', '\'', '`');
                 if (_seen.Add(normalized))
                 {
                     _blocked.Add(normalized);
                 }
             }
+        }
+
+        /// <summary>
+        /// The command named after <c>"…requires approval:"</c>, or null when the refusal names none.
+        /// </summary>
+        private static string? ExtractRefusedCommand(string text)
+        {
+            Match m = RefusedCommandPart.Match(text);
+            if (!m.Success)
+            {
+                return null;
+            }
+
+            string command = m.Groups["command"].Value.Trim();
+            return command.Length > 0 ? command : null;
         }
 
         private static string? ExtractPath(string text)
