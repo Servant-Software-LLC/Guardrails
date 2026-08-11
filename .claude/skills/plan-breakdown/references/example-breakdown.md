@@ -122,8 +122,11 @@ joined by `dependsOn` (`01-author-stats-tests` → `02-implement-stats-flag`), s
 `02-implement-stats-flag`'s action prompt may reasonably want to run `git diff` / `git log` to see
 exactly what `01-author-stats-tests` committed (the test file and its stub) before extending the stub
 into real logic — the textbook case the default now covers. Note what is deliberately absent:
-`restore`, `reset`, `checkout`, `push`, `commit`, `stash` — every state-mutating git operation stays
-outside `allowedTools`.
+`restore`, `reset`, `checkout`, `push`, `commit`, `stash` — the default GRANTS no state-mutating git
+operation. That is an authoring choice, not an enforcement mechanism: `allowedTools` is a floor that
+Claude Code MERGES with the operator's `~/.claude/settings.json`, so it can only GRANT — omitting
+`checkout` here does not stop a task running `git checkout` on a box whose settings already allow it.
+The read-only list is still the right thing to author: on a clean box or in CI it IS the whole grant.
 
 ### `preflights/01-baseline-inventory-tests-green.ps1` — **INSERTED** (brownfield positive-baseline preflight, #181)
 

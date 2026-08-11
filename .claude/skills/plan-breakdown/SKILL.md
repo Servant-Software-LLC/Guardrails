@@ -1155,11 +1155,18 @@ Per `references/schemas.md`, exactly:
   rejected `git log`/`git diff` attempts (in whatever compound-vs-bare form it tries
   next — the rejection is identical either way) and falls back to broad `Grep`/`Glob`
   sweeps across dozens of files to reconstruct context a single `git diff` would have
-  given directly. Keep every **state-mutating** git operation OUT of the allowed set —
-  `restore`, `reset`, `checkout` (outside the task's own files), `push`, `commit`,
-  `stash` stay ungranted; this is about read-only inspection, never loosened write
-  access. A single-task plan (nothing yet for a task to inspect) has no need for this —
-  omit it there, as the existing single-task templates correctly do.
+  given directly. Keep the default READ-ONLY: do NOT add **state-mutating** git
+  operations (`restore`, `reset`, `checkout` outside the task's own files, `push`,
+  `commit`, `stash`) — this is about read-only inspection, never loosened write access.
+  **But `allowedTools` is a FLOOR, not a ceiling.** Claude Code MERGES the harness's
+  `--allowedTools` with the operator's own `~/.claude/settings.json`, so a plan's list can
+  only GRANT a capability — it can never WITHHOLD one. Omitting `git checkout` does NOT
+  make `git checkout` unavailable: on a box whose settings file already allows it, a task
+  can and will run it. Author the read-only default anyway — on a clean box or in CI the
+  plan's list IS the whole grant — but never write a task, prompt or guardrail that RELIES
+  on a state-mutating verb being unavailable. A single-task plan (nothing yet for a task to
+  inspect) has no need for this — omit it there, as the existing single-task templates
+  correctly do.
 - `task.json` per task: `description` (one actionable line), `dependsOn`, a **`stableId`**
   (see below), and overrides only when justified. One `action.*` file per task folder.
 - **`stableId` — mint one per task by default.** It is an **internal regeneration-identity
