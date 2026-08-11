@@ -1,9 +1,7 @@
-using System.Text.Json;
 using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
-using Guardrails.Core.State;
 
 namespace Guardrails.Cli;
 
@@ -47,11 +45,18 @@ public static class PlanGuardrailPhase
     /// full test suite). The terminal phase runs OUTSIDE the Spectre live region (it is disposed before
     /// this is called), so plain heartbeat lines there are #145-safe. Null ⇒ no heartbeat.
     /// </para>
+    /// <para>
+    /// <paramref name="runId"/> is the run's journal id — the <c>logs/&lt;runId&gt;/</c> tree this gate's
+    /// per-check output is captured under (issue #432, SSOT §8). It is a REQUIRED argument (nullable, but
+    /// deliberately NOT defaulted) so a new caller cannot silently drop the capture; null means "no
+    /// journal to name" ⇒ capture nothing.
+    /// </para>
     /// </summary>
     public static async Task<bool> EvaluateAsync(
         PlanDefinition plan,
         ProcessRunner processRunner,
         TextWriter? heartbeatOut,
+        string? runId,
         CancellationToken cancellationToken,
         string? junctionRoot = null)
     {
@@ -70,12 +75,35 @@ public static class PlanGuardrailPhase
 
         using GuardrailHeartbeat? heartbeat = heartbeatOut is null ? null : GuardrailHeartbeat.StartConsole(heartbeatOut);
 
+        // Issue #432: capture each terminal check's stdout/stderr under logs/<runId>/guardrails/<name>/.
+        // The terminal gate is the LAST thing a run does; when it fails there is no retry, no attempt dir
+        // and no feedback.md — the captured output here is the whole post-mortem.
+        string? artifactDir = GateArtifacts.DirectoryFor(
+            plan.PlanDirectory, runId, waveDir: null, GateArtifacts.GuardrailsFolder);
+        string? relativeLogDir = GateArtifacts.RelativeDirectoryFor(
+            runId, waveDir: null, GateArtifacts.GuardrailsFolder);
+
         ReVerifyResult result = await reVerifier
-            .ReVerifyAsync(evalWorkspace, plan.PlanGuardrails, heartbeat, cancellationToken)
+            .ReVerifyAsync(
+                evalWorkspace,
+                plan.PlanGuardrails,
+                new ReVerifyOptions { Progress = heartbeat, ArtifactDirectory = artifactDir },
+                cancellationToken)
             .ConfigureAwait(false);
 
         List<FailedGuardrail> failedChecks = result.FailedGuardrails
             .Select(f => new FailedGuardrail { Name = f.Name, Reason = f.Reason ?? "failed" })
+            .ToList();
+
+        // Every check, passing ones included (issue #432) — `failedChecks` alone cannot distinguish
+        // "three checks ran and the third failed" from "one check ran".
+        List<PlanPreflightCheck> checks = plan.PlanGuardrails
+            .Select(g =>
+            {
+                GuardrailResult? failure = result.FailedGuardrails
+                    .FirstOrDefault(f => string.Equals(f.Name, g.Name, StringComparison.Ordinal));
+                return new PlanPreflightCheck { Name = g.Name, Passed = failure is null, Reason = failure?.Reason };
+            })
             .ToList();
 
         // #175 merge-collision attribution (SSOT §3.3, issue #205): a terminal-gate failure on the merged
@@ -93,26 +121,30 @@ public static class PlanGuardrailPhase
             Status = result.Passed ? PlanPhaseStatus.Passed : PlanPhaseStatus.PlanGuardrailFailed,
             PlanHash = currentHash,
             FailedChecks = failedChecks,
-            CollisionHint = collisionHint
+            CollisionHint = collisionHint,
+            EvaluatedAt = DateTimeOffset.UtcNow,
+            Checks = checks,
+            LogDir = relativeLogDir
         };
 
-        WriteMarker(plan.PlanDirectory, section);
+        // Issue #432: on FAILURE also record the uniform top-level `halt`, so post-mortem tooling has one
+        // place to read "why did this run stop?" regardless of WHICH of the four gate folders halted it.
+        RunHalt? halt = result.Passed
+            ? null
+            : new RunHalt
+            {
+                Kind = RunHaltKind.PlanGuardrailFailed,
+                HaltedAt = DateTimeOffset.UtcNow,
+                Headline = "Terminal gate FAILED on the merged HEAD: "
+                           + string.Join(", ", failedChecks.Select(f => f.Name)),
+                FailedChecks = failedChecks,
+                LogDir = relativeLogDir
+            };
+
+        PlanPhaseJournalWriter.Update(plan.PlanDirectory, document => halt is null
+            ? document with { PlanGuardrails = section }
+            : document with { PlanGuardrails = section, Halt = halt });
 
         return result.Passed;
-    }
-
-    /// <summary>
-    /// Persist the <c>planGuardrails</c> section straight to <c>state/run.json</c> (the
-    /// <see cref="JournalDocument.PlanGuardrails"/> shape) — same direct-write pattern as
-    /// <see cref="PlanPreflightPhase"/>'s marker: the journal type exposes no mutator for this OPTIONAL
-    /// top-level section, so this re-reads the current document and adds only the one field.
-    /// </summary>
-    private static void WriteMarker(string planDirectory, PlanGuardrailsSection section)
-    {
-        string path = RunJournal.PathFor(planDirectory);
-        JournalDocument document = JournalReader.Read(path);
-        JournalDocument updated = document with { PlanGuardrails = section };
-        string json = JsonSerializer.Serialize(updated, JournalJson.Options);
-        AtomicFile.WriteAllText(path, json);
     }
 }

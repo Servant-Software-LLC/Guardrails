@@ -48,6 +48,19 @@ public static class JournalJson
         _ => throw new JsonException($"Unhandled plan phase status '{status}'.")
     };
 
+    /// <summary>
+    /// The SSOT §7 token for a <see cref="RunHaltKind"/> (e.g. <c>wave-entry-gate-failed</c>) — the single
+    /// source of truth for the kebab spelling of the top-level <c>halt.kind</c> field (issue #432).
+    /// </summary>
+    public static string RunHaltToken(RunHaltKind kind) => kind switch
+    {
+        RunHaltKind.PlanPreflightFailed => "plan-preflight-failed",
+        RunHaltKind.WaveEntryGateFailed => "wave-entry-gate-failed",
+        RunHaltKind.WaveExitGateFailed => "wave-exit-gate-failed",
+        RunHaltKind.PlanGuardrailFailed => "plan-guardrail-failed",
+        _ => throw new JsonException($"Unhandled run halt kind '{kind}'.")
+    };
+
     private static JsonSerializerOptions Build()
     {
         var options = new JsonSerializerOptions
@@ -63,7 +76,28 @@ public static class JournalJson
         options.Converters.Add(new AttemptOutcomeConverter());
         options.Converters.Add(new PlanPhaseStatusConverter());
         options.Converters.Add(new WaveStatusConverter());
+        options.Converters.Add(new RunHaltKindConverter());
         return options;
+    }
+
+    /// <summary>Maps <see cref="RunHaltKind"/> to/from the SSOT §7 <c>halt.kind</c> strings (issue #432).</summary>
+    private sealed class RunHaltKindConverter : JsonConverter<RunHaltKind>
+    {
+        public override RunHaltKind Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            string? value = reader.GetString();
+            return value switch
+            {
+                "plan-preflight-failed" => RunHaltKind.PlanPreflightFailed,
+                "wave-entry-gate-failed" => RunHaltKind.WaveEntryGateFailed,
+                "wave-exit-gate-failed" => RunHaltKind.WaveExitGateFailed,
+                "plan-guardrail-failed" => RunHaltKind.PlanGuardrailFailed,
+                _ => throw new JsonException($"Unknown run halt kind '{value}'.")
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, RunHaltKind value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(RunHaltToken(value));
     }
 
     /// <summary>Maps <see cref="WaveStatus"/> to/from the SSOT §7/§14 wave status strings.</summary>

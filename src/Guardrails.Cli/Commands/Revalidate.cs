@@ -160,7 +160,12 @@ public static class Revalidate
         output.WriteLine(
             "Revalidating 'plan:guardrails' — running the terminal <plan>/guardrails/ checks against the current merged HEAD (no agent attempt).\n");
 
-        bool passed = await PlanGuardrailPhase.EvaluateAsync(plan, new ProcessRunner(), output, cancellationToken).ConfigureAwait(false);
+        // Issue #432: capture this gate's per-check output under the EXISTING run's logs/<runId>/ tree —
+        // read non-normalizing (like ReadDurableStatuses) so a revalidate never mutates resume state just
+        // to learn the run id. No journal on disk ⇒ null ⇒ no capture (unchanged behaviour).
+        bool passed = await PlanGuardrailPhase
+            .EvaluateAsync(plan, new ProcessRunner(), output, ReadRunId(plan.PlanDirectory), cancellationToken)
+            .ConfigureAwait(false);
 
         if (passed)
         {
@@ -219,5 +224,17 @@ public static class Revalidate
 
         JournalDocument document = JournalReader.Read(journalPath);
         return document.Tasks.ToDictionary(p => p.Key, p => p.Value.Status, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// The existing run's id read straight off <c>run.json</c> — the <c>logs/&lt;runId&gt;/</c> tree a
+    /// revalidated gate captures its per-check output under (issue #432). Read the same non-normalizing
+    /// way as <see cref="ReadDurableStatuses"/>: <see cref="RunJournal.LoadOrCreate"/> would rewrite
+    /// resume state as a side effect of merely learning the id. Null when no journal exists yet.
+    /// </summary>
+    private static string? ReadRunId(string planDirectory)
+    {
+        string journalPath = RunJournal.PathFor(planDirectory);
+        return File.Exists(journalPath) ? JournalReader.Read(journalPath).RunId : null;
     }
 }
