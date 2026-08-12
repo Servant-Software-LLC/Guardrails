@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=07beb175802b7fcaaa12f0317a2de8d4749e87988ede1230f845301fab8a15cd -->
+<!-- guardrails:graph v1 source-sha256=82c7e32f5634688958b42ff55eef2568c7031ece03d6b6271f6a6cd4f526215e -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -92,53 +92,56 @@
 
 <script type="text/plain" id="graph-source">flowchart TD
   subgraph plan_preflights["Full Flight Checks"]
-    plan_preflights_0["01-wave2-scanner-materialized"]:::preflight
+    plan_preflights_0["01-wave3-injection-materialized"]:::preflight
   end
   style plan_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  subgraph task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection["wave-03-provision-what-we-prescribe/01-author-tests-grant-injection"]
-    task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection_gr_0["01-tests-build"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection_gr_1["02-tests-fail-on-stubs"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection_gr_2["03-no-write-verb-asserted"]:::guardrail
+  subgraph task_wave_04_fix_the_advice_01_author_tests_salvage_advice["wave-04-fix-the-advice/01-author-tests-salvage-advice"]
+    task_wave_04_fix_the_advice_01_author_tests_salvage_advice_gr_0["01-tests-build"]:::guardrail
+    task_wave_04_fix_the_advice_01_author_tests_salvage_advice_gr_1["02-tests-fail-on-current-code"]:::guardrail
   end
-  style task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_provision_what_we_prescribe_02_implement_grant_injection["wave-03-provision-what-we-prescribe/02-implement-grant-injection"]
-    task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_0["01-injection-tests-pass"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_1["02-no-write-verb-injected"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_2["03-golden-args-tests-pass"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_3["04-golden-coverage-preserved"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_4["05-ssot-contract-line-landed"]:::guardrail
+  style task_wave_04_fix_the_advice_01_author_tests_salvage_advice fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_04_fix_the_advice_02_implement_salvage_advice["wave-04-fix-the-advice/02-implement-salvage-advice"]
+    task_wave_04_fix_the_advice_02_implement_salvage_advice_gr_0["01-advice-tests-pass"]:::guardrail
+    task_wave_04_fix_the_advice_02_implement_salvage_advice_gr_1["02-no-ungranted-command-emitted"]:::guardrail
   end
-  style task_wave_03_provision_what_we_prescribe_02_implement_grant_injection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance["wave-03-provision-what-we-prescribe/03-record-injected-grants-in-provenance"]
-    task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_0["01-provenance-records-injection"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_1["02-core-builds"]:::guardrail
-    task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_2["03-log-header-echoes-injected-grants"]:::guardrail
+  style task_wave_04_fix_the_advice_02_implement_salvage_advice fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory["wave-04-fix-the-advice/03-reconcile-promptcomposer-advisory"]
+    task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory_gr_0["01-advisory-has-no-unusable-recipe"]:::guardrail
+    task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory_gr_1["02-composer-tests-pass"]:::guardrail
   end
-  style task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  style task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_04_fix_the_advice_04_reconcile_containment_hook_message["wave-04-fix-the-advice/04-reconcile-containment-hook-message"]
+    task_wave_04_fix_the_advice_04_reconcile_containment_hook_message_gr_0["01-hook-message-reconciled"]:::guardrail
+    task_wave_04_fix_the_advice_04_reconcile_containment_hook_message_gr_1["02-hook-logic-unchanged"]:::guardrail
+  end
+  style task_wave_04_fix_the_advice_04_reconcile_containment_hook_message fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
-    plan_guardrails_0["01-injection-tests-pass"]:::guardrail
+    plan_guardrails_0["01-solution-builds"]:::guardrail
+    plan_guardrails_1["02-all-tests-pass"]:::guardrail
+    plan_guardrails_2["03-union-conflict-marker-free"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
-  plan_preflights --> task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection
-  task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection --> task_wave_03_provision_what_we_prescribe_02_implement_grant_injection
-  task_wave_03_provision_what_we_prescribe_02_implement_grant_injection --> task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance
-  task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance --> plan_guardrails
+  plan_preflights --> task_wave_04_fix_the_advice_01_author_tests_salvage_advice
+  task_wave_04_fix_the_advice_01_author_tests_salvage_advice --> task_wave_04_fix_the_advice_02_implement_salvage_advice
+  task_wave_04_fix_the_advice_02_implement_salvage_advice --> task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory
+  task_wave_04_fix_the_advice_02_implement_salvage_advice --> task_wave_04_fix_the_advice_04_reconcile_containment_hook_message
+  task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory --> plan_guardrails
+  task_wave_04_fix_the_advice_04_reconcile_containment_hook_message --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
-  click plan_preflights_0 href "preflights/01-wave2-scanner-materialized.ps1" "01-wave2-scanner-materialized" _blank
-  click task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection_gr_0 href "tasks/01-author-tests-grant-injection/guardrails/01-tests-build.ps1" "01-tests-build" _blank
-  click task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection_gr_1 href "tasks/01-author-tests-grant-injection/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
-  click task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection_gr_2 href "tasks/01-author-tests-grant-injection/guardrails/03-no-write-verb-asserted.ps1" "03-no-write-verb-asserted" _blank
-  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_0 href "tasks/02-implement-grant-injection/guardrails/01-injection-tests-pass.ps1" "01-injection-tests-pass" _blank
-  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_1 href "tasks/02-implement-grant-injection/guardrails/02-no-write-verb-injected.ps1" "02-no-write-verb-injected" _blank
-  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_2 href "tasks/02-implement-grant-injection/guardrails/03-golden-args-tests-pass.ps1" "03-golden-args-tests-pass" _blank
-  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_3 href "tasks/02-implement-grant-injection/guardrails/04-golden-coverage-preserved.ps1" "04-golden-coverage-preserved" _blank
-  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_4 href "tasks/02-implement-grant-injection/guardrails/05-ssot-contract-line-landed.ps1" "05-ssot-contract-line-landed" _blank
-  click task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_0 href "tasks/03-record-injected-grants-in-provenance/guardrails/01-provenance-records-injection.ps1" "01-provenance-records-injection" _blank
-  click task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_1 href "tasks/03-record-injected-grants-in-provenance/guardrails/02-core-builds.ps1" "02-core-builds" _blank
-  click task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_2 href "tasks/03-record-injected-grants-in-provenance/guardrails/03-log-header-echoes-injected-grants.ps1" "03-log-header-echoes-injected-grants" _blank
-  click plan_guardrails_0 href "guardrails/01-injection-tests-pass.ps1" "01-injection-tests-pass" _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection":"tasks/01-author-tests-grant-injection/","task_wave_03_provision_what_we_prescribe_02_implement_grant_injection":"tasks/02-implement-grant-injection/","task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance":"tasks/03-record-injected-grants-in-provenance/"}</script>
+  click plan_preflights_0 href "preflights/01-wave3-injection-materialized.ps1" "01-wave3-injection-materialized" _blank
+  click task_wave_04_fix_the_advice_01_author_tests_salvage_advice_gr_0 href "tasks/01-author-tests-salvage-advice/guardrails/01-tests-build.ps1" "01-tests-build" _blank
+  click task_wave_04_fix_the_advice_01_author_tests_salvage_advice_gr_1 href "tasks/01-author-tests-salvage-advice/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
+  click task_wave_04_fix_the_advice_02_implement_salvage_advice_gr_0 href "tasks/02-implement-salvage-advice/guardrails/01-advice-tests-pass.ps1" "01-advice-tests-pass" _blank
+  click task_wave_04_fix_the_advice_02_implement_salvage_advice_gr_1 href "tasks/02-implement-salvage-advice/guardrails/02-no-ungranted-command-emitted.ps1" "02-no-ungranted-command-emitted" _blank
+  click task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory_gr_0 href "tasks/03-reconcile-promptcomposer-advisory/guardrails/01-advisory-has-no-unusable-recipe.ps1" "01-advisory-has-no-unusable-recipe" _blank
+  click task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory_gr_1 href "tasks/03-reconcile-promptcomposer-advisory/guardrails/02-composer-tests-pass.ps1" "02-composer-tests-pass" _blank
+  click task_wave_04_fix_the_advice_04_reconcile_containment_hook_message_gr_0 href "tasks/04-reconcile-containment-hook-message/guardrails/01-hook-message-reconciled.ps1" "01-hook-message-reconciled" _blank
+  click task_wave_04_fix_the_advice_04_reconcile_containment_hook_message_gr_1 href "tasks/04-reconcile-containment-hook-message/guardrails/02-hook-logic-unchanged.ps1" "02-hook-logic-unchanged" _blank
+  click plan_guardrails_0 href "guardrails/01-solution-builds.ps1" "01-solution-builds" _blank
+  click plan_guardrails_1 href "guardrails/02-all-tests-pass.ps1" "02-all-tests-pass" _blank
+  click plan_guardrails_2 href "guardrails/03-union-conflict-marker-free.ps1" "03-union-conflict-marker-free" _blank</script>
+<script type="application/json" id="task-folder-targets">{"task_wave_04_fix_the_advice_01_author_tests_salvage_advice":"tasks/01-author-tests-salvage-advice/","task_wave_04_fix_the_advice_02_implement_salvage_advice":"tasks/02-implement-salvage-advice/","task_wave_04_fix_the_advice_03_reconcile_promptcomposer_advisory":"tasks/03-reconcile-promptcomposer-advisory/","task_wave_04_fix_the_advice_04_reconcile_containment_hook_message":"tasks/04-reconcile-containment-hook-message/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
