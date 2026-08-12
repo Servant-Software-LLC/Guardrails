@@ -9,8 +9,9 @@
 > `specialization` on each registry block (DoR §4.1); the **`guardrails providers init`**
 > registry generator (DoR §4.3); and `tiering.verifier.defaultTier` (DoR §6.5). It also
 > **retires `routing.rank`** in favour of ascending-`strength` ordering (DoR §4.2) and
-> **reallocates the GR block to GR2043–GR2052** — the original GR2037–GR2042 reservation was
-> taken by shipped work while this design sat in draft (DoR §13).
+> **reallocates the GR block to GR2043–GR2053** (v1 takes GR2043–GR2052; GR2053 is v2) — the
+> original GR2037–GR2045 reservation was taken by shipped work while this design sat in draft
+> (DoR §13). **Re-verify before landing; the file is the registry, the design is not.**
 
 Part of the model-tiering epic (#201). This is stage 1 of 3 sequential plans (foundation →
 consumers → dynamic behavior); stages 2 and 3 depend on this one landing first. Covers issues

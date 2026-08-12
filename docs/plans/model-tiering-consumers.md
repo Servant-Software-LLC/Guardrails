@@ -11,8 +11,8 @@
 > **costly floor** inside a single shared candidacy predicate (DoR §6.2 — the harness may never
 > auto-select a `costly: true` block, and validation + runtime must agree on that), and the
 > **verifier route** (DoR §6.5 — a judge guardrail resolves ≥ its actor, with a *strength* bump
-> when the actor is weak, surfaced as an **advisory** at a startup preflight and via #229, never
-> blocking). Candidate ordering is **ascending `strength`**, not `routing.rank`.
+> when the actor is weak, surfaced as an **advisory** at BOTH boundaries — a startup preflight AND
+> a per-attempt JIT re-check — and via #229, never blocking). Candidate ordering is **ascending `strength`**, not `routing.rank`.
 
 Part of the model-tiering epic (#201). This is stage 2 of 3 — **depends on stage 1
 (`model-tiering-foundation.md`, issues #224+#225) having landed**: every task here reads either
@@ -62,8 +62,14 @@ Per-attempt model logging already exists (#198, shipped) — #230's cost account
    meeting the required strength. The bump obeys the costly floor: **if the only stronger block is
    `costly`, the judge stays put and an advisory fires** — it degrades, it never overspends. Apply
    the **judge block's** `guardrailOverrides`, not the actor block's. Record the judge route in the
-   attempt's `judge {...}` provenance. Add a **startup preflight** advisory line; the per-attempt
-   re-check has nothing extra to see until the v2 ladder exists.
+   attempt's `judge {...}` provenance. Surface at **BOTH boundaries (charter Decision 9, both v1)**:
+   a **startup preflight** advisory line over the statically-predicted pairs, **and a per-attempt
+   JIT re-check** of the pair the resolver actually returned. The JIT half is not redundant in
+   static v1 — the preflight is a *model* of the resolver while the JIT check *is* the resolver
+   (the #382 lesson), and it is the only boundary that sees a config edit on resume, an
+   overwatcher-applied action change, or a hand-edit between waves. **De-dup:** record
+   `judge.advisory` in provenance every attempt, but log a line only when the observed pair differs
+   from the preflight's prediction (DoR §6.5).
 
 ### #227 — Budget/limit probes per provider
 1. For each registered provider (#224), add a way to query its CURRENT usage/limit state where its

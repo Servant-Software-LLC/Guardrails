@@ -8,17 +8,27 @@
 >    half of #201 — settled 10 numbered Decisions with the maintainer AFTER this DoR was drafted.
 >    **Three of them change the registry shape this DoR owns** (three independent model axes; a
 >    GENERATED registry; the harness may never auto-select a `costly` model), so they are reconciled
->    here, not bolted on later: §4.1 (axes), §4.5 (generation), §6.2 (the costly floor), §6.5 (the
+>    here, not bolted on later: §4.1 (axes), §4.3 (generation), §6.2 (the costly floor), §6.5 (the
 >    verifier route). The charter remains the rationale/review record; **this DoR owns the
 >    contracts.**
 > 2. **master moved a month.** Revision 2's assumptions are stale in three places, all corrected
->    here: the reserved diagnostic-code block **GR2043–GR2052 is entirely taken** by shipped work
->    (#346, #383, #361, #389, #378 — §13 reallocates and explains how the reservation rotted); this
+>    here: its reserved diagnostic-code block **GR2037–GR2045 has been entirely taken** by shipped
+>    work (#346, #383, #361, #389, #378 — §13 reallocates to **GR2043–GR2053** and explains how the
+>    reservation rotted); this
 >    document's number **13 collides** with `13-merge-on-success-default.md` (renumbered **17**); and
 >    **#349 is still open**, so §9.3's "additive over #349's base" needed a fallback (§9.3).
 >
 > The revision-2 skeleton — static v1, the three dynamic subsystems deferred to named v2 bets — is
 > **unchanged and reaffirmed**. Nothing below re-opens it.
+>
+> **Maintainer rulings folded in (2026-08-12), after revision 3's first draft:** (a) charter
+> **Decision 9 stands as BOTH and both halves are v1** — the proposed deferral of the per-attempt
+> JIT re-check is **overruled**; §6.5 now states what the second boundary buys before graduation
+> exists, plus a de-duplication rule. (b) The **verifier-only provider-kind fallback** (D21a) is
+> **ratified**. (c) **OD-G is answered — `costly` means "never automatic, full stop"**; the
+> unservable-tier consequence is intended and is a validate-time **error**, shown with its exact
+> message in §14.1. Three questions remain open and are carried as answerable `:::question` blocks
+> in the charter (§11).
 
 > **Status: DRAFT (revised ×2) — for #106 inline draft-PR review.** This document is the
 > contract-locked, build-ready design of record for the model-tiering epic (#201) and its
@@ -79,7 +89,7 @@ and the answer to review comment 1, "I assume you mean routing during /plan-brea
 | **difficulty tag** (`easy \| medium \| hard`) | `/plan-breakdown` (#225) or a human hand-edit | **breakdown time** (static) | **v1** |
 | **route** = concrete (provider, model, effort) for a tagged task | the harness, deterministically (#226) | **attempt-launch time** | **v1** (static resolver) |
 | **explicit pin** (`action.model` / `action.runner` / `action.effort`) | task author | **authoring time** | **v1** (shipped escape hatch) |
-| **model axes** (`costly` / `strength` / `specialization` per registry block) | the human, annotating a **generated** registry (§4.5) | **registration time** (out of band, before any run) | **v1** |
+| **model axes** (`costly` / `strength` / `specialization` per registry block) | the human, annotating a **generated** registry (§4.3) | **registration time** (out of band, before any run) | **v1** |
 | **verifier route** = the (provider, model, effort) that *judges* the work | the harness, deterministically, from the actor's route (§6.5) | **attempt-launch time**, alongside the actor | **v1** (static) |
 | **steering** (`--prefer`, mid-run threshold answers) | operator | **mid-run** | **v2 — deferred (#231)** |
 
@@ -161,7 +171,7 @@ Settled, and **in v1**:
   block. Not for its own rung, not for a stronger-rung climb, not (in v2) for a ladder escalation,
   not for a judge bump. Only an explicit task pin — or the `default` pointer, which is itself a
   user assignment (warned, §6.2) — reaches one.
-- **The registry is generated, then annotated** (D23, §4.5 — charter D8): `guardrails providers
+- **The registry is generated, then annotated** (D23, §4.3 — charter D8): `guardrails providers
   init` enumerates what it can and writes the blocks into `guardrails.json` **with the legal axis
   values as `//` comments**, idempotently and without ever overwriting a human annotation.
 - **The verifier route is v1 and static** (D24, §6.5 — charter D1/D2/D4/D5/D7/D9/D10): a judge
@@ -282,16 +292,20 @@ directions, on purpose:**
   provider-kind fallback — which *over*-warns at worst, and an extra advisory costs nothing (the
   rule is advisory by charter Decision 1).
 
-**The provider-kind fallback needs one correction the charter could not have seen (D21a).** The
-charter says *"local-inference ⇒ weak, cloud frontier ⇒ not weak"*, keyed on provider kind. But
-this DoR's `kind` enum does **not** cleanly separate local from cloud: **`openai-compat` covers
+**The provider-kind fallback is VERIFIER-ONLY (D21a — SETTLED, maintainer-ratified 2026-08-12).**
+Charter Decision 7 words the fallback as *"local-inference ⇒ weak, cloud frontier ⇒ not weak"*,
+keyed on provider kind. That cannot key on this DoR's `kind` enum, because **`openai-compat` covers
 both** a loopback Ollama endpoint *and* any cloud OpenAI-compatible API — that is precisely why it
-is one kind (§4). So the fallback as literally written is not implementable. **Ruling:** the
-kind fallback is used **only** on the verifier side, where its failure mode is a spurious advisory,
-and it reads `kind != "claude"` ⇒ *treat as weak-unless-declared*. It is **never** used for actor
-ordering, where mis-classifying a cloud endpoint as weak would misroute real spend. Anyone who
-finds the fallback's guess wrong fixes it by declaring `strength` — which is the entire point of
-the axis existing.
+is one kind (§4). **The ruling, approved:**
+
+> The provider-kind fallback is used **only** on the verifier side (§6.5), where it reads
+> `kind != "claude"` ⇒ *weak-unless-declared*. It is **never** used for actor ordering.
+
+The asymmetry is what makes the fallback safe rather than merely convenient: on the verifier side a
+wrong guess costs **one spare advisory** on a rule that is advisory anyway; on the actor side the
+same wrong guess would **misroute real spend**. So the guess is allowed exactly where being wrong
+is cheap, and forbidden exactly where it is not. A user who dislikes the guess overrides it by
+declaring `strength` — which is the entire point of the axis existing.
 
 **The axes are per-BLOCK, therefore per-EFFORT — and that is a feature.** Because a block IS a
 (kind, model, effort) route (§4), "the same model at `low` and at `xhigh`" is two blocks and can
@@ -395,10 +409,16 @@ Two rules make the reservation airtight, and they now cover **both** forms:
 never apply, because the candidacy predicate excludes costly blocks first (§6.2). It is a warning
 rather than an error so the two mechanisms compose instead of fighting: if excluding that block
 leaves a *used* tier unserved, **GR2046** (unservable tier) fires as an error and names the cliff
-precisely. *(Foreseeable consequence, stated so nobody is surprised: marking your only `hard`-capable
-block costly makes `hard` unservable — GR2046, at validate time, before a token is spent. That is
-the honest outcome, not a bug: the config now says "hard tasks must be pinned by a human." §11
-OD-G asks whether that cliff is intended for the common case.)*
+precisely.
+
+**The cliff is INTENDED — settled 2026-08-12 (was OD-G).** Marking your only `hard`-capable block
+`costly` makes `hard` unservable, and that is a **validate-time ERROR (GR2046)**, not a warning to
+route around. The maintainer's words are taken literally: *"They should never be chosen by the
+harness, only the user can specify to use them for a task."* There is no "expensive but still
+routable" middle setting, no dial, and no split into `costly`-for-accounting plus
+`reserved`-for-the-floor. The consequence is a feature: the config now states, checkably, **"hard
+tasks must be pinned by a human"**, and it says so *before a token is spent* rather than by
+surprising you with a bill. See §14 for the exact error a user meets.
 
 **Deferred to v2 (with the ladder):** the DA pass proposed a `routing.escalationTarget: false`
 field to express *"may serve a tier on first attempt but never RECEIVE a ladder escalation."*
@@ -740,20 +760,47 @@ deterministic-first; it hardens the one place a model's opinion is load-bearing.
    verdict profile (permissions/tools/turns). Applying the *actor's* block's overrides to a judge
    running on a different block would silently mis-profile every bumped judge.
 
-**Surfacing is ADVISORY, at both boundaries (charter Decisions 1, 9, 10).**
+**Surfacing is ADVISORY, at BOTH boundaries, and BOTH are v1 (charter Decisions 1, 9, 10 —
+ratified 2026-08-12).**
 
-- A judge weaker than its actor, or **equal-and-weak**, is surfaced as a **#229 review finding** and
-  as a **startup preflight warning line**. Never a hard error, never a load-time refusal, never a
-  halt — in attended *or* unattended mode (charter Decision 10). The harness does not block on a
-  model-quality opinion.
-- **Why the JIT half of charter Decision 9 is not v1, without over-ruling it.** Decision 9 requires
-  *both* a startup preflight and a per-attempt re-check, and its stated justification for the JIT
-  half is that *"a tier reached by graduating mid-run is invisible to any preflight."* **In static
-  v1 nothing graduates** — the resolver is a pure function of (tag + registry) and yields the same
-  route on every attempt (§6). So in v1 the JIT re-check can see nothing the preflight did not, and
-  the two collapse into one. **Decision 9 is honored, not overridden: the JIT re-check re-appears
-  the moment the v2 ladder gives it something to see**, and the resolver seam is already at
-  attempt-launch so no relocation is needed.
+A judge weaker than its actor, or **equal-and-weak**, is surfaced as a **#229 review finding**, as a
+**startup preflight warning line**, and as a **per-attempt JIT re-check**. Never a hard error, never
+a load-time refusal, never a halt — in attended *or* unattended mode (charter Decision 10). The
+harness does not block on a model-quality opinion.
+
+**What the JIT re-check does in static v1, stated plainly.** An earlier draft of this DoR proposed
+deferring the JIT half on the grounds that its stated justification — *"a tier reached by graduating
+mid-run is invisible to any preflight"* — has no referent until the v2 ladder exists. **That
+deferral was overruled: Decision 9's "both" is v1.** The honest account of what the second boundary
+buys in a static v1, so nobody has to guess:
+
+1. **The preflight is a MODEL of the resolver; the JIT check IS the resolver.** The preflight
+   *predicts* each task's (actor, judge) pair from the plan and registry; the JIT check reports the
+   pair the resolver **actually returned** at attempt launch. In a correct implementation they
+   agree, and **that agreement is the point** — the two are a mirror-check, and any disagreement is
+   by definition a resolver bug that no amount of preflight sophistication could catch. This repo
+   has already paid for the general version of this lesson (#382: a static check that mirrors the
+   real path certifies green while the real path is broken). A preflight that is the *only* check
+   is a fake mask over the composition root.
+2. **It is the only boundary that sees a mid-run mutation.** A resumed run whose `guardrails.json`
+   was edited between sessions, an overwatcher-applied action change (#269), a human hand-edit
+   between waves (#254) — none of these existed when the preflight ran. In static v1 the resolver
+   is a pure function of *(tag + registry)*, but neither input is frozen for the life of a run.
+3. **It costs almost nothing, because §9.3 already requires the work.** The `judge {...}` provenance
+   object is written per attempt regardless — which means the judge route is *already* resolved at
+   every attempt launch. The JIT re-check is one comparison over values the harness has already
+   computed, not a second resolution pass.
+4. **v2 then adds a trigger, not a subsystem.** When the ladder lands and the actor can graduate
+   mid-run, the JIT check needs no new machinery — it starts seeing a moving actor and re-resolving
+   the judge against it (charter Decision 6).
+
+**De-duplication ruling (the one consequence this creates).** With three surfaces reporting one
+condition, a single weak judge could produce a #229 finding, a preflight line, and one advisory per
+attempt — noise that trains people to ignore it. So: the **preflight** emits one pre-run summary
+line per affected task; the **JIT re-check** records `judge.advisory` in that attempt's provenance
+**always**, but emits a **log line only when the observed pair differs from what the preflight
+predicted** (case 1 or 2 above) — the interesting case, and the only one the preflight did not
+already say. The run summary aggregates from provenance, so nothing is lost by the quieter log.
 
 **Config surface (charter Decision 4 — both granularities).** Per-judge override = the frontmatter
 `tier` (already in §5). Per-plan default = **`tiering.verifier.defaultTier`** (optional; overrides
@@ -768,8 +815,9 @@ invariant 7 for why that is load-bearing rather than tidy.
 #230-lite's per-tier spend line shows **what verification actually cost** — which is the number
 that will decide whether a bumped judge is worth it.
 
-**Deferred to v2 with the ladder (charter Decision 6):** re-resolving the judge upward when the
-actor graduates, the verifier floor, and the JIT re-check's escalation-aware half (§7).
+**Deferred to v2 with the ladder (charter Decision 6):** re-resolving the judge **upward when the
+actor graduates**, and the verifier floor (§7). *The JIT re-check itself is v1 — v2 gives it a
+moving actor to observe, not a new mechanism.*
 
 ## 7. The escalation ladder (#228)  [v2 — deferred]
 
@@ -989,7 +1037,7 @@ Tier fields ride inside `task.json`/frontmatter, so waved plans get tiering for 
 | Stage | Contents | Depends on |
 |---|---|---|
 | **Stage 1** (`model-tiering-foundation.md`) | #224 registry (`kind`/`effort`/`routing` + **the three model axes `costly`/`strength`/`specialization`, §4.1** + GR2053–GR2052 validation + sentinel update; non-routable-default warning §4.2) ∥ **`guardrails providers init` registry generation (§4.3)** ∥ #225 **gated** tagging (`action.tier`, frontmatter `tier`, `tiering.defaultTier`, `tiering.verifier.defaultTier`, skill doctrine — writes nothing when tiering unconfigured, §5) | this DoR reviewed |
-| **Stage 2** (`model-tiering-consumers.md`, static subset) | #226-**static** resolver (§6.1 precedence incl. `action.runner`/`action.effort`, §6.2 candidate selection **+ the costly floor**, §6.3 unavailability→#115, **§6.5 the verifier route + startup preflight**, `no-route`, provenance fields §9.3 **incl. `judge`**) ∥ #229 review check **+ the judge-weaker-than-actor / equal-and-weak findings** ∥ #230-**lite** per-tier spend line | Stage 1 |
+| **Stage 2** (`model-tiering-consumers.md`, static subset) | #226-**static** resolver (§6.1 precedence incl. `action.runner`/`action.effort`, §6.2 candidate selection **+ the costly floor**, §6.3 unavailability→#115, **§6.5 the verifier route + BOTH boundaries — startup preflight AND per-attempt JIT re-check**, `no-route`, provenance fields §9.3 **incl. `judge`**) ∥ #229 review check **+ the judge-weaker-than-actor / equal-and-weak findings** ∥ #230-**lite** per-tier spend line | Stage 1 |
 | **#223** (standalone) | `openai-compat` runner class filling the §4.4 seam | Stage 1 (the `kind` seam) + real local endpoint available |
 
 **v2 — named bets (deferred; revisited with #230-lite measurement in hand):**
@@ -1020,37 +1068,46 @@ confirm.
 - **#229 placement (§10).** Confirm #229 (review appropriateness check) stays in v1 (this
   revision keeps it as the tag-quality net); it was not in the explicit KEEP list.
 
-**New in revision 3 — the charter reconciliation raises four, and closes one:**
+**SETTLED on 2026-08-12 — recorded here so they are not re-opened:**
 
-- **CLOSED, needing only confirmation — the charter's disposition-2 consequence (§6.5 step 5).**
-  The charter flagged, and did not assume away, that when "judge ≥ actor" cannot be met without a
-  costly model the rule *degrades to an advisory rather than overspending*. **This DoR confirms
-  that reading and adds its actor-side counterpart: the actor route does the opposite — it halts**
-  (§6.2, invariant 5). Degrade what is advisory; halt what is load-bearing. If you intended
-  graduation to be allowed to drag the judge up into a costly model, this is the line to overrule.
-- **OD-E — `providers init` enumeration degrades for Claude (§4.3 ruling 2).** The charter's
-  Decision 8 assumes Guardrails can enumerate a provider's models. For `openai-compat` that is
-  `GET /v1/models`; **for the Claude CLI there may be no stable list surface** — the same
-  feasibility risk as OD-C, which the charter did not price. The design degrades honestly (emit
-  the existing blocks, annotated, plus an explicit "could not enumerate" note; never fabricate a
-  model list). **Sign-off asked: is annotate-only acceptable for the flagship provider?** If not,
-  Decision 8 needs a different mechanism (a curated shipped model list would go stale and is
-  therefore not proposed).
+- **The charter's disposition-2 consequence (§6.5 step 5) — CONFIRMED.** When "judge ≥ actor"
+  cannot be met without a costly model the verifier rule *degrades to an advisory rather than
+  overspending*; **the actor route does the opposite — it halts** (§6.2, invariant 5). Degrade what
+  is advisory; halt what is load-bearing.
+- **Charter Decision 9 ("both boundaries") is v1 in full — the JIT re-check is NOT deferred.** An
+  earlier draft proposed deferring the per-attempt half because static v1 has nothing that
+  graduates; **overruled.** §6.5 states plainly what the second boundary buys without graduation
+  (the preflight models the resolver, the JIT check *is* the resolver; it is the only boundary that
+  sees a resume-time config edit or an overwatcher change; §9.3 already pays for the data) and
+  carries the de-duplication rule that keeps three surfaces from shouting one finding.
+- **The provider-kind fallback is verifier-only (D21a) — RATIFIED.** §4.1.
+- **OD-G — how sharp the `costly` cliff is — ANSWERED: never automatic, full stop.** A `costly:
+  true` block is never auto-selected at any rung, by the resolver, the judge bump, or the v2 ladder.
+  A config whose only `hard`-capable block is `costly` therefore makes `hard` unservable, and that
+  is a **validate-time ERROR (GR2046)** — not a warning to route around, and not a case for a
+  softer "expensive but routable" setting. The axis is **not** split into `costly`-for-accounting
+  plus `reserved`-for-the-floor. §4.2, §6.2, §14 (the exact error text).
+
+**Still open — three, now carried as answerable `:::question` blocks in
+[`model-tiering-verifier.charter.md`](model-tiering-verifier.charter.md) under *Open decisions (for
+your review)*.** That file is what gets answered in the Charter review pane; §11 below is the
+canonical statement of each, and **if the two ever disagree, the charter's wording is what the
+answer binds to.**
+- **OD-E — `providers init` enumeration degrades for Claude (§4.3 ruling 2).** *Charter block id:
+  `providers-init-claude`.* The charter's Decision 8 assumes Guardrails can enumerate a provider's
+  models. For `openai-compat` that is `GET /v1/models`; **for the Claude CLI there may be no stable
+  list surface** — the same feasibility risk as OD-C, which the charter did not price. The design
+  degrades honestly (emit the existing blocks, annotated, plus an explicit "could not enumerate"
+  note; never fabricate a model list). **Sign-off asked: is annotate-only acceptable for the
+  flagship provider?** If not, Decision 8 needs a different mechanism (a curated shipped model list
+  would go stale and is therefore not proposed).
 - **OD-F — retiring `routing.rank` in favour of ascending-`strength` ordering (D25, §4.2).**
-  **This is the architect's call, not yours** — flagged because two ordering axes with opposite
-  polarity is a defect generator, and `strength` is now mandated by charter Decision 7 while `rank`
-  is not. Zero-annotation behavior is unchanged either way. *Overrule in one line: "keep `rank` as
-  an explicit override that wins when present."*
-- **OD-G — how sharp is the `costly` cliff meant to be (§4.2, §6.2)?** `costly: true` removes a
-  block from candidacy at **every** rung, so marking your only `hard`-capable block costly makes
-  `hard` unservable (GR2046, at validate time). That is correct and honest for **Fable**. It may be
-  surprising for **Opus**, which many configs will want as the automatic `hard` route *and* would
-  describe as expensive. **Sign-off asked:** is `costly` intended as "never automatic, full stop"
-  (this design), or as "expensive — warn loudly but still route"? If the latter, the axis splits in
-  two (`costly` for accounting, a separate `reserved` for the floor) and the floor moves to
-  `reserved`. **The design as written takes your words literally** — *"They should never be chosen
-  by the harness, only the user can specify to use them for a task."*
-- **OD-H — is `tiering.verifier.defaultTier` wanted in v1 at all (§6.5)?** Charter Decision 4 asked
+  *Charter block id: `retire-rank`.* **This is the architect's call** — flagged because two ordering
+  axes with opposite polarity is a defect generator, and `strength` is now mandated by charter
+  Decision 7 while `rank` is not. Zero-annotation behavior is unchanged either way. *Overrule in one
+  line: "keep `rank` as an explicit override that wins when present."*
+- **OD-H — is `tiering.verifier.defaultTier` wanted in v1 at all (§6.5)?** *Charter block id:
+  `verifier-default-tier`.* Charter Decision 4 asked
   for both granularities. The per-judge override (frontmatter `tier`) and the *rule-based* default
   (judge = actor's rung, bumped when weak) may already cover every real case, making the per-plan
   key a knob nobody turns. It is one optional key; it is included, and it is the cheapest thing in
@@ -1228,7 +1285,7 @@ language.) **§9.6 explicitly states there is no ladder, no probe, and no steeri
   declares `routing` (inert, §4.2); a **full pin + `action.tier`** coexisting
   on one action (§6.1). All warnings, not errors — the plan still runs.
 - **The verifier check is NOT a validation code.** A judge weaker than its actor is an *advisory*
-  (charter Decision 1): a #229 review finding plus a startup preflight warning **line**, not a
+  (charter Decision 1): a #229 review finding, a startup preflight warning **line**, and a per-attempt JIT re-check — not a
   GR-coded diagnostic and never a load-time refusal. Resisting the urge to give it a code is the
   design; a GR code is a thing that can fail a build.
 
@@ -1358,6 +1415,43 @@ same reason the whole epic is safe: if sonnet's work is not good enough, the **d
 fails it**, and the task halts for a human. If you want `hard` to mean opus, say so where it is
 honest to say it: remove `hard` from sonnet's `tiers`. **(OD-F is your one-line overrule.)**
 
+### 14.1 The `costly` cliff, and the error a user actually meets  [settled — was OD-G]
+
+The config above works because `hard` has a non-costly candidate (`sonnet`, and `opus`). Now make
+the change a cost-conscious user will reach for on day one — **mark `opus` costly too**:
+
+```jsonc
+    "opus": { "command": "claude", "model": "claude-opus-4-6", "effort": "high",
+              "costly": true, "strength": 4,                    // <-- added
+              "routing": { "tiers": ["hard"], "notes": "…" } },
+    "sonnet": { "command": "claude", "model": "claude-sonnet-4-5", "strength": 3,
+                "routing": { "tiers": ["medium"], "notes": "…" } },   // <-- no longer serves hard
+```
+
+`hard` now has **no candidate**: `opus` is excluded by the costly floor and `sonnet` no longer
+declares it. `guardrails validate` fails, before a single token is spent:
+
+```
+error GR2046: task '02-implement-stats' is tagged tier 'hard', but no block can serve it.
+  The only block declaring tier 'hard' is 'opus', which is marked costly: true —
+  the harness never auto-selects a costly model (guardrails.json > promptRunners.opus).
+  Fix ONE of:
+    - pin the task explicitly:  "action": { "runner": "opus" }   (a costly model is
+      reachable by YOUR assignment, just never by the harness's choice)
+    - clear "costly": true on 'opus', or
+    - add tier 'hard' to a non-costly block's routing.tiers
+warning GR2051: promptRunners.opus declares 'routing' but is marked costly: true —
+  the routing block is inert (a costly block is never a tier candidate).
+```
+
+**This is intended behavior, not a rough edge.** The config is now saying, checkably, *"hard tasks
+must be pinned by a human"* — and it says so at validate time rather than by surprising you with a
+bill. Note what the harness does **not** do: it does not fall back to `sonnet` (that would route
+weaker than asked, §6.2), it does not "warn and use opus anyway" (that is the floor, and the floor
+has no override), and it does not wait until runtime to mention it. The two diagnostics divide the
+work honestly — **GR2051 explains why the block is out, GR2046 explains what that costs you** —
+which is why GR2051 is a warning and GR2046 is an error rather than one combined complaint.
+
 **Read row 01's judge column too — that is the charter, working.** The actor is a local 32B; its
 judge is *not* the same local 32B (the #382 failure at the model layer), it is sonnet — one
 strength rank up, chosen automatically, **and never Fable**, because `costly: true` fences the
@@ -1430,15 +1524,19 @@ medium: 190k tok / $0.14` (task 04's pinned spend is attributed to its pinned mo
 - **"Adding the verifier half to v1 re-inflates the scope revision 2 deliberately cut."**
   **Response:** it adds one resolution rule and two advisory surfaces to a resolver that already
   exists in v1 — no new subsystem, no new runtime machinery, no probes, no ladder. The parts of the
-  charter that WOULD be a subsystem (re-resolution on graduation, the floor, the JIT re-check) are
+  charter that WOULD be a subsystem (re-resolution on graduation, the floor) are
   deferred to v2 *with the ladder they depend on*, using the same test revision 2 used. And the
   registry axes had to land in Stage 1 regardless — the devil's-advocate gate said so, before the
   charter existed: *"the registry shape should absorb the comment-7 fix first."*
-- **"You are answering a settled charter Decision 9 with 'not in v1' — that is an override dressed
-  as a phasing note."** Partly fair. **Response:** the honest form of the claim is narrower and is
-  what §6.5 states: Decision 9's JIT re-check is *justified by graduation*, static v1 has no
-  graduation, so in v1 the JIT check is provably a no-op — and it returns with the ladder. If the
-  maintainer wants it built anyway as a standing structure, it is a small addition, not a redesign.
+- **"You answered a settled charter Decision 9 with 'not in v1' — that is an override dressed as a
+  phasing note."** **Conceded, and the maintainer overruled it (2026-08-12): Decision 9's "both" is
+  v1.** The critique was right on the process point and, on inspection, right on the substance too:
+  the deferral rested on reading the JIT check as *only* a graduation-observer, when its more
+  durable job is to be **the real path checking itself** rather than a static model of it — the
+  exact distinction #382 was about. §6.5 now states what the second boundary buys in a static v1
+  without hand-waving, and the cost turned out to be one comparison over data §9.3 already writes.
+  **The general lesson is worth keeping: "this would be a no-op in v1" is a claim about today's
+  reachability, not about whether a structure belongs in the design.**
 
 ## 16. Decisions
 
@@ -1465,10 +1563,12 @@ with no `routing` is never a tier target; a reserved block must not be `default`
 
 **D21 three independent model axes** — `costly` / `strength` / `specialization`, each admitting
 *unspecified*, **top-level on the block, not inside `routing`** (a reserved or pinned block has a
-strength too) (§4.1, charter D7) · **D21a the provider-kind fallback is verifier-only** — `kind`
+strength too) (§4.1, charter D7) · **D21a the provider-kind fallback is verifier-only —
+maintainer-ratified 2026-08-12** — `kind`
 does not separate local from cloud (`openai-compat` covers both), so the fallback reads
-`kind != "claude"` ⇒ weak-unless-declared and is never used for actor ordering, where its failure
-mode would be real misrouting instead of a spare advisory (§4.1) · **D22 the costly floor** — the
+`kind != "claude"` ⇒ weak-unless-declared and is never used for actor ordering: the guess is
+allowed where being wrong costs one spare advisory, and forbidden where it would misroute real
+spend (§4.1) · **D22 the costly floor** — the
 harness never auto-selects a `costly: true` block, at any rung, by any mechanism, in any version;
 only a task pin or the `default` pointer reaches one (§6.2, charter D3) · **D22a one candidacy
 predicate** shared by the resolver, GR2046 and `no-route`, so validation and runtime can never
@@ -1476,7 +1576,11 @@ disagree about which blocks serve a rung (§6.2) · **D23 the registry is genera
 — `guardrails providers init` writes comment-annotated blocks into `guardrails.json` itself
 (comments already parse), idempotently, never fabricating a model list (§4.3, charter D8) ·
 **D24 the verifier route is v1 and static** — a judge resolves at the actor's rung, bumped when the
-actor is weak, advisory-only at both boundaries (§6.5, charter D1/D2/D4/D5/D7/D9/D10) · **D24a the
+actor is weak, **advisory-only at BOTH boundaries, both of them v1: the startup preflight AND the
+per-attempt JIT re-check** (charter D9, ratified 2026-08-12 over an earlier draft's proposal to
+defer the JIT half; §6.5 states what the second boundary buys before graduation exists, and §6.5
+carries the de-duplication rule that keeps three surfaces from shouting one finding)
+(§6.5, charter D1/D2/D4/D5/D7/D9/D10) · **D24a the
 bump is in STRENGTH, never in tier** — bumping the tier would mean "pretend the work is harder", a
 category error; the charter's prose uses both phrasings and only one is coherent (§6.5) ·
 **D25 `routing.rank` is retired** in favour of ascending-`strength` ordering — one ordering axis,
@@ -1528,7 +1632,8 @@ top (§9.2, with #228).
    the costly floor** + ascending-`strength` ordering + climb;
    §6.3 unavailability→shipped #115 pause; **§6.5 the verifier route — judge resolution, the
    strength bump, the advisory degradation, `guardrailOverrides` composing with the JUDGE's block,
-   and the startup preflight**; `no-route` outcome) + `TaskExecutor` wiring (replacing
+   BOTH surfacing boundaries — the startup preflight AND the per-attempt JIT re-check with its
+   de-duplication rule**; `no-route` outcome) + `TaskExecutor` wiring (replacing
    the ~1027–1032 two-level fallback), **provenance fields — landing whatever #349 has not, since
    #349 is still open** (§9.3) **plus the `judge` object** (§12.4),
    the **#230-lite per-tier spend line** with the Invariant-7 no-per-tier-line-when-inactive rule,

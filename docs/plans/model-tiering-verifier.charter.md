@@ -117,7 +117,8 @@ the two differ, **the DoR wins** — the same rule the three stage briefs follow
 | 7 — three independent axes | **§4.1** (D21) — `costly`/`strength`/`specialization`, **top-level on the block, not inside `routing`**, because a *reserved or pinned* block has a strength too and the ≥ comparison needs it |
 | 8 — generated registry | **§4.3** (D23) — `guardrails providers init`, writing comment-annotated blocks into `guardrails.json` itself (it already parses `//` comments), idempotent, never fabricating a model list |
 | 3 — never auto-select `costly` | **§6.2** (D22) — one candidacy predicate excludes costly blocks from every rung, every climb, every judge bump, and (v2) every ladder escalation |
-| 1, 2, 4, 5, 9, 10 — the judge rule | **§6.5** (D24) — v1 and static; advisory at a startup preflight and via #229; never blocking |
+| 1, 2, 4, 5, 10 — the judge rule | **§6.5** (D24) — v1 and static; advisory via #229; never blocking |
+| 9 — surfaced at BOTH boundaries | **§6.5**, **both v1** — startup preflight AND per-attempt JIT re-check. An earlier DoR draft proposed deferring the JIT half (nothing graduates in static v1); **the maintainer overruled that on 2026-08-12** and the DoR now states what the second boundary buys without graduation: the preflight is a *model* of the resolver, the JIT check *is* the resolver, and it is the only boundary that sees a mid-run config edit, resume, or overwatcher change |
 | 6 — rides up with escalation, floored | **v2 with the #228 ladder** (DoR §7, §12.7) — nothing graduates in static v1 |
 
 **Two corrections the DoR had to make, recorded here so this charter is not read as still saying
@@ -127,24 +128,31 @@ otherwise:**
    ABOVE"* and the diagram says *"one strength rank ABOVE"*. Those are different operations, and
    only the second is coherent: **tier** describes how hard the *work* is, **strength** describes
    how capable a *model* is, and bumping the tier would mean "pretend the work is harder".
-2. **The provider-kind fallback is verifier-only** (DoR §4.1 / D21a). Decision 7's *"local-inference
-   ⇒ weak, cloud frontier ⇒ not weak"* cannot key on the DoR's `kind` enum as written, because
-   **`openai-compat` covers both** a loopback Ollama endpoint and a cloud OpenAI-compatible API.
-   The fallback therefore reads `kind != "claude"` ⇒ weak-unless-declared and is used **only** for
-   the judge comparison, where a wrong guess costs one spare advisory — never for actor ordering,
-   where it would cost real misrouting.
+2. **The provider-kind fallback is verifier-only — RATIFIED 2026-08-12** (DoR §4.1 / D21a).
+   Decision 7's *"local-inference ⇒ weak, cloud frontier ⇒ not weak"* cannot key on the DoR's `kind`
+   enum as written, because **`openai-compat` covers both** a loopback Ollama endpoint and a cloud
+   OpenAI-compatible API. The fallback therefore reads `kind != "claude"` ⇒ weak-unless-declared and
+   is used **only** for the judge comparison. The asymmetry is the point: the guess is allowed
+   exactly where being wrong costs **one spare advisory** on an already-advisory rule, and forbidden
+   exactly where it would **misroute real spend**.
 
-**Disposition 2's flagged consequence is CONFIRMED, with its counterpart stated:** when "judge ≥
-actor" cannot be met without a costly model, the verifier rule **degrades to an advisory and the
-run proceeds**. The actor route does the **opposite** — it **halts** (GR2046 at validate time,
-`no-route` at runtime), because a judge is advisory-and-never-alone by construction while an actor
-route is load-bearing. **Degrade what is advisory; halt what is load-bearing.** Neither overspends.
+**Settled at the same time (2026-08-12), so they are not re-opened:**
 
-**Two open sign-offs the reconciliation raised** (DoR §11): **OD-E** — `providers init` cannot
-necessarily enumerate the *Claude* CLI's models (the same feasibility risk as OD-C, which Decision
-8 did not price), so it degrades to annotate-only for that provider; and **OD-G** — whether
-`costly` is meant as "never automatic, full stop" (as designed, taking the review answer literally)
-or "expensive, warn but still route", which would split the axis in two.
+- **Disposition 2's flagged consequence is CONFIRMED, with its counterpart stated:** when "judge ≥
+  actor" cannot be met without a costly model, the verifier rule **degrades to an advisory and the
+  run proceeds**. The actor route does the **opposite** — it **halts** (GR2046 at validate time,
+  `no-route` at runtime), because a judge is advisory-and-never-alone by construction while an actor
+  route is load-bearing. **Degrade what is advisory; halt what is load-bearing.** Neither overspends.
+- **Decision 9 stands as BOTH, and both halves are v1.** The DoR briefly proposed deferring the JIT
+  re-check on the grounds that nothing graduates in a static v1; **overruled.** See the Decision-9
+  row in the table above for what the second boundary buys before graduation exists.
+- **`costly` means "never automatic, full stop."** A `costly: true` block is never auto-selected at
+  any rung — not by the resolver, not by the judge bump, not by the future escalation ladder. If
+  that leaves a difficulty tier with no eligible model, `guardrails validate` **fails** (GR2046)
+  rather than routing around it, and the axis is **not** split into a costly-for-accounting flag
+  plus a separate reserved-for-the-floor flag. This is the review answer to `bump-ceiling` taken
+  literally: *"They should never be chosen by the harness, only the user can specify to use them
+  for a task."*
 
 ## Proposed shape
 
@@ -206,10 +214,10 @@ the preflight still earns its place by catching a misconfigured plan before a si
 
 ## Decisions taken in review (answered inline)
 
-All five questions are settled and folded into **Decisions** above; the blocks below are the durable record
-of what was asked and what was answered. No open question blocks remain — though **disposition 2** flags one
-*consequence* of the settled rules worth confirming before implementation, since the naive reading of that
-note is now wrong.
+All five original questions are settled and folded into **Decisions** above; the blocks below are the
+durable record of what was asked and what was answered. Disposition 2's flagged *consequence* has since been
+**confirmed** (the rule degrades, it never overspends). **Three NEW open questions** — raised by reconciling
+these Decisions into the design-of-record — are in *Open decisions (for your review)* below.
 
 :::question
 {"id":"weak-detection","title":"How do we decide a model is \"local / weak\" and therefore needs the one-tier bump?","mode":"single","options":["Provider kind — local-inference endpoints are weak, cloud frontier APIs are not (no per-model judgement)","An explicit strength/rank field on each provider-registry entry (#224), authored by the user","Both — rank when declared, fall back to provider kind when it isn't"],"target":"human", "answer": ["Both.  Guardrails knows the model providers and should be able to enumerate its models and provide them for configuration if requested in a jsonc file which will have comment to indicate the enum values allowed to attach to a model.  One of those enum values should be unspecified.  The range of values needs to be enough to cover not only strength but even some specialization.  (like a coding vs. planning models and/or high thinking and costly, etc).  Hmmm.. maybe that makes for too many values in one option.  Let\u0027s divide it out.  Have a boolean value for costly and another value for specialization and another which ranks their strength, so that bumping up can occur."]}
@@ -229,6 +237,71 @@ note is now wrong.
 
 :::question
 {"id":"specialization-values","title":"Decision 7 gives `specialization` its own axis but does not enumerate its values — what are they, and does judge selection read them?","mode":"single","options":["A small fixed enum (coding / planning-reasoning / general / unspecified), and judging PREFERS planning-reasoning at the required strength when one is available","The same small fixed enum, but recorded for reporting and user routing only — judge selection ignores specialization entirely","A free-form user-defined string with no harness semantics beyond display and manual routing"],"target":"human", "answer": ["A small fixed enum (coding / planning-reasoning / general / unspecified), and judging PREFERS planning-reasoning at the required strength when one is available"]}
+:::
+
+## Open decisions (for your review)
+
+Three questions came out of folding this charter's Decisions into the design-of-record
+([`17-model-tiering.md`](17-model-tiering.md) §11). Each is **self-contained below** — you do not need
+the DoR open to answer. Every one has a working answer already implemented in the design, so **not
+answering leaves a coherent design**; answering either confirms it or changes one specific thing.
+
+---
+
+**1. Can Guardrails actually list Claude's models?** *(binds this charter — Decision 8, the generated
+registry.)*
+
+Decision 8 says Guardrails enumerates each provider's models and writes them into a comment-annotated
+config for you to annotate with `costly` / `strength` / `specialization`. For a local or
+OpenAI-compatible endpoint that is a real API call (`GET /v1/models`) and it works. **For the Claude CLI
+there may be no stable, supported way to list models** — the same wall the usage-probe question hit.
+
+The design currently **degrades honestly**: for a provider it cannot enumerate, `guardrails providers
+init` annotates the blocks *already in your config* with the legal values in comments, adds a "could not
+enumerate models for kind 'claude' — add blocks manually" note, and **never invents a model name**. So
+you still get the annotated form you asked for; you just add the Claude blocks yourself the first time.
+The alternative would be shipping a curated model list inside Guardrails, which goes stale the week
+after a release and would quietly point you at a retired model.
+
+:::question
+{"id":"providers-init-claude","title":"`guardrails providers init` may be unable to enumerate the Claude CLI's models. What should it do for that provider?","mode":"single","options":["Degrade honestly — annotate the blocks already in the config with the legal axis values, add a 'could not enumerate' note, and never invent a model name (the current design)","Ship a curated model list inside Guardrails for kinds that cannot be enumerated, accepting that it goes stale between releases","Fail the command for a provider it cannot enumerate, so the gap is impossible to miss"],"target":"human"}
+:::
+
+---
+
+**2. Two ways to order models, or one?** *(binds the design-of-record — the ACTOR-side routing, not this
+charter's judge rule. Called OD-F there.)*
+
+Decision 7 gave every registry model a **`strength`** rank (higher = stronger) so the judge bump has
+something to compare. The actor-side design already had a separate **`routing.rank`** (lower = wins) for
+choosing between two models that both serve a difficulty tier. That leaves two orderings on the same
+blocks pointing opposite ways — a reliable source of backwards-comparison bugs.
+
+The design currently **drops `routing.rank`** and orders candidates by **ascending `strength`** — the
+weakest model you said may serve this tier goes first, which is the whole point of tiering. To say
+"sonnet should not serve hard work", you remove `hard` from sonnet's tier list, which is the honest
+place to say it. **If nobody annotates `strength` at all, ordering is declaration order — identical to
+today.** Keeping both is possible; it just means maintaining a preference list by hand *and* living with
+two opposite polarities.
+
+:::question
+{"id":"retire-rank","title":"A model now has a `strength` rank (higher = stronger). Should the separate `routing.rank` preference field (lower = wins) be dropped?","mode":"single","options":["Drop `routing.rank` — order candidates by ascending `strength` (weakest model that can serve the tier goes first); express 'this model should not serve that tier' by editing its tier list","Keep `routing.rank` as an optional explicit override that wins over strength-ordering when present, accepting two ordering fields with opposite polarity","Keep `routing.rank` as the only ordering field, and use `strength` solely for the judge-vs-actor comparison"],"target":"human"}
+:::
+
+---
+
+**3. Do you want a plan-wide setting for the judge's tier?** *(binds this charter — Decision 4, "both
+granularities".)*
+
+Decision 4 asked for a per-plan default verifier tier **plus** a per-judge override. The per-judge
+override exists (a `tier` in the judge guardrail's frontmatter). The per-plan default is currently a
+`tiering.verifier.defaultTier` key — but the judge tier is **already chosen automatically** by
+Decision 2's rule (judge = the actor's tier, bumped one strength rank when the actor is weak), so the
+plan-wide key only exists to override that rule for a whole plan at once. It may be a knob nobody ever
+turns, and it is the cheapest thing in the design to remove.
+
+:::question
+{"id":"verifier-default-tier","title":"The judge's tier is already chosen automatically (actor's tier, bumped when the actor is weak). Is a plan-wide `tiering.verifier.defaultTier` override still wanted?","mode":"single","options":["Yes — keep the plan-wide key as Decision 4 asked, as an escape hatch when the automatic rule is wrong for a whole plan","No — drop it; the automatic rule plus the per-judge frontmatter override covers every real case, and an unused knob is a cost","Keep it, but only as a plan-wide FLOOR (never below tier X) rather than a plan-wide default"],"target":"human"}
 :::
 
 ## Scope / non-goals
