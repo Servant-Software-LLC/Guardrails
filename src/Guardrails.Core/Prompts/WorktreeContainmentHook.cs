@@ -259,8 +259,17 @@ public static class WorktreeContainmentHook
 
             # git stash family (#192): refs/stash is repo-wide, not worktree-scoped -- a concurrent
             # task's stash can silently apply into the WRONG worktree. Always block, any subcommand.
+            #
+            # The MESSAGE must name only a route the agent can actually take (#382). The scratch-patch
+            # recipe this used to hand back was refused three ways over: its redirect target sat outside
+            # the worktree, which the redirect check further down THIS script blocks (the PowerShell
+            # twin's relative target landed INSIDE the worktree instead, where it then failed the
+            # write-scope check as an out-of-scope path), and both git verbs it leaned on are ungranted
+            # on a clean box. Bash(git show*) is the one git verb the harness injects unconditionally
+            # (ClaudePromptRunner.SalvageInspectionGrant), so that plus the agent's own file-editing
+            # tools is the whole recipe -- the same route RetryPolicy's salvage section prescribes.
             if printf '%s' "$cmd" | grep -Eq '(^|[;&|]|[[:space:]])git[[:space:]]+stash([[:space:]]|$)'; then
-              block "'git stash' is repo-wide, not worktree-scoped -- a concurrent task's stash can silently cross-contaminate this worktree. Use: git diff > /tmp/mine.patch && git checkout -- <files> to test baseline, then git apply /tmp/mine.patch to restore."
+              block "'git stash' is repo-wide, not worktree-scoped -- a concurrent task's stash can silently cross-contaminate this worktree. You do not need it: your edits are uncommitted, so the committed tree is already the clean baseline. To read a file as it was committed, run: git show 'HEAD:<path>' -- git show is the one git verb this harness grants unconditionally -- and write that content over the file with your own file-editing tool; put your own version back the same way afterwards. If you must park text on disk in between, keep the scratch file INSIDE this worktree AND inside your task's writeScope: a path outside the worktree is blocked by this same hook, and an in-worktree path outside your writeScope fails the write-scope check. Do not reach for git diff or git apply, and do not try to undo your edits with a git write verb -- none of those are granted unless this task's allowedTools declares them, so do not spend turns on them."
             fi
 
             # git worktree add <path> -- a new worktree rooted outside this segment is exactly the
@@ -275,7 +284,8 @@ public static class WorktreeContainmentHook
               resolve_and_check "$wt_path"
             fi
 
-            # git checkout -- <path> (restoring a path from another commit/branch into place).
+            # 'git checkout' with a pathspec after the '--' separator (restoring a path from another
+            # commit/branch into place). Matcher unchanged -- only the wording of this note.
             if printf '%s' "$cmd" | grep -Eq '(^|[;&|]|[[:space:]])git[[:space:]]+checkout[[:space:]].*--[[:space:]]+[^[:space:]]'; then
               co_path="$(printf '%s' "$cmd" | sed -E 's/.*--[[:space:]]+//')"
               for p in $co_path; do resolve_and_check "$p"; done
@@ -370,9 +380,11 @@ public static class WorktreeContainmentHook
                 $cmd = [string]$toolInput.command
                 if ($null -eq $cmd) { $cmd = '' }
 
-                # git stash family (#192): refs/stash is repo-wide, not worktree-scoped.
+                # git stash family (#192): refs/stash is repo-wide, not worktree-scoped. The message is
+                # kept WORD-FOR-WORD identical to the bash twin's (see its comment for why the old
+                # scratch-patch recipe was self-defeating on both platforms) -- one rule, one wording.
                 if ($cmd -match '(^|[;&|]|\s)git\s+stash(\s|$)') {
-                    Block "'git stash' is repo-wide, not worktree-scoped -- a concurrent task's stash can silently cross-contaminate this worktree. Use: git diff > TEMP/mine.patch then git checkout -- <files> to test baseline, then git apply TEMP/mine.patch to restore."
+                    Block "'git stash' is repo-wide, not worktree-scoped -- a concurrent task's stash can silently cross-contaminate this worktree. You do not need it: your edits are uncommitted, so the committed tree is already the clean baseline. To read a file as it was committed, run: git show 'HEAD:<path>' -- git show is the one git verb this harness grants unconditionally -- and write that content over the file with your own file-editing tool; put your own version back the same way afterwards. If you must park text on disk in between, keep the scratch file INSIDE this worktree AND inside your task's writeScope: a path outside the worktree is blocked by this same hook, and an in-worktree path outside your writeScope fails the write-scope check. Do not reach for git diff or git apply, and do not try to undo your edits with a git write verb -- none of those are granted unless this task's allowedTools declares them, so do not spend turns on them."
                 }
 
                 if ($cmd -match '(^|[;&|]|\s)git\s+worktree\s+add\s') {
