@@ -39,23 +39,35 @@ public sealed class ClaudePromptRunnerArgsTests
     [Fact]
     public void AllowedTools_AreJoinedWithCommas()
     {
+        // EXACT-EQUALITY pin, deliberately: SSOT §9 quarantines the flag spelling in the runner, and this
+        // is the assertion that holds it to account. Re-baselined for the harness's own read-only salvage
+        // grant, which the runner now appends after the declared entries on EVERY invocation — so the
+        // expected value is the full emitted set in emission order, never a substring check of it.
         var settings = new PromptRunnerSettings { AllowedTools = ["Read", "Edit", "Bash(dotnet *)"] };
 
         IReadOnlyList<string> args = ClaudePromptRunner.BuildArguments(Invocation(settings));
 
         int idx = args.ToList().IndexOf("--allowedTools");
         Assert.True(idx >= 0);
-        Assert.Equal("Read,Edit,Bash(dotnet *)", args[idx + 1]);
+        Assert.Equal("Read,Edit,Bash(dotnet *),Bash(git show*)", args[idx + 1]);
     }
 
     [Fact]
-    public void NoAllowedTools_OmitsTheFlag()
+    public void NoAllowedTools_StillEmitsTheFlag_CarryingExactlyTheInjectedGrant()
     {
+        // Was NoAllowedTools_OmitsTheFlag, which pinned the pre-injection contract: an empty declared list
+        // meant no flag at all. That is now a real, intended behaviour change — the harness provisions what
+        // it prescribes, so the flag is ALWAYS emitted — and the old assertion caught it correctly.
+        // Re-pointed rather than deleted, and to the STRONGER form: with nothing declared, every entry on
+        // the command line is something the harness put there, so pinning the whole value exactly still
+        // guards against a stray grant leaking in.
         var settings = new PromptRunnerSettings { AllowedTools = [] };
 
         IReadOnlyList<string> args = ClaudePromptRunner.BuildArguments(Invocation(settings));
 
-        Assert.DoesNotContain("--allowedTools", args);
+        int idx = args.ToList().IndexOf("--allowedTools");
+        Assert.True(idx >= 0, "--allowedTools is emitted unconditionally, even for a plan declaring no tools");
+        Assert.Equal("Bash(git show*)", args[idx + 1]);
     }
 
     [Fact]

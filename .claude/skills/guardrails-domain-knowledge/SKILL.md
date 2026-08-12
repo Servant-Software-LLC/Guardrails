@@ -153,6 +153,15 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   `git apply`). Honest boundary: this defends the TOOL-CALL layer Claude Code exposes -- the `Bash`
   matcher is a heuristic over command TEXT, not an OS-level sandbox, so it raises the bar sharply
   against accidental/careless escapes but is not proof against a deliberately adversarial agent.
+  **`allowedTools` is a FLOOR, not a ceiling (#252):** the tool list a plan/task declares (passed as
+  `--allowedTools`) can only GRANT -- it can never WITHHOLD, because Claude Code MERGES it with the
+  operator's own `~/.claude/settings.json`. Omitting a verb does not make that verb unavailable: on a
+  real run under a plan whose `allowedTools` contained no git AT ALL, a bare
+  `git checkout <ref> -- <paths>` still ran and completed a salvage, because the operator's settings
+  file granted `Bash(git checkout:*)`. So never reason "the plan did not list it, therefore the agent
+  cannot do it" -- the containment hook above, not the tool list, is what actually blocks. The
+  read-only git default (#252: `log`/`diff`/`show`/`status`) is still the right thing to AUTHOR: on a
+  clean box / CI the plan's list IS the whole grant.
 - **Action kinds**: `.prompt.md` -> LLM (via pluggable `IPromptRunner`; v1 = Claude Code
   CLI headless); anything else -> process via the interpreter map.
 - **Guardrails**: deterministic (exit 0 = pass; failure reason on stdout) or prompt

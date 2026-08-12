@@ -379,7 +379,7 @@ decision (issue #275) and is deliberately NOT done here.
   BEFORE the existing F2 `git reset --hard <taskBase> + git clean -fd` rollback discards it. The next
   attempt still starts from the clean `taskBase` (unchanged, deterministic) — only the RETRY FEEDBACK
   changes: it exposes the stash as an agent-controlled input (pull ALL via `git apply`, SOME via
-  `git checkout <ref> -- <path>`, or NONE) with a `git diff --stat` summary. **Issue #306** widens the
+  `git show <ref>:<path>`, or NONE) with a `git diff --stat` summary. **Issue #306** widens the
   scope: salvage fires for EVERY non-final worktree failure — guardrail-fail, action-fail, timeout,
   max-turns, output-cap, write-scope — superseding #195's non-logic-only scope guard, because the retry
   agent (informed by the per-guardrail verdicts, §8) decides how much to reuse. Fragment-rejection paths
@@ -571,12 +571,22 @@ log dir, go dig" pointer. **The next attempt still starts from the clean `taskBa
 half-broken state as the base; this DEFAULT does NOT change. What changes is the **retry feedback**:
 `feedback.md` (§8) gains a "Prior attempt work is salvageable" section that exposes the stash as a
 **first-class, agent-controlled input** — the agent decides whether to pull **ALL** of it
-(`git apply prior-attempt.patch`), **SOME** of it (`git checkout <ref> -- <path>` per file), or **NONE**
+(`git apply prior-attempt.patch`), **SOME** of it (`git show <ref>:<path>` per file), or **NONE**
 (re-author) — plus a `git diff --stat <taskBase> <ref>` summary. **Salvaged files remain subject to the
 task's declared `writeScope`** (§3.4) exactly like any other write: the write-scope check runs a
 retrospective `git diff` on the FINAL state regardless of how it got there (fresh authorship or a
 recovered file), so an out-of-scope file pulled in from a stash is caught and scoped-reverted identically
 to a freshly-written one.
+
+**The harness PROVISIONS what its feedback prescribes (issue #382).** Retry feedback MUST never present a
+runnable command that the attempt's effective permission set does not grant — so the harness itself injects
+the read-only grant its own salvage protocol depends on (`Bash(git show*)`, quarantined in the runner per
+§9) into `--allowedTools` on EVERY invocation, unconditionally and idempotently, exactly like the
+`--add-dir <planDirectory>` grant that makes `prior-attempt.patch` reachable; it never depends on the plan
+author having declared it. Unconditional because conditioning on "this attempt carries a salvage ref" would
+make the effective permission set vary between attempts of the SAME task. READ-ONLY only: no tree-mutating
+verb is ever injected, so the whole-patch route (`git apply`) remains a grant the plan must declare
+explicitly.
 
 **Scope — EVERY non-final worktree failure (issue #306 supersedes #195's non-logic-only scope guard).**
 #195 originally restricted the stash to the two non-logic budget-exhaustion outcomes (`max-turns` /

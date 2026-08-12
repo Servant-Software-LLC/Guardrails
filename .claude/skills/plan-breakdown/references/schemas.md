@@ -143,8 +143,13 @@ inspection (#252).** Add `Bash(git log*)`, `Bash(git diff*)`, `Bash(git show*)`,
 task's action prompt can inspect what an ancestor task already committed instead of
 burning turns on rejected `git log`/`git diff` attempts and falling back to broad
 `Grep`/`Glob` sweeps. Never add **state-mutating** git commands (`restore`, `reset`,
-`checkout`, `push`, `commit`, `stash`) to this default — those stay outside
-`allowedTools`. A single-task plan has nothing yet to inspect — omit the git entries
+`checkout`, `push`, `commit`, `stash`) to this default — keep it read-only.
+**`allowedTools` is a floor, not a ceiling:** Claude Code merges it with the operator's
+`~/.claude/settings.json`, so the list can only GRANT — it never withholds. Leaving
+`checkout` out does not make `git checkout` unavailable where the operator's settings
+already allow it. Author the read-only default because it is the whole grant on a clean
+box or in CI, not because it blocks anything — and never rely on a state-mutating verb
+being absent. A single-task plan has nothing yet to inspect — omit the git entries
 there.
 
 ## `tasks/<id>/task.json`

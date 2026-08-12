@@ -311,7 +311,9 @@ public sealed record AttemptRecord
 /// Per-attempt provenance recorded in <c>run.json</c> and mirrored to
 /// <c>&lt;attempt&gt;/attempt-provenance.json</c> (SSOT §7/§8, issue #198): the facts the harness already
 /// knows at attempt launch. Every field is optional so a script attempt (no model, serial mode with no
-/// segment) records only what applies. It records WHAT ran WHERE without re-deriving it from logs.
+/// segment) records only what applies. It records WHAT ran WHERE without re-deriving it from logs —
+/// and, since #382, under WHICH PERMISSIONS, split into what the plan declared and what the harness
+/// injected on top so the effective set is never an unattributable merged list.
 /// </summary>
 public sealed record AttemptProvenance
 {
@@ -338,6 +340,30 @@ public sealed record AttemptProvenance
     /// <summary>The base commit sha the segment forked from (<c>taskBase</c>). Null in serial mode.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? BaseCommit { get; init; }
+
+    /// <summary>
+    /// The tool grants the PLAN DECLARED for this attempt — the prompt runner's <c>allowedTools</c>
+    /// exactly as authored, order preserved. The "before" half of the injection story: it is what a
+    /// reader would otherwise have to reconstruct from <c>guardrails.json</c> to know whether the
+    /// effective set matched the declaration. Null when the question does not apply (a script attempt,
+    /// or a prompt task whose runner cannot be resolved); an EMPTY list is a real answer — the plan
+    /// declared no grants at all.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? DeclaredToolGrants { get; init; }
+
+    /// <summary>
+    /// ONLY what the HARNESS INJECTED on top of <see cref="DeclaredToolGrants"/> (issue #382) — the
+    /// read-only grants the harness provisions for its own retry-salvage protocol rather than hoping
+    /// the plan author already declared them. Held apart from the declared list, never folded into it:
+    /// injection buys determinism at the cost of transparency, and this field is the repayment — the
+    /// effective set is <c>declaredToolGrants</c> + <c>injectedToolGrants</c>, attributable to whoever
+    /// contributed each entry. Null on the same "does not apply" attempts as
+    /// <see cref="DeclaredToolGrants"/>; an EMPTY list is likewise a real answer — the plan already
+    /// declared everything the harness needs, so nothing was added.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? InjectedToolGrants { get; init; }
 }
 
 /// <summary>A guardrail that failed, with its one-line reason (SSOT §7 <c>failedGuardrails</c>).</summary>

@@ -627,10 +627,14 @@ public sealed class TaskExecutor : ITaskExecutor
         string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
 
         // #198: the provenance the harness knows BEFORE the attempt runs — model + segment worktree +
-        // base commit. Written to the attempt log dir as a machine-readable header artifact regardless
-        // of outcome, and carried onto the journal AttemptRecord on the success paths below.
+        // base commit, and (#382) the declared/injected tool grants. Written to the attempt log dir as a
+        // machine-readable header artifact regardless of outcome, and carried onto the journal
+        // AttemptRecord on the success paths below.
         Journal.AttemptProvenance? provenance = BuildProvenance(task, worktree);
         AttemptArtifacts.WriteProvenance(logDir, provenance);
+        // #382: the same grant split, in prose, at the head of the attempt's own log dir — a human
+        // reading logs sees what the harness ADDED to what the plan DECLARED without querying run.json.
+        WriteToolGrantHeader(logDir, provenance);
 
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
@@ -1314,10 +1318,11 @@ public sealed class TaskExecutor : ITaskExecutor
 
     /// <summary>
     /// Build the #198 per-attempt provenance the harness knows at launch: the resolved model, the
-    /// segment worktree (branch + path), and the base commit. Returns null in serial mode (no segment)
+    /// segment worktree (branch + path), the base commit, and (#382) the tool grants split into what
+    /// the plan DECLARED and what the harness INJECTED. Returns null in serial mode (no segment)
     /// UNLESS a model is resolvable — a serial prompt task still records its model so <c>run.json</c>
     /// discloses which model ran even without a worktree. In worktree mode the segment fields are
-    /// always populated; the model is null for a script task (no model runs).
+    /// always populated; the model and the grants are null for a script task (no model, no grants).
     /// </summary>
     private Journal.AttemptProvenance? BuildProvenance(TaskNode task, WorktreeHandle worktree)
     {
@@ -1329,14 +1334,90 @@ public sealed class TaskExecutor : ITaskExecutor
             return null;
         }
 
+        ToolGrantResolution? grants = ResolveToolGrants(task);
+
         return new Journal.AttemptProvenance
         {
             Model = model,
             SegmentBranch = realSegment ? NullIfEmpty(worktree.SegmentBranchName) : null,
             WorktreePath = realSegment ? NullIfEmpty(worktree.WorktreePath) : null,
-            BaseCommit = realSegment ? NullIfEmpty(worktree.TaskBase) : null
+            BaseCommit = realSegment ? NullIfEmpty(worktree.TaskBase) : null,
+            DeclaredToolGrants = grants is null ? null : DeclaredFrom(grants),
+            InjectedToolGrants = grants?.Injected
         };
     }
+
+    /// <summary>
+    /// The tool grants an agent attempt of <paramref name="task"/> runs under, resolved through the
+    /// SAME <see cref="ClaudePromptRunner.ResolveToolGrants"/> the runner calls when it spells
+    /// <c>--allowedTools</c> — so the recorded split can never drift from the set actually granted.
+    /// Null for a script task (no grants apply) or a prompt task whose runner cannot be resolved
+    /// (a malformed plan validation would already reject): recording a fabricated empty split there
+    /// would assert "the plan declared nothing", which is not what the harness knows.
+    /// </summary>
+    private ToolGrantResolution? ResolveToolGrants(TaskNode task)
+    {
+        if (task.Action.Kind != ActionKind.Prompt)
+        {
+            return null;
+        }
+
+        string? runnerName = task.Action.Runner ?? _plan.Config.DefaultPromptRunner;
+        if (runnerName is null || !_plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config))
+        {
+            return null;
+        }
+
+        // The ACTION profile, not the guardrail one: this provenance describes the action attempt.
+        return ClaudePromptRunner.ResolveToolGrants(config.EffectiveSettings(isGuardrail: false).AllowedTools);
+    }
+
+    /// <summary>
+    /// The declared half of a <see cref="ToolGrantResolution"/>: the effective set minus what the
+    /// harness injected. Derived by subtraction rather than re-read from config so the two halves are
+    /// guaranteed to reconstitute the effective set exactly.
+    /// </summary>
+    private static IReadOnlyList<string> DeclaredFrom(ToolGrantResolution grants) =>
+        grants.Effective.Where(t => !grants.Injected.Contains(t, StringComparer.Ordinal)).ToList();
+
+    /// <summary>
+    /// Write <c>attempt-tool-grants.log</c> — the human-readable head of the attempt's log dir naming,
+    /// on separate labelled lines, the grants the PLAN DECLARED and the ones the HARNESS INJECTED
+    /// (issue #382). The machine-readable copy already rides in <c>attempt-provenance.json</c>; this is
+    /// the copy someone scanning a failed attempt's logs actually reads. No-op when the attempt has no
+    /// grants to report (a script attempt, or an unresolvable runner). Best-effort: an IO hiccup must
+    /// never fail an attempt over a disclosure artifact.
+    /// </summary>
+    private static void WriteToolGrantHeader(string logDir, Journal.AttemptProvenance? provenance)
+    {
+        if (provenance?.InjectedToolGrants is not { } injected || provenance.DeclaredToolGrants is not { } declared)
+        {
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# effective tool grants for this attempt (issue #382)");
+        sb.AppendLine("# The harness PROVISIONS the permissions its own protocols prescribe, so the");
+        sb.AppendLine("# effective set is wider than task.json/guardrails.json declare. Both halves are");
+        sb.AppendLine("# named below; the effective --allowedTools is their concatenation.");
+        sb.Append("declared by the plan: ").AppendLine(Describe(declared));
+        sb.Append("INJECTED by the harness: ").AppendLine(
+            injected.Count == 0
+                ? "(none — the plan already declares everything the harness needs)"
+                : Describe(injected));
+
+        try
+        {
+            AtomicFile.WriteAllText(Path.Combine(logDir, "attempt-tool-grants.log"), sb.ToString());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Disclosure is best-effort; attempt-provenance.json still carries the same split.
+        }
+    }
+
+    private static string Describe(IReadOnlyList<string> grants) =>
+        grants.Count == 0 ? "(none)" : string.Join(", ", grants);
 
     /// <summary>
     /// The model an agent attempt of <paramref name="task"/> runs on (issue #198, fixed for the #200
