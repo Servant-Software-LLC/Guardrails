@@ -75,9 +75,13 @@ public sealed class RetryPolicyTests
         // Header is truthful: work was SAVED, recover it — NOT the bare "keep what already works" claim.
         Assert.Contains("was SAVED, not lost", feedback);
         Assert.DoesNotContain("keep what", feedback);
-        // The stash is exposed directly as an applyable patch AND a per-file ref (all/some/none).
+        // The stash is exposed directly as a readable patch AND a per-file ref (all/some/none).
+        // #382 re-baseline: the patch is now handed over as something to READ (it needs no git at all —
+        // the harness emits `--add-dir <planDirectory>` unconditionally) rather than as a `git apply`
+        // invocation of a verb --allowedTools does not carry. What this assertion has always been for —
+        // the patch FILE reaching the agent — is unchanged.
         Assert.Contains("## Prior attempt work is salvageable", feedback);
-        Assert.Contains("git apply \"/plan/logs/run/10-author-tests/attempt-1/prior-attempt.patch\"", feedback);
+        Assert.Contains("`/plan/logs/run/10-author-tests/attempt-1/prior-attempt.patch`", feedback);
         Assert.Contains("git show \"refs/guardrails/10-author-tests/attempt-1:<path>\"", feedback);
         // The per-guardrail verdicts tell it exactly what already passes.
         Assert.Contains("- ✅ 01-imports-clean", feedback);
@@ -100,6 +104,12 @@ public sealed class RetryPolicyTests
         // edit that reintroduces `git checkout`/`git restore` as the recommended per-file command fails
         // here even if it phrases it differently. Widening the #252 allow-list is a maintainer policy call;
         // until it is made, the feedback must not presuppose it.
+        //
+        // Wave 4 (#382) rewrote the section around this test and left every assertion below intact, on
+        // purpose: the new text warns about the write-side verbs by naming them BARE ("checkout, restore,
+        // reset"), never as a `git <verb> …` invocation, so the direction survives the rewrite unweakened.
+        // RetryPolicySalvageAdviceTests re-pins the same rule at INVOCATION granularity (a backticked span
+        // carrying arguments), which is what makes the prose warning safe to keep.
         var salvage = new SalvageRef(
             "refs/guardrails/07-impl/attempt-1", " src/A.cs | 2 +-",
             Attempt: 1, PatchPath: "/plan/logs/run/07-impl/attempt-1/prior-attempt.patch");
@@ -203,7 +213,7 @@ public sealed class RetryPolicyTests
         Assert.Contains("exited with code 1", feedback);
         Assert.Contains("was SAVED, not lost", feedback);
         Assert.Contains("## Prior attempt work is salvageable", feedback);
-        Assert.Contains("git apply \"/p.patch\"", feedback);
+        Assert.Contains("`/p.patch`", feedback);                   // #382: the patch is READ, not applied
         Assert.DoesNotContain("Do NOT start over", feedback);      // the #167-gap wording is gone here too
     }
 
@@ -220,13 +230,20 @@ public sealed class RetryPolicyTests
         Assert.Contains("timed out", feedback);
         Assert.Contains("NOT discarded", feedback);
         Assert.Contains("## Prior attempt work is salvageable", feedback);
-        Assert.Contains("git apply \"/p.patch\"", feedback);
+        Assert.Contains("`/p.patch`", feedback);                        // #382: the patch is READ, not applied
         Assert.DoesNotContain("preserved in your workspace", feedback); // no false "on disk" claim
     }
 
     [Fact]
-    public void SalvageSection_WithPatchPath_OffersGitApply_ForPullAll()
+    public void SalvageSection_WithPatchPath_LeadsWithThePatchFile_ThenThePerFileBlobRoute()
     {
+        // Wave 4 / #382 re-baseline of SalvageSection_WithPatchPath_OffersGitApply_ForPullAll.
+        // RE-POINTED, NOT WEAKENED: both things it always proved still hold — the patch file reaches the
+        // agent, and the per-file `git show` route is offered — but the patch is now the LEADING route
+        // and is handed over as something to READ (it needs no git at all: the harness emits
+        // `--add-dir <planDirectory>` unconditionally), never as a `git apply "<patch>"` invocation of a
+        // verb --allowedTools does not carry. The ordering and no-invocation assertions added below make
+        // this strictly stronger than the pair it replaces.
         var salvage = new SalvageRef(
             "refs/guardrails/12-implement/attempt-2", " src/Foo.cs | 40 ++++",
             Attempt: 2, PatchPath: "/plan/logs/run/12-implement/attempt-2/prior-attempt.patch");
@@ -234,8 +251,14 @@ public sealed class RetryPolicyTests
         string feedback = RetryPolicy.ForMaxTurnsExceeded(
             Task("12-implement"), attempt: 3, fileWritesRolledBack: true, salvageRef: salvage);
 
-        Assert.Contains("git apply \"/plan/logs/run/12-implement/attempt-2/prior-attempt.patch\"", feedback);
+        Assert.Contains("`/plan/logs/run/12-implement/attempt-2/prior-attempt.patch`", feedback);
         Assert.Contains("git show \"refs/guardrails/12-implement/attempt-2:<path>\"", feedback);
+        Assert.True(
+            feedback.IndexOf("prior-attempt.patch", StringComparison.Ordinal)
+                < feedback.IndexOf("git show", StringComparison.Ordinal),
+            "the patch route must be presented BEFORE the `git show` blob route — it is the cheaper of " +
+            "the two and needs no git at all");
+        Assert.DoesNotContain("git apply \"", feedback);   // never a copy-pasteable ungranted invocation
     }
 
     [Fact]

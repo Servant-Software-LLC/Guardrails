@@ -421,10 +421,13 @@ public static class RetryPolicy
     }
 
     /// <summary>
-    /// Append the retry-salvage adoption section (issues #195 / #306): the prior attempt's rolled-back
-    /// working tree was stashed before the F2 reset discarded it, and this exposes it as a FIRST-CLASS,
-    /// agent-controlled retry input — the agent decides whether to pull ALL of it (<c>git apply</c> the
-    /// patch), SOME of it (<c>git show &lt;ref&gt;:&lt;path&gt;</c> per file), or NONE (re-author). The
+    /// Append the retry-salvage adoption section (issues #195 / #306 / #382): the prior attempt's
+    /// rolled-back working tree was preserved before the F2 reset discarded it, and this exposes it as a
+    /// FIRST-CLASS, agent-controlled retry input — the agent decides whether to pull ALL of it, SOME of
+    /// it, or NONE (re-author). Issue #382 makes the advice ROUTE BY SIZE off the diff-stat it already
+    /// embeds: a handful of changed lines means read that file's HUNK in the patch and write those lines
+    /// back with the editing tool (no git at all); an essentially-new file has no hunk worth reading, so
+    /// pull the whole prior blob with <c>git show &lt;ref&gt;:&lt;path&gt;</c>. The
     /// framing is deliberately outcome-NEUTRAL: #306 offers this on EVERY non-final worktree failure
     /// (guardrail-fail, action-fail, timeout, max-turns, output-cap, write-scope), not only the #195
     /// non-logic budget-exhaustion outcomes, so it must not claim the attempt "was making real progress"
@@ -439,52 +442,90 @@ public static class RetryPolicy
             return;
         }
 
+        // Forward slashes so the path reads the same on every OS: every editing/read tool accepts
+        // `C:/…` on Windows, and it avoids a backslash-escape hazard wherever the agent pastes it.
+        string? patchPath = salvageRef.PatchPath is { Length: > 0 } raw ? raw.Replace('\\', '/') : null;
+
         text.AppendLine();
         text.AppendLine("## Prior attempt work is salvageable");
         text.AppendLine();
-        text.AppendLine($"Attempt {salvageRef.Attempt}'s FULL working tree — before the reset above — was stashed to the");
+        text.AppendLine($"Attempt {salvageRef.Attempt}'s FULL working tree — before the reset above — was preserved to the");
         text.AppendLine($"git ref `{salvageRef.RefName}` so you can BUILD ON IT instead of re-deriving everything. The");
-        text.AppendLine("clean base is still the default starting point; recovering the prior work is YOUR call — pull");
-        text.AppendLine("all of it, some of it, or none:");
+        text.AppendLine("clean base is still the default starting point; recovering the prior work is YOUR call. Route");
+        text.AppendLine(string.IsNullOrWhiteSpace(salvageRef.DiffStat)
+            ? "each file by SIZE:"
+            : "each file by SIZE — the changed-line counts below tell you which of these it needs:");
         text.AppendLine();
-        if (salvageRef.PatchPath is { Length: > 0 } patchPath)
+
+        // Issue #382: the two routes below are ordered and sized deliberately.
+        //
+        // The PATCH leads. It needs no git at all — the harness emits `--add-dir <planDirectory>` on every
+        // invocation, so the patch file is already inside the agent's granted READ surface — and for a
+        // file with a handful of changed lines a hunk is a fraction of what re-reading the whole blob
+        // costs. Framing it as "pull in EVERYTHING" (the pre-#382 wording) buried the cheapest option
+        // behind the most expensive one, and whole-patch adoption is usually the WRONG call anyway:
+        // observed live, an agent correctly refused `git apply` because the patch carried out-of-scope
+        // packages.lock.json churn that would have failed the write-scope check.
+        //
+        // `git show <ref>:<path>` is the OTHER half of the size rule (an essentially-new file has no hunk
+        // worth reading), and since #382 it is the one git verb the harness PROVISIONS: it injects
+        // `Bash(git show*)` into --allowedTools unconditionally. So it is also the ONLY git command this
+        // section may prescribe. The diff-against-taskBase inspection alternative this section used to
+        // offer alongside it was dropped for exactly that reason — it sat outside the injected grant, and
+        // `git show --stat` already covers inspection. Anything else the text hands over as a runnable
+        // command reproduces issue #382 inside the very text that exists to prevent it.
+        //
+        // The reason the write-side verbs stay out is REACH, not enforcement: reading a blob and writing
+        // it back with the editing tool is the only per-file route available to a plan whose allowedTools
+        // grant no git WRITE verbs. It is NOT more strongly enforced than a git write — neither route is
+        // checked against writeScope at write time. `WriteScope.IsInScope` is consulted in exactly three
+        // places: `HarnessWrite` (the harness's OWN write), `StagingMover` (a path match) and the
+        // RETROSPECTIVE `WriteScopeCheck`; `WorktreeContainmentHook` enforces worktree containment only.
+        // Whichever route the agent takes, the same retroactive check over the FINAL state catches it.
+        if (patchPath is not null)
         {
-            // Forward slashes so the command works verbatim on every OS: git accepts `C:/…` on Windows,
-            // and it avoids a bash backslash-escape hazard in the emitted command.
-            string applyPath = patchPath.Replace('\\', '/');
-            text.AppendLine($"- Pull in EVERYTHING: READ the patch file `{applyPath}` to see exactly what the prior");
-            text.AppendLine("  attempt changed, then re-apply the parts you want with your file-editing tool. (If — and");
-            text.AppendLine($"  only if — this task's `allowedTools` grants it, `git apply \"{applyPath}\"` does that in one");
-            text.AppendLine("  step; it is NOT granted by default, so do not burn turns retrying it when it is refused.)");
+            text.AppendLine($"- A few changed lines in a file that already existed — READ THE PATCH: `{patchPath}`.");
+            text.AppendLine("  It is a plain unified diff of what that attempt changed. This is the cheapest, most");
+            text.AppendLine("  targeted route and it needs NO git at all (the harness already grants you read access to");
+            text.AppendLine("  the plan directory it sits in): find that file's hunk, then write those lines back with");
+            text.AppendLine("  your file-editing tool. A hunk is a fraction of what re-reading a whole file costs.");
+            text.AppendLine("- A file that is essentially NEW — nearly all additions, so no hunk is worth reading —");
+            text.AppendLine($"  take the whole blob instead: `git show \"{salvageRef.RefName}:<path>\"` prints that file's");
+            text.AppendLine("  prior contents; write them back with your file-editing tool.");
+        }
+        else
+        {
+            text.AppendLine("- No patch file was written for that attempt (it is best-effort), so the ref is the only");
+            text.AppendLine($"  route: `git show \"{salvageRef.RefName}:<path>\"` prints a file's prior contents — write");
+            text.AppendLine("  them back with your file-editing tool. For a file with a few changed lines write back");
+            text.AppendLine("  only the lines that differ; for an essentially-new file take the whole blob as-is.");
         }
 
-        // Issue #374: this section used to recommend `git apply` and `git checkout <ref> -- <path>` flatly,
-        // while the #252 allowedTools default deliberately grants READ-ONLY git (log/diff/show/status) and
-        // explicitly keeps state-mutating git (restore/reset/checkout/push/commit/stash) ungranted. So the
-        // harness was recommending commands its own permission layer refuses, and the agent burned turns
-        // rediscovering a workaround (observed live: it fell back to re-applying edits by hand).
-        // The recommendations now LEAD with `git show <ref>:<path>` piped into the agent's own editing
-        // tool. The reason is REACH, not enforcement: reading a blob and writing it back with the editing
-        // tool is the only per-file route still available to a plan whose allowedTools grant no git WRITE
-        // verbs at all. It is NOT more strongly enforced than a git write — neither route is checked
-        // against writeScope at write time. `WriteScope.IsInScope` is consulted in exactly three places:
-        // `HarnessWrite` (the harness's OWN write), `StagingMover` (a path match) and the RETROSPECTIVE
-        // `WriteScopeCheck`; `WorktreeContainmentHook` enforces worktree containment only. Whichever route
-        // the agent takes, the same retroactive check over the attempt's FINAL state catches it.
-        // Widening the #252 allow-list to include the one-liners is a maintainer policy call, deliberately
-        // NOT made here.
-        text.AppendLine($"- Pull in ONE file that is correct as-is: `git show \"{salvageRef.RefName}:<path>\"` prints that");
-        text.AppendLine("  file's prior contents — write them back with your file-editing tool. This is the per-file");
-        text.AppendLine("  route to prefer; the write-side verbs (checkout/restore) are not granted by default, so do");
-        text.AppendLine("  not spend turns trying them.");
-        text.AppendLine($"- Inspect before adopting: `git show --stat \"{salvageRef.RefName}\"` or `git diff <taskBase> \"{salvageRef.RefName}\"`.");
+        text.AppendLine($"- Inspect before adopting: `git show --stat \"{salvageRef.RefName}\"`.");
         text.AppendLine("- Re-author, from scratch, only what is INCOMPLETE or wrong — judge each file; do not blindly");
         text.AppendLine("  restore everything.");
+
+        if (patchPath is not null)
+        {
+            text.AppendLine();
+            text.AppendLine("Adopting the WHOLE patch in one go is often wrong. A real attempt's patch routinely carries");
+            text.AppendLine("out-of-scope churn — a regenerated lock file, a formatter sweep — that would fail this");
+            text.AppendLine("task's write-scope check, so take the hunks you actually meant to keep, not the lot. It");
+            text.AppendLine("also needs `git apply`, which is NOT granted by default: reach for it only if this task's");
+            text.AppendLine("`allowedTools` declares it, and never spend a second turn on it once it is refused.");
+        }
+
+        text.AppendLine();
+        text.AppendLine("Run the commands above AS WRITTEN. The harness already runs you IN the worktree, so a");
+        text.AppendLine("`git -C <abs-path>` prefix is unnecessary — and it is the single biggest source of refused");
+        text.AppendLine("calls, because the grant matches the plain command shape; it kills read-only verbs too. The");
+        text.AppendLine("write-side verbs — checkout, restore, reset — are ungranted as well, so do not spend turns");
+        text.AppendLine("discovering that for yourself.");
 
         if (!string.IsNullOrWhiteSpace(salvageRef.DiffStat))
         {
             text.AppendLine();
-            text.AppendLine("What that attempt changed (`git diff --stat` vs. this task's base commit):");
+            text.AppendLine("What that attempt changed (changed-line counts vs. this task's base commit):");
             text.AppendLine("```");
             text.AppendLine(salvageRef.DiffStat.TrimEnd('\r', '\n'));
             text.AppendLine("```");
