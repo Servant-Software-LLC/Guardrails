@@ -195,33 +195,6 @@ flowchart TB
   V -.->|"judge &lt; actor, or equal-and-weak"| F["#229 advisory finding<br/>(run proceeds)"]
 :::
 
-## Review notes — disposition
-
-Your three inline notes (2026-08-09) are answered below. Charter's CLI has no agent-reply path, so the
-dispositions live here rather than as replies in the review pane.
-
-**1. "If the judge is equal and is not a frontier model, then a warning… Qwen judging Qwen should warn,
-Opus judging Opus should not. Maybe we can only detect local vs cloud inference?"**
-→ Settled, and **your fallback guess became the rule**. The equal-but-weak case is called out in
-*The principle* and drives Decision 2's bump. Detection is Decision 7: `strength` rank when declared, and
-**exactly your suggestion — provider kind (local vs cloud) — whenever rank is `unspecified`**. So it works
-with a registry the user never annotates, and gets sharper when they do.
-
-**2. "The runner may end on Opus (because of graduation) but the judge may be Sonnet 5. Should we consider
-auto-elevating the judge?"**
-→ Yes — Decision 6 re-resolves the judge upward on every escalation. **But the naive answer is now wrong,
-and this is the sharpest interaction in the plan:** your own `bump-ceiling` answer forbids the harness from
-auto-selecting a costly model. If Opus carries `costly: true`, the judge **cannot** be auto-elevated to
-meet it. The rule then *degrades rather than overspends* — it emits the #229 advisory and the run proceeds
-(Decision 3's derived consequence). Worth confirming that is what you intended: the alternative reading is
-that graduation should be allowed to drag the judge up with it, costly or not.
-
-**3. "Is this surfaced at harness startup or JIT? Since a task runner can graduate with re-attempts, it
-matters. Right?"**
-→ Right, and it settled the `check-timing` question: **both** (Decision 9). Your reasoning is exactly why
-startup alone is insufficient — a tier reached by graduating mid-run is invisible to any preflight — while
-the preflight still earns its place by catching a misconfigured plan before a single token is spent.
-
 ## Decisions taken in review (answered inline)
 
 All five original questions are settled and folded into **Decisions** above; the blocks below are the
