@@ -1,6 +1,11 @@
 # catches: wave 3 exiting without the harness actually provisioning the read-only grant its own retry
 #          protocol names - the injection tests do not pass on the merged wave HEAD.
-$log = dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj -c Release --filter "FullyQualifiedName~ToolGrant|FullyQualifiedName~ClaudePromptRunner" 2>&1 | Out-String
+# scope: ToolGrantInjection ONLY. The filter used to also sweep in ~ClaudePromptRunner, which pulled
+#        ClaudePromptRunnerArgsTests - a pre-existing golden no wave-3 task could edit - into this
+#        gate's exit criteria (#193 orphaned-golden trap). A name-prefix filter is an accidental scope:
+#        any future ClaudePromptRunner* test file would silently join wave 3's contract. Collateral
+#        breakage is the job of wave 4's full-suite gate (02-all-tests-pass.ps1), not this one.
+$log = dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj -c Release --filter "FullyQualifiedName~ToolGrantInjection" 2>&1 | Out-String
 $code = $LASTEXITCODE
 Write-Output $log
 if ($code -ne 0) {

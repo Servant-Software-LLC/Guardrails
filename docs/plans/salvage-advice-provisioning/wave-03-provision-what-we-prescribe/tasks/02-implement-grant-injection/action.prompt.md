@@ -25,8 +25,32 @@ Make task 01's tests pass, and land the contract change in the SSOT in the SAME 
    the harness must never present a runnable command the effective permission set does not grant - and
    state that the harness injects the read-only grant its own protocol depends on.
 
-Do NOT edit the authored tests. If they are genuinely wrong, emit {"needsHuman": "<why>"} instead.
+Do NOT edit task 01's authored tests in `tests/Guardrails.Core.Tests/ToolGrantInjectionTests.cs` (task 01
+owns that file). If those tests are genuinely wrong, emit {"needsHuman": "<why>"} instead.
+
+## Re-baseline the tests your own change invalidates (you OWN this)
+
+`tests/Guardrails.Core.Tests/ClaudePromptRunnerArgsTests.cs` PINS the exact `--allowedTools` argument
+built before injection existed (SSOT §9 quarantines all flag spelling in that class, and this file is
+what holds it to account). Unconditional injection WILL break two of its assertions, and no other task
+owns that file, so it is in YOUR writeScope: update it in the SAME change.
+
+- `AllowedTools_AreJoinedWithCommas` asserts the joined value equals `Read,Edit,Bash(dotnet *)` exactly.
+  The injected grant now also appears in that value. **Keep it an exact-equality pin** - exactness is the
+  entire point of this file - and update the expected string to the full emitted set, in the order your
+  implementation emits it. Do not soften `Assert.Equal` into `Assert.Contains` to make it pass.
+- `NoAllowedTools_OmitsTheFlag` asserts that a plan declaring no `allowedTools` gets no `--allowedTools`
+  flag at all. **That is a real behaviour change and the test caught it correctly.** The decision of
+  record is CONFIRMED: the harness provisions what it prescribes, so the flag is now ALWAYS emitted, even
+  when the plan declares nothing. Re-point this test rather than deleting it - assert that with an empty
+  declared list the flag IS present and its value is EXACTLY the injected grant and nothing else. That is
+  strictly stronger than the assertion it replaces: it still guards against a stray grant leaking in.
+
+**Preserve the INTENT while re-baselining, do not delete the coverage.** Deleting or weakening a failing
+assertion instead of re-pointing it is the failure this task must not commit. Touch only the two
+assertions above; leave every other test in that file alone.
 
 **Scope boundary (harness-enforced):** Write only to
-`src/Guardrails.Core/Prompts/ClaudePromptRunner.cs` and `docs/plans/02-schemas-and-contracts.md`. An
-out-of-scope edit fails the task immediately and consumes a retry.
+`src/Guardrails.Core/Prompts/ClaudePromptRunner.cs`, `docs/plans/02-schemas-and-contracts.md` and
+`tests/Guardrails.Core.Tests/ClaudePromptRunnerArgsTests.cs`. An out-of-scope edit fails the task
+immediately and consumes a retry.

@@ -1,7 +1,11 @@
 {
-  "description": "Inject Bash(git show*) unconditionally in ClaudePromptRunner and land the contract line in the SSOT",
+  "description": "Inject Bash(git show*) unconditionally in ClaudePromptRunner, land the contract line in the SSOT, and re-baseline the arg-spelling tests that pin the pre-injection flag set",
   "dependsOn": ["01-author-tests-grant-injection"],
   "stableId": "s9j8w5",
-  "writeScope": ["src/Guardrails.Core/Prompts/ClaudePromptRunner.cs", "docs/plans/02-schemas-and-contracts.md"],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/ClaudePromptRunner.cs",
+    "docs/plans/02-schemas-and-contracts.md",
+    "tests/Guardrails.Core.Tests/ClaudePromptRunnerArgsTests.cs"
+  ],
   "action": { "maxTurns": 75 }
 }
