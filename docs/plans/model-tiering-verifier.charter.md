@@ -264,7 +264,7 @@ The alternative would be shipping a curated model list inside Guardrails, which 
 after a release and would quietly point you at a retired model.
 
 :::question
-{"id":"providers-init-claude","title":"`guardrails providers init` may be unable to enumerate the Claude CLI's models. What should it do for that provider?","mode":"single","options":["Degrade honestly — annotate the blocks already in the config with the legal axis values, add a 'could not enumerate' note, and never invent a model name (the current design)","Ship a curated model list inside Guardrails for kinds that cannot be enumerated, accepting that it goes stale between releases","Fail the command for a provider it cannot enumerate, so the gap is impossible to miss"],"target":"human"}
+{"id":"providers-init-claude","title":"`guardrails providers init` may be unable to enumerate the Claude CLI's models. What should it do for that provider?","mode":"single","options":["Degrade honestly — annotate the blocks already in the config with the legal axis values, add a 'could not enumerate' note, and never invent a model name (the current design)","Ship a curated model list inside Guardrails for kinds that cannot be enumerated, accepting that it goes stale between releases","Fail the command for a provider it cannot enumerate, so the gap is impossible to miss"],"target":"human", "answer": ["Degrade honestly \u2014 annotate the blocks already in the config with the legal axis values, add a \u0027could not enumerate\u0027 note, and never invent a model name (the current design)"]}
 :::
 
 ---
@@ -285,7 +285,7 @@ today.** Keeping both is possible; it just means maintaining a preference list b
 two opposite polarities.
 
 :::question
-{"id":"retire-rank","title":"A model now has a `strength` rank (higher = stronger). Should the separate `routing.rank` preference field (lower = wins) be dropped?","mode":"single","options":["Drop `routing.rank` — order candidates by ascending `strength` (weakest model that can serve the tier goes first); express 'this model should not serve that tier' by editing its tier list","Keep `routing.rank` as an optional explicit override that wins over strength-ordering when present, accepting two ordering fields with opposite polarity","Keep `routing.rank` as the only ordering field, and use `strength` solely for the judge-vs-actor comparison"],"target":"human"}
+{"id":"retire-rank","title":"A model now has a `strength` rank (higher = stronger). Should the separate `routing.rank` preference field (lower = wins) be dropped?","mode":"single","options":["Drop `routing.rank` — order candidates by ascending `strength` (weakest model that can serve the tier goes first); express 'this model should not serve that tier' by editing its tier list","Keep `routing.rank` as an optional explicit override that wins over strength-ordering when present, accepting two ordering fields with opposite polarity","Keep `routing.rank` as the only ordering field, and use `strength` solely for the judge-vs-actor comparison"],"target":"human", "answer": ["Drop \u0060routing.rank\u0060 \u2014 order candidates by ascending \u0060strength\u0060 (weakest model that can serve the tier goes first); express \u0027this model should not serve that tier\u0027 by editing its tier list"]}
 :::
 
 ---
@@ -301,7 +301,7 @@ plan-wide key only exists to override that rule for a whole plan at once. It may
 turns, and it is the cheapest thing in the design to remove.
 
 :::question
-{"id":"verifier-default-tier","title":"The judge's tier is already chosen automatically (actor's tier, bumped when the actor is weak). Is a plan-wide `tiering.verifier.defaultTier` override still wanted?","mode":"single","options":["Yes — keep the plan-wide key as Decision 4 asked, as an escape hatch when the automatic rule is wrong for a whole plan","No — drop it; the automatic rule plus the per-judge frontmatter override covers every real case, and an unused knob is a cost","Keep it, but only as a plan-wide FLOOR (never below tier X) rather than a plan-wide default"],"target":"human"}
+{"id":"verifier-default-tier","title":"The judge's tier is already chosen automatically (actor's tier, bumped when the actor is weak). Is a plan-wide `tiering.verifier.defaultTier` override still wanted?","mode":"single","options":["Yes — keep the plan-wide key as Decision 4 asked, as an escape hatch when the automatic rule is wrong for a whole plan","No — drop it; the automatic rule plus the per-judge frontmatter override covers every real case, and an unused knob is a cost","Keep it, but only as a plan-wide FLOOR (never below tier X) rather than a plan-wide default"],"target":"human", "answer": ["Keep it, but only as a plan-wide FLOOR (never below tier X) rather than a plan-wide default"]}
 :::
 
 ## Scope / non-goals
