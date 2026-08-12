@@ -106,6 +106,46 @@ to the actor's.
     lands in the run report. A weak judge does not halt an autonomous run — consistent with Decision 1, and
     with the harness never blocking on a model-quality opinion.
 
+## Reconciliation into the design-of-record
+
+These Decisions are now folded into **[`17-model-tiering.md`](17-model-tiering.md)** (DoR revision
+3), which owns the **contracts**; this charter remains the rationale and the review record. Where
+the two differ, **the DoR wins** — the same rule the three stage briefs follow. Landing map:
+
+| Charter Decision | Lands in the DoR as |
+|---|---|
+| 7 — three independent axes | **§4.1** (D21) — `costly`/`strength`/`specialization`, **top-level on the block, not inside `routing`**, because a *reserved or pinned* block has a strength too and the ≥ comparison needs it |
+| 8 — generated registry | **§4.3** (D23) — `guardrails providers init`, writing comment-annotated blocks into `guardrails.json` itself (it already parses `//` comments), idempotent, never fabricating a model list |
+| 3 — never auto-select `costly` | **§6.2** (D22) — one candidacy predicate excludes costly blocks from every rung, every climb, every judge bump, and (v2) every ladder escalation |
+| 1, 2, 4, 5, 9, 10 — the judge rule | **§6.5** (D24) — v1 and static; advisory at a startup preflight and via #229; never blocking |
+| 6 — rides up with escalation, floored | **v2 with the #228 ladder** (DoR §7, §12.7) — nothing graduates in static v1 |
+
+**Two corrections the DoR had to make, recorded here so this charter is not read as still saying
+otherwise:**
+
+1. **The bump is in STRENGTH, never in tier** (DoR §6.5 / D24a). Decision 2 says *"bumped one tier
+   ABOVE"* and the diagram says *"one strength rank ABOVE"*. Those are different operations, and
+   only the second is coherent: **tier** describes how hard the *work* is, **strength** describes
+   how capable a *model* is, and bumping the tier would mean "pretend the work is harder".
+2. **The provider-kind fallback is verifier-only** (DoR §4.1 / D21a). Decision 7's *"local-inference
+   ⇒ weak, cloud frontier ⇒ not weak"* cannot key on the DoR's `kind` enum as written, because
+   **`openai-compat` covers both** a loopback Ollama endpoint and a cloud OpenAI-compatible API.
+   The fallback therefore reads `kind != "claude"` ⇒ weak-unless-declared and is used **only** for
+   the judge comparison, where a wrong guess costs one spare advisory — never for actor ordering,
+   where it would cost real misrouting.
+
+**Disposition 2's flagged consequence is CONFIRMED, with its counterpart stated:** when "judge ≥
+actor" cannot be met without a costly model, the verifier rule **degrades to an advisory and the
+run proceeds**. The actor route does the **opposite** — it **halts** (GR2046 at validate time,
+`no-route` at runtime), because a judge is advisory-and-never-alone by construction while an actor
+route is load-bearing. **Degrade what is advisory; halt what is load-bearing.** Neither overspends.
+
+**Two open sign-offs the reconciliation raised** (DoR §11): **OD-E** — `providers init` cannot
+necessarily enumerate the *Claude* CLI's models (the same feasibility risk as OD-C, which Decision
+8 did not price), so it degrades to annotate-only for that provider; and **OD-G** — whether
+`costly` is meant as "never automatic, full stop" (as designed, taking the review answer literally)
+or "expensive, warn but still route", which would split the axis in two.
+
 ## Proposed shape
 
 - Extend the **provider registry (#224)** with the three axes of Decision 7 (`costly`, `strength`,
