@@ -86,8 +86,11 @@ to the actor's.
    - **`costly`** — boolean. Drives Decision 3 and nothing else.
    - **`strength`** — the rank, and the ONLY axis the "judge ≥ actor" comparison and the one-tier bump
      read. Comparison needs a total order; only this axis has one.
-   - **`specialization`** — e.g. coding vs planning/reasoning. A **preference, never an ordering** — it
-     cannot satisfy or violate ≥, and a specialization mismatch is not a rule breach.
+   - **`specialization`** — a **small fixed enum: `coding` / `planning-reasoning` / `general` /
+     `unspecified`** (`specialization-values`). A **preference, never an ordering** — it cannot satisfy or
+     violate ≥, and a mismatch is not a rule breach. Judge selection **does** read it: among candidates
+     that already meet the required strength, prefer `planning-reasoning`. Strength gates; specialization
+     only breaks ties. A fixed enum rather than a free-form string precisely so the harness can act on it.
 
    **Every axis admits `unspecified`**, and `unspecified` strength is what makes the answer "Both" rather
    than "rank only": the ≥ rule falls back to **provider kind** (local-inference ⇒ weak; cloud frontier ⇒
@@ -134,10 +137,39 @@ flowchart TB
   V -.->|"judge &lt; actor, or equal-and-weak"| F["#229 advisory finding<br/>(run proceeds)"]
 :::
 
+## Review notes — disposition
+
+Your three inline notes (2026-08-09) are answered below. Charter's CLI has no agent-reply path, so the
+dispositions live here rather than as replies in the review pane.
+
+**1. "If the judge is equal and is not a frontier model, then a warning… Qwen judging Qwen should warn,
+Opus judging Opus should not. Maybe we can only detect local vs cloud inference?"**
+→ Settled, and **your fallback guess became the rule**. The equal-but-weak case is called out in
+*The principle* and drives Decision 2's bump. Detection is Decision 7: `strength` rank when declared, and
+**exactly your suggestion — provider kind (local vs cloud) — whenever rank is `unspecified`**. So it works
+with a registry the user never annotates, and gets sharper when they do.
+
+**2. "The runner may end on Opus (because of graduation) but the judge may be Sonnet 5. Should we consider
+auto-elevating the judge?"**
+→ Yes — Decision 6 re-resolves the judge upward on every escalation. **But the naive answer is now wrong,
+and this is the sharpest interaction in the plan:** your own `bump-ceiling` answer forbids the harness from
+auto-selecting a costly model. If Opus carries `costly: true`, the judge **cannot** be auto-elevated to
+meet it. The rule then *degrades rather than overspends* — it emits the #229 advisory and the run proceeds
+(Decision 3's derived consequence). Worth confirming that is what you intended: the alternative reading is
+that graduation should be allowed to drag the judge up with it, costly or not.
+
+**3. "Is this surfaced at harness startup or JIT? Since a task runner can graduate with re-attempts, it
+matters. Right?"**
+→ Right, and it settled the `check-timing` question: **both** (Decision 9). Your reasoning is exactly why
+startup alone is insufficient — a tier reached by graduating mid-run is invisible to any preflight — while
+the preflight still earns its place by catching a misconfigured plan before a single token is spent.
+
 ## Decisions taken in review (answered inline)
 
-All four are settled and folded into **Decisions** above; the blocks below are the durable record of what
-was asked and what was answered.
+All five questions are settled and folded into **Decisions** above; the blocks below are the durable record
+of what was asked and what was answered. No open question blocks remain — though **disposition 2** flags one
+*consequence* of the settled rules worth confirming before implementation, since the naive reading of that
+note is now wrong.
 
 :::question
 {"id":"weak-detection","title":"How do we decide a model is \"local / weak\" and therefore needs the one-tier bump?","mode":"single","options":["Provider kind — local-inference endpoints are weak, cloud frontier APIs are not (no per-model judgement)","An explicit strength/rank field on each provider-registry entry (#224), authored by the user","Both — rank when declared, fall back to provider kind when it isn't"],"target":"human", "answer": ["Both.  Guardrails knows the model providers and should be able to enumerate its models and provide them for configuration if requested in a jsonc file which will have comment to indicate the enum values allowed to attach to a model.  One of those enum values should be unspecified.  The range of values needs to be enough to cover not only strength but even some specialization.  (like a coding vs. planning models and/or high thinking and costly, etc).  Hmmm.. maybe that makes for too many values in one option.  Let\u0027s divide it out.  Have a boolean value for costly and another value for specialization and another which ranks their strength, so that bumping up can occur."]}
@@ -155,14 +187,8 @@ was asked and what was answered.
 {"id":"autonomous-advisory","title":"Advisory means the run proceeds — but in UNATTENDED autonomous mode (#361/#269), nobody reads a warning mid-run. What happens there?","mode":"single","options":["Same as attended — advisory only; the finding lands in the run report","Escalate to a halt under the autonomy policy (a weak judge is a review-integrity problem)","Configurable via the existing unified autonomy policy (prompt / halt / auto)"],"target":"human", "answer": ["Same as attended \u2014 advisory only; the finding lands in the run report"]}
 :::
 
-## Open decisions (for your review)
-
-One fork the answers opened rather than closed. Splitting `specialization` onto its own axis was your call
-in `weak-detection` — but it arrived as thinking-aloud ("another value for specialization") and its values
-were never enumerated, so the design cannot be built from it as written.
-
 :::question
-{"id":"specialization-values","title":"Decision 7 gives `specialization` its own axis but does not enumerate its values — what are they, and does judge selection read them?","mode":"single","options":["A small fixed enum (coding / planning-reasoning / general / unspecified), and judging PREFERS planning-reasoning at the required strength when one is available","The same small fixed enum, but recorded for reporting and user routing only — judge selection ignores specialization entirely","A free-form user-defined string with no harness semantics beyond display and manual routing"],"target":"human"}
+{"id":"specialization-values","title":"Decision 7 gives `specialization` its own axis but does not enumerate its values — what are they, and does judge selection read them?","mode":"single","options":["A small fixed enum (coding / planning-reasoning / general / unspecified), and judging PREFERS planning-reasoning at the required strength when one is available","The same small fixed enum, but recorded for reporting and user routing only — judge selection ignores specialization entirely","A free-form user-defined string with no harness semantics beyond display and manual routing"],"target":"human", "answer": ["A small fixed enum (coding / planning-reasoning / general / unspecified), and judging PREFERS planning-reasoning at the required strength when one is available"]}
 :::
 
 ## Scope / non-goals
