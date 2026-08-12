@@ -262,10 +262,47 @@ public sealed class PromptComposerTests : IDisposable
         Assert.Contains("git stash", composed);
         Assert.Contains("NOT safe", composed);
         Assert.Contains("repo-wide", composed);
-        // The safe, stash-free alternative (diff → checkout baseline → re-apply) must be present.
-        Assert.Contains("git diff", composed);
-        Assert.Contains("git checkout --", composed);
-        Assert.Contains("git apply", composed);
+
+        // Issue #382: the stash-free alternative must be runnable under the harness's OWN defaults,
+        // and must tell the SAME story as the retry-salvage advice a retry prompt inlines alongside
+        // it — read with the one git verb the harness provisions (`Bash(git show*)`, injected into
+        // every invocation), write with the agent's own file-editing tool, and keep the scratch copy
+        // INSIDE the worktree under the stage-excluded `.guardrails-agent-io/`.
+        string section = WorktreeSafetySection(composed);
+        Assert.Contains("git show", section);
+        Assert.Contains("file-editing tool", section);
+        Assert.Contains(".guardrails-agent-io", section);
+
+        // The superseded three-line recipe must not come back. Every line of it was unusable under
+        // the harness's own defaults: the redirect target resolved OUTSIDE the worktree, so the very
+        // containment hook this section speaks for blocked it, and the checkout/apply write verbs are
+        // ungranted on a clean box where the plan's allowedTools IS the whole grant.
+        //
+        // The ban is INVOCATION-shaped, matching the carve-out RetryPolicySalvageAdviceTests pins for
+        // the sibling salvage advice: prose may NAME an ungranted verb to warn that it is ungranted
+        // (`git apply` is named exactly that way below, and `/tmp` as an anti-example), but nothing
+        // the agent could copy and run may survive. A trailing space is what separates the two — a
+        // backticked bare span ends in a backtick, an invocation carries arguments.
+        Assert.DoesNotContain("/tmp/mine.patch", section);
+        Assert.DoesNotContain("> /tmp", section);
+        Assert.DoesNotContain("git checkout", section);
+        Assert.DoesNotContain("git apply ", section);
+        Assert.DoesNotContain("git diff", section);
+
+        // ...and the verb that IS named stays framed as ungranted, never as a step.
+        Assert.Contains("`git apply`", section);
+        Assert.Contains("not granted by", section);
+    }
+
+    // The advisory is appended LAST by both ComposeAction and ComposeGuardrail, so it runs to the end
+    // of the prompt. Slicing it out keeps the negative assertions scoped to the advisory itself: a
+    // retry prompt legitimately inlines feedback that MENTIONS the ungranted verbs (RetryPolicy hedges
+    // `git apply` on allowedTools), and that must never read as this section recommending them.
+    private static string WorktreeSafetySection(string composed)
+    {
+        int start = composed.IndexOf("## Worktree safety", StringComparison.Ordinal);
+        Assert.True(start >= 0, "the composed prompt has no '## Worktree safety' section:\n" + composed);
+        return composed[start..];
     }
 
     [Fact]
