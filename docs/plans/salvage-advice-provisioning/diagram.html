@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=f3ac134ccc2c796aa4b1dd21812fd8df1a29c648b75e26ef54d477755943a5b0 -->
+<!-- guardrails:graph v1 source-sha256=0d16a1ddbc4f2b505232b41fd58dc5cff181a3453ac33ebcbd9fae7794b95823 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -161,11 +161,15 @@
     subgraph task_wave_03_provision_what_we_prescribe_02_implement_grant_injection["02-implement-grant-injection"]
       task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_0["01-injection-tests-pass"]:::guardrail
       task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_1["02-no-write-verb-injected"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_2["03-golden-args-tests-pass"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_3["04-golden-coverage-preserved"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_4["05-ssot-contract-line-landed"]:::guardrail
     end
     style task_wave_03_provision_what_we_prescribe_02_implement_grant_injection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance["03-record-injected-grants-in-provenance"]
       task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_0["01-provenance-records-injection"]:::guardrail
       task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_1["02-core-builds"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_2["03-log-header-echoes-injected-grants"]:::guardrail
     end
     style task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
@@ -254,8 +258,12 @@
   click task_wave_03_provision_what_we_prescribe_01_author_tests_grant_injection_gr_2 href "wave-03-provision-what-we-prescribe/tasks/01-author-tests-grant-injection/guardrails/03-no-write-verb-asserted.ps1" "03-no-write-verb-asserted" _blank
   click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_0 href "wave-03-provision-what-we-prescribe/tasks/02-implement-grant-injection/guardrails/01-injection-tests-pass.ps1" "01-injection-tests-pass" _blank
   click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_1 href "wave-03-provision-what-we-prescribe/tasks/02-implement-grant-injection/guardrails/02-no-write-verb-injected.ps1" "02-no-write-verb-injected" _blank
+  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_2 href "wave-03-provision-what-we-prescribe/tasks/02-implement-grant-injection/guardrails/03-golden-args-tests-pass.ps1" "03-golden-args-tests-pass" _blank
+  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_3 href "wave-03-provision-what-we-prescribe/tasks/02-implement-grant-injection/guardrails/04-golden-coverage-preserved.ps1" "04-golden-coverage-preserved" _blank
+  click task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_4 href "wave-03-provision-what-we-prescribe/tasks/02-implement-grant-injection/guardrails/05-ssot-contract-line-landed.ps1" "05-ssot-contract-line-landed" _blank
   click task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_0 href "wave-03-provision-what-we-prescribe/tasks/03-record-injected-grants-in-provenance/guardrails/01-provenance-records-injection.ps1" "01-provenance-records-injection" _blank
   click task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_1 href "wave-03-provision-what-we-prescribe/tasks/03-record-injected-grants-in-provenance/guardrails/02-core-builds.ps1" "02-core-builds" _blank
+  click task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_2 href "wave-03-provision-what-we-prescribe/tasks/03-record-injected-grants-in-provenance/guardrails/03-log-header-echoes-injected-grants.ps1" "03-log-header-echoes-injected-grants" _blank
   click task_wave_04_fix_the_advice_01_author_tests_salvage_advice_gr_0 href "wave-04-fix-the-advice/tasks/01-author-tests-salvage-advice/guardrails/01-tests-build.ps1" "01-tests-build" _blank
   click task_wave_04_fix_the_advice_01_author_tests_salvage_advice_gr_1 href "wave-04-fix-the-advice/tasks/01-author-tests-salvage-advice/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
   click task_wave_04_fix_the_advice_02_implement_salvage_advice_gr_0 href "wave-04-fix-the-advice/tasks/02-implement-salvage-advice/guardrails/01-advice-tests-pass.ps1" "01-advice-tests-pass" _blank

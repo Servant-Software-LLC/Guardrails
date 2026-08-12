@@ -50,6 +50,12 @@ owns that file, so it is in YOUR writeScope: update it in the SAME change.
 assertion instead of re-pointing it is the failure this task must not commit. Touch only the two
 assertions above; leave every other test in that file alone.
 
+These rules are ENFORCED, not advisory - guardrails `03-golden-args-tests-pass` and
+`04-golden-coverage-preserved` run that file's tests AND check the coverage structurally, so deleting a
+test or softening `Assert.Equal` into `Assert.Contains` fails the task rather than going green. If you
+rename `NoAllowedTools_OmitsTheFlag` (its name becomes inaccurate once the flag is always emitted, so a
+rename is reasonable), **keep the `NoAllowedTools_` prefix** - that is how the check finds it.
+
 **Scope boundary (harness-enforced):** Write only to
 `src/Guardrails.Core/Prompts/ClaudePromptRunner.cs`, `docs/plans/02-schemas-and-contracts.md` and
 `tests/Guardrails.Core.Tests/ClaudePromptRunnerArgsTests.cs`. An out-of-scope edit fails the task

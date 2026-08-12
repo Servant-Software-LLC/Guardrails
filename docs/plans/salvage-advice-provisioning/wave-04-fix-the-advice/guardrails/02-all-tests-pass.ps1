@@ -6,7 +6,7 @@ Write-Output $log
 if ($code -ne 0) {
     Write-Output ""
     Write-Output "---- failure detail (why) ----"
-    foreach ($line in ($log -split "`r?`n")) { if ($line -match 'error|Assert\.|Exception|\[FAIL\]|at Guardrails') { Write-Output $line } }
+    foreach ($line in ($log -split "`r?`n")) { if ($line -match 'error|Assert\.|Exception|\[FAIL\]|at Guardrails|Expected:|Actual:|Strings differ') { Write-Output $line } }
     Write-Output "the full suite fails on the merged plan HEAD"
     exit 1
 }

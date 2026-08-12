@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=f3ac134ccc2c796aa4b1dd21812fd8df1a29c648b75e26ef54d477755943a5b0 -->
+<!-- guardrails:graph v1 source-sha256=0d16a1ddbc4f2b505232b41fd58dc5cff181a3453ac33ebcbd9fae7794b95823 -->
 
 ```mermaid
 flowchart TD
@@ -72,11 +72,15 @@ flowchart TD
     subgraph task_wave_03_provision_what_we_prescribe_02_implement_grant_injection["02-implement-grant-injection"]
       task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_0["01-injection-tests-pass"]:::guardrail
       task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_1["02-no-write-verb-injected"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_2["03-golden-args-tests-pass"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_3["04-golden-coverage-preserved"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_02_implement_grant_injection_gr_4["05-ssot-contract-line-landed"]:::guardrail
     end
     style task_wave_03_provision_what_we_prescribe_02_implement_grant_injection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance["03-record-injected-grants-in-provenance"]
       task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_0["01-provenance-records-injection"]:::guardrail
       task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_1["02-core-builds"]:::guardrail
+      task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance_gr_2["03-log-header-echoes-injected-grants"]:::guardrail
     end
     style task_wave_03_provision_what_we_prescribe_03_record_injected_grants_in_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end

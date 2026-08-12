@@ -2,7 +2,12 @@
 #          and a git write grant is unnarrowable under a prefix glob.
 $f = 'src/Guardrails.Core/Prompts/ClaudePromptRunner.cs'
 if (-not (Test-Path $f)) { Write-Output "$f not found"; exit 1 }
-$c = Get-Content -Raw -Path $f
+$raw = Get-Content -Raw -Path $f
+# Strip comments before matching (#97/#98). Without this, a correct implementation that merely
+# DOCUMENTS why write verbs are excluded ("we never inject Bash(git restore*)") false-REDs, and each
+# retry strips one mention to expose the next - the whack-a-mole that dead-ends at needs-human.
+$c = [regex]::Replace($raw, '(?s)/\*.*?\*/', ' ')
+$c = [regex]::Replace($c, '(?m)//.*$', '')
 $bad = @()
 foreach ($verb in @('git restore', 'git checkout', 'git reset', 'git apply', 'git stash')) {
     if ($c -match ('Bash\(' + [regex]::Escape($verb))) { $bad += $verb }

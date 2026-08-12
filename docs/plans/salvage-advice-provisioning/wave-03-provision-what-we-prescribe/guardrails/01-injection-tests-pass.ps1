@@ -8,10 +8,18 @@
 $log = dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj -c Release --filter "FullyQualifiedName~ToolGrantInjection" 2>&1 | Out-String
 $code = $LASTEXITCODE
 Write-Output $log
+# A filter matching ZERO tests exits 0 - verified by execution against master, which prints
+# "No test matches the given testcase filter" and returns exit code 0. The old broad filter could never
+# be vacuous (pre-existing tests always matched); narrowing introduced that hole, so close it explicitly.
+if ($log -match 'No test matches the given testcase filter') {
+    Write-Output ""
+    Write-Output "the filter matched ZERO tests - ToolGrantInjectionTests is absent from the merged wave-3 HEAD, so this gate certified NOTHING"
+    exit 1
+}
 if ($code -ne 0) {
     Write-Output ""
     Write-Output "---- failure detail (why) ----"
-    foreach ($line in ($log -split "`r?`n")) { if ($line -match 'error|Assert\.|Exception|\[FAIL\]|at Guardrails') { Write-Output $line } }
+    foreach ($line in ($log -split "`r?`n")) { if ($line -match 'error|Assert\.|Exception|\[FAIL\]|at Guardrails|Expected:|Actual:|Strings differ') { Write-Output $line } }
     Write-Output "the grant-injection tests fail on the merged wave-3 HEAD"
     exit 1
 }
