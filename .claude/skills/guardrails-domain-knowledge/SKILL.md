@@ -392,7 +392,7 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   (W-1: a trailer on a surviving segment ref that never FF'd is not authoritative).
 - **End-of-run delivery**: when the run drains green AND `mergeOnSuccess` is effective, the harness
   merges the plan branch into the user's original branch. **AI-merge is NOT used here.** A conflict /
-  failed re-verify / dirty user tree halts, plan branch intact. **Default ON (#340 — "green means
+  failed re-verify / a **blocking-dirty** user tree halts, plan branch intact. **Default ON (#340 — "green means
   delivered").** Opt out with `"mergeOnSuccess": false` or the CLI `--no-merge-on-success`; precedence
   (highest wins): CLI flag (`--merge-on-success` / `--no-merge-on-success`) → `guardrails.json` →
   the `true` default; passing BOTH flags is a usage error. Delivery is **idempotent on resume** (a
@@ -401,6 +401,23 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   "delivered to <branch> …" notice naming the branch + the opt-out. The outcome is a `MergeOnSuccessResult`:
   `FastForwarded` / `Merged` (delivered, exit 0) or `Conflict` / `DirtyWorkingTree` / `HookRejected`
   (halted; work is durable on the plan branch, exit 2).
+  **The dirty-tree gate is an INTERSECTION, not "any dirt anywhere" (#448, SSOT §5.3).** `DirtyWorkingTree`
+  fires only when a TRACKED uncommitted path is ALSO a path the merge would update — `git status
+  --porcelain --untracked-files=no -z` ∩ `git diff --name-only -z HEAD...<planBranch>` (untracked still
+  excluded). **Empty intersection ⇒ delivery PROCEEDS** and the user's unrelated WIP survives, matching
+  git's own rule (git refuses only when a merge must overwrite a locally-modified file it actually
+  updates). **Merge SHAPE matters:** a fast-forward tolerates disjoint dirt of every flavour, but a real
+  (non-FF) merge demands a CLEAN INDEX — so after an empty intersection the harness checks `git merge-base
+  --is-ancestor HEAD <planBranch>` and, on non-FF, still refuses if anything is STAGED (keeping that an
+  honest `DirtyWorkingTree` instead of a `git merge` failure misreported as `Conflict`).
+  Motivating incident: a wholly-green waved run regenerated its own **tracked** per-wave
+  `diagram.md`/`.html` mid-run and then refused its own delivery on that self-inflicted, provably
+  disjoint dirt. **FAILS CLOSED** — if the touched-path set can't be computed (git unavailable, no merge
+  base, unparseable porcelain) it reverts to refuse-on-ANY-tracked-dirt; a fail-open would be worse than
+  the bug. The blocking paths are **NAMED**: newline-separated + ordinal-sorted in
+  `RunReport.MergeOnSuccessDetail` (the same channel `HookRejected` uses for hook stderr), listed by the
+  CLI, so nobody is sent to `git status` to find what blocked a green run. `Conflict`/`HookRejected` are
+  untouched.
   **Green-but-undelivered warning (#340):** the backstop for the OPT-OUT case. When the user opts OUT
   (`mergeOnSuccess` resolved false) a wholly-green run can deliver NOTHING while the console reads like a
   delivering run — the verified work sits on `guardrails/<plan-name>` one `--fresh`/`reset -y` from

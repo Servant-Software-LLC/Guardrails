@@ -1545,10 +1545,29 @@ public static class RunCommand
                 break;
 
             case MergeOnSuccessResult.DirtyWorkingTree:
-                output.WriteLine(
-                    $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
-                    "branch was refused because your working tree has uncommitted changes. Commit or " +
-                    "stash them, then merge `" + planBranch + "` manually.");
+                // Issue #448 part B: NAME the blocking paths. The gate only refuses on files this
+                // merge would actually update, so the list is short and directly actionable — the
+                // user no longer has to run `git status` and guess which change was in the way.
+                if (report.MergeOnSuccessDetail is { Length: > 0 } dirtyPaths)
+                {
+                    output.WriteLine(
+                        $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                        "branch was refused because these tracked files have uncommitted changes that " +
+                        "block it:");
+                    foreach (string path in dirtyPaths.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        output.WriteLine($"  {path.Trim()}");
+                    }
+                    output.WriteLine(
+                        "  Commit or stash them, then merge `" + planBranch + "` manually.");
+                }
+                else
+                {
+                    output.WriteLine(
+                        $"All tasks passed and are on branch `{planBranch}`. The final merge into your " +
+                        "branch was refused because your working tree has uncommitted changes. Commit or " +
+                        "stash them, then merge `" + planBranch + "` manually.");
+                }
                 break;
         }
     }

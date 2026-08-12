@@ -946,32 +946,41 @@ public sealed class WiringDefectRegressionTests
     // ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Plan 08 defect F4: <see cref="GitWorktreeProvider.MergePlanBranchIntoUserBranch"/> runs
-    /// <c>git merge --ff-only</c> without first checking whether the working tree is dirty.
-    /// When the plan branch only adds new files (no conflict with the user's uncommitted work),
-    /// the FF merge succeeds silently, interleaving the user's WIP with the plan's output.
-    /// RED until MergePlanBranchIntoUserBranch checks <c>git status --porcelain</c> and refuses
-    /// to merge when the working tree is dirty.
+    /// Plan 08 defect F4: <see cref="GitWorktreeProvider.MergePlanBranchIntoUserBranch"/> ran
+    /// <c>git merge --ff-only</c> without first checking whether the working tree was dirty, so the FF
+    /// silently interleaved the user's uncommitted work with the plan's output. The gate closing that
+    /// hazard is still asserted here.
+    /// <para>
+    /// <b>EXPECTATION DELIBERATELY NARROWED — issue #448.</b> This test originally dirtied
+    /// <c>README.md</c> while the plan branch added only <c>new-feature.cs</c> — a <b>DISJOINT</b> pair —
+    /// and asserted the merge was refused. That expectation was itself the bug #448 fixes: git rewrites
+    /// only the paths it merges, so disjoint WIP is never interleaved and a manual <c>git merge</c>
+    /// succeeds there. Refusing on it let a wholly-green run's own generated artifacts (regenerated
+    /// per-wave diagrams) refuse that run's own delivery. The gate is now the INTERSECTION of the dirty
+    /// tracked paths with the paths the merge would update (SSOT §5.3), so this test dirties a file the
+    /// plan branch ALSO modifies — the case where the F4 hazard is real and the refusal is still correct.
+    /// The disjoint counterpart, which must now DELIVER, is
+    /// <c>MergeOnSuccessTests.MergeOnSuccess_DirtDisjointFromMergePaths_DeliversAndPreservesWip</c>.
+    /// </para>
     /// </summary>
     [Fact]
-    public void F4_DirtyUserTree_AtMerge_HaltsToNeedsHuman()
+    public void F4_DirtyUserTree_OnAPathTheMergeUpdates_AtMerge_HaltsToNeedsHuman()
     {
         using var repo = new TempGitRepo();
 
-        // Create the plan branch with a commit that adds a NEW file (no conflict with README.md).
+        // The plan branch MODIFIES README.md — the very file the user is about to dirty. An ff-only
+        // merge would therefore have to overwrite the user's uncommitted edit: the real F4 hazard.
         string userBranch = repo.CurrentBranch(repo.RepoPath);
         string initialHead = repo.HeadSha(repo.RepoPath);
 
         TempGitRepo.Git(repo.RepoPath, "checkout", "-b", "guardrails/plan");
-        File.WriteAllText(Path.Combine(repo.RepoPath, "new-feature.cs"), "class NewFeature {}");
-        TempGitRepo.Git(repo.RepoPath, "add", "new-feature.cs");
+        File.AppendAllText(Path.Combine(repo.RepoPath, "README.md"), "\n# written by the plan");
+        TempGitRepo.Git(repo.RepoPath, "add", "README.md");
         TempGitRepo.Git(repo.RepoPath, "commit", "-m",
             "Guardrails-Task: 01-task\nGuardrails-Run: test-run");
         TempGitRepo.Git(repo.RepoPath, "checkout", userBranch);
 
-        // Dirty the working tree: modify README.md without staging.
-        // The FF merge of guardrails/plan does NOT conflict with README.md (it only adds new-feature.cs),
-        // so git allows it even though the working tree is dirty — that is the F4 defect.
+        // Dirty the working tree on that same path, unstaged.
         File.AppendAllText(Path.Combine(repo.RepoPath, "README.md"), "\n# user's in-progress work");
 
         var integ = new IntegrationHandle
@@ -986,11 +995,17 @@ public sealed class WiringDefectRegressionTests
         var provider = new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot);
         MergeOnSuccessResult result = provider.MergePlanBranchIntoUserBranch(integ, CancellationToken.None);
 
-        // Must NOT fast-forward when the working tree is dirty.
-        // Current: FF succeeds (dirty README doesn't conflict with new-feature.cs) → FastForwarded → RED.
-        Assert.True(result != MergeOnSuccessResult.FastForwarded,
-            "MergePlanBranchIntoUserBranch must refuse (return non-FastForwarded) when the " +
-            "working tree is dirty. Defect F4: no pre-merge dirty-tree check exists.");
+        // Must refuse — and refuse SPECIFICALLY as a dirty tree, not as a conflict.
+        Assert.Equal(MergeOnSuccessResult.DirtyWorkingTree, result);
+
+        // #448 part B: the blocking path is named, so the user is not sent to `git status`.
+        Assert.NotNull(provider.LastMergeOnSuccessDetail);
+        Assert.Contains("README.md", provider.LastMergeOnSuccessDetail!, StringComparison.Ordinal);
+
+        // The user's branch never moved and their WIP survives.
+        Assert.Equal(initialHead, repo.HeadSha(repo.RepoPath));
+        Assert.Contains("user's in-progress work",
+            File.ReadAllText(Path.Combine(repo.RepoPath, "README.md")), StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

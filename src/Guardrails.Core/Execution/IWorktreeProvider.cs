@@ -75,11 +75,16 @@ public interface IWorktreeProvider
     MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct);
 
     /// <summary>
-    /// The git hook's stderr captured by the most recent <see cref="MergePlanBranchIntoUserBranch"/>
-    /// call when it returned <see cref="MergeOnSuccessResult.HookRejected"/> (issues #149/#150);
-    /// null otherwise. Read by the Scheduler immediately after the merge call to populate
-    /// <see cref="RunReport.MergeOnSuccessDetail"/>. Default null for fake providers that have no
-    /// real git hooks.
+    /// Free-text detail captured by the most recent <see cref="MergePlanBranchIntoUserBranch"/> call
+    /// for the two halts that carry one; null otherwise. Read by the Scheduler immediately after the
+    /// merge call to populate <see cref="RunReport.MergeOnSuccessDetail"/>. Default null for fake
+    /// providers that have no real git hooks or working tree.
+    /// <list type="bullet">
+    ///   <item><see cref="MergeOnSuccessResult.HookRejected"/> — the git hook's stderr (#149/#150).</item>
+    ///   <item><see cref="MergeOnSuccessResult.DirtyWorkingTree"/> — the newline-separated, ordinal-sorted
+    ///     TRACKED paths whose uncommitted changes blocked the merge (#448), so the CLI can name them
+    ///     instead of sending the user to <c>git status</c>. Null when none could be enumerated.</item>
+    /// </list>
     /// </summary>
     string? LastMergeOnSuccessDetail => null;
 

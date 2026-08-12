@@ -378,11 +378,19 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // resumed run could call the merge more than once over its lifetime).
         LastMergeOnSuccessDetail = null;
 
-        // F4: never run git over uncommitted user work. A dirty working tree refuses the merge —
-        // even an ff-only merge that adds only new files (no textual conflict with the dirty paths)
-        // would silently interleave the user's WIP with the plan's output. Halt to needs-human.
-        if (IsWorkingTreeDirty())
+        // F4, NARROWED TO A REAL INTERSECTION (issue #448): never run git over uncommitted user work
+        // THIS MERGE WOULD OVERWRITE. The pre-#448 gate refused on ANY tracked modification anywhere
+        // in the repo, which is strictly coarser than git's own rule — git refuses a merge only when
+        // it must update a locally-modified file. The incident: a wholly-green WAVED run regenerated
+        // its own tracked per-wave `diagram.md`/`diagram.html` mid-run, then refused its own delivery
+        // on that self-inflicted dirt even though the merge touched only `src/`, `tests/` and one doc
+        // (`git merge-tree` predicted zero conflicts; the manual merge had none).
+        if (BlockingDirtyPaths(integ.PlanBranchName) is { } blocking)
         {
+            // Part B of #448: NAME the offending paths so the user is not sent to `git status` to
+            // discover what blocked a green run's delivery. Null when nothing could be enumerated
+            // (git itself failed) — the CLI then falls back to the generic wording.
+            LastMergeOnSuccessDetail = blocking.Count > 0 ? string.Join("\n", blocking) : null;
             return MergeOnSuccessResult.DirtyWorkingTree;
         }
 
@@ -1434,17 +1442,164 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     }
 
     /// <summary>
-    /// True when the user's checkout (<c>_repoPath</c>) has uncommitted changes to TRACKED files
-    /// — staged or unstaged (<c>git status --porcelain --untracked-files=no</c> non-empty). F4 /
-    /// run-start pre-flight. Untracked files are EXCLUDED: the harness writes its own runtime state
-    /// (<c>state/</c>, <c>logs/</c>) under the plan folder inside the repo, which would otherwise
+    /// The F4 dirty-working-tree gate for the end-of-run delivery, narrowed to a REAL intersection
+    /// (issue #448). Returns <c>null</c> when the merge may proceed — the user's checkout is clean, or
+    /// its dirty paths are DISJOINT from the set of paths this merge would update and git would
+    /// therefore merge cleanly while preserving the user's WIP. Otherwise returns the blocking paths,
+    /// ordinal-sorted, for <see cref="LastMergeOnSuccessDetail"/> to name.
+    /// <para>
+    /// Untracked files stay EXCLUDED (<c>--untracked-files=no</c>): the harness writes its own runtime
+    /// state (<c>state/</c>, <c>logs/</c>) under the plan folder inside the repo, which would otherwise
     /// flag every real run as dirty; and an untracked file cannot be silently interleaved by a
-    /// fast-forward (git errors on an untracked-file collision, handled by the merge path). The F4
-    /// hazard is specifically a tracked modification (e.g. an unstaged edit to a committed file)
-    /// that an ff-only merge would silently fold in alongside the plan's output.
+    /// fast-forward (git errors on an untracked-file collision, handled by the merge path).
+    /// </para>
+    /// <para>
+    /// <b>Disjoint dirt is not uniformly safe — it depends on the merge SHAPE</b> (measured, not assumed):
+    /// a FAST-FORWARD tolerates every flavour of disjoint dirt (unstaged, staged, staged rename), because
+    /// git rewrites only the paths it updates. A REAL (non-FF) merge additionally demands a CLEAN INDEX —
+    /// it refuses outright when anything is STAGED, even on a path it never touches. So a disjoint-but-staged
+    /// change is still blocking on the non-FF path, and refusing it HERE keeps it an honest
+    /// <see cref="MergeOnSuccessResult.DirtyWorkingTree"/> instead of letting <c>git merge</c> fail below
+    /// and be misreported as a <see cref="MergeOnSuccessResult.Conflict"/>.
+    /// </para>
+    /// <para>
+    /// <b>Fail CLOSED on any git failure.</b> If the touched-path set cannot be computed (git unavailable,
+    /// unrelated histories with no merge base, unparseable porcelain) this falls back to the pre-#448
+    /// refuse-on-ANY-tracked-dirt behaviour rather than proceeding; likewise an indeterminate merge shape
+    /// is treated as non-FF. A fail-OPEN here — running a merge over user work we could not prove safe —
+    /// would be strictly worse than the bug this narrowing fixes.
+    /// </para>
     /// </summary>
-    private bool IsWorkingTreeDirty() =>
-        Git("status", "--porcelain", "--untracked-files=no").Trim().Length > 0;
+    private IReadOnlyList<string>? BlockingDirtyPaths(string planBranch)
+    {
+        string porcelain;
+        try
+        {
+            // -z: NUL-separated and UNQUOTED, so a path with a space/non-ASCII byte parses exactly.
+            porcelain = Git("status", "--porcelain", "--untracked-files=no", "-z");
+        }
+        catch (InvalidOperationException)
+        {
+            // git status itself failed — we cannot prove the tree is clean. Refuse, unnamed.
+            return [];
+        }
+
+        IReadOnlyList<DirtyEntry>? dirty = ParseDirtyTrackedPaths(porcelain);
+        if (dirty is null)
+        {
+            // Unparseable porcelain — refuse rather than guess at the user's WIP.
+            return [];
+        }
+
+        if (dirty.Count == 0)
+        {
+            return null; // clean tree — by far the common case
+        }
+
+        IReadOnlyList<string>? touched = MergeTouchedPaths(planBranch);
+        if (touched is null)
+        {
+            // Touched-path set unknown ⇒ conservative fallback: refuse on ANY tracked dirt, naming it.
+            return Sorted(dirty.Select(d => d.Path));
+        }
+
+        var touchedSet = new HashSet<string>(touched, StringComparer.Ordinal);
+        List<string> intersecting = dirty.Where(d => touchedSet.Contains(d.Path)).Select(d => d.Path).ToList();
+        if (intersecting.Count > 0)
+        {
+            return Sorted(intersecting);
+        }
+
+        // Disjoint. Safe on a fast-forward; on a real merge only if nothing is staged (see the remarks).
+        if (MergeWouldFastForward(planBranch))
+        {
+            return null;
+        }
+
+        List<string> staged = dirty.Where(d => d.Staged).Select(d => d.Path).ToList();
+        return staged.Count == 0 ? null : Sorted(staged);
+    }
+
+    /// <summary>
+    /// True when the pending delivery can fast-forward — i.e. <c>HEAD</c> is an ancestor of
+    /// <paramref name="planBranch"/> (which includes the already-delivered "Already up to date" resume
+    /// case). Any non-zero exit — "not an ancestor" (1) AND a git error (128) — reports false, so an
+    /// indeterminate shape is treated as the stricter non-FF case.
+    /// </summary>
+    private bool MergeWouldFastForward(string planBranch)
+    {
+        var (_, exit) = TryGitIn(_repoPath, "merge-base", "--is-ancestor", "HEAD", planBranch);
+        return exit == 0;
+    }
+
+    /// <summary>
+    /// The paths the pending delivery would UPDATE in the user's checkout: everything
+    /// <paramref name="planBranch"/> changed since it diverged from <c>HEAD</c>
+    /// (<c>git diff --name-only HEAD...&lt;planBranch&gt;</c>, i.e. merge-base→plan-branch). This is a
+    /// deliberate SUPERSET of the files a merge actually rewrites — a path both sides changed
+    /// identically appears here yet leaves the working tree untouched — which keeps the gate on the
+    /// conservative side. For a fast-forward the merge base IS <c>HEAD</c>, so the set is exact.
+    /// Null when git could not compute it (see the fail-closed note on <see cref="BlockingDirtyPaths"/>).
+    /// </summary>
+    private IReadOnlyList<string>? MergeTouchedPaths(string planBranch)
+    {
+        try
+        {
+            // Trailing "--" disambiguates the revision range from a pathspec.
+            return SplitNulSeparated(Git("diff", "--name-only", "-z", $"HEAD...{planBranch}", "--"));
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>One TRACKED path with uncommitted changes; <paramref name="Staged"/> = the index differs from HEAD for it.</summary>
+    private readonly record struct DirtyEntry(string Path, bool Staged);
+
+    /// <summary>
+    /// Parse <c>git status --porcelain --untracked-files=no -z</c> into the TRACKED paths carrying
+    /// uncommitted changes. Each record is <c>XY&lt;space&gt;&lt;path&gt;NUL</c> where <c>X</c> is the
+    /// INDEX status (anything but a space ⇒ staged) and <c>Y</c> the worktree status; a rename/copy
+    /// (<c>X</c> or <c>Y</c> in <c>{R, C}</c>) appends a second <c>&lt;origPath&gt;NUL</c> field and BOTH
+    /// endpoints are reported dirty — a staged rename has moved content away from the old path and into
+    /// the new one, so either endpoint colliding with the merge is blocking. Returns null on a malformed
+    /// record so the caller can fail closed instead of silently under-reporting the user's WIP.
+    /// </summary>
+    private static IReadOnlyList<DirtyEntry>? ParseDirtyTrackedPaths(string porcelainZ)
+    {
+        var entries = new List<DirtyEntry>();
+        int i = 0;
+        while (i < porcelainZ.Length)
+        {
+            int end = porcelainZ.IndexOf('\0', i);
+            if (end < 0) return null; // truncated record
+            string record = porcelainZ[i..end];
+            i = end + 1;
+
+            // "XY " + at least one path character.
+            if (record.Length < 4 || record[2] != ' ') return null;
+            bool staged = record[0] != ' ';
+            entries.Add(new DirtyEntry(record[3..], staged));
+
+            if (record[0] is 'R' or 'C' || record[1] is 'R' or 'C')
+            {
+                int origEnd = porcelainZ.IndexOf('\0', i);
+                if (origEnd < 0) return null; // rename record missing its source field
+                entries.Add(new DirtyEntry(porcelainZ[i..origEnd], staged));
+                i = origEnd + 1;
+            }
+        }
+
+        return entries;
+    }
+
+    private static string[] SplitNulSeparated(string value) =>
+        value.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+
+    /// <summary>Ordinal sort — the repo-wide ordering convention, so the named paths are locale-stable.</summary>
+    private static IReadOnlyList<string> Sorted(IEnumerable<string> paths) =>
+        paths.Distinct(StringComparer.Ordinal).OrderBy(p => p, StringComparer.Ordinal).ToArray();
 
     /// <summary>True when local branch <paramref name="branch"/> already exists (resume idempotency).</summary>
     private bool BranchExists(string branch)

@@ -271,7 +271,8 @@ decision (issue #275) and is deliberately NOT done here.
   junction (issue #419), so its effective cwd is measured short exactly like a fresh run's.
 - `mergeOnSuccess` (**default `true`, #340**) delivers the plan branch into the user's original
   branch at run end when the whole run goes green — so **"green" means "delivered."** **AI-merge is
-  withheld at this boundary** — a conflict, a failed post-merge re-verify, or a dirty user tree halts
+  withheld at this boundary** — a conflict, a failed post-merge re-verify, or a user tree dirty **on a
+  path this merge would update** (#448 — unrelated WIP no longer blocks; §5.3) halts
   (exit 2) with the plan branch intact; never a force-overwrite, never an AI auto-resolve of the
   user's commits. **Opt out** with `"mergeOnSuccess": false` or the CLI `--no-merge-on-success` to
   leave the verified work on the plan branch for manual review/merge. **CLI precedence** (highest
@@ -1354,6 +1355,45 @@ tree is refused **before any git merge runs** (the harness never runs git over u
 and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that re-drains green
 after a prior run already delivered re-issues an ff-only merge that git reports "Already up to date"
 (→ `FastForwarded`, exit 0) — never a double-merge or error.
+
+**The dirty-tree gate is an INTERSECTION, not "any dirt anywhere" (issue #448).** The delivery refuses
+with `DirtyWorkingTree` only when a TRACKED path with uncommitted changes is **also a path this merge
+would update**. Concretely: `git status --porcelain --untracked-files=no -z` (the dirty tracked set;
+untracked stays excluded — the harness writes its own `state/`/`logs/` inside the repo, and a merge
+errors on an untracked-file collision anyway) intersected with `git diff --name-only -z HEAD...<planBranch>`
+(everything the plan branch changed since it diverged — a deliberate **superset** of what the merge
+rewrites, and exact for a fast-forward). **Empty intersection ⇒ delivery proceeds** to the normal
+ff-only → real-merge path, and the user's unrelated WIP survives untouched, exactly as it would under a
+manual `git merge`. This matches git's own rule — git refuses a merge only when it must overwrite a
+locally-modified file it actually updates — where the pre-#448 gate was strictly coarser and refused on
+any tracked modification anywhere in the repo.
+
+- **Disjoint dirt is not uniformly safe — it depends on the merge SHAPE.** A **fast-forward** tolerates
+  every flavour of disjoint dirt (unstaged, staged, staged rename): git rewrites only the paths it
+  updates. A **real (non-FF) merge** additionally demands a **clean index** — it refuses outright when
+  anything is STAGED, even on a path it never touches. So after an empty intersection the harness checks
+  `git merge-base --is-ancestor HEAD <planBranch>`: FF ⇒ proceed; non-FF ⇒ still refuse (naming the staged
+  paths) if anything is staged, proceed if all remaining dirt is unstaged-only. Refusing there keeps that
+  case an honest `DirtyWorkingTree` rather than letting `git merge` fail and be misreported as a `Conflict`.
+  An indeterminate merge shape (a git error from `--is-ancestor`) is treated as the stricter non-FF case.
+
+- **Motivating incident.** A wholly-green (14/14) waved run regenerated its own **tracked** per-wave
+  `diagram.md`/`diagram.html` mid-run (§10 / §14 — the run writes them at wave boundaries), then refused
+  its own delivery on that self-inflicted dirt. The dirty paths (`docs/plans/**/diagram.*`) were disjoint
+  from the merge's path set (`src/`, `tests/`, one SSOT doc); `git merge-tree` predicted zero conflicts and
+  the manual merge had none. `mergeOnSuccess` defaults ON (#340) — "green means delivered" — so a generated
+  side effect silently downgrading a green run to "merge it yourself" undercut the headline behaviour.
+- **FAIL CLOSED, never open.** If the merge's touched-path set cannot be computed — git unavailable,
+  unrelated histories (no merge base), unparseable porcelain — the harness falls back to the pre-#448
+  refuse-on-**any**-tracked-dirt rule. Running a merge over user work that could not be *proven* safe
+  would be strictly worse than the bug the narrowing fixes.
+- **The blocking paths are NAMED.** A `DirtyWorkingTree` halt carries the newline-separated, ordinal-sorted
+  blocking paths in `RunReport.MergeOnSuccessDetail` (threaded out of the provider's
+  `LastMergeOnSuccessDetail`, the same channel `HookRejected` uses for the hook's stderr) and the CLI lists
+  them, so the user is never sent to `git status` to discover what blocked a green run's delivery. Null —
+  and the generic wording — only in the fail-closed case where nothing could be enumerated.
+- `Conflict` and `HookRejected` are unchanged: this narrows *which* dirt refuses, not what happens once the
+  merge actually runs.
 
 **Autonomous mode reconciles delivery with the #340 default (issue #361, `docs/plans/12-autonomous-mode.md`
 §1/§5.2).** A run that recorded **any** `proceeded-best-guess` **or** `proceeded-unreviewed` decision (§7

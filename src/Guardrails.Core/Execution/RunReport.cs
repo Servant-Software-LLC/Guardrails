@@ -167,10 +167,14 @@ public sealed record RunReport
     public MergeOnSuccessResult? MergeOnSuccessOutcome { get; init; }
 
     /// <summary>
-    /// Free-text detail for the merge-on-success outcome when it carries one — specifically the git
-    /// hook's stderr when <see cref="MergeOnSuccessOutcome"/> is
-    /// <see cref="MergeOnSuccessResult.HookRejected"/> (issues #149/#150). Null otherwise. The CLI
-    /// renders this verbatim so the user sees exactly why their hook rejected the user-branch merge.
+    /// Free-text detail for the merge-on-success outcome when it carries one; null otherwise. The CLI
+    /// renders it so the user sees exactly what refused the delivery. Two carriers:
+    /// <list type="bullet">
+    ///   <item><see cref="MergeOnSuccessResult.HookRejected"/> — the git hook's stderr, verbatim
+    ///     (issues #149/#150).</item>
+    ///   <item><see cref="MergeOnSuccessResult.DirtyWorkingTree"/> — the newline-separated, ordinal-sorted
+    ///     TRACKED paths whose uncommitted changes blocked the merge (issue #448).</item>
+    /// </list>
     /// </summary>
     public string? MergeOnSuccessDetail { get; init; }
 

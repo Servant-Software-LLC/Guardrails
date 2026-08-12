@@ -241,6 +241,9 @@ public sealed class MergeOnSuccessTests
         public void RollbackMerge(IntegrationHandle integ, CancellationToken ct) =>
             _inner.RollbackMerge(integ, ct);
 
+        /// <summary>Forward the inner provider's detail (the #448 blocking-path list / a hook's stderr).</summary>
+        public string? LastMergeOnSuccessDetail => _inner.LastMergeOnSuccessDetail;
+
         /// <summary>
         /// Commits a conflicting change to the user's branch on <paramref name="_repoPath"/>
         /// (the <c>src/shared.txt</c> file that the plan task also wrote) and then delegates to
@@ -262,6 +265,79 @@ public sealed class MergeOnSuccessTests
             TempGitRepo.Git(_repoPath, "add", _conflictRelPath);
             TempGitRepo.Git(_repoPath, "commit", "-m", "user: concurrent conflicting advance");
             UserBranchHeadAfterAdvance = TempGitRepo.Git(_repoPath, "rev-parse", "HEAD").Trim();
+
+            return _inner.MergePlanBranchIntoUserBranch(integ, ct);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // DirtyTrackedFileBeforeMergeDecorator (issue #448) — wraps a real IWorktreeProvider and, inside
+    // MergePlanBranchIntoUserBranch, writes to a TRACKED file in the user's checkout WITHOUT committing,
+    // immediately before delegating. This models the real incident faithfully: the RUN ITSELF dirties a
+    // tracked file mid-run (the waved run regenerating its own per-wave diagram.md/.html at a wave
+    // boundary) and then meets its own dirty-tree gate at delivery time. Optionally `git add`s the
+    // change so the STAGED-vs-unstaged half of the gate can be driven too.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    private sealed class DirtyTrackedFileBeforeMergeDecorator : IWorktreeProvider
+    {
+        private readonly IWorktreeProvider _inner;
+        private readonly string _repoPath;
+        private readonly string _dirtyRelPath;
+        private readonly string _dirtyContent;
+        private readonly bool _stage;
+
+        /// <summary>The plan branch name captured at merge time, so a test can assert it survived the halt.</summary>
+        public string? PlanBranchName { get; private set; }
+
+        public DirtyTrackedFileBeforeMergeDecorator(
+            IWorktreeProvider inner, string repoPath, string dirtyRelPath, string dirtyContent, bool stage = false)
+        {
+            _inner = inner;
+            _repoPath = repoPath;
+            _dirtyRelPath = dirtyRelPath;
+            _dirtyContent = dirtyContent;
+            _stage = stage;
+        }
+
+        public IntegrationHandle CreateIntegration(string planName, string runId, CancellationToken ct) =>
+            _inner.CreateIntegration(planName, runId, ct);
+
+        public WorktreeHandle CreateSegment(string taskId, int attempt, IntegrationHandle integ, CancellationToken ct) =>
+            _inner.CreateSegment(taskId, attempt, integ, ct);
+
+        public WorktreeHandle ReuseSegment(WorktreeHandle upstreamSegment, string taskId, int attempt) =>
+            _inner.ReuseSegment(upstreamSegment, taskId, attempt);
+
+        public WorktreeHandle ForkFromTip(string producerRecordedSha, string taskId, int attempt) =>
+            _inner.ForkFromTip(producerRecordedSha, taskId, attempt);
+
+        public IntegrationResult Integrate(WorktreeHandle segment, IntegrationHandle integ, CancellationToken ct) =>
+            _inner.Integrate(segment, integ, ct);
+
+        public void Discard(WorktreeHandle handle) => _inner.Discard(handle);
+
+        public void PruneOrphans(IReadOnlyCollection<string> liveTaskIds, IntegrationHandle integ) =>
+            _inner.PruneOrphans(liveTaskIds, integ);
+
+        public void RollbackMerge(IntegrationHandle integ, CancellationToken ct) =>
+            _inner.RollbackMerge(integ, ct);
+
+        /// <summary>The inner provider's detail (the #448 blocking-path list) must reach the Scheduler.</summary>
+        public string? LastMergeOnSuccessDetail => _inner.LastMergeOnSuccessDetail;
+
+        public MergeOnSuccessResult MergePlanBranchIntoUserBranch(IntegrationHandle integ, CancellationToken ct)
+        {
+            PlanBranchName = integ.PlanBranchName;
+
+            string fullPath = Path.Combine(
+                _repoPath, _dirtyRelPath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            File.WriteAllText(fullPath, _dirtyContent);
+            if (_stage)
+            {
+                TempGitRepo.Git(_repoPath, "add", _dirtyRelPath);
+            }
 
             return _inner.MergePlanBranchIntoUserBranch(integ, ct);
         }
@@ -650,6 +726,282 @@ public sealed class MergeOnSuccessTests
         Assert.NotNull(decorator.UserBranchHeadAfterAdvance);
         Assert.Equal(decorator.UserBranchHeadAfterAdvance, repo.HeadSha());
         Assert.Equal(originalBranch, repo.CurrentBranch());
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+    // Issue #448 — the dirty-tree gate is an INTERSECTION, not "any dirt anywhere".
+    //
+    // The incident: a wholly-green (14/14) WAVED run regenerated its own TRACKED per-wave
+    // diagram.md/.html mid-run, then refused its own mergeOnSuccess delivery on that self-inflicted
+    // dirt — even though the dirty paths (docs/plans/**/diagram.*) were provably DISJOINT from the
+    // merge's path set (src/, tests/, one doc) and git merged them by hand with zero conflicts.
+    // ═════════════════════════════════════════════════════════════════════════════════════════
+
+    /// <summary>Commit a tracked file into the repo so a later uncommitted edit to it counts as TRACKED dirt.</summary>
+    private static void CommitTrackedFile(TempGitRepo repo, string relPath, string content)
+    {
+        string full = Path.Combine(repo.RepoPath, relPath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllText(full, content);
+        TempGitRepo.Git(repo.RepoPath, "add", relPath);
+        TempGitRepo.Git(repo.RepoPath, "commit", "-m", $"track {relPath}");
+    }
+
+    private static string ReadRepoFile(TempGitRepo repo, string relPath) =>
+        File.ReadAllText(Path.Combine(repo.RepoPath, relPath.Replace('/', Path.DirectorySeparatorChar)));
+
+    /// <summary>Write an uncommitted change to an already-tracked file in the user's checkout.</summary>
+    private static void DirtyTrackedFile(TempGitRepo repo, string relPath, string content) =>
+        File.WriteAllText(Path.Combine(repo.RepoPath, relPath.Replace('/', Path.DirectorySeparatorChar)), content);
+
+    // A tracked path in the shape the incident produced — a per-wave diagram the run regenerates itself.
+    private const string DiagramRelPath = "docs/plans/salvage/wave-03-provision/diagram.md";
+    private const string RegeneratedDiagram = "diagram: REGENERATED BY THE RUN\n";
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #448 (i) — THE REGRESSION: dirt DISJOINT from the merge's paths must now DELIVER.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #448, the regression the fix exists for: a wholly-green run whose own mid-run write dirtied a
+    /// TRACKED file that is DISJOINT from everything the merge would update now DELIVERS (fast-forward)
+    /// instead of refusing itself with <see cref="MergeOnSuccessResult.DirtyWorkingTree"/>. Modelled on the
+    /// real incident — the dirty file is a per-wave <c>docs/plans/**/diagram.md</c> written by the run,
+    /// while the merge touches only <c>src/app.cs</c>. Also asserts the delivery preserved that uncommitted
+    /// WIP byte-for-byte and left it dirty, exactly as a manual <c>git merge</c> would.
+    /// </summary>
+    [Fact]
+    public async Task MergeOnSuccess_DirtDisjointFromMergePaths_DeliversAndPreservesWip()
+    {
+        using var repo = new TempGitRepo();
+        CommitTrackedFile(repo, DiagramRelPath, "diagram: stale\n");
+        string initialHead = repo.HeadSha();
+        string originalBranch = repo.CurrentBranch();
+
+        // The plan's only task writes src/app.cs — DISJOINT from the diagram path. mergeOnSuccess default ON.
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        // The decorator dirties the tracked diagram at merge time — i.e. the RUN created the dirt.
+        var decorator = new DirtyTrackedFileBeforeMergeDecorator(
+            new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            repo.RepoPath, DiagramRelPath, RegeneratedDiagram);
+
+        var (report, _) = await RunWithProviderAsync(planDir, decorator, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "#448 disjoint-dirt: expected all tasks to succeed; " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        // THE FIX: pre-#448 this returned DirtyWorkingTree and delivered nothing.
+        Assert.Equal(MergeOnSuccessResult.FastForwarded, report.MergeOnSuccessOutcome);
+        Assert.Equal(originalBranch, report.DeliveredToBranch);
+        Assert.Null(report.MergeOnSuccessDetail);
+        Assert.False(report.WhollyGreenButUndelivered);
+
+        // Delivery is REAL: the user's branch advanced and the deliverable landed in their checkout.
+        Assert.NotEqual(initialHead, repo.HeadSha());
+        Assert.Equal(originalBranch, repo.CurrentBranch());
+        Assert.True(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")),
+            "#448: the narrowed gate must let the delivery land the plan's file in the user's checkout.");
+
+        // The uncommitted WIP survived untouched and is still dirty — git never rewrites a path it
+        // does not merge, which is exactly why refusing on it was wrong.
+        Assert.Equal(RegeneratedDiagram, ReadRepoFile(repo, DiagramRelPath));
+        Assert.Contains("diagram.md",
+            TempGitRepo.Git(repo.RepoPath, "status", "--porcelain", "--untracked-files=no"),
+            StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #448 (ii) — dirt INTERSECTING the merge's paths still refuses, and NAMES the path.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #448, the half that must NOT change: an uncommitted change to a tracked file the merge WOULD
+    /// update still refuses with <see cref="MergeOnSuccessResult.DirtyWorkingTree"/> and the user's branch
+    /// is untouched. Part B on top: the halt now NAMES the offending path via
+    /// <see cref="RunReport.MergeOnSuccessDetail"/> — and names ONLY it. A second, DISJOINT dirty file is
+    /// present throughout; its absence from the detail is the proof the gate really narrowed rather than
+    /// just relabelling the old any-dirt-anywhere refusal.
+    /// </summary>
+    [Fact]
+    public async Task MergeOnSuccess_DirtIntersectsMergePaths_RefusesAndNamesOnlyTheBlockingPath()
+    {
+        using var repo = new TempGitRepo();
+        const string appRelPath = "src/app.cs";
+        CommitTrackedFile(repo, appRelPath, "class App { /* original */ }\n");
+        CommitTrackedFile(repo, DiagramRelPath, "diagram: stale\n");
+        string originalBranch = repo.CurrentBranch();
+
+        // The task REWRITES the tracked src/app.cs ⇒ the merge's path set contains it.
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: appRelPath, taskFileContent: "class App { /* from the plan */ }");
+
+        // Disjoint dirt present from the start (the incident's shape) …
+        DirtyTrackedFile(repo, DiagramRelPath, RegeneratedDiagram);
+        string headBeforeDelivery = repo.HeadSha();
+
+        // … plus INTERSECTING dirt created at merge time.
+        const string appWip = "class App { /* my uncommitted WIP */ }\n";
+        var decorator = new DirtyTrackedFileBeforeMergeDecorator(
+            new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            repo.RepoPath, appRelPath, appWip);
+
+        var (report, _) = await RunWithProviderAsync(planDir, decorator, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "#448 intersecting-dirt: the tasks all pass; only the end-of-run delivery halts. " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        Assert.Equal(MergeOnSuccessResult.DirtyWorkingTree, report.MergeOnSuccessOutcome);
+        Assert.Null(report.DeliveredToBranch);
+
+        // Part B: the blocking path is NAMED …
+        Assert.NotNull(report.MergeOnSuccessDetail);
+        Assert.Contains(appRelPath, report.MergeOnSuccessDetail!, StringComparison.Ordinal);
+        // … and ONLY it — the disjoint dirty file must not be blamed (the narrowing, proven).
+        Assert.DoesNotContain("diagram.md", report.MergeOnSuccessDetail!, StringComparison.Ordinal);
+
+        // The user's branch is untouched and their WIP is intact; the work stays on the plan branch.
+        Assert.Equal(headBeforeDelivery, repo.HeadSha());
+        Assert.Equal(originalBranch, repo.CurrentBranch());
+        Assert.Equal(appWip, ReadRepoFile(repo, appRelPath));
+        Assert.NotNull(decorator.PlanBranchName);
+        Assert.True(repo.BranchExists(decorator.PlanBranchName!),
+            "#448: a refused delivery must leave the plan branch intact.");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #448 — merge SHAPE matters: a real (non-FF) merge demands a CLEAN INDEX, so disjoint dirt is
+    // safe there only while it is UNSTAGED. Two tests pin both sides of that measured git behaviour.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #448, non-FF + UNSTAGED disjoint dirt: the user's branch advanced mid-run (so delivery is a
+    /// real merge, not a fast-forward) while a disjoint tracked file carries unstaged changes. git merges
+    /// that cleanly, so delivery must SUCCEED with <see cref="MergeOnSuccessResult.Merged"/> — and the
+    /// unstaged WIP must survive, uncommitted, outside the merge commit.
+    /// </summary>
+    [Fact]
+    public async Task MergeOnSuccess_NonFf_UnstagedDisjointDirt_DeliversViaRealMerge()
+    {
+        using var repo = new TempGitRepo();
+        const string otherRelPath = "src/other.cs";
+        CommitTrackedFile(repo, DiagramRelPath, "diagram: stale\n");
+        CommitTrackedFile(repo, otherRelPath, "class Other {}\n");
+        string originalBranch = repo.CurrentBranch();
+
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        // Inner: dirty the disjoint diagram (UNSTAGED). Outer: advance the user's branch on a file the
+        // plan never touches ⇒ a clean, non-fast-forward merge.
+        var dirtying = new DirtyTrackedFileBeforeMergeDecorator(
+            new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            repo.RepoPath, DiagramRelPath, RegeneratedDiagram, stage: false);
+        var decorator = new AdvanceUserBranchBeforeMergeDecorator(
+            dirtying, repo.RepoPath, otherRelPath, "class Other { /* user advanced */ }\n");
+
+        var (report, _) = await RunWithProviderAsync(planDir, decorator, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "#448 non-FF unstaged: expected all tasks to succeed; " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        Assert.Equal(MergeOnSuccessResult.Merged, report.MergeOnSuccessOutcome);
+        Assert.Equal(originalBranch, report.DeliveredToBranch);
+        Assert.True(File.Exists(Path.Combine(repo.RepoPath, "src", "app.cs")));
+
+        // A real merge commit exists, and the unstaged WIP was NOT swept into it.
+        Assert.NotEmpty(TempGitRepo.Git(repo.RepoPath, "log", "--merges", "--format=%H").Trim());
+        Assert.Equal(RegeneratedDiagram, ReadRepoFile(repo, DiagramRelPath));
+        Assert.Contains("diagram.md",
+            TempGitRepo.Git(repo.RepoPath, "status", "--porcelain", "--untracked-files=no"),
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Issue #448, non-FF + STAGED disjoint dirt: git refuses a real merge whenever the INDEX differs from
+    /// HEAD, even on a path the merge never touches (measured — a fast-forward tolerates the same staged
+    /// change). The gate must therefore still refuse here, and refuse HONESTLY: the outcome is
+    /// <see cref="MergeOnSuccessResult.DirtyWorkingTree"/> naming the staged path, NOT the
+    /// <see cref="MergeOnSuccessResult.Conflict"/> a naive path-intersection-only narrowing would have
+    /// produced by letting <c>git merge</c> fail through to the conflict branch.
+    /// </summary>
+    [Fact]
+    public async Task MergeOnSuccess_NonFf_StagedDisjointDirt_RefusesAsDirtyNotConflict()
+    {
+        using var repo = new TempGitRepo();
+        const string otherRelPath = "src/other.cs";
+        CommitTrackedFile(repo, DiagramRelPath, "diagram: stale\n");
+        CommitTrackedFile(repo, otherRelPath, "class Other {}\n");
+        string originalBranch = repo.CurrentBranch();
+
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: "src/app.cs", taskFileContent: "class App {}");
+
+        // Identical to the test above except the disjoint dirt is STAGED.
+        var dirtying = new DirtyTrackedFileBeforeMergeDecorator(
+            new GitWorktreeProvider(repo.RepoPath, repo.WorktreeRoot),
+            repo.RepoPath, DiagramRelPath, RegeneratedDiagram, stage: true);
+        var decorator = new AdvanceUserBranchBeforeMergeDecorator(
+            dirtying, repo.RepoPath, otherRelPath, "class Other { /* user advanced */ }\n");
+
+        var (report, _) = await RunWithProviderAsync(planDir, decorator, TestContext.Current.CancellationToken);
+
+        Assert.True(report.AllSucceeded,
+            "#448 non-FF staged: the tasks all pass; only the end-of-run delivery halts. " +
+            string.Join(", ", report.Tasks.Select(t => $"{t.TaskId}={t.Outcome}")));
+
+        Assert.Equal(MergeOnSuccessResult.DirtyWorkingTree, report.MergeOnSuccessOutcome);
+        Assert.NotNull(report.MergeOnSuccessDetail);
+        Assert.Contains("diagram.md", report.MergeOnSuccessDetail!, StringComparison.Ordinal);
+
+        // Nothing was delivered and the user's branch sits at its own advance commit.
+        Assert.Null(report.DeliveredToBranch);
+        Assert.NotNull(decorator.UserBranchHeadAfterAdvance);
+        Assert.Equal(decorator.UserBranchHeadAfterAdvance, repo.HeadSha());
+        Assert.Equal(originalBranch, repo.CurrentBranch());
+        Assert.Empty(TempGitRepo.Git(repo.RepoPath, "log", "--merges", "--format=%H").Trim());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+    // #448 part B through the REAL CLI — the user must read the blocking path off the console.
+    // ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Issue #448 part B, end to end: <c>guardrails run</c> on a wholly-green plan whose delivery is
+    /// refused prints the BLOCKING PATH, so the user is never sent to <c>git status</c> to discover what
+    /// stopped a green run from delivering. Exit stays <see cref="ExitCodes.TaskFailed"/> (the work is
+    /// durable on the plan branch but the user must act, SSOT §5.3).
+    /// </summary>
+    [Fact]
+    public async Task Cli_DirtyIntersectingPath_HaltsAndNamesTheBlockingPath()
+    {
+        using var repo = new TempGitRepo();
+        const string appRelPath = "src/app.cs";
+        CommitTrackedFile(repo, appRelPath, "class App { /* original */ }\n");
+        string headBeforeRun = repo.HeadSha();
+
+        // The task rewrites the tracked src/app.cs; the user has uncommitted changes to that same file.
+        string planDir = CreatePlanInRepo(
+            repo.RepoPath, mergeOnSuccess: null,
+            taskFile: appRelPath, taskFileContent: "class App { /* from the plan */ }");
+        DirtyTrackedFile(repo, appRelPath, "class App { /* my uncommitted WIP */ }\n");
+
+        var io = new StringConsoleIo();
+        int exitCode = await InvokeCliAsync(io, "run", planDir, "--no-ui", "--no-log-server");
+
+        Assert.Equal(ExitCodes.TaskFailed, exitCode);
+        Assert.Contains("uncommitted changes", io.OutText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(appRelPath, io.OutText, StringComparison.Ordinal);
+        // Nothing was delivered — the user's branch is untouched.
+        Assert.Equal(headBeforeRun, repo.HeadSha());
     }
 
     // ─────────────────────────────────────────────────────────────────────────────────────────

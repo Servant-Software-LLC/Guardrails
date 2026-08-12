@@ -641,7 +641,12 @@ public sealed class Scheduler
         if (report.AllSucceeded && deliver && _worktreeProvider != null && integ != null)
         {
             mergeOutcome = _worktreeProvider.MergePlanBranchIntoUserBranch(integ, cancellationToken);
-            if (mergeOutcome == MergeOnSuccessResult.HookRejected)
+
+            // Thread the provider's detail out for the two halts that carry one: the git hook's stderr
+            // (HookRejected, #149/#150) and — since #448 — the blocking dirty paths (DirtyWorkingTree),
+            // so the CLI can NAME what refused a green run's delivery instead of sending the user to
+            // `git status`.
+            if (mergeOutcome is MergeOnSuccessResult.HookRejected or MergeOnSuccessResult.DirtyWorkingTree)
             {
                 mergeDetail = _worktreeProvider.LastMergeOnSuccessDetail;
             }

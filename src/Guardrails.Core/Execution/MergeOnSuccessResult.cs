@@ -16,9 +16,18 @@ public enum MergeOnSuccessResult
     Conflict,
 
     /// <summary>
-    /// The user's working tree was dirty (uncommitted changes) at merge-back time, so the harness
-    /// refused to run git over uncommitted user work and halted to needs-human (plan 08 §5.3 / F4).
-    /// The user's branch was not modified.
+    /// The user's working tree had uncommitted changes to TRACKED files THIS MERGE WOULD UPDATE at
+    /// merge-back time, so the harness refused to run git over uncommitted user work and halted to
+    /// needs-human (plan 08 §5.3 / F4). The user's branch was not modified.
+    /// <para>
+    /// <b>Narrowed in issue #448:</b> dirt DISJOINT from the merge's path set no longer refuses —
+    /// git itself merges that case cleanly and preserves the user's WIP, and the old any-dirt-anywhere
+    /// rule let a run's own generated artifacts (regenerated per-wave diagrams) refuse a wholly-green
+    /// run's delivery. The blocking paths are exposed via
+    /// <see cref="IWorktreeProvider.LastMergeOnSuccessDetail"/> → <see cref="RunReport.MergeOnSuccessDetail"/>
+    /// so the CLI can name them. The gate FAILS CLOSED: if the merge's path set cannot be computed,
+    /// any tracked dirt still refuses.
+    /// </para>
     /// </summary>
     DirtyWorkingTree,
 
