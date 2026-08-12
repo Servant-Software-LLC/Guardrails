@@ -7,7 +7,9 @@
 > **DoR revision 3 adds three items to this stage** (from the reviewed verifier charter,
 > `model-tiering-verifier.charter.md`): the **three model axes** `costly`/`strength`/
 > `specialization` on each registry block (DoR §4.1); the **`guardrails providers init`**
-> registry generator (DoR §4.3); and `tiering.verifier.defaultTier` (DoR §6.5). It also
+> registry generator (DoR §4.3); and the verifier FLOOR `tiering.verifier.minTier` (DoR §6.5.1 —
+> settled 2026-08-12 as a floor, NOT a default: it never selects the judge's rung, it only refuses
+> one that came out below it). It also
 > **retires `routing.rank`** in favour of ascending-`strength` ordering (DoR §4.2) and
 > **reallocates the GR block to GR2043–GR2053** (v1 takes GR2043–GR2052; GR2053 is v2) — the
 > original GR2037–GR2045 reservation was taken by shipped work while this design sat in draft
@@ -61,8 +63,11 @@ test fails. §3 documents `task.json`'s schema (where the new tier field joins `
 6. **The three model axes (DoR §4.1, charter Decision 7):** `costly` (bool), `strength` (integer
    ≥ 1, higher = stronger), `specialization` (`coding|planning-reasoning|general|unspecified`) —
    **top-level on the block**, all optional, malformed = GR2049. Not consumed in this stage; the
-   resolver (stage 2) is the first reader. **`routing.rank` is NOT implemented** — ordering comes
-   from ascending `strength` (DoR §4.2/D25).
+   resolver (stage 2) is the first reader. **`routing.rank` is NOT implemented** (settled OD-F) —
+   ordering comes from ascending `strength`: *the weakest model that can serve the tier goes first*
+   (DoR §4.2/D25). A `routing.rank` key present in a config raises the retired-field warning
+   **GR2054** rather than being silently ignored, so a migrated config's ordering can never change
+   without the author being told.
 7. **`guardrails providers init` (DoR §4.3, charter Decision 8):** enumerate each configured
    provider's models where the `kind` has an enumeration surface, and write/merge the blocks into
    `guardrails.json` **with the legal values for each axis as `//` comments**. Idempotent (never

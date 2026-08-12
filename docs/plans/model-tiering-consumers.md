@@ -59,8 +59,12 @@ Per-attempt model logging already exists (#198, shipped) — #230's cost account
    actor is *weak* (declared `strength`, else the `kind != "claude"` fallback) the judge is the
    **weakest candidate at that rung whose `strength` is strictly greater** — a **strength** bump,
    never a tier bump. `specialization: planning-reasoning` breaks ties among candidates already
-   meeting the required strength. The bump obeys the costly floor: **if the only stronger block is
-   `costly`, the judge stays put and an advisory fires** — it degrades, it never overspends. Apply
+   meeting the required strength. Then apply the **verifier floor** `tiering.verifier.minTier` (DoR
+   §6.5.1): if the resolved rung came out *below* it, raise it — the floor **never selects** a rung
+   and **never lowers** a result. The bump and the floor both obey the costly floor: **if the only
+   stronger (or only floor-satisfying) block is `costly`, the judge stays put and an advisory
+   fires** — it degrades, it never overspends, it never climbs a rung to compensate, and it is
+   **not** an error (no GR code: a verifier condition may never fail a build). Apply
    the **judge block's** `guardrailOverrides`, not the actor block's. Record the judge route in the
    attempt's `judge {...}` provenance. Surface at **BOTH boundaries (charter Decision 9, both v1)**:
    a **startup preflight** advisory line over the statically-predicted pairs, **and a per-attempt
@@ -120,6 +124,10 @@ Per-attempt model logging already exists (#198, shipped) — #230's cost account
 - **The verifier rule:** a weak actor's judge resolves one strength rank up; a strong actor's judge
   does not move; when the only stronger block is `costly` the judge stays put, an advisory is
   emitted, **and the run proceeds** (it degrades, it never overspends).
+- **The verifier floor:** with `tiering.verifier.minTier: "medium"`, an `easy` task's judge resolves
+  at `medium`; a judge that already resolved at `hard` is **untouched** (the floor never lowers);
+  and a floor that no non-costly block can serve produces an **advisory, not an error**, with the
+  judge left at its unfloored result.
 - **Invariant 7 extends to the verifier half:** a routing-enabled config + zero-tag plan carrying a
   judge guardrail does **zero** judge-tiering activity — no bump, no preflight line, no `judge`
   provenance, no report line.

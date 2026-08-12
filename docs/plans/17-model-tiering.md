@@ -27,8 +27,16 @@
 > exists, plus a de-duplication rule. (b) The **verifier-only provider-kind fallback** (D21a) is
 > **ratified**. (c) **OD-G is answered — `costly` means "never automatic, full stop"**; the
 > unservable-tier consequence is intended and is a validate-time **error**, shown with its exact
-> message in §14.1. Three questions remain open and are carried as answerable `:::question` blocks
-> in the charter (§11).
+> message in §14.1.
+>
+> **Charter review closed (2026-08-12) — all 8 `:::question` blocks now carry answers.** The last
+> three: (d) **`providers init` degrades honestly** — never invents a model name, now a hard rule
+> with its reason (§4.3). (e) **`routing.rank` is dropped** — candidates order by ascending
+> `strength`, *weakest model that can serve the tier first*, with warning GR2054 on a leftover key
+> (§4.2). (f) **the plan-wide verifier knob becomes a FLOOR** — `tiering.verifier.minTier`, which
+> **changed the design**: it never selects, only refuses a result that came out too low; it
+> collapses charter Decisions 4 and 6 into one floor concept and moves it from v2 into v1 (§6.5.1).
+> **Nothing is open in the charter.**
 
 > **Status: DRAFT (revised ×2) — for #106 inline draft-PR review.** This document is the
 > contract-locked, build-ready design of record for the model-tiering epic (#201) and its
@@ -174,12 +182,16 @@ Settled, and **in v1**:
 - **The registry is generated, then annotated** (D23, §4.3 — charter D8): `guardrails providers
   init` enumerates what it can and writes the blocks into `guardrails.json` **with the legal axis
   values as `//` comments**, idempotently and without ever overwriting a human annotation.
-- **The verifier route is v1 and static** (D24, §6.5 — charter D1/D2/D4/D5/D7/D9/D10): a judge
+- **The verifier route is v1 and static** (D24, §6.5 — charter D1/D2/D5/D7/D9/D10): a judge
   guardrail resolves its own route ≥ the actor's, with a **strength** bump when the actor is weak;
-  violations are **advisory**, never blocking.
-- **`routing.rank` is retired in favour of ordering by ascending `strength`** (D25, §4/§6.2) —
-  one ordering axis instead of two with opposite polarity. **This is the architect's call, not a
-  maintainer ruling** — see §11 (OD-F) for the one-line overrule.
+  violations are **advisory**, never blocking. Surfaced at **both** boundaries (preflight + JIT),
+  both v1.
+- **The plan-wide verifier knob is a FLOOR, not a default** (D27, §6.5.1 — charter D4 + D6, which
+  it collapses into one concept): `tiering.verifier.minTier` never selects the judge's rung, it only
+  refuses one that came out below it.
+- **`routing.rank` is retired in favour of ordering by ascending `strength`** (D25, §4.2/§6.2) —
+  *the weakest model that can serve the tier goes first*, one ordering axis instead of two with
+  opposite polarity. Settled 2026-08-12; a leftover `rank` key raises warning GR2054.
 - **`action.effort` corrected** (D3, §5): #200 shipped `action.model` only. Every reference to
   "`action.model`/`action.effort` (already shipped, #200)" in the briefs/issues overstates —
   `effort` is a **new** field this epic introduces (schema in v1, consumed by the v1 resolver).
@@ -343,21 +355,41 @@ Three new optional keys per block (full JSON in §12.1):
   wrong types) is **GR2044**. The prose-vs-tags question is thereby
   answered: **both, with a hard deterministic/advisory split** (D6).
 
-**`routing.rank` is retired (D25 — the architect's call, overrulable in one line; OD-F).** Revision
+**`routing.rank` is RETIRED (D25 — settled 2026-08-12, was OD-F).** Revision
 2 gave `routing` a `rank` (lower wins) to order same-tier candidates. Now that `strength` exists as
 a declared, totally-ordered axis (§4.1), `rank` would be **a second ordering axis with the opposite
 polarity** — "rank 1 beats rank 2" next to "strength 5 beats strength 2" is a bug waiting to be
-written, twice, by different people. So:
+written, twice, by different people. The maintainer chose to drop it. The settled rule:
 
-> **Same-rung candidates are ordered by ASCENDING `strength`** (weakest sufficient first — the
-> token-saving thesis, stated as an ordering), **unspecified last, ties by declaration order.**
+> **Same-rung candidates are ordered by ASCENDING `strength` — the weakest model that can serve the
+> tier goes first.** Unspecified `strength` sorts last; ties break by declaration order.
 
-Nothing expressible with `rank` is lost that matters: "sonnet should beat local-kimi at `medium`"
-is more honestly said by **removing `medium` from kimi's `tiers`** — i.e. by saying kimi may not
-serve medium — than by out-ranking it while still declaring it eligible. And with **zero**
-annotation the order is declaration order, which is byte-identical to the reviewed
-`rank`-defaults-to-1 behavior. *Overrule path: reinstate `rank` as an optional explicit override
-that wins over strength-ordering when present — one bullet, one validation rule, no other change.*
+**Why ascending, said out loud, because the direction is the whole feature.** This is a
+**cost-minimising default**: the entire premise of #201 is that spending a frontier model on
+routine work is waste, and *"weakest model that can serve the tier goes first"* is that premise
+expressed as an ordering rather than as a preference list somebody has to maintain. What makes it
+safe to default toward the cheap end is the same thing that makes the whole epic safe — **the
+deterministic gate certifies, not the model**: if the weakest eligible model produces bad work, its
+guardrails fail it and the task halts honestly (§14, row 01). A design without that gate could not
+afford this default.
+
+**Replacement idiom — how to say what `rank` used to say.** To express *"sonnet should serve
+`medium`, local-kimi should not"*, **remove `medium` from local-kimi's `routing.tiers`.** That is
+strictly more honest than out-ranking a block while still declaring it eligible: it states the
+capability judgment ("kimi cannot be trusted with medium work") in the place the design reads
+capability judgments, instead of hiding it in a preference number. Eligibility says *may*;
+`strength` says *how strong*; nothing needs to say *prefer*.
+
+**Migration — for anyone who already wrote `routing.rank`.** No config in the wild has one (nothing
+has shipped; `rank` existed only in revision 2 of this document), but the rule if a draft does:
+**delete the `rank` key and, for any block you were ranking DOWN, remove the tiers you were ranking
+it out of.** A leftover `rank` key is simply an unknown property — the loader ignores unknown keys,
+so it neither errors nor does anything, which is the quietest possible failure. **Stage 1 therefore emits a
+validate WARNING — GR2054 `RetiredRoutingRank`** — rather than silently ignoring the key. The
+hazard it closes is real and is exactly the kind this repo refuses to ship: a config carrying
+`rank` would have its candidate ordering **silently change** from rank order to strength order,
+with nothing to tell the author their preference stopped being honored. A retired field that looks
+like it still works is the trap this consolidation existed to remove.
 
 **Reserved-model pattern (D20, now DECLARED rather than incidental — answers review comment 7,
 "reserve Fable for /plan-breakdown; re-attempts must never reach it").**
@@ -463,15 +495,29 @@ Five rulings, each of which an implementer would otherwise have to guess:
    SSOT example already uses `//` comments. A second file would need a precedence-and-merge story
    for zero gain (KISS). *Verified against `src/Guardrails.Core/Loading/PlanJson.cs` at authoring
    time — this is the one charter detail that could have blocked implementation and does not.*
-2. **It never fabricates a model list — enumeration degrades honestly (OD-E).** `openai-compat`
-   has a real enumeration surface (`GET /v1/models`). **The Claude CLI may not**: this is the same
-   feasibility risk as OD-C's usage probe, and the charter's "Guardrails knows the model providers"
-   assumed it away. **Ruling:** for a `kind` with no enumeration surface, the command emits the
-   blocks **already present** in the config, fully annotated, plus an explicit
+2. **It NEVER invents a model name — a hard rule, ratified 2026-08-12 (was OD-E).**
+   `openai-compat` has a real enumeration surface (`GET /v1/models`). **The Claude CLI may not** —
+   the same feasibility risk as OD-C's usage probe, which charter Decision 8's *"Guardrails knows
+   the model providers"* assumed away. The maintainer chose **degrade honestly** over the two
+   alternatives (ship a curated model list; fail the command). **The settled ruling:**
+
+   > A model identifier in the registry may only come from **a provider that reported it** or **a
+   > human who typed it**. `providers init` may never synthesize one — not from a shipped list, not
+   > from a heuristic, not from a previous release's knowledge.
+
+   **The reason this is a hard rule and not a nicety:** a registry entry is not documentation, it
+   is a **routing target**. A fabricated or stale model id would be selected by the resolver and
+   **spent against at a model that may not exist** — an authoring-time guess turning into a runtime
+   failure, or worse, silent substitution by a provider that resolves unknown names loosely. The
+   generator has no way to know, so it does not guess. This is the same rule as GR2043's refusal to
+   silently fall back to `claude` for an unrecognized `kind` (§4.2), applied one layer earlier.
+
+   **What it does instead:** for a `kind` with no enumeration surface, it emits the blocks
+   **already present** in the config, fully annotated, plus an explicit
    `// could not enumerate models for kind "claude" — add blocks manually; the legal axis values
-   are above` note. It never invents model identifiers, and it never fails the command. Honest
-   halts, applied to a generator. **OD-E (§11) asks the maintainer to accept this degradation for
-   the flagship provider** — the same shape of sign-off as OD-C, and for the same reason.
+   are above` note. It **never fails the command** — the annotation half of its job still succeeds,
+   which is what makes "degrade" the right word rather than "give up". Honest halts, applied to a
+   generator.
 3. **It is idempotent and never overwrites a human annotation.** Re-running adds *missing* blocks
    and *missing* comment annotations; it never rewrites an axis a human has set, never reorders
    blocks, and never deletes. A generator that clobbers the annotation it exists to solicit is
@@ -802,22 +848,84 @@ line per affected task; the **JIT re-check** records `judge.advisory` in that at
 predicted** (case 1 or 2 above) — the interesting case, and the only one the preflight did not
 already say. The run summary aggregates from provenance, so nothing is lost by the quieter log.
 
-**Config surface (charter Decision 4 — both granularities).** Per-judge override = the frontmatter
-`tier` (already in §5). Per-plan default = **`tiering.verifier.defaultTier`** (optional; overrides
-the rule in step 2 plan-wide). **`tiering.verifier.floor` is deferred to v2 with the ladder** —
-charter Decision 6 words it as *"rides up with escalation, floored"*, and a floor on a value that
-cannot move in static v1 is a knob with no reachable effect (YAGNI).
+### 6.5.1 The verifier floor — `tiering.verifier.minTier` (D27)  [v1]
 
-**Gating (Invariant 7).** The entire verifier half is inert when tiering is unconfigured — see
-invariant 7 for why that is load-bearing rather than tidy.
+**Settled 2026-08-12 (was OD-H), and it CHANGED the design.** Charter Decision 4 asked for "both
+granularities: a per-plan default verifier tier plus a per-task override". Revision 3 read the
+per-plan half as a *default* — a plan-wide override of the rule in step 2. **The maintainer's
+answer makes it a FLOOR instead**, and the distinction is not cosmetic:
+
+| | A default (what revision 3 had) | A floor (what is settled) |
+|---|---|---|
+| Does it choose the judge's tier? | **Yes** — it replaces the rule | **No, never** — the rule in steps 2–3 still chooses |
+| When does it act? | Always, unless a per-judge pin overrides | **Only** when the chosen result came out *below* it |
+| Can it lower a judge? | Yes (a plan-wide `easy` would drag every judge down) | **No.** It only ever raises |
+
+> **`tiering.verifier.minTier` (optional): the resolved judge may never end up below this rung.**
+> It never selects; it only refuses a result that came out too low.
+
+**Resolution order, restated with the floor in place.** Steps 1–3 of §6.5 are unchanged; the floor
+is applied *after* them:
+
+1. Frontmatter `tier` / `runner` pin → wins (see the pin note below).
+2. Judge rung = the actor's effective rung.
+3. Weak-actor **strength** bump.
+4. **Floor:** if the rung from (2)–(3) is below `minTier`, raise it to `minTier` and re-select from
+   `Candidates(minTier)`. **Never the reverse** — a result at or above `minTier` is untouched.
+5. Costly floor (§6.2) applies to every selection above; `specialization` breaks remaining ties.
+
+**Why this is reachable in static v1 — correcting revision 3's own reasoning.** Revision 3 deferred
+`verifier.floor` to v2 on the grounds that "a floor on a value that cannot move in static v1 is a
+knob with no reachable effect." **That argument was wrong, and the answer exposes why:** the judge's
+tier *does* vary in static v1 — it varies **across tasks** (it tracks each task's actor), just not
+across attempts of one task. A plan with `easy` tasks resolves `easy` judges, and *"never verify
+anything with less than a `medium` judge, however trivial the task looked"* is a perfectly reachable
+policy in a purely static run. Only the *escalation-driven* movement (charter Decision 6's "rides up
+with escalation") waits for v2 — and the floor constrains that too, with no second mechanism.
+
+**One floor, not two (reconciling charter Decisions 4 and 6).** Decision 6 already said the judge
+"never drops below a configured verifier floor" without naming the knob; Decision 4 named a knob
+without calling it a floor. **They are the same thing, and `tiering.verifier.minTier` is it.** There
+is exactly one verifier floor concept in this design, it is v1, and in v2 it additionally bounds the
+re-resolution as the actor graduates. *(Vocabulary warning, since this document now says "floor"
+about two different things: the **costly floor** is a floor on harness **autonomy** — which models
+it may choose, §6.2 — while the **verifier floor** is a floor on the judge's **tier** — how weak the
+judge may be. They constrain different axes and never contend.)*
+
+**A pin bypasses the floor; the advisory catches it anyway.** A judge's frontmatter `runner` pin
+names a block directly, so there is no rung for the floor to raise — consistent with §6.1, where an
+explicit pin bypasses resolution on the actor side too. That does mean the floor is bypassable
+per-judge, and it should be: the human who pinned it said what they wanted. **But the safety
+property does not depend on the floor** — the #229 finding and the preflight/JIT advisories compare
+the judge's *actual strength* against the actor's, however that route was reached. **The floor
+governs resolution; the advisory governs reality.** A pin can opt out of the former and never the
+latter.
+
+**When the floor cannot be met without a costly model, it DEGRADES — it does not escalate, and it
+is not an error.** Ruling 3 (§6.2) forbids the harness from auto-selecting a `costly: true` block
+for any reason, and a verifier floor is not an exception. So if `Candidates(minTier)` is empty
+because every block serving that rung is costly, the judge **stays at the best non-costly result
+from steps 2–3** and the standard §6.5 step-5 advisory fires. It does **not** climb to a stronger
+rung (that spends more to satisfy a preference), and it does **not** reach the costly block.
+
+**No new diagnostic code, and that is a deliberate refusal.** An unsatisfiable *actor* tier is
+**GR2046, an error**; an unsatisfiable *verifier* floor is **an advisory line**. Same asymmetry as
+D26, for the same reason: a GR code is a thing that can fail a build, and §12.6 states that no
+verifier condition may ever fail one. The condition is not unreported — the **startup preflight**
+surfaces it before the run, which is precisely the job that boundary exists for. This is the case
+§12.6's "resisting the urge to give it a code is the design" was written for.
+
+**Gating (Invariant 7).** The entire verifier half — floor included — is inert when tiering is
+unconfigured; see invariant 7 for why that is load-bearing rather than tidy.
 
 **Journal.** The judge's resolved route is recorded per attempt alongside the actor's (§9.3), so
 #230-lite's per-tier spend line shows **what verification actually cost** — which is the number
-that will decide whether a bumped judge is worth it.
+that will decide whether a bumped judge is worth it. When the floor raised a judge, `judge.tierSource`
+records `"floor"` so the cost of the policy is attributable to the policy.
 
 **Deferred to v2 with the ladder (charter Decision 6):** re-resolving the judge **upward when the
-actor graduates**, and the verifier floor (§7). *The JIT re-check itself is v1 — v2 gives it a
-moving actor to observe, not a new mechanism.*
+actor graduates** (§7). *Neither the JIT re-check nor the floor is deferred — both are v1; v2 gives
+them a moving actor to act on, not a new mechanism.*
 
 ## 7. The escalation ladder (#228)  [v2 — deferred]
 
@@ -1036,7 +1144,7 @@ Tier fields ride inside `task.json`/frontmatter, so waved plans get tiering for 
 
 | Stage | Contents | Depends on |
 |---|---|---|
-| **Stage 1** (`model-tiering-foundation.md`) | #224 registry (`kind`/`effort`/`routing` + **the three model axes `costly`/`strength`/`specialization`, §4.1** + GR2053–GR2052 validation + sentinel update; non-routable-default warning §4.2) ∥ **`guardrails providers init` registry generation (§4.3)** ∥ #225 **gated** tagging (`action.tier`, frontmatter `tier`, `tiering.defaultTier`, `tiering.verifier.defaultTier`, skill doctrine — writes nothing when tiering unconfigured, §5) | this DoR reviewed |
+| **Stage 1** (`model-tiering-foundation.md`) | #224 registry (`kind`/`effort`/`routing` + **the three model axes `costly`/`strength`/`specialization`, §4.1** + GR2043–GR2054 validation + sentinel update; non-routable-default warning §4.2) ∥ **`guardrails providers init` registry generation (§4.3)** ∥ #225 **gated** tagging (`action.tier`, frontmatter `tier`, `tiering.defaultTier`, `tiering.verifier.minTier`, skill doctrine — writes nothing when tiering unconfigured, §5) | this DoR reviewed |
 | **Stage 2** (`model-tiering-consumers.md`, static subset) | #226-**static** resolver (§6.1 precedence incl. `action.runner`/`action.effort`, §6.2 candidate selection **+ the costly floor**, §6.3 unavailability→#115, **§6.5 the verifier route + BOTH boundaries — startup preflight AND per-attempt JIT re-check**, `no-route`, provenance fields §9.3 **incl. `judge`**) ∥ #229 review check **+ the judge-weaker-than-actor / equal-and-weak findings** ∥ #230-**lite** per-tier spend line | Stage 1 |
 | **#223** (standalone) | `openai-compat` runner class filling the §4.4 seam | Stage 1 (the `kind` seam) + real local endpoint available |
 
@@ -1087,31 +1195,26 @@ confirm.
   is a **validate-time ERROR (GR2046)** — not a warning to route around, and not a case for a
   softer "expensive but routable" setting. The axis is **not** split into `costly`-for-accounting
   plus `reserved`-for-the-floor. §4.2, §6.2, §14 (the exact error text).
+- **OD-E — `providers init` enumeration for Claude — ANSWERED: degrade honestly.** Chosen over
+  shipping a curated model list and over failing the command. Now a **hard rule** with its reason
+  stated: a model id may only come from a provider that reported it or a human who typed it, because
+  a registry entry is a **routing target**, and a fabricated id would be spent against at a model
+  that may not exist. §4.3 ruling 2.
+- **OD-F — retiring `routing.rank` — ANSWERED: drop it.** Candidates order by **ascending
+  `strength`** — *the weakest model that can serve the tier goes first* — and "this model should not
+  serve that tier" is expressed by editing its `routing.tiers`. New warning **GR2054** fires on a
+  leftover `rank` key so a migrated config's ordering can never change silently. §4.2, §13.
+- **OD-H — the plan-wide verifier key — ANSWERED, and it CHANGED the design: it is a FLOOR, not a
+  default.** `tiering.verifier.minTier` never *selects* the judge's rung (the actor's-rung-plus-bump
+  rule still does); it only refuses a result that came out below it, and never lowers one. This also
+  **collapses charter Decisions 4 and 6 into one floor concept**, moves the floor from v2 into v1,
+  and degrades to an advisory — never an error, never a costly auto-selection — when it cannot be
+  met. **§6.5.1** is the full ruling, including the rename rationale.
 
-**Still open — three, now carried as answerable `:::question` blocks in
-[`model-tiering-verifier.charter.md`](model-tiering-verifier.charter.md) under *Open decisions (for
-your review)*.** That file is what gets answered in the Charter review pane; §11 below is the
-canonical statement of each, and **if the two ever disagree, the charter's wording is what the
-answer binds to.**
-- **OD-E — `providers init` enumeration degrades for Claude (§4.3 ruling 2).** *Charter block id:
-  `providers-init-claude`.* The charter's Decision 8 assumes Guardrails can enumerate a provider's
-  models. For `openai-compat` that is `GET /v1/models`; **for the Claude CLI there may be no stable
-  list surface** — the same feasibility risk as OD-C, which the charter did not price. The design
-  degrades honestly (emit the existing blocks, annotated, plus an explicit "could not enumerate"
-  note; never fabricate a model list). **Sign-off asked: is annotate-only acceptable for the
-  flagship provider?** If not, Decision 8 needs a different mechanism (a curated shipped model list
-  would go stale and is therefore not proposed).
-- **OD-F — retiring `routing.rank` in favour of ascending-`strength` ordering (D25, §4.2).**
-  *Charter block id: `retire-rank`.* **This is the architect's call** — flagged because two ordering
-  axes with opposite polarity is a defect generator, and `strength` is now mandated by charter
-  Decision 7 while `rank` is not. Zero-annotation behavior is unchanged either way. *Overrule in one
-  line: "keep `rank` as an explicit override that wins when present."*
-- **OD-H — is `tiering.verifier.defaultTier` wanted in v1 at all (§6.5)?** *Charter block id:
-  `verifier-default-tier`.* Charter Decision 4 asked
-  for both granularities. The per-judge override (frontmatter `tier`) and the *rule-based* default
-  (judge = actor's rung, bumped when weak) may already cover every real case, making the per-plan
-  key a knob nobody turns. It is one optional key; it is included, and it is the cheapest thing in
-  this design to cut.
+**Nothing is open in the charter.** All eight `:::question` blocks in
+[`model-tiering-verifier.charter.md`](model-tiering-verifier.charter.md) now carry answers; the
+blocks remain as the durable record. §11 above is the canonical statement of each outcome, and
+**if the two ever disagree, the charter is what was answered, so the charter's wording wins.**
 
 **Deferred to v2 — decide with #230-lite dogfood measurement in hand, when/if v2 builds the
 subsystem each one gates. These are NOT open v1 sign-offs.**
@@ -1137,9 +1240,8 @@ subsystem each one gates. These are NOT open v1 sign-offs.**
 ### 12.1 §2 `guardrails.json` — Stage 1 [v1]
 
 Add a top-level optional block (after `preserveAttemptsForSalvage`). **In v1 the `tiering` block
-holds exactly TWO keys — `defaultTier` and `verifier.defaultTier`;** the `thresholdPercent` /
-`probeCacheSeconds` knobs and `verifier.floor` are v2 (they configure probes, threshold prompts,
-and a judge tier that can move — see §12.7).
+holds exactly TWO keys — `defaultTier` and `verifier.minTier`;** the `thresholdPercent` /
+`probeCacheSeconds` knobs are v2 (they configure probes and threshold prompts — see §12.7).
 
 ```jsonc
   "tiering": {                        // OPTIONAL (#201). Tiering is CONFIGURED iff >=1 runner block declares
@@ -1148,11 +1250,14 @@ and a judge tier that can move — see §12.7).
     "defaultTier": "medium",          // OPTIONAL plan-wide tier for UNTAGGED prompt actions: "easy"|"medium"|"hard"
                                       //   (GR2045 if unrecognized). EXAMPLE value — there is NO built-in default;
                                       //   absent = an untagged task keeps LEGACY resolution (§5).
-    "verifier": {                     // OPTIONAL (#201 verifier half, §6.5). Absent = the rule-based default:
-                                      //   a judge resolves at the ACTOR's rung, bumped one STRENGTH rank when the
-                                      //   actor is weak. Inert when tiering is unconfigured.
-      "defaultTier": null             // OPTIONAL plan-wide rung for judge guardrails, overriding that rule.
-                                      //   ("floor" is v2, with the ladder — §12.7.)
+    "verifier": {                     // OPTIONAL (#201 verifier half, §6.5). The judge's rung is ALWAYS chosen by
+                                      //   the rule: the ACTOR's rung, bumped one STRENGTH rank when the actor is
+                                      //   weak. Inert when tiering is unconfigured.
+      "minTier": null                 // OPTIONAL plan-wide FLOOR (§6.5.1): the resolved judge may never end up
+                                      //   BELOW this rung. It never SELECTS a rung — it only refuses one that came
+                                      //   out too low, and never lowers a result. "easy"|"medium"|"hard" (GR2045).
+                                      //   Unsatisfiable without a costly block => the judge stays put + an ADVISORY
+                                      //   (never an error, never a costly auto-selection — §6.5.1).
     }
   },
 ```
@@ -1280,10 +1385,11 @@ language.) **§9.6 explicitly states there is no ladder, no probe, and no steeri
 
 - GR2009's runner-command probe extends per-kind (an `openai-compat` block probes its endpoint
   reachability as a **warning**, mirroring the PATH probe — lands with the #223 standalone runner).
-- Three new **warnings** (v1): a `costly` **or** `routing`-less block named `default` in a
+- Four new **warnings** (v1): a `costly` **or** `routing`-less block named `default` in a
   tiering-configured file (reserved-model back-door, §4.2); a `costly: true` block that also
   declares `routing` (inert, §4.2); a **full pin + `action.tier`** coexisting
-  on one action (§6.1). All warnings, not errors — the plan still runs.
+  on one action (§6.1); and a retired **`routing.rank`** key (GR2054, §4.2 — so a migrated config's
+  ordering never changes silently). All warnings, not errors — the plan still runs.
 - **The verifier check is NOT a validation code.** A judge weaker than its actor is an *advisory*
   (charter Decision 1): a #229 review finding, a startup preflight warning **line**, and a per-attempt JIT re-check — not a
   GR-coded diagnostic and never a load-time refusal. Resisting the urge to give it a code is the
@@ -1296,8 +1402,6 @@ v2 bet (§10), in the same change as its code:
 
 - **`tiering.thresholdPercent` (default 80) + `tiering.probeCacheSeconds` (default 60, GR2053 if
   ≤0)** keys — with #231 / #227 respectively.
-- **`tiering.verifier.floor`** — with #228 (a floor on a judge tier that cannot move in static v1
-  is unreachable; charter Decision 6, §6.5).
 - **§2.1 `autonomyPolicy` `routing` boundary** + the non-interactive carve-out (§12.2) — with #231.
 - **`decisions[]` `boundary: "routing"`** — with #231.
 - **`provenance.tierSource` value `"escalated"`** and the **judge re-resolution on escalation**
@@ -1309,7 +1413,7 @@ v2 bet (§10), in the same change as its code:
 - **§9.6 normative language** for probes-advise / the ladder / `--prefer` + threshold prompts /
   the ladder-first-overwatcher-layers ordering — with the respective bet.
 
-## 13. Reserved diagnostic codes — GR2043–GR2053 (next-free marker → GR2054)
+## 13. Reserved diagnostic codes — GR2043–GR2054 (next-free marker → GR2055)
 
 > **Revision 3 reallocated this whole block, and the reason is worth more than the numbers.**
 > Revision 2 reserved **GR2037–GR2045** and said so with confidence — *"verified against
@@ -1331,15 +1435,15 @@ v2 bet (§10), in the same change as its code:
 
 Verified against `src/Guardrails.Core/Loading/DiagnosticCodes.cs` on **2026-08-12**: **GR2042**
 (`StructuralOverScope`) is the last taken code and the file's marker line says **GR2043 is
-next-free**. This DoR reserves the contiguous block **GR2043–GR2053**; the constants + the
+next-free**. This DoR reserves the contiguous block **GR2043–GR2054**; the constants + the
 historical-comment discipline below land at build time, per stage, and the marker is bumped to
-**GR2054**. The **Scope** column marks v1 vs a v2 bet — **GR2053 is the only code deferred to v2.**
+**GR2055**. The **Scope** column marks v1 vs a v2 bet — **GR2053 is the only code deferred to v2.**
 
 | Code | Name | Sev | Scope | Meaning |
 |---|---|---|---|---|
 | GR2043 | `UnsupportedRunnerKind` | error | **v1** | `promptRunners.<name>.kind` unrecognized, or recognized but not implemented in this harness build; message names the value + the supported set (the #223 seam gate — never a silent claude fallback) |
 | GR2044 | `MalformedRoutingGuidance` | error | **v1** | `routing` block invalid: missing/empty `tiers`, a value outside the tier enum, or wrong types |
-| GR2045 | `UnrecognizedTier` | error | **v1** | `action.tier`, judge-frontmatter `tier`, `tiering.defaultTier`, or `tiering.verifier.defaultTier` not one of `easy\|medium\|hard` |
+| GR2045 | `UnrecognizedTier` | error | **v1** | `action.tier`, judge-frontmatter `tier`, `tiering.defaultTier`, or `tiering.verifier.minTier` not one of `easy\|medium\|hard` |
 | GR2046 | `UnservableTier` | error | **v1** | a USED tier (task tag, frontmatter tag, or a `defaultTier`) in a tiering-configured plan has no **candidate** block at-or-above it (§6.2) — either none serves it, or **the only ones that do are `costly: true`**, which the harness may never select. The message MUST distinguish the two: they have different fixes |
 | GR2047 | `TieringInert` | warning | **v1** | tier tags present but NO block declares `routing` — tags have no effect; plan runs with legacy resolution |
 | GR2048 | `EffortInvalid` | error | **v1** | a present `effort` (block, override, or `action.effort`) fails the GR2030-style shape check (non-empty, no whitespace/control chars) |
@@ -1348,13 +1452,14 @@ historical-comment discipline below land at build time, per stage, and the marke
 | GR2051 | `CostlyBlockRoutingInert` | warning | **v1** | a `costly: true` block also declares `routing` — the routing can never apply, because the candidacy predicate excludes costly blocks (§6.2). A warning, so GR2046 can report the real consequence |
 | GR2052 | `PinAndTierCoexist` | warning | **v1** | a full pin (`action.runner`/`action.model`) and `action.tier` are both set on one action — the tier is dead weight the pin overrides (§6.1, DA F3) |
 | GR2053 | `RoutingNumericNonPositive` | error | **v2 (#227)** | `tiering.probeCacheSeconds` / `thresholdPercent` present but not a positive value (cf. GR2012/GR2023/GR2036) |
+| GR2054 | `RetiredRoutingRank` | warning | **v1** | a `routing.rank` key is present — the field was retired in favour of ascending-`strength` ordering (§4.2, settled OD-F). Without this warning an existing draft's candidate ordering would change **silently**; unknown keys are otherwise ignored by the loader |
 
 Historical-comment discipline for the build-time edit: "Next-free allocation **re-confirmed at
 Stage-1 landing time** (the model-tiering DoR `docs/plans/17-model-tiering.md` reserved
-GR2043–GR2053 on 2026-08-12, after its ORIGINAL GR2037–GR2045 reservation was overtaken by #346,
+GR2043–GR2054 on 2026-08-12, after its ORIGINAL GR2037–GR2045 reservation was overtaken by #346,
 #383, #361, #389 and #378 while the design sat in draft). **v1 (static routing + verifier)** takes
-GR2043–GR2052 (#224/#225/#226/#201-verifier) across Stages 1–2; **v2** takes GR2053 with #227's
-probes. CURRENT next-free code: GR2054."
+GR2043–GR2052 + GR2054 (#224/#225/#226/#201-verifier) across Stages 1–2; **v2** takes GR2053 with
+#227's probes. CURRENT next-free code: GR2055."
 
 ## 14. Worked example  [v1 — static routing]
 
@@ -1512,7 +1617,7 @@ medium: 190k tok / $0.14` (task 04's pinned spend is attributed to its pinned mo
   exists — the burden the charter foresaw is the burden it already paid for. (3) Revision 3
   **removed** an axis (`rank`) while adding the mandated ones, so the net count of ordering
   concepts went *down*. If the maintainer still finds it heavy, the cut order is: `specialization`
-  (OD-H's neighbour — only the judge tie-break reads it), then `tiering.verifier.defaultTier`.
+  (only the judge tie-break reads it), then `tiering.verifier.minTier`.
 - **"The costly floor is absolute — no dial, no `--force`. Isn't an un-overridable rule exactly the
   rigidity Guardrails avoids elsewhere?"** **Response:** it is un-overridable *by the harness*, not
   by the human — a task pin reaches any model instantly. That is the shape of every good safety
@@ -1583,11 +1688,19 @@ carries the de-duplication rule that keeps three surfaces from shouting one find
 (§6.5, charter D1/D2/D4/D5/D7/D9/D10) · **D24a the
 bump is in STRENGTH, never in tier** — bumping the tier would mean "pretend the work is harder", a
 category error; the charter's prose uses both phrasings and only one is coherent (§6.5) ·
-**D25 `routing.rank` is retired** in favour of ascending-`strength` ordering — one ordering axis,
-not two with opposite polarity (§4.2; **architect's call**, OD-F) · **D26 the degrade/halt
+**D25 `routing.rank` is retired** in favour of ascending-`strength` ordering — *the weakest model
+that can serve the tier goes first*, a cost-minimising default the deterministic gate makes safe;
+one ordering axis, not two with opposite polarity; retired-key warning GR2054 (§4.2; **settled
+2026-08-12**) · **D26 the degrade/halt
 asymmetry** — the verifier rule degrades to an advisory when only a costly model would satisfy it;
 the actor route halts instead (GR2046 / `no-route`). Degrade what is advisory, halt what is
-load-bearing; neither overspends (invariant 5, §6.2, §6.5).
+load-bearing; neither overspends (invariant 5, §6.2, §6.5) · **D27 the plan-wide verifier knob is a
+FLOOR, not a default** — `tiering.verifier.minTier` never selects the judge's rung, it only refuses
+one that came out below it and never lowers a result; it collapses charter Decisions 4 and 6 into
+**one** floor concept, is **v1** (the judge's tier varies across tasks even in a static run, so a
+floor is reachable — correcting revision 3's own YAGNI argument), is bypassed by a per-judge
+`runner` pin but never by the advisory, and **degrades to an advisory rather than reaching a costly
+block or climbing a rung** when it cannot be met (§6.5.1, settled 2026-08-12).
 
 **DEFERRED to v2 (retained as ratified designs; each revisited with #230-lite data when/if its
 bet is built):**
@@ -1610,10 +1723,10 @@ top (§9.2, with #228).
 1. **Stage 1 (foundation) — `guardrails-harness-developer`:** `kind`/`effort`/`routing` **+ the
    three model axes `costly`/`strength`/`specialization` (§4.1)** on
    `RawPromptRunner`(+overrides)/`PromptRunnerConfig`, `tier`/`effort` on `RawAction`,
-   `tiering` **(`defaultTier` + `verifier.defaultTier` only — NOT `thresholdPercent` /
-   `probeCacheSeconds` / `verifier.floor`, §12.7)** on
-   `RawRunConfig`; `FromConfig` kind-switch; **GR2043–GR2052** in
-   `PlanValidator`/`DiagnosticCodes` (marker bump to **GR2054**; GR2053 is v2, do NOT add) —
+   `tiering` **(`defaultTier` + `verifier.minTier` only — NOT `thresholdPercent` /
+   `probeCacheSeconds`, §12.7)** on
+   `RawRunConfig`; `FromConfig` kind-switch; **GR2043–GR2052 + GR2054** in
+   `PlanValidator`/`DiagnosticCodes` (marker bump to **GR2055**; GR2053 is v2, do NOT add) —
    **and RE-VERIFY the whole block against `DiagnosticCodes.cs` before landing, per §13's standing
    instruction**; §12.1/12.3 SSOT edits + the plan-breakdown `schemas.md` sentinel mirror.
    `filesTouched:

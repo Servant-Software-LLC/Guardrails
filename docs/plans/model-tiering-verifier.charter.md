@@ -73,13 +73,20 @@ to the actor's.
    satisfied without a costly model (the actor IS costly, or graduated there under #228), the harness does
    **not** auto-select one. It emits the #229 advisory and proceeds — which is precisely Decision 1 and the
    `autonomous-advisory` answer working as intended. An unsatisfiable rule surfaces; it never spends.
-4. **Both granularities.** A per-plan default verifier tier **plus** a per-task/per-judge-guardrail
+4. **Both granularities — and the per-plan half is a FLOOR, not a default** (`verifier-default-tier`,
+   answered in review). A per-plan **minimum** verifier tier **plus** a per-task/per-judge-guardrail
    override. Per-plan alone fails both ways: too low for a task that graduated to a strong model, too high
-   (and too expensive) for the majority that didn't.
+   (and too expensive) for the majority that didn't — which is exactly why the plan-wide knob must not
+   *choose* the judge's tier. **It never selects; it only refuses a result that came out below it, and it
+   never lowers one.** The rule in Decision 2 (the actor's tier, bumped when the actor is weak) remains the
+   thing that chooses. The knob is `tiering.verifier.minTier` (DoR §6.5.1). **This is the same floor
+   Decision 6 refers to — there is exactly one.**
 5. **All four verdict surfaces** obey the rule: per-task prompt-judge guardrails, the terminal
    `<plan>/guardrails/` phase, the autonomous review-gate (#361), and the overwatcher (#269).
 6. **Rides up with escalation, floored.** When an actor escalates to a stronger tier on retry (#228), the
-   judge re-resolves to stay ≥ it, and never drops below a configured verifier floor.
+   judge re-resolves to stay ≥ it, and never drops below the configured verifier floor. **That floor is
+   Decision 4's `tiering.verifier.minTier`** — the two Decisions describe one knob, not two (the floor
+   applies in a static run as well; escalation is simply the other thing it bounds).
 7. **A registry entry carries THREE INDEPENDENT axes, not one blended tier** (`weak-detection`). The
    review's own words: *"maybe that makes for too many values in one option. Let's divide it out."* So
    each provider-registry model (#224) declares:
@@ -115,11 +122,12 @@ the two differ, **the DoR wins** — the same rule the three stage briefs follow
 | Charter Decision | Lands in the DoR as |
 |---|---|
 | 7 — three independent axes | **§4.1** (D21) — `costly`/`strength`/`specialization`, **top-level on the block, not inside `routing`**, because a *reserved or pinned* block has a strength too and the ≥ comparison needs it |
-| 8 — generated registry | **§4.3** (D23) — `guardrails providers init`, writing comment-annotated blocks into `guardrails.json` itself (it already parses `//` comments), idempotent, never fabricating a model list |
+| 8 — generated registry | **§4.3** (D23) — `guardrails providers init`, writing comment-annotated blocks into `guardrails.json` itself (it already parses `//` comments), idempotent. **`providers-init-claude` settled it: it may never invent a model name** — a registry entry is a routing target, so a fabricated id would be spent against at a model that may not exist |
 | 3 — never auto-select `costly` | **§6.2** (D22) — one candidacy predicate excludes costly blocks from every rung, every climb, every judge bump, and (v2) every ladder escalation |
-| 1, 2, 4, 5, 10 — the judge rule | **§6.5** (D24) — v1 and static; advisory via #229; never blocking |
+| 1, 2, 5, 10 — the judge rule | **§6.5** (D24) — v1 and static; advisory via #229; never blocking |
+| **4 + 6 — the verifier FLOOR (one concept, not two)** | **§6.5.1** (D27), **v1** — `verifier-default-tier` settled that the plan-wide knob is a **floor**, not a default: `tiering.verifier.minTier` never selects the judge's rung, it only refuses one that came out below it and never lowers a result. Decision 6's "never drops below a configured verifier floor" **is this same knob**. Unsatisfiable without a costly block ⇒ **degrades to the advisory** (Decision 3 admits no exception), never an error, never a rung climb |
 | 9 — surfaced at BOTH boundaries | **§6.5**, **both v1** — startup preflight AND per-attempt JIT re-check. An earlier DoR draft proposed deferring the JIT half (nothing graduates in static v1); **the maintainer overruled that on 2026-08-12** and the DoR now states what the second boundary buys without graduation: the preflight is a *model* of the resolver, the JIT check *is* the resolver, and it is the only boundary that sees a mid-run config edit, resume, or overwatcher change |
-| 6 — rides up with escalation, floored | **v2 with the #228 ladder** (DoR §7, §12.7) — nothing graduates in static v1 |
+| 6's escalation half only | **v2 with the #228 ladder** (DoR §7) — re-resolving the judge *upward as the actor graduates*. The floor itself is v1 (row above): the judge's tier varies across tasks in a static run, so a floor is reachable without any graduation |
 
 **Two corrections the DoR had to make, recorded here so this charter is not read as still saying
 otherwise:**
@@ -160,7 +168,9 @@ otherwise:**
   `specialization`, each admitting `unspecified`), and add the `.jsonc` generation of Decision 8 —
   enumerate the provider's models, emit them annotated with the legal enum values in comments.
 - Extend the tier resolution (#226) so a prompt-**judge** guardrail resolves its own `(provider, model,
-  effort)` — defaulting per Decision 2, and hard-bounded by Decision 3 (never auto-select `costly`).
+  effort)` — chosen per Decision 2, raised (never lowered) by Decision 4's `tiering.verifier.minTier`
+  floor, and hard-bounded by Decision 3 (never auto-select `costly`, not even to satisfy the floor —
+  an unsatisfiable floor degrades to the advisory).
 - Resolve the judge **per attempt, alongside the actor** (Decision 6): because the actor's tier only
   settles at attempt-launch and can graduate on retry, a judge fixed at plan-load is stale by definition.
 - Add the **startup preflight** of Decision 9 over the statically-known tiers, so a plan whose configured
@@ -217,7 +227,8 @@ the preflight still earns its place by catching a misconfigured plan before a si
 All five original questions are settled and folded into **Decisions** above; the blocks below are the
 durable record of what was asked and what was answered. Disposition 2's flagged *consequence* has since been
 **confirmed** (the rule degrades, it never overspends). **Three NEW open questions** — raised by reconciling
-these Decisions into the design-of-record — are in *Open decisions (for your review)* below.
+these Decisions into the design-of-record — were raised, answered, and are recorded in *Open decisions* below.
+**All eight questions in this charter now carry answers; nothing is open.**
 
 :::question
 {"id":"weak-detection","title":"How do we decide a model is \"local / weak\" and therefore needs the one-tier bump?","mode":"single","options":["Provider kind — local-inference endpoints are weak, cloud frontier APIs are not (no per-model judgement)","An explicit strength/rank field on each provider-registry entry (#224), authored by the user","Both — rank when declared, fall back to provider kind when it isn't"],"target":"human", "answer": ["Both.  Guardrails knows the model providers and should be able to enumerate its models and provide them for configuration if requested in a jsonc file which will have comment to indicate the enum values allowed to attach to a model.  One of those enum values should be unspecified.  The range of values needs to be enough to cover not only strength but even some specialization.  (like a coding vs. planning models and/or high thinking and costly, etc).  Hmmm.. maybe that makes for too many values in one option.  Let\u0027s divide it out.  Have a boolean value for costly and another value for specialization and another which ranks their strength, so that bumping up can occur."]}
@@ -239,12 +250,18 @@ these Decisions into the design-of-record — are in *Open decisions (for your r
 {"id":"specialization-values","title":"Decision 7 gives `specialization` its own axis but does not enumerate its values — what are they, and does judge selection read them?","mode":"single","options":["A small fixed enum (coding / planning-reasoning / general / unspecified), and judging PREFERS planning-reasoning at the required strength when one is available","The same small fixed enum, but recorded for reporting and user routing only — judge selection ignores specialization entirely","A free-form user-defined string with no harness semantics beyond display and manual routing"],"target":"human", "answer": ["A small fixed enum (coding / planning-reasoning / general / unspecified), and judging PREFERS planning-reasoning at the required strength when one is available"]}
 :::
 
-## Open decisions (for your review)
+## Open decisions — ALL ANSWERED (2026-08-12)
 
-Three questions came out of folding this charter's Decisions into the design-of-record
-([`17-model-tiering.md`](17-model-tiering.md) §11). Each is **self-contained below** — you do not need
-the DoR open to answer. Every one has a working answer already implemented in the design, so **not
-answering leaves a coherent design**; answering either confirms it or changes one specific thing.
+**Nothing is open.** These three questions came out of folding this charter's Decisions into the
+design-of-record ([`17-model-tiering.md`](17-model-tiering.md) §11); all three are now answered, and the
+blocks below are kept as the durable record of what was asked and what was chosen — the same treatment as
+the five original questions above. What each answer did:
+
+| Question | Answer | Effect on the design |
+|---|---|---|
+| `providers-init-claude` | Degrade honestly; never invent a model name | **Ratified** the designed behavior, and promoted "never invent a model name" to a hard rule with its reason: a registry entry is a **routing target**, so a fabricated id would be spent against at a model that may not exist (DoR §4.3) |
+| `retire-rank` | Drop `routing.rank`; order by ascending `strength` | **Ratified** D25. *The weakest model that can serve the tier goes first* — a cost-minimising default the deterministic gate makes safe. "This model should not serve that tier" is now said by editing its `routing.tiers`. A leftover `rank` key raises warning **GR2054** so ordering never changes silently (DoR §4.2) |
+| `verifier-default-tier` | Keep it, but as a plan-wide **FLOOR** | **CHANGED the design.** `tiering.verifier.minTier` never *selects* the judge's rung — the Decision-2 rule still does — it only refuses a result that came out below it, and never lowers one. Collapses Decisions 4 and 6 into **one** floor concept, moves the floor from v2 into **v1**, and **degrades to the advisory** rather than reaching a costly model or climbing a rung when unsatisfiable (DoR §6.5.1) |
 
 ---
 
@@ -267,6 +284,9 @@ after a release and would quietly point you at a retired model.
 {"id":"providers-init-claude","title":"`guardrails providers init` may be unable to enumerate the Claude CLI's models. What should it do for that provider?","mode":"single","options":["Degrade honestly — annotate the blocks already in the config with the legal axis values, add a 'could not enumerate' note, and never invent a model name (the current design)","Ship a curated model list inside Guardrails for kinds that cannot be enumerated, accepting that it goes stale between releases","Fail the command for a provider it cannot enumerate, so the gap is impossible to miss"],"target":"human", "answer": ["Degrade honestly \u2014 annotate the blocks already in the config with the legal axis values, add a \u0027could not enumerate\u0027 note, and never invent a model name (the current design)"]}
 :::
 
+→ **Answered: degrade honestly.** Now a hard rule — a model id may only come from a provider that
+reported it or a human who typed it (DoR §4.3 ruling 2).
+
 ---
 
 **2. Two ways to order models, or one?** *(binds the design-of-record — the ACTOR-side routing, not this
@@ -288,6 +308,9 @@ two opposite polarities.
 {"id":"retire-rank","title":"A model now has a `strength` rank (higher = stronger). Should the separate `routing.rank` preference field (lower = wins) be dropped?","mode":"single","options":["Drop `routing.rank` — order candidates by ascending `strength` (weakest model that can serve the tier goes first); express 'this model should not serve that tier' by editing its tier list","Keep `routing.rank` as an optional explicit override that wins over strength-ordering when present, accepting two ordering fields with opposite polarity","Keep `routing.rank` as the only ordering field, and use `strength` solely for the judge-vs-actor comparison"],"target":"human", "answer": ["Drop \u0060routing.rank\u0060 \u2014 order candidates by ascending \u0060strength\u0060 (weakest model that can serve the tier goes first); express \u0027this model should not serve that tier\u0027 by editing its tier list"]}
 :::
 
+→ **Answered: drop `routing.rank`.** Candidates order by ascending `strength`; a leftover `rank` key
+raises warning GR2054 so a migrated config's ordering never changes silently (DoR §4.2).
+
 ---
 
 **3. Do you want a plan-wide setting for the judge's tier?** *(binds this charter — Decision 4, "both
@@ -303,6 +326,10 @@ turns, and it is the cheapest thing in the design to remove.
 :::question
 {"id":"verifier-default-tier","title":"The judge's tier is already chosen automatically (actor's tier, bumped when the actor is weak). Is a plan-wide `tiering.verifier.defaultTier` override still wanted?","mode":"single","options":["Yes — keep the plan-wide key as Decision 4 asked, as an escape hatch when the automatic rule is wrong for a whole plan","No — drop it; the automatic rule plus the per-judge frontmatter override covers every real case, and an unused knob is a cost","Keep it, but only as a plan-wide FLOOR (never below tier X) rather than a plan-wide default"],"target":"human", "answer": ["Keep it, but only as a plan-wide FLOOR (never below tier X) rather than a plan-wide default"]}
 :::
+
+→ **Answered: keep it as a plan-wide FLOOR.** It is now `tiering.verifier.minTier` — it never selects
+the judge's rung, only refuses one that came out too low. **The lead-in above describes the *default*
+semantics this answer replaced**; the floor rules are DoR §6.5.1.
 
 ## Scope / non-goals
 

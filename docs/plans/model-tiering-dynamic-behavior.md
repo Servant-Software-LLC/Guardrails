@@ -17,8 +17,9 @@
 > jump too. This is the structural answer to review comment 7 (*"I don't want re-attempts to reach
 > for Fable at all"*), and it means the proposed `routing.escalationTarget: false` field must be
 > re-examined before it is built — `costly` may already subsume it. Also v2 with the ladder:
-> re-resolving the **judge** upward when the actor graduates, and `tiering.verifier.floor` (charter
-> Decision 6 — see DoR §6.5). **The JIT judge re-check is NOT deferred — it is v1** (charter
+> re-resolving the **judge** upward when the actor graduates (charter Decision 6 — see DoR §6.5).
+> **The verifier floor `tiering.verifier.minTier` is NOT deferred — it is v1** (DoR §6.5.1); this
+> stage only makes it bound a judge tier that can now move. **The JIT judge re-check is NOT deferred — it is v1** (charter
 > Decision 9); v2 merely gives it a moving actor to observe, so this stage adds a trigger, not a
 > mechanism.
 
