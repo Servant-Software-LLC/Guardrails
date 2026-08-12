@@ -9,7 +9,7 @@ namespace Guardrails.Core.Prompts;
 /// spelling and stream parsing is confined to this class (SSOT §9). Invocation:
 /// <code>
 /// claude -p --output-format stream-json --verbose --permission-mode &lt;m&gt; --max-turns &lt;n&gt;
-///   [--model &lt;m&gt;] [--allowedTools &lt;joined&gt;] --add-dir &lt;planDir&gt; [extraArgs…]
+///   [--model &lt;m&gt;] --allowedTools &lt;joined&gt; --add-dir &lt;planDir&gt; [extraArgs…]
 /// </code>
 /// The composed prompt is delivered on STDIN; cwd = workspace; every raw stream line is
 /// teed to <c>claude-stream.jsonl</c>. Semantic disposition: a non-zero exit OR no terminal
@@ -195,11 +195,12 @@ public sealed class ClaudePromptRunner : IPromptRunner
             args.Add(settings.Model);
         }
 
-        if (settings.AllowedTools.Count > 0)
-        {
-            args.Add("--allowedTools");
-            args.Add(string.Join(",", settings.AllowedTools));
-        }
+        // UNCONDITIONAL, exactly like the --add-dir <planDirectory> grant immediately below: the harness
+        // provisions the permission its own retry protocol prescribes rather than hoping the plan author
+        // (or the operator's ~/.claude/settings.json) already did. Emitted even when the plan declares
+        // nothing, because ResolveToolGrants never returns an empty effective set.
+        args.Add("--allowedTools");
+        args.Add(string.Join(",", ResolveToolGrants(settings.AllowedTools).Effective));
 
         args.Add("--add-dir");
         args.Add(invocation.PlanDirectory);
@@ -210,6 +211,19 @@ public sealed class ClaudePromptRunner : IPromptRunner
     }
 
     /// <summary>
+    /// The ONE grant the harness provisions for itself (issue #382), spelled exactly as the #252
+    /// read-only default and every <c>guardrails.json</c> spell it — a near-miss (<c>Bash(git show:*)</c>,
+    /// <c>Bash(git show *)</c>) is a grant the CLI would not match. QUARANTINED here with the rest of the
+    /// Claude flag spelling (SSOT §9).
+    /// <para>
+    /// READ-ONLY, and only this. The salvage feedback also offers a whole-patch route, but the verb that
+    /// would license it mutates the tree and is unnarrowable under a prefix glob — so the harness never
+    /// injects it; granting that route stays the plan author's explicit call.
+    /// </para>
+    /// </summary>
+    internal const string SalvageInspectionGrant = "Bash(git show*)";
+
+    /// <summary>
     /// Resolve the plan's DECLARED tool grants into the set the runner actually passes, reporting
     /// separately what the HARNESS added — the read-only git inspection grant the retry-salvage
     /// protocol (<see cref="RetryPolicy"/>'s salvage section) prescribes but has never provisioned.
@@ -217,16 +231,24 @@ public sealed class ClaudePromptRunner : IPromptRunner
     /// provenance and the attempt log header can record the effective set beside the declared one
     /// instead of the two silently diverging.
     /// <para>
-    /// STUB — deliberately not implemented. The injection itself is the NEXT task's deliverable; this
-    /// member exists only so the tests that pin its contract
-    /// (<c>tests/Guardrails.Core.Tests/ToolGrantInjectionTests.cs</c>) COMPILE and fail for the right
-    /// reason. The seam it belongs on is the unconditional <c>--add-dir</c> append in
-    /// <see cref="BuildArguments"/> directly above — grep that marker, not a line number.
+    /// Pure and idempotent: the declared entries keep their order, the harness grant is APPENDED only
+    /// when absent, and the caller's list is never mutated (the same settings instance is reused across
+    /// every attempt of every task on this runner, so an in-place append would accumulate).
     /// </para>
     /// </summary>
-    internal static ToolGrantResolution ResolveToolGrants(IReadOnlyList<string> declaredTools) =>
-        throw new NotImplementedException(
-            "tool-grant injection is not implemented yet — see ToolGrantInjectionTests for the contract it must satisfy");
+    internal static ToolGrantResolution ResolveToolGrants(IReadOnlyList<string> declaredTools)
+    {
+        var effective = new List<string>(declaredTools);
+        var injected = new List<string>();
+
+        if (!effective.Contains(SalvageInspectionGrant, StringComparer.Ordinal))
+        {
+            effective.Add(SalvageInspectionGrant);
+            injected.Add(SalvageInspectionGrant);
+        }
+
+        return new ToolGrantResolution { Effective = effective, Injected = injected };
+    }
 
     /// <summary>
     /// Classify a non-success run into a runner-agnostic <see cref="PromptFailureKind"/> (SSOT §9).

@@ -578,6 +578,16 @@ retrospective `git diff` on the FINAL state regardless of how it got there (fres
 recovered file), so an out-of-scope file pulled in from a stash is caught and scoped-reverted identically
 to a freshly-written one.
 
+**The harness PROVISIONS what its feedback prescribes (issue #382).** Retry feedback MUST never present a
+runnable command that the attempt's effective permission set does not grant — so the harness itself injects
+the read-only grant its own salvage protocol depends on (`Bash(git show*)`, quarantined in the runner per
+§9) into `--allowedTools` on EVERY invocation, unconditionally and idempotently, exactly like the
+`--add-dir <planDirectory>` grant that makes `prior-attempt.patch` reachable; it never depends on the plan
+author having declared it. Unconditional because conditioning on "this attempt carries a salvage ref" would
+make the effective permission set vary between attempts of the SAME task. READ-ONLY only: no tree-mutating
+verb is ever injected, so the whole-patch route (`git apply`) remains a grant the plan must declare
+explicitly.
+
 **Scope — EVERY non-final worktree failure (issue #306 supersedes #195's non-logic-only scope guard).**
 #195 originally restricted the stash to the two non-logic budget-exhaustion outcomes (`max-turns` /
 `output-cap`) on the theory that a `guardrail-failed` attempt's code "may be genuinely wrong." #306
