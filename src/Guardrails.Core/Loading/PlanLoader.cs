@@ -54,7 +54,7 @@ public sealed class PlanLoader
             return new PlanLoadResult { Diagnostics = diagnostics };
         }
 
-        LoadTasksOrWaves(planDir, diagnostics, out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves);
+        LoadTasksOrWaves(planDir, config, diagnostics, out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves);
 
         // Plan-level preflights/guardrails folders (SSOT §1/§4) sit at the plan ROOT, siblings of
         // tasks/. They reuse the SAME guardrail-file parser as a task's guardrails/ — they differ only
@@ -149,6 +149,7 @@ public sealed class PlanLoader
                 StringComparer.OrdinalIgnoreCase);
 
         AutonomyConfig? autonomy = MapAutonomy(raw.Autonomy);
+        TieringConfig? tiering = MapTiering(raw.Tiering);
 
         return new RunConfig
         {
@@ -171,6 +172,7 @@ public sealed class PlanLoader
             TriageAutoFile = raw.TriageAutoFile ?? false,
             AutonomyPolicy = autonomyPolicy,
             Autonomy = autonomy,
+            Tiering = tiering,
             // #360 §14.4/§14.10: between-wave breakdown auto-invocation, DEFAULT true and decoupled from
             // autonomyPolicy. An omitted key resolves the true default (a present brief.md auto-fires the
             // JIT-checkpoint breakdown); set false to restore the #368 autonomyPolicy-gated invocation.
@@ -182,6 +184,16 @@ public sealed class PlanLoader
             PromptRunners = runners.Runners
         };
     }
+
+    /// <summary>
+    /// Map the optional <c>tiering</c> block (SSOT §2/§3, issue #225). Absent ⇒ <c>null</c>: NO plan-wide
+    /// default exists, so every untagged task keeps a <c>null</c> tier. Nothing is substituted for an absent
+    /// block — a hard-coded fallback would silently tier a single-model user's plan, the one thing the
+    /// charter's gate forbids. A present <c>defaultTier</c> is carried VERBATIM (no trim, no case-fold) so an
+    /// unrecognized value reaches the validator's GR2043 check as written.
+    /// </summary>
+    private static TieringConfig? MapTiering(RawTieringConfig? raw) =>
+        raw is null ? null : new TieringConfig { DefaultTier = raw.DefaultTier };
 
     /// <summary>
     /// Map the raw <c>autonomy</c> block (issue #361, doc 12 §3.3–§3.5) onto <see cref="AutonomyConfig"/>. A
@@ -386,9 +398,10 @@ public sealed class PlanLoader
     /// run regardless). For a flat plan <paramref name="waves"/> is empty and behaviour is unchanged.
     /// </summary>
     private void LoadTasksOrWaves(
-        string planDir, List<Diagnostic> diagnostics,
+        string planDir, RunConfig config, List<Diagnostic> diagnostics,
         out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves)
     {
+        string? defaultTier = PropagatableDefaultTier(config);
         bool hasRootTasks = Directory.Exists(Path.Combine(planDir, TasksDirName));
 
         List<(string Path, string Name)> subdirs = Directory
@@ -404,20 +417,30 @@ public sealed class PlanLoader
                 "Plan has a MIXED layout: both a root 'tasks/' directory and 'wave-*/' subdirectories. A " +
                 "plan is either FLAT (a root 'tasks/') or WAVED (no root 'tasks/', with ordered 'wave-NN-slug/' " +
                 "subdirs) — never both (SSOT §14.1). Remove one layout."));
-            tasks = LoadTasks(planDir, diagnostics); // best-effort so other checks still run; GR2032 blocks the run.
+            tasks = LoadTasks(planDir, defaultTier, diagnostics); // best-effort so other checks still run; GR2032 blocks the run.
             waves = [];
             return;
         }
 
         if (!hasWaveDirs)
         {
-            tasks = LoadTasks(planDir, diagnostics); // FLAT (or neither — LoadTasks reports the missing tasks/).
+            tasks = LoadTasks(planDir, defaultTier, diagnostics); // FLAT (or neither — LoadTasks reports the missing tasks/).
             waves = [];
             return;
         }
 
-        LoadWaves(planDir, subdirs, diagnostics, out tasks, out waves);
+        LoadWaves(planDir, subdirs, defaultTier, diagnostics, out tasks, out waves);
     }
+
+    /// <summary>
+    /// The plan-wide default tier that fills in for every task declaring no <c>action.tier</c> (SSOT §3,
+    /// issue #225) — but ONLY when it is a RECOGNIZED token. An unrecognized default is reported ONCE, at
+    /// its declaration site, by the validator (GR2043); propagating it onto every untagged task as well
+    /// would multiply one typo into an error per task and bury the single site that needs fixing. An absent
+    /// block (or an absent <c>defaultTier</c> within it) ⇒ null ⇒ nothing is filled in anywhere.
+    /// </summary>
+    private static string? PropagatableDefaultTier(RunConfig config) =>
+        ActionTiers.IsRecognized(config.Tiering?.DefaultTier) ? config.Tiering!.DefaultTier : null;
 
     /// <summary>
     /// Load a WAVED plan (SSOT §14). Validates wave numbering (<see cref="DiagnosticCodes.WaveNumbering"/> —
@@ -427,7 +450,7 @@ public sealed class PlanLoader
     /// is the flattened union of every wave's tasks in strict wave order.
     /// </summary>
     private void LoadWaves(
-        string planDir, List<(string Path, string Name)> subdirs, List<Diagnostic> diagnostics,
+        string planDir, List<(string Path, string Name)> subdirs, string? defaultTier, List<Diagnostic> diagnostics,
         out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves)
     {
         // GR2033: a subdirectory alongside the wave dirs that is neither wave-conforming nor a recognised
@@ -496,7 +519,7 @@ public sealed class PlanLoader
         var waveNodes = new List<WaveNode>();
         foreach ((string dir, int number, string slug, string path) in ordered)
         {
-            IReadOnlyList<TaskNode> waveTasks = LoadWaveTasks(path, dir, diagnostics);
+            IReadOnlyList<TaskNode> waveTasks = LoadWaveTasks(path, dir, defaultTier, diagnostics);
 
             waveNodes.Add(new WaveNode
             {
@@ -528,7 +551,8 @@ public sealed class PlanLoader
     /// error (the between-wave runtime checkpoint honest-halts on an unauthored next wave; SSOT §14.4); the
     /// whole-plan empty check in <see cref="LoadWaves"/> catches a plan with NO tasks anywhere.
     /// </summary>
-    private IReadOnlyList<TaskNode> LoadWaveTasks(string wavePath, string waveDir, List<Diagnostic> diagnostics)
+    private IReadOnlyList<TaskNode> LoadWaveTasks(
+        string wavePath, string waveDir, string? defaultTier, List<Diagnostic> diagnostics)
     {
         string tasksDir = Path.Combine(wavePath, TasksDirName);
         if (!Directory.Exists(tasksDir))
@@ -541,7 +565,7 @@ public sealed class PlanLoader
                      .EnumerateDirectories(tasksDir)
                      .OrderBy(Path.GetFileName, StringComparer.Ordinal))
         {
-            TaskNode? task = LoadTask(taskFolder, diagnostics, waveDir);
+            TaskNode? task = LoadTask(taskFolder, defaultTier, diagnostics, waveDir);
             if (task is not null)
             {
                 tasks.Add(task);
@@ -654,7 +678,7 @@ public sealed class PlanLoader
 
     // --- tasks/* ----------------------------------------------------------------------
 
-    private IReadOnlyList<TaskNode> LoadTasks(string planDir, List<Diagnostic> diagnostics)
+    private IReadOnlyList<TaskNode> LoadTasks(string planDir, string? defaultTier, List<Diagnostic> diagnostics)
     {
         string tasksDir = Path.Combine(planDir, TasksDirName);
         if (!Directory.Exists(tasksDir))
@@ -681,7 +705,7 @@ public sealed class PlanLoader
 
         foreach (string taskFolder in taskFolders)
         {
-            TaskNode? task = LoadTask(taskFolder, diagnostics);
+            TaskNode? task = LoadTask(taskFolder, defaultTier, diagnostics);
             if (task is not null)
             {
                 tasks.Add(task);
@@ -696,9 +720,11 @@ public sealed class PlanLoader
     /// folder name. In a WAVED plan (SSOT §14.2) <paramref name="waveDir"/> is the owning wave dir and the
     /// task id is the WAVE-QUALIFIED <c>&lt;waveDir&gt;/&lt;folder&gt;</c>. <c>dependsOn</c> is stored AS
     /// AUTHORED here (plain sibling names); the caller's <see cref="QualifyWaveDependencies"/> post-pass
-    /// qualifies it intra-wave and flags cross-wave edges (GR2034).
+    /// qualifies it intra-wave and flags cross-wave edges (GR2034). <paramref name="defaultTier"/> is the
+    /// plan-wide tier that fills in when this task declares no <c>action.tier</c> (SSOT §3).
     /// </summary>
-    private TaskNode? LoadTask(string taskFolder, List<Diagnostic> diagnostics, string? waveDir = null)
+    private TaskNode? LoadTask(
+        string taskFolder, string? defaultTier, List<Diagnostic> diagnostics, string? waveDir = null)
     {
         string folderName = Path.GetFileName(taskFolder);
         string taskId = waveDir is null ? folderName : $"{waveDir}/{folderName}";
@@ -733,7 +759,7 @@ public sealed class PlanLoader
             return null;
         }
 
-        ActionDefinition? action = ResolveAction(taskFolder, taskId, raw.Action, diagnostics);
+        ActionDefinition? action = ResolveAction(taskFolder, taskId, raw.Action, defaultTier, diagnostics);
         if (action is null)
         {
             return null;
@@ -795,7 +821,8 @@ public sealed class PlanLoader
 
     // --- action discovery (SSOT §3) ---------------------------------------------------
 
-    private ActionDefinition? ResolveAction(string taskFolder, string taskId, RawAction? rawAction, List<Diagnostic> diagnostics)
+    private ActionDefinition? ResolveAction(
+        string taskFolder, string taskId, RawAction? rawAction, string? defaultTier, List<Diagnostic> diagnostics)
     {
         string? actionPath;
         if (!string.IsNullOrWhiteSpace(rawAction?.Path))
@@ -829,6 +856,12 @@ public sealed class PlanLoader
             // BindStagingOutputs documents for stagingOutputs — silently normalizing it to null here
             // would let a malformed override validate clean.
             Model = rawAction?.Model,
+            // Tier precedence, resolved HERE at load (SSOT §3, issue #225): task action.tier > the
+            // plan-wide tiering.defaultTier > null. Resolving at LOAD rather than at breakdown is what
+            // makes the default reach a task a human hand-added to the folder afterwards, which no
+            // breakdown ever touched. Bound VERBATIM like Model — a malformed tier is the validator's to
+            // judge (GR2043), not the loader's to normalize away.
+            Tier = rawAction?.Tier ?? defaultTier,
             TimeoutSeconds = rawAction?.TimeoutSeconds,
             WorkingDirectory = rawAction?.WorkingDirectory,
             Env = (IReadOnlyDictionary<string, string>?)rawAction?.Env ?? new Dictionary<string, string>()
