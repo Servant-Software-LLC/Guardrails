@@ -25,6 +25,15 @@ public sealed record ActionDefinition
     /// <summary>Model override for prompt actions; null = inherit from the runner config default.</summary>
     public string? Model { get; init; }
 
+    /// <summary>
+    /// Difficulty tier — <c>easy</c>|<c>medium</c>|<c>hard</c> (SSOT §3, issue #225); null = untagged (no
+    /// <c>action.tier</c> declared and no plan-wide default configured). RESOLVED AT LOAD, precedence
+    /// <c>task.json action.tier</c> &gt; <c>tiering.defaultTier</c> &gt; null — which is what makes the
+    /// plan-wide default reach a task hand-added to the folder after breakdown. Nothing ROUTES on it in
+    /// Stage 1; the resolver is Stage 2 (#226).
+    /// </summary>
+    public string? Tier { get; init; }
+
     /// <summary>Per-action timeout ceiling in seconds; null = inherit from task/config.</summary>
     public int? TimeoutSeconds { get; init; }
 

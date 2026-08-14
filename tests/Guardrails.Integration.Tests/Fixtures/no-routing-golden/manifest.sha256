@@ -1,0 +1,13 @@
+fb361357d6833622e4a9b9a9eef8e75fa33af467e761c82ed35ee26f7aba7984  breakdown-report.md
+f544534f0a48c4ea80713c0bcb6df398716f4cdfb95a9c565f0dfbe559af3caf  hello-greeting/guardrails.json
+f239d56b92b8b726610ccf9a7ff740105e6c070a9e39557d7032a40957b85db3  hello-greeting/guardrails/01-out-folder-complete.ps1
+cf0960b7a80a20885eb96874ad55d30a3b796f03d9b9825d7153fe39c0f765be  hello-greeting/tasks/01-seed-recipient/action.ps1
+098b3acabd12af5e53dba28f13432115dceba18d4491d3552a2b37af31830f1f  hello-greeting/tasks/01-seed-recipient/guardrails/01-recipient-seeded.ps1
+b69c2f579ddf0188f85d17201c4b73ea36bc15a26dda746b318434395bac6ca9  hello-greeting/tasks/01-seed-recipient/task.json
+d7c7d2228494697976c823d878e4223e8f0a690835474680b044b6522a420dd0  hello-greeting/tasks/02-write-greeting/action.prompt.md
+bce56ab369807ebe94d4f00ca930fbd84df93fdec77d3e5b265210913e41f0f6  hello-greeting/tasks/02-write-greeting/guardrails/01-greeting-addresses-recipient.ps1
+0d92cdde2a0ce5ebfbec1cd41f9a2678dd6960056a6c644c586b54111538b629  hello-greeting/tasks/02-write-greeting/task.json
+97c2c563897d47376a5aa2c046847bb40e47cb93e947e51474e6057ebf9f8bc3  hello-greeting/tasks/03-review-greeting/action.prompt.md
+77499075893d763da6de14ad1da514d405a11b222e3cd2d208c0fc40c769e345  hello-greeting/tasks/03-review-greeting/guardrails/01-review-structure.ps1
+6098d478781d7e84034240eedae6a085ad235b2876b50287b798272e67548a81  hello-greeting/tasks/03-review-greeting/guardrails/02-verdict-is-substantive.prompt.md
+df1301e8a0bdd31eb85e1dd3c8559d50fc3209af77a836e9b29c827a1a22b68f  hello-greeting/tasks/03-review-greeting/task.json

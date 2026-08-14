@@ -62,7 +62,9 @@ public sealed class PlanValidator
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
+        ValidatePromptRunnerAxes(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
+        ValidateTierValues(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
@@ -209,6 +211,30 @@ public sealed class PlanValidator
     }
 
     /// <summary>
+    /// A present <c>strength</c> axis must be at least 1 (SSOT §9, issue #224 / charter Decision 7).
+    /// <c>strength</c> is relative capability, higher = stronger, and it is the ORDERING key for tier
+    /// candidates (ascending — the weakest model that can serve the tier goes first), so a zero or negative
+    /// value has no meaning to order by and is always an authoring mistake — an ERROR (GR2045), mirroring
+    /// the other optional-positive checks (cf. GR2012 <c>maxCostUsd</c>, GR2023 <c>maxOutputTokens</c>,
+    /// GR2036 <c>expectedDurationSeconds</c>). An absent axis is "not stated" and is never flagged. The
+    /// axes' TYPE checks are the loader's (<c>PlanLoader.ReadCostly</c>/<c>ReadStrength</c>/
+    /// <c>ReadSpecialization</c>), which is the only place holding the raw JSON; both halves report GR2045.
+    /// </summary>
+    private static void ValidatePromptRunnerAxes(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values)
+        {
+            if (runner.Strength is { } strength && strength < 1)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.strength is {strength}, but it must be an integer of at " +
+                    "least 1 (higher = stronger); candidates for a tier are ordered by ascending strength, " +
+                    "so there is no meaningful zeroth or negative capability."));
+            }
+        }
+    }
+
+    /// <summary>
     /// A present <c>model</c> must be a real-looking value (SSOT §2/§3, issue #200): non-empty,
     /// non-whitespace, with no leading/trailing whitespace and no embedded whitespace/control
     /// characters — none of which any real Claude model identifier ever contains. There is no
@@ -276,6 +302,44 @@ public sealed class PlanValidator
         }
 
         return !model.Any(c => char.IsWhiteSpace(c) || char.IsControl(c));
+    }
+
+    /// <summary>
+    /// A declared difficulty tier must be one of the three recognised tokens (SSOT §3, issue #225),
+    /// checked at BOTH sites a tier can be declared: the plan-wide <c>tiering.defaultTier</c> and each
+    /// task's <c>action.tier</c> (GR2043 ERROR). Unlike <c>model</c> (GR2030, a shape check — there is no
+    /// enumerable set of valid model names) the tier vocabulary is CLOSED, so this is a real membership
+    /// test against <see cref="ActionTiers.All"/>, matched verbatim. An absent tier at either site is fine
+    /// (untagged) and is not flagged.
+    ///
+    /// <para>The plan-wide default is checked FIRST and independently because it is the more dangerous
+    /// site: a typo there would tier every untagged task in the plan. It is reported exactly ONCE, here at
+    /// its declaration site — the loader's <c>PropagatableDefaultTier</c> deliberately does not propagate
+    /// an unrecognised default onto tasks, so a single typo can never fan out into one error per untagged
+    /// task.</para>
+    /// </summary>
+    private static void ValidateTierValues(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (plan.Config.Tiering?.DefaultTier is { } defaultTier && !ActionTiers.IsRecognized(defaultTier))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.InvalidTierValue, plan.PlanDirectory,
+                $"tiering.defaultTier is '{defaultTier}', which is not a recognised difficulty tier. " +
+                $"Expected exactly one of {ActionTiers.TokenList} (matched verbatim — no surrounding " +
+                "whitespace), or omit the tiering block entirely to leave untagged tasks untagged. This " +
+                "default applies to every task that declares no action.tier of its own, so a typo here " +
+                "would mistier the whole plan."));
+        }
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.Action.Tier is { } tier && !ActionTiers.IsRecognized(tier))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidTierValue, task.Directory,
+                    $"Task '{task.Id}' declares action.tier '{tier}', which is not a recognised difficulty " +
+                    $"tier. Expected exactly one of {ActionTiers.TokenList} (matched verbatim — no " +
+                    "surrounding whitespace), or omit the field to inherit the plan-wide default."));
+            }
+        }
     }
 
     /// <summary>

@@ -1,0 +1,6 @@
+{
+  "description": "Read out/recipient.txt and write out/greeting.txt greeting that recipient",
+  "stableId": "b7x2ne",
+  "dependsOn": ["01-seed-recipient"],
+  "writeScope": ["out/greeting.txt"]
+}

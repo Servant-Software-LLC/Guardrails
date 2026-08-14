@@ -1,0 +1,6 @@
+{
+  "description": "Write out/recipient.txt containing the single word World",
+  "stableId": "h4t9qm",
+  "dependsOn": [],
+  "writeScope": ["out/recipient.txt"]
+}

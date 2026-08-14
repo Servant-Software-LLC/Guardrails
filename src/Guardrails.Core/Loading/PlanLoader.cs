@@ -54,7 +54,7 @@ public sealed class PlanLoader
             return new PlanLoadResult { Diagnostics = diagnostics };
         }
 
-        LoadTasksOrWaves(planDir, diagnostics, out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves);
+        LoadTasksOrWaves(planDir, config, diagnostics, out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves);
 
         // Plan-level preflights/guardrails folders (SSOT §1/§4) sit at the plan ROOT, siblings of
         // tasks/. They reuse the SAME guardrail-file parser as a task's guardrails/ — they differ only
@@ -133,7 +133,7 @@ public sealed class PlanLoader
         PromptRunnersResult runners;
         try
         {
-            runners = ReadPromptRunners(raw.PromptRunners);
+            runners = ReadPromptRunners(raw.PromptRunners, configPath, diagnostics);
         }
         catch (JsonException ex)
         {
@@ -149,6 +149,7 @@ public sealed class PlanLoader
                 StringComparer.OrdinalIgnoreCase);
 
         AutonomyConfig? autonomy = MapAutonomy(raw.Autonomy);
+        TieringConfig? tiering = MapTiering(raw.Tiering);
 
         return new RunConfig
         {
@@ -171,6 +172,7 @@ public sealed class PlanLoader
             TriageAutoFile = raw.TriageAutoFile ?? false,
             AutonomyPolicy = autonomyPolicy,
             Autonomy = autonomy,
+            Tiering = tiering,
             // #360 §14.4/§14.10: between-wave breakdown auto-invocation, DEFAULT true and decoupled from
             // autonomyPolicy. An omitted key resolves the true default (a present brief.md auto-fires the
             // JIT-checkpoint breakdown); set false to restore the #368 autonomyPolicy-gated invocation.
@@ -182,6 +184,16 @@ public sealed class PlanLoader
             PromptRunners = runners.Runners
         };
     }
+
+    /// <summary>
+    /// Map the optional <c>tiering</c> block (SSOT §2/§3, issue #225). Absent ⇒ <c>null</c>: NO plan-wide
+    /// default exists, so every untagged task keeps a <c>null</c> tier. Nothing is substituted for an absent
+    /// block — a hard-coded fallback would silently tier a single-model user's plan, the one thing the
+    /// charter's gate forbids. A present <c>defaultTier</c> is carried VERBATIM (no trim, no case-fold) so an
+    /// unrecognized value reaches the validator's GR2043 check as written.
+    /// </summary>
+    private static TieringConfig? MapTiering(RawTieringConfig? raw) =>
+        raw is null ? null : new TieringConfig { DefaultTier = raw.DefaultTier };
 
     /// <summary>
     /// Map the raw <c>autonomy</c> block (issue #361, doc 12 §3.3–§3.5) onto <see cref="AutonomyConfig"/>. A
@@ -305,8 +317,17 @@ public sealed class PlanLoader
     /// Parse the <c>promptRunners</c> map (SSOT §2/§9): a <c>"default"</c> string pointer plus
     /// one config object per named runner. Each runner's settings get documented defaults; a
     /// <c>guardrailOverrides</c> sub-block is a partial override (only present keys override).
+    ///
+    /// <para>Takes <paramref name="diagnostics"/> because the Stage 1 schema surface (issue #224 — the
+    /// <c>kind</c> discriminator, the three axes, the retired <c>routing.rank</c>) can only be judged
+    /// HERE: by the time a <see cref="PromptRunnerConfig"/> exists the unrecognised token has already been
+    /// normalized away, so a later validator pass could not see it without re-reading the file. A bad
+    /// value is REPORTED and the block keeps loading with the documented default — not to let the run
+    /// proceed (an error blocks it), but so one <c>guardrails validate</c> reports every problem in the
+    /// config rather than one per invocation.</para>
     /// </summary>
-    private static PromptRunnersResult ReadPromptRunners(JsonElement? promptRunners)
+    private static PromptRunnersResult ReadPromptRunners(
+        JsonElement? promptRunners, string configPath, List<Diagnostic> diagnostics)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
         var runners = new Dictionary<string, PromptRunnerConfig>(StringComparer.Ordinal);
@@ -330,14 +351,15 @@ public sealed class PlanLoader
             if (property.Value.ValueKind == JsonValueKind.Object)
             {
                 RawPromptRunner raw = property.Value.Deserialize<RawPromptRunner>(PlanJson.Options)!;
-                runners[property.Name] = BuildRunnerConfig(property.Name, raw);
+                runners[property.Name] = BuildRunnerConfig(property.Name, raw, configPath, diagnostics);
             }
         }
 
         return new PromptRunnersResult(names, defaultRunner, runners);
     }
 
-    private static PromptRunnerConfig BuildRunnerConfig(string name, RawPromptRunner raw)
+    private static PromptRunnerConfig BuildRunnerConfig(
+        string name, RawPromptRunner raw, string configPath, List<Diagnostic> diagnostics)
     {
         var settings = new PromptRunnerSettings
         {
@@ -372,9 +394,163 @@ public sealed class PlanLoader
             Name = name,
             Command = string.IsNullOrWhiteSpace(raw.Command) ? name : raw.Command,
             Settings = settings,
+            Kind = ReadKind(name, raw.Kind, configPath, diagnostics),
+            Costly = ReadCostly(name, raw.Costly, configPath, diagnostics),
+            Strength = ReadStrength(name, raw.Strength, configPath, diagnostics),
+            Specialization = ReadSpecialization(name, raw.Specialization, configPath, diagnostics),
+            Routing = ReadRouting(name, raw.Routing, configPath, diagnostics),
             GuardrailOverrides = overrides
         };
     }
+
+    /// <summary>
+    /// The <c>kind</c> discriminator (SSOT §9, issue #224). ABSENT ⇒ <c>claude</c> — the additive
+    /// guarantee: every config written before the discriminator existed is implicitly Claude and loads
+    /// unchanged. An unrecognised token is an error NAMING the value (an operator with several blocks
+    /// should not have to hunt for which one is wrong); the block then falls back to the default purely so
+    /// the remaining checks still run — the error itself blocks the run.
+    /// </summary>
+    private static PromptRunnerKind ReadKind(
+        string name, string? rawKind, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (rawKind is null)
+        {
+            return PromptRunnerKinds.Default;
+        }
+
+        if (PromptRunnerKinds.TryParse(rawKind, out PromptRunnerKind kind))
+        {
+            return kind;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.InvalidPromptRunnerKind, configPath,
+            $"promptRunners.{name}.kind '{rawKind}' is not a recognised runner kind; expected 'claude' " +
+            "(the default when the key is omitted), 'codex', 'openrouter', or 'local' (SSOT §9)."));
+        return PromptRunnerKinds.Default;
+    }
+
+    /// <summary>
+    /// Axis 1 of 3 — <c>costly</c> (SSOT §9). TRI-STATE: absent ⇒ <c>null</c> ("not stated"), which is
+    /// deliberately distinct from an explicit <c>false</c> ("stated to be cheap"). A present non-boolean
+    /// (the classic <c>"yes"</c>) is an error naming the axis, not a silent drop.
+    /// </summary>
+    private static bool? ReadCostly(
+        string name, JsonElement? rawCostly, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (AbsentAxis(rawCostly, out JsonElement value))
+        {
+            return null;
+        }
+
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.True:
+                return true;
+            case JsonValueKind.False:
+                return false;
+            default:
+                diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, configPath,
+                    $"promptRunners.{name}.costly must be a boolean (true or false), but was " +
+                    $"{DescribeJson(value)}. Omit the key entirely to leave the axis unstated (SSOT §9)."));
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Axis 2 of 3 — <c>strength</c> (SSOT §9): relative capability, higher = stronger, and the ORDERING
+    /// key (ascending, so the weakest model that can serve a tier goes first). Absent ⇒ <c>null</c>. A
+    /// present non-integer is reported here; the <c>&gt;= 1</c> RANGE check is
+    /// <c>PlanValidator.ValidatePromptRunnerAxes</c>, which sits with the other optional-positive checks
+    /// and reads the parsed value — a value that binds as an integer is well-formed enough to be carried
+    /// verbatim into the diagnostic (the GR2030 doctrine).
+    /// </summary>
+    private static int? ReadStrength(
+        string name, JsonElement? rawStrength, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (AbsentAxis(rawStrength, out JsonElement value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int strength))
+        {
+            return strength;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, configPath,
+            $"promptRunners.{name}.strength must be an integer of at least 1 (higher = stronger), but was " +
+            $"{DescribeJson(value)}. Omit the key entirely to leave the axis unstated (SSOT §9)."));
+        return null;
+    }
+
+    /// <summary>
+    /// Axis 3 of 3 — <c>specialization</c> (SSOT §9): what the model is FOR. An absent key resolves to
+    /// <see cref="PromptRunnerSpecialization.Unspecified"/> (a first-class value, not a null), and
+    /// <c>unspecified</c> is writable explicitly. An out-of-enum token is an error naming the axis.
+    /// </summary>
+    private static PromptRunnerSpecialization ReadSpecialization(
+        string name, string? rawSpecialization, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (rawSpecialization is null)
+        {
+            return PromptRunnerSpecialization.Unspecified;
+        }
+
+        if (PromptRunnerSpecializations.TryParse(rawSpecialization, out PromptRunnerSpecialization parsed))
+        {
+            return parsed;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, configPath,
+            $"promptRunners.{name}.specialization '{rawSpecialization}' is not a recognised value; expected " +
+            "'coding', 'planning-reasoning', 'general', or 'unspecified' (SSOT §9)."));
+        return PromptRunnerSpecialization.Unspecified;
+    }
+
+    /// <summary>
+    /// The optional per-model <c>routing</c> guidance block (SSOT §9, issue #224). Absent ⇒ <c>null</c>.
+    /// Stage 1 only proves it parses, validates, and round-trips — the static resolver (#226) is its first
+    /// reader. A block still carrying the RETIRED <c>rank</c> key gets a WARNING (the config keeps
+    /// loading, but never silently — ordering is ascending <c>strength</c>, and <c>rank</c> is ignored).
+    /// </summary>
+    private static PromptRunnerRouting? ReadRouting(
+        string name, RawPromptRunnerRouting? raw, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (raw is null)
+        {
+            return null;
+        }
+
+        if (raw.Extra is { } extra &&
+            extra.Keys.Any(key => string.Equals(key, "rank", StringComparison.OrdinalIgnoreCase)))
+        {
+            diagnostics.Add(Warning(DiagnosticCodes.RetiredRoutingRank, configPath,
+                $"promptRunners.{name}.routing.rank is a RETIRED key and is IGNORED: ordering is ascending " +
+                "'strength' — the weakest model that can serve the tier goes first — not a hand-written " +
+                "rank. Remove 'rank' and express relative capability with 'strength' (SSOT §9)."));
+        }
+
+        return new PromptRunnerRouting
+        {
+            Guidance = raw.Guidance,
+            Tags = raw.Tags is null ? [] : [.. raw.Tags]
+        };
+    }
+
+    /// <summary>
+    /// True when a raw axis element is ABSENT — the key was missing, or written as an explicit JSON
+    /// <c>null</c>, which the schema treats identically to "not stated" (as <c>model: null</c> already
+    /// does). Otherwise <paramref name="value"/> is the element to judge.
+    /// </summary>
+    private static bool AbsentAxis(JsonElement? raw, out JsonElement value)
+    {
+        value = raw ?? default;
+        return raw is null || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined;
+    }
+
+    /// <summary>A short, quotable rendering of a malformed axis value for its diagnostic.</summary>
+    private static string DescribeJson(JsonElement value) =>
+        value.ValueKind == JsonValueKind.String ? $"the string '{value.GetString()}'" : $"'{value.GetRawText()}'";
 
     // --- layout detection: flat vs waved (SSOT §14.1) ---------------------------------
 
@@ -386,9 +562,10 @@ public sealed class PlanLoader
     /// run regardless). For a flat plan <paramref name="waves"/> is empty and behaviour is unchanged.
     /// </summary>
     private void LoadTasksOrWaves(
-        string planDir, List<Diagnostic> diagnostics,
+        string planDir, RunConfig config, List<Diagnostic> diagnostics,
         out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves)
     {
+        string? defaultTier = PropagatableDefaultTier(config);
         bool hasRootTasks = Directory.Exists(Path.Combine(planDir, TasksDirName));
 
         List<(string Path, string Name)> subdirs = Directory
@@ -404,20 +581,30 @@ public sealed class PlanLoader
                 "Plan has a MIXED layout: both a root 'tasks/' directory and 'wave-*/' subdirectories. A " +
                 "plan is either FLAT (a root 'tasks/') or WAVED (no root 'tasks/', with ordered 'wave-NN-slug/' " +
                 "subdirs) — never both (SSOT §14.1). Remove one layout."));
-            tasks = LoadTasks(planDir, diagnostics); // best-effort so other checks still run; GR2032 blocks the run.
+            tasks = LoadTasks(planDir, defaultTier, diagnostics); // best-effort so other checks still run; GR2032 blocks the run.
             waves = [];
             return;
         }
 
         if (!hasWaveDirs)
         {
-            tasks = LoadTasks(planDir, diagnostics); // FLAT (or neither — LoadTasks reports the missing tasks/).
+            tasks = LoadTasks(planDir, defaultTier, diagnostics); // FLAT (or neither — LoadTasks reports the missing tasks/).
             waves = [];
             return;
         }
 
-        LoadWaves(planDir, subdirs, diagnostics, out tasks, out waves);
+        LoadWaves(planDir, subdirs, defaultTier, diagnostics, out tasks, out waves);
     }
+
+    /// <summary>
+    /// The plan-wide default tier that fills in for every task declaring no <c>action.tier</c> (SSOT §3,
+    /// issue #225) — but ONLY when it is a RECOGNIZED token. An unrecognized default is reported ONCE, at
+    /// its declaration site, by the validator (GR2043); propagating it onto every untagged task as well
+    /// would multiply one typo into an error per task and bury the single site that needs fixing. An absent
+    /// block (or an absent <c>defaultTier</c> within it) ⇒ null ⇒ nothing is filled in anywhere.
+    /// </summary>
+    private static string? PropagatableDefaultTier(RunConfig config) =>
+        ActionTiers.IsRecognized(config.Tiering?.DefaultTier) ? config.Tiering!.DefaultTier : null;
 
     /// <summary>
     /// Load a WAVED plan (SSOT §14). Validates wave numbering (<see cref="DiagnosticCodes.WaveNumbering"/> —
@@ -427,7 +614,7 @@ public sealed class PlanLoader
     /// is the flattened union of every wave's tasks in strict wave order.
     /// </summary>
     private void LoadWaves(
-        string planDir, List<(string Path, string Name)> subdirs, List<Diagnostic> diagnostics,
+        string planDir, List<(string Path, string Name)> subdirs, string? defaultTier, List<Diagnostic> diagnostics,
         out IReadOnlyList<TaskNode> tasks, out IReadOnlyList<WaveNode> waves)
     {
         // GR2033: a subdirectory alongside the wave dirs that is neither wave-conforming nor a recognised
@@ -496,7 +683,7 @@ public sealed class PlanLoader
         var waveNodes = new List<WaveNode>();
         foreach ((string dir, int number, string slug, string path) in ordered)
         {
-            IReadOnlyList<TaskNode> waveTasks = LoadWaveTasks(path, dir, diagnostics);
+            IReadOnlyList<TaskNode> waveTasks = LoadWaveTasks(path, dir, defaultTier, diagnostics);
 
             waveNodes.Add(new WaveNode
             {
@@ -528,7 +715,8 @@ public sealed class PlanLoader
     /// error (the between-wave runtime checkpoint honest-halts on an unauthored next wave; SSOT §14.4); the
     /// whole-plan empty check in <see cref="LoadWaves"/> catches a plan with NO tasks anywhere.
     /// </summary>
-    private IReadOnlyList<TaskNode> LoadWaveTasks(string wavePath, string waveDir, List<Diagnostic> diagnostics)
+    private IReadOnlyList<TaskNode> LoadWaveTasks(
+        string wavePath, string waveDir, string? defaultTier, List<Diagnostic> diagnostics)
     {
         string tasksDir = Path.Combine(wavePath, TasksDirName);
         if (!Directory.Exists(tasksDir))
@@ -541,7 +729,7 @@ public sealed class PlanLoader
                      .EnumerateDirectories(tasksDir)
                      .OrderBy(Path.GetFileName, StringComparer.Ordinal))
         {
-            TaskNode? task = LoadTask(taskFolder, diagnostics, waveDir);
+            TaskNode? task = LoadTask(taskFolder, defaultTier, diagnostics, waveDir);
             if (task is not null)
             {
                 tasks.Add(task);
@@ -654,7 +842,7 @@ public sealed class PlanLoader
 
     // --- tasks/* ----------------------------------------------------------------------
 
-    private IReadOnlyList<TaskNode> LoadTasks(string planDir, List<Diagnostic> diagnostics)
+    private IReadOnlyList<TaskNode> LoadTasks(string planDir, string? defaultTier, List<Diagnostic> diagnostics)
     {
         string tasksDir = Path.Combine(planDir, TasksDirName);
         if (!Directory.Exists(tasksDir))
@@ -681,7 +869,7 @@ public sealed class PlanLoader
 
         foreach (string taskFolder in taskFolders)
         {
-            TaskNode? task = LoadTask(taskFolder, diagnostics);
+            TaskNode? task = LoadTask(taskFolder, defaultTier, diagnostics);
             if (task is not null)
             {
                 tasks.Add(task);
@@ -696,9 +884,11 @@ public sealed class PlanLoader
     /// folder name. In a WAVED plan (SSOT §14.2) <paramref name="waveDir"/> is the owning wave dir and the
     /// task id is the WAVE-QUALIFIED <c>&lt;waveDir&gt;/&lt;folder&gt;</c>. <c>dependsOn</c> is stored AS
     /// AUTHORED here (plain sibling names); the caller's <see cref="QualifyWaveDependencies"/> post-pass
-    /// qualifies it intra-wave and flags cross-wave edges (GR2034).
+    /// qualifies it intra-wave and flags cross-wave edges (GR2034). <paramref name="defaultTier"/> is the
+    /// plan-wide tier that fills in when this task declares no <c>action.tier</c> (SSOT §3).
     /// </summary>
-    private TaskNode? LoadTask(string taskFolder, List<Diagnostic> diagnostics, string? waveDir = null)
+    private TaskNode? LoadTask(
+        string taskFolder, string? defaultTier, List<Diagnostic> diagnostics, string? waveDir = null)
     {
         string folderName = Path.GetFileName(taskFolder);
         string taskId = waveDir is null ? folderName : $"{waveDir}/{folderName}";
@@ -733,7 +923,7 @@ public sealed class PlanLoader
             return null;
         }
 
-        ActionDefinition? action = ResolveAction(taskFolder, taskId, raw.Action, diagnostics);
+        ActionDefinition? action = ResolveAction(taskFolder, taskId, raw.Action, defaultTier, diagnostics);
         if (action is null)
         {
             return null;
@@ -795,7 +985,8 @@ public sealed class PlanLoader
 
     // --- action discovery (SSOT §3) ---------------------------------------------------
 
-    private ActionDefinition? ResolveAction(string taskFolder, string taskId, RawAction? rawAction, List<Diagnostic> diagnostics)
+    private ActionDefinition? ResolveAction(
+        string taskFolder, string taskId, RawAction? rawAction, string? defaultTier, List<Diagnostic> diagnostics)
     {
         string? actionPath;
         if (!string.IsNullOrWhiteSpace(rawAction?.Path))
@@ -829,6 +1020,12 @@ public sealed class PlanLoader
             // BindStagingOutputs documents for stagingOutputs — silently normalizing it to null here
             // would let a malformed override validate clean.
             Model = rawAction?.Model,
+            // Tier precedence, resolved HERE at load (SSOT §3, issue #225): task action.tier > the
+            // plan-wide tiering.defaultTier > null. Resolving at LOAD rather than at breakdown is what
+            // makes the default reach a task a human hand-added to the folder afterwards, which no
+            // breakdown ever touched. Bound VERBATIM like Model — a malformed tier is the validator's to
+            // judge (GR2043), not the loader's to normalize away.
+            Tier = rawAction?.Tier ?? defaultTier,
             TimeoutSeconds = rawAction?.TimeoutSeconds,
             WorkingDirectory = rawAction?.WorkingDirectory,
             Env = (IReadOnlyDictionary<string, string>?)rawAction?.Env ?? new Dictionary<string, string>()

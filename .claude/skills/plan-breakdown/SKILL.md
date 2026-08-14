@@ -155,6 +155,28 @@ and only then does `guardrails run` execute it.
    SSOT §14 C5). When `$waved`, Steps 1–8 still run — **once per wave** — but Step 9 governs the
    layout, the wave gates, the wave-qualified identity, and the JIT staged-breakdown mode; read it
    before proceeding.
+9. **Detect whether model tiering is CONFIGURED — set `$tiering`. Default: NOT configured (#225).**
+   Model tiering is an **opt-in the CONFIG declares**; the breakdown never turns it on by itself. Set
+   `$tiering = configured` only when the `guardrails.json` that will govern this plan **already**
+   carries tiering metadata — either
+   - a **`routing` block on any `promptRunners.<name>`** (the #224 provider-registry surface: the
+     per-model guidance/tags saying what work that model should take on), or
+   - an existing top-level **`tiering`** block.
+
+   Read it from the config actually in play: the plan folder's own `guardrails.json` on a
+   regeneration (substep 2 → Step 8), or a repo / `.guardrails/` config this plan will reuse. A
+   **fresh** breakdown that authors `guardrails.json` from scratch has neither ⇒ `$tiering =
+   not-configured` — which is the case for essentially every plan today, and is exactly the
+   single-model default the gate protects.
+
+   There is exactly ONE other way in: **the plan itself explicitly instructs the breakdown to author
+   per-model routing** (it names the runners and what work each should take). That trigger is
+   **explicit-only** — never infer it from a plan that merely sounds complex, mentions a model name,
+   or configures a second runner with **no** `routing` block. **When in doubt, `not-configured`:** a
+   missed tag is the status quo (nothing routes on a tier in this stage anyway), while a tag emitted
+   against a single-model config breaks the byte-identical guarantee for a user who never asked for
+   tiering. `$tiering` gates **Step 4c** (classification), the **Step 6** emission, and the **Step
+   7.4** report lines — read Step 4c before emitting anything tier-shaped.
 
 ## Step 1 — Parse the plan into candidate work items
 
@@ -1195,6 +1217,14 @@ Per `references/schemas.md`, exactly:
   multi-leaf/fan-in plan carries ≥1 real integration-set re-run there (enforced as **GR2028**, the
   re-homed content teeth of the old GR2018). A single linear chain (one leaf, no fan-in) needs no
   terminal folder.
+- **`action.tier` and the `tiering` block — ONLY when Step 0.9 set `$tiering = configured` (#225).**
+  When tiering IS configured, write each prompt task's classified tier as `action.tier` (`"easy"` |
+  `"medium"` | `"hard"`, matched VERBATIM — a stray space or capital is a **GR2043** error) and emit
+  the plan-wide top-level `"tiering": { "defaultTier": "medium" }` in `guardrails.json`; the rubric,
+  the exact shapes and the hand-added-task rationale are Step 4c. When tiering is **NOT** configured
+  — the single-model default, no `routing` block — write **neither**, and not even `"tier": null`:
+  the folder must be **byte-identical** to what this skill emitted before #225 existed (DoR
+  Invariant 7, Step 4c.1).
 - Every **prompt action** opens with the harness-contract header block, verbatim:
 
   ```markdown
@@ -1448,6 +1478,19 @@ Per `references/schemas.md`, exactly:
    prove its OWN correctness. Report which script guardrails were author-time-executed (valid + invalid)
    and which were deferred with the reason. (Doctrine: `guardrails-domain-knowledge` → author-time
    smoke-test gate; `guardrails-review` re-checks it.)
+0e. **Tiering-gate self-review — an unconfigured plan must carry ZERO tier bytes (#225).** Check Step
+   0.9's `$tiering` against what the folder actually contains. **If `$tiering = not-configured`** (the
+   single-model default — no `routing` block and no `tiering` block in the governing config), sweep
+   the generated folder and confirm there is **no `"tier"` key in any `task.json`** (not even
+   `"tier": null`), **no `tiering` block in `guardrails.json`**, and **no classification line staged
+   for the report** — including a well-meant "tiering: not configured" note, which is itself a
+   classification report line (Step 4c.1). The folder must be **byte-identical** to what this skill
+   would have produced before #225 existed; one stray key fails DoR Invariant 7 and the committed
+   no-`routing` golden that proves it. **If `$tiering = configured`**, confirm the inverse: every
+   PROMPT task carries an `action.tier` of exactly `easy` / `medium` / `hard`, the plan-wide
+   `tiering.defaultTier` is present, no script task or deterministic guardrail was tagged, each
+   surviving prompt-judge guardrail was classified, and the report carries the Step 4c.7 lines.
+   Either direction, a mismatch is a self-review finding — fix it HERE, before `guardrails validate`.
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why). **This now FAILS a breakdown that OMITS any `writeScope`**
    (**GR2041**, #389 — required on every task): a task that writes nothing to the repo must still
@@ -1470,7 +1513,14 @@ Per `references/schemas.md`, exactly:
    decision the human should confirm** — chief among them any test-framework or E2E-driver choice:
    state which was used and why (detected in repo / named in the plan / asked via
    `AskUserQuestion` / left as a needs-human halt). A wrong framework poisons every
-   downstream test task, so it must never be buried. **If the plan was UI-facing**, state
+   downstream test task, so it must never be buried. **When — and ONLY when — Step 0.9 set `$tiering
+   = configured`**, add the Step 4c.7 tiering lines: the `tier` column on the task table, the `hard`
+   tasks with their one-clause reasons, each surviving prompt-judge guardrail's tier (plus the honest
+   note that Stage 1 has no field to write it to), the plan-wide `defaultTier` and that it covers any
+   task left untagged **including one hand-added after this breakdown**, and that nothing routes on a
+   tier yet. **When tiering is NOT configured, none of that appears — not even a note saying so**
+   (Step 4c.1: such a note is itself a classification report line, and the breakdown must be
+   byte-identical to a pre-#225 one). **If the plan was UI-facing**, state
    the outcome of the Step 7.0 exit-criteria self-review: each UI surface, the
    `NN-build-ui-<screen>` task that builds it, its UI-presence guardrail (asset-exists +
    served-markup string asserted), and the known UI string the served-markup check greps
@@ -1546,6 +1596,18 @@ to preserve edits against).
    token that survives in the guardrail must still be named in the rewritten prompt. Re-running the
    Step 4 covers-key-behaviors selection on the new prompt is the clean way to regenerate the
    guardrail from scratch when the scenario list changed substantially.
+
+   **1b. Re-run the tiering gate, and preserve a human's tier edits (#225).** Re-run Step 0.9's
+   detection against the **CURRENT** config before staging — the gate is a property of the config
+   today, not of the last generation. A config that has GAINED a `routing` block since then flips
+   `$tiering` to configured, so this regeneration legitimately introduces `action.tier` and a
+   `tiering` block where the previous folder had none: say so in the report rather than letting tiers
+   appear unexplained. An `action.tier` a human hand-changed on a continuation task is a human edit
+   like any other — carry it into the staged `task.json` instead of overwriting it with your fresh
+   classification, and note the divergence so they can confirm it; likewise never strip a `tiering`
+   block a human added to `guardrails.json`. The reverse case (a `routing` block REMOVED) does not
+   license quietly deleting the tiers already in the folder — nothing routes on them and validation
+   still accepts them, so surface it as a decision for the human instead of a silent data loss.
 2. **Dry-run the merge:** `guardrails merge <folder> --remote <staging>`. Branch on the exit code:
    - **Exit `0`** — no conflicts. Proceed to apply (step 3).
    - **Exit `2`** — read the output to disambiguate (this code has two meanings):
@@ -1654,6 +1716,170 @@ deliberately, not by accident.
 > `guardrails-harness-developer` — **out of scope for the skill**; the breakdown's fixed bump is
 > only the first-attempt cushion that pairs with it.
 <!-- END ADDED SECTION #94 -->
+
+<!-- BEGIN ADDED SECTION #225 — gated difficulty tiering: classify, default, report (auto-merge friendly; do not merge into prose above) -->
+## Step 4c — Difficulty tiering: classify, default, report — ALL of it GATED (#225)
+
+**Read the gate (4c.1) before the rubric.** This entire section is a **no-op** unless Step 0.9 set
+`$tiering = configured`. It is the sibling of Step 4a — both attach a per-task attribute to PROMPT
+tasks by archetype and report it, never silently — but they answer different questions: `maxTurns`
+asks *how much work will this take*, `tier` asks *how much model capability does this need*. Neither
+derives from the other (4c.4).
+
+### 4c.1 The GATE — when tiering is NOT configured, emit NOTHING (DoR Invariant 7)
+
+When `$tiering = not-configured` (the single-model default — no `routing` block on any prompt
+runner), the breakdown emits:
+
+- **no `action.tier`** in any `task.json` — not `"tier": "medium"`, and **not `"tier": null`** either
+  (a null key is still a byte that was not there before);
+- **no `tiering` block** in `guardrails.json`;
+- **no classification report lines** in the Step 7 report.
+
+A single-model user's breakdown must be **byte-identical to today** — the same bytes this skill
+produced before #225 existed. It is worth being blunt about why that is spelled out at this length:
+it is the acceptance criterion **most likely to be asserted and least likely to be genuinely
+tested**, because "I added the feature and gated it" reads as done long before anyone diffs a real
+no-`routing` folder. The proof is external and committed — a golden no-`routing` task folder plus
+negative assertions (`tests/Guardrails.Integration.Tests/ModelTiering/`) — so a stray byte here fails
+a test, not merely a review.
+
+**The trap, stated plainly: "tiering: not configured" is ITSELF a classification report line — do
+NOT emit it.** The reflex this skill trains everywhere else — *surface every decision, never a silent
+default* (the #42 test-framework precedent) — is **inverted here, deliberately**. There is no
+decision to surface: a plan with no routing config never opted into tiering, so a note explaining
+that tiering was skipped is both a diff against the byte-identical baseline and a false signal that a
+user who never asked about models must now think about them. **Silence is the specification.** Do not
+classify, do not tag, do not mention it, do not add an `(n/a)` tier column, and do not offer tiering
+as a suggestion in the report. The only correct output is the output of a skill that never heard of
+tiering.
+
+**Nothing else changes across the gate, either.** It is not a switch on *how the plan is broken
+down*: sizing (Step 2), the DAG (Step 3), guardrail selection (Step 4), the generative insertions
+(Step 5) and `maxTurns` budgeting (Step 4a) are IDENTICAL on both sides of it. Tiering is metadata
+about which model should take an already-decided task — see 4c.5.
+
+### 4c.2 What gets classified (when the gate is open)
+
+Two model-driven populations; everything else has no model to route and therefore no tier:
+
+- **Every PROMPT task** (a `.prompt.md` action) → classify it and write `action.tier` into its
+  `task.json` (4c.6).
+- **Every SURVIVING prompt-judge guardrail** (a `NN-name.prompt.md` in any of the four
+  guardrail/preflight folders that passed the Step 4 demotion gate) → classify it and **REPORT** it.
+  There is **no schema field to write it to in Stage 1**: `action.tier` is defined on `task.json`'s
+  action block only (SSOT §3). **Do NOT invent a `tier:` prompt-frontmatter key** — no loader binds
+  one, so it would be authored schema, silently ignored, that a later reader mistakes for a live
+  setting. Classify it, report it, and name the gap in the report rather than quietly dropping the
+  judge population: the requirement is the classification, not a field that does not exist yet.
+- **SCRIPT actions and deterministic guardrails are SKIPPED** — no prompt, no model, no tier (the
+  same rule as Step 4a's "Script tasks have no `maxTurns` — skip them"). Never tag them.
+
+### 4c.3 The rubric — `easy` | `medium` | `hard`
+
+Classify on **what the task asks the model to do**, not on how important the deliverable is or how
+long the file is. Take the HIGHEST tier whose description fits:
+
+- **`easy` — mechanical and fully specified.** The deliverable's exact shape is already decided and
+  the agent's job is to type it out: seed a directory, add a file whose content the plan dictates, a
+  rename/move, a config or version edit at a named key, a prose edit whose target text is named. No
+  API to discover, no design choice left open, no cross-file reasoning. Its guardrails are typically
+  `file-exists` / regex checks.
+- **`medium` — ordinary bounded work on a familiar surface (the DEFAULT).** Implement a named
+  behaviour so already-authored tests pass; author tests for a behaviour the plan specifies; a
+  bounded refactor inside one project. One session, the decisions already made by the plan, on a
+  surface an ancestor task or the existing repo has already established. **When two tiers both seem
+  to fit, choose `medium`** — it is the honest middle and the one that degrades least in either
+  direction.
+- **`hard` — discovery, judgement, or integration.** Any one of:
+  - the four **turn-expensive archetypes of Step 4a** — integration/smoke/e2e with an in-process
+    harness; work against an unfamiliar third-party SDK; terminal aggregation / composition-root or
+    entry-point wiring; integrating with a same-plan sibling's not-yet-landed implementation;
+  - the task must make a **design decision the plan left open** (it names an outcome, not a shape);
+  - its guardrail is a **real-seam / composition-root proof** (#120/#382) — the task has to reason
+    about the production assembly, not just about its own file;
+  - the deliverable is a **cross-cutting output shape** (#193) whose bytes flow into goldens that
+    other, pre-existing tests pin.
+
+Record a **one-clause reason** as you classify — it is what the report prints for every `hard`, and
+it is what makes a tier reviewable rather than a vibe.
+
+### 4c.4 `tier` and `maxTurns` are correlated, not the same axis — cross-check, never derive
+
+Step 4a's archetypes appear verbatim in the `hard` list, so most `maxTurns: 75` tasks are `hard`.
+They remain different questions: a bulk scripted-ETL task (#100) can burn turns while asking little
+of the model, and a small, subtle algorithm can be `hard` in twenty turns. So **do not compute one
+from the other** — but DO cross-check, because a disagreement is usually a mistake in one of them:
+
+- a task tiered **`easy` that carries a `maxTurns: 75` bump** is a contradiction — re-read both;
+- a task tiered **`hard` with no bump** is fine when the difficulty is judgement rather than
+  discovery, but re-check Step 4a's archetypes once before leaving it.
+
+### 4c.5 A tier NEVER weakens verification (the adversarial reading)
+
+A tier is routing metadata. It is **not** a licence to give an `easy` task fewer guardrails, skip its
+TDD split, widen its `writeScope`, or soften its `# catches:` line — and **not** an excuse to hand a
+`hard` task a prompt-judge where a deterministic check exists. The verification bar is identical at
+every tier: the guardrails prove the deliverable, and a deliverable does not become easier to verify
+because a cheaper model was pointed at it. If a task feels `easy` *because* its guardrails are thin,
+the finding is a thin guardrail (Step 4), not an easy task.
+
+### 4c.6 What to WRITE (Step 6), when the gate is open
+
+1. **Per prompt task — `action.tier` in `task.json`**, alongside `action.maxTurns` / `action.model`:
+
+   ```jsonc
+   {
+     "description": "Implement <feature> so the tests pass (fill logic over the stubs)",
+     "dependsOn": ["NN-author-tests-<feature>"],
+     "stableId": "q7m2zd",
+     "writeScope": ["src/MyProject/"],
+     "action": { "tier": "medium" }
+   }
+   ```
+
+   The three tokens are matched **VERBATIM** — lowercase `easy` / `medium` / `hard`, no trimming and
+   no case-folding — so `"Hard "` or `"Medium"` is a **GR2043 validation error**, not a near-miss the
+   loader repairs (the same *preserve the malformed signal* doctrine `action.model` follows for
+   GR2030). Step 7.1's `guardrails validate` catches it.
+
+2. **Once per plan — the plan-wide default in `guardrails.json`:**
+
+   ```jsonc
+   {
+     "version": 1,
+     "tiering": { "defaultTier": "medium" }
+   }
+   ```
+
+   It is a **top-level** block (a sibling of `promptRunners`), and its value is validated at its own
+   declaration site — a typo'd default is ONE GR2043 error there, never one per untagged task.
+   **Emit `"medium"`** unless the plan says otherwise: the default's whole job is to cover work
+   **nobody classified**, and unclassified work is precisely what you must not assume is cheap.
+
+3. **The default covers what the breakdown never saw — it does NOT excuse leaving your own tasks
+   untagged.** Resolution is `task.json action.tier` **>** `tiering.defaultTier` **>** `null`,
+   evaluated **at load** — which is exactly why it reaches a task **a human hand-adds to the folder
+   after this breakdown ran** (and one an editor renamed, and one a later regeneration introduced).
+   That hand-added task is the case the plan-wide default exists for. Tag **every** prompt task you
+   emit explicitly anyway: a folder that leans on the default is a folder that classified nothing and
+   reported nothing while looking configured.
+
+### 4c.7 What to REPORT (Step 7.4), when the gate is open
+
+- Add a **`tier` column** to the task table, with `—` for script tasks (no tier).
+- List the **`hard`** tasks with their one-clause reasons — the set a human most wants to challenge,
+  and the set whose misclassification costs the most.
+- List each **surviving prompt-judge guardrail** with its classified tier, stating that Stage 1 has
+  no field to write it to (4c.2) — an honest gap, named rather than hidden.
+- State the **plan-wide default** and what it covers: any task left untagged, **including one added
+  by hand after this breakdown**.
+- State plainly that **nothing routes on a tier yet** in this stage — the plan only gets to *say*
+  what it has, and `validate` holds it to that. A reviewer must not read a tier as a model assignment
+  that has already happened.
+
+And when the gate is CLOSED: **none of the above appears anywhere in the report** — see 4c.1.
+<!-- END ADDED SECTION #225 -->
 
 <!-- BEGIN ADDED SECTION #116 — Windows-safe shared git-repo test fixture (auto-merge friendly; do not merge into prose above) -->
 ## Step 5a — Emit a Windows-safe shared `TempGitRepo` fixture when author-tests build real git repos (#116)
@@ -2260,8 +2486,16 @@ Everything else in this skill still holds — inside each wave. The ones that vi
   durable-marker + architecture-caveat rule and the fourth turn-expensive archetype — apply BOTH. (The
   JIT flow in §9.5 is the stronger fix: author wave 2 against the REAL materialized code, so there is
   nothing to guess.)
-- **`guardrails-patterns.md`, stack detection, `$testFramework`, `$e2eStack`** are resolved ONCE for
-  the plan (Step 0), not per wave.
+- **Tiering is a PLAN-level config; classification is per wave (#225).** `guardrails.json` is ONE
+  shared run config at the plan root, so the `tiering.defaultTier` block is authored **once, at the
+  plan root** — never per wave, never duplicated into a wave folder. Classification (Step 4c) then
+  runs over each wave's own prompt tasks as that wave is authored — including a wave authored **JIT**
+  against the materialized worktree (§9.5 step 3) — and each wave's task table carries its `tier`
+  column. The GATE is unchanged and plan-wide: `$tiering = not-configured` ⇒ **no** wave emits a
+  tier, no `tiering` block is written, no wave's report mentions tiering, and the whole nested folder
+  stays **byte-identical** to a pre-#225 one (Step 4c.1).
+- **`guardrails-patterns.md`, stack detection, `$testFramework`, `$e2eStack`, `$tiering`** are
+  resolved ONCE for the plan (Step 0), not per wave.
 
 ### 9.5 JIT staged-breakdown mode — break down wave N+1 AFTER wave N runs
 
@@ -2419,4 +2653,6 @@ authority for every path/signature the new wave references.
 - [ ] (#254) `dependsOn` is INTRA-WAVE only — no cross-wave edge (GR2034); a wave-2 dependency on a wave-1 artifact is expressed as the wave-2 entry gate + the action reading the real path. Every waved-plan prompt action's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (not the bare folder name — a bare key is rejected as foreign every attempt); the harness-contract header, the example, and the state-output guardrail's index all use that wave-qualified id.
 - [ ] (#254/#360) JIT staged breakdown: a downstream wave whose tasks reference not-yet-existing artifacts is left as a declared stub (empty `tasks/` + an **auto-seeded `brief.md`** — never brief-less by default, §14.4/§14.10), and the Step 7 report documents the workflow (run → the seeded stub **auto-breaks-down at its checkpoint** against the MATERIALIZED integration worktree → **halt for review** → `/guardrails-review` that wave → resume; a brief-less/opt-out stub honest-halts for a manual `/plan-breakdown` re-invocation instead). A wave that IS designable up front is authored up front. Every generated waved script guardrail (task-level AND wave entry/exit gates) got the #302 author-time smoke-test (Step 7.0d).
 - [ ] (#365/#360) One-ahead invariant held: the initial JIT breakdown left **only wave `K+1`** stubbed (not `K+1..N`), and every JIT re-invocation (§9.5 step 3) that authored a wave **re-created AND auto-seeded the next `wave-(K+2)` stub** (dir + empty `tasks/` + a `brief.md` populated from that wave's parent-plan section — or a minimal template flagged in the report when no section was identifiable; NEVER brief-less by default, §14.4/§14.10 auto-breakdown-default) whenever a planned wave remained, then **regenerated the diagram** (`guardrails graph`); the FINAL wave got no stub after it. The forward signal is thereby preserved across every JIT step (not just the first), and each seeded stub auto-breaks-down at its checkpoint — still halting for the human review gate.
+- [ ] (#225) **The tiering GATE held.** Step 0.9 recorded `$tiering`, and tiering counts as configured ONLY when the governing `guardrails.json` already carries a `routing` block on a prompt runner (or an existing `tiering` block), or the plan EXPLICITLY instructs the breakdown to author per-model routing — never inferred from a plan that merely sounds complex, and `not-configured` when in doubt. When NOT configured, the emitted folder contains **no `action.tier` (not even `"tier": null`), no `tiering` block in `guardrails.json`, and no classification report line — including any "tiering: not configured" note, which is itself one** — so a single-model user's breakdown is **byte-identical** to what this skill emitted before #225 existed (DoR Invariant 7; re-checked in the Step 7.0e self-review and proven externally by the committed no-`routing` golden plus its negative assertions). Sizing, the DAG, guardrail selection and `maxTurns` budgeting are unchanged on both sides of the gate.
+- [ ] (#225) When tiering IS configured: every PROMPT task carries an `action.tier` of exactly `easy` | `medium` | `hard` (matched VERBATIM — a stray space or capital is a GR2043 error) classified by the Step 4c.3 rubric with a one-clause reason recorded; every surviving prompt-judge guardrail is classified and REPORTED (Stage 1 has no field to write it to — no invented `tier:` frontmatter key); script actions and deterministic guardrails are left untagged; the plan-wide `"tiering": { "defaultTier": "medium" }` is emitted ONCE in `guardrails.json` to cover anything left untagged **including a task a human hand-adds after the breakdown** (resolved at load: `action.tier` > `defaultTier` > `null`), without excusing an untagged emitted task; no tier weakened a guardrail, a TDD split or a `writeScope` (4c.5); tier vs `maxTurns` was cross-checked, not derived (4c.4); and the Step 7.4 report carries the `tier` column, the `hard` reasons, the judge tiers, the default and its hand-added-task coverage, and the "nothing routes on a tier yet" statement.
 <!-- END ADDED QUALITY-BAR ITEMS -->
