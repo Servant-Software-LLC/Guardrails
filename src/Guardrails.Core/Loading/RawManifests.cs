@@ -133,6 +133,11 @@ internal sealed class RawAction
     public string? Runner { get; set; }
     public int? MaxTurns { get; set; }
     public string? Model { get; set; }
+
+    // Difficulty tag (SSOT §3, issue #225): easy|medium|hard. STUB — the property binds, but the
+    // raw→model mapping, the plan-wide default, and the value check are the implement task's job.
+    public string? Tier { get; set; }
+
     public int? TimeoutSeconds { get; set; }
     public string? WorkingDirectory { get; set; }
     public Dictionary<string, string>? Env { get; set; }

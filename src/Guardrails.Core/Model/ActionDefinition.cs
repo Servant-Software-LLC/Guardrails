@@ -25,6 +25,13 @@ public sealed record ActionDefinition
     /// <summary>Model override for prompt actions; null = inherit from the runner config default.</summary>
     public string? Model { get; init; }
 
+    /// <summary>
+    /// Difficulty tier for prompt actions — <c>easy</c>|<c>medium</c>|<c>hard</c> (SSOT §3, issue #225);
+    /// null = untagged (no tier declared and no plan-wide default configured). STUB: nothing populates
+    /// this yet — the load-time resolution (task tier &gt; plan-wide default) is the implement task's job.
+    /// </summary>
+    public string? Tier { get; init; }
+
     /// <summary>Per-action timeout ceiling in seconds; null = inherit from task/config.</summary>
     public int? TimeoutSeconds { get; init; }
 
