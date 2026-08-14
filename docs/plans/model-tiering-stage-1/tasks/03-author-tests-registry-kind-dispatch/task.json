@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests + stubs for PromptRunnerRegistry.FromConfig switching on kind, with an actionable failure for an unimplemented kind and never a silent fallback to Claude",
+  "dependsOn": [],
+  "stableId": "b4t8xr",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/RegistryKindDispatchTests.cs",
+    "src/Guardrails.Core/Prompts/PromptRunnerRegistry.cs"
+  ]
+}

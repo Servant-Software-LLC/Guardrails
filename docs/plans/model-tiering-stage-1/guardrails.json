@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "interpreters": {
+    "ps1": [
+      "pwsh",
+      "-NoProfile",
+      "-File"
+    ]
+  },
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "kind": "claude",
+      "maxTurns": 50,
+      "permissionMode": "acceptEdits",
+      "allowedTools": [
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash(dotnet *)",
+        "Bash(git log*)",
+        "Bash(git diff*)",
+        "Bash(git show*)",
+        "Bash(git status*)"
+      ]
+    }
+  }
+}

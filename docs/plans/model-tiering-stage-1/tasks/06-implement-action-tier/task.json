@@ -1,0 +1,11 @@
+{
+  "description": "Implement action.tier on RawAction and the resolved model with validate rejecting an unrecognized tier, and update SSOT section 3 in the same change",
+  "dependsOn": [
+    "05-author-tests-action-tier"
+  ],
+  "stableId": "h8c4nj",
+  "writeScope": [
+    "src/Guardrails.Core/",
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

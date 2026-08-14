@@ -1,0 +1,14 @@
+{
+  "description": "Prove DoR Invariant 7 both ways - a committed golden no-routing task folder plus a meta-test reproducing it byte-for-byte, and negative assertions that no tier artefact appears",
+  "dependsOn": [
+    "08-update-plan-breakdown-skill-tiering"
+  ],
+  "stableId": "v9k3tb",
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/",
+    "tests/Guardrails.Integration.Tests/Fixtures/no-routing-golden/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

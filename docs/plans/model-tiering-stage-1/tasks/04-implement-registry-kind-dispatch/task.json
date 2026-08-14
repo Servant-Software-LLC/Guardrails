@@ -1,0 +1,11 @@
+{
+  "description": "Implement PromptRunnerRegistry.FromConfig kind dispatch over the stubs so an unimplemented kind fails with an actionable message and never falls back to Claude",
+  "dependsOn": [
+    "03-author-tests-registry-kind-dispatch",
+    "02-implement-runner-kind-and-axes"
+  ],
+  "stableId": "m5w1qe",
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/"
+  ]
+}

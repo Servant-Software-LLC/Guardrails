@@ -1,0 +1,13 @@
+{
+  "description": "Teach guardrails-review to verify every statically-named model resolves to a configured runner and report the ones that do not, with JIT judge resolution reported as unchecked",
+  "dependsOn": [
+    "02-implement-runner-kind-and-axes"
+  ],
+  "stableId": "t1x7gm",
+  "writeScope": [
+    ".claude/skills/guardrails-review/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

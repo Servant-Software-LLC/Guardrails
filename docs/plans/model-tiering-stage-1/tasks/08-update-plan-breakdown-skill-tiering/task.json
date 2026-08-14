@@ -1,0 +1,13 @@
+{
+  "description": "Teach the plan-breakdown skill to classify each prompt task easy/medium/hard and report it, gated so a no-routing config emits nothing",
+  "dependsOn": [
+    "06-implement-action-tier"
+  ],
+  "stableId": "r6d0ls",
+  "writeScope": [
+    ".claude/skills/plan-breakdown/"
+  ],
+  "action": {
+    "maxTurns": 75
+  }
+}

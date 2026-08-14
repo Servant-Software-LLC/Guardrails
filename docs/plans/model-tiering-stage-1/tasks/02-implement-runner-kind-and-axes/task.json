@@ -1,0 +1,11 @@
+{
+  "description": "Implement the kind discriminator, the three axes, routing guidance and the retired-rank warning over the stubs, and update SSOT section 9 in the same change",
+  "dependsOn": [
+    "01-author-tests-runner-kind-and-axes"
+  ],
+  "stableId": "q7m2zd",
+  "writeScope": [
+    "src/Guardrails.Core/",
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests + stubs for action.tier on RawAction and the resolved model, and for guardrails validate rejecting an unrecognized tier",
+  "dependsOn": [],
+  "stableId": "z2p6vk",
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/ActionTierTests.cs",
+    "src/Guardrails.Core/Loading/RawManifests.cs",
+    "src/Guardrails.Core/Model/ActionDefinition.cs"
+  ]
+}
