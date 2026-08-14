@@ -173,8 +173,42 @@ public static class PromptRunnerKinds
     public const PromptRunnerKind Default = PromptRunnerKind.Claude;
 
     /// <summary>The canonical wire token for <paramref name="kind"/> (e.g. <see cref="PromptRunnerKind.OpenRouter"/> ⇒ <c>openrouter</c>).</summary>
-    public static string Token(PromptRunnerKind kind) =>
-        throw new NotImplementedException($"PromptRunnerKinds.Token({kind}) is not implemented yet (#224).");
+    public static string Token(PromptRunnerKind kind) => kind switch
+    {
+        PromptRunnerKind.Claude => "claude",
+        PromptRunnerKind.Codex => "codex",
+        PromptRunnerKind.OpenRouter => "openrouter",
+        PromptRunnerKind.Local => "local",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unhandled prompt-runner kind.")
+    };
+
+    /// <summary>
+    /// Parse a <c>kind</c> string (trim + case-insensitive, mirroring <c>AutonomyPolicies.TryParse</c>):
+    /// <c>claude</c>, <c>codex</c>, <c>openrouter</c>, or <c>local</c>. Any other value returns
+    /// <c>false</c> with <paramref name="kind"/> left at <see cref="Default"/> and the caller reports it —
+    /// an unrecognised kind is REPORTED, never silently served by the default.
+    /// </summary>
+    public static bool TryParse(string value, out PromptRunnerKind kind)
+    {
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "claude":
+                kind = PromptRunnerKind.Claude;
+                return true;
+            case "codex":
+                kind = PromptRunnerKind.Codex;
+                return true;
+            case "openrouter":
+                kind = PromptRunnerKind.OpenRouter;
+                return true;
+            case "local":
+                kind = PromptRunnerKind.Local;
+                return true;
+            default:
+                kind = Default;
+                return false;
+        }
+    }
 }
 
 /// <summary>
@@ -205,8 +239,45 @@ public enum PromptRunnerSpecialization
 public static class PromptRunnerSpecializations
 {
     /// <summary>The canonical wire token for <paramref name="specialization"/>.</summary>
-    public static string Token(PromptRunnerSpecialization specialization) =>
-        throw new NotImplementedException($"PromptRunnerSpecializations.Token({specialization}) is not implemented yet (#224).");
+    public static string Token(PromptRunnerSpecialization specialization) => specialization switch
+    {
+        PromptRunnerSpecialization.Unspecified => "unspecified",
+        PromptRunnerSpecialization.Coding => "coding",
+        PromptRunnerSpecialization.PlanningReasoning => "planning-reasoning",
+        PromptRunnerSpecialization.General => "general",
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(specialization), specialization, "Unhandled prompt-runner specialization.")
+    };
+
+    /// <summary>
+    /// Parse a <c>specialization</c> string (trim + case-insensitive): <c>coding</c>,
+    /// <c>planning-reasoning</c>, <c>general</c>, or <c>unspecified</c>. <c>unspecified</c> is
+    /// WRITABLE, not merely the absent-key fallback. Any other value returns <c>false</c> and the caller
+    /// reports it rather than quietly resolving to
+    /// <see cref="PromptRunnerSpecialization.Unspecified"/>, which would leave the operator believing
+    /// they had expressed a routing preference they had not.
+    /// </summary>
+    public static bool TryParse(string value, out PromptRunnerSpecialization specialization)
+    {
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "unspecified":
+                specialization = PromptRunnerSpecialization.Unspecified;
+                return true;
+            case "coding":
+                specialization = PromptRunnerSpecialization.Coding;
+                return true;
+            case "planning-reasoning":
+                specialization = PromptRunnerSpecialization.PlanningReasoning;
+                return true;
+            case "general":
+                specialization = PromptRunnerSpecialization.General;
+                return true;
+            default:
+                specialization = PromptRunnerSpecialization.Unspecified;
+                return false;
+        }
+    }
 }
 
 /// <summary>

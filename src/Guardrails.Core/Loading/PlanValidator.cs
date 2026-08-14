@@ -62,6 +62,7 @@ public sealed class PlanValidator
         ValidatePromptRunners(plan, diagnostics);
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
+        ValidatePromptRunnerAxes(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
         ValidateTierValues(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
@@ -205,6 +206,30 @@ public sealed class PlanValidator
                 diagnostics.Add(Error(DiagnosticCodes.MaxOutputTokensNonPositive, plan.PlanDirectory,
                     $"promptRunners.{runner.Name}.guardrailOverrides.maxOutputTokens resolves to a " +
                     "non-positive value, but it must be a positive integer."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A present <c>strength</c> axis must be at least 1 (SSOT §9, issue #224 / charter Decision 7).
+    /// <c>strength</c> is relative capability, higher = stronger, and it is the ORDERING key for tier
+    /// candidates (ascending — the weakest model that can serve the tier goes first), so a zero or negative
+    /// value has no meaning to order by and is always an authoring mistake — an ERROR (GR2045), mirroring
+    /// the other optional-positive checks (cf. GR2012 <c>maxCostUsd</c>, GR2023 <c>maxOutputTokens</c>,
+    /// GR2036 <c>expectedDurationSeconds</c>). An absent axis is "not stated" and is never flagged. The
+    /// axes' TYPE checks are the loader's (<c>PlanLoader.ReadCostly</c>/<c>ReadStrength</c>/
+    /// <c>ReadSpecialization</c>), which is the only place holding the raw JSON; both halves report GR2045.
+    /// </summary>
+    private static void ValidatePromptRunnerAxes(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values)
+        {
+            if (runner.Strength is { } strength && strength < 1)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.strength is {strength}, but it must be an integer of at " +
+                    "least 1 (higher = stronger); candidates for a tier are ordered by ascending strength, " +
+                    "so there is no meaningful zeroth or negative capability."));
             }
         }
     }

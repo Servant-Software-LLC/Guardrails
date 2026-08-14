@@ -133,7 +133,7 @@ public sealed class PlanLoader
         PromptRunnersResult runners;
         try
         {
-            runners = ReadPromptRunners(raw.PromptRunners);
+            runners = ReadPromptRunners(raw.PromptRunners, configPath, diagnostics);
         }
         catch (JsonException ex)
         {
@@ -317,8 +317,17 @@ public sealed class PlanLoader
     /// Parse the <c>promptRunners</c> map (SSOT §2/§9): a <c>"default"</c> string pointer plus
     /// one config object per named runner. Each runner's settings get documented defaults; a
     /// <c>guardrailOverrides</c> sub-block is a partial override (only present keys override).
+    ///
+    /// <para>Takes <paramref name="diagnostics"/> because the Stage 1 schema surface (issue #224 — the
+    /// <c>kind</c> discriminator, the three axes, the retired <c>routing.rank</c>) can only be judged
+    /// HERE: by the time a <see cref="PromptRunnerConfig"/> exists the unrecognised token has already been
+    /// normalized away, so a later validator pass could not see it without re-reading the file. A bad
+    /// value is REPORTED and the block keeps loading with the documented default — not to let the run
+    /// proceed (an error blocks it), but so one <c>guardrails validate</c> reports every problem in the
+    /// config rather than one per invocation.</para>
     /// </summary>
-    private static PromptRunnersResult ReadPromptRunners(JsonElement? promptRunners)
+    private static PromptRunnersResult ReadPromptRunners(
+        JsonElement? promptRunners, string configPath, List<Diagnostic> diagnostics)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
         var runners = new Dictionary<string, PromptRunnerConfig>(StringComparer.Ordinal);
@@ -342,14 +351,15 @@ public sealed class PlanLoader
             if (property.Value.ValueKind == JsonValueKind.Object)
             {
                 RawPromptRunner raw = property.Value.Deserialize<RawPromptRunner>(PlanJson.Options)!;
-                runners[property.Name] = BuildRunnerConfig(property.Name, raw);
+                runners[property.Name] = BuildRunnerConfig(property.Name, raw, configPath, diagnostics);
             }
         }
 
         return new PromptRunnersResult(names, defaultRunner, runners);
     }
 
-    private static PromptRunnerConfig BuildRunnerConfig(string name, RawPromptRunner raw)
+    private static PromptRunnerConfig BuildRunnerConfig(
+        string name, RawPromptRunner raw, string configPath, List<Diagnostic> diagnostics)
     {
         var settings = new PromptRunnerSettings
         {
@@ -384,9 +394,163 @@ public sealed class PlanLoader
             Name = name,
             Command = string.IsNullOrWhiteSpace(raw.Command) ? name : raw.Command,
             Settings = settings,
+            Kind = ReadKind(name, raw.Kind, configPath, diagnostics),
+            Costly = ReadCostly(name, raw.Costly, configPath, diagnostics),
+            Strength = ReadStrength(name, raw.Strength, configPath, diagnostics),
+            Specialization = ReadSpecialization(name, raw.Specialization, configPath, diagnostics),
+            Routing = ReadRouting(name, raw.Routing, configPath, diagnostics),
             GuardrailOverrides = overrides
         };
     }
+
+    /// <summary>
+    /// The <c>kind</c> discriminator (SSOT §9, issue #224). ABSENT ⇒ <c>claude</c> — the additive
+    /// guarantee: every config written before the discriminator existed is implicitly Claude and loads
+    /// unchanged. An unrecognised token is an error NAMING the value (an operator with several blocks
+    /// should not have to hunt for which one is wrong); the block then falls back to the default purely so
+    /// the remaining checks still run — the error itself blocks the run.
+    /// </summary>
+    private static PromptRunnerKind ReadKind(
+        string name, string? rawKind, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (rawKind is null)
+        {
+            return PromptRunnerKinds.Default;
+        }
+
+        if (PromptRunnerKinds.TryParse(rawKind, out PromptRunnerKind kind))
+        {
+            return kind;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.InvalidPromptRunnerKind, configPath,
+            $"promptRunners.{name}.kind '{rawKind}' is not a recognised runner kind; expected 'claude' " +
+            "(the default when the key is omitted), 'codex', 'openrouter', or 'local' (SSOT §9)."));
+        return PromptRunnerKinds.Default;
+    }
+
+    /// <summary>
+    /// Axis 1 of 3 — <c>costly</c> (SSOT §9). TRI-STATE: absent ⇒ <c>null</c> ("not stated"), which is
+    /// deliberately distinct from an explicit <c>false</c> ("stated to be cheap"). A present non-boolean
+    /// (the classic <c>"yes"</c>) is an error naming the axis, not a silent drop.
+    /// </summary>
+    private static bool? ReadCostly(
+        string name, JsonElement? rawCostly, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (AbsentAxis(rawCostly, out JsonElement value))
+        {
+            return null;
+        }
+
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.True:
+                return true;
+            case JsonValueKind.False:
+                return false;
+            default:
+                diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, configPath,
+                    $"promptRunners.{name}.costly must be a boolean (true or false), but was " +
+                    $"{DescribeJson(value)}. Omit the key entirely to leave the axis unstated (SSOT §9)."));
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Axis 2 of 3 — <c>strength</c> (SSOT §9): relative capability, higher = stronger, and the ORDERING
+    /// key (ascending, so the weakest model that can serve a tier goes first). Absent ⇒ <c>null</c>. A
+    /// present non-integer is reported here; the <c>&gt;= 1</c> RANGE check is
+    /// <c>PlanValidator.ValidatePromptRunnerAxes</c>, which sits with the other optional-positive checks
+    /// and reads the parsed value — a value that binds as an integer is well-formed enough to be carried
+    /// verbatim into the diagnostic (the GR2030 doctrine).
+    /// </summary>
+    private static int? ReadStrength(
+        string name, JsonElement? rawStrength, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (AbsentAxis(rawStrength, out JsonElement value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int strength))
+        {
+            return strength;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, configPath,
+            $"promptRunners.{name}.strength must be an integer of at least 1 (higher = stronger), but was " +
+            $"{DescribeJson(value)}. Omit the key entirely to leave the axis unstated (SSOT §9)."));
+        return null;
+    }
+
+    /// <summary>
+    /// Axis 3 of 3 — <c>specialization</c> (SSOT §9): what the model is FOR. An absent key resolves to
+    /// <see cref="PromptRunnerSpecialization.Unspecified"/> (a first-class value, not a null), and
+    /// <c>unspecified</c> is writable explicitly. An out-of-enum token is an error naming the axis.
+    /// </summary>
+    private static PromptRunnerSpecialization ReadSpecialization(
+        string name, string? rawSpecialization, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (rawSpecialization is null)
+        {
+            return PromptRunnerSpecialization.Unspecified;
+        }
+
+        if (PromptRunnerSpecializations.TryParse(rawSpecialization, out PromptRunnerSpecialization parsed))
+        {
+            return parsed;
+        }
+
+        diagnostics.Add(Error(DiagnosticCodes.InvalidRunnerAxis, configPath,
+            $"promptRunners.{name}.specialization '{rawSpecialization}' is not a recognised value; expected " +
+            "'coding', 'planning-reasoning', 'general', or 'unspecified' (SSOT §9)."));
+        return PromptRunnerSpecialization.Unspecified;
+    }
+
+    /// <summary>
+    /// The optional per-model <c>routing</c> guidance block (SSOT §9, issue #224). Absent ⇒ <c>null</c>.
+    /// Stage 1 only proves it parses, validates, and round-trips — the static resolver (#226) is its first
+    /// reader. A block still carrying the RETIRED <c>rank</c> key gets a WARNING (the config keeps
+    /// loading, but never silently — ordering is ascending <c>strength</c>, and <c>rank</c> is ignored).
+    /// </summary>
+    private static PromptRunnerRouting? ReadRouting(
+        string name, RawPromptRunnerRouting? raw, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (raw is null)
+        {
+            return null;
+        }
+
+        if (raw.Extra is { } extra &&
+            extra.Keys.Any(key => string.Equals(key, "rank", StringComparison.OrdinalIgnoreCase)))
+        {
+            diagnostics.Add(Warning(DiagnosticCodes.RetiredRoutingRank, configPath,
+                $"promptRunners.{name}.routing.rank is a RETIRED key and is IGNORED: ordering is ascending " +
+                "'strength' — the weakest model that can serve the tier goes first — not a hand-written " +
+                "rank. Remove 'rank' and express relative capability with 'strength' (SSOT §9)."));
+        }
+
+        return new PromptRunnerRouting
+        {
+            Guidance = raw.Guidance,
+            Tags = raw.Tags is null ? [] : [.. raw.Tags]
+        };
+    }
+
+    /// <summary>
+    /// True when a raw axis element is ABSENT — the key was missing, or written as an explicit JSON
+    /// <c>null</c>, which the schema treats identically to "not stated" (as <c>model: null</c> already
+    /// does). Otherwise <paramref name="value"/> is the element to judge.
+    /// </summary>
+    private static bool AbsentAxis(JsonElement? raw, out JsonElement value)
+    {
+        value = raw ?? default;
+        return raw is null || value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined;
+    }
+
+    /// <summary>A short, quotable rendering of a malformed axis value for its diagnostic.</summary>
+    private static string DescribeJson(JsonElement value) =>
+        value.ValueKind == JsonValueKind.String ? $"the string '{value.GetString()}'" : $"'{value.GetRawText()}'";
 
     // --- layout detection: flat vs waved (SSOT §14.1) ---------------------------------
 
