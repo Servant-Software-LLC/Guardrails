@@ -27,6 +27,10 @@ internal sealed class RawRunConfig
     // raw→model mapping in PlanLoader is stubbed until the implement task wires the real parse.
     public RawAutonomyConfig? Autonomy { get; set; }
 
+    // The optional model-tiering block (SSOT §2/§3, issue #225). null ⇒ the block was ABSENT ⇒ no plan-wide
+    // default tier exists and untagged tasks stay untagged (RunConfig.Tiering stays null).
+    public RawTieringConfig? Tiering { get; set; }
+
     public Dictionary<string, List<string>>? Interpreters { get; set; }
 
     // promptRunners is a heterogeneous map: a "default" string pointer plus named
@@ -52,6 +56,16 @@ internal sealed class RawAutonomyConfig
 
     public RawBlockerRetry? BlockerRetry { get; set; }
     public int? MaxJudgeWidenings { get; set; }
+}
+
+/// <summary>
+/// Raw shape of the optional <c>tiering</c> block (SSOT §2/§3, issue #225). <c>defaultTier</c> is bound
+/// VERBATIM — an unrecognized value reaches the validator's GR2043 check faithfully rather than being
+/// normalized into validity, the same doctrine <c>action.model</c> follows for GR2030.
+/// </summary>
+internal sealed class RawTieringConfig
+{
+    public string? DefaultTier { get; set; }
 }
 
 /// <summary>Raw shape of the <c>autonomy.blockerRetry</c> sub-block (doc 12 §3.4/§4.2).</summary>
@@ -134,8 +148,9 @@ internal sealed class RawAction
     public int? MaxTurns { get; set; }
     public string? Model { get; set; }
 
-    // Difficulty tag (SSOT §3, issue #225): easy|medium|hard. STUB — the property binds, but the
-    // raw→model mapping, the plan-wide default, and the value check are the implement task's job.
+    // Difficulty tag (SSOT §3, issue #225): easy|medium|hard. Bound VERBATIM (no trim/case-fold) so an
+    // unrecognized value reaches the validator's GR2043 check as written — the same "preserve the
+    // malformed signal" doctrine Model follows for GR2030.
     public string? Tier { get; set; }
 
     public int? TimeoutSeconds { get; set; }

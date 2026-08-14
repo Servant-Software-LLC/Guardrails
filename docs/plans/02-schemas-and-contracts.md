@@ -148,6 +148,9 @@ decision (issue #275) and is deliberately NOT done here.
     },
     "maxJudgeWidenings": 3            // OPTIONAL run-level cap on how many times a judge may reclassify an unknown failure as retryable; once spent, every unknown failure escalates deterministically
   },
+  "tiering": {                        // OPTIONAL, NEW (#225; the per-task key is action.tier — "easy" | "medium" | "hard", §3). Whole block ABSENT ⇒ NO plan-wide default ⇒ every untagged task resolves to a null tier and nothing is fabricated: the additive guarantee that a single-model plan is byte-identically unaffected
+    "defaultTier": "medium"           // OPTIONAL; the tier applied to every task that declares no action.tier of its own. Matched VERBATIM against the same three tokens (no trim, no case-fold); anything else is a GR2043 error, reported ONCE here rather than fanned out over every untagged task
+  },
   "autoBreakdown": true,              // OPTIONAL; DEFAULT true (#360, §14.4/§14.10). Between-wave breakdown INVOCATION only, DECOUPLED from autonomyPolicy. true: a JIT-checkpoint wave carrying a brief.md AUTO-FIRES plan-breakdown with NO prompt (even non-interactive), at ANY policy; the human review gate STILL halts. false: fall back to the #368 autonomyPolicy-gated invocation. brief.md still required (absent → honest-halt)
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
   "preserveAttemptsForSalvage": true, // OPTIONAL; retry salvage (§3.2, issues #195/#306). Default true. Stashes ANY rolled-back non-final worktree attempt to a git ref + applyable patch (exposed to the retry) instead of pure discard; set false to disable
@@ -488,6 +491,8 @@ or interactively, the dial is inert — which is why an existing run's behaviour
     "runner": "claude",              // prompt actions only; default = promptRunners.default
     "maxTurns": 80,                  // prompt actions only
     "model": null,                   // prompt actions only; null = inherit from the runner's default model
+    "tier": null,                    // OPTIONAL difficulty tag (#225): "easy" | "medium" | "hard"; null/absent =
+                                     //   inherit tiering.defaultTier (§2), or stay untagged when no tiering block
     "timeoutSeconds": 2400,          // narrower than task timeout
     "workingDirectory": null,        // overrides config workspace (rare)
     "env": { "MY_VAR": "value" }     // extra env vars for this action's process
@@ -520,6 +525,27 @@ must be a real-looking value — non-empty, no leading/trailing/embedded whitesp
 characters — or `validate` rejects it (`GR2030`); a `null`/absent value is always fine and means "no
 override here". The resolved value is also what `run.json`'s per-attempt provenance records (§7) —
 provenance never lags behind what actually ran.
+
+`action.tier` (issue #225) is an **optional** difficulty tag on a task — `"easy"`, `"medium"` or
+`"hard"` — mirroring `action.model`/`action.maxTurns` exactly (same shape, same "task.json wins"
+precedence, same *bound verbatim, judged by the validator* split). The full resolution order,
+evaluated **once at load**: **`task.json action.tier`** (if set) **> `tiering.defaultTier`** (§2, if a
+`tiering` block is configured) **> `null`** (untagged). Resolving at **load** rather than at breakdown
+is what makes the plan-wide default reach a task a human hand-added to the folder afterwards, which
+no `/plan-breakdown` run ever saw.
+
+An **absent** `tiering` block means there is **no** plan-wide default: every untagged task stays
+`null` and **nothing is substituted**. That is the load-bearing additive guarantee — a plan that
+never mentions a tier parses, validates and runs exactly as it does today. Nothing **routes** on a
+tier in this stage; the plan only gets to *say* what it has, and `validate` holds it to that.
+
+A declared tier that is not one of the three tokens is a **`GR2043` error**, checked at **both**
+declaration sites: a task's `action.tier` and the plan-wide `tiering.defaultTier`. Matching is
+**verbatim** — no trimming, no case-folding — so `"Hard "` with a stray trailing space is reported
+rather than silently accepted (the same *preserve the malformed signal* doctrine `action.model`
+follows for `GR2030`). An unrecognized plan-wide default is reported exactly **once, at its own
+declaration site**, and is deliberately **not** propagated onto tasks, so one typo can never fan out
+into an error per untagged task. A `null`/absent tier at either site is always fine.
 
 *(Former §3.1/§3.1.1 — the `captureHashes`/`restoreOnRetry` triad — are **removed in this change**,
 along with the harness `CapturedFileStore`/`FileHashCapture`/`RestoreAncestorCaptures`/`WorkspaceLock`
@@ -4637,8 +4663,9 @@ supplies the *materialized* upstream state (the prior waves' real outputs); `bri
 **Validation.** `guardrails validate` does **NOT** error on an absent `brief.md` (it is optional). A future
 validation **WARNING** on a wave stub — empty `tasks/` — that has no `brief.md` is **DEFERRED**, not shipped
 in Phase 0; it will take a fresh GR code when implemented (`GR2038` was since taken by #383's
-`WorktreePathTooLong`, `GR2039`/`GR2040` by #361's autonomy-dial checks, and **`GR2041` by #389's
-`MissingWriteScope`** (required-`writeScope`, §3.4), so the next free is `GR2042`).
+`WorktreePathTooLong`, `GR2039`/`GR2040` by #361's autonomy-dial checks, **`GR2041` by #389's
+`MissingWriteScope`** (required-`writeScope`, §3.4), `GR2042` by #378's `StructuralOverScope` and
+`GR2043` by #225's `InvalidTierValue` (§3), so the next free is `GR2044`).
 
 **Hash treatment.**
 - **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a

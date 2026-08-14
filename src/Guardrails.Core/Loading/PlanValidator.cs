@@ -63,6 +63,7 @@ public sealed class PlanValidator
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
+        ValidateTierValues(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
@@ -276,6 +277,44 @@ public sealed class PlanValidator
         }
 
         return !model.Any(c => char.IsWhiteSpace(c) || char.IsControl(c));
+    }
+
+    /// <summary>
+    /// A declared difficulty tier must be one of the three recognised tokens (SSOT §3, issue #225),
+    /// checked at BOTH sites a tier can be declared: the plan-wide <c>tiering.defaultTier</c> and each
+    /// task's <c>action.tier</c> (GR2043 ERROR). Unlike <c>model</c> (GR2030, a shape check — there is no
+    /// enumerable set of valid model names) the tier vocabulary is CLOSED, so this is a real membership
+    /// test against <see cref="ActionTiers.All"/>, matched verbatim. An absent tier at either site is fine
+    /// (untagged) and is not flagged.
+    ///
+    /// <para>The plan-wide default is checked FIRST and independently because it is the more dangerous
+    /// site: a typo there would tier every untagged task in the plan. It is reported exactly ONCE, here at
+    /// its declaration site — the loader's <c>PropagatableDefaultTier</c> deliberately does not propagate
+    /// an unrecognised default onto tasks, so a single typo can never fan out into one error per untagged
+    /// task.</para>
+    /// </summary>
+    private static void ValidateTierValues(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (plan.Config.Tiering?.DefaultTier is { } defaultTier && !ActionTiers.IsRecognized(defaultTier))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.InvalidTierValue, plan.PlanDirectory,
+                $"tiering.defaultTier is '{defaultTier}', which is not a recognised difficulty tier. " +
+                $"Expected exactly one of {ActionTiers.TokenList} (matched verbatim — no surrounding " +
+                "whitespace), or omit the tiering block entirely to leave untagged tasks untagged. This " +
+                "default applies to every task that declares no action.tier of its own, so a typo here " +
+                "would mistier the whole plan."));
+        }
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.Action.Tier is { } tier && !ActionTiers.IsRecognized(tier))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidTierValue, task.Directory,
+                    $"Task '{task.Id}' declares action.tier '{tier}', which is not a recognised difficulty " +
+                    $"tier. Expected exactly one of {ActionTiers.TokenList} (matched verbatim — no " +
+                    "surrounding whitespace), or omit the field to inherit the plan-wide default."));
+            }
+        }
     }
 
     /// <summary>

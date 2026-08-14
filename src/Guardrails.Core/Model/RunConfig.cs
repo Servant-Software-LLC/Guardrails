@@ -125,6 +125,16 @@ public sealed record RunConfig
     public AutonomyConfig? Autonomy { get; init; }
 
     /// <summary>
+    /// The OPTIONAL model-tiering block (SSOT §2/§3, issue #225). Null (the default) ⇒ the <c>tiering</c>
+    /// block was ABSENT from <c>guardrails.json</c> ⇒ there is no plan-wide default and every untagged
+    /// task resolves to a <c>null</c> <see cref="ActionDefinition.Tier"/> — the additive guarantee that a
+    /// single-model user's plan is unaffected by this feature. Present ⇒ its
+    /// <see cref="TieringConfig.DefaultTier"/> fills in for every task that declares no
+    /// <c>action.tier</c> of its own.
+    /// </summary>
+    public TieringConfig? Tiering { get; init; }
+
+    /// <summary>
     /// The between-wave breakdown-INVOCATION knob (SSOT §14.4/§14.10, #360). Default <c>true</c>: at a JIT
     /// wave checkpoint (an unauthored/empty next wave) carrying a human-authored <c>brief.md</c>, the harness
     /// AUTO-INVOKES <c>plan-breakdown</c> with NO prompt (even non-interactive), <b>DECOUPLED from</b>

@@ -472,6 +472,23 @@ public static class DiagnosticCodes
     /// </summary>
     public const string StructuralOverScope = "GR2042";
 
-    // CURRENT next-free code: GR2043. GR2042 (StructuralOverScope) is the last taken code
-    // above. When allocating a new code, take GR2043 and update this line (issue #320).
+    // --- difficulty tier (`action.tier` / `tiering.defaultTier`, issue #225, SSOT §2/§3) ---------------
+
+    /// <summary>
+    /// A declared difficulty tier is not one of the recognised tokens <c>easy</c>, <c>medium</c> or
+    /// <c>hard</c> (SSOT §3, issue #225) — at either site a tier can be declared: a task's
+    /// <c>task.json action.tier</c>, or the plan-wide <c>tiering.defaultTier</c> in <c>guardrails.json</c>.
+    /// The tier is a CLOSED token set (unlike a model identifier, GR2030, which has no enumerable valid
+    /// set), so an unrecognised value can only ever be a typo — and one that would otherwise fail silently:
+    /// nothing routes on a tier in Stage 1, so a garbage value would sit in the plan undetected until the
+    /// Stage 2 resolver could not match it. The plan-wide default is checked too, and is the more dangerous
+    /// of the two: a typo there applies a garbage tier to EVERY untagged task in the plan. Matched
+    /// VERBATIM — no trimming, no case-folding — so <c>"hard "</c> is reported rather than silently
+    /// accepted (the GR2030 "preserve the malformed signal" doctrine). An ERROR; a <c>null</c>/absent tier
+    /// at either site is fine (untagged) and is never flagged.
+    /// </summary>
+    public const string InvalidTierValue = "GR2043";
+
+    // CURRENT next-free code: GR2044. GR2043 (InvalidTierValue) is the last taken code
+    // above. When allocating a new code, take GR2044 and update this line (issue #320).
 }

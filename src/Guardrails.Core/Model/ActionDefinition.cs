@@ -26,9 +26,11 @@ public sealed record ActionDefinition
     public string? Model { get; init; }
 
     /// <summary>
-    /// Difficulty tier for prompt actions — <c>easy</c>|<c>medium</c>|<c>hard</c> (SSOT §3, issue #225);
-    /// null = untagged (no tier declared and no plan-wide default configured). STUB: nothing populates
-    /// this yet — the load-time resolution (task tier &gt; plan-wide default) is the implement task's job.
+    /// Difficulty tier — <c>easy</c>|<c>medium</c>|<c>hard</c> (SSOT §3, issue #225); null = untagged (no
+    /// <c>action.tier</c> declared and no plan-wide default configured). RESOLVED AT LOAD, precedence
+    /// <c>task.json action.tier</c> &gt; <c>tiering.defaultTier</c> &gt; null — which is what makes the
+    /// plan-wide default reach a task hand-added to the folder after breakdown. Nothing ROUTES on it in
+    /// Stage 1; the resolver is Stage 2 (#226).
     /// </summary>
     public string? Tier { get; init; }
 
