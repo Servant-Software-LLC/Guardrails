@@ -178,7 +178,14 @@ decision (issue #275) and is deliberately NOT done here.
 <!-- canonical-schema:promptRunners — the `"promptRunners": { … }` block above (from its
      `"promptRunners":` line through its matching close, leading 2-space indent included) is the
      CANONICAL copy. `.claude/skills/plan-breakdown/references/schemas.md` mirrors it byte-for-byte
-     between its `canonical-schema:promptRunners` sentinels (drift-tested). Edit here first. -->
+     between its `canonical-schema:promptRunners` sentinels (drift-tested). Edit here first.
+     NOTE (#224, model-tiering Stage 1): this block is an EXAMPLE of a typical config, not the full key
+     list. The provider-registry keys — `kind` (default `claude`) and the per-model axes `costly` /
+     `strength` / `specialization` / `routing` — are OPTIONAL and are defined normatively in §9. They are
+     held OUT of this canonical block deliberately: the block is mirrored byte-for-byte into the skill
+     copy, so the two must move in ONE change, and the skill mirror is not in the harness change's write
+     scope. Fold them in when that mirror is next updated — a config omitting every one of them is still
+     complete and valid, which is exactly the additive guarantee §9 states. -->
 
 - `workspace` is the repo/directory the plan operates ON (typically the folder that
   contains the plan folder). Children run with cwd = workspace; everything
@@ -3022,6 +3029,75 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
   signal is its verdict file); promoting guardrail-prompt transients to the same pause path is a future
   extension, not part of #114/#115/#119.
 
+**The provider registry — `kind` + the three per-model axes + `routing` guidance (issue #224, model-tiering
+Stage 1).** A `promptRunners.<name>` block declares not only HOW to invoke a CLI but WHICH implementation
+serves it and WHAT the model behind it is good for. Every key below is **OPTIONAL and purely ADDITIVE**: a
+config written before any of it existed parses, validates, and runs **exactly as it does today**. Nothing in
+the harness READS the axes in Stage 1 — the static tier resolver (#226) is their first consumer — so this
+section defines the wire schema and its diagnostics, not a routing behaviour.
+
+```jsonc
+"primary": {
+  "command": "claude",
+  "kind": "claude",                 // OPTIONAL; DEFAULT "claude". claude | codex | openrouter | local
+  "costly": true,                   // OPTIONAL axis 1/3; boolean. ABSENT = "not stated" (≠ false)
+  "strength": 7,                    // OPTIONAL axis 2/3; integer >= 1, higher = stronger. ABSENT = "not stated"
+  "specialization": "planning-reasoning", // OPTIONAL axis 3/3; coding | planning-reasoning | general | unspecified
+  "routing": {                      // OPTIONAL; ABSENT = null. Read by the #226 resolver, not by Stage 1
+    "guidance": "Prefer for wide-context refactors; avoid for one-line fixes.",
+    "tags": ["refactoring", "long-context"]
+  }
+}
+```
+
+- **`kind` — the implementation discriminator. DEFAULTS TO `claude`.** It selects which `IPromptRunner`
+  serves the block, and **it — not the map key — is what dispatch reads**: a block may be named anything
+  (`primary`, `cheap`, `reviewer`) and still be dispatched correctly, because dispatch keys on the `kind`
+  FIELD, never on the map name or the `command`. The default is what keeps the change additive — an omitted
+  `kind` is Claude, so every existing config validates and runs unchanged. Accepted: `claude`, `codex`,
+  `openrouter`, `local` (parsed trimmed + case-insensitively, as `autonomyPolicy` is). An **unrecognised**
+  value is **GR2044 (error)**, and the message NAMES the offending value so an operator with several blocks
+  knows which one to fix; the block then falls back to `claude` only so the REST of validation still reports
+  (the error blocks the run regardless).
+  - **Recognised-but-unimplemented is a BACKSTOP, not a gate.** Only `claude` has a concrete runner in
+    Stage 1. A config declaring `codex`/`openrouter`/`local` **loads and validates CLEAN** (no diagnostic —
+    declaring a kind is legal); construction of the runner registry then fails with an
+    `InvalidOperationException` naming the kind. It must **never** silently fall back to Claude — quietly
+    serving a request for another provider with a different model is the one failure mode this seam exists
+    to prevent. The concrete runners land with #223.
+- **The three axes are TOP-LEVEL on the block** — not nested under `routing`, not under a `settings`
+  sub-object. They describe the MODEL, and the resolver reads them alongside `command`/`model`.
+  - **`costly`** (boolean) — does spending on this model warrant restraint? **TRI-STATE**: an absent key is
+    `null` = "not stated", deliberately distinct from an explicit `false` = "stated to be cheap". A present
+    non-boolean (the classic `"costly": "yes"`) is **GR2045 (error)** naming the axis.
+  - **`strength`** (integer **>= 1**, higher = stronger) — relative capability, and **the ORDERING key**.
+    Candidates for a tier are ordered by **ASCENDING strength: the weakest model that can serve the tier
+    goes first.** Absent = `null` = not stated. A non-integer, or an integer below 1 (there is no meaningful
+    zeroth or negative capability to order by), is **GR2045 (error)**.
+  - **`specialization`** (string) — what the model is FOR: `coding`, `planning-reasoning` (note the
+    hyphen), `general`, or `unspecified`. An absent key resolves to `unspecified`, which is a **first-class,
+    writable value rather than a null** — "not stated" and "explicitly stated to be a generalist-of-no-
+    particular-kind" are both expressible. An out-of-enum token is **GR2045 (error)** naming the axis.
+  - **A present-but-malformed axis is reported, never silently dropped.** Dropping it would leave the
+    operator believing they had expressed a routing preference the resolver will never see. An **absent**
+    axis is never flagged, and is never back-filled with a fabricated default.
+- **`routing`** (object, absent ⇒ `null`) — per-model guidance about the work this model should take on:
+  `guidance` (free prose) and `tags` (machine-comparable strings; absent ⇒ empty list). Stage 1 requires
+  only that it parses, validates, and survives a serialise/parse cycle intact.
+- **`routing.rank` is RETIRED and is NOT implemented (settled OD-F).** Ordering is ascending `strength`;
+  `rank` is not modelled anywhere in the harness and is **IGNORED**. A config still carrying it gets
+  **GR2046 (warning)** — deliberately not an error, so a config mid-migration keeps loading, and
+  deliberately not silence, because accepting `rank` quietly is exactly how a migrated config's ordering
+  would change without anyone being told. Remove `rank`; express relative capability with `strength`.
+
+> **Canonical-schema note (see the `canonical-schema:promptRunners` sentinel in §2).** The tiering keys
+> above are documented HERE rather than added to the §2 canonical block, because that block is mirrored
+> byte-for-byte into `.claude/skills/plan-breakdown/references/schemas.md` and the mirror is drift-tested
+> (`SchemaDriftTests`). The two must move in ONE change; folding these keys into the canonical block is
+> therefore the job of the task that owns the skill mirror, not of the harness change that introduced them.
+> §9 is the normative definition either way — the §2 block is an EXAMPLE of a typical config, and a config
+> that omits every key here is still a complete and valid one.
+
 ### 9.1 AI-merge worker
 
 The AI-merge worker resolves a git merge conflict during a union (§5.3 case B). It is a **constrained
@@ -4637,8 +4713,10 @@ supplies the *materialized* upstream state (the prior waves' real outputs); `bri
 **Validation.** `guardrails validate` does **NOT** error on an absent `brief.md` (it is optional). A future
 validation **WARNING** on a wave stub — empty `tasks/` — that has no `brief.md` is **DEFERRED**, not shipped
 in Phase 0; it will take a fresh GR code when implemented (`GR2038` was since taken by #383's
-`WorktreePathTooLong`, `GR2039`/`GR2040` by #361's autonomy-dial checks, and **`GR2041` by #389's
-`MissingWriteScope`** (required-`writeScope`, §3.4), so the next free is `GR2042`).
+`WorktreePathTooLong`, `GR2039`/`GR2040` by #361's autonomy-dial checks, **`GR2041` by #389's
+`MissingWriteScope`** (required-`writeScope`, §3.4), `GR2042` by #378's `StructuralOverScope`, `GR2043` by
+the model-tiering `action.tier` check, and **`GR2044`–`GR2046` by #224's provider registry**
+(`InvalidPromptRunnerKind` / `InvalidRunnerAxis` / `RetiredRoutingRank`, §9), so the next free is `GR2047`).
 
 **Hash treatment.**
 - **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a

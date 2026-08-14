@@ -472,6 +472,51 @@ public static class DiagnosticCodes
     /// </summary>
     public const string StructuralOverScope = "GR2042";
 
-    // CURRENT next-free code: GR2043. GR2042 (StructuralOverScope) is the last taken code
-    // above. When allocating a new code, take GR2043 and update this line (issue #320).
+    // --- provider registry: the kind discriminator + the three per-model axes (issue #224, SSOT §9) ---
+    //
+    // GR2043 is deliberately SKIPPED here: it is allocated by the concurrent action-tier change in this same
+    // model-tiering Stage 1 plan (InvalidTierValue). Taking it twice for two different meanings is the one
+    // outcome a code registry must not produce, and a gap costs nothing — codes are opaque identifiers.
+
+    /// <summary>
+    /// A <c>promptRunners.&lt;name&gt;.kind</c> value is present but is not one of the recognised runner
+    /// kinds <c>claude</c> / <c>codex</c> / <c>openrouter</c> / <c>local</c> (SSOT §9, issue #224). The
+    /// discriminator selects which runner IMPLEMENTATION serves the block; a value that names no
+    /// implementation can only ever be a typo or a kind from a newer Guardrails, and the message NAMES the
+    /// offending value so an operator with several blocks knows which one to fix. An ERROR — the loader
+    /// falls the block back to the <c>claude</c> default only so the REST of validation still reports, never
+    /// so the run proceeds (any error blocks it). Distinct from the RECOGNISED-but-unimplemented kind, which
+    /// loads clean and fails at registry construction with an actionable message (charter §A.2 — the
+    /// backstop, not the gate).
+    /// </summary>
+    public const string InvalidPromptRunnerKind = "GR2044";
+
+    /// <summary>
+    /// One of the three per-model AXES on a <c>promptRunners.&lt;name&gt;</c> block is malformed (SSOT §9,
+    /// issue #224 / charter Decision 7): a <c>costly</c> that is not a boolean, a <c>strength</c> that is
+    /// not an integer or is below 1 (higher = stronger, so there is no meaningful zeroth or negative
+    /// capability), or a <c>specialization</c> outside
+    /// <c>coding</c>/<c>planning-reasoning</c>/<c>general</c>/<c>unspecified</c>. All three axes are
+    /// OPTIONAL and an absent axis is never flagged — but a PRESENT one that cannot be understood is an
+    /// ERROR rather than a silent drop, because silently ignoring it would leave the operator believing they
+    /// had expressed a routing preference the Stage 2 resolver (#226) will never see. The message names the
+    /// offending AXIS (and its value), one diagnostic per malformed axis. The type checks live in
+    /// <see cref="PlanLoader"/> (the only place holding the raw JSON); the <c>strength &gt;= 1</c> range
+    /// check lives in <see cref="PlanValidator"/> alongside the other optional-positive checks (cf. GR2012
+    /// <c>maxCostUsd</c>, GR2023 <c>maxOutputTokens</c>, GR2036 <c>expectedDurationSeconds</c>).
+    /// </summary>
+    public const string InvalidRunnerAxis = "GR2045";
+
+    /// <summary>
+    /// A <c>promptRunners.&lt;name&gt;.routing</c> block still carries the RETIRED <c>rank</c> key (SSOT §9,
+    /// issue #224, settled OD-F). Ordering is ascending <c>strength</c> — the weakest model that can serve
+    /// the tier goes first — and <c>rank</c> is not modelled anywhere, so the key is IGNORED. A WARNING, not
+    /// an error: a config mid-migration must keep loading. Not silence either: accepting <c>rank</c> quietly
+    /// is exactly how a migrated config's ordering would change without anyone being told, which is the one
+    /// outcome this key's retirement must not produce.
+    /// </summary>
+    public const string RetiredRoutingRank = "GR2046";
+
+    // CURRENT next-free code: GR2047. GR2046 (RetiredRoutingRank) is the last taken code
+    // above. When allocating a new code, take GR2047 and update this line (issue #320).
 }

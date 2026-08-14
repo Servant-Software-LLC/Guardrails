@@ -77,7 +77,42 @@ internal sealed class RawPromptRunner
     // General env passthrough (issue #114). null = none.
     public Dictionary<string, string>? Env { get; set; }
 
+    // Which runner IMPLEMENTATION serves this block (SSOT §9, issue #224). null = ABSENT = claude, which is
+    // what keeps the discriminator additive. An unrecognised token is reported by PlanLoader.ReadKind.
+    public string? Kind { get; set; }
+
+    // Axes 1 and 2 of 3 (SSOT §9, charter Decision 7) are bound as RAW JSON, not as bool?/int?, precisely
+    // because their malformed form is a TYPE error ("costly": "yes", "strength": "high"): a typed binding
+    // would throw mid-deserialization and surface as a generic parse failure naming a CLR type instead of
+    // the axis. Held raw, the loader can name the axis and keep loading so the rest of validate still
+    // reports. null = the key was ABSENT.
+    public JsonElement? Costly { get; set; }
+    public JsonElement? Strength { get; set; }
+
+    // Axis 3 of 3. A string, because its malformed form is a bad TOKEN, not a bad type.
+    public string? Specialization { get; set; }
+
+    // Per-model routing guidance (SSOT §9, issue #224). null = the key was absent.
+    public RawPromptRunnerRouting? Routing { get; set; }
+
     public RawPromptRunnerOverrides? GuardrailOverrides { get; set; }
+}
+
+/// <summary>
+/// Raw shape of the optional <c>promptRunners.&lt;name&gt;.routing</c> guidance block (SSOT §9, issue #224).
+/// Nothing consumes it in Stage 1 — the static resolver (#226) is its first reader.
+/// </summary>
+internal sealed class RawPromptRunnerRouting
+{
+    public string? Guidance { get; set; }
+    public List<string>? Tags { get; set; }
+
+    // `rank` is a RETIRED key (settled OD-F) and is deliberately NOT a property here: declaring one would
+    // model a value nothing may honour, which is the silent acceptance the retirement exists to prevent.
+    // Unknown keys land here instead, where the loader can SEE a stale `rank` and warn without any code
+    // path being able to read it as ordering.
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? Extra { get; set; }
 }
 
 /// <summary>Raw shape of a <c>guardrailOverrides</c> sub-block — every field optional (partial override).</summary>
