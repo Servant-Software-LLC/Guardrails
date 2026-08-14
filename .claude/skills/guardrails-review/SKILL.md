@@ -99,6 +99,55 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   deterministic archetype that could replace it, or confirm none can (the 4-question
   demotion gate).
 - **Over-broad**: "all tests pass" anywhere except the terminal `<plan>/guardrails/` folder.
+- **Model named but unservable — the pre-run availability check (#224 · `model-tiering-stage-1` charter D)**:
+  walk the task folder you are reviewing and collect every model a task names **statically**, then assert
+  each one resolves to a runner `guardrails.json` actually configures. **Reports, never rewrites** — the
+  pass names the task and the model and leaves the fix to the human, exactly as it does for a weak
+  guardrail; it never edits a `promptRunners` block or an `action.model` to make its own check pass.
+  **Why this belongs to the REVIEW and not the harness:** `PromptRunnerRegistry.FromConfig` already refuses
+  a config it cannot serve — but by then the run is IN FLIGHT: a wave may have committed work, and the
+  operator meets a config problem as a mid-run halt instead of as a review finding. Registry construction
+  is the **backstop**; this probe is the **gate**. Everything decidable from the plan plus the config gets
+  decided BEFORE `run`.
+  - **What to collect** — *statically named* = written in the folder or the config, readable without
+    running anything: (1) each task's `action.model`; (2) each **surviving** prompt-judge guardrail's
+    configured model — a judge's `.prompt.md` frontmatter names only a `runner`, never a model, so read
+    the block it resolves to: `guardrailOverrides.model` when present, else that block's `model` (SSOT
+    §2/§9); (3) each `promptRunners.<name>.model` itself, which is what every prompt on that block gets
+    when no task overrides it. *Surviving* = the judges still standing after the demotion gate above — do
+    not chase a judge you are already recommending be replaced by a deterministic check.
+  - **Which runner will carry it** (SSOT §3/§9): `action.runner` > the prompt file's frontmatter `runner`
+    > `promptRunners.default` (only when it names a declared block) > the sole declared block when exactly
+    one exists > **nothing resolves**. **`action.model` does NOT select a runner** — there is no
+    model→runner routing in the harness; a model is an OVERRIDE applied to whatever runner the task
+    already resolves to (the Stage 2 tier resolver, #226, is the first thing that will route). So check
+    each model against the ONE block that will carry it, never against the union of every declared block.
+  - **Unservable, in three shapes.** **(a) Nothing resolves** — ≥2 declared blocks, no (or a dangling)
+    `promptRunners.default`, and neither the task nor the judge names one; the registry throws "No prompt
+    runner specified and no default is configured" → **BLOCKER**. **(b) The carrying block's `kind` has
+    no concrete runner in this harness version** — `codex` / `openrouter` / `local`, of which only
+    `claude` is real today (SSOT §9) → **BLOCKER**, and the shape that reads green everywhere else: such
+    a config LOADS AND VALIDATES CLEAN by design (declaring a kind is legal — deliberately no diagnostic)
+    and then fails registry construction with an `InvalidOperationException` naming the kind, so
+    `guardrails validate` will never tell you and this probe is the only pre-run signal. **(c)
+    Provider-family mismatch** — the id plainly belongs to a different provider than the carrying block's
+    `kind` → **WEAK, and a judgement call**: a model identifier has **no enumerable valid set** (exactly
+    why GR2030 checks only its SHAPE) and `providers init` never fabricates one, so there is no catalogue
+    to look it up in. Report what you observed and why it looks wrong; never claim the model does not
+    exist.
+  - **Do not re-report what `validate` already says** — GR2004 (a runner name no block declares), GR2008
+    (prompts but no `promptRunners`), GR2030 (a malformed `model` string), GR2009 (a `command` not on
+    PATH, a WARNING since the plan may run on another machine). This probe covers precisely what those
+    miss: a **well-formed** model on a **resolvable** runner the harness **cannot construct**.
+  - **A judge whose model is resolved JUST-IN-TIME is OUT OF SCOPE here — and must NOT be silently
+    skipped.** JIT judge resolution (the model chosen at judging time rather than written in the folder)
+    is deferred to **#223**, where a judge can actually resolve to a non-Claude model and the check has
+    more than one case to verify; by construction that resolution happens AFTER the work it judges is
+    done, so a failure there has already been paid for. Until #223 fills the socket, the Step 6 report
+    NAMES each judge this pass could not check and why, so the gap is **visible rather than assumed
+    covered** — a review listing only what it verified reads as coverage it does not have. Keep that
+    distinct from the ordinary *no model named* case (`model` null at both sites, so the runner is simply
+    never passed `--model`): nothing is named, nothing is deferred, and there is nothing to check.
 - **Missing / malformed positive-baseline (preflight) on a brownfield plan (#181)**: does the plan
   build onto **existing code that already has tests in the touched area** (a brownfield plan — it modifies
   project(s) with existing test coverage), yet carry **no `<plan>/preflights/01-baseline-<area>-tests-green`
@@ -862,6 +911,11 @@ produces and the repo doesn't already contain → a missing guardrail-enabling t
   already allow `Bash(git checkout:*)`, a task's prompt can run `git checkout` even though
   the plan lists no git at all. So never raise — or dismiss — a finding on the premise that
   leaving a verb out of `allowedTools` makes it unavailable.
+- **Every statically named model resolves to a runner the config can actually construct** — the §2
+  model-availability probe from the config side: each `promptRunners.<name>.model` /
+  `guardrailOverrides.model` sits on a block whose `kind` has a concrete runner (only `claude` does today,
+  SSOT §9), and `promptRunners.default` names a declared block whenever two or more are declared. Report,
+  never rewrite — and report a JIT-resolved judge model as UNCHECKED (#223) rather than passing over it.
 
 ### 6. Report
 
@@ -872,6 +926,10 @@ Severities: **BLOCKER** (a wrong implementation passes) · **WEAK** (gameable,
 nondeterministic-where-deterministic-possible, or unactionable) · **NIT**.
 For WEAK prompt-judges, the fix column contains the replacement deterministic
 guardrail — ideally as ready-to-paste script text.
+
+The report also states what the pass could NOT check — the model-availability probe's JIT-resolved judge
+models, deferred to #223 — as an explicit line, never a silent omission: an unchecked gap that goes
+unmentioned is indistinguishable from a verified one.
 
 Then ask: **"Apply fixes?"** — per-finding approval, never bulk-silent. If a finding
 concerns a guardrail the human added or edited (check `git log`/`git diff` if the
@@ -1000,6 +1058,7 @@ finding remains unaddressed.
 - [ ] Every BLOCKER names the concrete wrong implementation, not a vibe.
 - [ ] Terminal/e2e tasks claiming an output quantity assert a STRICTLY POSITIVE value (no hollow `Assert.Equal(0,…)` / `NotNull` / bare `exit 0`); every structural property check is accessor-order-insensitive (no `\{\s*get` / `\{\s*set` anchor).
 - [ ] Every WEAK judge finding names its deterministic replacement (or proves none exists).
+- [ ] Every **statically named** model (`action.model`; each surviving judge's runner-configured `model` / `guardrailOverrides.model`; each `promptRunners.<name>.model`) was checked against the ONE block that will carry it (`action.runner` > frontmatter `runner` > `promptRunners.default` > the sole declared block — `action.model` never selects a runner), and that block's `kind` has a concrete runner in this harness version — a model no configured runner can serve is a FINDING naming the task and the model, not a mid-run registry halt: BLOCKER when nothing resolves or the `kind` is unimplemented (such a config LOADS AND VALIDATES CLEAN, so `validate` never catches it), WEAK for a provider-family mismatch (a model id has no enumerable valid set to check against). The probe REPORTS, never rewrites. Every judge whose model is resolved just-in-time is reported as UNCHECKED with the reason, deferred to #223, never silently passed over (#224).
 - [ ] Coverage gaps cite the exact unverified completion criterion.
 - [ ] Every `covers-key-behaviors` guardrail's required tokens are each named (directly or via synonym) in the SAME task's action prompt; a token the guardrail requires but the prompt never mentions is a BLOCKER ("the task will fail every attempt") — the human-judgement complement to the deterministic GR2026 warning (#157).
 - [ ] **Every task declares a `writeScope` (#389)** — an ABSENT field is a BLOCKER (GR2041); `"writeScope": []` ("writes nothing to the repo") is a FIRST-CLASS VALID declaration and is NOT flagged (flag only a truly absent field). Every TDD implementation task's `writeScope` EXCLUDES its test-author task's test files (but may TARGET the stub file the test-author wrote, #155); no task carries a vacuous `**`/over-broad `writeScope` (propose a real surface or `[]`, never omission).
