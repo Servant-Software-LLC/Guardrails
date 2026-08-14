@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "promptRunners": {
+    "default": "claude",
+    "claude": {
+      "command": "claude",
+      "permissionMode": "acceptEdits",
+      "allowedTools": ["Read", "Write", "Grep", "Glob"],
+      "maxTurns": 25
+    }
+  }
+}

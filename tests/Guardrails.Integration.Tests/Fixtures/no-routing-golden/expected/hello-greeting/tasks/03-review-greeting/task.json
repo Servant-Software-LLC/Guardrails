@@ -1,0 +1,9 @@
+{
+  "description": "Write out/review.md quoting the greeting verbatim and giving an honest verdict on how warmly it reads",
+  "stableId": "c5j8rw",
+  "dependsOn": ["02-write-greeting"],
+  "writeScope": ["out/review.md"],
+  "action": {
+    "maxTurns": 20
+  }
+}
