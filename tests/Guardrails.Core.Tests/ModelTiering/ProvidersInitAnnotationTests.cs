@@ -78,16 +78,19 @@ public sealed class ProvidersInitAnnotationTests
     }
 
     /// <summary>
-    /// A block that already STATES an axis keeps its value untouched and gains only the legal-value
-    /// comment above it — the "annotate what is there" half of the job, distinct from appending a key.
+    /// A block that already STATES an axis is left ENTIRELY alone — value and commentary both. Only the
+    /// axes it does not carry are appended (each with its legal-value comment). Maintainer ruling
+    /// 2026-08-15: the skip is keyed on "the key exists", not "a comment is near it", which is what makes
+    /// a human's deletion of a generated comment stick — see
+    /// <see cref="Annotate_DoesNotResurrectACommentAHumanDeleted"/>.
     /// </summary>
     [Fact]
-    public void Annotate_CommentsAPresentAxisWithoutRewritingItsValue()
+    public void Annotate_LeavesAPresentAxisEntirelyAlone()
     {
         RegistryAnnotationResult result = RegistryAnnotation.Annotate(Fixture);
 
         RegistryBlockReport cheap = result.Blocks.Single(b => b.Name == "cheap");
-        Assert.Equal(2, cheap.AddedComments);
+        Assert.Equal(0, cheap.AddedComments);   // `costly` and `strength` are stated: nothing to solicit
         Assert.Equal([RegistryAxes.Specialization, RegistryAxes.Routing], cheap.AddedKeys);
 
         Assert.Contains("\"costly\": false", result.AnnotatedText, StringComparison.Ordinal);
@@ -97,6 +100,42 @@ public sealed class ProvidersInitAnnotationTests
         // stated `false` keeps its answer; a second placeholder there would be a rewrite.
         Assert.Equal(1, Occurrences(result.AnnotatedText, "\"costly\": null"));
         Assert.Equal(1, Occurrences(result.AnnotatedText, "\"strength\": null"));
+    }
+
+    /// <summary>
+    /// A comment a human DELETED must not come back (maintainer ruling, 2026-08-15). Deleting the
+    /// solicitation is a decision — re-inserting it would re-ask a question they closed, every run,
+    /// forever. Stickiness is structural here: the skip is keyed on the key's existence, so no marker is
+    /// written into the user's file to remember the deletion by.
+    /// <para>
+    /// What is NOT lost is the asking itself: the block stays on the run report's unstated list while its
+    /// value is still <c>null</c>. The comment asks once in the file; the report keeps asking.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Annotate_DoesNotResurrectACommentAHumanDeleted()
+    {
+        // Run 1: the verb appends every axis with its legal-value comment.
+        string annotated = RegistryAnnotation.Annotate(Fixture).AnnotatedText;
+        Assert.Contains("// specialization:", annotated, StringComparison.Ordinal);
+
+        // The human deletes ONE generated comment block, keeping the key it introduced.
+        string[] lines = annotated.Split('\n');
+        string withoutComment = string.Join('\n', lines.Where(l => !l.TrimStart().StartsWith("// specialization:", StringComparison.Ordinal)
+                                                               && !l.TrimStart().StartsWith("//   A preference used", StringComparison.Ordinal)
+                                                               && !l.TrimStart().StartsWith("//   'coding'", StringComparison.Ordinal)
+                                                               && !l.TrimStart().StartsWith("//   'unspecified' explicitly", StringComparison.Ordinal)));
+        Assert.DoesNotContain("// specialization:", withoutComment, StringComparison.Ordinal);
+
+        // Run 2: the key is present, so the axis is skipped whole — the deletion sticks.
+        RegistryAnnotationResult second = RegistryAnnotation.Annotate(withoutComment);
+
+        Assert.True(second.Succeeded);
+        Assert.DoesNotContain("// specialization:", second.AnnotatedText, StringComparison.Ordinal);
+        Assert.Equal(withoutComment, second.AnnotatedText);
+
+        // …and the question is still being asked where asking belongs: the report.
+        Assert.Contains(second.Blocks, b => b.UnstatedAxes.Contains(RegistryAxes.Specialization));
     }
 
     // ── criterion 1: idempotent, and byte-identical over a human's annotation ────────────────
@@ -369,8 +408,15 @@ public sealed class ProvidersInitAnnotationTests
 
         Assert.True(result.Succeeded, result.Failure);
         Assert.Contains("naïve — ünicode… 🙂 shifts byte offsets", result.AnnotatedText, StringComparison.Ordinal);
+
+        // The appended keys land AFTER the multi-byte value, so their insertion offset is exactly the one
+        // a byte-index-as-char-index bug corrupts. Treating the byte offset as a string index throws
+        // inside StringBuilder.Append rather than misplacing quietly.
         Assert.Contains("\"costly\": null", result.AnnotatedText, StringComparison.Ordinal);
-        Assert.Contains("// routing:", result.AnnotatedText, StringComparison.Ordinal);
+        Assert.Contains("// costly:", result.AnnotatedText, StringComparison.Ordinal);
+
+        // `routing` is PRESENT here, so it is left entirely alone — no comment, value verbatim.
+        Assert.DoesNotContain("// routing:", result.AnnotatedText, StringComparison.Ordinal);
     }
 
     /// <summary>A trailing comma (legal here — the loader allows them) does not produce a double comma.</summary>

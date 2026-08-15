@@ -276,12 +276,19 @@ public static class RegistryAnnotation
                     unstated.Add(axis.Name);
                 }
 
-                if (!source.HasCommentNear(tokens[location.NameToken].Start))
-                {
-                    plan.InsertLinesBefore(tokens[location.NameToken].Start, axis.CommentLines, label);
-                    comments++;
-                }
-
+                // A PRESENT key is left entirely alone — its value AND its commentary. Deliberate, and
+                // maintainer-ruled (2026-08-15): if a human DELETES a generated comment, it must not come
+                // back. Keying the skip on "the key exists" rather than "a comment is near it" makes that
+                // stickiness structural, with no marker written into the user's file to remember it by.
+                //
+                // The solicitation is not lost, only the nagging: `unstated` above is populated BEFORE
+                // this point, so a block whose cost is still unstated is named in the run's report on
+                // every run. The comment's job is to ASK ONCE in the file; the report's job is to keep
+                // asking. Re-inserting a comment a human removed answers a question they already closed.
+                //
+                // Side effect, accepted: a key a human hand-wrote before ever running this verb never
+                // receives a legal-values comment. That is the same rule read the other way — the key is
+                // present with a stated value, so there is nothing left to solicit there.
                 continue;
             }
 
