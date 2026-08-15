@@ -198,21 +198,32 @@ public static class WorktreeReclaim
     /// <paramref name="currentJunctionRoot"/> are this run's own root + recorded link — EXCLUDED from the
     /// sweep. Windows drive-root junctions are swept only on Windows; the <c>gr-wt/*</c> + legacy
     /// <c>guardrails-worktrees/*</c> roots are swept on every OS. Best-effort — a GC hiccup never blocks the
-    /// run; each reclaim logs one line.
+    /// run.
+    /// <para>
+    /// Issue #450 — the startup sweep is bounded in BOTH dimensions a user experiences it in. Its
+    /// wall-clock cost is capped by <see cref="StartupSweepBudget"/> (a shared deadline across both sweeps,
+    /// so pre-run latency is bounded no matter how large the backlog), and its console output is capped by
+    /// <see cref="ReclaimLogDetailCap"/> detail lines plus one summary — because what actually made a user
+    /// kill a healthy run was hundreds of near-identical lines, not the work itself. A staleness memo is
+    /// shared between the two sweeps so a confirmed-stale junction TARGET is not tree-scanned again as a
+    /// root (issue #409 N1).
+    /// </para>
     /// </summary>
     public static void Reclaim(string workspace, string currentRealRoot, string? currentJunctionRoot, TextWriter log)
     {
         DateTime cutoffUtc = DateTime.UtcNow - StalenessThreshold;
+        DateTime deadlineUtc = DateTime.UtcNow + StartupSweepBudget;
+        var staleness = new Dictionary<string, bool>(PathKeyComparer);
 
         // 1) Drive-root junctions .a..z (Windows only): a link whose target is GONE (dangling) or STALE.
         if (OperatingSystem.IsWindows())
         {
-            try { ReclaimStaleJunctions(currentRealRoot, currentJunctionRoot, cutoffUtc, log); }
+            try { ReclaimStaleJunctions(currentRealRoot, currentJunctionRoot, cutoffUtc, log, deadlineUtc, staleness); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort */ }
         }
 
         // 2) Worktree roots (cross-platform): a gr-wt/* or guardrails-worktrees/* root whose whole tree is STALE.
-        try { ReclaimStaleRoots(workspace, currentRealRoot, cutoffUtc, log); }
+        try { ReclaimStaleRoots(workspace, currentRealRoot, cutoffUtc, log, deadlineUtc, staleness); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort */ }
     }
 
@@ -222,6 +233,37 @@ public static class WorktreeReclaim
     /// GC (<see cref="Reclaim"/>), so the two together still bound the accumulation.
     /// </summary>
     public const int ExitSweepCap = 16;
+
+    /// <summary>
+    /// Issue #450 — the wall-clock budget the STARTUP sweep (<see cref="Reclaim"/>) may spend before it
+    /// stops and leaves the remainder to the next run.
+    /// <para>
+    /// <b>Why a TIME budget and not the exit sweep's count cap.</b> A count cap bounds the wrong quantity:
+    /// what blocks the user is elapsed time, and per-root cost varies by three orders of magnitude (a small
+    /// fixture root is a directory delete; a full checkout is a recursive stat of a whole source tree). A
+    /// cap tuned for the expensive root throttles the cheap one pointlessly — <see cref="ExitSweepCap"/>'s
+    /// 16 would need ~63 runs to drain the ~1000-root backlog that provoked this issue, while a 5-second
+    /// budget drains it in one. A deadline instead bounds exactly the thing the user feels, and
+    /// self-adjusts: it reclaims as much as fits, whatever each root costs.
+    /// </para>
+    /// <para>
+    /// Five seconds is chosen against the alternative it delays: a run measured in minutes-to-hours. It is
+    /// long enough to clear a large backlog of cheap roots in one pass and short enough that a worst case
+    /// is never mistaken for a hang — especially since the first reclaims print immediately, so the silent
+    /// window is bounded by this value and nothing else.
+    /// </para>
+    /// </summary>
+    public static readonly TimeSpan StartupSweepBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Issue #450 — how many per-root reclaim lines a sweep prints in FULL before it falls back to a single
+    /// trailing count. The flood that made a user abort a healthy run was ~1000 lines of 130 characters
+    /// carrying ~8 characters of signal each (only the hex root id differed), emitted before any of the
+    /// run's own output. The first few lines are kept because they carry the real diagnostic content — which
+    /// parent, what kind of root — and because output appearing IMMEDIATELY is what distinguishes a working
+    /// sweep from a stuck one; beyond that, repetition adds nothing a count does not.
+    /// </summary>
+    public const int ReclaimLogDetailCap = 3;
 
     /// <summary>
     /// Issue #419 — reclaim LEAKED worktree ROOTS at a run's EXIT path (the run's <c>finally</c>), so a
@@ -251,12 +293,13 @@ public static class WorktreeReclaim
     }
 
     private static void ReclaimStaleJunctions(
-        string currentRealRoot, string? currentJunctionRoot, DateTime cutoffUtc, TextWriter log)
+        string currentRealRoot, string? currentJunctionRoot, DateTime cutoffUtc, TextWriter log,
+        DateTime? deadlineUtc, IDictionary<string, bool>? stalenessCache)
     {
         string? drive = Path.GetPathRoot(currentRealRoot);
         if (string.IsNullOrWhiteSpace(drive)) return;
 
-        SweepJunctions(drive, currentJunctionRoot, cutoffUtc, log);
+        SweepJunctions(drive, currentJunctionRoot, cutoffUtc, log, deadlineUtc, stalenessCache);
     }
 
     /// <summary>
@@ -267,10 +310,15 @@ public static class WorktreeReclaim
     /// base — never the real drive root. Windows-only in effect (junctions exist only there).
     /// </summary>
     internal static void SweepJunctions(
-        string baseDir, string? currentJunctionRoot, DateTime cutoffUtc, TextWriter log)
+        string baseDir, string? currentJunctionRoot, DateTime cutoffUtc, TextWriter log,
+        DateTime? deadlineUtc = null, IDictionary<string, bool>? stalenessCache = null)
     {
         foreach (string leaf in WorktreeJunction.CandidateLeaves)
         {
+            // #450: the shared startup budget bounds this sweep too — a junction TARGET can be a whole
+            // checkout, so its staleness scan is not automatically cheap.
+            if (BudgetExhausted(deadlineUtc)) return;
+
             string link = Path.Combine(baseDir, leaf);
 
             // Never THIS run's own junction (a resume's recorded link is legitimately old yet in-use).
@@ -292,7 +340,8 @@ public static class WorktreeReclaim
                 bool dangling = !Directory.Exists(target);
 
                 // F1: a live-locked target (an active run, incl. idle) is KEPT regardless of mtime.
-                if (!dangling && (IsLockedByLiveProcess(target) || !TreeIsStale(target, cutoffUtc))) continue;
+                if (!dangling && (IsLockedByLiveProcess(target)
+                    || !TreeIsStale(target, cutoffUtc, stalenessCache))) continue;
 
                 WorktreeJunction.RemoveJunctionLink(link); // link-only; the root sweep reclaims a stale target dir
                 log.WriteLine(
@@ -308,24 +357,52 @@ public static class WorktreeReclaim
     }
 
     private static void ReclaimStaleRoots(
-        string workspace, string currentRealRoot, DateTime cutoffUtc, TextWriter log) =>
-        SweepRoots(CandidateRootParents(currentRealRoot), workspace, currentRealRoot, cutoffUtc, log);
+        string workspace, string currentRealRoot, DateTime cutoffUtc, TextWriter log,
+        DateTime? deadlineUtc, IDictionary<string, bool>? stalenessCache) =>
+        SweepRoots(
+            CandidateRootParents(currentRealRoot), workspace, currentRealRoot, cutoffUtc, log,
+            deadlineUtc: deadlineUtc, stalenessCache: stalenessCache);
 
     /// <summary>
-    /// Sweep the child subdirs of each of <paramref name="parents"/> (issue #407 B), reclaiming (git-prune +
-    /// delete via <see cref="GitWorktreeProvider.RemoveWorktreeRoot"/>) any whose whole tree is STALE, while
-    /// KEEPING the current run's own root (<paramref name="currentRealRoot"/>) and any FRESH tree (a
-    /// possibly-active run). Internal + <paramref name="parents"/>-parameterized so tests exercise it against
-    /// a controlled temp parent — never the real <c>gr-wt</c> / <c>guardrails-worktrees</c> dirs. Cross-OS.
+    /// Sweep the child subdirs of each of <paramref name="parents"/> (issue #407 B), reclaiming (git-unregister
+    /// + delete via <see cref="GitWorktreeProvider.RemoveWorktreeRoot(string, string, IReadOnlyList{string})"/>)
+    /// any whose whole tree is STALE, while KEEPING the current run's own root
+    /// (<paramref name="currentRealRoot"/>) and any FRESH tree (a possibly-active run). Internal +
+    /// <paramref name="parents"/>-parameterized so tests exercise it against a controlled temp parent — never
+    /// the real <c>gr-wt</c> / <c>guardrails-worktrees</c> dirs. Cross-OS.
+    /// <para>
+    /// Issue #450: bounded by <paramref name="maxReclaims"/> (the exit sweep's count cap, #419) AND
+    /// <paramref name="deadlineUtc"/> (the startup sweep's time budget), whichever bites first; git
+    /// bookkeeping is batched (one <c>worktree list</c> for the sweep, one <c>prune</c> at the end, and
+    /// NEITHER for a root this repo never registered); and output is capped at
+    /// <see cref="ReclaimLogDetailCap"/> detail lines plus a trailing count.
+    /// </para>
     /// </summary>
+    /// <param name="deadlineUtc">
+    /// When the sweep must stop, or <c>null</c> for no time bound. Checked BEFORE each root, so it bounds
+    /// the staleness SCAN of kept roots too — which is where the latency of a large backlog actually lives.
+    /// </param>
+    /// <param name="stalenessCache">
+    /// Optional memo of <see cref="TreeIsStale"/> results shared with <see cref="SweepJunctions"/> in the
+    /// same <see cref="Reclaim"/> (issue #409 N1: a confirmed-stale junction target was scanned twice — once
+    /// as a target, once as a root). <c>null</c> disables memoisation.
+    /// </param>
     internal static void SweepRoots(
         IEnumerable<string> parents, string workspace, string? currentRealRoot, DateTime cutoffUtc,
-        TextWriter log, int maxReclaims = int.MaxValue)
+        TextWriter log, int maxReclaims = int.MaxValue, DateTime? deadlineUtc = null,
+        IDictionary<string, bool>? stalenessCache = null)
     {
         int reclaimed = 0;
+        bool stoppedEarly = false;
+        bool prunePending = false;
+
+        // Fetched lazily on the FIRST actual reclaim: a sweep that reclaims nothing (the overwhelmingly
+        // common case) spawns no git at all, exactly as before (#450).
+        IReadOnlyList<string>? registeredWorktrees = null;
+
         foreach (string parent in parents)
         {
-            if (reclaimed >= maxReclaims) return;   // #419: honor the exit-sweep cap
+            if (Exhausted()) { stoppedEarly = true; break; }
             if (!Directory.Exists(parent)) continue;
 
             string[] children;
@@ -334,28 +411,76 @@ public static class WorktreeReclaim
 
             foreach (string root in children)
             {
-                if (reclaimed >= maxReclaims) return; // #419: stop once the cap is hit (never delay the exit)
+                // #419 count cap / #450 time budget: stop once either bites (never delay the exit or the start).
+                if (Exhausted()) { stoppedEarly = true; break; }
                 try
                 {
                     // Never THIS run's root (a resume's root is legitimately old yet in-use).
                     if (currentRealRoot is not null && WorktreeJunction.SamePath(root, currentRealRoot)) continue;
                     // F1: a live-locked root (an active run, incl. idle) is KEPT regardless of mtime.
                     if (IsLockedByLiveProcess(root)) continue;
-                    if (!TreeIsStale(root, cutoffUtc)) continue; // fresh → maybe active → KEEP
+                    if (!TreeIsStale(root, cutoffUtc, stalenessCache)) continue; // fresh → maybe active → KEEP
 
-                    GitWorktreeProvider.RemoveWorktreeRoot(workspace, root);
+                    registeredWorktrees ??= GitWorktreeProvider.RegisteredWorktreePaths(workspace);
+                    prunePending |= GitWorktreeProvider.RemoveWorktreeRoot(workspace, root, registeredWorktrees);
                     reclaimed++;
-                    log.WriteLine(
-                        $"[guardrails] GC: reclaimed leaked worktree root '{root}' "
-                        + $"(idle > {StalenessThreshold.TotalHours:0}h, no live run) (issue #407 B).");
+
+                    if (reclaimed <= ReclaimLogDetailCap)
+                    {
+                        log.WriteLine(
+                            $"[guardrails] GC: reclaimed leaked worktree root '{root}' "
+                            + $"(idle > {StalenessThreshold.TotalHours:0}h, no live run) (issue #407 B).");
+                    }
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                     // N2: one racy/locked root never aborts the rest of the sweep.
                 }
             }
+
+            if (stoppedEarly) break;
+        }
+
+        // One prune for the whole sweep, and only when something was actually unregistered (#450).
+        if (prunePending)
+        {
+            GitWorktreeProvider.PruneWorktrees(workspace);
+        }
+
+        WriteSweepSummary(log, reclaimed, stoppedEarly);
+        return;
+
+        bool Exhausted() =>
+            reclaimed >= maxReclaims || BudgetExhausted(deadlineUtc);
+    }
+
+    /// <summary>
+    /// Issue #450 — close a root sweep's output: the count of reclaims BEYOND the per-root detail lines, and
+    /// a note when the sweep stopped on its cap/budget with work possibly left. Silent when nothing was
+    /// reclaimed, and silent when every reclaim already printed its own line — so the ordinary one-or-two-root
+    /// sweep reads exactly as it did before, and only the flood case changes.
+    /// </summary>
+    private static void WriteSweepSummary(TextWriter log, int reclaimed, bool stoppedEarly)
+    {
+        if (reclaimed > ReclaimLogDetailCap)
+        {
+            log.WriteLine(
+                $"[guardrails] GC: …and {reclaimed - ReclaimLogDetailCap} more leaked worktree root(s) "
+                + $"reclaimed — {reclaimed} total (idle > {StalenessThreshold.TotalHours:0}h, no live run) "
+                + "(issue #407 B).");
+        }
+
+        if (stoppedEarly && reclaimed > 0)
+        {
+            log.WriteLine(
+                "[guardrails] GC: sweep stopped at its budget; any remaining leaked roots are reclaimed by "
+                + "the next run (issue #450).");
         }
     }
+
+    /// <summary>True once <paramref name="deadlineUtc"/> has passed. A null deadline never expires (#450).</summary>
+    private static bool BudgetExhausted(DateTime? deadlineUtc) =>
+        deadlineUtc is { } deadline && DateTime.UtcNow >= deadline;
 
     /// <summary>
     /// The directories whose child subdirs are candidate leaked worktree roots (issue #407 B): the current
@@ -408,6 +533,45 @@ public static class WorktreeReclaim
             return false; // cannot scan ⇒ err toward KEEPING
         }
     }
+
+    /// <summary>
+    /// <see cref="TreeIsStale(string, DateTime)"/> through an optional per-sweep memo (issue #409 N1). The
+    /// two sweeps of one <see cref="Reclaim"/> ask about the SAME directory whenever a junction points at a
+    /// root under a swept parent — the junction sweep as a link target, the root sweep as a root — and a full
+    /// recursive stat of a checkout is the single most expensive thing the GC does. Confining the memo to one
+    /// <see cref="Reclaim"/> call keeps the answer seconds fresh, and the two readings are already separated
+    /// only by the link removal between them, which does not touch the tree.
+    /// </summary>
+    private static bool TreeIsStale(string root, DateTime cutoffUtc, IDictionary<string, bool>? cache)
+    {
+        if (cache is null) return TreeIsStale(root, cutoffUtc);
+
+        string key = PathKey(root);
+        if (cache.TryGetValue(key, out bool cached)) return cached;
+
+        bool stale = TreeIsStale(root, cutoffUtc);
+        cache[key] = stale;
+        return stale;
+    }
+
+    /// <summary>
+    /// The staleness memo's key: the resolved full path without a trailing separator, so <c>root</c> and
+    /// <c>root\</c> (and a junction target reported either way) collapse to one entry. Falls back to the raw
+    /// string if the path cannot be resolved — a miss is only a repeated scan, never a wrong answer.
+    /// </summary>
+    private static string PathKey(string path)
+    {
+        try { return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)); }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException) { return path; }
+    }
+
+    /// <summary>
+    /// The memo's comparer — matching <see cref="WorktreeJunction.SamePath"/>, which the sweeps already use
+    /// to decide root identity, so the memo can never disagree with the exclusion logic about what "the same
+    /// directory" means (issue #409 N4 notes the same unconditional case-insensitivity; harness worktree
+    /// roots are lowercase hex, so a case-only collision is not reachable).
+    /// </summary>
+    private static StringComparer PathKeyComparer => StringComparer.OrdinalIgnoreCase;
 
     private static string? TryLinkTarget(string link)
     {

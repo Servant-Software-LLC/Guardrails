@@ -518,8 +518,9 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
     /// <summary>
     /// Issue #407 (junction lifecycle): remove EVERY git worktree registered in <paramref name="repoPath"/>
-    /// whose path resolves UNDER <paramref name="worktreeRoot"/>, prune the dangling registrations, then
-    /// delete the root directory itself. Unlike <see cref="TeardownPlanBranch"/> it NEVER deletes a branch
+    /// whose path resolves UNDER <paramref name="worktreeRoot"/>, prune the dangling registrations (only
+    /// when something WAS unregistered — issue #450: a prune has nothing to do otherwise), then delete the
+    /// root directory itself. Unlike <see cref="TeardownPlanBranch"/> it NEVER deletes a branch
     /// (plan OR segment): a green-delivered run's plan branch must survive on the user's repo, and a foreign
     /// leak's branches are none of our business — this reclaims the on-disk worktree TREE + its git
     /// registrations ONLY. Used by BOTH the terminal-completion cleanup (A) and the startup GC (B) via
@@ -532,20 +533,51 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     {
         if (string.IsNullOrWhiteSpace(worktreeRoot)) return;
 
+        if (RemoveWorktreeRoot(repoPath, worktreeRoot, RegisteredWorktreePaths(repoPath)))
+        {
+            PruneWorktrees(repoPath);
+        }
+    }
+
+    /// <summary>
+    /// The bulk-sweep form of <see cref="RemoveWorktreeRoot(string, string)"/> (issue #450): identical
+    /// removal, but the caller supplies a listing of <paramref name="repoPath"/>'s registered worktrees
+    /// fetched ONCE for the whole sweep, and the caller prunes ONCE at the end (this returns whether a
+    /// prune is warranted). Sweeping a backlog through the single-root form spawned three git processes
+    /// PER ROOT — <c>worktree list</c>, <c>worktree remove</c>, <c>worktree prune</c> — which is what
+    /// made a ~1000-root sweep take minutes even though the roots were foreign fixture debris this repo
+    /// had never registered. Here a root with nothing registered under it costs ZERO git processes: just
+    /// the directory delete.
+    /// </summary>
+    /// <param name="registeredWorktrees">
+    /// The repo's registered worktree paths, from <see cref="RegisteredWorktreePaths"/>. Pre-fetched, so
+    /// it can be moments stale — harmless: a worktree registered since the fetch belongs to a run that
+    /// started since the sweep began, and such a root is fresh/live-locked and never reaches this call.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> when at least one registered worktree was unregistered, so the caller should call
+    /// <see cref="PruneWorktrees"/> once when the sweep finishes. <c>false</c> when the root held no
+    /// registration of this repo (nothing for a prune to do — the #450 cheap path).
+    /// </returns>
+    public static bool RemoveWorktreeRoot(
+        string repoPath, string worktreeRoot, IReadOnlyList<string> registeredWorktrees)
+    {
+        if (string.IsNullOrWhiteSpace(worktreeRoot)) return false;
+
         // Unregister any worktrees under the root FIRST — a checked-out worktree cannot simply be rm-rf'd
         // without leaving git's bookkeeping inconsistent. Located git-authoritatively (git stores the REAL
         // path even when a #383 junction aliased it during the run), so this keys on the real root.
+        bool unregisteredAny = false;
         try
         {
-            foreach (string wt in RegisteredWorktreesUnder(repoPath, worktreeRoot))
+            foreach (string wt in registeredWorktrees.Where(p => PathIsUnder(p, worktreeRoot)))
             {
                 try { GitIn(repoPath, "worktree", "remove", "--force", wt); }
-                catch (InvalidOperationException) { /* not removable / already gone; pruned below */ }
+                catch (InvalidOperationException) { /* not removable / already gone; pruned by the caller */ }
                 // Issue #109: clear any tree git left on disk (Windows read-only loose objects).
                 SafeDelete.DeleteDirectory(wt);
+                unregisteredAny = true;
             }
-
-            try { GitIn(repoPath, "worktree", "prune"); } catch (InvalidOperationException) { /* best-effort */ }
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -553,30 +585,48 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         }
 
         SafeDelete.DeleteDirectory(worktreeRoot);
+        return unregisteredAny;
     }
 
     /// <summary>
-    /// The absolute paths of git worktrees registered in <paramref name="repoPath"/> whose path is under
-    /// <paramref name="worktreeRoot"/> (issue #407), parsing <c>git worktree list --porcelain</c>. The main
-    /// worktree (the repo itself, outside the harness-owned root) is naturally excluded — it is never under
-    /// <paramref name="worktreeRoot"/>. Empty on any git failure (best-effort).
+    /// <c>git worktree prune</c> in <paramref name="repoPath"/> — drop the admin records of worktrees whose
+    /// directories are gone. Best-effort (a non-repo / absent git is swallowed). Issue #450: hoisted out of
+    /// the per-root removal so a bulk sweep prunes ONCE instead of once per reclaimed root.
     /// </summary>
-    private static IReadOnlyList<string> RegisteredWorktreesUnder(string repoPath, string worktreeRoot)
+    public static void PruneWorktrees(string repoPath)
+    {
+        try { GitIn(repoPath, "worktree", "prune"); }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Best-effort — a stale admin record is harmless and the next prune clears it.
+        }
+    }
+
+    /// <summary>
+    /// Every git worktree path registered in <paramref name="repoPath"/> (issue #450), from ONE
+    /// <c>git worktree list --porcelain</c>. Includes the main worktree (the repo itself), which is
+    /// naturally excluded by the under-the-root filter in
+    /// <see cref="RemoveWorktreeRoot(string, string, IReadOnlyList{string})"/>. Empty on any git failure
+    /// (best-effort) — the caller then falls back to a directory-only sweep, exactly as before.
+    /// </summary>
+    public static IReadOnlyList<string> RegisteredWorktreePaths(string repoPath)
     {
         string listing;
         try { listing = GitIn(repoPath, "worktree", "list", "--porcelain"); }
-        catch (InvalidOperationException) { return []; }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return [];
+        }
 
-        var under = new List<string>();
+        var paths = new List<string>();
         foreach (string rawLine in listing.Split('\n'))
         {
             string line = rawLine.Trim();
             if (!line.StartsWith("worktree ", StringComparison.Ordinal)) continue;
-            string path = line["worktree ".Length..].Trim();
-            if (PathIsUnder(path, worktreeRoot)) under.Add(path);
+            paths.Add(line["worktree ".Length..].Trim());
         }
 
-        return under;
+        return paths;
     }
 
     /// <summary>True when <paramref name="path"/> equals or is nested under <paramref name="ancestor"/> (full-path, case-insensitive on Windows). Issue #407.</summary>

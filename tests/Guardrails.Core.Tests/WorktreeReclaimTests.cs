@@ -220,6 +220,178 @@ public sealed class WorktreeReclaimTests : IDisposable
         Assert.Equal(3, Directory.GetDirectories(parent).Length); // 5 - 2 = 3 left for the startup GC
     }
 
+    // ── #450 — the sweep is bounded in TIME and in OUTPUT (a working sweep must not read as a hang) ─
+
+    [Fact]
+    public void SweepRoots_FloodIsCappedToDetailLinesPlusOneSummary()
+    {
+        // THE #450 SYMPTOM: ~1000 reclaimable roots emitted ~1000 near-identical 130-char lines before any
+        // of the run's own output, and a user killed a healthy run because it read as a stuck loop. Ten
+        // roots must produce exactly ReclaimLogDetailCap detail lines + ONE summary carrying the full count.
+        string parent = Path.Combine(_root, "flood");
+        for (int i = 0; i < 10; i++)
+        {
+            MakeChild(parent, $"stale{i}", DateTime.UtcNow - TimeSpan.FromDays(3));
+        }
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-flood");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        var log = new StringWriter();
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null, DateTime.UtcNow - TimeSpan.FromHours(24), log);
+
+        Assert.Empty(Directory.GetDirectories(parent)); // all ten still reclaimed — output capped, work not
+
+        string[] lines = LogLines(log);
+        Assert.Equal(WorktreeReclaim.ReclaimLogDetailCap + 1, lines.Length);
+        Assert.Equal(
+            WorktreeReclaim.ReclaimLogDetailCap,
+            lines.Count(l => l.Contains("reclaimed leaked worktree root", StringComparison.Ordinal)));
+
+        string summary = lines[^1];
+        Assert.Contains($"…and {10 - WorktreeReclaim.ReclaimLogDetailCap} more", summary, StringComparison.Ordinal);
+        Assert.Contains("10 total", summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SweepRoots_OrdinarySweep_LogsOneLinePerRoot_AndNoSummary()
+    {
+        // The regression guard on the other side of #450: a normal sweep (a root or two) must read exactly
+        // as it did before — per-root detail, no trailing count to explain away.
+        string parent = Path.Combine(_root, "ordinary");
+        MakeChild(parent, "stale0", DateTime.UtcNow - TimeSpan.FromDays(3));
+        MakeChild(parent, "stale1", DateTime.UtcNow - TimeSpan.FromDays(3));
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-ordinary");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        var log = new StringWriter();
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null, DateTime.UtcNow - TimeSpan.FromHours(24), log);
+
+        string[] lines = LogLines(log);
+        Assert.Equal(2, lines.Length);
+        Assert.All(lines, l => Assert.Contains("reclaimed leaked worktree root", l, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SweepRoots_NothingReclaimed_IsSilent()
+    {
+        // A fresh (possibly-active) root is kept, and a sweep that reclaims nothing says nothing — the
+        // startup GC stays invisible on the overwhelmingly common run.
+        string parent = Path.Combine(_root, "quiet");
+        MakeChild(parent, "fresh", DateTime.UtcNow);
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-quiet");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        var log = new StringWriter();
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null, DateTime.UtcNow - TimeSpan.FromHours(24), log);
+
+        Assert.Equal(string.Empty, log.ToString());
+    }
+
+    [Fact]
+    public void SweepRoots_ExpiredBudget_ReclaimsNothing_AndScansNothing()
+    {
+        // The #450 time bound: with the budget already spent the sweep stops BEFORE the first root, so the
+        // startup GC can never hold a run open no matter how large the backlog. (Checked before the
+        // staleness scan, which is where a big backlog's latency actually lives — not in the deletes.)
+        string parent = Path.Combine(_root, "expired");
+        for (int i = 0; i < 5; i++)
+        {
+            MakeChild(parent, $"stale{i}", DateTime.UtcNow - TimeSpan.FromDays(3));
+        }
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-expired");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        var log = new StringWriter();
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null, DateTime.UtcNow - TimeSpan.FromHours(24), log,
+            deadlineUtc: DateTime.UtcNow - TimeSpan.FromSeconds(1));
+
+        Assert.Equal(5, Directory.GetDirectories(parent).Length); // untouched
+        Assert.Equal(string.Empty, log.ToString());               // and no noise about it
+    }
+
+    [Fact]
+    public void SweepRoots_UnexpiredBudget_ReclaimsEverything()
+    {
+        // The other half of the bound: a budget with time left never truncates the sweep. Paired with the
+        // expired case so "the deadline is honoured" cannot be satisfied by a sweep that always stops.
+        string parent = Path.Combine(_root, "unexpired");
+        for (int i = 0; i < 5; i++)
+        {
+            MakeChild(parent, $"stale{i}", DateTime.UtcNow - TimeSpan.FromDays(3));
+        }
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-unexpired");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null, DateTime.UtcNow - TimeSpan.FromHours(24),
+            TextWriter.Null, deadlineUtc: DateTime.UtcNow + TimeSpan.FromHours(1));
+
+        Assert.Empty(Directory.GetDirectories(parent));
+    }
+
+    [Fact]
+    public void SweepRoots_StoppedEarly_SaysTheRestWaitForTheNextRun()
+    {
+        // When a bound DOES bite mid-sweep, the log says so — the difference between "the GC finished" and
+        // "the GC did what it could" is exactly what a user reading a truncated sweep needs.
+        string parent = Path.Combine(_root, "stopped");
+        for (int i = 0; i < 5; i++)
+        {
+            MakeChild(parent, $"stale{i}", DateTime.UtcNow - TimeSpan.FromDays(3));
+        }
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-stopped");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        var log = new StringWriter();
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null, DateTime.UtcNow - TimeSpan.FromHours(24), log,
+            maxReclaims: 2);
+
+        Assert.Contains("reclaimed by the next run", log.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SweepRoots_ConsultsTheSharedStalenessMemo_InsteadOfRescanning()
+    {
+        // #409 N1: the junction sweep and the root sweep ask about the SAME tree when a junction targets a
+        // swept root, and a full recursive stat of a checkout is the GC's most expensive act. Proven by
+        // pre-seeding the memo with answers that CONTRADICT the filesystem: if the sweep re-scanned, the
+        // real mtimes would decide and both assertions would invert.
+        string parent = Path.Combine(_root, "memo");
+        string staleRoot = MakeChild(parent, "stale-but-memoed-fresh", DateTime.UtcNow - TimeSpan.FromDays(3));
+        string freshRoot = MakeChild(parent, "fresh-but-memoed-stale", DateTime.UtcNow);
+
+        string nonGitWorkspace = Path.Combine(_root, "ws-memo");
+        Directory.CreateDirectory(nonGitWorkspace);
+
+        var memo = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+        {
+            [staleRoot] = false, // "not stale" → must be KEPT despite a 3-day-old tree
+            [freshRoot] = true    // "stale"     → must be reclaimed despite a fresh tree
+        };
+
+        WorktreeReclaim.SweepRoots(
+            [parent], nonGitWorkspace, currentRealRoot: null, DateTime.UtcNow - TimeSpan.FromHours(24),
+            TextWriter.Null, stalenessCache: memo);
+
+        Assert.True(Directory.Exists(staleRoot));
+        Assert.False(Directory.Exists(freshRoot));
+    }
+
+    /// <summary>The log's non-empty lines, OS-newline agnostic.</summary>
+    private static string[] LogLines(StringWriter log) =>
+        log.ToString().Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Length > 0).ToArray();
+
     // ── B — the #407 Finding-1 live-process LOCK (idle-run protection + PID-reuse guard) ─────────
 
     [Fact]

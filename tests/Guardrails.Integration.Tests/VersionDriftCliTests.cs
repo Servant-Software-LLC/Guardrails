@@ -88,7 +88,90 @@ public sealed class VersionDriftCliTests : IDisposable
         Assert.Contains("plan-breakdown", errText);
         Assert.Contains("1.0.0-preview.49", errText);            // the stale version
         Assert.Contains(_scanRoot, errText);                    // the root location
-        Assert.Contains("guardrails skills install --force", errText);
+
+        // Issue #461: the remedy must target the root the warning just named. This scan root is neither
+        // the user-level nor the project-level default, so the only command that can clear this warning is
+        // the explicit --target form. The pre-#461 fixed `skills install --force` wrote to ~/.claude/skills
+        // and would have left this warning standing verbatim.
+        Assert.Contains(
+            $"Remedy for {_scanRoot}: run `guardrails skills install --target {_scanRoot} --force`.",
+            errText,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Version_TwoDriftedRoots_EachGetsTheRemedyForThatRoot()
+    {
+        // Issue #461 — one fixed remedy line cannot be right for two roots. Each root gets the command
+        // that writes to IT, so running both clears the whole block.
+        string secondRoot = Path.Combine(_root, "installed-two", "skills");
+        Directory.CreateDirectory(Path.Combine(secondRoot, "guardrails-review"));
+        File.WriteAllText(
+            Path.Combine(secondRoot, "guardrails-review", "SKILL.md"),
+            "---\nname: guardrails-review\ndescription: a skill\n---\n# guardrails-review\n");
+        InstallSkill("plan-breakdown", "1.0.0-preview.49");
+
+        var io = new StringConsoleIo();
+        var root = new RootCommand("test root");
+        VersionOption versionOption = root.Options.OfType<VersionOption>().Single();
+        versionOption.Action = new VersionWithDriftAction(
+            io, HarnessVersion, _bundledSkills, new[] { _scanRoot, secondRoot });
+
+        await root.Parse("--version").InvokeAsync(configuration: null, TestContext.Current.CancellationToken);
+        string errText = io.ErrorText;
+
+        Assert.Contains($"Remedy for {_scanRoot}: run `guardrails skills install --target {_scanRoot} --force`.",
+            errText, StringComparison.Ordinal);
+        Assert.Contains($"Remedy for {secondRoot}: run `guardrails skills install --target {secondRoot} --force`.",
+            errText, StringComparison.Ordinal);
+    }
+
+    // ── #461 — a git-TRACKED skills root is authored SOURCE, not a stale install ──────────────────
+
+    [Fact]
+    public async Task Version_GitTrackedRoot_IsNotReportedAsAStaleInstall()
+    {
+        // THE #461 CASE, reproduced against real git: in this very repo `./.claude/skills` is tracked
+        // source — where the shipped skills are AUTHORED, deliberately left unstamped. Reporting it as a
+        // stale install was wrong at the category level: no install command writes an author's source, so
+        // no remedy could ever clear the warning, and the one command that targets that root
+        // (`skills install --project --force`) would have replaced the author's work with the bundle.
+        using var repo = new TempSkillsRepo();
+        string trackedRoot = repo.CommitSkillsRoot("plan-breakdown");
+
+        var io = new StringConsoleIo();
+        var root = new RootCommand("test root");
+        VersionOption versionOption = root.Options.OfType<VersionOption>().Single();
+        versionOption.Action = new VersionWithDriftAction(
+            io, HarnessVersion, _bundledSkills, new[] { trackedRoot });
+
+        int exitCode = await root.Parse("--version")
+            .InvokeAsync(configuration: null, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        Assert.Equal(HarnessVersion, io.OutText.Trim());
+        Assert.Equal(string.Empty, io.ErrorText);   // no warning, and so no remedy that cannot help
+    }
+
+    [Fact]
+    public async Task Version_UntrackedRootInsideARepo_StillWarns()
+    {
+        // The control that keeps the #461 fix honest: the discriminator is TRACKED, not "inside a git
+        // repo". An install directory that happens to sit in a working copy (git knows nothing about it)
+        // is still an install, and a stale one still has to be reported.
+        using var repo = new TempSkillsRepo();
+        string untrackedRoot = repo.SkillsRootWithoutCommitting("plan-breakdown");
+
+        var io = new StringConsoleIo();
+        var root = new RootCommand("test root");
+        VersionOption versionOption = root.Options.OfType<VersionOption>().Single();
+        versionOption.Action = new VersionWithDriftAction(
+            io, HarnessVersion, _bundledSkills, new[] { untrackedRoot });
+
+        await root.Parse("--version").InvokeAsync(configuration: null, TestContext.Current.CancellationToken);
+
+        Assert.Contains("WARNING", io.ErrorText);
+        Assert.Contains("plan-breakdown", io.ErrorText);
     }
 
     [Fact]
