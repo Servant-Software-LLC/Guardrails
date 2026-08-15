@@ -1281,7 +1281,16 @@ block after `"model": null,`:
                                       //   not for its rung, not for a stronger-rung climb, not for a v2 ladder
                                       //   escalation, not for a judge bump. Reachable ONLY by an explicit task pin
                                       //   (action.runner/action.model) or as the `default` pointer (warned, GR2051).
-                                      //   Absent = false. Declaring `routing` alongside it is inert (GR2052).
+                                      //   TRI-STATE, settled 2026-08-15 — this DoR previously said "absent =
+                                      //   false" and the maintainer OVERRULED it in favour of what Stage 1
+                                      //   shipped: absent is NULL ("not stated"), distinct from an explicit
+                                      //   `false` ("stated cheap"). Three states in the SCHEMA; TWO at the
+                                      //   candidacy PREDICATE — null behaves as NOT-costly there, because an
+                                      //   un-annotated registry must stay routable (§6.2). The distinction is
+                                      //   what `providers init` exists to close: it can name every block whose
+                                      //   cost is unstated and ask, which "absent = false" made unaskable by
+                                      //   silently answering for the user. Declaring `routing` alongside a
+                                      //   costly block is inert (GR2052).
       "strength": null,               // OPTIONAL (#201, §4.1). Integer >= 1; HIGHER = stronger. The ONLY totally
                                       //   ordered axis, and the only one a >= comparison or a bump may read.
                                       //   Orders same-rung candidates ASCENDING (weakest sufficient first);
