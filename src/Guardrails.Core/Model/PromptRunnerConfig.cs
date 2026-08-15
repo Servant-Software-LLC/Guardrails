@@ -241,6 +241,33 @@ public static class PromptRunnerKinds
     /// <summary>True when this build carries a concrete <c>IPromptRunner</c> for <paramref name="kind"/>.</summary>
     public static bool IsImplemented(PromptRunnerKind kind) => Implemented.Contains(kind);
 
+    /// <summary>
+    /// The kinds this BUILD can ENUMERATE the models of — a statement of fact about this build, in the
+    /// same shape as <see cref="Implemented"/> right above it, and read by <c>guardrails providers init</c>
+    /// (SSOT §9.7) to decide whether it may add blocks or must degrade to annotating the ones already there.
+    ///
+    /// <para><b>EMPTY, and that is the whole of v1's behaviour rather than a gap.</b> Only
+    /// <see cref="PromptRunnerKind.Claude"/> is implemented at all, and the Claude CLI exposes no model
+    /// list (settled OD-E) — so there is nothing to enumerate anywhere. The <c>openai-compat</c>
+    /// <c>GET /v1/models</c> surface arrives with its runner in #223, which adds that kind here and
+    /// supplies the enumerator; nothing else about <c>providers init</c> moves.</para>
+    ///
+    /// <para><b>This is a list, not a seam.</b> There is deliberately no <c>IModelEnumerator</c> stub to
+    /// fill: an interface with no implementation is dead code that cannot be tested, and the generator
+    /// needs exactly one fact from this file — <i>can this kind be enumerated?</i> — which a list answers
+    /// honestly today.</para>
+    /// </summary>
+    public static IReadOnlyList<PromptRunnerKind> ModelEnumerable { get; } = [];
+
+    /// <summary>
+    /// True when this build can ask <paramref name="kind"/> for its model list. FALSE FOR EVERY KIND in
+    /// v1 — which is what routes <c>providers init</c> down its "could not enumerate" path, where it
+    /// annotates the blocks already present, says plainly that it added none, and exits 0. It never
+    /// synthesises a model id: a registry entry is a ROUTING TARGET, not documentation, so a fabricated
+    /// or stale id would be spent against at a model that may not exist (SSOT §9.7, DoR §4.3 ruling 2).
+    /// </summary>
+    public static bool HasModelEnumeration(PromptRunnerKind kind) => ModelEnumerable.Contains(kind);
+
     /// <summary>The implemented kinds as a comma-separated quoted list, for diagnostic messages.</summary>
     public static string ImplementedTokenList => string.Join(", ", Implemented.Select(k => $"'{Token(k)}'"));
 
@@ -318,6 +345,20 @@ public enum PromptRunnerSpecialization
 /// </summary>
 public static class PromptRunnerSpecializations
 {
+    /// <summary>The recognised values, in declaration order — for diagnostic and generator messages.</summary>
+    public static IReadOnlyList<PromptRunnerSpecialization> All { get; } =
+        [PromptRunnerSpecialization.Coding, PromptRunnerSpecialization.PlanningReasoning,
+         PromptRunnerSpecialization.General, PromptRunnerSpecialization.Unspecified];
+
+    /// <summary>
+    /// The recognised tokens as a comma-separated quoted list, mirroring
+    /// <see cref="PromptRunnerKinds.TokenList"/> and <see cref="ActionTiers.TokenList"/>. Read by the
+    /// <c>providers init</c> generator so the legal values it comments into a user's own
+    /// <c>guardrails.json</c> (SSOT §9.7) are the same spelling the validator enforces — the enum is
+    /// declared once and can never drift from the form that solicits it.
+    /// </summary>
+    public static string TokenList => string.Join(", ", All.Select(s => $"'{Token(s)}'"));
+
     /// <summary>The canonical wire token for <paramref name="specialization"/>.</summary>
     public static string Token(PromptRunnerSpecialization specialization) => specialization switch
     {

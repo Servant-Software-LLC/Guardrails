@@ -3797,10 +3797,10 @@ serving a rung and the resolver did not, validation would pass and every task at
 runtime. It lives in one place in the code (`PromptRunnerConfig.ServesTier`).
 
 **`costly` is TRI-STATE in the schema and TWO-valued at the predicate.** `null` (absent, "not stated") is
-deliberately distinct from an explicit `false` ("stated cheap") — the distinction exists so a future
-`providers init` can name every block whose cost is unstated and *ask*, which an "absent = false" rule
-would answer on the user's behalf. **At the candidacy predicate, `null` behaves as NOT-costly**, because
-an un-annotated registry must stay routable; only an explicit `true` excludes a block.
+deliberately distinct from an explicit `false` ("stated cheap") — the distinction exists so
+`guardrails providers init` (§9.7) can name every block whose cost is unstated and *ask*, which an
+"absent = false" rule would answer on the user's behalf. **At the candidacy predicate, `null` behaves as
+NOT-costly**, because an un-annotated registry must stay routable; only an explicit `true` excludes a block.
 
 **The costly floor.** `costly: true` blocks are excluded from `Candidates(R)` at **every** rung — their
 own, a climbed-to stronger rung, and (later) a ladder escalation or a judge bump. It is a hard floor on
@@ -3852,6 +3852,84 @@ drag every judge down; a plan-wide `easy` *floor* does nothing at all.
 **Nothing in the harness consumes `routing.tiers`, `effort`, `strength`, `specialization`, `costly` or
 `verifier.minTier` at runtime yet.** Stage 1.5 guarantees exactly that they parse, validate, and
 round-trip — so the resolver (#226) inherits a checked contract instead of a hopeful one.
+
+### 9.7 The generated registry — `guardrails providers init` (model tiering, issue #201) — the CLI contract
+
+> **Scope note.** This verb only ever ANNOTATES a config. It is not part of a run, it resolves nothing,
+> and it allocates **no GR code** — it is a generator, not a validation surface, so its failures are CLI
+> errors and its findings are report lines. Design of record: `docs/plans/17-model-tiering.md` §4.3.
+
+```
+guardrails providers init [folder] [--write]
+```
+
+Three axes with legal enums (§9.6) are exactly the kind of schema nobody remembers, so the values must be
+discoverable **in the file being edited** rather than only here. `providers init` puts them there: for
+every `promptRunners` block it writes the legal values of `costly` / `strength` / `specialization` /
+`routing` as `//` comments, appends any of those four keys the block does not carry, and names every block
+whose axes are still unstated.
+
+**It edits `guardrails.json` itself, not a sibling `.jsonc`.** The substance of "a comment-bearing config"
+is comment-bearing JSON, and `guardrails.json` **already is** one — `PlanJson.Options` sets
+`ReadCommentHandling = JsonCommentHandling.Skip` and `AllowTrailingCommas = true` precisely because humans
+hand-edit these files. A second file would need a precedence-and-merge story for zero gain.
+
+**The write is a SURGICAL TEXT EDIT, and it may not be anything else.** `System.Text.Json` skips comments
+on read and **cannot emit them at all**, so parse-and-reserialize would destroy every `//` comment in the
+file — including the ones a human wrote and the ones this command exists to create — plus its key order
+and formatting. So the parse is used ONLY to locate (which blocks exist, which keys are present, at which
+byte offsets), and every write is an **insertion** spliced into the original text. The safety properties
+are the ones `HarnessWrite`'s anchored `edits` form already established for `needsHarnessWrite` (§5.3):
+resolve everything against an in-memory copy first, write nothing until it all resolves, respect the
+file's own newline convention, preserve a UTF-8 BOM, refuse a target that is not valid UTF-8. The one
+divergence is that the location is a **byte offset from the tokenizer** rather than a text anchor —
+the harness parsed the file itself, so it does not have to guess where a passage is.
+
+**Four properties are contract:**
+
+1. **Idempotent, and byte-identical over a human's annotation.** Re-running adds *missing* keys and
+   *missing* comments only. It never rewrites a value a human set, never reorders a block or a key, and
+   never deletes. An axis that already carries **any** comment — the generator's, or the human's own — is
+   skipped entirely, so the detection is biased toward "leave it alone". A second run against an annotated
+   config produces **zero insertions**: not "the same bytes re-emitted", but no edit at all. *A generator
+   that clobbers the annotation it exists to solicit is worse than no generator.*
+2. **It NEVER invents a model id.** A `kind` may be enumerated only when this build says it can —
+   `PromptRunnerKinds.ModelEnumerable`, which is **EMPTY in v1** (the Claude CLI exposes no model list;
+   `openai-compat`'s `GET /v1/models` arrives with its runner in #223). For a kind with no enumeration
+   surface the command annotates the blocks **already present**, emits an explicit
+   `// could not enumerate models for kind '<kind>'` note with the reason, adds **no** block, writes **no**
+   model identifier, and **exits 0**. Degrading honestly is not failing — the annotation half of the job
+   succeeded, and that half is most of the value. The rule is hard rather than a nicety because **a
+   registry entry is a ROUTING TARGET, not documentation**: a fabricated or stale id would be *spent
+   against* at a model that may not exist, or silently substituted by a provider that resolves unknown
+   names loosely. Same rule as GR2044's refusal to fall back to `claude` (§9), applied one layer earlier.
+3. **An absent key is written as `null`, never as a guessed value.** The loader treats a missing key and an
+   explicit JSON `null` identically as "not stated" (`PlanLoader.AbsentAxis`), so the placeholder changes
+   nothing semantically while turning a remembered schema into a filled-in form. It also keeps the
+   tri-state payoff alive: a block the command just wrote `null` into is **still unstated**, so the command
+   keeps naming it and asking on every subsequent run. Its own placeholder is a prompt, never an answer —
+   which is the concrete reason `costly` kept a third state (§9.6).
+4. **Output is a DIFF TO ACCEPT — preview is the default, `--write` is the acceptance.** A bare
+   `providers init` prints a unified diff and leaves the file **byte-identical**; the human accepts by
+   re-running with `--write`. It is not a silent config mutation, and it is not a receipt printed after the
+   fact. An interactive y/n is deliberately *not* the mechanism: it cannot serve a non-interactive session,
+   and the CLI's console seam is output-only by design. Because every hunk is DERIVED from the insertion
+   that produces it rather than recovered by an alignment pass, the preview and the write cannot disagree.
+
+**Exit codes.** `0` whenever the configuration was read and annotated — including the "could not
+enumerate" path, a config with no `promptRunners` at all, and a config already fully annotated.
+`1` (`HarnessError`) only when the command could not proceed: no `guardrails.json` at the folder (it
+annotates a configuration, it never creates one), a file that is not valid UTF-8 or not parseable JSON, an
+IO failure, or the post-condition check failing. In every failure case **nothing is written and the file is
+byte-identical**.
+
+**Post-condition, checked before the caller is offered a byte.** The annotated text must re-parse, and every
+value the original carried must still be present and identical (objects may only have GAINED keys; arrays
+must be raw-text identical). Insertion-only construction makes both true by design — the check proves it
+rather than trusting it, and turns a would-be silent corruption into a refusal.
+
+`guardrails providers status`, the live-state inspector, stays a **v2** verb in the same noun-space: `init`
+needs only a model list, `status` needs a usage surface.
 
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
