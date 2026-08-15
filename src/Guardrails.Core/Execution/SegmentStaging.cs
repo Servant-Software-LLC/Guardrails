@@ -84,7 +84,10 @@ public static class SegmentStaging
             WorkingDirectory = repoPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            // Issue #457: git's stderr (echoed into the thrown message) is UTF-8, not the console code page.
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
         foreach (string arg in StageAllArguments())
         {

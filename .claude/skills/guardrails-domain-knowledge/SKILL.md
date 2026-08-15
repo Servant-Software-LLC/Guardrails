@@ -184,7 +184,10 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   command. It's a speed/flake trade-off, sound only against output the action couldn't fabricate.
   **Guardrail scope** (SSOT section 4.3): a guardrail declares an optional `scope` (`"local"`
   default, or `"integration"`). The **integration-guardrail set** = all `scope: "integration"`
-  guardrails across the plan (typically the whole-repo build + full test suite). At **every** union
+  guardrails across the plan -- from **BOTH** the per-task `tasks/<id>/guardrails/` folders **and**
+  the plan-root `<plan>/guardrails/` folder (#451: the plan root was excluded by construction, so a
+  union-invariant check authored exactly where the four-folder model says it belongs never ran at any
+  union) -- typically the whole-repo build + full test suite. At **every** union
   point (a fan-in or a non-FF plan-branch integration) the harness re-runs, on the merged bytes,
   **the integration set ONLY** -- one set, run uniformly at every union and again on the final merged
   HEAD by the terminal `<plan>/guardrails/` folder (the Terminal Gate, SSOT section 3.3). There is
@@ -354,12 +357,18 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   - `git merge --no-commit`; on conflict, the **AI-merge worker** (a constrained prompt behind
     `IPromptRunner`) is a **BYTE PRODUCER** only -- it writes resolved bytes to
     `GUARDRAILS_MERGE_OUT` via the three-way on-disk env contract (`GUARDRAILS_MERGE_BASE`,
-    `GUARDRAILS_MERGE_OURS`, `GUARDRAILS_MERGE_THEIRS`, `GUARDRAILS_MERGE_OUT`). Two
-    **deterministic checks** gate the output: (i) no conflict markers remain (`git diff --check`);
-    (ii) blast-radius: modified only the git-reported-conflicted files (`git status --porcelain`).
+    `GUARDRAILS_MERGE_OURS`, `GUARDRAILS_MERGE_THEIRS`, `GUARDRAILS_MERGE_OUT`). **Deterministic
+    checks** gate the output: (i) no conflict markers remain (`git diff --check`);
+    (ii) blast-radius: modified only the git-reported-conflicted files (`git status --porcelain`);
+    (iii) **no unmerged path remains** (`git diff --diff-filter=U`, #451) -- an attempt resolves ONE
+    file, so a 2+-file conflict leaves the rest at `UU` where (i)/(ii) are structurally blind to
+    them, and the Scheduler re-asserts the same post-condition before the merge commit so the
+    `git commit` cannot exit 128 and turn a designed `needs-human` into a run-killing infra abort.
     Violation -> discard (`reset --hard`) + `needs-human`. 1 retry. `PromptResult.IsError` and
     exit code are **never** the verdict. AI-merge resolves harness-internal unions only; withheld
-    at the `--merge-on-success` user-branch boundary.
+    at the `--merge-on-success` user-branch boundary. Every git call on this path pins **UTF-8
+    (no BOM)** on the child streams -- the three-way inputs come from `git show`, so an unpinned
+    decode hands the AI mojibake that is then written back over a tracked file (#457).
   - **The verdict** (for both clean-auto and AI-resolved) is the **deterministic re-verify**:
     re-run **the integration-guardrail set** (integration-set-only, SSOT section 4.3) on the merged
     bytes via the attempt-decoupled `IReVerifier` seam (no attempt lifecycle, no action result). Any
@@ -390,9 +399,19 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
 - **Resume-by-trailer**: the plan-branch's trailer-bearing commits are the durable resume record.
   On resume, stale segment refs (`guardrails/<runId>/*`) are deleted **before** any trailer read
   (W-1: a trailer on a surviving segment ref that never FF'd is not authoritative).
-- **End-of-run delivery**: when the run drains green AND `mergeOnSuccess` is effective, the harness
-  merges the plan branch into the user's original branch. **AI-merge is NOT used here.** A conflict /
-  failed re-verify / a **blocking-dirty** user tree halts, plan branch intact. **Default ON (#340 — "green means
+- **End-of-run delivery**: when the run drains green **AND every terminal gate the plan declares has
+  PASSED** AND `mergeOnSuccess` is effective, the harness merges the plan branch into the user's
+  original branch. **AI-merge is NOT used here.** A conflict / failed re-verify / a **blocking-dirty**
+  user tree halts, plan branch intact.
+  **Ordering (#457): "all succeeded" means tasks AND gate.** For a plan with no `<plan>/guardrails/`
+  folder the terminal boundary lives inside the Scheduler (legacy section 3.3 gate / last wave's exit
+  gate) and already folds into `AllSucceeded`, so delivery fires there. For a plan that DECLARES
+  `<plan>/guardrails/`, the Terminal Gate runs in the CLI **after** the Scheduler returns (it must --
+  its console heartbeat is only safe once the Spectre live region is disposed), so the Scheduler
+  **DEFERS** delivery (`RunReport.DeliveryPendingTerminalGate`) and the CLI calls
+  `Scheduler.CompleteDeferredDelivery` **only on a PASS**. A failed gate delivers nothing. Previously
+  delivery fired on tasks-green alone: one run merged corrupted work to the user's `master` five
+  minutes BEFORE the gate that caught it printed "terminal halt". **Default ON (#340 — "green means
   delivered").** Opt out with `"mergeOnSuccess": false` or the CLI `--no-merge-on-success`; precedence
   (highest wins): CLI flag (`--merge-on-success` / `--no-merge-on-success`) → `guardrails.json` →
   the `true` default; passing BOTH flags is a usage error. Delivery is **idempotent on resume** (a

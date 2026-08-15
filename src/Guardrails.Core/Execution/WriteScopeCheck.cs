@@ -286,7 +286,10 @@ public static class WriteScopeCheck
             WorkingDirectory = repoPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            // Issue #457: pin UTF-8 on every git stream (this one is exit-code-only, kept uniform).
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
         psi.ArgumentList.Add("cat-file");
         psi.ArgumentList.Add("-e");
@@ -308,7 +311,11 @@ public static class WriteScopeCheck
             WorkingDirectory = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            // Issue #457: this captures `git diff --name-only` / `git status` PATHS, which may be
+            // non-ASCII; an unpinned decode would corrupt the write-scope verdict's file names.
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
         foreach (string arg in args) psi.ArgumentList.Add(arg);
         using var proc = Process.Start(psi)!;

@@ -10,12 +10,18 @@ namespace Guardrails.Core.Execution;
 /// on-disk env contract: GUARDRAILS_MERGE_BASE / GUARDRAILS_MERGE_OURS / GUARDRAILS_MERGE_THEIRS
 /// (inputs) and GUARDRAILS_MERGE_OUT (the AI writes the resolution; the harness reads it).
 ///
-/// <see cref="Prompts.PromptResult.IsError"/> is NEVER the verdict — only the three deterministic
+/// <see cref="Prompts.PromptResult.IsError"/> is NEVER the verdict — only the four deterministic
 /// gates certify:
 ///   (i)   non-degenerate: GUARDRAILS_MERGE_OUT is not empty/whitespace (an empty resolution would
 ///         otherwise pass gates ii/iii vacuously and silently blank the conflicted file)
 ///   (ii)  git diff --check — no conflict markers remain in the staged resolution
 ///   (iii) git status --porcelain — blast-radius: the AI touched ONLY the git-reported-conflicted files
+///   (iv)  no unmerged path remains (issue #451) — an attempt resolves exactly ONE file, so a 2+-file
+///         conflict leaves the rest at UU, where gates (ii) and (iii) are structurally blind to them
+///
+/// Every git call here pins UTF-8 (no BOM) on the child's streams (issue #457): the three-way inputs
+/// are captured from `git show`, and an unpinned decode hands the AI mojibake that is then written
+/// back over a tracked file.
 ///
 /// The three-way input files + the resolution target live in a harness temp dir granted to the
 /// runner's sandbox via <c>--add-dir</c> (the runner's cwd is the worktree, so the temp dir is
@@ -169,6 +175,18 @@ internal sealed class AiMergeResolver
             HashSet<string> postRunnerFiles = ParseStatusFiles(statusAfter);
             if (postRunnerFiles.Any(f => !preRunnerFiles.Contains(f))) return false;
 
+            // Gate (iv), issue #451: NO UNMERGED PATH MAY REMAIN. This attempt resolves exactly ONE
+            // file (conflictFile = conflictedFiles[0], per the single-file prompt contract §9.1), so a
+            // union that conflicted in TWO OR MORE files leaves the others at UU — and neither prior
+            // gate sees them: `git diff --cached` skips unmerged entries entirely (so gate (i) finds no
+            // markers), and the leftovers were already in `preRunnerFiles` (so gate (ii) finds nothing
+            // out of bounds). Both gates then pass on a half-resolved merge, the attempt reports
+            // SUCCESS, and the `git commit` that follows dies with "Committing is not possible because
+            // you have unmerged files" — exit 128, read by the Scheduler as an infrastructure fault
+            // that aborts the entire run. Fail the attempt here instead: the budget is spent honestly
+            // and the conflict reaches the designed B1-rollback / needs-human path.
+            if (ParseConflictedFiles(statusAfter).Count > 0) return false;
+
             return true;
         }
         finally
@@ -248,7 +266,16 @@ internal sealed class AiMergeResolver
             WorkingDirectory = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            // Issue #457 — THE data-integrity boundary of this class. TryGitShow captures
+            // `git show <ref>:<file>` here to build the three-way MERGE_BASE/OURS/THEIRS inputs, and the
+            // AI's resolution (derived from those bytes) is written back over the conflicted file. Left
+            // unpinned, .NET decodes git's UTF-8 with the host CONSOLE code page (CP437/850 on Windows),
+            // so every multi-byte character is mojibake BEFORE the AI ever sees it — and the mojibake is
+            // then re-encoded as UTF-8 into a tracked file. Pin UTF-8 (no BOM), exactly as ProcessRunner
+            // does for the same reason (#55).
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding  = ChildProcessEncoding.Utf8NoBom
         };
         foreach (var arg in args) psi.ArgumentList.Add(arg);
         using var proc = Process.Start(psi)!;

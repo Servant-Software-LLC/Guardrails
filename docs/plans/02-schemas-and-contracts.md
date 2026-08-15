@@ -995,7 +995,18 @@ codes only distinguish "ran" from "crashed".
 A guardrail declares an optional `scope` (deterministic sidecar key §4.1, or prompt frontmatter
 §4.2): `"local"` (default) or `"integration"`. The run's **integration-guardrail set** = the union
 of all `scope: "integration"` guardrails across the plan (typically the whole-repo build + the
-whole test suite). At **every union point** (a fan-in or a non-FF plan-branch integration, §5.3), on
+whole test suite).
+
+> **"Across the plan" means BOTH guardrail homes (issue #451).** The set is drawn from the per-task
+> `tasks/<id>/guardrails/` folders **and** the plan-root `<plan>/guardrails/` folder. The harness
+> previously built it from the task folders only, so a plan-root guardrail tagged
+> `scope: "integration"` — which under the four-folder model is exactly where a **union invariant**
+> belongs — was silently never re-run at any union point. A plan carrying a conflict-marker +
+> duplicate-member union scan, correctly authored and correctly tagged, therefore never executed it,
+> and a union shipped a file with conflict markers still in it. The `scope` tag remains the only
+> selector: a plan-root guardrail left at the default `local` scope still runs once at the Terminal
+> Gate and nowhere else, since the folder's GR2028 terminal-sink obligation is independent of this
+> per-union tag. At **every union point** (a fan-in or a non-FF plan-branch integration, §5.3), on
 the merged bytes, BEFORE the merge commit and BEFORE any downstream action, the harness re-runs **the
 run's integration-guardrail set** (via the attempt-decoupled re-verify seam). This is the **complete
 v1 union re-verify contract**: one set, run uniformly at every union and again on the final merged
@@ -1315,9 +1326,11 @@ the commit.
 
 **Union resolution: git auto-merge → AI-merge → human.** `git merge --no-commit`; on conflict, the
 **AI-merge worker** (a constrained prompt behind `IPromptRunner`, §9.1) produces merged BYTES only,
-trusted via two **deterministic** checks — (i) no conflict markers remain (`git diff --check`),
-(ii) blast-radius: it modified only the git-reported-conflicted files (`git status --porcelain`); an
-out-of-bounds write or a remaining marker ⇒ discard (`reset --hard`) + needs-human. 1 retry. The AI
+trusted via **deterministic** checks — (i) no conflict markers remain (`git diff --check`),
+(ii) blast-radius: it modified only the git-reported-conflicted files (`git status --porcelain`),
+(iii) no unmerged path remains (`git diff --diff-filter=U`, re-asserted by the Scheduler before the
+merge commit — #451); an out-of-bounds write, a remaining marker or a remaining unmerged path ⇒
+discard (`reset --hard`) + needs-human. 1 retry. The AI
 resolves harness-internal unions only; it is **withheld** at the `--merge-on-success` user-branch
 boundary.
 
@@ -1376,11 +1389,12 @@ regardless of per-task outcomes.
 in its segment worktree (keeping every upstream/sibling commit; `taskBase ≠ preHead`), not a
 discard-and-recreate.
 
-**Run end (delivery, ON by default — #340).** When the run drains wholly green AND `mergeOnSuccess`
-is effective (the `true` default, or explicitly via config / `--merge-on-success`; suppressed by
-`--no-merge-on-success` / `"mergeOnSuccess": false`), the harness merges the plan branch into the
-user's original branch (ff-only when possible, else a real merge whose re-verify must pass). **AI-merge
-is NOT used here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
+**Run end (delivery, ON by default — #340).** When the run drains wholly green **AND every terminal
+gate the plan declares has PASSED** (see "Delivery is ordered AFTER the terminal gate" below) AND
+`mergeOnSuccess` is effective (the `true` default, or explicitly via config / `--merge-on-success`;
+suppressed by `--no-merge-on-success` / `"mergeOnSuccess": false`), the harness merges the plan branch
+into the user's original branch (ff-only when possible, else a real merge whose re-verify must pass).
+**AI-merge is NOT used here.** A conflict / failed re-verify / dirty user tree halts to `needs-human`, plan branch
 intact — never a force-overwrite. Opting out (`false` / `--no-merge-on-success`) leaves the plan branch
 for the user to review and merge. The merge-back outcome is reported as `MergeOnSuccessResult`
 (`FastForwarded` / `Merged` / `Conflict` / `DirtyWorkingTree` / `HookRejected`); a dirty user working
@@ -1388,6 +1402,32 @@ tree is refused **before any git merge runs** (the harness never runs git over u
 and returns `DirtyWorkingTree`. Delivery is **idempotent on resume**: a resumed run that re-drains green
 after a prior run already delivered re-issues an ff-only merge that git reports "Already up to date"
 (→ `FastForwarded`, exit 0) — never a double-merge or error.
+
+**Delivery is ordered AFTER the terminal gate — "all succeeded" means tasks AND gate (issue #457).**
+Nothing reaches the user's branch until *every* terminal check the plan declares has passed on the
+merged HEAD. The DAG draining green is a necessary condition, never a sufficient one.
+
+- A plan with **no `<plan>/guardrails/` folder** has its terminal boundary INSIDE the Scheduler — the
+  legacy §3.3 whole-repo gate for a flat plan, the last wave's exit gate (§14.3) for a waved one. Both
+  run before delivery is considered and both fold their failure into `AllSucceeded` (the gate task is
+  rewritten `needs-human`; a failed wave gate returns a `WaveHalt`). Delivery fires in the Scheduler,
+  as before.
+- A plan **declaring `<plan>/guardrails/`** has its terminal boundary in the CLI's `PlanGuardrailPhase`,
+  which by construction runs AFTER the Scheduler returns (it writes plain console heartbeat lines that
+  are only safe once the Spectre live region is disposed, and it owns the `planGuardrails` journal
+  section + `halt` record). For such a plan the Scheduler **DEFERS** delivery: it stamps
+  `RunReport.DeliveryPendingTerminalGate` and merges nothing. The CLI evaluates the gate and, **only on
+  a pass**, calls `Scheduler.CompleteDeferredDelivery`, which performs the identical merge and stamps
+  the identical `MergeOnSuccessResult` / `MergeOnSuccessDetail` / `DeliveredToBranch`. On a FAILED gate
+  that call never happens: nothing is delivered, the verified-but-ungated work stays on
+  `guardrails/<plan-name>`, and the run exits 2 with the terminal-halt message — which is now TRUE.
+
+  > This closes an incident in which a run merged to the user's `master` at 21:50:36 and failed its
+  > terminal gate at 21:55:26, printing a "terminal halt" for a corrupted document that had already
+  > shipped. The gate worked; it simply fired after the only thing it could have prevented.
+
+The gate is **not** moved into the Scheduler: Core never touches the console and never owns CLI
+rendering (§7), so the deferral moves the *delivery* — a pure provider call with no output — instead.
 
 **The dirty-tree gate is an INTERSECTION, not "any dirt anywhere" (issue #448).** The delivery refuses
 with `DirtyWorkingTree` only when a TRACKED path with uncommitted changes is **also a path this merge
@@ -3148,13 +3188,35 @@ guardrail-verifier concept). **It is a BYTE PRODUCER, never a VERDICT PRODUCER:*
 - **Output:** the merged bytes only, written to `GUARDRAILS_MERGE_OUT`. A rationale is logged
   (NON-gating, never read as a verdict). `PromptResult.IsError` and the exit code are **not** the
   verdict.
-- **Trust:** three deterministic checks — (i) the resolution is non-degenerate: an empty or
+- **Trust:** **four** deterministic checks — (i) the resolution is non-degenerate: an empty or
   whitespace-only `GUARDRAILS_MERGE_OUT` is a FAILED attempt (an empty resolution would otherwise
   pass gates ii/iii vacuously and silently blank the conflicted file); (ii) no conflict markers
   remain (`git diff --check`); (iii) blast-radius (modified only the git-reported-conflicted files,
-  `git status --porcelain`). A violation ⇒ discard (`reset --hard`) + `needs-human`.
+  `git status --porcelain`); **(iv) NO UNMERGED PATH REMAINS** (`git diff --diff-filter=U` is empty,
+  issue #451). A violation ⇒ discard (`reset --hard`) + `needs-human`.
+
+  > **Why (iv) is not implied by (i)–(iii).** An attempt resolves exactly ONE file (the prompt is
+  > single-file by contract), so a union that conflicts in two or more files leaves the rest at `UU` —
+  > and neither (ii) nor (iii) can see them: `git diff --cached` skips unmerged entries entirely, and
+  > the leftovers were already present in the pre-runner status, so nothing is out of bounds. Both
+  > gates then pass on a half-resolved merge and the attempt reports SUCCESS. The Scheduler
+  > **independently re-asserts the same post-condition** (`IWorktreeProvider.UnmergedPaths`)
+  > immediately before the B2 `CommitStagedMerge`, because a resolver's boolean is not the authority
+  > on the index's state. Without it the `git commit` exits 128 ("Committing is not possible because
+  > you have unmerged files") from inside the integration fault handler, and a KNOWN state with a
+  > designed handler — B1 rollback → `needs-human` — instead **aborts the whole run**, stranding every
+  > already-settled task's work.
+
+- **Encoding:** every git invocation on this path pins **UTF-8 (no BOM)** on the child's
+  stdout/stderr. The three-way inputs are captured from `git show <ref>:<file>`, so an unpinned
+  stream would decode git's UTF-8 with the host console code page (CP437/850 on Windows) and hand the
+  AI mojibake, whose "resolution" is then written back over a tracked file — the #457 incident, in
+  which a single unpinned stream destroyed *every* multi-byte character in a 388 KB tracked document
+  (1077 em dashes, 503 section signs, 146 box-drawing, 126 arrows, 86 ellipses → zero survivors) and
+  inflated it to 404 KB. The pinned encoding has one definition harness-wide
+  (`ChildProcessEncoding.Utf8NoBom`, shared with `ProcessRunner`'s #55 fix).
 - **Budget:** 1 retry (2 attempts). Escalate to `needs-human` on markers-left / out-of-bounds /
-  re-verify-fail / budget. The AI's exit code is never a verdict.
+  unmerged-paths-left / re-verify-fail / budget. The AI's exit code is never a verdict.
 
 Its cost is charged against `maxCostUsd` like any prompt attempt (#314): each merge-prompt attempt's
 `PromptResult.CostUsd` is routed through the shared overhead sink (top-level `overheadCostUsd`, §7) so it

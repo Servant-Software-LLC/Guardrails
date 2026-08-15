@@ -22,15 +22,15 @@ public sealed class ProcessRunner
     /// persisted that way to claude-stream.jsonl / transcript.md / *.log. Pinning UTF-8 makes capture
     /// host-console-independent and round-trip-faithful.
     /// <para>
-    /// The no-BOM form is load-bearing specifically on the <see cref="ProcessStartInfo.StandardInputEncoding"/>
-    /// (encode) path: a BOM-emitting encoder would prepend <c>EF BB BF</c> to the child's stdin,
-    /// corrupting the head of a composed prompt fed to <c>claude -p</c>. On the stdout/stderr (decode)
-    /// paths the BOM flag is irrelevant — a decoder strips a leading BOM either way — but one shared
-    /// no-BOM instance keeps all three streams consistent and matches the harness's own UTF-8-no-BOM
-    /// writes (<see cref="State.AtomicFile"/>).
+    /// The instance is shared with every OTHER child-process boundary in the harness via
+    /// <see cref="ChildProcessEncoding"/> (issue #457) — the git runners that were still unpinned
+    /// corrupted a tracked file through exactly this mechanism, so there is deliberately ONE definition
+    /// of "the encoding the harness pins" rather than a copy per call site. See that type for the full
+    /// rationale, including why the no-BOM form is load-bearing on
+    /// <see cref="ProcessStartInfo.StandardInputEncoding"/>.
     /// </para>
     /// </summary>
-    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    private static readonly Encoding Utf8NoBom = ChildProcessEncoding.Utf8NoBom;
 
     /// <summary>
     /// Run <paramref name="command"/> in <paramref name="workingDirectory"/> with the given

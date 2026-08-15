@@ -155,6 +155,25 @@ public interface IWorktreeProvider
         IntegrationHandle integ, string taskId, CancellationToken ct, string? definitionHash = null) => "";
 
     /// <summary>
+    /// The paths still UNMERGED in the integration worktree's index (<c>git diff --diff-filter=U</c>),
+    /// as <c>/</c>-separated repo-relative paths; empty when the index is clean.
+    /// <para>
+    /// <b>Issue #451 — the post-condition an AI merge resolver is not trusted to satisfy.</b> The
+    /// resolver reports a boolean; a <c>true</c> that still leaves an unmerged path is a KNOWN,
+    /// designed-for state (needs-human with a B1 rollback), but the Scheduler used to discover it only
+    /// when <see cref="CommitStagedMerge"/>'s <c>git commit</c> exited 128 — inside a <c>try</c> that
+    /// reads any git failure as an INFRASTRUCTURE FAULT, aborting the whole run mid-flight and
+    /// stranding every settled task's work. The Scheduler calls this immediately before
+    /// <see cref="CommitStagedMerge"/> so the known state takes the designed path instead.
+    /// </para>
+    /// <para>
+    /// Default EMPTY for fake/serial providers, which keep no git index and can never be in this
+    /// state — so the assert is a free no-op there and no existing fake needs to change.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<string> UnmergedPaths(IntegrationHandle integ) => [];
+
+    /// <summary>
     /// Retry-salvage pruning (issue #195, deliverable 6): delete every preserved salvage ref for
     /// <paramref name="taskId"/> (<c>refs/guardrails/&lt;taskId&gt;/attempt-*</c>) — called once a task
     /// settles <c>succeeded</c>, so a green task's salvage refs (its own rolled-back partial attempts)

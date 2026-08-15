@@ -468,6 +468,7 @@ public static class RunCommand
             JournalDocument? diagramSeed = TryReadJournalForSeed(probe.Plan.PlanDirectory);
 
             RunReport report;
+            Scheduler scheduler;
             OnTheFlyDiagramObserver diagramObserver;
             if (live)
             {
@@ -487,7 +488,7 @@ public static class RunCommand
                 // Stack the diagram observer AROUND the log-site observer: it forwards every event down
                 // the chain and re-renders logs/<runId>/diagram.html after each.
                 diagramObserver = new OnTheFlyDiagramObserver(siteObserver, logsRoot, probe.Plan, diagramSeed);
-                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
+                (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -498,7 +499,7 @@ public static class RunCommand
                 PrintStaticIndexLink(logsRoot, io);
                 diagramObserver.WriteInitialDiagram();
                 PrintDiagramLink(logsRoot, io);
-                report = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
+                (report, scheduler) = await ExecuteAsync(probe.Plan, diagramObserver, driftAuthorization, waveDriftAuthorized, breakdownConfirmations, junctionRootForRun, cancellationToken).ConfigureAwait(false);
             }
 
             // Terminal plan-guardrail phase (SSOT §7/§7.1, deliverable 4): evaluate <plan>/guardrails/
@@ -543,6 +544,23 @@ public static class RunCommand
                     {
                         io.Out.WriteLine("Terminal Gate: passed.");
                     }
+                }
+
+                // Issue #457 — DELIVERY HAPPENS HERE, NOT INSIDE THE SCHEDULER, for any plan declaring a
+                // <plan>/guardrails/ terminal gate. The Scheduler HELD the merge back (report
+                // .DeliveryPendingTerminalGate) precisely because its own `AllSucceeded` is TASKS ONLY and
+                // this gate's verdict did not exist yet. Now it does: a PASSED gate delivers exactly as
+                // before (#340 delivered-by-default is unchanged for a genuinely green run), and a FAILED
+                // gate simply never reaches this call — nothing merges to the user's branch, and the
+                // verified-but-ungated work stays on the plan branch where the halt message says it is.
+                //
+                // Placed BEFORE WriteFinalStatic/Finish so the outcome is in the report every downstream
+                // consumer reads: the exit-code mapping for a halted delivery (HookRejected /
+                // DirtyWorkingTree / Conflict), the final static pages, the #340 notices, and the #407
+                // reclaim predicate.
+                if (report.DeliveryPendingTerminalGate && planGuardrailsPassed)
+                {
+                    report = scheduler.CompleteDeferredDelivery(report, cancellationToken);
                 }
 
                 // The FINAL, settled live diagram (no meta refresh, no spinner) — the durable post-mortem of
@@ -1690,7 +1708,15 @@ public static class RunCommand
         }
     }
 
-    private static Task<RunReport> ExecuteAsync(
+    /// <summary>
+    /// One run's result plus the <see cref="Scheduler"/> that produced it (issue #457). The Scheduler
+    /// is threaded out because end-of-run delivery is now DEFERRED for any plan declaring a
+    /// <c>&lt;plan&gt;/guardrails/</c> terminal gate: only this command knows the gate's verdict, and
+    /// only the Scheduler holds the worktree provider + integration handle that perform the merge.
+    /// </summary>
+    private readonly record struct RunExecution(RunReport Report, Scheduler Scheduler);
+
+    private static async Task<RunExecution> ExecuteAsync(
         Core.Model.PlanDefinition plan,
         IRunObserver observer,
         DriftAuthorization? driftAuthorization,
@@ -1702,7 +1728,8 @@ public static class RunCommand
         Scheduler scheduler = SchedulerFactory.Create(
             plan, new ProcessRunner(), new PathExecutableProbe(), observer, driftAuthorization, waveDriftAuthorized,
             breakdownConfirmations: breakdownConfirmations, junctionRoot: junctionRoot);
-        return scheduler.RunAsync(plan, cancellationToken);
+        RunReport report = await scheduler.RunAsync(plan, cancellationToken).ConfigureAwait(false);
+        return new RunExecution(report, scheduler);
     }
 
     /// <summary>

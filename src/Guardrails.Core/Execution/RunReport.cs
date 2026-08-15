@@ -207,6 +207,32 @@ public sealed record RunReport
     public bool WhollyGreenButUndelivered { get; init; }
 
     /// <summary>
+    /// True when this run drained wholly green with delivery resolved ON, but the delivery was HELD BACK
+    /// because the plan declares a terminal gate (<c>&lt;plan&gt;/guardrails/</c>) whose verdict the
+    /// Scheduler does not have (issue #457).
+    /// <para>
+    /// <b>The defect this closes.</b> Delivery used to fire inside the Scheduler on
+    /// <see cref="AllSucceeded"/> — which is TASKS ONLY. The CLI's terminal plan-guardrail phase runs
+    /// AFTER the Scheduler returns, so a run could merge to the user's branch and only then discover
+    /// that the whole-repo soundness check failed: observed on one run as a delivery at 21:50:36 and a
+    /// terminal-gate FAILURE at 21:55:26, with the CLI printing "terminal halt" for work that had
+    /// already shipped. A gate that runs after delivery is not a gate.
+    /// </para>
+    /// <para>
+    /// When true the run is NOT finished: the CLI evaluates the terminal gate and, only if it PASSES,
+    /// calls <see cref="Scheduler.CompleteDeferredDelivery"/> to perform the merge and stamp
+    /// <see cref="MergeOnSuccessOutcome"/> / <see cref="MergeOnSuccessDetail"/> /
+    /// <see cref="DeliveredToBranch"/>. A FAILED gate simply never calls it, so nothing is delivered
+    /// and the verified work stays on the plan branch. It is false whenever delivery already ran
+    /// in-Scheduler (a plan with no terminal-gate folder, whose legacy in-Scheduler gate has ALREADY
+    /// been folded into <see cref="AllSucceeded"/> before delivery is considered) — so the two are
+    /// never both set, and the #340 delivered-by-default behaviour is unchanged for every genuinely
+    /// green run.
+    /// </para>
+    /// </summary>
+    public bool DeliveryPendingTerminalGate { get; init; }
+
+    /// <summary>
     /// How many waves this run PROCEEDED THROUGH UNREVIEWED (issue #361 Phase 4, doc 12 §5.2 Option P / §7.1):
     /// the count of <see cref="DecisionTokens.ProceededUnreviewed"/> decisions the run recorded, derived by
     /// <see cref="RunOutcomePolicy.ProceededUnreviewedWaveCount"/> over the durable <c>decisions[]</c> stream

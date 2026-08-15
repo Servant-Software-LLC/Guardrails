@@ -208,6 +208,28 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
 
     /// <inheritdoc />
     /// <remarks>
+    /// Issue #451: <c>git diff --name-only --diff-filter=U</c> in the integration worktree. Read-only
+    /// and non-throwing — a git failure here reports "no unmerged paths" rather than manufacturing a
+    /// second fault on a path whose whole purpose is to keep a known state out of the fault handler.
+    /// </remarks>
+    public IReadOnlyList<string> UnmergedPaths(IntegrationHandle integ)
+    {
+        var (stdout, exitCode) = TryGitIn(
+            integ.IntegrationWorktreePath, "diff", "--name-only", "--diff-filter=U");
+        if (exitCode != 0)
+        {
+            return [];
+        }
+
+        return stdout
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .ToList();
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// B2: commit the staged (<c>merge --no-commit</c>) union in the integration worktree as a
     /// merge commit carrying the <c>Guardrails-Task:</c>/<c>Guardrails-Run:</c> trailers, so the
     /// settled task leaves a first-parent trailer on the plan branch exactly like the FF path.
@@ -1699,7 +1721,12 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             WorkingDirectory = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            // Issue #457: git speaks UTF-8; an unpinned stream is decoded with the host console code page.
+            // This runner captures commit trailers, porcelain paths and hook stderr — all of which can
+            // carry non-ASCII and all of which are re-surfaced (to the user, or into a commit message).
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
         foreach (var arg in args) psi.ArgumentList.Add(arg);
         if (extraEnv is not null)
@@ -1738,7 +1765,11 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             WorkingDirectory = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
-            UseShellExecute = false
+            UseShellExecute = false,
+            // Issue #457 — the hook-rejection stderr surfaced verbatim to the user (#149/#150) and the
+            // dirty-path list (#448) both flow through here; pin UTF-8 so neither is mojibake.
+            StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+            StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
         };
         foreach (var arg in args) psi.ArgumentList.Add(arg);
         using var proc = Process.Start(psi)!;

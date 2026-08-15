@@ -86,6 +86,12 @@ public sealed class Scheduler
     private readonly ConcurrentDictionary<string, string> _pendingBestGuessInjection =
         new(StringComparer.Ordinal);
 
+    // #457: the integration handle of a delivery HELD BACK by Finalize because the plan declares a
+    // <plan>/guardrails/ terminal gate whose verdict only the CLI has. Non-null between RunAsync
+    // returning and CompleteDeferredDelivery being called; cleared there so a delivery can never run
+    // twice. Written once on the single-threaded Finalize path after every worker has quiesced.
+    private IntegrationHandle? _pendingDeliveryIntegration;
+
     public Scheduler(
         PlanDefinition plan,
         ITaskExecutor executor,
@@ -250,8 +256,7 @@ public sealed class Scheduler
         // terminal soundness boundary is its LAST wave's exit gate (§14.3), so this never runs there.
         if (report.AllSucceeded && _reVerifier != null && integ != null && plan.PlanGuardrails.Count == 0)
         {
-            IReadOnlyList<GuardrailDefinition> integrationSet =
-                GuardrailScopeFilter.IntegrationSet(plan.Tasks.SelectMany(t => t.Guardrails));
+            IReadOnlyList<GuardrailDefinition> integrationSet = UnionIntegrationSet(plan);
 
             if (integrationSet.Count > 0)
             {
@@ -636,20 +641,35 @@ public sealed class Scheduler
 
         // Deliver the completed plan branch to the user's branch when every task succeeded and delivery
         // resolved on. AI-merge is withheld: a conflict halts with the plan branch intact.
+        //
+        // #457 ORDERING: `report.AllSucceeded` is TASKS ONLY. It already folds in the LEGACY in-Scheduler
+        // terminal gate (RunFlatAsync rewrites the gate task to NeedsHuman on failure) and a waved run's
+        // exit gates (a failed gate returns a WaveHalt, which AllSucceeded excludes) — so for a plan with
+        // no <plan>/guardrails/ folder every terminal check has already run and delivering here is
+        // correctly ordered. It does NOT cover the FOUR-FOLDER terminal gate: <plan>/guardrails/ is
+        // evaluated by the CLI's PlanGuardrailPhase AFTER RunAsync returns, and that phase must stay
+        // there — it writes plain console heartbeat lines that are only #145-safe OUTSIDE the Spectre
+        // live region (which is disposed only after this method's caller returns), and it owns the
+        // journal/halt/artifact writing that belongs behind the CLI seam. So DELIVERY moves instead of
+        // the gate: hold it back, flag it on the report, and let the CLI complete it via
+        // CompleteDeferredDelivery once — and only once — the gate has PASSED.
+        bool terminalGateVerdictPending = plan.PlanGuardrails.Count > 0;
+        bool deliverable = report.AllSucceeded && deliver && _worktreeProvider != null && integ != null;
+
         MergeOnSuccessResult? mergeOutcome = null;
         string? mergeDetail = null;
-        if (report.AllSucceeded && deliver && _worktreeProvider != null && integ != null)
-        {
-            mergeOutcome = _worktreeProvider.MergePlanBranchIntoUserBranch(integ, cancellationToken);
+        bool deliveryPendingTerminalGate = false;
 
-            // Thread the provider's detail out for the two halts that carry one: the git hook's stderr
-            // (HookRejected, #149/#150) and — since #448 — the blocking dirty paths (DirtyWorkingTree),
-            // so the CLI can NAME what refused a green run's delivery instead of sending the user to
-            // `git status`.
-            if (mergeOutcome is MergeOnSuccessResult.HookRejected or MergeOnSuccessResult.DirtyWorkingTree)
-            {
-                mergeDetail = _worktreeProvider.LastMergeOnSuccessDetail;
-            }
+        if (deliverable && terminalGateVerdictPending)
+        {
+            // Hold the delivery. The integration handle is stashed for CompleteDeferredDelivery; nothing
+            // touches the user's branch until the terminal gate certifies the merged HEAD.
+            _pendingDeliveryIntegration = integ;
+            deliveryPendingTerminalGate = true;
+        }
+        else if (deliverable)
+        {
+            (mergeOutcome, mergeDetail) = DeliverToUserBranch(integ!, cancellationToken);
         }
 
         // Issue #340: a wholly-green run whose delivery did NOT happen because delivery resolved OFF — the
@@ -693,8 +713,66 @@ public sealed class Scheduler
             MergeOnSuccessDetail = mergeDetail,
             DeliveredToBranch = deliveredToBranch,
             WhollyGreenButUndelivered = whollyGreenButUndelivered,
+            DeliveryPendingTerminalGate = deliveryPendingTerminalGate,
             UnreviewedWaveCount = RunOutcomePolicy.ProceededUnreviewedWaveCount(decisions)
         };
+    }
+
+    /// <summary>
+    /// Perform a delivery that <see cref="Finalize"/> HELD BACK pending the terminal gate (issue #457),
+    /// and return <paramref name="report"/> stamped with its outcome exactly as
+    /// <see cref="Finalize"/> would have.
+    /// <para>
+    /// <b>The caller's obligation.</b> Call this ONLY when
+    /// <see cref="RunReport.DeliveryPendingTerminalGate"/> is true AND the terminal plan-guardrail phase
+    /// PASSED on the merged HEAD. It is a no-op (returns the report unchanged) when nothing was
+    /// deferred, so it is safe on every path; a caller that never invokes it simply leaves the verified
+    /// work on the plan branch, which is the SAFE failure direction and exactly what a FAILED gate must
+    /// produce.
+    /// </para>
+    /// </summary>
+    public RunReport CompleteDeferredDelivery(RunReport report, CancellationToken cancellationToken)
+    {
+        if (!report.DeliveryPendingTerminalGate || _pendingDeliveryIntegration is not { } integ)
+        {
+            return report;
+        }
+
+        _pendingDeliveryIntegration = null; // one delivery per run — never re-entrant
+
+        (MergeOnSuccessResult outcome, string? detail) = DeliverToUserBranch(integ, cancellationToken);
+
+        return report with
+        {
+            MergeOnSuccessOutcome = outcome,
+            MergeOnSuccessDetail = detail,
+            DeliveredToBranch =
+                outcome is MergeOnSuccessResult.FastForwarded or MergeOnSuccessResult.Merged
+                    ? integ.OriginalBranch
+                    : null,
+            DeliveryPendingTerminalGate = false
+        };
+    }
+
+    /// <summary>
+    /// The end-of-run merge-back itself (SSOT §5.3) — shared by the immediate path in
+    /// <see cref="Finalize"/> and the terminal-gate-deferred path in
+    /// <see cref="CompleteDeferredDelivery"/>, so both stamp identical outcomes. Threads the provider's
+    /// detail out for the two halts that carry one: the git hook's stderr (HookRejected, #149/#150) and
+    /// the blocking dirty paths (DirtyWorkingTree, #448), so the CLI can NAME what refused a green run's
+    /// delivery instead of sending the user to <c>git status</c>.
+    /// </summary>
+    private (MergeOnSuccessResult Outcome, string? Detail) DeliverToUserBranch(
+        IntegrationHandle integ, CancellationToken cancellationToken)
+    {
+        MergeOnSuccessResult outcome =
+            _worktreeProvider!.MergePlanBranchIntoUserBranch(integ, cancellationToken);
+
+        string? detail = outcome is MergeOnSuccessResult.HookRejected or MergeOnSuccessResult.DirtyWorkingTree
+            ? _worktreeProvider.LastMergeOnSuccessDetail
+            : null;
+
+        return (outcome, detail);
     }
 
     private static bool AllGreenFor(IReadOnlyList<TaskNode> tasks, IReadOnlyDictionary<string, TaskResult> settled) =>
@@ -2899,6 +2977,20 @@ public sealed class Scheduler
                     _journal,
                     ct).ConfigureAwait(false);
 
+            // #451 POST-CONDITION: a resolver that returns TRUE is not trusted on its word. The one
+            // fact that must hold before B2 is that the index carries NO unmerged path — anything else
+            // makes the `git commit` below exit 128 ("Committing is not possible because you have
+            // unmerged files") from inside a try{} that classifies every git failure as an
+            // INFRASTRUCTURE FAULT, aborting the whole run and stranding every already-settled task's
+            // work. A half-resolved merge is a KNOWN state with a designed handler (B1 rollback →
+            // needs-human), so demote it to that handler here rather than letting it reach the commit.
+            // Free for fake/serial providers: the default UnmergedPaths is empty.
+            IReadOnlyList<string> unmergedAfterAi = aiResolved ? provider.UnmergedPaths(integ) : [];
+            if (aiResolved && unmergedAfterAi.Count > 0)
+            {
+                aiResolved = false;
+            }
+
             if (!aiResolved)
             {
                 AtomicFile.WriteAllText(statePath, preMergeState);
@@ -2910,7 +3002,10 @@ public sealed class Scheduler
                     Outcome = TaskOutcome.NeedsHuman,
                     ActionExitCode = result.ActionExitCode,
                     Guardrails = result.Guardrails,
-                    Summary = "merge conflict could not be AI-resolved; needs human"
+                    Summary = unmergedAfterAi.Count > 0
+                        ? "AI merge reported success but left unmerged path(s): "
+                          + string.Join(", ", unmergedAfterAi) + "; rolled back, needs human"
+                        : "merge conflict could not be AI-resolved; needs human"
                 };
             }
 
@@ -2924,8 +3019,7 @@ public sealed class Scheduler
             // guardrails (a well-authored integration/union-verify guardrail catches a dropped
             // hunk), the disjoint-scope CHECK, and the terminal integration gate — not by
             // re-running the full per-task set (which would be inconsistent with the union path).
-            IReadOnlyList<GuardrailDefinition> aiIntegGuardrails =
-                GuardrailScopeFilter.IntegrationSet(_plan.Tasks.SelectMany(t => t.Guardrails));
+            IReadOnlyList<GuardrailDefinition> aiIntegGuardrails = UnionIntegrationSet(_plan);
 
             ReVerifyResult aiReVerify = _reVerifier != null
                 ? await _reVerifier.ReVerifyAsync(integ.IntegrationWorktreePath, aiIntegGuardrails, ct).ConfigureAwait(false)
@@ -2960,8 +3054,7 @@ public sealed class Scheduler
         }
 
         // Non-FF union: re-verify the merged bytes in the integration worktree.
-        IReadOnlyList<GuardrailDefinition> integGuardrails =
-            GuardrailScopeFilter.IntegrationSet(_plan.Tasks.SelectMany(t => t.Guardrails));
+        IReadOnlyList<GuardrailDefinition> integGuardrails = UnionIntegrationSet(_plan);
 
         ReVerifyResult reVerify = _reVerifier != null
             ? await _reVerifier.ReVerifyAsync(integ.IntegrationWorktreePath, integGuardrails, ct).ConfigureAwait(false)
@@ -3125,6 +3218,30 @@ public sealed class Scheduler
 
         AtomicFile.WriteAllText(statePath, stateObj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
+
+    /// <summary>
+    /// The run's INTEGRATION-GUARDRAIL SET (SSOT §4.3) — every guardrail declared
+    /// <c>scope:"integration"</c>, re-run on the merged bytes at EVERY union point (clean non-FF and
+    /// AI-resolved alike) and by the legacy terminal gate.
+    /// <para>
+    /// <b>Issue #451.</b> The set is drawn from BOTH guardrail homes: the per-task
+    /// <c>&lt;task&gt;/guardrails/</c> folders AND the plan-root <c>&lt;plan&gt;/guardrails/</c> folder
+    /// (<see cref="PlanDefinition.PlanGuardrails"/>). It previously read <c>plan.Tasks</c> only, so a
+    /// plan-root guardrail tagged <c>scope:"integration"</c> — which under the four-folder model is
+    /// exactly where a UNION-INVARIANT check belongs — silently never ran at any union. That is how a
+    /// conflict-marker + duplicate-member scan sat in a plan, correctly authored and correctly tagged,
+    /// while a union shipped a file with conflict markers still in it.
+    /// </para>
+    /// <para>
+    /// The <c>scope</c> tag remains the ONLY selector, so a plan-root guardrail left at the default
+    /// <c>local</c> scope still runs once at the terminal gate and nowhere else — the plan-root folder's
+    /// GR2028 terminal-sink obligation is independent of this per-union tag. Extracted to one method so
+    /// the three call sites cannot drift apart again.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<GuardrailDefinition> UnionIntegrationSet(PlanDefinition plan) =>
+        GuardrailScopeFilter.IntegrationSet(
+            plan.Tasks.SelectMany(t => t.Guardrails).Concat(plan.PlanGuardrails));
 
     /// <summary>
     /// Convert an all-green report into a needs-human one when the terminal integration gate

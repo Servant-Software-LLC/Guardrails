@@ -325,7 +325,10 @@ public static class SchedulerFactory
                 WorkingDirectory = workspace,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                UseShellExecute = false
+                UseShellExecute = false,
+                // Issue #457: pin UTF-8 on every git stream (this one is ASCII-only, kept uniform).
+                StandardOutputEncoding = ChildProcessEncoding.Utf8NoBom,
+                StandardErrorEncoding = ChildProcessEncoding.Utf8NoBom
             };
             psi.ArgumentList.Add("rev-parse");
             psi.ArgumentList.Add("--is-inside-work-tree");
