@@ -48,7 +48,42 @@ public static class RealPath
     /// not exist, it is not a link, it is unreadable, or the link chain is circular) is kept literally,
     /// so the result degrades gracefully toward the plain <see cref="Path.GetFullPath(string)"/> form.
     /// </summary>
-    public static string Resolve(string path)
+    public static string Resolve(string path) => Resolve(path, depth: 0, LinkResolver);
+
+    /// <summary>
+    /// <see cref="Resolve(string)"/> with the per-segment link lookup INJECTED, so the walk's own logic —
+    /// re-canonicalising an adopted target, and terminating on a link arrangement that would otherwise
+    /// recurse forever — is testable on any OS.
+    /// <para>
+    /// It has to be injectable, because the behaviour that makes the walk necessary is not reproducible
+    /// on every platform: Windows resolves a link through <c>GetFinalPathNameByHandle</c> and hands back
+    /// an ALREADY-canonical final target, so no Windows link arrangement can produce the aliased target
+    /// that broke this walk on macOS (where .NET follows the link CHAIN but leaves the components of the
+    /// path it lands on untouched). A test that can only fail on the maintainer's least-used OS is how
+    /// this bug reached master twice; this seam lets the logic be pinned on the OS the work is done on.
+    /// </para>
+    /// </summary>
+    /// <param name="resolveSegment">
+    /// Given one path, returns its link target, or that same path when it is not a link — the contract of
+    /// the real <see cref="ResolveSegment"/>.
+    /// </param>
+    internal static string ResolveWith(string path, Func<string, string> resolveSegment) =>
+        Resolve(path, depth: 0, resolveSegment);
+
+    /// <summary>The production segment resolver, cached so the common path allocates no delegate.</summary>
+    private static readonly Func<string, string> LinkResolver = ResolveSegment;
+
+    /// <summary>
+    /// How many link targets deep <see cref="Resolve"/> will re-canonicalise before giving up and taking
+    /// the target as it stands. A runaway is not hypothetical: <c>/x/a → /y/a</c> together with
+    /// <c>/y → /x</c> makes each target's re-canonicalisation rediscover the other link forever, even
+    /// though NEITHER link is individually circular (so the runtime's own SYMLOOP detection never fires).
+    /// 40 matches the usual OS symlink-chain limit — far beyond any real path, so reaching it means
+    /// something pathological, and the best-effort contract says degrade rather than throw or hang.
+    /// </summary>
+    private const int MaxLinkDepth = 40;
+
+    private static string Resolve(string path, int depth, Func<string, string> resolveSegment)
     {
         string full;
         try
@@ -78,7 +113,21 @@ public static class RealPath
             // path whose LEAF no longer exists behave correctly — the deepest existing ancestor
             // resolves, the vanished remainder is carried literally onto it — which matters because
             // the sweep this serves asks about directories it has just deleted.
-            current = ResolveSegment(Path.Combine(current, segment));
+            string combined = Path.Combine(current, segment);
+            string resolved = resolveSegment(combined);
+
+            // A link's target is a FRESH path, not a continuation of this walk — it may itself sit under
+            // unresolved ancestors, because what a link stores is whatever spelling was passed to
+            // ln/mklink. The harness creates its worktrees under Path.GetTempPath(), so on macOS that is
+            // routinely the ALIASED spelling: a link recorded as "/var/…/real" would otherwise be adopted
+            // verbatim and throw away the "/private/var" this walk had already established — arriving at a
+            // path that followed the link yet lost the canonicalisation. So re-canonicalise every adopted
+            // target from ITS root, bounded by MaxLinkDepth. This covers a RELATIVE target too: ResolveSegment
+            // re-bases it on the link's directory first, and the re-based result can still climb (via "..")
+            // through ancestors this walk never visited, so it needs exactly the same treatment.
+            current = !string.Equals(resolved, combined, Comparison) && depth < MaxLinkDepth
+                ? Resolve(resolved, depth + 1, resolveSegment)
+                : resolved;
         }
 
         return current;

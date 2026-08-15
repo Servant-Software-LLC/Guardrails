@@ -71,6 +71,104 @@ public sealed class RealPathTests
     }
 
     [Fact]
+    public void Resolve_ReCanonicalisesAnAdoptedTarget_WhenTheLinkTargetIsWrittenThroughAnotherLink()
+    {
+        // The defect this pins, found by the tests above on real macOS and INVISIBLE to them on Windows
+        // and Linux. A link stores whatever spelling was handed to ln/mklink, so its target can be
+        // absolute and yet NOT canonical — it can run through another link. Adopting such a target
+        // verbatim mid-walk throws away every resolution already accumulated: the walk follows the link
+        // correctly and still lands on an aliased path.
+        //
+        // On macOS the outer link is supplied for free — the harness builds under Path.GetTempPath(),
+        // which lives under /var → /private/var, so a link created there records "/var/…" and the walk
+        // jumped back out of "/private/var" the moment it adopted one. Here BOTH links are built
+        // explicitly, rather than borrowing a platform's ambient symlink.
+        //
+        // HONEST SCOPE — this test is INERT ON WINDOWS: it passes with or without the fix there, and
+        // that was MEASURED, not assumed. Windows resolves a link with GetFinalPathNameByHandle, which
+        // returns an already-canonical final target (probed: immediate target "…\link\root", final
+        // target "…\real\root"), so no Windows link arrangement can hand the walk an aliased target. On
+        // Unix .NET follows the link CHAIN but leaves the components of the path it lands on untouched,
+        // which is where the defect lives. The platform-independent proof of this same logic is
+        // Walk_ReCanonicalisesAnAdoptedTarget_…, which drives the walk through an injected resolver.
+        using var fixture = new LinkedTree();
+        Assert.SkipUnless(fixture.LinkedViaAlias, LinkedTree.SkipReason);
+
+        // <base>/via → <base>/link/root, and <base>/link → <base>/real. So 'via's stored target is
+        // ABSOLUTE but ALIASED, and resolving it must still land on the fully canonical real root.
+        Assert.Equal(
+            RealPath.Resolve(fixture.RealRoot),
+            RealPath.Resolve(fixture.Via),
+            StringComparer.FromComparison(RealPath.Comparison));
+
+        // Stated as a path prefix as well, so the failure mode is named rather than inferred: the result
+        // may not still be expressed through the alias.
+        Assert.False(
+            RealPath.Resolve(fixture.Via).StartsWith(
+                Path.GetFullPath(fixture.Link) + Path.DirectorySeparatorChar, RealPath.Comparison),
+            "an adopted link target must be re-canonicalised, not carried through in the alias's spelling.");
+
+        Assert.True(RealPath.IsUnder(fixture.Via, fixture.RealRoot));
+        Assert.True(RealPath.IsUnder(Path.Combine(fixture.Via, "segment"), fixture.RealSegment));
+    }
+
+    [Fact]
+    public void Walk_ReCanonicalisesAnAdoptedTarget_ProvenWithoutDependingOnPlatformLinkSemantics()
+    {
+        // The SAME defect as the test above, pinned through the injectable segment resolver so it is
+        // genuinely exercised on EVERY OS — including the ones where no real link arrangement can
+        // reproduce it (Windows hands back an already-canonical final target, so the hazard is
+        // unreachable there through the filesystem). Fails against an implementation that adopts a
+        // link target verbatim; passes only when the adopted target is re-canonicalised.
+        string root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()))!;
+        string aliasDir = Path.Combine(root, "alias");
+        string realDir = Path.Combine(root, "real");
+        string entry = Path.Combine(root, "entry");
+
+        // 'entry' is a link whose target is ABSOLUTE but written through 'alias'; 'alias' is itself a
+        // link to 'real'. Resolving 'entry' must land on 'real', not on 'alias'.
+        string Fake(string p) =>
+            string.Equals(p, entry, RealPath.Comparison) ? Path.Combine(aliasDir, "inner")
+            : string.Equals(p, aliasDir, RealPath.Comparison) ? realDir
+            : p;
+
+        Assert.Equal(
+            Path.Combine(realDir, "inner"),
+            RealPath.ResolveWith(entry, Fake),
+            StringComparer.FromComparison(RealPath.Comparison));
+
+        // And the segments that follow the adopted target ride on the CANONICAL form, not the alias.
+        Assert.Equal(
+            Path.Combine(realDir, "inner", "leaf"),
+            RealPath.ResolveWith(Path.Combine(entry, "leaf"), Fake),
+            StringComparer.FromComparison(RealPath.Comparison));
+    }
+
+    [Fact]
+    public void Walk_Terminates_OnLinksThatWouldOtherwiseReCanonicaliseForever()
+    {
+        // Re-canonicalising every adopted target introduces a runaway that following a link chain does
+        // not: '/x/a → /y/a' plus '/y → /x' makes each target's re-canonicalisation rediscover the other
+        // link, forever, though NEITHER link is individually circular — so the runtime's own SYMLOOP
+        // detection never fires and cannot save us. The depth guard must stop it, and per the best-effort
+        // contract it must degrade to a literal rather than throw or hang. If this regresses, this test
+        // does not fail politely — it hangs or overflows the stack, which is itself the signal.
+        string root = Path.GetPathRoot(Path.GetFullPath(Path.GetTempPath()))!;
+        string x = Path.Combine(root, "x");
+        string y = Path.Combine(root, "y");
+
+        string Fake(string p) =>
+            string.Equals(p, Path.Combine(x, "a"), RealPath.Comparison) ? Path.Combine(y, "a")
+            : string.Equals(p, y, RealPath.Comparison) ? x
+            : p;
+
+        string result = RealPath.ResolveWith(Path.Combine(x, "a"), Fake);
+
+        Assert.False(string.IsNullOrEmpty(result));
+        Assert.True(Path.IsPathRooted(result));
+    }
+
+    [Fact]
     public void IsUnder_DoesNotMatchASiblingThatMerelySharesAPrefix()
     {
         using var fixture = new LinkedTree();
@@ -172,8 +270,13 @@ public sealed class RealPathTests
             _base = Path.Combine(Path.GetTempPath(), "gr-realpath-" + Guid.NewGuid().ToString("N"));
             RealBase = Path.Combine(_base, "real");
             Link = Path.Combine(_base, "link");
+            Via = Path.Combine(_base, "via");
             Directory.CreateDirectory(Path.Combine(RealBase, "root", "segment"));
             Linked = TryLink(Link, RealBase);
+
+            // A SECOND link whose stored target is written THROUGH the first — absolute, but aliased.
+            // Created after Link so the target it records is a path that itself needs resolving.
+            LinkedViaAlias = Linked && TryLink(Via, AliasedRoot);
         }
 
         /// <summary>The real directory the link points at — <c>&lt;base&gt;/real</c>.</summary>
@@ -182,8 +285,18 @@ public sealed class RealPathTests
         /// <summary>The link — <c>&lt;base&gt;/link</c> → <see cref="RealBase"/>.</summary>
         internal string Link { get; }
 
+        /// <summary>
+        /// A link to <see cref="AliasedRoot"/> — <c>&lt;base&gt;/via</c> → <c>&lt;base&gt;/link/root</c>.
+        /// Its recorded target is ABSOLUTE but runs through <see cref="Link"/>, which is the shape macOS
+        /// hands the harness for free via <c>/var</c> → <c>/private/var</c>.
+        /// </summary>
+        internal string Via { get; }
+
         /// <summary>False when neither a symlink nor a junction could be created here.</summary>
         internal bool Linked { get; }
+
+        /// <summary>True when BOTH links exist, so the aliased-target hazard can be exercised.</summary>
+        internal bool LinkedViaAlias { get; }
 
         /// <summary>The root as GIT would report it (resolved).</summary>
         internal string RealRoot => Path.Combine(RealBase, "root");
@@ -209,11 +322,19 @@ public sealed class RealPathTests
 
         public void Dispose()
         {
-            // Remove the LINK first and by itself, so a recursive delete can never walk through it into
-            // the target (and, on a junction, delete the real tree twice over).
-            try { if (Directory.Exists(Link)) Directory.Delete(Link); } catch (IOException) { /* best-effort */ }
-            catch (UnauthorizedAccessException) { /* best-effort */ }
+            // Remove the LINKS first and by themselves, so a recursive delete can never walk through one
+            // into the target (and, on a junction, delete the real tree twice over). 'via' goes before
+            // 'link' — it points through it.
+            DeleteLink(Via);
+            DeleteLink(Link);
             SafeDelete.DeleteDirectory(_base);
+        }
+
+        private static void DeleteLink(string link)
+        {
+            try { if (Directory.Exists(link)) Directory.Delete(link); }
+            catch (IOException) { /* best-effort */ }
+            catch (UnauthorizedAccessException) { /* best-effort */ }
         }
 
         private static bool TryLink(string link, string target)
