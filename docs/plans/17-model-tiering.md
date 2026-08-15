@@ -282,9 +282,34 @@ inside `routing`:
 
 | Axis | Type | Ordered? | Who reads it |
 |---|---|---|---|
-| **`costly`** | bool, default **false** (= absent/unspecified) | no | the candidacy predicate (§6.2) — and nothing else |
+| **`costly`** | **TRI-STATE** — `true` / `false` / **absent = *not stated*** (§12.1, settled 2026-08-15). Three states in the SCHEMA, **two at the predicate**: absent behaves as not-costly, so an un-annotated registry stays routable | no | the candidacy predicate (§6.2) — and `providers init`, which exists partly to find the *not stated* ones and ask (§4.3) |
 | **`strength`** | integer ≥ 1, **higher = stronger**; absent = *unspecified* | **yes — the ONLY total order** | candidate ordering (§6.2), the verifier ≥ comparison and its bump (§6.5) |
 | **`specialization`** | enum `coding \| planning-reasoning \| general \| unspecified`; absent = `unspecified` | **no — a preference, never an ordering** | the verifier's tie-break among candidates already meeting the required strength (§6.5) |
+
+> **Difficulty does NOT map to strength — it maps to a candidate SET.** Asked directly during Stage 1.5
+> ("plan-breakdown indicates a task's difficulty; that should determine the model's strength for the
+> first attempt — does that conflict?"). It does not conflict, but the mechanism is one step removed and
+> worth stating plainly, because the direct reading is the intuitive one:
+>
+> **tier tag → the blocks whose `routing.tiers` contains that rung → ordered by ASCENDING `strength` →
+> the first one wins.**
+>
+> So a `hard` task does **not** get "the strongest model". It gets **the weakest model the operator
+> declared capable of `hard`** — a cost-minimising default (D25), and what makes defaulting toward the
+> cheap end safe is the deterministic gate, not the model. Two consequences follow, and both are
+> deliberate:
+>
+> - **There is no numeric tier→strength mapping, and there must not be one.** Capability is declared by
+>   the *operator*, in `routing.tiers`, per block. `strength` only orders candidates that are already
+>   declared capable; it never decides *whether* a block can serve a rung. A harness that inferred "hard
+>   ⇒ strength ≥ N" would be guessing at capability the operator alone can know, and would silently
+>   re-route when someone edited a rank.
+> - **A hard task whose only capable blocks are `costly: true` does not escalate — it fails validate**
+>   (GR2048), naming the cliff. The harness never reaches for a costly model to satisfy a rung; that is
+>   the costly floor, and it holds here exactly as it holds everywhere else.
+>
+> Strength *does* drive first-attempt selection — as the tie-break inside an operator-declared candidate
+> set, not as a translation of difficulty.
 
 **Why top-level and not inside `routing`.** `routing` means *"this block opts into tier
 resolution."* A **reserved** block (no `routing`) and a **pinned** block still have a strength — and
