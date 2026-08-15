@@ -14,6 +14,15 @@ namespace Guardrails.Integration.Tests;
 /// optimisation that can leave git's records inconsistent, so these prove the records afterwards rather
 /// than the process count.
 /// </para>
+/// <para>
+/// Issue #452 — and the inconsistent state duly arrived, on macOS only: git prints the SYMLINK-RESOLVED
+/// path of a worktree while the harness's root came from <see cref="Path.GetTempPath"/> unresolved
+/// (<c>/private/var/folders/…</c> vs <c>/var/folders/…</c>), so nothing was ever recognised as under the
+/// root, nothing was unregistered, and the "prune only when something was unregistered" batching never
+/// fired. #450 did not introduce that mismatch — the unconditional prune it replaced had been sweeping
+/// the dangling record away by accident. The assertions below therefore compare whole CANONICALISED
+/// paths; the substring form they replaced could be satisfied by a shared prefix.
+/// </para>
 /// </summary>
 public sealed class WorktreeSweepBookkeepingTests
 {
@@ -26,9 +35,14 @@ public sealed class WorktreeSweepBookkeepingTests
         string segment = Path.Combine(root, "segment");
 
         repo.Git("worktree", "add", "-b", "guardrails/abandoned", segment);
-        Assert.Contains(
-            Slashed(segment), Slashed(repo.Git("worktree", "list", "--porcelain")),
-            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(Registered(repo), p => RealPath.SamePath(p, segment));
+
+        // The precondition the sweep's unregister step turns on, asserted directly (issue #452): git
+        // reports the SYMLINK-RESOLVED real path of the worktree, while `root` descends from
+        // Path.GetTempPath() and is not resolved — on macOS those are "/private/var/folders/…" and
+        // "/var/folders/…", two spellings of one directory. If the harness cannot see the registered
+        // worktree as living under its own root, it unregisters nothing and the prune below never runs.
+        Assert.Contains(Registered(repo), p => RealPath.IsUnder(p, root));
 
         AgeTree(root, DateTime.UtcNow - TimeSpan.FromDays(3)); // an abandoned run's leak
 
@@ -40,11 +54,11 @@ public sealed class WorktreeSweepBookkeepingTests
 
             Assert.False(Directory.Exists(root));
             // The registration is gone too — a deleted tree with a live record is the inconsistent state
-            // batching could have produced. (Asserted through the same normalisation that was just proven
-            // to MATCH above, so this cannot pass merely by mis-spelling the path.)
-            Assert.DoesNotContain(
-                Slashed(segment), Slashed(repo.Git("worktree", "list", "--porcelain")),
-                StringComparison.OrdinalIgnoreCase);
+            // batching could have produced. Compared as whole CANONICALISED paths, not as a substring of
+            // the porcelain listing: a substring test is satisfied by any prefix coincidence (on macOS
+            // "/private/var/…/segment" contains "/var/…/segment"), which made the matching Contains
+            // assertion pass for the wrong reason and the failure message unreadable.
+            Assert.DoesNotContain(Registered(repo), p => RealPath.SamePath(p, segment));
             Assert.Empty(WorktreeAdminRecords(repo.RepoPath));
         }
         finally
@@ -54,15 +68,28 @@ public sealed class WorktreeSweepBookkeepingTests
     }
 
     [Fact]
-    public void ForeignRoot_NeedsNoPrune_AndIsStillDeleted()
+    public void ForeignRoot_NeedsNoPrune_AndIsStillDeleted_WithoutSwallowingAPrefixSharingNeighbour()
     {
         // The #450 cheap path: fixture debris this repo never registered. Nothing to unregister ⇒ the
         // caller is told no prune is warranted ⇒ zero git processes for the entire root. The directory
         // still goes, which is the only thing that ever mattered for those roots.
+        //
+        // This is also the OTHER direction of the issue #452 fix, and the regression that fix could
+        // plausibly introduce. Canonicalising both sides has to make a genuinely-registered worktree
+        // MATCH its root without making a genuinely-foreign one start matching — so the neighbour below
+        // is a live, registered worktree whose root's full name has the swept root's full name as a
+        // string PREFIX ("…-live" vs ""). A containment test that canonicalised but then compared by
+        // StartsWith without a directory boundary would unregister and DELETE it. It must survive
+        // untouched, on every OS: on macOS both roots resolve through the same /var → /private/var link,
+        // so resolution alone cannot be what tells them apart.
         using var repo = new TempSkillsRepo();
-        string root = Path.Combine(Path.GetTempPath(), "gr-foreign-" + Guid.NewGuid().ToString("N"));
+        string id = Guid.NewGuid().ToString("N");
+        string root = Path.Combine(Path.GetTempPath(), "gr-foreign-" + id);
+        string neighbourRoot = Path.Combine(Path.GetTempPath(), "gr-foreign-" + id + "-live");
+        string neighbourSegment = Path.Combine(neighbourRoot, "segment");
         Directory.CreateDirectory(root);
         File.WriteAllText(Path.Combine(root, "A.cs"), "// leaked integration fixture");
+        repo.Git("worktree", "add", "-b", "guardrails/neighbour", neighbourSegment);
 
         try
         {
@@ -71,10 +98,17 @@ public sealed class WorktreeSweepBookkeepingTests
 
             Assert.False(prunePending);
             Assert.False(Directory.Exists(root));
+
+            // The neighbour is untouched — still on disk AND still registered.
+            Assert.True(Directory.Exists(neighbourSegment));
+            Assert.Contains(Registered(repo), p => RealPath.SamePath(p, neighbourSegment));
         }
         finally
         {
             SafeDelete.DeleteDirectory(root);
+            try { repo.Git("worktree", "remove", "--force", neighbourSegment); }
+            catch (InvalidOperationException) { /* best-effort cleanup */ }
+            SafeDelete.DeleteDirectory(neighbourRoot);
         }
     }
 
@@ -87,8 +121,7 @@ public sealed class WorktreeSweepBookkeepingTests
 
         try
         {
-            IReadOnlyList<string> listed = GitWorktreeProvider.RegisteredWorktreePaths(repo.RepoPath);
-            Assert.Contains(listed, p => p.Contains(Path.GetFileName(segment), StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(Registered(repo), p => RealPath.SamePath(p, segment));
 
             // Best-effort by contract: no repo, no throw, no listing — the sweep then degrades to a
             // directory-only reclaim exactly as it did before.
@@ -105,10 +138,13 @@ public sealed class WorktreeSweepBookkeepingTests
     }
 
     /// <summary>
-    /// Forward-slash form. <c>git worktree list --porcelain</c> prints POSIX separators even on Windows, so
-    /// comparing raw paths would silently never match (and make a DoesNotContain assertion vacuous).
+    /// The repo's registered worktree paths, as the harness itself parses them — so these assertions
+    /// compare whole paths through <see cref="RealPath"/> (separator-, case- and symlink-normalised)
+    /// rather than searching the raw porcelain text for a substring, which a shared prefix can satisfy
+    /// by accident and which would make a <c>DoesNotContain</c> assertion quietly vacuous.
     /// </summary>
-    private static string Slashed(string text) => text.Replace('\\', '/');
+    private static IReadOnlyList<string> Registered(TempSkillsRepo repo) =>
+        GitWorktreeProvider.RegisteredWorktreePaths(repo.RepoPath);
 
     /// <summary>The repo's per-worktree admin directories (<c>.git/worktrees/*</c>) — empty once pruned.</summary>
     private static string[] WorktreeAdminRecords(string repoPath)

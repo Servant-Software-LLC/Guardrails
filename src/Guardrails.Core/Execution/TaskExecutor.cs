@@ -1,5 +1,6 @@
 using System.Text;
 using Guardrails.Core.Graph;
+using Guardrails.Core.Io;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.Prompts;
@@ -1688,26 +1689,20 @@ public sealed class TaskExecutor : ITaskExecutor
     }
 
     /// <summary>
-    /// Canonicalize an existing directory path for a like-for-like <see cref="Path.GetRelativePath"/>
-    /// comparison (#135 edge 1): <see cref="Path.GetFullPath"/> normalizes separators and collapses
-    /// <c>..</c>, and — when the directory exists — <see cref="Directory.ResolveLinkTarget"/> resolves
-    /// a final-segment symlink (the shape of a symlinked TEMP/CI root). Best-effort: a missing path or
-    /// a resolve failure returns the <see cref="Path.GetFullPath"/> form, never throws.
+    /// Canonicalize a directory path for a like-for-like <see cref="Path.GetRelativePath"/> comparison
+    /// (#135 edge 1) — full-path normalization plus SYMLINK resolution, so a symlinked TEMP/CI root
+    /// (macOS <c>/var</c> → <c>/private/var</c>) cannot make a genuinely-nested plan dir look like it
+    /// escapes the workspace and emit a spurious <c>".."</c>. Best-effort: a missing path or a resolve
+    /// failure degrades to the <see cref="Path.GetFullPath"/> form, never throws.
     /// </summary>
-    private static string Canonicalize(string path)
-    {
-        string full = Path.GetFullPath(path);
-        try
-        {
-            // returnFinalTarget: true follows a chain of links on the final segment to its real target.
-            FileSystemInfo? target = Directory.ResolveLinkTarget(full, returnFinalTarget: true);
-            return target is not null ? Path.GetFullPath(target.FullName) : full;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return full;
-        }
-    }
+    /// <remarks>
+    /// Issue #452: this used to call <see cref="Directory.ResolveLinkTarget"/> on the path itself, which
+    /// resolves the FINAL SEGMENT only and returns null when that segment is not a link — so for
+    /// <c>/var/folders/…/workspace</c> it resolved nothing at all, because the link is <c>/var</c>, several
+    /// segments up. <see cref="RealPath.Resolve"/> walks every segment, which is what the comment above has
+    /// always claimed.
+    /// </remarks>
+    private static string Canonicalize(string path) => RealPath.Resolve(path);
 
     /// <summary>
     /// True when a relative path produced by <see cref="Path.GetRelativePath"/> does NOT stay within

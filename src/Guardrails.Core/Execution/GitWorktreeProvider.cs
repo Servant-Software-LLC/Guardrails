@@ -567,10 +567,18 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         // Unregister any worktrees under the root FIRST — a checked-out worktree cannot simply be rm-rf'd
         // without leaving git's bookkeeping inconsistent. Located git-authoritatively (git stores the REAL
         // path even when a #383 junction aliased it during the run), so this keys on the real root.
+        //
+        // The comparison must be SYMLINK-RESOLVED (issue #452), not merely full-path: `p` is what git
+        // printed and git stores the resolved real path, while `worktreeRoot` descends from
+        // Path.GetTempPath() — which on macOS is the UNRESOLVED /var/folders/… of a /var → /private/var
+        // symlink. Lexically the two never matched there, so NOTHING was ever unregistered on macOS,
+        // `unregisteredAny` stayed false, the caller's single batched prune never ran, and every sweep
+        // deleted the tree while leaving git's record of it behind — an accumulating stale registration.
+        // (The pre-#450 unconditional prune swept that record away by accident, which is what masked it.)
         bool unregisteredAny = false;
         try
         {
-            foreach (string wt in registeredWorktrees.Where(p => PathIsUnder(p, worktreeRoot)))
+            foreach (string wt in registeredWorktrees.Where(p => RealPath.IsUnder(p, worktreeRoot)))
             {
                 try { GitIn(repoPath, "worktree", "remove", "--force", wt); }
                 catch (InvalidOperationException) { /* not removable / already gone; pruned by the caller */ }
@@ -627,20 +635,6 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
         }
 
         return paths;
-    }
-
-    /// <summary>True when <paramref name="path"/> equals or is nested under <paramref name="ancestor"/> (full-path, case-insensitive on Windows). Issue #407.</summary>
-    private static bool PathIsUnder(string path, string ancestor)
-    {
-        try
-        {
-            string p = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
-            string a = Path.TrimEndingDirectorySeparator(Path.GetFullPath(ancestor));
-            StringComparison cmp = OperatingSystem.IsWindows()
-                ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-            return p.Equals(a, cmp) || p.StartsWith(a + Path.DirectorySeparatorChar, cmp);
-        }
-        catch (ArgumentException) { return false; }
     }
 
     /// <summary>
@@ -1716,8 +1710,18 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
     /// SHORT junction on resume, matching a fresh run's. The IDENTITY when no junction is in effect
     /// (<c>_realRoot == _worktreeRoot</c> — non-Windows or a lazy-skip / fallback run) or when
     /// <paramref name="path"/> is not under the real root. Both roots are the harness's own worktree roots
-    /// (no user metacharacters); the comparison is full-path + case-insensitive, matching git's
-    /// letter-agnostic canonicalization on Windows.
+    /// (no user metacharacters); the comparison is case-insensitive, matching git's letter-agnostic
+    /// canonicalization on Windows.
+    /// <para>
+    /// The comparison is taken over the SYMLINK-RESOLVED spelling of both sides (issue #452): the same
+    /// shape as the sweep's containment test — <paramref name="path"/> is git-reported (git stores the
+    /// resolved real path) while <c>_realRoot</c> descends from <see cref="Path.GetTempPath"/>, which does
+    /// not resolve symlinks. A junctioned/symlinked temp dir would otherwise make a genuinely-under-the-root
+    /// integration worktree look foreign, silently skipping the re-aliasing and leaving the resume on the
+    /// long path. The <c>_realRoot</c>/<c>_worktreeRoot</c> gate above stays LEXICAL on purpose — the #383
+    /// junction and its target ARE the same directory, and telling those two spellings apart is exactly
+    /// what this method exists to do.
+    /// </para>
     /// </summary>
     private string AliasForLaunch(string path)
     {
@@ -1726,8 +1730,8 @@ public sealed class GitWorktreeProvider : IWorktreeProvider
             return path; // no junction in effect — nothing to re-alias
         }
 
-        string real = Path.TrimEndingDirectorySeparator(Path.GetFullPath(_realRoot));
-        string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        string real = RealPath.Resolve(_realRoot);
+        string full = RealPath.Resolve(path);
 
         if (string.Equals(full, real, StringComparison.OrdinalIgnoreCase))
         {
