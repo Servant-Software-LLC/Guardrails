@@ -212,6 +212,7 @@ guardrails skills install            # → ~/.claude/skills (user-level: every r
 guardrails skills install --project  # → ./.claude/skills (this repo only; created if missing)
 guardrails skills install --target /custom/skills/dir   # explicit destination
 guardrails skills install --force    # overwrite skill folders that already exist
+guardrails skills install --force --overwrite-tracked   # …even where that replaces authored source
 ```
 
 `guardrails install skills` is a hidden alias for the same thing, if that word order
@@ -230,6 +231,29 @@ The three bundled skills:
 Without `--force`, a skill folder that already exists in the target is left untouched
 and reported as skipped. Restart Claude Code (or start a new session) and confirm
 `/plan-breakdown` appears.
+
+### Installing over authored source (`--overwrite-tracked`)
+
+`--force` **deletes** each destination skill folder before copying the bundled one in. That is
+right for an install — the payload is reconstructable from any tool of the same version — and
+wrong for a directory where skills are *authored*. This repository is the second case:
+`./.claude/skills` is tracked source, and it is what gets packed into the shipped tool.
+
+So a `--force` install is **refused** when a destination skill folder is git-tracked *and* has
+uncommitted changes (issue #461):
+
+```text
+Refusing to overwrite git-tracked skill source(s) with uncommitted changes:
+  - /work/Guardrails/.claude/skills/plan-breakdown
+--force would delete each of those folders and replace them with the copy bundled in
+guardrails v1.2.0, destroying work git cannot restore.
+Commit or stash those changes first, or pass --overwrite-tracked to proceed anyway.
+```
+
+Untracked files inside a tracked folder count as uncommitted — they are the content git could
+*not* bring back. Tracked-but-clean destinations are allowed (git can restore them) but print a
+note, since the result is a working-tree diff you did not write. A destination git knows nothing
+about — the ordinary install case — is unaffected, as is any machine without git.
 
 ### Skill versioning and drift detection
 
@@ -281,11 +305,25 @@ informational):
 WARNING: 1 installed Guardrails skill(s) do not match this harness (v1.2.0):
   - plan-breakdown [v1.1.0] in C:\Users\you\.claude\skills
 A stale skill can silently produce output for an older harness.
-Remedy: run `guardrails skills install --force`.
+Remedy for C:\Users\you\.claude\skills: run `guardrails skills install --force`.
 ```
 
 When everything matches (or nothing is installed, or this build carries no bundled
 skills), `--version` prints only the version line.
+
+**The remedy names the root it can actually fix** (issue #461). There is one `Remedy for …` line
+per drifted root, carrying the command whose destination *is* that root: the bare install for
+`~/.claude/skills`, `--project` for `./.claude/skills`, and an explicit `--target <root>` for
+anywhere else. Running the printed line verbatim clears the warning it follows.
+
+**A git-tracked skills directory is not reported at all.** If the repository tracks files under a
+scan root, that directory is authored *source*, not an install — this repository's own
+`./.claude/skills` is exactly that — and its `SKILL.md` files are unstamped by design. Reporting
+it as a stale install was a category error: no install command writes an author's source, so no
+remedy could clear the warning, and the one command that *did* target that root
+(`skills install --project --force`) overwrote the author's work with the bundled copy. Tracked
+roots are therefore skipped silently; an untracked install directory inside a working copy is
+still reported normally.
 
 > **Release gate (#171).** Because the version stamp lives in the *packaged* artifact and
 > not the build output, the publish pipeline is gated by an end-to-end packaged-tool smoke

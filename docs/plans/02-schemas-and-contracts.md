@@ -269,7 +269,16 @@ decision (issue #275) and is deliberately NOT done here.
   startup GC. The **worktree ROOT is NOT process-scoped** (a resumable outcome needs it): it is reclaimed
   by the terminal-completion cleanup (A, on a wholly-green delivered run) and by the GC — which now ALSO
   runs a count-capped root-only sweep at the run's EXIT path, so a session's last run reclaims its
-  abandoned roots on the way out. **Graceful fallback:** if the junction cannot be created for ANY reason (a
+  abandoned roots on the way out. **Both GC sweeps are bounded, in the dimension each is felt in
+  (issue #450).** The EXIT sweep is COUNT-capped (`ExitSweepCap`) so it never delays a visible exit. The
+  STARTUP sweep is TIME-capped (`StartupSweepBudget`, 5s, spanning the junction AND root passes) so it never
+  delays a run's start — a count cap would bound the wrong quantity, since per-root cost varies by orders of
+  magnitude, and would drain a large backlog only 16 roots per run. A sweep's OUTPUT is capped independently:
+  the first `ReclaimLogDetailCap` reclaims log a line each, the remainder collapse into one count, and a
+  sweep that stopped at a bound says so. This is a contract on the sweep's *bounds*, not on the reclaim
+  predicate — which is unchanged, and still errs toward KEEPING. Whatever a bound leaves behind is reclaimed
+  by a later run; the sweeps are a backstop, never a correctness requirement. **Graceful fallback:** if the
+  junction cannot be created for ANY reason (a
   locked-down `<drive>:\` ACL, a non-NTFS or sandboxed root, all 26 names taken), the harness logs a note
   and falls back to the real (non-junction) root — the run proceeds exactly as without the feature, relying
   on the short default + GR2038 backstop. The junction is an optimization that must never block an

@@ -77,12 +77,7 @@ public static class SkillsInstaller
 
         var results = new List<SkillResult>();
 
-        // Ordinal sort so the install report is stable across locales/filesystems.
-        IEnumerable<string> skillDirs = Directory
-            .EnumerateDirectories(sourceSkillsDir)
-            .OrderBy(Path.GetFileName, StringComparer.Ordinal);
-
-        foreach (string skillDir in skillDirs)
+        foreach (string skillDir in BundledSkillDirs(sourceSkillsDir))
         {
             string name = Path.GetFileName(skillDir);
             string destination = Path.Combine(targetDir, name);
@@ -109,6 +104,35 @@ public static class SkillsInstaller
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// The bundled skill folders under <paramref name="sourceSkillsDir"/> — its direct child directories,
+    /// ordinal-sorted so the install report (and anything derived from it) is stable across locales and
+    /// filesystems. One definition, so <see cref="PlannedOverwrites"/> can never disagree with
+    /// <see cref="InstallAll"/> about which folders an install touches.
+    /// </summary>
+    private static IEnumerable<string> BundledSkillDirs(string sourceSkillsDir) =>
+        Directory.EnumerateDirectories(sourceSkillsDir).OrderBy(Path.GetFileName, StringComparer.Ordinal);
+
+    /// <summary>
+    /// The destination skill folders a <c>--force</c> install would DELETE and replace (issue #461): those
+    /// that exist in <paramref name="targetDir"/> under a bundled skill's name. Without <c>--force</c> the
+    /// same folders are skipped and nothing is destroyed, so this is the exact set a caller must vet before
+    /// letting <c>--force</c> proceed. Absolute paths, ordinal order; empty when the target is fresh or
+    /// <paramref name="sourceSkillsDir"/> does not exist.
+    /// </summary>
+    public static IReadOnlyList<string> PlannedOverwrites(string sourceSkillsDir, string targetDir)
+    {
+        if (!Directory.Exists(sourceSkillsDir))
+        {
+            return [];
+        }
+
+        return BundledSkillDirs(sourceSkillsDir)
+            .Select(skillDir => Path.Combine(targetDir, Path.GetFileName(skillDir)))
+            .Where(Directory.Exists)
+            .ToList();
     }
 
     /// <summary>
