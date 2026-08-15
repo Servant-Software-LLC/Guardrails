@@ -105,9 +105,23 @@ YamlDotNet (Core, frontmatter), xunit.v3.
   (scripts parse it, unchanged) and writes a drift-warning block to **stderr** — exit code stays
   0 — for any known skill found under `~/.claude/skills` or `./.claude/skills` whose
   `metadata.guardrails-version` is missing (`unversioned`) or `≠` the harness. (It reads INSTALLED
-  skills; from the bundled dir it derives only folder names, never their version.) Remedy it
-  warns: `guardrails skills install --force`, which overwrites the folder with a
-  frontmatter-stamped copy **and removes any orphaned preview.26 sidecar**.
+  skills; from the bundled dir it derives only folder names, never their version.)
+  **A git-TRACKED root is SOURCE, not an install, and is dropped from the report entirely (#461).**
+  That is this repo's own `./.claude/skills`: authored there, packed into the tool, and unstamped
+  BY DESIGN — so it is permanently "drifted" and any note about it would be noise on every
+  `--version`. The discriminator is *tracked*, asked of git, not "inside a repo": an untracked
+  install directory inside a working copy is still reported.
+  **The remedy names the root it applies to.** One `Remedy for <root>` line per drifted root,
+  carrying the command whose destination IS that root — bare / `--project` / `--target <root>` —
+  resolved through the same `ResolveTargetDir` the install command uses, so the printed command
+  cannot drift from where the command writes. (Before #461 a single fixed
+  `guardrails skills install --force` was printed for every case; it writes to `~/.claude/skills`,
+  so for any other root it could not clear the warning it accompanied.)
+  `skills install --force` overwrites the folder with a frontmatter-stamped copy **and removes any
+  orphaned preview.26 sidecar** — but it **REFUSES** a destination that git tracks AND that is
+  dirty, because `--force` deletes the whole folder first and a never-committed file is the one
+  thing git cannot restore. `--overwrite-tracked` is the explicit override. The guard keys on the
+  DESTINATION, not the flag spelling, so `--target <repo>/.claude/skills --force` is guarded too.
 
 ## Commands
 
