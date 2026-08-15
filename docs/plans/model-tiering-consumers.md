@@ -50,7 +50,7 @@ Per-attempt model logging already exists (#198, shipped) — #230's cost account
 5. **The costly floor + one candidacy predicate (DoR §6.2, revision 3).** `Candidates(R)` = blocks
    with `routing` present ∧ `R ∈ routing.tiers` ∧ **not `costly: true`**, ordered by **ascending
    `strength`** (unspecified last), ties by declaration order. Write it **once** and use it from
-   the resolver, the GR2046 validation, and the `no-route` path — if validation and runtime
+   the resolver, the GR2048 validation, and the `no-route` path — if validation and runtime
    disagree about which blocks serve a rung, validation passes and every task of that rung dies at
    runtime.
 6. **The verifier route (DoR §6.5, revision 3 — charter `model-tiering-verifier.charter.md`).** A
@@ -120,7 +120,7 @@ Per-attempt model logging already exists (#198, shipped) — #230's cost account
 - **The costly floor holds where it must and yields where it should:** a `costly: true` block is
   never selected for its own rung, for a stronger-rung climb, or for a judge bump — and IS reached
   by an explicit `action.runner`/`action.model` pin. A config whose only `hard`-capable block is
-  `costly` fails validation with **GR2046**, and the message says *which* of the two causes it is.
+  `costly` fails validation with **GR2048**, and the message says *which* of the two causes it is.
 - **The verifier rule:** a weak actor's judge resolves one strength rank up; a strong actor's judge
   does not move; when the only stronger block is `costly` the judge stays put, an advisory is
   emitted, **and the run proceeds** (it degrades, it never overspends).
@@ -134,7 +134,7 @@ Per-attempt model logging already exists (#198, shipped) — #230's cost account
 
 ## Stack
 
-.NET 8 / xUnit v3 for `Guardrails.Core`/`Guardrails.Cli` (resolution, probes, run-report
+.NET 10 / xUnit v3 for `Guardrails.Core`/`Guardrails.Cli` (resolution, probes, run-report
 aggregation). `.claude/skills/guardrails-review/SKILL.md` for the appropriateness check (a
 `guardrails-skill-author` task). Verification: `dotnet test tests/Guardrails.Core.Tests` +
 `tests/Guardrails.Integration.Tests` for the resolution/probe behavior; the guardrails-review

@@ -13,8 +13,9 @@
 >    contracts.**
 > 2. **master moved a month.** Revision 2's assumptions are stale in three places, all corrected
 >    here: its reserved diagnostic-code block **GR2037–GR2045 has been entirely taken** by shipped
->    work (#346, #383, #361, #389, #378 — §13 reallocates to **GR2043–GR2053** and explains how the
->    reservation rotted); this
+>    work (#346, #383, #361, #389, #378 — §13 reallocated to **GR2043–GR2054** and explains how the
+>    reservation rotted; it has since rotted a THIRD time, at Stage-1 landing, and §13 records that
+>    too); this
 >    document's number **13 collides** with `13-merge-on-success-default.md` (renumbered **17**); and
 >    **#349 is still open**, so §9.3's "additive over #349's base" needed a fallback (§9.3).
 >
@@ -32,7 +33,7 @@
 > **Charter review closed (2026-08-12) — all 8 `:::question` blocks now carry answers.** The last
 > three: (d) **`providers init` degrades honestly** — never invents a model name, now a hard rule
 > with its reason (§4.3). (e) **`routing.rank` is dropped** — candidates order by ascending
-> `strength`, *weakest model that can serve the tier first*, with warning GR2054 on a leftover key
+> `strength`, *weakest model that can serve the tier first*, with warning GR2046 on a leftover key
 > (§4.2). (f) **the plan-wide verifier knob becomes a FLOOR** — `tiering.verifier.minTier`, which
 > **changed the design**: it never selects, only refuses a result that came out too low; it
 > collapses charter Decisions 4 and 6 into one floor concept and moves it from v2 into v1 (§6.5.1).
@@ -191,7 +192,7 @@ Settled, and **in v1**:
   refuses one that came out below it.
 - **`routing.rank` is retired in favour of ordering by ascending `strength`** (D25, §4.2/§6.2) —
   *the weakest model that can serve the tier goes first*, one ordering axis instead of two with
-  opposite polarity. Settled 2026-08-12; a leftover `rank` key raises warning GR2054.
+  opposite polarity. Settled 2026-08-12; a leftover `rank` key raises warning GR2046.
 - **`action.effort` corrected** (D3, §5): #200 shipped `action.model` only. Every reference to
   "`action.model`/`action.effort` (already shipped, #200)" in the briefs/issues overstates —
   `effort` is a **new** field this epic introduces (schema in v1, consumed by the v1 resolver).
@@ -232,7 +233,7 @@ gate v2, not v1, and are revisited with #230-lite measurement in hand):
    **The degrade/halt asymmetry (D26 — the explicit answer to the charter's open consequence):**
    when a rule cannot be satisfied without a `costly` model, the **verifier** rule *degrades* to an
    advisory and the run proceeds (charter D3's derived consequence), but the **actor** route
-   *halts* — GR2046 at validate time, `no-route` at runtime. They differ because they are not the
+   *halts* — GR2048 at validate time, `no-route` at runtime. They differ because they are not the
    same kind of thing: a judge is **advisory and never alone** by construction (invariant 1), so a
    degraded judge loses a second opinion while the deterministic gate still certifies; an actor
    route is **load-bearing**, so degrading it would mean shipping work from a model nobody vouched
@@ -325,7 +326,7 @@ carry **different** `costly` values. A frontier model at minimal effort need not
 while its `xhigh` sibling is. No extra mechanism was needed for this; it falls out of D2.
 
 Malformed axes (wrong type, non-positive `strength`, a `specialization` outside the enum) are
-**GR2049**.
+**GR2045**.
 
 ### 4.2 The routing block, and the retirement of `rank` (D25)  [v1]
 
@@ -337,11 +338,11 @@ Three new optional keys per block (full JSON in §12.1):
   Ollama / llama.cpp / LM Studio / vLLM — they share the wire protocol); `"codex"` /
   `"openrouter"` are reserved names, unassigned. A `kind` that is unrecognized OR recognized
   but not yet implemented in the installed harness fails `guardrails validate` with
-  **GR2043**, naming the value and the currently supported set — an honest halt at validate
+  **GR2044**, naming the value and the currently supported set — an honest halt at validate
   time, never a silent fallback to Claude. `PromptRunnerRegistry.FromConfig` switches on
   `kind` to construct the runner class (the seam its own doc comment already names).
 - **`effort`** (D3) — an opaque, per-block thinking-effort knob (e.g. `"low"`, `"xhigh"`).
-  Opaque to the harness: shape-validated only (GR2048, mirroring GR2030's `model` check) and
+  Opaque to the harness: shape-validated only (GR2050, mirroring GR2030's `model` check) and
   **translated by the runner CLASS** into whatever its CLI/API exposes — the spelling is
   quarantined exactly like `maxOutputTokens` → `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Wanting the
   same model at two efforts = two blocks (`"opus"`, `"opus-xhigh"`).
@@ -352,7 +353,7 @@ Three new optional keys per block (full JSON in §12.1):
   tiers this route may serve; `notes` (optional prose) is
   surfaced to humans (`providers status`, review context) and MAY be appended to a composed
   prompt as context — **never parsed** (invariant 1). Malformed routing (empty/unknown `tiers`,
-  wrong types) is **GR2044**. The prose-vs-tags question is thereby
+  wrong types) is **GR2047**. The prose-vs-tags question is thereby
   answered: **both, with a hard deterministic/advisory split** (D6).
 
 **`routing.rank` is RETIRED (D25 — settled 2026-08-12, was OD-F).** Revision
@@ -385,7 +386,7 @@ has shipped; `rank` existed only in revision 2 of this document), but the rule i
 **delete the `rank` key and, for any block you were ranking DOWN, remove the tiers you were ranking
 it out of.** A leftover `rank` key is simply an unknown property — the loader ignores unknown keys,
 so it neither errors nor does anything, which is the quietest possible failure. **Stage 1 therefore emits a
-validate WARNING — GR2054 `RetiredRoutingRank`** — rather than silently ignoring the key. The
+validate WARNING — GR2046 `RetiredRoutingRank`** — rather than silently ignoring the key. The
 hazard it closes is real and is exactly the kind this repo refuses to ship: a config carrying
 `rank` would have its candidate ordering **silently change** from rank order to strength order,
 with nothing to tell the author their preference stopped being honored. A retired field that looks
@@ -423,7 +424,7 @@ Two rules make the reservation airtight, and they now cover **both** forms:
 
 - **A non-routable block must NOT be the registry `default` pointer** — otherwise an untagged task
   with no `defaultTier` falls to legacy resolution = the default runner = the reserved model,
-  and the reservation evaporates through the back door. `validate` **warns** (**GR2050**) when a
+  and the reservation evaporates through the back door. `validate` **warns** (**GR2051**) when a
   `costly: true` **or** `routing`-less block is named `default` in a config that declares tiering
   (the same net #229 provides at review time). *(This is why the worked example (§14) never makes a
   reserved block the default.)* **Note the deliberate limit of this rule:** naming a block `default`
@@ -437,14 +438,14 @@ Two rules make the reservation airtight, and they now cover **both** forms:
   cannot make Fable the breakdown model, and `costly: true` cannot make it one either. What
   `costly` guarantees is the half the harness DOES control — that no run ever reaches for it.)*
 
-**`costly: true` + `routing` on the same block is inert, and warned (GR2051).** The routing can
+**`costly: true` + `routing` on the same block is inert, and warned (GR2052).** The routing can
 never apply, because the candidacy predicate excludes costly blocks first (§6.2). It is a warning
 rather than an error so the two mechanisms compose instead of fighting: if excluding that block
-leaves a *used* tier unserved, **GR2046** (unservable tier) fires as an error and names the cliff
+leaves a *used* tier unserved, **GR2048** (unservable tier) fires as an error and names the cliff
 precisely.
 
 **The cliff is INTENDED — settled 2026-08-12 (was OD-G).** Marking your only `hard`-capable block
-`costly` makes `hard` unservable, and that is a **validate-time ERROR (GR2046)**, not a warning to
+`costly` makes `hard` unservable, and that is a **validate-time ERROR (GR2048)**, not a warning to
 route around. The maintainer's words are taken literally: *"They should never be chosen by the
 harness, only the user can specify to use them for a task."* There is no "expensive but still
 routable" middle setting, no dial, and no split into `costly`-for-accounting plus
@@ -464,7 +465,7 @@ before adding a field.
 
 - **Configured** iff ≥ 1 block declares `routing`. This is what gates *tag authoring* (§5) and
   validation (a plan carrying tier tags with NO `routing` block anywhere is tiering-inert →
-  **warning GR2047**, and the plan runs exactly as today).
+  **warning GR2049**, and the plan runs exactly as today).
 - **Active for a task** only when that task will *actually resolve through routing* — i.e. it has
   an **effective tier** (a tag or `defaultTier`) **AND** a serving routing block exists. Tier
   resolution, and (in v2) any probing or threshold prompt, fire **only** for such work — **never
@@ -509,7 +510,7 @@ Five rulings, each of which an implementer would otherwise have to guess:
    is a **routing target**. A fabricated or stale model id would be selected by the resolver and
    **spent against at a model that may not exist** — an authoring-time guess turning into a runtime
    failure, or worse, silent substitution by a provider that resolves unknown names loosely. The
-   generator has no way to know, so it does not guess. This is the same rule as GR2043's refusal to
+   generator has no way to know, so it does not guess. This is the same rule as GR2044's refusal to
    silently fall back to `claude` for an unrecognized `kind` (§4.2), applied one layer earlier.
 
    **What it does instead:** for a `kind` with no enumeration surface, it emits the blocks
@@ -541,14 +542,14 @@ model list, `status` needs a usage surface, and only the second one is blocked o
 contract (SSOT §4.2/§5), the `PromptFailureKind` classification quarantine (its own vendor error
 strings live in its class, like `ClaudePromptRunner`'s), populate the same §7 provenance
 fields, and report cost as absent (tokens only) unless its API provides one. When it lands,
-GR2043's supported set grows — no other contract moves. Its internals (auth, streaming,
+GR2044's supported set grows — no other contract moves. Its internals (auth, streaming,
 endpoint probing) are #223's own design space.
 
 ## 5. The tier model (#225)  [v1]
 
 **Ruling (D7): the tier enum is `easy | medium | hard` — final for v1.** Closed, lowercase,
 ordered `easy(1) < medium(2) < hard(3)` (the resolver's ordering; also the v2 ladder's rungs).
-An unrecognized value anywhere (GR2045) is a validation error. Three levels is deliberately
+An unrecognized value anywhere (GR2043) is a validation error. Three levels is deliberately
 coarse: the tag must stay a cheap, stable judgment a human can make without knowing what is
 registered (#201's rationale); finer gradations would re-couple tagging to model knowledge.
 
@@ -607,7 +608,7 @@ knows whether routing exists, because it produces `guardrails.json`. Its tagging
   maxTurns-by-archetype precedent).
 - **Tiering NOT configured** (no `routing` block anywhere — the single-model default): the skill
   writes **NO `action.tier` fields, NO `tiering` block, and NO classification report lines**, and
-  **GR2047 cannot fire**. A single-model user's breakdown is therefore **byte-identical to
+  **GR2049 cannot fire**. A single-model user's breakdown is therefore **byte-identical to
   today** — the authoring half of Invariant 7.
 
 ## 6. Attempt-launch resolution — the static resolver (#226-static)  [v1]
@@ -649,9 +650,9 @@ item 2.)
 ### 6.2 Candidate selection — never weaker than asked, never costly without you  [v1]
 
 **ONE candidacy predicate, written once, used by everything (D22a).** This is a correctness
-requirement, not tidiness: `validate`'s GR2046 check, the runtime resolver, the `no-route` outcome,
+requirement, not tidiness: `validate`'s GR2048 check, the runtime resolver, the `no-route` outcome,
 the §6.5 judge resolution, and (in v2) the ladder must all agree on *which blocks count as serving
-a rung*. If GR2046 counts a costly block as "serving `hard`" and the resolver does not, validation
+a rung*. If GR2048 counts a costly block as "serving `hard`" and the resolver does not, validation
 passes and every hard task dies at runtime on `no-route`. So:
 
 > **`Candidates(R)` = blocks where `routing` is present AND `R ∈ routing.tiers` AND `costly` is
@@ -671,7 +672,7 @@ autonomy-policy dial. The only paths to a costly model are:
 
 1. an explicit **task pin** — `action.runner` / `action.model` (a per-task user assignment); or
 2. the registry **`default` pointer** (a plan-wide user assignment) via legacy resolution — which
-   is sanctioned but warned (GR2050, §4.2).
+   is sanctioned but warned (GR2051, §4.2).
 
 Everything else is the harness choosing, and the harness does not choose.
 
@@ -683,13 +684,13 @@ lever in v1.)*
 
 **Nor is there a costly-model degrade — and that is the deliberate asymmetry (D26).** When a rung's
 candidate set is empty because the only capable block is `costly`, the actor route does **not**
-quietly reach for it and does **not** quietly drop to a weaker rung. It **halts**: GR2046 at
+quietly reach for it and does **not** quietly drop to a weaker rung. It **halts**: GR2048 at
 validate time (zero spend, before the run), `no-route` at runtime. Contrast the verifier rule
 (§6.5), which in the same situation *degrades to an advisory and proceeds*. See invariant 5 for
 why the two differ — degrade what is advisory, halt what is load-bearing. **Both honor the
 maintainer's actual constraint: neither ever overspends.**
 
-Statically, `validate` errors (**GR2046**) when any *used* tier (a task tag, frontmatter tag, or
+Statically, `validate` errors (**GR2048**) when any *used* tier (a task tag, frontmatter tag, or
 `defaultTier`) has no **candidate** rung at-or-above it — the only config where resolution would
 have to route down. Note this now fires for a *second* reason as well as an empty registry: every
 block that could serve the rung is `costly: true`. The diagnostic must say **which** — "no block
@@ -698,7 +699,7 @@ may never select; pin them per task or clear the flag" are different problems wi
 
 **The `no-route` defensive outcome [v1].** The **`no-route`** attempt outcome (§12.4) exists only
 for the defensive residual — resolution finds literally zero registered candidate blocks at
-runtime for a used rung (a config gap GR2046 should have caught) — and settles needs-human with
+runtime for a used rung (a config gap GR2048 should have caught) — and settles needs-human with
 an actionable "register a provider serving tier ≥ R" message. It is cheap, honest, and independent
 of probes, so it stays in v1.
 
@@ -748,7 +749,7 @@ openai-compat = endpoint reachability/load; a kind with no usage surface returns
 (never fails the run — the *degraded/absent usage surface is honestly surfaced*, review comment
 4). **Rulings (D11):** probes are deterministic HTTP/CLI queries — **never prompt spend** (an LLM
 call is not a probe); cached in-memory per provider with TTL `tiering.probeCacheSeconds` (default
-**60**, GR2053 if ≤ 0), with **consecutive-failure TTL doubling** (cap ~15 min) so a dead endpoint
+**60**, GR2054 if ≤ 0), with **consecutive-failure TTL doubling** (cap ~15 min) so a dead endpoint
 is not re-probed every minute all run (DA comment 6); probed lazily at resolution and at run
 start, with a small hard per-probe timeout; observe-only (not journaled — they surface in
 `decisions[]` context, threshold prompts, and a new **`guardrails providers status`** command). A
@@ -909,7 +910,7 @@ from steps 2–3** and the standard §6.5 step-5 advisory fires. It does **not**
 rung (that spends more to satisfy a preference), and it does **not** reach the costly block.
 
 **No new diagnostic code, and that is a deliberate refusal.** An unsatisfiable *actor* tier is
-**GR2046, an error**; an unsatisfiable *verifier* floor is **an advisory line**. Same asymmetry as
+**GR2048, an error**; an unsatisfiable *verifier* floor is **an advisory line**. Same asymmetry as
 D26, for the same reason: a GR code is a thing that can fail a build, and §12.6 states that no
 verifier condition may ever fail one. The condition is not unreported — the **startup preflight**
 surfaces it before the run, which is precisely the job that boundary exists for. This is the case
@@ -1144,7 +1145,7 @@ Tier fields ride inside `task.json`/frontmatter, so waved plans get tiering for 
 
 | Stage | Contents | Depends on |
 |---|---|---|
-| **Stage 1** (`model-tiering-foundation.md`) | #224 registry (`kind`/`effort`/`routing` + **the three model axes `costly`/`strength`/`specialization`, §4.1** + GR2043–GR2054 validation + sentinel update; non-routable-default warning §4.2) ∥ **`guardrails providers init` registry generation (§4.3)** ∥ #225 **gated** tagging (`action.tier`, frontmatter `tier`, `tiering.defaultTier`, `tiering.verifier.minTier`, skill doctrine — writes nothing when tiering unconfigured, §5) | this DoR reviewed |
+| **Stage 1** (`model-tiering-foundation.md`) | #224 registry (`kind`/`effort`/`routing` + **the three model axes `costly`/`strength`/`specialization`, §4.1** + GR2043–GR2053 validation + sentinel update; non-routable-default warning §4.2) ∥ **`guardrails providers init` registry generation (§4.3)** ∥ #225 **gated** tagging (`action.tier`, frontmatter `tier`, `tiering.defaultTier`, `tiering.verifier.minTier`, skill doctrine — writes nothing when tiering unconfigured, §5) | this DoR reviewed |
 | **Stage 2** (`model-tiering-consumers.md`, static subset) | #226-**static** resolver (§6.1 precedence incl. `action.runner`/`action.effort`, §6.2 candidate selection **+ the costly floor**, §6.3 unavailability→#115, **§6.5 the verifier route + BOTH boundaries — startup preflight AND per-attempt JIT re-check**, `no-route`, provenance fields §9.3 **incl. `judge`**) ∥ #229 review check **+ the judge-weaker-than-actor / equal-and-weak findings** ∥ #230-**lite** per-tier spend line | Stage 1 |
 | **#223** (standalone) | `openai-compat` runner class filling the §4.4 seam | Stage 1 (the `kind` seam) + real local endpoint available |
 
@@ -1152,7 +1153,7 @@ Tier fields ride inside `task.json`/frontmatter, so waved plans get tiering for 
 
 | Bet | Contents | Gating decision |
 |---|---|---|
-| **#227 probes** | per-`kind` `IProviderProbe` + cache (TTL doubling) + `guardrails providers status` (GR2053) + probe-advise ranking (§6.4) | OD-C (stable Claude usage surface feasible?) |
+| **#227 probes** | per-`kind` `IProviderProbe` + cache (TTL doubling) + `guardrails providers status` (GR2054) + probe-advise ranking (§6.4) | OD-C (stable Claude usage surface feasible?) |
 | **#228 ladder** | escalation ladder (§7) + `tierSource: "escalated"` + `routing.escalationTarget` field | OD-A re-scope (DA F1); D15 trigger set (DA F5) |
 | **#231 steering** | `--prefer` + threshold prompts (`routing` autonomy boundary, §8) | OD-B (unattended default); route-down lever (DA F2) |
 | **pre-existing v2 bets** | prose-steering compiler → `--prefer`; per-model $ pricing table (until then: tokens-only); overwatcher tier-pin fix-op; probe-informed *scheduling* | — |
@@ -1192,7 +1193,7 @@ confirm.
 - **OD-G — how sharp the `costly` cliff is — ANSWERED: never automatic, full stop.** A `costly:
   true` block is never auto-selected at any rung, by the resolver, the judge bump, or the v2 ladder.
   A config whose only `hard`-capable block is `costly` therefore makes `hard` unservable, and that
-  is a **validate-time ERROR (GR2046)** — not a warning to route around, and not a case for a
+  is a **validate-time ERROR (GR2048)** — not a warning to route around, and not a case for a
   softer "expensive but routable" setting. The axis is **not** split into `costly`-for-accounting
   plus `reserved`-for-the-floor. §4.2, §6.2, §14 (the exact error text).
 - **OD-E — `providers init` enumeration for Claude — ANSWERED: degrade honestly.** Chosen over
@@ -1202,7 +1203,7 @@ confirm.
   that may not exist. §4.3 ruling 2.
 - **OD-F — retiring `routing.rank` — ANSWERED: drop it.** Candidates order by **ascending
   `strength`** — *the weakest model that can serve the tier goes first* — and "this model should not
-  serve that tier" is expressed by editing its `routing.tiers`. New warning **GR2054** fires on a
+  serve that tier" is expressed by editing its `routing.tiers`. New warning **GR2046** fires on a
   leftover `rank` key so a migrated config's ordering can never change silently. §4.2, §13.
 - **OD-H — the plan-wide verifier key — ANSWERED, and it CHANGED the design: it is a FLOOR, not a
   default.** `tiering.verifier.minTier` never *selects* the judge's rung (the actor's-rung-plus-bump
@@ -1248,14 +1249,14 @@ holds exactly TWO keys — `defaultTier` and `verifier.minTier`;** the `threshol
                                       //   `routing` (below); ACTIVE for a task only when it resolves through
                                       //   routing (§4). Absent = none.
     "defaultTier": "medium",          // OPTIONAL plan-wide tier for UNTAGGED prompt actions: "easy"|"medium"|"hard"
-                                      //   (GR2045 if unrecognized). EXAMPLE value — there is NO built-in default;
+                                      //   (GR2043 if unrecognized). EXAMPLE value — there is NO built-in default;
                                       //   absent = an untagged task keeps LEGACY resolution (§5).
     "verifier": {                     // OPTIONAL (#201 verifier half, §6.5). The judge's rung is ALWAYS chosen by
                                       //   the rule: the ACTOR's rung, bumped one STRENGTH rank when the actor is
                                       //   weak. Inert when tiering is unconfigured.
       "minTier": null                 // OPTIONAL plan-wide FLOOR (§6.5.1): the resolved judge may never end up
                                       //   BELOW this rung. It never SELECTS a rung — it only refuses one that came
-                                      //   out too low, and never lowers a result. "easy"|"medium"|"hard" (GR2045).
+                                      //   out too low, and never lowers a result. "easy"|"medium"|"hard" (GR2043).
                                       //   Unsatisfiable without a costly block => the judge stays put + an ADVISORY
                                       //   (never an error, never a costly auto-selection — §6.5.1).
     }
@@ -1271,29 +1272,29 @@ block after `"model": null,`:
       "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" (back-compat).
                                       //   v1 implements "claude"; "openai-compat" is the reserved #223 seam
                                       //   (Ollama/llama.cpp/LM Studio/vLLM); "codex"/"openrouter" reserved.
-                                      //   Unrecognized OR not-yet-implemented kind = GR2043 (never a silent
+                                      //   Unrecognized OR not-yet-implemented kind = GR2044 (never a silent
                                       //   fallback to claude).
       "effort": null,                 // OPTIONAL thinking-effort knob (#201); OPAQUE string, shape-checked like
-                                      //   `model` (GR2048), TRANSLATED by the runner CLASS (spelling quarantined
+                                      //   `model` (GR2050), TRANSLATED by the runner CLASS (spelling quarantined
                                       //   there, like maxOutputTokens). Same model at two efforts = two blocks.
       "costly": false,                // OPTIONAL (#201, §4.1). TRUE = the harness may NEVER auto-select this block:
                                       //   not for its rung, not for a stronger-rung climb, not for a v2 ladder
                                       //   escalation, not for a judge bump. Reachable ONLY by an explicit task pin
-                                      //   (action.runner/action.model) or as the `default` pointer (warned, GR2050).
-                                      //   Absent = false. Declaring `routing` alongside it is inert (GR2051).
+                                      //   (action.runner/action.model) or as the `default` pointer (warned, GR2051).
+                                      //   Absent = false. Declaring `routing` alongside it is inert (GR2052).
       "strength": null,               // OPTIONAL (#201, §4.1). Integer >= 1; HIGHER = stronger. The ONLY totally
                                       //   ordered axis, and the only one a >= comparison or a bump may read.
                                       //   Orders same-rung candidates ASCENDING (weakest sufficient first);
                                       //   absent/unspecified sorts LAST for ordering, and counts as WEAK for the
-                                      //   §6.5 verifier comparison (provider-kind fallback). Malformed = GR2049.
+                                      //   §6.5 verifier comparison (provider-kind fallback). Malformed = GR2045.
       "specialization": null,         // OPTIONAL (#201, §4.1). One of "coding"|"planning-reasoning"|"general"|
                                       //   "unspecified" (absent = "unspecified"). A PREFERENCE, never an ordering:
                                       //   it breaks ties among candidates already meeting the required strength
-                                      //   (§6.5) and can neither satisfy nor violate >=. Outside the enum = GR2049.
+                                      //   (§6.5) and can neither satisfy nor violate >=. Outside the enum = GR2045.
       "routing": {                    // OPTIONAL (#224): opts this block into tier resolution (§9.6). Absent =
                                       //   block reachable only explicitly / as default (today's behavior).
         "tiers": ["medium", "hard"],  // REQUIRED here; non-empty subset of easy|medium|hard — which rungs this
-                                      //   (kind, model, effort) route may serve. Malformed = GR2044.
+                                      //   (kind, model, effort) route may serve. Malformed = GR2047.
         "notes": "…"                  // OPTIONAL human-authored prose guidance; surfaced to humans and MAY be
                                       //   appended to composed prompts as context — NEVER parsed for routing.
       },
@@ -1305,10 +1306,10 @@ block after `"model": null,`:
 
 Prose bullets to add under §2: the **configured-vs-active** activation rule (configured iff ≥1
 `routing` block; *active for a task* only when it has an effective tier AND a serving block —
-plan-scoped, §4); tags without any routing block = **GR2047 warning**, plan runs as today; the
-GR2046 rule (§12.5); the reserved-model warning (a `costly` **or** `routing`-less block must not be
+plan-scoped, §4); tags without any routing block = **GR2049 warning**, plan runs as today; the
+GR2048 rule (§12.5); the reserved-model warning (a `costly` **or** `routing`-less block must not be
 `default`, §4.2); **the single candidacy predicate** (`routing` present ∧ rung ∈ `tiers` ∧ not
-`costly`) stated ONCE and referenced by the resolver, GR2046, and `no-route` (§6.2); and **the
+`costly`) stated ONCE and referenced by the resolver, GR2048, and `no-route` (§6.2); and **the
 costly floor in one sentence** — *the harness never auto-selects a `costly: true` block; only an
 explicit task pin or the `default` pointer reaches one.*
 
@@ -1332,10 +1333,10 @@ In the `action` block after `"model": null,`:
 
 ```jsonc
     "tier": null,                    // prompt actions only (#225): "easy"|"medium"|"hard" difficulty tag feeding
-                                     //   attempt-launch tier resolution (§9.6); GR2045 if unrecognized. null/absent
+                                     //   attempt-launch tier resolution (§9.6); GR2043 if unrecognized. null/absent
                                      //   = inherit tiering.defaultTier (§2), else legacy resolution.
     "effort": null,                  // prompt actions only (#201): per-task thinking-effort override; mirrors
-                                     //   `model`'s SHAPE (GR2048 shape check; opaque to the harness) but NOT its
+                                     //   `model`'s SHAPE (GR2050 shape check; opaque to the harness) but NOT its
                                      //   bypass — with a tier but no full pin, resolution still selects the block
                                      //   and `effort` overrides the resolved route's effort (§6.1 item 2).
 ```
@@ -1363,14 +1364,14 @@ applies).
   when no judge resolved through routing (Invariant 7); `"bumped": true` when the weak-actor
   strength bump fired.
 - Attempt `outcome` enum gains **`no-route`** — resolution found zero registered candidate blocks
-  at-or-above the task's rung (a runtime config gap; validation GR2046 normally prevents it).
+  at-or-above the task's rung (a runtime config gap; validation GR2048 normally prevents it).
   Settles needs-human with "register a provider serving tier ≥ R" feedback. This is a v1 defensive
   outcome independent of probes (§6.2).
 - *(v2, §12.7: `decisions[]` `boundary` gains `routing`.)*
 
 ### 12.5 §9 — seam note + a new §9.6 "Tier routing (model tiering, #201)" [v1]
 
-§9 intro: note that `FromConfig` switches on `kind` (GR2043 gate) and that `--model`/effort flags
+§9 intro: note that `FromConfig` switches on `kind` (GR2044 gate) and that `--model`/effort flags
 are emitted from the RESOLVED route. New **§9.6 (v1 content)** documenting, normatively: the
 three model axes and their unspecified-fallbacks (§4.1); **the single candidacy predicate and the
 costly floor** (§6.2); the precedence chain incl. `action.runner`/`action.effort` (§6.1); candidate
@@ -1388,7 +1389,7 @@ language.) **§9.6 explicitly states there is no ladder, no probe, and no steeri
 - Four new **warnings** (v1): a `costly` **or** `routing`-less block named `default` in a
   tiering-configured file (reserved-model back-door, §4.2); a `costly: true` block that also
   declares `routing` (inert, §4.2); a **full pin + `action.tier`** coexisting
-  on one action (§6.1); and a retired **`routing.rank`** key (GR2054, §4.2 — so a migrated config's
+  on one action (§6.1); and a retired **`routing.rank`** key (GR2046, §4.2 — so a migrated config's
   ordering never changes silently). All warnings, not errors — the plan still runs.
 - **The verifier check is NOT a validation code.** A judge weaker than its actor is an *advisory*
   (charter Decision 1): a #229 review finding, a startup preflight warning **line**, and a per-attempt JIT re-check — not a
@@ -1400,7 +1401,7 @@ language.) **§9.6 explicitly states there is no ladder, no probe, and no steeri
 Consolidated so a Stage-1/2 implementer can see exactly what to leave out. Each lands with its
 v2 bet (§10), in the same change as its code:
 
-- **`tiering.thresholdPercent` (default 80) + `tiering.probeCacheSeconds` (default 60, GR2053 if
+- **`tiering.thresholdPercent` (default 80) + `tiering.probeCacheSeconds` (default 60, GR2054 if
   ≤0)** keys — with #231 / #227 respectively.
 - **§2.1 `autonomyPolicy` `routing` boundary** + the non-interactive carve-out (§12.2) — with #231.
 - **`decisions[]` `boundary: "routing"`** — with #231.
@@ -1408,12 +1409,12 @@ v2 bet (§10), in the same change as its code:
   (`judge.bumped` recomputed per attempt, charter Decision 6) — with #228.
 - **`routing.escalationTarget: false`** block field — with #228 (§4.2, §7), **and only after
   checking whether `costly` already subsumes it**.
-- **GR2053** (`RoutingNumericNonPositive`) — with #227 (the only reserved code that is a v2 delta;
-  GR2043–GR2048 are all v1 — §13).
+- **GR2054** (`RoutingNumericNonPositive`) — with #227 (the only reserved code that is a v2 delta;
+  GR2043–GR2053 are all v1 — §13).
 - **§9.6 normative language** for probes-advise / the ladder / `--prefer` + threshold prompts /
   the ladder-first-overwatcher-layers ordering — with the respective bet.
 
-## 13. Reserved diagnostic codes — GR2043–GR2054 (next-free marker → GR2055)
+## 13. Diagnostic codes — GR2043–GR2046 allocated by Stage 1, GR2047–GR2054 reserved (next-free marker → GR2055)
 
 > **Revision 3 reallocated this whole block, and the reason is worth more than the numbers.**
 > Revision 2 reserved **GR2037–GR2045** and said so with confidence — *"verified against
@@ -1432,44 +1433,127 @@ v2 bet (§10), in the same change as its code:
 > renumber if it has rotted again. The file wins. The numbers below are a shape, not a claim.**
 > Revision 2 wrote exactly that sentence about the epic briefing's stale "GR2036 next" and then
 > made the same mistake one layer up — which is the most instructive thing in this document.
+>
+> ---
+>
+> **THIRD ROT — and this time the instruction above was the thing that got skipped.** Stage 1 has
+> landed (master `5788a54`) and it did **not** re-verify against this section: it allocated its own
+> numbers and its own names. The lesson is therefore no longer a cautionary tale told once — it is
+> **empirically confirmed twice over**, and the second confirmation is the sharper of the two,
+> because the failure mode itself changed:
+>
+> - **Rot #1 and #2 were SHIFTS.** A contiguous block was overtaken from below; every reserved code
+>   still meant what this document said it meant, just at a different number. Renumbering was
+>   arithmetic, and a careless bulk edit would still have landed on the right answer.
+> - **Rot #3 is a COLLISION.** `GR2043` now exists on both sides and **names two different things**:
+>   this document called it `UnsupportedRunnerKind` (the `kind` discriminator); the file ships it as
+>   `InvalidTierValue` (the tier enum). `GR2045` collided in the opposite direction — this document's
+>   `UnrecognizedTier` against the file's `InvalidRunnerAxis`. The two numbers effectively **swapped
+>   meanings.** A find-and-replace over this document would have silently corrupted it into
+>   confident, well-formatted nonsense; every one of the ~120 references had to be re-pointed at the
+>   concept it was actually discussing.
+>
+> **The most instructive detail is inside `DiagnosticCodes.cs` itself.** Its comment above the
+> provider-registry block records that GR2043 was *deliberately skipped* there while a concurrent
+> action-tier change in the same Stage-1 plan claimed it — *"Taking it twice for two different
+> meanings is the one outcome a code registry must not produce, and a gap costs nothing"* — followed
+> by a post-merge note that the gap closed once that change landed. **So the file's own allocation
+> discipline worked perfectly.** Two concurrent slices coordinated *inside* the registry and produced
+> no collision at all. The only reservation that got trampled was the one held **outside** the file,
+> in this document. That is this section's thesis demonstrated rather than asserted: **the registry
+> defends itself; a document cannot defend a claim on the registry.** The standing instruction is not
+> paperwork — it is the only mechanism this design has, and skipping it is exactly why §13 has now
+> been rewritten three times.
+>
+> **The instruction stands, unchanged and now twice-proven, for Stage 2 and every later stage:
+> re-verify against `DiagnosticCodes.cs` immediately before landing, and renumber if it has rotted
+> again. The file wins.** §13.2 below is, as ever, a shape and not a claim.
 
-Verified against `src/Guardrails.Core/Loading/DiagnosticCodes.cs` on **2026-08-12**: **GR2042**
-(`StructuralOverScope`) is the last taken code and the file's marker line says **GR2043 is
-next-free**. This DoR reserves the contiguous block **GR2043–GR2054**; the constants + the
-historical-comment discipline below land at build time, per stage, and the marker is bumped to
-**GR2055**. The **Scope** column marks v1 vs a v2 bet — **GR2053 is the only code deferred to v2.**
+Re-verified against `src/Guardrails.Core/Loading/DiagnosticCodes.cs` on **2026-08-15** (post
+Stage-1 merge): **GR2046** (`RetiredRoutingRank`) is the last taken code and the file's marker line
+says **GR2047 is next-free**. Four of this block's codes have therefore **already shipped** (§13.1),
+under numbers — and in three of four cases names — that differ from what this document reserved. The
+remaining eight are renumbered into the free range and re-reserved as **GR2047–GR2054** (§13.2);
+their constants + the historical-comment discipline land at build time, per stage, and the marker is
+then bumped to **GR2055**. The **Scope** column marks v1 vs a v2 bet — **GR2054 is the only code
+deferred to v2.**
+
+### 13.1 Already allocated — landed with Stage 1 (the file's names are canonical)
+
+These are **not reservations**; they are shipped constants. The names below are the ones in
+`DiagnosticCodes.cs`, **not** the names this document preferred — where the two differ, the file
+wins, which is the whole point of §13. The "DoR reserved as" column exists only so that a reader of
+an earlier revision, or of a review comment written against one, can find out what a stale number
+now means.
+
+| Code | Shipped name | Sev | Scope | DoR reserved as | Meaning as shipped |
+|---|---|---|---|---|---|
+| GR2043 | `InvalidTierValue` | error | **v1** | GR2045 `UnrecognizedTier` | a declared difficulty tier is not one of `easy`/`medium`/`hard`. Matched VERBATIM — no trimming, no case-folding — so `"hard "` is reported rather than silently accepted (the GR2030 preserve-the-malformed-signal doctrine); an absent tier is never flagged. **Narrower than reserved:** the shipped check covers **two** sites — `task.json action.tier` and the plan-wide `tiering.defaultTier` — not the four this DoR specified (§13.3) |
+| GR2044 | `InvalidPromptRunnerKind` | error | **v1** | GR2043 `UnsupportedRunnerKind` | a `promptRunners.<name>.kind` is present but names no recognised runner kind; the message NAMES the offending value. The loader falls the block back to the `claude` default **only** so the rest of validation still reports, never so the run proceeds. **Narrower than reserved:** a RECOGNISED-but-unimplemented kind is *not* this code — it loads clean and fails at registry construction with an actionable message (charter §A.2 — the backstop, not the gate) |
+| GR2045 | `InvalidRunnerAxis` | error | **v1** | GR2049 `MalformedModelAxis` | one of the three per-block model axes is malformed (§4.1): `costly` not a bool, `strength` not an integer or below 1, or `specialization` outside the enum. One diagnostic per malformed axis, naming the axis and its value; an absent axis is never flagged |
+| GR2046 | `RetiredRoutingRank` | warning | **v1** | GR2054 `RetiredRoutingRank` | a `promptRunners.<name>.routing` block still carries the RETIRED `rank` key (§4.2, settled OD-F). The key is IGNORED. A warning rather than an error so a config mid-migration keeps loading — and rather than silence, because accepting `rank` quietly is exactly how a migrated config's ordering would change with nobody told. **Name matched; only the number moved** |
+
+### 13.2 Still reserved — NOT yet allocated (renumbered into GR2047–GR2054)
+
+The eight codes Stage 1 did not ship, renumbered into the free range **in their original order**.
+Re-verify against the file before landing.
 
 | Code | Name | Sev | Scope | Meaning |
 |---|---|---|---|---|
-| GR2043 | `UnsupportedRunnerKind` | error | **v1** | `promptRunners.<name>.kind` unrecognized, or recognized but not implemented in this harness build; message names the value + the supported set (the #223 seam gate — never a silent claude fallback) |
-| GR2044 | `MalformedRoutingGuidance` | error | **v1** | `routing` block invalid: missing/empty `tiers`, a value outside the tier enum, or wrong types |
-| GR2045 | `UnrecognizedTier` | error | **v1** | `action.tier`, judge-frontmatter `tier`, `tiering.defaultTier`, or `tiering.verifier.minTier` not one of `easy\|medium\|hard` |
-| GR2046 | `UnservableTier` | error | **v1** | a USED tier (task tag, frontmatter tag, or a `defaultTier`) in a tiering-configured plan has no **candidate** block at-or-above it (§6.2) — either none serves it, or **the only ones that do are `costly: true`**, which the harness may never select. The message MUST distinguish the two: they have different fixes |
-| GR2047 | `TieringInert` | warning | **v1** | tier tags present but NO block declares `routing` — tags have no effect; plan runs with legacy resolution |
-| GR2048 | `EffortInvalid` | error | **v1** | a present `effort` (block, override, or `action.effort`) fails the GR2030-style shape check (non-empty, no whitespace/control chars) |
-| GR2049 | `MalformedModelAxis` | error | **v1** | a model axis is malformed (§4.1): `costly` not a bool, `strength` not an integer ≥ 1, or `specialization` outside `coding\|planning-reasoning\|general\|unspecified`. One code for all three axes — they are validated together and fixed in the same place |
-| GR2050 | `NonRoutableBlockIsDefault` | warning | **v1** | a `costly: true` **or** `routing`-less block is the registry `default` pointer in a tiering-configured file — untagged tasks would fall to a model held out of routing (§4.2; review comment 7's back door) |
-| GR2051 | `CostlyBlockRoutingInert` | warning | **v1** | a `costly: true` block also declares `routing` — the routing can never apply, because the candidacy predicate excludes costly blocks (§6.2). A warning, so GR2046 can report the real consequence |
-| GR2052 | `PinAndTierCoexist` | warning | **v1** | a full pin (`action.runner`/`action.model`) and `action.tier` are both set on one action — the tier is dead weight the pin overrides (§6.1, DA F3) |
-| GR2053 | `RoutingNumericNonPositive` | error | **v2 (#227)** | `tiering.probeCacheSeconds` / `thresholdPercent` present but not a positive value (cf. GR2012/GR2023/GR2036) |
-| GR2054 | `RetiredRoutingRank` | warning | **v1** | a `routing.rank` key is present — the field was retired in favour of ascending-`strength` ordering (§4.2, settled OD-F). Without this warning an existing draft's candidate ordering would change **silently**; unknown keys are otherwise ignored by the loader |
+| GR2047 | `MalformedRoutingGuidance` | error | **v1** | `routing` block invalid: missing/empty `tiers`, a value outside the tier enum, or wrong types |
+| GR2048 | `UnservableTier` | error | **v1** | a USED tier (task tag, frontmatter tag, or a `defaultTier`) in a tiering-configured plan has no **candidate** block at-or-above it (§6.2) — either none serves it, or **the only ones that do are `costly: true`**, which the harness may never select. The message MUST distinguish the two: they have different fixes |
+| GR2049 | `TieringInert` | warning | **v1** | tier tags present but NO block declares `routing` — tags have no effect; plan runs with legacy resolution |
+| GR2050 | `EffortInvalid` | error | **v1** | a present `effort` (block, override, or `action.effort`) fails the GR2030-style shape check (non-empty, no whitespace/control chars) |
+| GR2051 | `NonRoutableBlockIsDefault` | warning | **v1** | a `costly: true` **or** `routing`-less block is the registry `default` pointer in a tiering-configured file — untagged tasks would fall to a model held out of routing (§4.2; review comment 7's back door) |
+| GR2052 | `CostlyBlockRoutingInert` | warning | **v1** | a `costly: true` block also declares `routing` — the routing can never apply, because the candidacy predicate excludes costly blocks (§6.2). A warning, so GR2048 can report the real consequence |
+| GR2053 | `PinAndTierCoexist` | warning | **v1** | a full pin (`action.runner`/`action.model`) and `action.tier` are both set on one action — the tier is dead weight the pin overrides (§6.1, DA F3) |
+| GR2054 | `RoutingNumericNonPositive` | error | **v2 (#227)** | `tiering.probeCacheSeconds` / `thresholdPercent` present but not a positive value (cf. GR2012/GR2023/GR2036) |
+
+### 13.3 The coverage gap this renumbering exposed — recorded, not silently fixed
+
+Re-verifying against the file surfaced something the numbers alone would have hidden: **Stage 1
+shipped four of the ten v1 validation codes this DoR assigned to it** (§10's Stage 1 row, §17's
+handoff). Still unimplemented: `MalformedRoutingGuidance`, `UnservableTier`, `TieringInert`,
+`EffortInvalid`, `NonRoutableBlockIsDefault`, `CostlyBlockRoutingInert`, `PinAndTierCoexist`.
+
+**Most of these are blocked on schema, not merely deferred — which matters more than the count.**
+Three of the seven have **no field to validate yet**, because the fields this DoR specified did not
+land with Stage 1: `routing.tiers` (the shipped `routing` block carries `guidance`/`tags` instead —
+so `MalformedRoutingGuidance` has no `tiers` to check, and §6.2's candidacy predicate has no tier
+field to read at all), `effort` at either site (so `EffortInvalid` has no target), and
+`tiering.verifier.minTier` (§6.5.1). The gap is therefore a **contract** gap first and a diagnostic
+gap second. Of the rest, the most load-bearing absence is **GR2048 `UnservableTier`** — the
+validate-time error the whole `costly`-cliff ruling (§4.2, §6.2, §14.1, OD-G) rests on: until it
+exists, *"hard tasks must be pinned by a human"* is a design intention with nothing enforcing it,
+and Stage 2 must not assume validation has already fenced the case its resolver will meet.
+Separately, shipped `GR2043 InvalidTierValue` covers two of the four tier-bearing sites this DoR
+specified — a judge guardrail's frontmatter `tier` (SSOT §4.2) and `tiering.verifier.minTier`
+(§6.5.1) are not merely unvalidated, they are **not parsed at all**.
+
+**This section only records the gap; it does not re-phase the epic, and it is not the whole
+Stage-1 delta.** §10 and §17 still state the DoR's intended Stage-1 scope, deliberately unedited, so
+the divergence stays visible rather than being quietly absorbed. Whether the remainder is a Stage-1
+follow-up or folds into Stage 2 — and how the shipped `routing` shape is reconciled with the one
+§12.1 specifies — is a maintainer call at the #106 review of this document.
 
 Historical-comment discipline for the build-time edit: "Next-free allocation **re-confirmed at
-Stage-1 landing time** (the model-tiering DoR `docs/plans/17-model-tiering.md` reserved
-GR2043–GR2054 on 2026-08-12, after its ORIGINAL GR2037–GR2045 reservation was overtaken by #346,
-#383, #361, #389 and #378 while the design sat in draft). **v1 (static routing + verifier)** takes
-GR2043–GR2052 + GR2054 (#224/#225/#226/#201-verifier) across Stages 1–2; **v2** takes GR2053 with
-#227's probes. CURRENT next-free code: GR2055."
+landing time** (the model-tiering DoR `docs/plans/17-model-tiering.md` reserved GR2043–GR2054 on
+2026-08-12, after its ORIGINAL GR2037–GR2045 reservation was overtaken by #346, #383, #361, #389 and
+#378 while the design sat in draft; Stage 1 then allocated GR2043–GR2046 on its own numbering
+without re-verifying, so the remaining eight were re-reserved at GR2047–GR2054 on 2026-08-15)."
+**v1 (static routing + verifier)** takes **GR2043–GR2053** (#224/#225/#226/#201-verifier) across
+Stages 1–2 — of which GR2043–GR2046 have shipped; **v2** takes **GR2054** with #227's probes.
+CURRENT next-free code: **GR2047** until the §13.2 block lands, **GR2055** once it has.
 
 ## 14. Worked example  [v1 — static routing]
 
 `guardrails.json` (v1 target state, as `guardrails providers init` would emit it and a human would
-then annotate; until #223 lands, the `local-kimi` block fails validation with GR2043 naming
+then annotate; until #223 lands, the `local-kimi` block fails validation with GR2044 naming
 `openai-compat` — delete it to run on a claude-only box today). Note the **`fable` block**: it is
 `costly: true`, so the resolver may never select it — **not at its own rung, not by a climb, not
 by a v2 ladder escalation, and not as a judge bump.** That is review comment 7's *"I don't want
 re-attempts to reach for Fable at all"*, made structural. It is deliberately **NOT** the `default`
-pointer (that would trip GR2050 and route untagged tasks to it); `default` is `sonnet`.
+pointer (that would trip GR2051 and route untagged tasks to it); `default` is `sonnet`.
 
 ```jsonc
 {
@@ -1537,7 +1621,7 @@ the change a cost-conscious user will reach for on day one — **mark `opus` cos
 declares it. `guardrails validate` fails, before a single token is spent:
 
 ```
-error GR2046: task '02-implement-stats' is tagged tier 'hard', but no block can serve it.
+error GR2048: task '02-implement-stats' is tagged tier 'hard', but no block can serve it.
   The only block declaring tier 'hard' is 'opus', which is marked costly: true —
   the harness never auto-selects a costly model (guardrails.json > promptRunners.opus).
   Fix ONE of:
@@ -1545,7 +1629,7 @@ error GR2046: task '02-implement-stats' is tagged tier 'hard', but no block can 
       reachable by YOUR assignment, just never by the harness's choice)
     - clear "costly": true on 'opus', or
     - add tier 'hard' to a non-costly block's routing.tiers
-warning GR2051: promptRunners.opus declares 'routing' but is marked costly: true —
+warning GR2052: promptRunners.opus declares 'routing' but is marked costly: true —
   the routing block is inert (a costly block is never a tier candidate).
 ```
 
@@ -1554,8 +1638,8 @@ must be pinned by a human"* — and it says so at validate time rather than by s
 bill. Note what the harness does **not** do: it does not fall back to `sonnet` (that would route
 weaker than asked, §6.2), it does not "warn and use opus anyway" (that is the floor, and the floor
 has no override), and it does not wait until runtime to mention it. The two diagnostics divide the
-work honestly — **GR2051 explains why the block is out, GR2046 explains what that costs you** —
-which is why GR2051 is a warning and GR2046 is an error rather than one combined complaint.
+work honestly — **GR2052 explains why the block is out, GR2048 explains what that costs you** —
+which is why GR2052 is a warning and GR2048 is an error rather than one combined complaint.
 
 **Read row 01's judge column too — that is the charter, working.** The actor is a local 32B; its
 judge is *not* the same local 32B (the #382 failure at the model layer), it is sonnet — one
@@ -1605,7 +1689,7 @@ medium: 190k tok / $0.14` (task 04's pinned spend is attributed to its pinned mo
 - **"Reserved-model-by-omitting-`routing` is a convention a reader will miss"** (the very trap the
   DA pass fell into) — **revision 3 concedes this and fixes it properly**: `costly: true` is a
   declared flag the generated registry (§4.3) puts in front of the user with its meaning in a
-  comment, not a convention inferred from an absence. GR2050 remains as the back-door net.
+  comment, not a convention inferred from an absence. GR2051 remains as the back-door net.
 
 **New counters revision 3 must answer:**
 
@@ -1651,7 +1735,7 @@ D18 **v1 = static routing; the ladder/probes/steering are deferred to named v2 b
 organizing decision (§2.2, §10) · D1 Stage-not-Wave terminology (§2.1) · D2 registry =
 `promptRunners` generalized, no `providers.json` (§4) · D3 `effort` is NEW, opaque,
 runner-translated (§4, corrects the "shipped with #200" misstatement) · D4 discriminator named
-`kind`, default `"claude"`, GR2043 honest rejection (§4) · D6 routing guidance = structured
+`kind`, default `"claude"`, GR2044 honest rejection (§4) · D6 routing guidance = structured
 `tiers` + `strength` ordering + advisory `notes` prose, hard split (§4) · D7 tier enum `easy|medium|hard`,
 closed, ordered, final for v1; difficulty ≠ strength; 4th tier additive-later (§5) · D9
 precedence: full pin (`action.runner`/`action.model`) > tier resolution (`action.effort` alone
@@ -1661,7 +1745,7 @@ active for a task only when it resolves through routing (§4) · D17 tier/effort
 `TaskDefinitionHash` (drift applies; KISS) (§9.4) · **D19 tagging is gated on tiering being
 configured** — `/plan-breakdown` writes nothing tiering-specific for a single-model user, so its
 breakdown is byte-identical to today (§5, Invariant 7) · **D20 reserved-model pattern** — a block
-with no `routing` is never a tier target; a reserved block must not be `default` (GR2050);
+with no `routing` is never a tier target; a reserved block must not be `default` (GR2051);
 `/plan-breakdown`-time model choice is outside the registry (§4).
 
 **RESOLVED and in v1 — added by revision 3 (the charter reconciliation):**
@@ -1676,7 +1760,7 @@ allowed where being wrong costs one spare advisory, and forbidden where it would
 spend (§4.1) · **D22 the costly floor** — the
 harness never auto-selects a `costly: true` block, at any rung, by any mechanism, in any version;
 only a task pin or the `default` pointer reaches one (§6.2, charter D3) · **D22a one candidacy
-predicate** shared by the resolver, GR2046 and `no-route`, so validation and runtime can never
+predicate** shared by the resolver, GR2048 and `no-route`, so validation and runtime can never
 disagree about which blocks serve a rung (§6.2) · **D23 the registry is generated then annotated**
 — `guardrails providers init` writes comment-annotated blocks into `guardrails.json` itself
 (comments already parse), idempotently, never fabricating a model list (§4.3, charter D8) ·
@@ -1690,10 +1774,10 @@ bump is in STRENGTH, never in tier** — bumping the tier would mean "pretend th
 category error; the charter's prose uses both phrasings and only one is coherent (§6.5) ·
 **D25 `routing.rank` is retired** in favour of ascending-`strength` ordering — *the weakest model
 that can serve the tier goes first*, a cost-minimising default the deterministic gate makes safe;
-one ordering axis, not two with opposite polarity; retired-key warning GR2054 (§4.2; **settled
+one ordering axis, not two with opposite polarity; retired-key warning GR2046 (§4.2; **settled
 2026-08-12**) · **D26 the degrade/halt
 asymmetry** — the verifier rule degrades to an advisory when only a costly model would satisfy it;
-the actor route halts instead (GR2046 / `no-route`). Degrade what is advisory, halt what is
+the actor route halts instead (GR2048 / `no-route`). Degrade what is advisory, halt what is
 load-bearing; neither overspends (invariant 5, §6.2, §6.5) · **D27 the plan-wide verifier knob is a
 FLOOR, not a default** — `tiering.verifier.minTier` never selects the judge's rung, it only refuses
 one that came out below it and never lowers a result; it collapses charter Decisions 4 and 6 into
@@ -1725,8 +1809,8 @@ top (§9.2, with #228).
    `RawPromptRunner`(+overrides)/`PromptRunnerConfig`, `tier`/`effort` on `RawAction`,
    `tiering` **(`defaultTier` + `verifier.minTier` only — NOT `thresholdPercent` /
    `probeCacheSeconds`, §12.7)** on
-   `RawRunConfig`; `FromConfig` kind-switch; **GR2043–GR2052 + GR2054** in
-   `PlanValidator`/`DiagnosticCodes` (marker bump to **GR2055**; GR2053 is v2, do NOT add) —
+   `RawRunConfig`; `FromConfig` kind-switch; **GR2043–GR2053** in
+   `PlanValidator`/`DiagnosticCodes` (marker bump to **GR2055**; GR2054 is v2, do NOT add) —
    **and RE-VERIFY the whole block against `DiagnosticCodes.cs` before landing, per §13's standing
    instruction**; §12.1/12.3 SSOT edits + the plan-breakdown `schemas.md` sentinel mirror.
    `filesTouched:
@@ -1764,7 +1848,7 @@ top (§9.2, with #228).
 
 **v2 — named bets, NOT started until #230-lite measurement justifies them (§10, §11):**
 
-3. **#227 probes** — `IProviderProbe` + cache (TTL doubling) + `providers status` (GR2053); gated
+3. **#227 probes** — `IProviderProbe` + cache (TTL doubling) + `providers status` (GR2054); gated
    by OD-C. **#228 ladder** — journal-derived rung, D15 trigger table, OD-A re-scoped per DA F1,
    `tierSource:"escalated"`, `routing.escalationTarget`; gated by OD-A/F5. **#231 steering** —
    `--prefer` + threshold boundary + `routing` `decisions[]` + OD-B carve-out + the DA-F2
@@ -1773,6 +1857,6 @@ top (§9.2, with #228).
 **Standalone:**
 
 4. **#223 — `guardrails-harness-developer`,** independently once a local endpoint exists: the
-   `openai-compat` runner class behind GR2043's gate (§4.4).
+   `openai-compat` runner class behind GR2044's gate (§4.4).
 
 Every stage: `guardrails-domain-knowledge` execution-semantics update in the same change.

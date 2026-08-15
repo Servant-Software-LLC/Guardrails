@@ -96,7 +96,7 @@ as design (not yet implementation) on #201's "Resolution timing" section:
 
 ## Stack
 
-.NET 8 / xUnit v3 for `Guardrails.Core`/`Guardrails.Cli` (escalation logic, steering surface,
+.NET 10 / xUnit v3 for `Guardrails.Core`/`Guardrails.Cli` (escalation logic, steering surface,
 threshold-check + prompt UX). Verification: `dotnet test tests/Guardrails.Core.Tests` +
 `tests/Guardrails.Integration.Tests` for the escalation/steering behavior; a scripted or manual
 check for the interactive-prompt UX (both at `/plan-breakdown` and `guardrails run` call sites).

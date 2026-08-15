@@ -11,9 +11,14 @@
 > settled 2026-08-12 as a floor, NOT a default: it never selects the judge's rung, it only refuses
 > one that came out below it). It also
 > **retires `routing.rank`** in favour of ascending-`strength` ordering (DoR §4.2) and
-> **reallocates the GR block to GR2043–GR2053** (v1 takes GR2043–GR2052; GR2053 is v2) — the
-> original GR2037–GR2045 reservation was taken by shipped work while this design sat in draft
-> (DoR §13). **Re-verify before landing; the file is the registry, the design is not.**
+> **reallocates the GR block** — the original GR2037–GR2045 reservation was taken by shipped work
+> while this design sat in draft (DoR §13). **As of the Stage-1 merge (master `5788a54`), four codes
+> are ALLOCATED and shipped — GR2043 `InvalidTierValue`, GR2044 `InvalidPromptRunnerKind`, GR2045
+> `InvalidRunnerAxis`, GR2046 `RetiredRoutingRank` — and the remaining eight are re-reserved at
+> GR2047–GR2054** (v1 takes GR2043–GR2053; GR2054 is v2). Note that Stage 1 allocated its own
+> numbering *without* re-verifying against the DoR, so GR2043 and GR2045 mean different things in
+> the file than in earlier revisions of this brief (DoR §13). **Re-verify before landing; the file is
+> the registry, the design is not.**
 
 Part of the model-tiering epic (#201). This is stage 1 of 3 sequential plans (foundation →
 consumers → dynamic behavior); stages 2 and 3 depend on this one landing first. Covers issues
@@ -62,11 +67,11 @@ test fails. §3 documents `task.json`'s schema (where the new tier field joins `
 5. Update SSOT §9 (prose + the canonical-schema sentinel block) in the same change.
 6. **The three model axes (DoR §4.1, charter Decision 7):** `costly` (bool), `strength` (integer
    ≥ 1, higher = stronger), `specialization` (`coding|planning-reasoning|general|unspecified`) —
-   **top-level on the block**, all optional, malformed = GR2049. Not consumed in this stage; the
+   **top-level on the block**, all optional, malformed = GR2045. Not consumed in this stage; the
    resolver (stage 2) is the first reader. **`routing.rank` is NOT implemented** (settled OD-F) —
    ordering comes from ascending `strength`: *the weakest model that can serve the tier goes first*
    (DoR §4.2/D25). A `routing.rank` key present in a config raises the retired-field warning
-   **GR2054** rather than being silently ignored, so a migrated config's ordering can never change
+   **GR2046** rather than being silently ignored, so a migrated config's ordering can never change
    without the author being told.
 7. **`guardrails providers init` (DoR §4.3, charter Decision 8):** enumerate each configured
    provider's models where the `kind` has an enumeration surface, and write/merge the blocks into
@@ -86,8 +91,8 @@ test fails. §3 documents `task.json`'s schema (where the new tier field joins `
    being configured (DoR §5, D19):** the skill produces `guardrails.json`, so it knows whether any
    `routing` block exists. If tiering is **not** configured (no `routing` block — the single-model
    default), the skill writes **NO `action.tier` fields, NO `tiering` block, and NO classification
-   report lines**, and GR2041 cannot fire — a single-model user's breakdown is **byte-identical to
-   today** (DoR Invariant 7).
+   report lines**, and GR2049 (`TieringInert`) cannot fire — a single-model user's breakdown is
+   **byte-identical to today** (DoR Invariant 7).
 3. A plan-wide default tier (config-level, e.g. `guardrails.json`) applies to any task left
    untagged — including one a human hand-adds to the folder after breakdown.
 4. `guardrails validate` rejects an unrecognized tier value.
@@ -107,23 +112,23 @@ test fails. §3 documents `task.json`'s schema (where the new tier field joins `
   real plan.
 - **Gated tagging (DoR Invariant 7 / D19):** breaking down a plan against a **no-`routing`** config
   produces a folder **byte-identical to today** — no `action.tier`, no `tiering` block, no
-  classification report lines, GR2041 does not fire.
+  classification report lines, GR2049 (`TieringInert`) does not fire.
 - SSOT §9 and §3 (including the canonical-schema sentinel) are updated in the same change as their
   respective code changes — not left to drift.
 - A block carrying `costly`/`strength`/`specialization` validates and round-trips; each malformed
-  form (non-bool `costly`, `strength: 0`, an out-of-enum `specialization`) fails with **GR2049**.
+  form (non-bool `costly`, `strength: 0`, an out-of-enum `specialization`) fails with **GR2045**.
 - **`guardrails providers init` is idempotent under re-run:** running it twice against a config a
   human has annotated leaves that annotation **byte-identical**. (This is the acceptance that
   matters most — a generator that clobbers the annotation it exists to solicit is worse than none.)
 - **`providers init` never invents a model:** against a `kind` with no enumeration surface it exits
   0, annotates the existing blocks, and emits the "could not enumerate" comment — it does not fail,
   and it does not write a model identifier the provider did not report.
-- **Re-verify GR2043–GR2052 against `DiagnosticCodes.cs` before landing** and renumber if the block
-  has been taken again; the file is the registry, this design is not (DoR §13).
+- **Re-verify the still-reserved GR2047–GR2054 block against `DiagnosticCodes.cs` before landing**
+  and renumber if it has been taken again; the file is the registry, this design is not (DoR §13).
 
 ## Stack
 
-.NET 8 / xUnit v3 for `Guardrails.Core` (registry + schema work, `guardrails validate`).
+.NET 10 / xUnit v3 for `Guardrails.Core` (registry + schema work, `guardrails validate`).
 `.claude/skills/plan-breakdown/SKILL.md` for the tagging doctrine (a `guardrails-skill-author`
 task). Verification: `dotnet test tests/Guardrails.Core.Tests` (schema/registry unit tests) +
 the plan-breakdown golden round-trip meta-test.
