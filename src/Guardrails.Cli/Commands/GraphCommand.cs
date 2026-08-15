@@ -313,8 +313,18 @@ public static partial class GraphCommand
     /// written <c>diagram.md</c> path. <c>diagram.md</c> stays the GitHub render (click-free, since
     /// GitHub sandboxes Mermaid and the targets are <c>file://</c>-local); <c>diagram.html</c> is
     /// the pan/zoom/fullscreen viewer whose nodes click through to their source. Both carry the
-    /// SAME <c>source-sha256</c> — so <c>--check</c> governs the pair — and both are excluded from
-    /// <c>guardrails.baseline</c>, so neither causes drift.
+    /// SAME <c>source-sha256</c>, so <c>--check</c> governs the pair.
+    /// <para>
+    /// Both are generated, non-authored artifacts, excluded from the <c>guardrails.baseline</c>
+    /// snapshot (SSOT §10/§11) — <see cref="Guardrails.Core.Breakdown.BreakdownManifest"/> drops
+    /// them by their manifest-root-relative name, which covers the plan-level pair and a PER-WAVE
+    /// baseline (the §11 model: <c>lock</c>/<c>merge</c> take a folder argument and operate on
+    /// <c>&lt;plan&gt;/&lt;wave&gt;/</c>). A baseline captured at a WAVED PLAN ROOT sees a wave's
+    /// pair as <c>&lt;wave&gt;/diagram.md</c> — two segments — and does NOT drop it. That predates
+    /// this command and is not changed by it (the run has always written those files at every wave
+    /// boundary), but it is why a plan-root <c>lock --diff</c> on a waved plan lists
+    /// <c>ADDED &lt;wave&gt;/diagram.html</c>; fixing it belongs to the manifest, not here.
+    /// </para>
     /// <para>
     /// THE single writer: the plan-level path, the per-wave fan-out (<see cref="DiagramTargets"/>),
     /// and <see cref="RenderWaveScoped"/> (the run's wave boundaries) all go through it, so no
@@ -383,7 +393,11 @@ public static partial class GraphCommand
     /// </summary>
     private static int Check(IReadOnlyList<PlanDefinition> targets, TextWriter output)
     {
-        string primaryDir = targets[0].PlanDirectory;
+        // Trim a trailing separator: `Path.GetFullPath("plan/")` keeps one, and a quoted Windows
+        // path ending in a backslash would escape its own closing quote in the copy-pasteable hint
+        // (`"C:\Dev AI\plan\"`). This also reproduces, byte for byte, the hint the pre-#447 code
+        // built from Path.GetDirectoryName(diagramPath), which never carried one.
+        string primaryDir = Path.TrimEndingDirectorySeparator(targets[0].PlanDirectory);
         string regenHint = $"run: guardrails graph {QuoteIfNeeded(primaryDir)}";
 
         bool allFresh = true;
