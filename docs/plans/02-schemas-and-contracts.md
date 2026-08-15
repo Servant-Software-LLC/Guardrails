@@ -148,8 +148,11 @@ decision (issue #275) and is deliberately NOT done here.
     },
     "maxJudgeWidenings": 3            // OPTIONAL run-level cap on how many times a judge may reclassify an unknown failure as retryable; once spent, every unknown failure escalates deterministically
   },
-  "tiering": {                        // OPTIONAL, NEW (#225; the per-task key is action.tier — "easy" | "medium" | "hard", §3). Whole block ABSENT ⇒ NO plan-wide default ⇒ every untagged task resolves to a null tier and nothing is fabricated: the additive guarantee that a single-model plan is byte-identically unaffected
-    "defaultTier": "medium"           // OPTIONAL; the tier applied to every task that declares no action.tier of its own. Matched VERBATIM against the same three tokens (no trim, no case-fold); anything else is a GR2043 error, reported ONCE here rather than fanned out over every untagged task
+  "tiering": {                        // OPTIONAL, NEW (#225/#201; the per-task key is action.tier — "easy" | "medium" | "hard", §3). Whole block ABSENT ⇒ NO plan-wide default ⇒ every untagged task resolves to a null tier and nothing is fabricated: the additive guarantee that a single-model plan is byte-identically unaffected. Tiering is CONFIGURED iff ≥1 promptRunners block declares `routing` (§9) — this block does NOT configure it
+    "defaultTier": "medium",          // OPTIONAL; the tier applied to every task that declares no action.tier of its own. Matched VERBATIM against the same three tokens (no trim, no case-fold); anything else is a GR2043 error, reported ONCE here rather than fanned out over every untagged task
+    "verifier": {                     // OPTIONAL (#201 verifier half, §9.6). Absent ⇒ no floor; the judge's rung is chosen entirely by the resolution rule (the ACTOR's rung, bumped one STRENGTH rank when the actor is weak)
+      "minTier": null                 // OPTIONAL plan-wide FLOOR: the resolved judge may never end up BELOW this rung. It NEVER selects a rung — it only refuses one that came out too low, and never lowers a result. "easy"|"medium"|"hard" (GR2043). Unsatisfiable without a costly block ⇒ the judge stays put + an ADVISORY (never an error — an actor tier HALTS, a verifier floor DEGRADES)
+    }
   },
   "autoBreakdown": true,              // OPTIONAL; DEFAULT true (#360, §14.4/§14.10). Between-wave breakdown INVOCATION only, DECOUPLED from autonomyPolicy. true: a JIT-checkpoint wave carrying a brief.md AUTO-FIRES plan-breakdown with NO prompt (even non-interactive), at ANY policy; the human review gate STILL halts. false: fall back to the #368 autonomyPolicy-gated invocation. brief.md still required (absent → honest-halt)
   "triageAutoFile": false,            // OPTIONAL; opt-in auto-file of the needs-human triage GH issue (§9). Default OFF = draft into feedback.md only; gated behind a configured GH repo + token when on
@@ -165,6 +168,12 @@ decision (issue #275) and is deliberately NOT done here.
       "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
       "maxTurns": 50,
       "model": null,                  // null = CLI default
+      "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat. Only "claude" is IMPLEMENTED; an unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
+      "effort": null,                 // OPTIONAL thinking-effort knob (#201); an OPAQUE string shape-checked like `model` (GR2050) and TRANSLATED by the runner CLASS, so the vendor spelling stays quarantined there. Same model at two efforts = two blocks
+      "costly": null,                 // OPTIONAL axis 1/3 (#201). TRUE = the harness may NEVER auto-select this block — only an explicit task pin (action.runner/action.model) or the `default` pointer reaches it. TRI-STATE: absent = null = "not stated", distinct from an explicit false = "stated cheap"; at the candidacy predicate null behaves as NOT-costly (an un-annotated registry stays routable). Non-boolean = GR2045
+      "strength": null,               // OPTIONAL axis 2/3 (#201). Integer >= 1, HIGHER = stronger — the ONLY totally-ordered axis. Orders same-rung candidates ASCENDING (the weakest model that can serve the tier goes first); absent sorts LAST. Malformed = GR2045
+      "specialization": null,         // OPTIONAL axis 3/3 (#201). "coding" | "planning-reasoning" | "general" | "unspecified" (absent = "unspecified", which is also writable). A PREFERENCE, never an ordering. Outside the enum = GR2045
+      "routing": null,                // OPTIONAL (#224/#201). ABSENT/null (shown) = this block is NEVER a tier target — reachable only by an explicit pin or as `default`, exactly today's behavior. PRESENT opts the block into tier resolution AND makes tiering CONFIGURED for the plan. Shape when present: { "tiers": [...], "notes": "…" } — `tiers` is REQUIRED and non-empty, a subset of "easy"|"medium"|"hard", and is the MACHINE-CONSUMED half (missing/empty/wrong-type/out-of-enum = GR2047); `notes` is prose surfaced to humans and MAY be appended to a composed prompt, but is NEVER parsed for a routing decision. `routing.rank` is RETIRED (GR2046 warning)
       "extraArgs": [],
       "maxOutputTokens": 64000,       // per-response output-token cap (#114); default 64000 (> Claude Code's 32000); GR2023 if <= 0
       "env": {},                      // extra env vars passed verbatim to the runner process (#114); user keys win last
@@ -182,13 +191,22 @@ decision (issue #275) and is deliberately NOT done here.
      `"promptRunners":` line through its matching close, leading 2-space indent included) is the
      CANONICAL copy. `.claude/skills/plan-breakdown/references/schemas.md` mirrors it byte-for-byte
      between its `canonical-schema:promptRunners` sentinels (drift-tested). Edit here first.
-     NOTE (#224, model-tiering Stage 1): this block is an EXAMPLE of a typical config, not the full key
-     list. The provider-registry keys — `kind` (default `claude`) and the per-model axes `costly` /
-     `strength` / `specialization` / `routing` — are OPTIONAL and are defined normatively in §9. They are
-     held OUT of this canonical block deliberately: the block is mirrored byte-for-byte into the skill
-     copy, so the two must move in ONE change, and the skill mirror is not in the harness change's write
-     scope. Fold them in when that mirror is next updated — a config omitting every one of them is still
-     complete and valid, which is exactly the additive guarantee §9 states. -->
+     NOTE (#201 model-tiering Stage 1.5): the provider-registry keys — `kind`, `effort`, and the axes
+     `costly` / `strength` / `specialization` / `routing` — are now IN this block, closing the mirror gap
+     Stage 1 left open (it updated §9's prose but not this block). They are all OPTIONAL and are defined
+     normatively in §9; §9 wins on meaning, this block shows placement.
+     EVERY tiering key here is shown in its ABSENT state (`null`) on purpose, and that is load-bearing
+     rather than tidy: the canonical block is what a generator or a hand-editor copies, so it must
+     demonstrate the DEFAULT — no `kind` behaviour change, no axes, and above all NO `routing`, since a
+     `routing` key is what makes tiering CONFIGURED for the whole plan. A block copied verbatim from here
+     validates clean and routes byte-identically to a pre-tiering config, which is Invariant 7 (§9.6)
+     shown rather than asserted. Fill these in only when you are actually tiering. -->
+
+<!-- A `guardrails.json` copied from the block above is exercised by
+     `SchemaDriftTests.CanonicalPromptRunnersBlock_ValidatesClean_AndConfiguresNoTiering`, which loads it
+     through the real loader+validator and asserts zero diagnostics and zero tiering. If a future edit
+     puts a live `routing` block (or any other configuring value) into the canonical example, that test
+     fails — deliberately, because the example would then be teaching every reader to opt in. -->
 
 - `workspace` is the repo/directory the plan operates ON (typically the folder that
   contains the plan folder). Children run with cwd = workspace; everything
@@ -500,6 +518,10 @@ or interactively, the dial is inert — which is why an existing run's behaviour
     "model": null,                   // prompt actions only; null = inherit from the runner's default model
     "tier": null,                    // OPTIONAL difficulty tag (#225): "easy" | "medium" | "hard"; null/absent =
                                      //   inherit tiering.defaultTier (§2), or stay untagged when no tiering block
+    "effort": null,                  // OPTIONAL per-task thinking-effort override (#201), prompt actions only. Mirrors
+                                     //   `model`'s SHAPE (opaque string, GR2050 shape check) but NOT its BYPASS: with a
+                                     //   tier and no full pin, resolution still selects the block and `effort` overrides
+                                     //   only that route's effort. null/absent = inherit the resolved route's effort
     "timeoutSeconds": 2400,          // narrower than task timeout
     "workingDirectory": null,        // overrides config workspace (rare)
     "env": { "MY_VAR": "value" }     // extra env vars for this action's process
@@ -546,13 +568,33 @@ An **absent** `tiering` block means there is **no** plan-wide default: every unt
 never mentions a tier parses, validates and runs exactly as it does today. Nothing **routes** on a
 tier in this stage; the plan only gets to *say* what it has, and `validate` holds it to that.
 
-A declared tier that is not one of the three tokens is a **`GR2043` error**, checked at **both**
-declaration sites: a task's `action.tier` and the plan-wide `tiering.defaultTier`. Matching is
-**verbatim** — no trimming, no case-folding — so `"Hard "` with a stray trailing space is reported
-rather than silently accepted (the same *preserve the malformed signal* doctrine `action.model`
-follows for `GR2030`). An unrecognized plan-wide default is reported exactly **once, at its own
-declaration site**, and is deliberately **not** propagated onto tasks, so one typo can never fan out
-into an error per untagged task. A `null`/absent tier at either site is always fine.
+A declared tier that is not one of the three tokens is a **`GR2043` error**, checked at **all four**
+declaration sites (#201 Stage 1.5 — Stage 1 shipped only the first and third):
+
+1. a task's **`action.tier`** (§3, above);
+2. a prompt guardrail's frontmatter **`tier`** (§4.2) — the *judge* site, across every
+   guardrail-shaped folder;
+3. the plan-wide **`tiering.defaultTier`** (§2);
+4. the plan-wide **`tiering.verifier.minTier`** floor (§2, §9.6).
+
+Matching is **verbatim** — no trimming, no case-folding — so `"Hard "` with a stray trailing space is
+reported rather than silently accepted (the same *preserve the malformed signal* doctrine
+`action.model` follows for `GR2030`). Covering all four is the point: a tier token that reaches the
+resolver unrecognized is unroutable wherever it was written, and a site validated at one declaration
+point but not another is exactly how a typo survives into a run. An unrecognized plan-wide default is
+reported exactly **once, at its own declaration site**, and is deliberately **not** propagated onto
+tasks, so one typo can never fan out into an error per untagged task. A `null`/absent tier at any site
+is always fine.
+
+`action.effort` (issue #201) is an **optional** per-task thinking-effort override on a prompt action.
+It mirrors `action.model`'s **shape** — an opaque vendor token with no enumerable valid set, held
+verbatim and given the same cheap shape check (non-empty, no leading/trailing/embedded whitespace or
+control characters; **`GR2050`** otherwise) — but deliberately **not** its **bypass**:
+`action.model`/`action.runner` are full pins that skip tier resolution entirely, whereas
+`action.effort` *alone* leaves resolution in charge of selecting the block and overrides only that
+route's effort. `{ "tier": "medium", "effort": "xhigh" }` therefore means *"route by tier, but think
+hard"*. Nothing consumes it yet — the static resolver (#226) is its first reader — so this stage only
+guarantees it parses, validates, and round-trips.
 
 *(Former §3.1/§3.1.1 — the `captureHashes`/`restoreOnRetry` triad — are **removed in this change**,
 along with the harness `CapturedFileStore`/`FileHashCapture`/`RestoreAncestorCaptures`/`WorkspaceLock`
@@ -975,9 +1017,20 @@ description: LLM review of the report tone
 runner: claude
 maxTurns: 20
 timeoutSeconds: 900
+tier: hard          # OPTIONAL (#201): the JUDGE's difficulty tier — "easy" | "medium" | "hard"
 ---
 You are a verifier. Read the report at out/report.md and judge ONLY whether ...
 ```
+
+**`tier` — the judge-guardrail tier tag (issue #201/#225, §9.6).** A prompt guardrail is the one place
+a model renders a *verdict*, so it resolves its own route and needs its own site to pin one; `tier`
+joins `runner`/`maxTurns` as an optional frontmatter key. It is the **fourth** `GR2043` site (§3): the
+value is a closed token set, matched against `easy`/`medium`/`hard` with its **case preserved** so a
+`tier: Hard` typo is reported rather than quietly repaired. (Surrounding whitespace is stripped by the
+frontmatter scalar reader for every key, as a YAML reader does.) **Absent ⇒ the judge's rung follows
+the actor's** — nothing is fabricated, and with tiering unconfigured the whole verifier half is inert
+(Invariant 7, §9.6). Deterministic guardrails run no model and never carry one. Nothing routes on it
+yet; the resolver is #226.
 
 **Verdict contract**: a prompt guardrail MUST end by writing
 
@@ -3105,13 +3158,15 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
 ```jsonc
 "primary": {
   "command": "claude",
-  "kind": "claude",                 // OPTIONAL; DEFAULT "claude". claude | codex | openrouter | local
+  "kind": "claude",                 // OPTIONAL; DEFAULT "claude". claude | codex | openrouter | local | openai-compat
+  "effort": "xhigh",                // OPTIONAL; opaque thinking-effort token, shape-checked (GR2050), runner-translated
   "costly": true,                   // OPTIONAL axis 1/3; boolean. ABSENT = "not stated" (≠ false)
   "strength": 7,                    // OPTIONAL axis 2/3; integer >= 1, higher = stronger. ABSENT = "not stated"
   "specialization": "planning-reasoning", // OPTIONAL axis 3/3; coding | planning-reasoning | general | unspecified
-  "routing": {                      // OPTIONAL; ABSENT = null. Read by the #226 resolver, not by Stage 1
-    "guidance": "Prefer for wide-context refactors; avoid for one-line fixes.",
-    "tags": ["refactoring", "long-context"]
+  "routing": {                      // OPTIONAL; ABSENT = null = never a tier target. PRESENT = opts into tier resolution
+    "tiers": ["medium", "hard"],    // REQUIRED here; non-empty subset of easy|medium|hard. The MACHINE-CONSUMED half (GR2047)
+    "notes": "Wide-context refactors; cross-module architecture.", // OPTIONAL prose for humans — NEVER parsed for routing
+    "guidance": "…", "tags": ["…"]  // OPTIONAL Stage-1 prose/tags; additive, also never parsed for routing
   }
 }
 ```
@@ -3121,16 +3176,36 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
   (`primary`, `cheap`, `reviewer`) and still be dispatched correctly, because dispatch keys on the `kind`
   FIELD, never on the map name or the `command`. The default is what keeps the change additive — an omitted
   `kind` is Claude, so every existing config validates and runs unchanged. Accepted: `claude`, `codex`,
-  `openrouter`, `local` (parsed trimmed + case-insensitively, as `autonomyPolicy` is). An **unrecognised**
-  value is **GR2044 (error)**, and the message NAMES the offending value so an operator with several blocks
-  knows which one to fix; the block then falls back to `claude` only so the REST of validation still reports
-  (the error blocks the run regardless).
-  - **Recognised-but-unimplemented is a BACKSTOP, not a gate.** Only `claude` has a concrete runner in
-    Stage 1. A config declaring `codex`/`openrouter`/`local` **loads and validates CLEAN** (no diagnostic —
-    declaring a kind is legal); construction of the runner registry then fails with an
-    `InvalidOperationException` naming the kind. It must **never** silently fall back to Claude — quietly
-    serving a request for another provider with a different model is the one failure mode this seam exists
-    to prevent. The concrete runners land with #223.
+  `openrouter`, `local`, `openai-compat` (parsed trimmed + case-insensitively, as `autonomyPolicy` is). An
+  **unrecognised** value is **GR2044 (error)**, and the message NAMES the offending value so an operator
+  with several blocks knows which one to fix; the block then falls back to `claude` only so the REST of
+  validation still reports (the error blocks the run regardless).
+  - **`openai-compat` is the reserved #223 seam** — ONE kind covering Ollama, llama.cpp, LM Studio and
+    vLLM, because they share the wire protocol. It deliberately spans a loopback local endpoint *and* a
+    cloud OpenAI-compatible API, which is exactly why the verifier's provider-kind "weak" fallback (§9.6)
+    is **verifier-only** and may never be used for actor ordering: this kind cannot tell the two apart.
+    `codex` and `openrouter` are reserved names, unassigned.
+  - **A recognised-but-unimplemented kind is a `guardrails validate` ERROR (GR2044), and registry
+    construction is the BACKSTOP — not the gate** (#201 Stage 1.5; Stage 1 shipped this the other way
+    round). Only `claude` has a concrete runner. A config declaring `codex`/`openrouter`/`local`/
+    `openai-compat` **fails validation**, naming the kind and what this build can serve.
+    `PromptRunnerRegistry.FromConfig` *still* throws an `InvalidOperationException` for such a kind —
+    that backstop covers a value cast in past the loader — but reaching it now means the gate was
+    bypassed. The reason for the move is the rule this document applies everywhere else: anything
+    knowable from the config alone is caught at validate time, never by a run that starts and then dies
+    composing its registry. It must **never** silently fall back to Claude — quietly serving a request
+    for another provider with a different model is the one failure mode this seam exists to prevent. The
+    concrete runners land with #223, and GR2044's implemented-set grows with them; the set is declared
+    once in `PromptRunnerKinds.Implemented` and pinned to the dispatch switch by a test, so the gate and
+    the backstop cannot drift apart.
+- **`effort` — the thinking-effort knob (issue #201).** An OPTIONAL, **opaque** per-block string (`"low"`,
+  `"xhigh"`, …). The harness never interprets it: it is shape-checked only (**GR2050** — non-empty, no
+  leading/trailing/embedded whitespace or control characters, the same predicate `model` gets for GR2030)
+  and **TRANSLATED by the runner CLASS** into whatever that CLI/API exposes, so the vendor spelling stays
+  quarantined there exactly as `maxOutputTokens` → `CLAUDE_CODE_MAX_OUTPUT_TOKENS` is. Wanting the same
+  model at two efforts is **two blocks** (`"opus"`, `"opus-xhigh"`) — which is what makes the three axes
+  per-*effort* as well as per-*model*: a frontier model at minimal effort need not be marked `costly` while
+  its `xhigh` sibling is. Absent ⇒ `null`, never fabricated. The per-task override is `action.effort` (§3).
 - **The three axes are TOP-LEVEL on the block** — not nested under `routing`, not under a `settings`
   sub-object. They describe the MODEL, and the resolver reads them alongside `command`/`model`.
   - **`costly`** (boolean) — does spending on this model warrant restraint? **TRI-STATE**: an absent key is
@@ -3147,22 +3222,36 @@ section defines the wire schema and its diagnostics, not a routing behaviour.
   - **A present-but-malformed axis is reported, never silently dropped.** Dropping it would leave the
     operator believing they had expressed a routing preference the resolver will never see. An **absent**
     axis is never flagged, and is never back-filled with a fabricated default.
-- **`routing`** (object, absent ⇒ `null`) — per-model guidance about the work this model should take on:
-  `guidance` (free prose) and `tags` (machine-comparable strings; absent ⇒ empty list). Stage 1 requires
-  only that it parses, validates, and survives a serialise/parse cycle intact.
+- **`routing`** (object, **absent ⇒ `null` ⇒ the block is NEVER a tier target**, reachable only by an
+  explicit pin or as the `default` pointer — today's behaviour). **Present, it opts the block into tier
+  resolution**, and its presence anywhere is what makes tiering *configured* for the plan (§9.6). The block
+  splits along one hard line:
+  - **`tiers` — REQUIRED and MACHINE-CONSUMED.** A non-empty subset of `easy`/`medium`/`hard` naming which
+    rungs this `(kind, model, effort)` route may serve. It is the **only** key the candidacy predicate
+    (§9.6) reads. Missing, empty, not an array, holding a non-string, or holding a token outside the enum
+    (matched **verbatim** — no trim, no case-fold) is **GR2047 (error)**, one diagnostic per distinct
+    problem. It is an error rather than a warning because the alternative failure is silent: a `routing`
+    block without a usable `tiers` declares an eligibility it cannot express, so it would simply never be
+    selected while its author read the config as opting in.
+  - **`notes` / `guidance` / `tags` — HUMAN-FACING, never parsed.** `notes` is the prose rationale;
+    `guidance`/`tags` are the Stage-1 spellings of the same human-facing surface, kept because they are
+    additive and harmless. All three are surfaced to humans (review context, future `providers status`) and
+    MAY be appended to a composed prompt as context, but **no routing decision ever reads them** — no LLM
+    and no prose picks a model.
 - **`routing.rank` is RETIRED and is NOT implemented (settled OD-F).** Ordering is ascending `strength`;
   `rank` is not modelled anywhere in the harness and is **IGNORED**. A config still carrying it gets
   **GR2046 (warning)** — deliberately not an error, so a config mid-migration keeps loading, and
   deliberately not silence, because accepting `rank` quietly is exactly how a migrated config's ordering
-  would change without anyone being told. Remove `rank`; express relative capability with `strength`.
+  would change without anyone being told. Remove `rank`; express relative capability with `strength`. To
+  say *"this block should not serve that rung"*, **remove the rung from `routing.tiers`** — eligibility
+  says *may*, `strength` says *how strong*, and nothing needs to say *prefer*.
 
-> **Canonical-schema note (see the `canonical-schema:promptRunners` sentinel in §2).** The tiering keys
-> above are documented HERE rather than added to the §2 canonical block, because that block is mirrored
-> byte-for-byte into `.claude/skills/plan-breakdown/references/schemas.md` and the mirror is drift-tested
-> (`SchemaDriftTests`). The two must move in ONE change; folding these keys into the canonical block is
-> therefore the job of the task that owns the skill mirror, not of the harness change that introduced them.
-> §9 is the normative definition either way — the §2 block is an EXAMPLE of a typical config, and a config
-> that omits every key here is still a complete and valid one.
+> **Canonical-schema note (see the `canonical-schema:promptRunners` sentinel in §2).** As of #201 Stage 1.5
+> every key above IS in the §2 canonical block (and therefore in the drift-tested
+> `.claude/skills/plan-breakdown/references/schemas.md` mirror), closing the gap Stage 1 left when it
+> updated this prose but not that block. **§9 remains the normative definition; the §2 block shows
+> placement and the DEFAULT (every tiering key `null`).** A config that omits every key here is still a
+> complete and valid one — which is what the canonical block demonstrates by showing them absent.
 
 ### 9.1 AI-merge worker
 
@@ -3669,6 +3758,100 @@ again. §9.3's halt rule now fires only for its originally-intended scope — a 
 `.claude/` write that did not use `stagingOutputs`.
 
 ---
+
+### 9.6 Tier routing (model tiering, issue #201) — the schema and its checks
+
+> **Scope note.** This section defines the CONTRACT the loader/validator enforce today. **There is no
+> resolver yet** — no ladder, no probes, no steering, and no attempt-launch tier resolution. Design of
+> record: `docs/plans/17-model-tiering.md`. What is normative here is the schema, the candidacy predicate,
+> and the four diagnostics; everything about *selection* lands with #226.
+
+**The tier enum is `easy | medium | hard`** — closed, lowercase, ordered `easy(1) < medium(2) < hard(3)`.
+It names **task difficulty** (a property of the *work*), deliberately not model capability (`strength`, a
+property of the *model*). Keeping the tag about the work is what lets a human tag without knowing the
+registry. Four sites may declare one; all four are GR2043-checked (§3).
+
+**Configured vs. active — the activation rule, and it is PLAN-scoped, not config-scoped.**
+
+- Tiering is **CONFIGURED** iff **≥ 1 runner block declares `routing`**. Nothing else configures it — not
+  a `tiering` block, not a tag.
+- Tiering is **ACTIVE for a task** only when that task would actually resolve through routing: it has an
+  effective tier (its own tag, or `tiering.defaultTier`) **AND** a serving block exists. A run whose
+  remaining tasks are all untagged does nothing tiering-specific even against a routing-enabled config.
+
+This is what makes **Invariant 7** provable rather than asserted: *a config with no `routing`, no
+`tiering`, no `kind` (or `kind: "claude"`) and no tier tags MUST produce a byte-identical routing
+decision, spend, and execution path to a pre-tiering build.* Observability enrichment is exempt and
+additive; decisions and spend are not.
+
+**The ONE candidacy predicate.** Written once, used by everything — GR2048's validate-time check, the
+future resolver, the `no-route` outcome, and the verifier route:
+
+> **`Candidates(R)` = blocks where `routing` is present AND `R ∈ routing.tiers` AND `costly` is not
+> `true`.** Ordered by **ascending `strength`** (unspecified last), ties by declaration order — *the
+> weakest model that can serve the tier goes first*. If `Candidates(R)` is empty, resolution climbs to the
+> nearest **stronger** rung with a non-empty set; it **never routes down**.
+
+Agreement here is a correctness requirement, not tidiness: if validation counted a `costly` block as
+serving a rung and the resolver did not, validation would pass and every task at that rung would die at
+runtime. It lives in one place in the code (`PromptRunnerConfig.ServesTier`).
+
+**`costly` is TRI-STATE in the schema and TWO-valued at the predicate.** `null` (absent, "not stated") is
+deliberately distinct from an explicit `false` ("stated cheap") — the distinction exists so a future
+`providers init` can name every block whose cost is unstated and *ask*, which an "absent = false" rule
+would answer on the user's behalf. **At the candidacy predicate, `null` behaves as NOT-costly**, because
+an un-annotated registry must stay routable; only an explicit `true` excludes a block.
+
+**The costly floor.** `costly: true` blocks are excluded from `Candidates(R)` at **every** rung — their
+own, a climbed-to stronger rung, and (later) a ladder escalation or a judge bump. It is a hard floor on
+**harness autonomy**, with no override, no `--force` and no autonomy dial. The only paths to a costly
+model are an explicit **task pin** (`action.runner`/`action.model`) or the registry **`default` pointer**
+— both user assignments. Everything else is the harness choosing, and the harness does not choose.
+
+**Validation (Stage 1.5).**
+
+| Code | Sev | Rule |
+|---|---|---|
+| `GR2043` | error | a tier token outside `easy`/`medium`/`hard`, at any of the four sites (§3) |
+| `GR2044` | error | a `kind` that is unrecognised, **or** recognised but not implemented in this build |
+| `GR2045` | error | a malformed axis: non-boolean `costly`, non-integer or `< 1` `strength`, out-of-enum `specialization` |
+| `GR2046` | warning | a retired `routing.rank` key (ignored; ordering is ascending `strength`) |
+| `GR2047` | error | a malformed `routing`: missing/empty/non-array `tiers`, or a value outside the tier enum |
+| `GR2048` | error | a **used** tier (task tag, judge frontmatter tag, or `defaultTier`) in a **tiering-configured** plan has no **candidate** at or above it |
+| `GR2049` | warning | tier tags present but **no** block declares `routing` — the tags are inert and the plan runs by legacy resolution |
+| `GR2050` | error | a present `effort` (block or `action.effort`) fails the GR2030-style shape check |
+
+**GR2048 and GR2049 are mutually exclusive by construction** — GR2049 fires only when tiering is
+unconfigured, GR2048 only when it is configured. That gating is what stops an unconfigured plan from
+emitting one "unservable" error per tag when the honest report is a single "your tags do nothing".
+
+**GR2048's message MUST distinguish its two causes, because they have different fixes:** (a) *nothing
+declares the rung* — widen a block's `routing.tiers` or register one; or (b) *the only blocks that declare
+it are `costly: true`* — pin the work explicitly, clear the flag, or add the rung to a non-costly block.
+Collapsing them into one "no block serves tier X" would send a user hunting for a block sitting right
+there in their config. It is reported **once per unservable tier**, naming the sites that use it.
+
+**The cliff GR2048 reports is INTENDED, not a rough edge.** Marking your only `hard`-capable block
+`costly` makes `hard` unservable, and that is a validate-time **error** — the config is then saying,
+checkably, *"hard tasks must be pinned by a human"*, and it says so before a token is spent rather than by
+surprising you with a bill. The harness does not fall back to a weaker rung (that routes weaker than
+asked) and does not reach for the costly block (that is the floor).
+
+**Degrade what is advisory; halt what is load-bearing.** An unsatisfiable **actor** tier HALTS (GR2048, an
+error). An unsatisfiable **verifier floor** (`tiering.verifier.minTier`) DEGRADES: the judge stays at its
+best non-costly result and an advisory fires. It has **no GR code, deliberately** — a judge is advisory
+and never alone by construction, so a degraded judge loses a second opinion while the deterministic gate
+still certifies, whereas an actor route is load-bearing. A GR code is a thing that can fail a build, and
+no verifier condition may ever fail one.
+
+**`tiering.verifier.minTier` is a FLOOR, not a default.** It never *selects* the judge's rung — the rule
+(the actor's rung, bumped one **strength** rank when the actor is weak) still chooses. It only refuses a
+result that came out below it, and it can only ever raise, never lower. A plan-wide `easy` *default* would
+drag every judge down; a plan-wide `easy` *floor* does nothing at all.
+
+**Nothing in the harness consumes `routing.tiers`, `effort`, `strength`, `specialization`, `costly` or
+`verifier.minTier` at runtime yet.** Stage 1.5 guarantees exactly that they parse, validate, and
+round-trip — so the resolver (#226) inherits a checked contract instead of a hopeful one.
 
 ## 10. Diagram artifacts (`diagram.md` + `diagram.html`)
 
@@ -4803,8 +4986,14 @@ validation **WARNING** on a wave stub — empty `tasks/` — that has no `brief.
 in Phase 0; it will take a fresh GR code when implemented (`GR2038` was since taken by #383's
 `WorktreePathTooLong`, `GR2039`/`GR2040` by #361's autonomy-dial checks, **`GR2041` by #389's
 `MissingWriteScope`** (required-`writeScope`, §3.4), `GR2042` by #378's `StructuralOverScope`, `GR2043` by
-#225's `InvalidTierValue` (§3), and **`GR2044`–`GR2046` by #224's provider registry**
-(`InvalidPromptRunnerKind` / `InvalidRunnerAxis` / `RetiredRoutingRank`, §9), so the next free is `GR2047`).
+#225's `InvalidTierValue` (§3), **`GR2044`–`GR2046` by #224's provider registry**
+(`InvalidPromptRunnerKind` / `InvalidRunnerAxis` / `RetiredRoutingRank`, §9), and **`GR2047`–`GR2050` by
+#201's model-tiering Stage 1.5** (`MalformedRoutingGuidance` / `UnservableTier` / `TieringInert` /
+`EffortInvalid`, §9.6), so the next free is `GR2051` — but note that `GR2051`–`GR2054` are RESERVED BY NAME
+for the rest of the model-tiering epic (`NonRoutableBlockIsDefault` / `CostlyBlockRoutingInert` /
+`PinAndTierCoexist` / `RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), so an unrelated
+new code should take **`GR2055`**. `DiagnosticCodes.cs` carries the same note and, per that document's
+standing instruction, **the file wins**: re-verify against it immediately before allocating.)
 
 **Hash treatment.**
 - **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a

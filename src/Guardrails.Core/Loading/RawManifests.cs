@@ -66,6 +66,19 @@ internal sealed class RawAutonomyConfig
 internal sealed class RawTieringConfig
 {
     public string? DefaultTier { get; set; }
+
+    // The optional verifier sub-block (SSOT §2, DoR §6.5.1). null ⇒ the key was ABSENT ⇒ no floor.
+    public RawTieringVerifier? Verifier { get; set; }
+}
+
+/// <summary>
+/// Raw shape of the optional <c>tiering.verifier</c> sub-block (SSOT §2, DoR §6.5.1). <c>minTier</c> is
+/// bound VERBATIM for the same reason <c>defaultTier</c> is: an unrecognized value must reach the
+/// validator's GR2043 check as written rather than being normalized into validity.
+/// </summary>
+internal sealed class RawTieringVerifier
+{
+    public string? MinTier { get; set; }
 }
 
 /// <summary>Raw shape of the <c>autonomy.blockerRetry</c> sub-block (doc 12 §3.4/§4.2).</summary>
@@ -92,8 +105,15 @@ internal sealed class RawPromptRunner
     public Dictionary<string, string>? Env { get; set; }
 
     // Which runner IMPLEMENTATION serves this block (SSOT §9, issue #224). null = ABSENT = claude, which is
-    // what keeps the discriminator additive. An unrecognised token is reported by PlanLoader.ReadKind.
+    // what keeps the discriminator additive. An unrecognised token is reported by PlanLoader.ReadKind; a
+    // RECOGNISED-but-unimplemented one by PlanValidator (both GR2044 — see that check for why the two
+    // halves live where they do).
     public string? Kind { get; set; }
+
+    // The opaque per-block thinking-effort knob (SSOT §9, issue #201). Typed as string? exactly like
+    // Model, whose SHAPE it mirrors: both are opaque vendor tokens with no enumerable valid set, both are
+    // shape-checked by the validator (GR2050 / GR2030), and neither is normalised on the way in.
+    public string? Effort { get; set; }
 
     // Axes 1 and 2 of 3 (SSOT §9, charter Decision 7) are bound as RAW JSON, not as bool?/int?, precisely
     // because their malformed form is a TYPE error ("costly": "yes", "strength": "high"): a typed binding
@@ -113,11 +133,19 @@ internal sealed class RawPromptRunner
 }
 
 /// <summary>
-/// Raw shape of the optional <c>promptRunners.&lt;name&gt;.routing</c> guidance block (SSOT §9, issue #224).
-/// Nothing consumes it in Stage 1 — the static resolver (#226) is its first reader.
+/// Raw shape of the optional <c>promptRunners.&lt;name&gt;.routing</c> block (SSOT §9, issue #224). Its
+/// presence opts the block into tier resolution; <c>tiers</c> is the machine-consumed half.
 /// </summary>
 internal sealed class RawPromptRunnerRouting
 {
+    // `tiers` is bound as RAW JSON, not List<string>?, for the same reason the costly/strength axes are:
+    // its malformed forms include TYPE errors ("tiers": "medium", "tiers": [1, 2]), and a typed binding
+    // would throw mid-deserialization and surface as a generic parse failure naming a CLR type instead of
+    // the key. Held raw, the loader can name the key and keep loading so the rest of validate still
+    // reports. null = the key was ABSENT — which is itself GR2047, since `tiers` is REQUIRED here.
+    public JsonElement? Tiers { get; set; }
+
+    public string? Notes { get; set; }
     public string? Guidance { get; set; }
     public List<string>? Tags { get; set; }
 
@@ -187,6 +215,10 @@ internal sealed class RawAction
     // unrecognized value reaches the validator's GR2043 check as written — the same "preserve the
     // malformed signal" doctrine Model follows for GR2030.
     public string? Tier { get; set; }
+
+    // Per-task thinking-effort override (SSOT §3, issue #201). Mirrors Model's shape exactly — an opaque
+    // vendor token, bound verbatim, shape-checked by the validator (GR2050).
+    public string? Effort { get; set; }
 
     public int? TimeoutSeconds { get; set; }
     public string? WorkingDirectory { get; set; }

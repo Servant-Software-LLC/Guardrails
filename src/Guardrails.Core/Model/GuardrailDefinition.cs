@@ -42,4 +42,15 @@ public sealed record GuardrailDefinition
     /// Null when the sidecar omits the field or there is no sidecar.
     /// </summary>
     public string? Scope { get; init; }
+
+    /// <summary>
+    /// Optional difficulty tier from a PROMPT guardrail's frontmatter (SSOT §4.2, issue #225) —
+    /// <c>easy</c>|<c>medium</c>|<c>hard</c>, joining <c>runner</c>/<c>maxTurns</c> as a frontmatter key.
+    /// This is the judge-guardrail half of tier tagging: a judge resolves its own route, so it needs its
+    /// own site to pin one. Bound VERBATIM (no trim, no case-fold) so an unrecognised value reaches the
+    /// validator's GR2043 check as written, the same doctrine <c>action.tier</c> follows. Null = the key
+    /// was absent, there is no frontmatter, or the guardrail is deterministic (a script guardrail runs no
+    /// model and can never carry one). Nothing ROUTES on it yet — the resolver is Stage 2 (#226).
+    /// </summary>
+    public string? Tier { get; init; }
 }

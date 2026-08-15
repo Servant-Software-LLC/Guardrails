@@ -536,6 +536,102 @@ public static class DiagnosticCodes
     /// </summary>
     public const string RetiredRoutingRank = "GR2046";
 
-    // CURRENT next-free code: GR2047. GR2046 (RetiredRoutingRank) is the last taken code
-    // above. When allocating a new code, take GR2047 and update this line (issue #320).
+    // --- model tiering Stage 1.5: the DoR reconciliation (issue #201, docs/plans/17-model-tiering.md
+    //     §13.2) --------------------------------------------------------------------------------------
+    //
+    // Next-free allocation RE-CONFIRMED against this file at landing time, per §13's standing
+    // instruction: GR2046 (RetiredRoutingRank) was the last taken code and the marker line read
+    // "CURRENT next-free code: GR2047". The design-of-record reserved GR2043–GR2054 on 2026-08-12 after
+    // its ORIGINAL GR2037–GR2045 reservation was overtaken by #346, #383, #361, #389 and #378 while the
+    // design sat in draft; Stage 1 then allocated GR2043–GR2046 on its own numbering WITHOUT
+    // re-verifying, so the remaining codes were re-reserved at GR2047–GR2054. This slice takes the first
+    // four of that re-reservation — GR2047–GR2050 — at the numbers §13.2 names, which are the numbers the
+    // file agrees with. The lesson §13 draws is the one this block exists to honour: a code reservation
+    // held in an unmerged document is a wish; THE FILE WINS, so re-verify here, not there.
+    //
+    // Deliberately NOT taken by this slice (still reserved in §13.2, still free): GR2051
+    // (NonRoutableBlockIsDefault), GR2052 (CostlyBlockRoutingInert), GR2053 (PinAndTierCoexist) — three
+    // v1 WARNINGS — and GR2054 (RoutingNumericNonPositive), the one v2 (#227 probes) code. Do not
+    // re-allocate those numbers to something else.
+
+    /// <summary>
+    /// A <c>promptRunners.&lt;name&gt;.routing</c> block is malformed (SSOT §9, issue #224 / DoR §4.2):
+    /// <c>tiers</c> is missing, is not an array, is EMPTY, holds a non-string element, or holds a value
+    /// that is not one of <c>easy</c>/<c>medium</c>/<c>hard</c>. <c>tiers</c> is the MACHINE-CONSUMED half
+    /// of <c>routing</c> — it is what makes the block a candidate for a rung (DoR §6.2's candidacy
+    /// predicate reads nothing else) — so a <c>routing</c> block without a usable <c>tiers</c> declares an
+    /// eligibility it cannot express. An ERROR rather than a warning because the failure is silent
+    /// otherwise: the block would simply never be selected, and its author would read the config as
+    /// opting in. Matched VERBATIM — no trimming, no case-folding — so <c>"hard "</c> is reported rather
+    /// than silently accepted (the GR2030/GR2043 "preserve the malformed signal" doctrine). The sibling
+    /// keys <c>guidance</c>/<c>notes</c>/<c>tags</c> are prose/advisory and are never parsed for a routing
+    /// decision (invariant 1), so nothing about them is checked here.
+    /// </summary>
+    public const string MalformedRoutingGuidance = "GR2047";
+
+    /// <summary>
+    /// A tier that the plan actually USES has no CANDIDATE block at or above it, in a plan where tiering
+    /// is CONFIGURED (SSOT §9.6, DoR §6.2/§14.1 — settled OD-G). "Used" spans all three declaration
+    /// sites: a task's <c>action.tier</c>, a judge guardrail's frontmatter <c>tier</c>, and the plan-wide
+    /// <c>tiering.defaultTier</c>. "Candidate" is the ONE predicate the whole feature shares —
+    /// <c>routing</c> present AND the rung ∈ <c>routing.tiers</c> AND <c>costly</c> is not <c>true</c>
+    /// (an ABSENT <c>costly</c> is "not stated" and behaves as NOT-costly here, because an un-annotated
+    /// registry must stay routable).
+    ///
+    /// <para>Two DIFFERENT configurations reach this error and the message MUST distinguish them, because
+    /// they have different fixes: (a) no block declares the rung at all — register one, or widen an
+    /// existing block's <c>routing.tiers</c>; (b) blocks DO declare it but every one of them is
+    /// <c>costly: true</c>, which the harness may never auto-select — pin the task explicitly
+    /// (<c>action.runner</c>/<c>action.model</c>, a costly model is reachable by the USER's assignment,
+    /// just never by the harness's choice), or clear the flag, or add the rung to a non-costly block.</para>
+    ///
+    /// <para>An ERROR, and deliberately so: the actor route is LOAD-BEARING, so it HALTS rather than
+    /// degrading (DoR invariant 5 — "degrade what is advisory, halt what is load-bearing"). The harness
+    /// will not fall back to a weaker rung (that routes weaker than asked) and will not reach for the
+    /// costly block (that is the floor, and the floor has no override). Static and config-only: no
+    /// resolver is consulted, so this fires at <c>validate</c> time, before a token is spent. Gated on
+    /// tiering being CONFIGURED (≥1 block declares <c>routing</c>) — a plan with tags and NO routing block
+    /// anywhere is <see cref="TieringInert"/> (a warning) instead, never a cascade of these.</para>
+    /// </summary>
+    public const string UnservableTier = "GR2048";
+
+    /// <summary>
+    /// The plan carries difficulty tier tags but NO <c>promptRunners</c> block declares <c>routing</c>
+    /// (SSOT §2/§9.6, DoR §4.2 — the configured-vs-active rule). Tiering is CONFIGURED iff at least one
+    /// block declares <c>routing</c>; without one there is nothing for a tier to resolve against, so every
+    /// tag is inert and the plan runs by LEGACY resolution (the runner's own model / the CLI default) —
+    /// exactly as it does today.
+    ///
+    /// <para>A WARNING, not an error: the plan is completely runnable and its behaviour is today's
+    /// behaviour, so failing it would break plans that tag ahead of registering providers. Not silence
+    /// either — an author who wrote tags believes they are routing, and the gap between "I tagged this
+    /// easy" and "it ran on the frontier model anyway" is precisely the kind of quiet no-op this repo
+    /// refuses to ship. Reported ONCE per plan, at the config, rather than once per tagged task.</para>
+    /// </summary>
+    public const string TieringInert = "GR2049";
+
+    /// <summary>
+    /// A present <c>effort</c> value (SSOT §2/§3/§9, issue #201) fails the shape check: it is empty,
+    /// whitespace-only, or carries leading/trailing/embedded whitespace or a control character. Checked
+    /// at both sites <c>effort</c> can be declared — <c>promptRunners.&lt;name&gt;.effort</c> and a task's
+    /// <c>task.json action.effort</c>.
+    ///
+    /// <para><c>effort</c> is an OPAQUE per-block thinking-effort knob (<c>"low"</c>, <c>"xhigh"</c>, …),
+    /// TRANSLATED by the runner CLASS into whatever its CLI/API exposes — the spelling is quarantined
+    /// there exactly as <c>maxOutputTokens</c> → <c>CLAUDE_CODE_MAX_OUTPUT_TOKENS</c> is. There is
+    /// therefore no enumerable set of legal values to check against, which is why this mirrors GR2030's
+    /// <c>model</c> check exactly rather than being a membership test: a value shaped like this can never
+    /// be a real effort token and is always a configuration mistake (an empty string left by templating, a
+    /// stray quoted space) that would otherwise reach the runner verbatim. An ERROR: a load-time catch in
+    /// place of a runtime invocation failure. A <c>null</c>/absent <c>effort</c> at either site is fine
+    /// and is never flagged. Nothing CONSUMES <c>effort</c> yet — the Stage 2 resolver (#226) is its first
+    /// reader — so this stage only proves it parses, validates, and round-trips.</para>
+    /// </summary>
+    public const string EffortInvalid = "GR2050";
+
+    // CURRENT next-free code: GR2051. GR2050 (EffortInvalid) is the last taken code above — but note
+    // that GR2051–GR2054 are RESERVED by name in docs/plans/17-model-tiering.md §13.2
+    // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
+    // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
+    // GR2055 and update this line rather than colliding with that block (issue #320).
 }

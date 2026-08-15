@@ -34,6 +34,16 @@ public sealed record ActionDefinition
     /// </summary>
     public string? Tier { get; init; }
 
+    /// <summary>
+    /// Per-task thinking-effort override for prompt actions (SSOT §3, issue #201); null = inherit the
+    /// resolved route's effort. Mirrors <see cref="Model"/>'s SHAPE (opaque string, GR2050 shape check)
+    /// but deliberately NOT its BYPASS: <c>action.model</c>/<c>action.runner</c> are full pins that skip
+    /// tier resolution, whereas <c>action.effort</c> ALONE still lets resolution select the block and
+    /// only overrides that route's effort — <c>{ "tier": "medium", "effort": "xhigh" }</c> means "route
+    /// by tier, but think hard". Nothing CONSUMES it yet; the Stage 2 resolver (#226) is its first reader.
+    /// </summary>
+    public string? Effort { get; init; }
+
     /// <summary>Per-action timeout ceiling in seconds; null = inherit from task/config.</summary>
     public int? TimeoutSeconds { get; init; }
 

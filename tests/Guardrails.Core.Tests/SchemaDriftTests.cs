@@ -57,6 +57,69 @@ public sealed class SchemaDriftTests
             "----- first divergence -----\n" + FirstDivergence(ssotNorm, skillNorm));
     }
 
+    /// <summary>
+    /// The canonical block is not just documentation — it is what a hand-editor or a generator COPIES, so
+    /// it has to be a config that actually works. This lifts the SSOT's `promptRunners` block into a real
+    /// `guardrails.json`, runs it through the loader and validator, and asserts two things:
+    ///
+    /// <list type="number">
+    ///   <item><b>Zero diagnostics.</b> A canonical example that trips its own validator would teach every
+    ///     reader a broken shape, and the model-tiering keys (#201) are exactly the kind of addition where
+    ///     that happens — <c>routing</c> requires a non-empty <c>tiers</c> (GR2047), so an example carrying
+    ///     a decorative empty one would be self-refuting.</item>
+    ///   <item><b>Zero tiering CONFIGURED.</b> Tiering turns on for a whole plan the moment ONE block
+    ///     declares <c>routing</c> (SSOT §9.6). The canonical block is therefore obliged to show the
+    ///     DEFAULT — every tiering key absent/null — because a live <c>routing</c> block here would opt in
+    ///     every reader who copied it, and would push <c>/plan-breakdown</c> (which mirrors this block) into
+    ///     emitting tier tags for single-model users. That is DoR Invariant 7, and this is the assertion
+    ///     that keeps a well-meaning "make the example richer" edit from quietly breaking it.</item>
+    /// </list>
+    /// </summary>
+    [Fact]
+    public void CanonicalPromptRunnersBlock_ValidatesClean_AndConfiguresNoTiering()
+    {
+        string ssotBlock = ExtractBlock(
+            File.ReadAllText(SsotSchemasPath), SsotBlockPattern, SsotSchemasPath,
+            "the \"promptRunners\": { … } block of the §2 example");
+
+        string root = Path.Combine(Path.GetTempPath(), "gr-canon-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string taskDir = Path.Combine(root, "tasks", "01-task");
+            Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
+            File.WriteAllText(Path.Combine(root, "guardrails.json"),
+                "{\n  \"version\": 1,\n  \"maxParallelism\": 1,\n" + ssotBlock + "\n}\n");
+            File.WriteAllText(Path.Combine(taskDir, "task.json"),
+                """{ "description": "t", "dependsOn": [], "writeScope": [] }""");
+            File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "Do the thing.\n");
+            File.WriteAllText(Path.Combine(taskDir, "guardrails", "01-ok.sh"), "# catches: nothing\nexit 0\n");
+
+            Loading.PlanLoadResult result = new Loading.PlanLoader().Load(root);
+            Assert.NotNull(result.Plan);
+
+            List<Loading.Diagnostic> diagnostics = [.. result.Diagnostics];
+            diagnostics.AddRange(new Loading.PlanValidator(FakeExecutableProbe.All).Validate(result.Plan!));
+
+            // GR2015 is excluded: the fixture lives in a temp folder, which is never a git root.
+            Loading.Diagnostic[] real =
+            [
+                .. diagnostics.Where(d => d.Code != Loading.DiagnosticCodes.WorkspaceNotGitRoot)
+            ];
+
+            Assert.True(real.Length == 0,
+                "The SSOT §2 canonical promptRunners block does not validate cleanly. A canonical example " +
+                "is what readers and generators copy, so it must be a working config.\nDiagnostics:\n" +
+                string.Join("\n", real.Select(d => $"  {d.Severity} {d.Code}: {d.Message}")));
+
+            Assert.DoesNotContain(result.Plan!.Config.PromptRunners.Values, r => r.Routing is not null);
+            Assert.Null(result.Plan!.Config.Tiering);
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { /* best-effort */ }
+        }
+    }
+
     private static string ExtractBlock(string text, string pattern, string path, string where)
     {
         Match match = Regex.Match(text, pattern, RegexOptions.Singleline | RegexOptions.Multiline);

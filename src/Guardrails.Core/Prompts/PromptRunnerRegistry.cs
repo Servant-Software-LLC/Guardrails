@@ -46,10 +46,15 @@ public sealed class PromptRunnerRegistry
     /// <see cref="ClaudePromptRunner"/>: a fallback would spend a real run against a model the config
     /// never asked for, and the run would look like it honoured the request.</para>
     ///
-    /// <para>This is the BACKSTOP, not the gate. Reaching it means the run is already in flight, so
-    /// anything knowable from the plan plus the config is checked before <c>run</c> starts — the
-    /// pre-run availability check in <c>/guardrails-review</c> (charter §D). The two are not
-    /// alternatives: this one still covers a provider that is configured but unservable right now.</para>
+    /// <para>This is the BACKSTOP, not the gate. The GATE is <c>guardrails validate</c>: an unimplemented
+    /// <c>kind</c> is a GR2044 validation ERROR (<c>PlanValidator.ValidatePromptRunnerKindsImplemented</c>),
+    /// so a config that would reach this throw is refused before the run starts. Reaching it means the run
+    /// is already in flight — a kind cast in past the loader, or a validation step skipped — and the one
+    /// thing it must never do is substitute Claude for the provider the config named.</para>
+    ///
+    /// <para>The switch below and <see cref="PromptRunnerKinds.Implemented"/> state the same fact from two
+    /// directions; they are pinned together by a test, so the gate can never start permitting a kind this
+    /// method would refuse (or vice versa).</para>
     /// </summary>
     private static IPromptRunner CreateRunner(PromptRunnerConfig runner, ProcessRunner processRunner) =>
         runner.Kind switch
@@ -71,10 +76,12 @@ public sealed class PromptRunnerRegistry
             : runner.Kind.ToString();
 
         return $"Prompt runner '{runner.Name}' declares kind '{kind}', which has no implementation in " +
-            $"this build — only '{PromptRunnerKinds.Token(PromptRunnerKinds.Default)}' is implemented " +
-            "(concrete non-Claude runners are issue #223). Point that promptRunners block at an " +
+            $"this build — this build serves {PromptRunnerKinds.ImplementedTokenList} (concrete " +
+            "non-Claude runners are issue #223). Point that promptRunners block at an " +
             "implemented kind, or remove it and route the tasks that used it to a runner this build can " +
-            "serve. The harness will not substitute a different model for the one the config asked for.";
+            "serve. The harness will not substitute a different model for the one the config asked for. " +
+            "(`guardrails validate` reports this as GR2044 before a run starts — reaching this message " +
+            "means the gate was bypassed and this backstop caught it.)";
     }
 
     /// <summary>

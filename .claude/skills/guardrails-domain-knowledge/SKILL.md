@@ -665,6 +665,55 @@ guardrails-review):**
   root:** the over-scoped sink is over-scoped *because* it concentrates the deferred real-seam proof #382
   would distribute -- #378 detects the over-scope, #382 prevents the concentration.
 
+## Model tiering -- the SCHEMA half only (#201, SSOT section 9.6)
+
+**There is NO resolver.** Nothing in the harness routes on a tier, reads `strength`, or consults `effort` at
+runtime. What EXISTS is the wire schema plus its validation, so the resolver (#226) inherits a checked
+contract instead of a hopeful one. Design of record: `docs/plans/17-model-tiering.md`. Do not describe
+tiering as a working feature.
+
+- **Tier enum `easy | medium | hard`** -- task DIFFICULTY (a property of the *work*), deliberately not model
+  capability (`strength`, a property of the *model*). Four declaration sites, all `GR2043`-checked:
+  `task.json action.tier`, a prompt guardrail's frontmatter `tier` (the JUDGE site), `tiering.defaultTier`,
+  and `tiering.verifier.minTier`.
+- **`promptRunners.<name>` is the registry unit** -- one block = one concrete (provider `kind`, command,
+  `model`, `effort`) route. There is no `providers.json` and no `providers` section. Optional keys: `kind`
+  (default `claude`; `claude|codex|openrouter|local|openai-compat`), `effort` (opaque, runner-translated),
+  the three axes `costly`/`strength`/`specialization`, and `routing`.
+- **`routing` is the switch.** ABSENT ⇒ the block is never a tier target. PRESENT ⇒ it opts in, and
+  **tiering is CONFIGURED for the plan the moment ONE block declares it.** `routing.tiers` is REQUIRED,
+  non-empty, and the only machine-consumed key (`GR2047`); `notes`/`guidance`/`tags` are prose for humans
+  and are **never parsed for a routing decision**. `routing.rank` is RETIRED (`GR2046` warning).
+- **The ONE candidacy predicate** (`PromptRunnerConfig.ServesTier`, SSOT section 9.6): `routing` present AND
+  rung in `routing.tiers` AND `costly` is not `true`. Ordered ascending `strength` -- *the weakest model that
+  can serve the tier goes first*. Never routes DOWN; climbs to a stronger rung when a rung's set is empty.
+- **`costly` is TRI-STATE in the schema, TWO-valued at the predicate.** `null` (absent, "not stated") is
+  distinct from an explicit `false` ("stated cheap") -- the distinction exists so a future `providers init`
+  can name unstated blocks and ASK. **At the predicate `null` behaves as NOT-costly**, because an
+  un-annotated registry must stay routable; only an explicit `true` excludes.
+- **The costly floor has no override.** The harness NEVER auto-selects a `costly: true` block -- not for its
+  rung, a stronger-rung climb, a ladder escalation, or a judge bump. The only paths are an explicit task pin
+  or the `default` pointer, both user assignments.
+- **`tiering.verifier.minTier` is a FLOOR, not a default.** It never selects the judge's rung; it only
+  refuses one that came out below it, and only ever raises.
+- **Degrade what is advisory; halt what is load-bearing.** An unsatisfiable ACTOR tier is `GR2048`, an
+  ERROR. An unsatisfiable VERIFIER floor degrades to an advisory and has **no GR code, deliberately** -- a
+  GR code is a thing that can fail a build, and no verifier condition may ever fail one.
+- **`GR2048` vs `GR2049` are mutually exclusive by construction.** `GR2049` (WARN) fires only when tiering
+  is UNCONFIGURED -- tags with no `routing` block anywhere, so the tags are inert and the plan runs by
+  legacy resolution. `GR2048` (ERROR) fires only when it IS configured. `GR2048`'s message must distinguish
+  its two causes ("nothing declares the rung" vs "the only blocks that do are `costly`") because the fixes
+  differ.
+- **`kind`: registry construction is the BACKSTOP, not the gate.** A recognized-but-unimplemented kind is a
+  `GR2044` validate ERROR. `PromptRunnerRegistry.FromConfig` still throws for one (covering a value cast in
+  past the loader), but that is no longer the first line of defence. It must NEVER fall back to Claude.
+- **Invariant 7 -- the load-bearing one.** A config with no `routing`, no `tiering`, no `kind` (or
+  `kind: "claude"`) and no tags must produce a **byte-identical** routing decision, spend, and execution
+  path. Activation is **plan-scoped, not config-scoped**. `/plan-breakdown` is gated on this: with no
+  `routing` block anywhere it writes **no `action.tier`, no `tiering` block, and no classification report
+  lines**. The SSOT section 2 canonical block therefore shows every tiering key `null` on purpose -- it is
+  what gets copied.
+
 ## Multi-wave plans (nested layout, M2 v1 -- SSOT section 14)
 
 The recursion is **`task ⊂ wave ⊂ plan`**: a **wave** is a first-class completion unit -- a task DAG plus
@@ -915,7 +964,9 @@ total order driven by the wave folder's numeric prefix.
   (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
-  HEAD-independence). Next-free GR code: **GR1010 / GR2043** (GR2035 = DuplicateCheckName — two checks in one
+  HEAD-independence). Next-free GR code: **GR1010 / GR2055** (GR2051-GR2054 are RESERVED BY NAME for the rest of the
+  model-tiering epic -- `docs/plans/17-model-tiering.md` section 13.2 -- so an UNRELATED new code takes
+  GR2055; `DiagnosticCodes.cs` WINS, re-verify against it before allocating. GR2035 = DuplicateCheckName — two checks in one
   folder sharing a `Name`, #332/SSOT §4.5; GR2036 = ExpectedDurationNonPositive — the optional guardrail
   `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1 / §12.1, issue #331 — the long-running-guardrail
   heartbeat; **GR2037 = BannedGuardrailPattern** — a generated guardrail SCRIPT contains a known-bad regex
@@ -923,7 +974,10 @@ total order driven by the wave folder's numeric prefix.
   hollow-assertion + #187a unanchored-conflict-marker, complements — does not replace — the #302 smoke-test +
   `/guardrails-review`; **GR2038** = WorktreePathTooLong #383/#384; **GR2039/GR2040** = autonomy-dial value +
   forbidden-compound-config #361; **GR2041** = MissingWriteScope #389; **GR2042** = StructuralOverScope, the
-  fan-in-sink / composition-root over-scope WARN, #378/SSOT §3.4).
+  fan-in-sink / composition-root over-scope WARN, #378/SSOT §3.4; **GR2043** = InvalidTierValue #225 (all
+  FOUR tier sites); **GR2044-GR2046** = InvalidPromptRunnerKind / InvalidRunnerAxis / RetiredRoutingRank,
+  #224 provider registry; **GR2047-GR2050** = MalformedRoutingGuidance / UnservableTier / TieringInert /
+  EffortInvalid, #201 model-tiering Stage 1.5, SSOT §9.6).
 - **M3 the overwatcher v1 (diagnose + propose) -- LANDED** (#269, design of record
   `docs/plans/11-overwatcher.md`, contract SSOT §9.2/§9.2.1/§8, #305 decisions baked in). The `Overwatch`
   component (`Guardrails.Core/Execution/Overwatch.cs`) SUBSUMES `NeedsHumanTriage` (now the §9.2.1
@@ -944,10 +998,11 @@ total order driven by the wave folder's numeric prefix.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: GR2043 (GR2035 =
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: GR2055 -- GR2051-GR2054 reserved by name for model tiering (GR2035 =
   DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331; GR2037 = BannedGuardrailPattern #346;
   GR2038 = WorktreePathTooLong #384; GR2039/GR2040 = autonomy-dial value + compound-config #361; GR2041 =
-  MissingWriteScope #389; GR2042 = StructuralOverScope over-scope WARN #378).
+  MissingWriteScope #389; GR2042 = StructuralOverScope over-scope WARN #378; GR2043-GR2050 = the
+  model-tiering schema codes, SSOT §9.6).
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

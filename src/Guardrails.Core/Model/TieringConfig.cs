@@ -23,6 +23,40 @@ public sealed record TieringConfig
     /// present but declared no default ⇒ untagged tasks stay untagged.
     /// </summary>
     public string? DefaultTier { get; init; }
+
+    /// <summary>
+    /// The OPTIONAL <c>tiering.verifier</c> sub-block (SSOT §2/§9.6, DoR §6.5.1). Null ⇒ the key was
+    /// absent ⇒ no verifier floor, and the judge's rung is chosen entirely by the §6.5 rule.
+    /// </summary>
+    public TieringVerifierConfig? Verifier { get; init; }
+}
+
+/// <summary>
+/// The OPTIONAL <c>tiering.verifier</c> block (SSOT §2, DoR §6.5.1 — settled OD-H). It carries exactly
+/// one v1 key, and the distinction that key encodes is the whole reason the block exists.
+///
+/// <para><b><see cref="MinTier"/> is a FLOOR, not a default.</b> It NEVER selects the judge's rung — the
+/// rule ("the judge's rung = the actor's effective rung, bumped one STRENGTH rank when the actor is
+/// weak") still chooses. The floor only REFUSES a result that came out below it, and it can only ever
+/// raise, never lower. A plan-wide <c>easy</c> default would drag every judge down; a plan-wide
+/// <c>easy</c> floor does nothing at all. That asymmetry is the setting.</para>
+///
+/// <para>Nothing RESOLVES against it yet — there is no resolver — so this stage only proves it parses,
+/// validates (GR2043 on an unrecognised token) and round-trips.</para>
+/// </summary>
+public sealed record TieringVerifierConfig
+{
+    /// <summary>
+    /// The rung the resolved judge may never end up BELOW (<c>easy</c>|<c>medium</c>|<c>hard</c>). Bound
+    /// VERBATIM from JSON — an unrecognised value is reported by the validator (GR2043) naming the bad
+    /// value, not normalised away here. Null ⇒ the key was absent ⇒ no floor.
+    ///
+    /// <para>When the floor cannot be met without a <c>costly: true</c> block it DEGRADES — the judge
+    /// stays at the best non-costly result and an advisory fires. It is deliberately NOT an error: an
+    /// unsatisfiable ACTOR tier halts (GR2048) because an actor route is load-bearing, while an
+    /// unsatisfiable VERIFIER floor is advisory, and a GR code is a thing that can fail a build.</para>
+    /// </summary>
+    public string? MinTier { get; init; }
 }
 
 /// <summary>

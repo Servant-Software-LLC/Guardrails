@@ -63,8 +63,12 @@ public sealed class PlanValidator
         ValidatePromptRunnerCommands(plan, diagnostics);
         ValidatePromptRunnerOutputCaps(plan, diagnostics);
         ValidatePromptRunnerAxes(plan, diagnostics);
+        ValidatePromptRunnerKindsImplemented(plan, diagnostics);
         ValidateModelValues(plan, diagnostics);
+        ValidateEffortValues(plan, diagnostics);
         ValidateTierValues(plan, diagnostics);
+        ValidateTieringInert(plan, diagnostics);
+        ValidateTierServability(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
 
@@ -235,6 +239,86 @@ public sealed class PlanValidator
     }
 
     /// <summary>
+    /// A declared <c>kind</c> must be one this BUILD can actually serve (SSOT §9, issue #224 / DoR §4.2)
+    /// — GR2044, the same code the loader uses for an UNRECOGNISED token, because they are one rule:
+    /// <i>a kind that will not run must fail <c>guardrails validate</c>, never a run.</i>
+    ///
+    /// <para><b>This is the GATE; <c>PromptRunnerRegistry.FromConfig</c> is the BACKSTOP.</b> The registry
+    /// still refuses an unimplemented kind at construction (it must — it cannot substitute Claude for a
+    /// provider the config named), but reaching that throw means the run is already in flight, and
+    /// everything knowable from the config alone belongs at validate time. The two are not alternatives:
+    /// this one catches the config, and the backstop still covers a kind cast in past the loader.</para>
+    ///
+    /// <para><b>Why this half lives in the validator and the unrecognised half in the loader.</b> The
+    /// loader holds the raw STRING, so only it can name a token that parses to nothing; "which kinds this
+    /// build implements" is a semantic fact about the assembly, read off the parsed enum. Same split, same
+    /// reason, as GR2045's type checks (loader) versus its range check (validator).</para>
+    /// </summary>
+    private static void ValidatePromptRunnerKindsImplemented(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values)
+        {
+            if (PromptRunnerKinds.IsImplemented(runner.Kind))
+            {
+                continue;
+            }
+
+            diagnostics.Add(Error(DiagnosticCodes.InvalidPromptRunnerKind, plan.PlanDirectory,
+                $"promptRunners.{runner.Name}.kind is '{PromptRunnerKinds.Token(runner.Kind)}', which is a " +
+                "recognised runner kind but has NO implementation in this build — this build can serve " +
+                $"{PromptRunnerKinds.ImplementedTokenList} (concrete non-Claude runners are issue #223). " +
+                "Point that promptRunners block at an implemented kind, or remove it and route the tasks " +
+                "that used it to a runner this build can serve. The harness will NOT substitute a " +
+                "different model for the one the config asked for, so this is an honest halt at validate " +
+                "time rather than a surprise when the run starts (SSOT §9)."));
+        }
+    }
+
+    /// <summary>
+    /// A present <c>effort</c> must be a real-looking value (SSOT §2/§3/§9, issue #201): non-empty,
+    /// non-whitespace, with no leading/trailing whitespace and no embedded whitespace/control characters.
+    /// Checked at both sites <c>effort</c> can be declared — <c>promptRunners.&lt;name&gt;.effort</c> and a
+    /// task's <c>task.json action.effort</c> (GR2050 ERROR). A <c>null</c>/absent value at either site is
+    /// fine and is not flagged.
+    ///
+    /// <para><c>effort</c> is OPAQUE to the harness — the runner CLASS translates it into whatever its
+    /// CLI/API exposes — so there is no enumerable set of legal tokens and this is deliberately the SAME
+    /// cheap, zero-false-positive shape check <c>model</c> gets (GR2030), sharing its
+    /// <see cref="IsValidOpaqueToken"/> predicate rather than growing a second, subtly different copy.</para>
+    /// </summary>
+    private static void ValidateEffortValues(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values)
+        {
+            if (runner.Effort is { } effort && !IsValidOpaqueToken(effort))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.EffortInvalid, plan.PlanDirectory,
+                    $"promptRunners.{runner.Name}.effort is empty, whitespace-only, or contains " +
+                    "leading/trailing/embedded whitespace or control characters — it must be a real " +
+                    "effort token the runner can translate (e.g. \"low\", \"xhigh\"), or be omitted " +
+                    "entirely to leave the block's effort unstated."));
+            }
+        }
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            if (task.Action.Kind != ActionKind.Prompt || task.Action.Effort is not { } taskEffort)
+            {
+                continue; // absent ⇒ no override, no check (script tasks have no effort at all).
+            }
+
+            if (!IsValidOpaqueToken(taskEffort))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.EffortInvalid, task.Directory,
+                    $"Task '{task.Id}' action.effort is empty, whitespace-only, or contains " +
+                    "leading/trailing/embedded whitespace or control characters — it must be a real " +
+                    "effort token the runner can translate (e.g. \"low\", \"xhigh\"), or be omitted " +
+                    "entirely to inherit the resolved route's effort."));
+            }
+        }
+    }
+
+    /// <summary>
     /// A present <c>model</c> must be a real-looking value (SSOT §2/§3, issue #200): non-empty,
     /// non-whitespace, with no leading/trailing whitespace and no embedded whitespace/control
     /// characters — none of which any real Claude model identifier ever contains. There is no
@@ -248,7 +332,7 @@ public sealed class PlanValidator
     {
         foreach (PromptRunnerConfig runner in plan.Config.PromptRunners.Values)
         {
-            if (runner.Settings.Model is { } baseModel && !IsValidModelValue(baseModel))
+            if (runner.Settings.Model is { } baseModel && !IsValidOpaqueToken(baseModel))
             {
                 diagnostics.Add(Error(DiagnosticCodes.ModelInvalid, plan.PlanDirectory,
                     $"promptRunners.{runner.Name}.model is empty, whitespace-only, or contains " +
@@ -256,7 +340,7 @@ public sealed class PlanValidator
                     "model identifier, or omitted entirely to use the CLI default."));
             }
 
-            if (runner.GuardrailOverrides?.Model is { } overrideModel && !IsValidModelValue(overrideModel))
+            if (runner.GuardrailOverrides?.Model is { } overrideModel && !IsValidOpaqueToken(overrideModel))
             {
                 diagnostics.Add(Error(DiagnosticCodes.ModelInvalid, plan.PlanDirectory,
                     $"promptRunners.{runner.Name}.guardrailOverrides.model is empty, whitespace-only, " +
@@ -272,7 +356,7 @@ public sealed class PlanValidator
                 continue; // absent ⇒ no override, no check (script tasks have no model at all).
             }
 
-            if (!IsValidModelValue(taskModel))
+            if (!IsValidOpaqueToken(taskModel))
             {
                 diagnostics.Add(Error(DiagnosticCodes.ModelInvalid, task.Directory,
                     $"Task '{task.Id}' action.model is empty, whitespace-only, or contains " +
@@ -283,40 +367,55 @@ public sealed class PlanValidator
     }
 
     /// <summary>
-    /// True when <paramref name="model"/> is a plausible model identifier: non-null, non-empty,
+    /// True when <paramref name="token"/> is a plausible OPAQUE vendor token: non-null, non-empty,
     /// contains no leading/trailing whitespace (a <c>Trim()</c> round-trips it unchanged), and
-    /// contains no whitespace or control character anywhere (no real Claude model name is ever
+    /// contains no whitespace or control character anywhere (no real model name or effort token is ever
     /// space-separated or carries a stray tab/newline). This is a shape check, not an allow-list —
-    /// there is no enumerable set of valid model names to compare against.
+    /// neither <c>model</c> (GR2030) nor <c>effort</c> (GR2050) has an enumerable set of valid values to
+    /// compare against, and they share ONE predicate deliberately: two copies of "what a vendor token
+    /// looks like" would drift, and a token accepted at one site and rejected at the other is the exact
+    /// confusion this check exists to prevent.
     /// </summary>
-    private static bool IsValidModelValue(string? model)
+    private static bool IsValidOpaqueToken(string? token)
     {
-        if (string.IsNullOrEmpty(model))
+        if (string.IsNullOrEmpty(token))
         {
             return false;
         }
 
-        if (model.Trim().Length != model.Length)
+        if (token.Trim().Length != token.Length)
         {
             return false; // leading/trailing whitespace
         }
 
-        return !model.Any(c => char.IsWhiteSpace(c) || char.IsControl(c));
+        return !token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c));
     }
 
     /// <summary>
-    /// A declared difficulty tier must be one of the three recognised tokens (SSOT §3, issue #225),
-    /// checked at BOTH sites a tier can be declared: the plan-wide <c>tiering.defaultTier</c> and each
-    /// task's <c>action.tier</c> (GR2043 ERROR). Unlike <c>model</c> (GR2030, a shape check — there is no
-    /// enumerable set of valid model names) the tier vocabulary is CLOSED, so this is a real membership
-    /// test against <see cref="ActionTiers.All"/>, matched verbatim. An absent tier at either site is fine
-    /// (untagged) and is not flagged.
+    /// A declared difficulty tier must be one of the three recognised tokens (SSOT §2/§3/§4.2, issue
+    /// #225 / DoR §5), checked at ALL FOUR sites a tier can be declared (GR2043 ERROR):
+    /// <list type="number">
+    ///   <item>a task's <c>task.json action.tier</c>;</item>
+    ///   <item>a PROMPT guardrail's frontmatter <c>tier</c> — the judge-guardrail site, across every
+    ///     guardrail-shaped folder (task guardrails/preflights, wave guardrails/preflights, plan
+    ///     guardrails/preflights), exactly like the <c>scope</c> check;</item>
+    ///   <item>the plan-wide <c>tiering.defaultTier</c>;</item>
+    ///   <item>the plan-wide <c>tiering.verifier.minTier</c> floor.</item>
+    /// </list>
+    /// Unlike <c>model</c>/<c>effort</c> (GR2030/GR2050, shape checks — there is no enumerable set of
+    /// valid vendor tokens) the tier vocabulary is CLOSED, so this is a real membership test against
+    /// <see cref="ActionTiers.All"/>, matched verbatim. An absent tier at any site is fine (untagged) and
+    /// is not flagged.
     ///
-    /// <para>The plan-wide default is checked FIRST and independently because it is the more dangerous
-    /// site: a typo there would tier every untagged task in the plan. It is reported exactly ONCE, here at
-    /// its declaration site — the loader's <c>PropagatableDefaultTier</c> deliberately does not propagate
-    /// an unrecognised default onto tasks, so a single typo can never fan out into one error per untagged
-    /// task.</para>
+    /// <para>Covering all four is the point of this check existing in one place: a tier token that reaches
+    /// the resolver unrecognised is unroutable wherever it was written, and a site validated at one
+    /// declaration point but not another is exactly how a typo survives into a run.</para>
+    ///
+    /// <para>The two plan-wide sites are checked FIRST and independently because they are the more
+    /// dangerous ones: a typo in <c>defaultTier</c> would tier every untagged task in the plan. Each is
+    /// reported exactly ONCE, at its own declaration site — the loader's <c>PropagatableDefaultTier</c>
+    /// deliberately does not propagate an unrecognised default onto tasks, so a single typo can never fan
+    /// out into one error per untagged task.</para>
     /// </summary>
     private static void ValidateTierValues(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
@@ -330,6 +429,16 @@ public sealed class PlanValidator
                 "would mistier the whole plan."));
         }
 
+        if (plan.Config.Tiering?.Verifier?.MinTier is { } minTier && !ActionTiers.IsRecognized(minTier))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.InvalidTierValue, plan.PlanDirectory,
+                $"tiering.verifier.minTier is '{minTier}', which is not a recognised difficulty tier. " +
+                $"Expected exactly one of {ActionTiers.TokenList} (matched verbatim — no surrounding " +
+                "whitespace), or omit the key to leave the judge's rung entirely to the resolution rule. " +
+                "minTier is a FLOOR, not a default: it never selects a rung, it only refuses one that " +
+                "came out below it."));
+        }
+
         foreach (TaskNode task in plan.Tasks)
         {
             if (task.Action.Tier is { } tier && !ActionTiers.IsRecognized(tier))
@@ -340,6 +449,221 @@ public sealed class PlanValidator
                     "surrounding whitespace), or omit the field to inherit the plan-wide default."));
             }
         }
+
+        foreach ((GuardrailDefinition guardrail, string context) in EveryCheck(plan))
+        {
+            if (guardrail.Tier is { } judgeTier && !ActionTiers.IsRecognized(judgeTier))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.InvalidTierValue, guardrail.Path,
+                    $"Guardrail '{guardrail.Name}' ({context}) declares frontmatter tier '{judgeTier}', " +
+                    $"which is not a recognised difficulty tier. Expected exactly one of " +
+                    $"{ActionTiers.TokenList}, or omit the key to let the judge's rung follow the actor's."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every guardrail-shaped check in the plan paired with a human-readable context, across ALL SIX
+    /// folder families (SSOT §4/§14.3): each task's <c>guardrails/</c> + <c>preflights/</c>, each wave's,
+    /// and the plan root's. Written once here because tier frontmatter — like <c>scope</c> and
+    /// <c>expectedDurationSeconds</c> before it — is a guardrail-shaped-file concept, and a folder covered
+    /// by one check but missed by another is how a rule silently stops applying to a whole layout.
+    /// </summary>
+    private static IEnumerable<(GuardrailDefinition Guardrail, string Context)> EveryCheck(PlanDefinition plan)
+    {
+        foreach (TaskNode task in plan.Tasks)
+        {
+            foreach (GuardrailDefinition g in task.Guardrails) yield return (g, $"task '{task.Id}'");
+            foreach (GuardrailDefinition g in task.Preflights) yield return (g, $"task '{task.Id}' preflights");
+        }
+
+        foreach (WaveNode wave in plan.Waves)
+        {
+            foreach (GuardrailDefinition g in wave.Preflights) yield return (g, $"wave '{wave.Dir}' preflights/");
+            foreach (GuardrailDefinition g in wave.Guardrails) yield return (g, $"wave '{wave.Dir}' guardrails/");
+        }
+
+        foreach (GuardrailDefinition g in plan.PlanPreflights) yield return (g, "<plan>/preflights/");
+        foreach (GuardrailDefinition g in plan.PlanGuardrails) yield return (g, "<plan>/guardrails/");
+    }
+
+    /// <summary>
+    /// Tiering is CONFIGURED for a plan iff at least ONE <c>promptRunners</c> block declares
+    /// <c>routing</c> (SSOT §9.6, DoR §4.2). This predicate gates the two checks below in OPPOSITE
+    /// directions — GR2049 fires only when it is false, GR2048 only when it is true — which is what keeps
+    /// an unconfigured plan from producing one "unservable" error per tag.
+    /// </summary>
+    private static bool TieringIsConfigured(PlanDefinition plan) =>
+        plan.Config.PromptRunners.Values.Any(r => r.Routing is not null);
+
+    /// <summary>
+    /// Every difficulty tier the plan actually USES (DoR §6.2), de-duplicated and each paired with the
+    /// sites that use it: a task's <c>action.tier</c>, a judge guardrail's frontmatter <c>tier</c>, and
+    /// the plan-wide <c>tiering.defaultTier</c>. Only RECOGNISED tokens are collected — an unrecognised
+    /// one is already GR2043's to report, and reporting it a second time as "unservable" would be two
+    /// errors for one typo with only one of them actionable.
+    ///
+    /// <para><c>tiering.verifier.minTier</c> is deliberately NOT a "used" tier. It is a floor on the
+    /// judge's rung, and an unsatisfiable verifier floor DEGRADES to an advisory rather than halting
+    /// (DoR §6.5.1) — the opposite disposition from an actor tier. Counting it here would turn an advisory
+    /// condition into a build-failing error, which §12.6 forbids by name.</para>
+    /// </summary>
+    private static IReadOnlyDictionary<string, List<string>> UsedTiers(PlanDefinition plan)
+    {
+        var used = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        void Record(string? tier, string site)
+        {
+            if (!ActionTiers.IsRecognized(tier))
+            {
+                return;
+            }
+
+            if (!used.TryGetValue(tier!, out List<string>? sites))
+            {
+                used[tier!] = sites = [];
+            }
+
+            sites.Add(site);
+        }
+
+        Record(plan.Config.Tiering?.DefaultTier, "tiering.defaultTier");
+
+        foreach (TaskNode task in plan.Tasks)
+        {
+            // A task's Tier is already the RESOLVED value (action.tier ?? defaultTier), so a plan whose
+            // tasks all inherit the default still reports the default's own site above, not N copies.
+            if (task.Action.Tier is { } tier && tier != plan.Config.Tiering?.DefaultTier)
+            {
+                Record(tier, $"task '{task.Id}'");
+            }
+        }
+
+        foreach ((GuardrailDefinition guardrail, string context) in EveryCheck(plan))
+        {
+            Record(guardrail.Tier, $"guardrail '{guardrail.Name}' ({context})");
+        }
+
+        return used;
+    }
+
+    /// <summary>
+    /// The plan carries tier tags but NO block declares <c>routing</c>, so tiering is not CONFIGURED and
+    /// every tag is inert — GR2049 WARNING (SSOT §2/§9.6, DoR §4.2). The plan runs exactly as it does
+    /// today, by legacy resolution (the runner's own model, else the CLI default).
+    ///
+    /// <para>A warning rather than an error because the plan is entirely runnable and its behaviour is
+    /// unchanged — failing it would break the legitimate order of tagging before registering providers.
+    /// Not silence either: the author who wrote <c>"tier": "easy"</c> believes they are routing, and the
+    /// gap between that belief and "it ran on the frontier model anyway" is precisely the quiet no-op this
+    /// repo refuses to ship. Emitted ONCE per plan, at the config — one message about one config-level
+    /// fact, not one per tagged task.</para>
+    /// </summary>
+    private static void ValidateTieringInert(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (TieringIsConfigured(plan))
+        {
+            return;
+        }
+
+        IReadOnlyDictionary<string, List<string>> used = UsedTiers(plan);
+        if (used.Count == 0)
+        {
+            return; // No tags at all — the single-model path, and the whole feature stays invisible.
+        }
+
+        string tiers = string.Join(", ", ActionTiers.All.Where(used.ContainsKey).Select(t => $"'{t}'"));
+        diagnostics.Add(Warning(DiagnosticCodes.TieringInert, plan.PlanDirectory,
+            $"This plan declares difficulty tiers ({tiers}) but NO promptRunners block declares a " +
+            "'routing' key, so tiering is not configured and the tags have NO effect: every prompt " +
+            "action resolves by legacy resolution (the runner's own model, else the CLI default), " +
+            "exactly as it would with no tiers at all. Add \"routing\": { \"tiers\": [...] } to at least " +
+            "one runner block to make the tags route, or remove the tags to say plainly that this plan " +
+            "does not tier (SSOT §9.6)."));
+    }
+
+    /// <summary>
+    /// In a TIERING-CONFIGURED plan, every USED tier must have a CANDIDATE block at or above it —
+    /// GR2048 ERROR (SSOT §9.6, DoR §6.2/§14.1, settled OD-G). Candidacy is
+    /// <see cref="PromptRunnerConfig.ServesTier"/>: <c>routing</c> present ∧ rung ∈ <c>routing.tiers</c> ∧
+    /// <c>costly</c> is not <c>true</c>. "At or above" is the never-route-DOWN floor made checkable —
+    /// resolution may climb to a stronger rung when a rung's own candidate set is empty, so only a tier
+    /// with nothing at or above it is genuinely unservable.
+    ///
+    /// <para><b>The message distinguishes the two causes, because they have different fixes.</b> Either
+    /// (a) no block declares the rung at all — register one or widen a block's <c>routing.tiers</c>; or
+    /// (b) blocks DO declare it and every one is <c>costly: true</c>, which the harness may never
+    /// auto-select — pin the task, clear the flag, or add the rung to a non-costly block. Collapsing them
+    /// into one "no block serves tier X" would send a user hunting for a block that is sitting right there
+    /// in their config.</para>
+    ///
+    /// <para>An ERROR, and it halts rather than degrading: an actor route is LOAD-BEARING, so shipping
+    /// work from a model nobody vouched for at that difficulty is not an option, and neither is quietly
+    /// reaching for the costly block (the floor has no override) nor dropping to a weaker rung (that
+    /// routes weaker than asked). Reported ONCE per unservable TIER, naming the sites that use it, rather
+    /// than once per task — one config gap is one problem.</para>
+    /// </summary>
+    private static void ValidateTierServability(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (!TieringIsConfigured(plan))
+        {
+            return; // Unconfigured ⇒ GR2049's territory; every tag is inert, not unservable.
+        }
+
+        PromptRunnerConfig[] runners = [.. plan.Config.PromptRunners.Values];
+        IReadOnlyDictionary<string, List<string>> used = UsedTiers(plan);
+
+        // ActionTiers.All is ordered ASCENDING by difficulty, so "at or above rung i" is the tail from i.
+        for (int i = 0; i < ActionTiers.All.Count; i++)
+        {
+            string tier = ActionTiers.All[i];
+            if (!used.TryGetValue(tier, out List<string>? sites))
+            {
+                continue;
+            }
+
+            string[] atOrAbove = [.. ActionTiers.All.Skip(i)];
+
+            if (atOrAbove.Any(rung => runners.Any(r => r.ServesTier(rung))))
+            {
+                continue;
+            }
+
+            string[] costlyBlockers =
+            [
+                .. runners
+                    .Where(r => r.Costly is true && atOrAbove.Any(r.DeclaresTier))
+                    .Select(r => r.Name)
+                    .Order(StringComparer.Ordinal)
+            ];
+
+            string cause = costlyBlockers.Length == 0
+                ? $"NO promptRunners block declares tier '{tier}' (or any stronger tier) in its " +
+                  "routing.tiers. Fix ONE of: add the tier to an existing block's routing.tiers, or " +
+                  "register a block that serves it."
+                : $"the only block(s) declaring tier '{tier}' or stronger — " +
+                  $"{string.Join(", ", costlyBlockers.Select(n => $"promptRunners.{n}"))} — are marked " +
+                  "\"costly\": true, and the harness NEVER auto-selects a costly model: not for its own " +
+                  "rung, not for a stronger-rung climb, not for a judge bump. Fix ONE of: pin the work " +
+                  "explicitly (\"action\": { \"runner\": \"" + costlyBlockers[0] + "\" }) — a costly " +
+                  "model is reachable by YOUR assignment, just never by the harness's choice; clear " +
+                  $"\"costly\": true on {costlyBlockers[0]}; or add tier '{tier}' to a non-costly " +
+                  "block's routing.tiers.";
+
+            diagnostics.Add(Error(DiagnosticCodes.UnservableTier, plan.PlanDirectory,
+                $"Tier '{tier}' is used by {DescribeSites(sites)}, but no block can serve it: {cause} " +
+                "The harness will not route weaker than asked, so this halts at validate time — before a " +
+                "token is spent — rather than at runtime (SSOT §9.6)."));
+        }
+    }
+
+    /// <summary>The sites using a tier, capped so one config gap cannot print a hundred task ids.</summary>
+    private static string DescribeSites(IReadOnlyList<string> sites)
+    {
+        const int Shown = 3;
+        return sites.Count <= Shown
+            ? string.Join(", ", sites)
+            : $"{string.Join(", ", sites.Take(Shown))} (+{sites.Count - Shown} more)";
     }
 
     /// <summary>

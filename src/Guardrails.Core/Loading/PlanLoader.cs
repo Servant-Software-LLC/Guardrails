@@ -190,10 +190,20 @@ public sealed class PlanLoader
     /// default exists, so every untagged task keeps a <c>null</c> tier. Nothing is substituted for an absent
     /// block — a hard-coded fallback would silently tier a single-model user's plan, the one thing the
     /// charter's gate forbids. A present <c>defaultTier</c> is carried VERBATIM (no trim, no case-fold) so an
-    /// unrecognized value reaches the validator's GR2043 check as written.
+    /// unrecognized value reaches the validator's GR2043 check as written. The optional
+    /// <c>verifier</c> sub-block (DoR §6.5.1) maps the same way, for the same reason: its
+    /// <c>minTier</c> is a FLOOR whose token is judged by the validator, never normalized here.
     /// </summary>
     private static TieringConfig? MapTiering(RawTieringConfig? raw) =>
-        raw is null ? null : new TieringConfig { DefaultTier = raw.DefaultTier };
+        raw is null
+            ? null
+            : new TieringConfig
+            {
+                DefaultTier = raw.DefaultTier,
+                Verifier = raw.Verifier is null
+                    ? null
+                    : new TieringVerifierConfig { MinTier = raw.Verifier.MinTier }
+            };
 
     /// <summary>
     /// Map the raw <c>autonomy</c> block (issue #361, doc 12 §3.3–§3.5) onto <see cref="AutonomyConfig"/>. A
@@ -395,6 +405,7 @@ public sealed class PlanLoader
             Command = string.IsNullOrWhiteSpace(raw.Command) ? name : raw.Command,
             Settings = settings,
             Kind = ReadKind(name, raw.Kind, configPath, diagnostics),
+            Effort = raw.Effort,
             Costly = ReadCostly(name, raw.Costly, configPath, diagnostics),
             Strength = ReadStrength(name, raw.Strength, configPath, diagnostics),
             Specialization = ReadSpecialization(name, raw.Specialization, configPath, diagnostics),
@@ -406,9 +417,14 @@ public sealed class PlanLoader
     /// <summary>
     /// The <c>kind</c> discriminator (SSOT §9, issue #224). ABSENT ⇒ <c>claude</c> — the additive
     /// guarantee: every config written before the discriminator existed is implicitly Claude and loads
-    /// unchanged. An unrecognised token is an error NAMING the value (an operator with several blocks
+    /// unchanged. An UNRECOGNISED token is an error NAMING the value (an operator with several blocks
     /// should not have to hunt for which one is wrong); the block then falls back to the default purely so
     /// the remaining checks still run — the error itself blocks the run.
+    ///
+    /// <para>This half owns UNRECOGNISED only. A token that IS recognised but has no runner class in this
+    /// build (everything except <c>claude</c> until #223) is the same GR2044, reported by
+    /// <c>PlanValidator.ValidatePromptRunnerKindsImplemented</c> — see there for why the two halves live
+    /// apart, and why registry construction stays the backstop rather than the gate.</para>
     /// </summary>
     private static PromptRunnerKind ReadKind(
         string name, string? rawKind, string configPath, List<Diagnostic> diagnostics)
@@ -424,8 +440,8 @@ public sealed class PlanLoader
         }
 
         diagnostics.Add(Error(DiagnosticCodes.InvalidPromptRunnerKind, configPath,
-            $"promptRunners.{name}.kind '{rawKind}' is not a recognised runner kind; expected 'claude' " +
-            "(the default when the key is omitted), 'codex', 'openrouter', or 'local' (SSOT §9)."));
+            $"promptRunners.{name}.kind '{rawKind}' is not a recognised runner kind; expected one of " +
+            $"{PromptRunnerKinds.TokenList} — 'claude' is the default when the key is omitted (SSOT §9)."));
         return PromptRunnerKinds.Default;
     }
 
@@ -508,10 +524,14 @@ public sealed class PlanLoader
     }
 
     /// <summary>
-    /// The optional per-model <c>routing</c> guidance block (SSOT §9, issue #224). Absent ⇒ <c>null</c>.
-    /// Stage 1 only proves it parses, validates, and round-trips — the static resolver (#226) is its first
-    /// reader. A block still carrying the RETIRED <c>rank</c> key gets a WARNING (the config keeps
-    /// loading, but never silently — ordering is ascending <c>strength</c>, and <c>rank</c> is ignored).
+    /// The optional per-model <c>routing</c> block (SSOT §9, issue #224). Absent ⇒ <c>null</c> ⇒ the block
+    /// is never a tier target. PRESENT ⇒ it opts into tier resolution, and <c>tiers</c> is REQUIRED
+    /// (GR2047) because it is the only key the candidacy predicate reads: a <c>routing</c> block without a
+    /// usable <c>tiers</c> declares an eligibility it cannot express, and would simply never be selected
+    /// while its author read the config as opting in.
+    ///
+    /// <para>A block still carrying the RETIRED <c>rank</c> key gets a WARNING (the config keeps loading,
+    /// but never silently — ordering is ascending <c>strength</c>, and <c>rank</c> is ignored).</para>
     /// </summary>
     private static PromptRunnerRouting? ReadRouting(
         string name, RawPromptRunnerRouting? raw, string configPath, List<Diagnostic> diagnostics)
@@ -532,9 +552,81 @@ public sealed class PlanLoader
 
         return new PromptRunnerRouting
         {
+            Tiers = ReadRoutingTiers(name, raw.Tiers, configPath, diagnostics),
+            Notes = raw.Notes,
             Guidance = raw.Guidance,
             Tags = raw.Tags is null ? [] : [.. raw.Tags]
         };
+    }
+
+    /// <summary>
+    /// <c>routing.tiers</c> (SSOT §9, DoR §4.2) — the MACHINE-CONSUMED half of a routing block: which
+    /// rungs this (kind, model, effort) route may serve. REQUIRED and non-empty; every element must be
+    /// exactly one of <see cref="ActionTiers.All"/>, matched VERBATIM (no trim, no case-fold — the
+    /// GR2030/GR2043 "preserve the malformed signal" doctrine, so <c>"hard "</c> is reported rather than
+    /// silently accepted). Each distinct problem gets its own GR2047 so a config with two bad tokens is
+    /// told about both.
+    ///
+    /// <para>Every failure returns the tiers parsed SO FAR rather than bailing, so the rest of validation
+    /// (including GR2048's servability check) still runs over whatever the author did express — the same
+    /// "keep loading so the whole report arrives" posture as the axis reads above.</para>
+    /// </summary>
+    private static IReadOnlyList<string> ReadRoutingTiers(
+        string name, JsonElement? rawTiers, string configPath, List<Diagnostic> diagnostics)
+    {
+        if (AbsentAxis(rawTiers, out JsonElement value))
+        {
+            diagnostics.Add(Error(DiagnosticCodes.MalformedRoutingGuidance, configPath,
+                $"promptRunners.{name}.routing declares no 'tiers'. A routing block opts the runner into " +
+                "tier resolution, and 'tiers' is the only key that says WHICH rungs it may serve — without " +
+                $"it the block can never be selected. Add a non-empty subset of {ActionTiers.TokenList}, " +
+                "or remove the routing block entirely to keep the runner reachable only by an explicit " +
+                "pin (SSOT §9)."));
+            return [];
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            diagnostics.Add(Error(DiagnosticCodes.MalformedRoutingGuidance, configPath,
+                $"promptRunners.{name}.routing.tiers must be an ARRAY of difficulty tiers, but was " +
+                $"{DescribeJson(value)}. Expected a non-empty subset of {ActionTiers.TokenList} — e.g. " +
+                "[\"medium\", \"hard\"] (SSOT §9)."));
+            return [];
+        }
+
+        var tiers = new List<string>();
+        foreach (JsonElement element in value.EnumerateArray())
+        {
+            if (element.ValueKind != JsonValueKind.String)
+            {
+                diagnostics.Add(Error(DiagnosticCodes.MalformedRoutingGuidance, configPath,
+                    $"promptRunners.{name}.routing.tiers contains {DescribeJson(element)}, which is not a " +
+                    $"difficulty tier. Every entry must be exactly one of {ActionTiers.TokenList} (SSOT §9)."));
+                continue;
+            }
+
+            string tier = element.GetString()!;
+            if (!ActionTiers.IsRecognized(tier))
+            {
+                diagnostics.Add(Error(DiagnosticCodes.MalformedRoutingGuidance, configPath,
+                    $"promptRunners.{name}.routing.tiers contains '{tier}', which is not a recognised " +
+                    $"difficulty tier. Expected exactly one of {ActionTiers.TokenList} (matched verbatim " +
+                    "— no surrounding whitespace, no case-folding) (SSOT §9)."));
+                continue;
+            }
+
+            tiers.Add(tier);
+        }
+
+        if (tiers.Count == 0 && !value.EnumerateArray().Any())
+        {
+            diagnostics.Add(Error(DiagnosticCodes.MalformedRoutingGuidance, configPath,
+                $"promptRunners.{name}.routing.tiers is EMPTY. An empty list serves no rung at all, which " +
+                "is indistinguishable from having no routing block — say which rungs this route may serve " +
+                $"(a non-empty subset of {ActionTiers.TokenList}), or remove the routing block (SSOT §9)."));
+        }
+
+        return tiers;
     }
 
     /// <summary>
@@ -1026,6 +1118,10 @@ public sealed class PlanLoader
             // breakdown ever touched. Bound VERBATIM like Model — a malformed tier is the validator's to
             // judge (GR2043), not the loader's to normalize away.
             Tier = rawAction?.Tier ?? defaultTier,
+            // Bound VERBATIM like Model, whose shape it mirrors — GR2050 judges it. Deliberately NOT
+            // defaulted from anything: there is no plan-wide effort, and an effort nobody wrote must not
+            // be invented (the same "never fabricate an unstated axis" rule the registry axes follow).
+            Effort = rawAction?.Effort,
             TimeoutSeconds = rawAction?.TimeoutSeconds,
             WorkingDirectory = rawAction?.WorkingDirectory,
             Env = (IReadOnlyDictionary<string, string>?)rawAction?.Env ?? new Dictionary<string, string>()
@@ -1283,8 +1379,18 @@ public sealed class PlanLoader
 
     /// <summary>
     /// Reads the YAML front-matter block (between the opening and closing <c>---</c> delimiters)
-    /// from a <c>.prompt.md</c> guardrail file and applies any recognised keys onto the guardrail.
-    /// Currently only <c>scope</c> is harvested; unknown keys are silently ignored.
+    /// from a <c>.prompt.md</c> guardrail file and applies any recognised keys onto the guardrail:
+    /// <c>scope</c> (SSOT §4.3) and <c>tier</c> (SSOT §4.2, issue #225). Unknown keys are silently
+    /// ignored.
+    ///
+    /// <para>The two keys are harvested with deliberately DIFFERENT policies, and the difference is the
+    /// point. <c>scope</c> is NORMALISED (lower-cased) because that is what it has always done and its
+    /// GR2021 check judges the normalised token. <c>tier</c> keeps its CASE, because its GR2043 check is
+    /// a verbatim membership test — case-folding here would silently repair <c>Hard</c> into validity at
+    /// the one site the "preserve the malformed signal" doctrine says must report it. (Surrounding
+    /// whitespace is stripped by <see cref="ParseFrontmatterScalar"/> for every key, as a YAML scalar
+    /// reader does; the JSON sites — <c>action.tier</c>, <c>tiering.defaultTier</c> — are the ones where
+    /// a stray <c>"hard "</c> survives to be reported.)</para>
     /// </summary>
     private static GuardrailDefinition ApplyPromptFrontmatter(GuardrailDefinition guardrail)
     {
@@ -1297,12 +1403,16 @@ public sealed class PlanLoader
             return guardrail;
 
         string? scope = ParseFrontmatterScalar(frontmatter, "scope");
-        if (scope is null)
+        string? tier = ParseFrontmatterScalar(frontmatter, "tier");
+        if (scope is null && tier is null)
             return guardrail;
 
         return guardrail with
         {
-            Scope = string.IsNullOrWhiteSpace(scope) ? null : scope.Trim().ToLowerInvariant()
+            Scope = scope is null
+                ? guardrail.Scope
+                : string.IsNullOrWhiteSpace(scope) ? null : scope.Trim().ToLowerInvariant(),
+            Tier = tier is null || tier.Length == 0 ? guardrail.Tier : tier
         };
     }
 

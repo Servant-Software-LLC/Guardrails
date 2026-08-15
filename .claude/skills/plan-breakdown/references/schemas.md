@@ -121,6 +121,12 @@ first guardrail are cheap sanity checks.
       "allowedTools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash(dotnet *)"],
       "maxTurns": 50,
       "model": null,                  // null = CLI default
+      "kind": "claude",               // OPTIONAL provider discriminator (#224); DEFAULT "claude" — omit it and nothing changes. Recognized: claude | codex | openrouter | local | openai-compat. Only "claude" is IMPLEMENTED; an unrecognized OR recognized-but-unimplemented kind is a GR2044 validate ERROR, never a silent fallback to claude (§9)
+      "effort": null,                 // OPTIONAL thinking-effort knob (#201); an OPAQUE string shape-checked like `model` (GR2050) and TRANSLATED by the runner CLASS, so the vendor spelling stays quarantined there. Same model at two efforts = two blocks
+      "costly": null,                 // OPTIONAL axis 1/3 (#201). TRUE = the harness may NEVER auto-select this block — only an explicit task pin (action.runner/action.model) or the `default` pointer reaches it. TRI-STATE: absent = null = "not stated", distinct from an explicit false = "stated cheap"; at the candidacy predicate null behaves as NOT-costly (an un-annotated registry stays routable). Non-boolean = GR2045
+      "strength": null,               // OPTIONAL axis 2/3 (#201). Integer >= 1, HIGHER = stronger — the ONLY totally-ordered axis. Orders same-rung candidates ASCENDING (the weakest model that can serve the tier goes first); absent sorts LAST. Malformed = GR2045
+      "specialization": null,         // OPTIONAL axis 3/3 (#201). "coding" | "planning-reasoning" | "general" | "unspecified" (absent = "unspecified", which is also writable). A PREFERENCE, never an ordering. Outside the enum = GR2045
+      "routing": null,                // OPTIONAL (#224/#201). ABSENT/null (shown) = this block is NEVER a tier target — reachable only by an explicit pin or as `default`, exactly today's behavior. PRESENT opts the block into tier resolution AND makes tiering CONFIGURED for the plan. Shape when present: { "tiers": [...], "notes": "…" } — `tiers` is REQUIRED and non-empty, a subset of "easy"|"medium"|"hard", and is the MACHINE-CONSUMED half (missing/empty/wrong-type/out-of-enum = GR2047); `notes` is prose surfaced to humans and MAY be appended to a composed prompt, but is NEVER parsed for a routing decision. `routing.rank` is RETIRED (GR2046 warning)
       "extraArgs": [],
       "maxOutputTokens": 64000,       // per-response output-token cap (#114); default 64000 (> Claude Code's 32000); GR2023 if <= 0
       "env": {},                      // extra env vars passed verbatim to the runner process (#114); user keys win last
@@ -136,6 +142,16 @@ first guardrail are cheap sanity checks.
 
 Scope `allowedTools` to what the plan's actions genuinely need — `Bash(dotnet *)` for
 a .NET plan, not blanket `Bash`.
+
+**The model-tiering keys above (`kind` / `effort` / `costly` / `strength` / `specialization` /
+`routing`) are OPT-IN, and every one is shown in its ABSENT state (`null`) on purpose. Emit them
+that way — or omit them entirely — unless the user has explicitly asked for tiering.** `routing`
+in particular is the switch: a single block declaring it makes tiering **configured** for the
+whole plan, which changes what `guardrails validate` reports and what a future resolver does.
+With no `routing` block anywhere, write **no `action.tier` fields, no `tiering` block, and no
+classification lines in the breakdown report** — a single-model user's breakdown must stay
+byte-identical to one produced before tiering existed (#201 Invariant 7). Registering providers
+is a deliberate, separate act by the human, not something a breakdown infers.
 
 **Multi-task plans (≥2 tasks joined by `dependsOn`) should default-include read-only git
 inspection (#252).** Add `Bash(git log*)`, `Bash(git diff*)`, `Bash(git show*)`,

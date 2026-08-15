@@ -43,9 +43,15 @@ public sealed class PromptRunnerSchemaTests : IDisposable
 
     /// <summary>
     /// ABSENT <c>kind</c> ⇒ <c>claude</c> (the additive guarantee — every config written before the
-    /// discriminator existed is implicitly Claude), and each of the four accepted tokens parses to its
-    /// kind. The block is named "primary", not "claude", so the default can only come from the schema
-    /// default and never from the map key.
+    /// discriminator existed is implicitly Claude), and each accepted token PARSES to its kind. The block
+    /// is named "primary", not "claude", so the default can only come from the schema default and never
+    /// from the map key.
+    ///
+    /// <para>This asserts PARSING only. Whether a parsed kind is one this build can SERVE is a separate
+    /// question with a separate answer — see
+    /// <see cref="RecognizedButUnimplementedKind_FailsValidate_NotJustRegistryConstruction"/>. Keeping the
+    /// two apart is what lets a reserved name (<c>openai-compat</c>, #223) be spelled correctly today and
+    /// implemented later without the parse test moving.</para>
     /// </summary>
     [Theory]
     [InlineData(null, PromptRunnerKind.Claude)]
@@ -53,6 +59,7 @@ public sealed class PromptRunnerSchemaTests : IDisposable
     [InlineData("codex", PromptRunnerKind.Codex)]
     [InlineData("openrouter", PromptRunnerKind.OpenRouter)]
     [InlineData("local", PromptRunnerKind.Local)]
+    [InlineData("openai-compat", PromptRunnerKind.OpenAiCompat)]
     public void Kind_DefaultsToClaudeWhenAbsent_AndParsesEveryAcceptedValue(string? kind, PromptRunnerKind expected)
     {
         string kindKey = kind is null ? string.Empty : $"\"kind\": \"{kind}\", ";
@@ -66,8 +73,116 @@ public sealed class PromptRunnerSchemaTests : IDisposable
             }
             """);
 
-        AssertNoErrors(loaded);
         Assert.Equal(expected, loaded.Runner("primary").Kind);
+    }
+
+    /// <summary>
+    /// <c>openai-compat</c> — the reserved #223 seam covering Ollama / llama.cpp / LM Studio / vLLM,
+    /// which share a wire protocol — is a RECOGNIZED token. It is asserted separately from the parse
+    /// theory above because of what it would otherwise cost: the design-of-record's own worked example
+    /// (§14) writes <c>"kind": "openai-compat"</c>, so a config copied straight out of the design would
+    /// have failed validation as an UNRECOGNIZED kind — a far more confusing message than "recognized,
+    /// not implemented here yet", and one that says the design is wrong rather than that the build is
+    /// early.
+    /// </summary>
+    [Fact]
+    public void OpenAiCompatKind_IsRecognized_NotAnUnknownToken()
+    {
+        Loaded loaded = Load("""
+            {
+              "version": 1,
+              "promptRunners": {
+                "default": "local-kimi",
+                "local-kimi": { "kind": "openai-compat", "command": "http://inference.local:11434" }
+              }
+            }
+            """);
+
+        Assert.Equal(PromptRunnerKind.OpenAiCompat, loaded.Runner("local-kimi").Kind);
+
+        // The distinction the message must carry: it is refused for being UNIMPLEMENTED, never for being
+        // unknown. A test that only checked "an error fired" would pass on either message.
+        Diagnostic error = Assert.Single(
+            loaded.Diagnostics, d => d.Code == DiagnosticCodes.InvalidPromptRunnerKind);
+        Assert.Contains("openai-compat", error.Message, StringComparison.Ordinal);
+        Assert.Contains("no implementation", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("not a recognised", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A RECOGNIZED-but-unimplemented <c>kind</c> fails <c>guardrails validate</c> (GR2044) — the change
+    /// Stage 1.5 makes to what Stage 1 shipped. Stage 1 let such a config load and validate CLEAN and
+    /// caught it only at <c>PromptRunnerRegistry</c> construction; the design's rule is that <b>registry
+    /// construction is the BACKSTOP, not the gate</b>. The difference is real and not cosmetic: under the
+    /// old behaviour a `validate`-clean config would begin a run and then die composing the registry,
+    /// which is the "knowable at load time, discovered at run time" cascade this repo turns into
+    /// load-time catches everywhere else.
+    /// </summary>
+    [Theory]
+    [InlineData("codex")]
+    [InlineData("openrouter")]
+    [InlineData("local")]
+    [InlineData("openai-compat")]
+    public void RecognizedButUnimplementedKind_FailsValidate_NotJustRegistryConstruction(string kind)
+    {
+        Loaded loaded = Load($$"""
+            {
+              "version": 1,
+              "promptRunners": {
+                "default": "primary",
+                "primary": { "kind": "{{kind}}", "command": "some-cli" }
+              }
+            }
+            """);
+
+        Diagnostic error = Assert.Single(
+            loaded.Diagnostics, d => d.Code == DiagnosticCodes.InvalidPromptRunnerKind);
+        Assert.Equal(DiagnosticSeverity.Error, error.Severity);
+        Assert.Contains(kind, error.Message, StringComparison.Ordinal);
+
+        // …and it names what this build CAN serve, so the fix does not require reading the source.
+        Assert.Contains("'claude'", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The implemented-kind GATE and the registry's dispatch BACKSTOP must agree, for every kind. They
+    /// are two statements of one fact in two files, which is precisely the shape that drifts: a kind
+    /// added to <see cref="PromptRunnerKinds.Implemented"/> without a dispatch arm would validate clean
+    /// and then throw mid-run, and an arm added without the list entry would be permanently unreachable
+    /// behind a validation error. Pinning them together costs one test and removes the whole class.
+    /// </summary>
+    [Fact]
+    public void ImplementedKindList_AgreesWithRegistryDispatch_ForEveryKind()
+    {
+        foreach (PromptRunnerKind kind in Enum.GetValues<PromptRunnerKind>())
+        {
+            var config = new RunConfig
+            {
+                Version = 1,
+                PromptRunnerNames = new HashSet<string>(StringComparer.Ordinal) { "primary" },
+                DefaultPromptRunner = "primary",
+                PromptRunners = new Dictionary<string, PromptRunnerConfig>(StringComparer.Ordinal)
+                {
+                    ["primary"] = new()
+                    {
+                        Name = "primary",
+                        Command = "cli-under-test",
+                        Settings = new PromptRunnerSettings(),
+                        Kind = kind
+                    }
+                }
+            };
+
+            Exception? failure = Record.Exception(
+                () => Guardrails.Core.Prompts.PromptRunnerRegistry.FromConfig(config, new Guardrails.Core.Execution.ProcessRunner()));
+
+            Assert.True(
+                PromptRunnerKinds.IsImplemented(kind) == (failure is null),
+                $"kind '{PromptRunnerKinds.Token(kind)}': PromptRunnerKinds.IsImplemented says " +
+                $"{PromptRunnerKinds.IsImplemented(kind)}, but registry construction " +
+                $"{(failure is null ? "SUCCEEDED" : "threw " + failure.GetType().Name)}. The validate-time " +
+                "gate and the runtime backstop have drifted.");
+        }
     }
 
     /// <summary>
@@ -100,6 +215,7 @@ public sealed class PromptRunnerSchemaTests : IDisposable
         Assert.Equal(PromptRunnerKind.Claude, runner.Kind);
         Assert.Null(runner.Costly);
         Assert.Null(runner.Strength);
+        Assert.Null(runner.Effort);
         Assert.Equal(PromptRunnerSpecialization.Unspecified, runner.Specialization);
         Assert.Null(runner.Routing);
 
@@ -148,7 +264,7 @@ public sealed class PromptRunnerSchemaTests : IDisposable
                 "default": "primary",
                 "primary": {
                   "command": "claude",
-                  "kind": "codex",
+                  "kind": "claude",
                   "costly": true,
                   "strength": 7,
                   "specialization": "planning-reasoning"
@@ -159,7 +275,7 @@ public sealed class PromptRunnerSchemaTests : IDisposable
 
         AssertNoErrors(first);
         PromptRunnerConfig parsed = first.Runner("primary");
-        Assert.Equal(PromptRunnerKind.Codex, parsed.Kind);
+        Assert.Equal(PromptRunnerKind.Claude, parsed.Kind);
         Assert.Equal(true, parsed.Costly);
         Assert.Equal(7, parsed.Strength);
         Assert.Equal(PromptRunnerSpecialization.PlanningReasoning, parsed.Specialization);
@@ -241,9 +357,10 @@ public sealed class PromptRunnerSchemaTests : IDisposable
     // --- 5/6. routing guidance and the retired rank -------------------------------------
 
     /// <summary>
-    /// Per-model <c>routing</c> guidance exists, validates, and round-trips. Stage 2 (#226) is its
-    /// first reader, so this stage asserts nothing about what it MEANS — only that prose and tags
-    /// survive the parse/serialise cycle intact rather than being dropped on the floor.
+    /// Per-model <c>routing</c> exists, validates, and round-trips — <c>tiers</c> (the machine-consumed
+    /// half) alongside the human-facing prose. The prose keys are asserted here as well as
+    /// <c>tiers</c> because they are ADDITIVE, not superseded: Stage 1.5 adds a required key to this
+    /// block, it does not take the Stage-1 ones away, and a config carrying both must keep both.
     /// </summary>
     [Fact]
     public void RoutingGuidance_ValidatesAndRoundTrips()
@@ -257,6 +374,8 @@ public sealed class PromptRunnerSchemaTests : IDisposable
                   "command": "claude",
                   "strength": 4,
                   "routing": {
+                    "tiers": ["medium", "hard"],
+                    "notes": "cross-module architecture; retry/journal contract work.",
                     "guidance": "Prefer for wide-context refactors; avoid for one-line fixes.",
                     "tags": ["refactoring", "long-context"]
                   }
@@ -268,6 +387,8 @@ public sealed class PromptRunnerSchemaTests : IDisposable
         AssertNoErrors(first);
         PromptRunnerConfig parsed = first.Runner("primary");
         Assert.NotNull(parsed.Routing);
+        Assert.Equal(["medium", "hard"], parsed.Routing.Tiers);
+        Assert.Equal("cross-module architecture; retry/journal contract work.", parsed.Routing.Notes);
         Assert.Equal("Prefer for wide-context refactors; avoid for one-line fixes.", parsed.Routing.Guidance);
         Assert.Equal(["refactoring", "long-context"], parsed.Routing.Tags);
 
@@ -276,6 +397,8 @@ public sealed class PromptRunnerSchemaTests : IDisposable
         AssertNoErrors(second);
         PromptRunnerRouting? round = second.Runner("primary").Routing;
         Assert.NotNull(round);
+        Assert.Equal(parsed.Routing.Tiers, round.Tiers);
+        Assert.Equal(parsed.Routing.Notes, round.Notes);
         Assert.Equal(parsed.Routing.Guidance, round.Guidance);
         Assert.Equal(parsed.Routing.Tags, round.Tags);
     }
@@ -298,7 +421,7 @@ public sealed class PromptRunnerSchemaTests : IDisposable
                 "primary": {
                   "command": "claude",
                   "strength": 4,
-                  "routing": { "rank": 2, "guidance": "Legacy block mid-migration." }
+                  "routing": { "tiers": ["medium"], "rank": 2, "guidance": "Legacy block mid-migration." }
                 }
               }
             }
@@ -377,9 +500,31 @@ public sealed class PromptRunnerSchemaTests : IDisposable
             block["strength"] = strength;
         }
 
+        if (runner.Effort is { } effort)
+        {
+            block["effort"] = effort;
+        }
+
         if (runner.Routing is { } routing)
         {
             var routingBlock = new JsonObject();
+
+            // `tiers` is REQUIRED, so it is emitted unconditionally: a Render that dropped it would
+            // produce a document the loader rejects, turning every round-trip assertion into a GR2047
+            // report instead of the comparison it is meant to be.
+            var tiers = new JsonArray();
+            foreach (string tier in routing.Tiers)
+            {
+                tiers.Add(tier);
+            }
+
+            routingBlock["tiers"] = tiers;
+
+            if (routing.Notes is not null)
+            {
+                routingBlock["notes"] = routing.Notes;
+            }
+
             if (routing.Guidance is not null)
             {
                 routingBlock["guidance"] = routing.Guidance;

@@ -26,6 +26,17 @@ public sealed record PromptRunnerConfig
     public PromptRunnerKind Kind { get; init; } = PromptRunnerKinds.Default;
 
     /// <summary>
+    /// The per-block thinking-effort knob (SSOT §9, issue #201) — e.g. <c>"low"</c>, <c>"xhigh"</c>.
+    /// OPAQUE to the harness: shape-validated only (GR2050, mirroring GR2030's <c>model</c> check) and
+    /// TRANSLATED by the runner CLASS into whatever its CLI/API exposes, so the vendor spelling stays
+    /// quarantined there exactly as <c>maxOutputTokens</c> → <c>CLAUDE_CODE_MAX_OUTPUT_TOKENS</c> does.
+    /// Wanting the same model at two efforts is TWO blocks (<c>"opus"</c>, <c>"opus-xhigh"</c>), which is
+    /// what makes the three model axes per-effort as well as per-model. Null = the key was absent.
+    /// Nothing READS it yet — the Stage 2 resolver (#226) is its first consumer.
+    /// </summary>
+    public string? Effort { get; init; }
+
+    /// <summary>
     /// Axis 1 of 3 (charter Decision 7): does spending on this model warrant restraint? OPTIONAL and
     /// TRI-STATE — <c>null</c> means "not stated", deliberately distinct from an explicit <c>false</c>
     /// ("stated to be cheap"). Nothing READS it in Stage 1; the resolver (#226) is the first consumer.
@@ -48,11 +59,43 @@ public sealed record PromptRunnerConfig
     public PromptRunnerSpecialization Specialization { get; init; } = PromptRunnerSpecialization.Unspecified;
 
     /// <summary>
-    /// Per-model ROUTING GUIDANCE (SSOT §9, issue #224): prose and/or tags describing the work this
-    /// model should take on. Null = the block carried no <c>routing</c> key. Stage 1 requires only
-    /// that it exists, validates, and round-trips — the static resolver (#226) is its first reader.
+    /// The per-model <c>routing</c> block (SSOT §9, issue #224): which difficulty rungs this block may
+    /// serve (<see cref="PromptRunnerRouting.Tiers"/>, the machine-consumed half) plus human-facing prose.
+    /// Null = the block carried no <c>routing</c> key, which means the block is NEVER a tier target —
+    /// reachable only explicitly (<c>action.runner</c>/<c>action.model</c>) or as the <c>default</c>
+    /// pointer, exactly today's behaviour.
     /// </summary>
     public PromptRunnerRouting? Routing { get; init; }
+
+    /// <summary>
+    /// The ONE candidacy predicate (SSOT §9.6, DoR §6.2), written once here so every reader agrees:
+    /// <c>routing</c> present AND <paramref name="tier"/> ∈ <c>routing.tiers</c> AND <c>costly</c> is not
+    /// <c>true</c>. It is a CORRECTNESS requirement that GR2048's validate-time check, the Stage 2
+    /// resolver, the <c>no-route</c> outcome and the verifier route all use this same predicate — if
+    /// validation counted a costly block as serving a rung and the resolver did not, validation would
+    /// pass and every task at that rung would die at runtime.
+    ///
+    /// <para><b>Three states in the schema, TWO here.</b> <see cref="Costly"/> is tri-state — <c>null</c>
+    /// is "not stated", deliberately distinct from an explicit <c>false</c> — but at THIS predicate
+    /// <c>null</c> behaves as NOT-costly, because an un-annotated registry must stay routable. Only an
+    /// explicit <c>true</c> excludes a block. (The distinction survives for <c>providers init</c>, which
+    /// exists to name every block whose cost is unstated and ask.)</para>
+    /// </summary>
+    /// <param name="tier">The rung to test candidacy for — one of <see cref="ActionTiers.All"/>.</param>
+    public bool ServesTier(string tier) =>
+        Costly is not true
+        && Routing is { } routing
+        && routing.Tiers.Contains(tier, StringComparer.Ordinal);
+
+    /// <summary>
+    /// True when this block DECLARES <paramref name="tier"/> in its <c>routing.tiers</c>, ignoring the
+    /// costly floor. The difference between this and <see cref="ServesTier"/> is exactly what GR2048's
+    /// message must distinguish: a rung nothing declares needs a new/widened block, while a rung declared
+    /// only by <c>costly: true</c> blocks needs a pin or a cleared flag. Two problems, two fixes.
+    /// </summary>
+    /// <param name="tier">The rung to test declaration for — one of <see cref="ActionTiers.All"/>.</param>
+    public bool DeclaresTier(string tier) =>
+        Routing is { } routing && routing.Tiers.Contains(tier, StringComparer.Ordinal);
 
     /// <summary>
     /// A partial override block applied for GUARDRAIL prompts only — the tighter,
@@ -142,35 +185,67 @@ public sealed record PromptRunnerOverrides
 
 /// <summary>
 /// Which runner IMPLEMENTATION a <c>promptRunners</c> block selects (SSOT §9, issue #224). Only
-/// <see cref="Claude"/> has a concrete runner in Stage 1 — the others are the seam #223 fills, and
-/// asking for one of them fails registry construction with an actionable message rather than
-/// silently falling back to Claude.
+/// <see cref="Claude"/> has a concrete runner — the others are the seam #223 fills. Declaring one of
+/// them is a <c>guardrails validate</c> ERROR (GR2044), not a silent load: registry construction still
+/// refuses it, but as the BACKSTOP rather than the gate (see <see cref="PromptRunnerKinds.Implemented"/>).
 /// </summary>
 public enum PromptRunnerKind
 {
     /// <summary>Claude Code (<c>ClaudePromptRunner</c>) — the DEFAULT for a block with no <c>kind</c>.</summary>
     Claude,
 
-    /// <summary>OpenAI Codex CLI. Declarable in Stage 1; no concrete runner until #223.</summary>
+    /// <summary>OpenAI Codex CLI. A reserved name; no concrete runner (#223).</summary>
     Codex,
 
-    /// <summary>An OpenRouter-hosted model. Declarable in Stage 1; no concrete runner until #223.</summary>
+    /// <summary>An OpenRouter-hosted model. A reserved name; no concrete runner (#223).</summary>
     OpenRouter,
 
-    /// <summary>A locally-hosted model. Declarable in Stage 1; no concrete runner until #223.</summary>
-    Local
+    /// <summary>A locally-hosted model. A reserved name; no concrete runner (#223).</summary>
+    Local,
+
+    /// <summary>
+    /// An OpenAI-compatible endpoint (wire token <c>openai-compat</c>) — ONE kind covering Ollama,
+    /// llama.cpp, LM Studio and vLLM, because they share the wire protocol. This is the reserved seam
+    /// #223 fills, and it deliberately spans BOTH a loopback local endpoint and a cloud
+    /// OpenAI-compatible API: that is precisely why the DoR's provider-kind "weak" fallback (§4.1) is
+    /// VERIFIER-ONLY and may never be used for actor ordering — this kind cannot tell the two apart.
+    /// No concrete runner yet (#223).
+    /// </summary>
+    OpenAiCompat
 }
 
 /// <summary>
 /// The single source of truth for the <see cref="PromptRunnerKind"/> wire tokens
-/// (<c>claude</c> / <c>codex</c> / <c>openrouter</c> / <c>local</c>), mirroring
-/// <see cref="AutonomyPolicies"/>. Shared by the loader, validation, and the <c>providers init</c>
-/// generator so the spelling never forks.
+/// (<c>claude</c> / <c>codex</c> / <c>openrouter</c> / <c>local</c> / <c>openai-compat</c>), mirroring
+/// <see cref="AutonomyPolicies"/>. Shared by the loader, validation, the registry's dispatch backstop,
+/// and the <c>providers init</c> generator so the spelling never forks.
 /// </summary>
 public static class PromptRunnerKinds
 {
     /// <summary>The kind an omitted <c>kind</c> key resolves to — the additive-compatibility default.</summary>
     public const PromptRunnerKind Default = PromptRunnerKind.Claude;
+
+    /// <summary>
+    /// The kinds this BUILD can actually serve — the single source of truth for "implemented", read by
+    /// the validate-time gate (GR2044) and asserted against <c>PromptRunnerRegistry.FromConfig</c>'s
+    /// dispatch switch, which is the runtime backstop. Two places state the same fact, so a test pins
+    /// them together rather than letting them drift.
+    /// </summary>
+    public static IReadOnlyList<PromptRunnerKind> Implemented { get; } = [PromptRunnerKind.Claude];
+
+    /// <summary>The recognised wire tokens, in declaration order — for diagnostic messages.</summary>
+    public static IReadOnlyList<PromptRunnerKind> All { get; } =
+        [PromptRunnerKind.Claude, PromptRunnerKind.Codex, PromptRunnerKind.OpenRouter,
+         PromptRunnerKind.Local, PromptRunnerKind.OpenAiCompat];
+
+    /// <summary>True when this build carries a concrete <c>IPromptRunner</c> for <paramref name="kind"/>.</summary>
+    public static bool IsImplemented(PromptRunnerKind kind) => Implemented.Contains(kind);
+
+    /// <summary>The implemented kinds as a comma-separated quoted list, for diagnostic messages.</summary>
+    public static string ImplementedTokenList => string.Join(", ", Implemented.Select(k => $"'{Token(k)}'"));
+
+    /// <summary>The recognised kinds as a comma-separated quoted list, for diagnostic messages.</summary>
+    public static string TokenList => string.Join(", ", All.Select(k => $"'{Token(k)}'"));
 
     /// <summary>The canonical wire token for <paramref name="kind"/> (e.g. <see cref="PromptRunnerKind.OpenRouter"/> ⇒ <c>openrouter</c>).</summary>
     public static string Token(PromptRunnerKind kind) => kind switch
@@ -179,14 +254,16 @@ public static class PromptRunnerKinds
         PromptRunnerKind.Codex => "codex",
         PromptRunnerKind.OpenRouter => "openrouter",
         PromptRunnerKind.Local => "local",
+        PromptRunnerKind.OpenAiCompat => "openai-compat",
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unhandled prompt-runner kind.")
     };
 
     /// <summary>
     /// Parse a <c>kind</c> string (trim + case-insensitive, mirroring <c>AutonomyPolicies.TryParse</c>):
-    /// <c>claude</c>, <c>codex</c>, <c>openrouter</c>, or <c>local</c>. Any other value returns
-    /// <c>false</c> with <paramref name="kind"/> left at <see cref="Default"/> and the caller reports it —
-    /// an unrecognised kind is REPORTED, never silently served by the default.
+    /// <c>claude</c>, <c>codex</c>, <c>openrouter</c>, <c>local</c>, or <c>openai-compat</c> (note the
+    /// hyphen — which is why this mapping is explicit rather than <c>Enum.TryParse</c>). Any other value
+    /// returns <c>false</c> with <paramref name="kind"/> left at <see cref="Default"/> and the caller
+    /// reports it — an unrecognised kind is REPORTED, never silently served by the default.
     /// </summary>
     public static bool TryParse(string value, out PromptRunnerKind kind)
     {
@@ -203,6 +280,9 @@ public static class PromptRunnerKinds
                 return true;
             case "local":
                 kind = PromptRunnerKind.Local;
+                return true;
+            case "openai-compat":
+                kind = PromptRunnerKind.OpenAiCompat;
                 return true;
             default:
                 kind = Default;
@@ -281,20 +361,54 @@ public static class PromptRunnerSpecializations
 }
 
 /// <summary>
-/// The optional per-model <c>routing</c> block (SSOT §9, issue #224): guidance about the work a model
-/// should take on. Nothing consumes it in Stage 1 — the static resolver (#226) is the first reader, so
-/// this stage only proves it parses, validates, and survives a serialise/parse cycle.
+/// The optional per-model <c>routing</c> block (SSOT §9, issue #224): it opts the block INTO tier
+/// resolution. Its presence is what makes tiering "configured" for a plan; its absence means the block
+/// is never a tier target at all.
+///
+/// <para><b>The block splits hard along one line: <see cref="Tiers"/> is MACHINE-CONSUMED, everything
+/// else is for humans.</b> <see cref="Tiers"/> is the only key the candidacy predicate
+/// (<see cref="PromptRunnerConfig.ServesTier"/>) reads, and it is REQUIRED (GR2047) precisely because a
+/// <c>routing</c> block without it declares an eligibility it cannot express. <see cref="Notes"/> /
+/// <see cref="Guidance"/> / <see cref="Tags"/> are surfaced to humans and MAY be appended to a composed
+/// prompt as context — they are <b>NEVER parsed to make a routing decision</b> (DoR invariant 1: no LLM
+/// and no prose ever picks a model).</para>
 ///
 /// <para><b><c>rank</c> is deliberately absent.</b> It is a RETIRED key (settled OD-F): ordering is
 /// ascending <see cref="PromptRunnerConfig.Strength"/>, not a hand-written rank. A config still
-/// carrying <c>routing.rank</c> gets a retired-field WARNING — modelling it here would be the silent
-/// acceptance the warning exists to prevent.</para>
+/// carrying <c>routing.rank</c> gets a retired-field WARNING (GR2046) — modelling it here would be the
+/// silent acceptance the warning exists to prevent. To say "this block should not serve that rung",
+/// remove the rung from <see cref="Tiers"/>; eligibility says <i>may</i>, <c>strength</c> says <i>how
+/// strong</i>, and nothing needs to say <i>prefer</i>.</para>
 /// </summary>
 public sealed record PromptRunnerRouting
 {
-    /// <summary>Free prose describing the work this model suits. Null = the key was absent.</summary>
+    /// <summary>
+    /// The difficulty rungs this (kind, model, effort) route MAY serve — a non-empty subset of
+    /// <see cref="ActionTiers.All"/>, REQUIRED whenever a <c>routing</c> block is present (GR2047).
+    /// This is the machine-consumed half of routing and the only key
+    /// <see cref="PromptRunnerConfig.ServesTier"/> reads. Held VERBATIM as declared (the loader rejects
+    /// anything outside the enum rather than normalising it), so the order here is the author's.
+    /// </summary>
+    public IReadOnlyList<string> Tiers { get; init; } = [];
+
+    /// <summary>
+    /// Human-authored prose rationale for this route (the DoR's <c>notes</c>). Surfaced to humans and
+    /// MAY be appended to a composed prompt as context — never parsed for a routing decision. Null = the
+    /// key was absent.
+    /// </summary>
+    public string? Notes { get; init; }
+
+    /// <summary>
+    /// Free prose describing the work this model suits — the Stage-1 spelling, kept because it is
+    /// additive and harmless. Semantically the same human-facing surface as <see cref="Notes"/>; neither
+    /// is ever parsed. Null = the key was absent.
+    /// </summary>
     public string? Guidance { get; init; }
 
-    /// <summary>Machine-comparable guidance tags. Empty = the key was absent.</summary>
+    /// <summary>
+    /// Free-form guidance tags from Stage 1. Advisory context for humans and composed prompts — these
+    /// are NOT tier tokens and nothing routes on them (<see cref="Tiers"/> is the routing surface).
+    /// Empty = the key was absent.
+    /// </summary>
     public IReadOnlyList<string> Tags { get; init; } = [];
 }
