@@ -120,7 +120,7 @@ renderable `diagram.md` (or run `guardrails graph <folder>`) — a Mermaid view 
 |---|---|
 | `guardrails validate [folder]` | Schema, DAG (cycles), file refs, interpreter/runner checks |
 | `guardrails plan [folder]` | Execution-wave preview — runs nothing |
-| `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness |
+| `guardrails graph [folder] [--check] [--stdout]` | Render a Mermaid diagram of the task/guardrail DAG to `<folder>/diagram.md`; `--check` reports staleness. On a **waved** plan this covers every diagram the plan owns — the plan-level one *and* each `wave-NN-<slug>/diagram.md` |
 | `guardrails run [folder] [--fresh] [--no-merge-on-success] [--no-ui] [--dry-run] [--no-log-server] [--log-port <n>]` | Run to green; resume-aware; live progress table. **A green run DELIVERS to your branch by default** — see [Delivery on success](#delivery-on-success); `--no-merge-on-success` opts out. `--fresh` discards prior run state and starts over. While running, a localhost-only log server serves each task's live attempt log (each row carries a clickable **view log** link); `--no-log-server` disables it and `--log-port` pins the port. `--dry-run` previews waves + per-task resolution + resume skips and exits without running |
 | `guardrails status [folder]` | Journal table: per-task status, attempts, last failure |
 | `guardrails lock [folder] [--check] [--diff]` | Record or compare a plan folder's breakdown manifest (`guardrails.baseline`); `--check` reports drift via exit code, `--diff` prints the per-file classification |

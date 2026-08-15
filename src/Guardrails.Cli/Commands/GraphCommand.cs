@@ -22,6 +22,15 @@ namespace Guardrails.Cli.Commands;
 /// <c>diagram.html</c>) are written to the wave folder so the per-wave review pause can surface
 /// just that wave (SSOT §14, issue #355).
 /// </para>
+/// <para>
+/// When the supplied folder is a WAVED PLAN ROOT the command operates on EVERY diagram that plan
+/// owns — the plan-level one PLUS one per <c>wave-NN-slug/</c> folder (see
+/// <see cref="DiagramTargets"/>, issue #447). Before that fix a regenerate wrote only the
+/// plan-level file while <c>--check</c> validated only the plan-level file, so a waved plan could
+/// not be brought fresh by the documented command AND <c>--check</c> then reported a false "fresh"
+/// over demonstrably stale per-wave diagrams — the very signal <c>/guardrails-review</c> branches
+/// on, and a mid-run regeneration source that dirties tracked files.
+/// </para>
 /// </summary>
 public static partial class GraphCommand
 {
@@ -46,17 +55,17 @@ public static partial class GraphCommand
 
         var checkOption = new Option<bool>("--check")
         {
-            Description = "Report whether diagram.md (and diagram.html if present) are up to date (exit 0 fresh, 2 stale/missing, 1 on a load/validate error); writes nothing. A missing diagram.html is not stale — only a present-but-hash-mismatched one is."
+            Description = "Report whether diagram.md (and diagram.html if present) are up to date (exit 0 fresh, 2 stale/missing, 1 on a load/validate error); writes nothing. On a waved plan EVERY wave's diagram is checked too, and one line is printed per stale/missing file. A missing diagram.html is not stale — only a present-but-hash-mismatched one is."
         };
 
         var stdoutOption = new Option<bool>("--stdout")
         {
-            Description = "Print the diagram to stdout instead of writing diagram.md (writes nothing to disk)."
+            Description = "Print the diagram to stdout instead of writing diagram.md (writes nothing to disk). On a waved plan this prints the plan-level diagram only."
         };
 
         var noHtmlOption = new Option<bool>("--no-html")
         {
-            Description = "Write only diagram.md; skip the interactive diagram.html navigation companion. Has no effect when combined with --stdout (which writes nothing to disk)."
+            Description = "Write only diagram.md; skip the interactive diagram.html navigation companion (at every scope — plan-level and per-wave). Has no effect when combined with --stdout (which writes nothing to disk)."
         };
 
         var formatOption = new Option<string>("--format")
@@ -99,7 +108,7 @@ public static partial class GraphCommand
         {
             PlanDefinition? wavePlan = LoadWaveScoped(folder, output);
             if (wavePlan is null) return ExitCodes.HarnessError;
-            return Render(wavePlan, check, toStdout, noHtml, io);
+            return Render([wavePlan], check, toStdout, noHtml, io);
         }
 
         PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
@@ -109,8 +118,36 @@ public static partial class GraphCommand
             return ExitCodes.HarnessError;
         }
 
-        return Render(probe.Plan, check, toStdout, noHtml, io);
+        return Render(DiagramTargets(probe.Plan), check, toStdout, noHtml, io);
     }
+
+    /// <summary>
+    /// Every diagram a plan folder OWNS, in write/report order: the plan-level diagram FIRST, then
+    /// — for a WAVED plan (SSOT §14) — one wave-scoped projection per wave, each carrying its own
+    /// wave folder as <see cref="PlanDefinition.PlanDirectory"/> so it renders/checks
+    /// <c>&lt;wave&gt;/diagram.{md,html}</c>.
+    /// <para>
+    /// This list IS the fix for issue #447. A waved plan's per-wave diagrams are first-class
+    /// artifacts of the plan folder — the run writes them at every wave boundary
+    /// (<see cref="RenderWaveScoped"/>) and the per-wave review pause reads them — but the
+    /// <c>graph</c> command used to treat the plan-level file as the plan's ONLY diagram. That made
+    /// the two halves of the contract lie in opposite directions: a regenerate could not bring the
+    /// wave files fresh, and <c>--check</c> then reported exit 0 over stale ones (a
+    /// <c>/guardrails-review</c> pass recorded "diagram fresh" while two waves were stale, and the
+    /// next run silently rewrote them mid-flight). Deriving BOTH the write set and the check set
+    /// from this one list is what keeps them from drifting apart again.
+    /// </para>
+    /// <para>
+    /// The plan-level target stays FIRST because it is the primary artifact: it is what
+    /// <c>--stdout</c> prints and the one <c>Diagram (interactive):</c> link points at (the line
+    /// <c>plan-breakdown</c>'s SKILL.md Step 7 relays verbatim, issues #249/#256 — which is why the
+    /// per-wave fan-out must never emit a second link line).
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<PlanDefinition> DiagramTargets(PlanDefinition plan) =>
+        plan.IsWaved
+            ? [plan, .. plan.Waves.Select(wave => ProjectWave(plan, wave))]
+            : [plan];
 
     /// <summary>
     /// Render a wave-scoped diagram (<c>diagram.md</c> + <c>diagram.html</c>) into
@@ -136,17 +173,10 @@ public static partial class GraphCommand
 
         try
         {
-            string sourceHash = GraphSourceHash.Compute(wavePlan);
-            string diagramPath = Path.Combine(wavePlan.PlanDirectory, DiagramFileName);
-            string diagramHtmlPath = Path.Combine(wavePlan.PlanDirectory, DiagramHtmlFileName);
-
-            string diagram = MermaidRenderer.Render(wavePlan);
-            AtomicFile.WriteAllText(diagramPath, ComposeDocument(diagram, sourceHash));
-
-            string interactive = MermaidRenderer.RenderInteractive(wavePlan);
-            IReadOnlyDictionary<string, string> taskFolderTargets = MermaidRenderer.TaskFolderTargets(wavePlan);
-            AtomicFile.WriteAllText(diagramHtmlPath, HtmlDiagramRenderer.Render(interactive, sourceHash, taskFolderTargets));
-
+            // The SAME writer the `graph` command uses, so the run's wave-boundary regeneration and
+            // an explicit `guardrails graph` produce byte-identical files (issue #447: they must
+            // never drift, or a run would keep re-dirtying files `graph --check` calls fresh).
+            WriteDiagramFiles(wavePlan, noHtml: false);
             return true;
         }
         catch (Exception ex)
@@ -201,10 +231,24 @@ public static partial class GraphCommand
             return null;
         }
 
-        // Project the full plan down to a wave-scoped slice: only this wave's tasks, preflight
-        // gate, and exit gate; PlanDirectory set to the wave folder so diagram.md / diagram.html
-        // land there. Waves cleared so MermaidRenderer sees a flat-plan shape (no wave headers).
-        return probe.Plan with
+        return ProjectWave(probe.Plan, wave);
+    }
+
+    /// <summary>
+    /// Project a loaded plan down to a wave-scoped slice: only this wave's tasks, entry gate, and
+    /// exit gate; <see cref="PlanDefinition.PlanDirectory"/> set to the wave folder so
+    /// <c>diagram.md</c> / <c>diagram.html</c> land THERE, and <see cref="PlanDefinition.Waves"/>
+    /// cleared so <see cref="MermaidRenderer"/> sees a flat-plan shape (no wave headers) and
+    /// <see cref="GraphSourceHash"/> keys the file on that wave's own content.
+    /// <para>
+    /// Shared by the wave-folder invocation (<c>guardrails graph &lt;plan&gt;/&lt;wave&gt;</c>, via
+    /// <see cref="LoadWaveScoped"/>) and the waved-plan-root fan-out
+    /// (<see cref="DiagramTargets"/>) — one projection, so a wave's diagram is byte-identical no
+    /// matter which of the two routes wrote it.
+    /// </para>
+    /// </summary>
+    private static PlanDefinition ProjectWave(PlanDefinition plan, WaveNode wave) =>
+        plan with
         {
             PlanDirectory = wave.Directory,
             Tasks = wave.Tasks,
@@ -212,54 +256,98 @@ public static partial class GraphCommand
             PlanPreflights = wave.Preflights,
             PlanGuardrails = wave.Guardrails,
         };
-    }
 
     /// <summary>
-    /// Shared render path for both the flat-plan and wave-scoped code paths. Drives the full
-    /// write / <c>--check</c> / <c>--stdout</c> pipeline against the supplied
-    /// <paramref name="plan"/>. <c>plan.PlanDirectory</c> is the output directory for
-    /// <c>diagram.md</c> and <c>diagram.html</c> — for a wave-scoped call this is the wave
-    /// folder, not the plan root.
+    /// Shared render path for the flat-plan, waved-plan, and wave-scoped code paths. Drives the
+    /// full write / <c>--check</c> / <c>--stdout</c> pipeline against every diagram the invoked
+    /// folder owns (<see cref="DiagramTargets"/>). Each target's <c>PlanDirectory</c> is its own
+    /// output directory — the plan root for the plan-level diagram, the wave folder for a
+    /// wave-scoped one — and <paramref name="targets"/>[0] is always the PRIMARY (plan-level, or
+    /// the wave itself for a wave-folder invocation).
     /// </summary>
-    private static int Render(PlanDefinition plan, bool check, bool toStdout, bool noHtml, IConsoleIo io)
+    private static int Render(
+        IReadOnlyList<PlanDefinition> targets, bool check, bool toStdout, bool noHtml, IConsoleIo io)
     {
         TextWriter output = io.Out;
-
-        string sourceHash = GraphSourceHash.Compute(plan);
-        string diagramPath = Path.Combine(plan.PlanDirectory, DiagramFileName);
-        string diagramHtmlPath = Path.Combine(plan.PlanDirectory, DiagramHtmlFileName);
+        PlanDefinition primary = targets[0];
 
         if (check)
         {
-            return Check(diagramPath, diagramHtmlPath, sourceHash, output);
+            return Check(targets, output);
         }
-
-        string diagram = MermaidRenderer.Render(plan);
 
         if (toStdout)
         {
-            output.WriteLine(diagram);
+            // --stdout is a "show me the diagram" affordance, not a regeneration: it prints the
+            // PRIMARY diagram only. Concatenating a waved plan's per-wave diagrams into one stream
+            // would produce several `flowchart TD` documents with nothing to delimit them; a caller
+            // who wants one wave's source asks for it by folder (`graph <plan>/<wave> --stdout`).
+            output.WriteLine(MermaidRenderer.Render(primary));
             return ExitCodes.Success;
         }
 
-        string document = ComposeDocument(diagram, sourceHash);
-        AtomicFile.WriteAllText(diagramPath, document);
-        output.WriteLine($"Wrote {diagramPath}");
+        // One line per file written — on a waved plan this is the ONLY place a reader can see that
+        // the per-wave diagrams were regenerated too. The single-line "Wrote <plan>/diagram.md" this
+        // replaces is precisely why nobody noticed only one file was ever being produced (#447).
+        foreach (PlanDefinition target in targets)
+        {
+            output.WriteLine($"Wrote {WriteDiagramFiles(target, noHtml)}");
+        }
 
-        // The interactive local-navigation companion (issue #33). diagram.md stays the GitHub
-        // render; diagram.html is the pan/zoom/fullscreen viewer whose nodes click through to
-        // their source under the plan folder. Both carry the same source-sha256 and are excluded
-        // from guardrails.baseline, so neither causes drift. The HTML embeds the interactive
-        // source (clean diagram + click directives); diagram.md stays click-free.
+        // Exactly ONE "Diagram (interactive):" line, for the PRIMARY diagram — plan-breakdown's
+        // SKILL.md Step 7 relays this line verbatim as its report's last line (#249/#256), and a
+        // per-wave link line each would leave "the" link ambiguous. A wave's own interactive link is
+        // still reachable: `guardrails graph <plan>/<wave>` prints it, and the run prints
+        // "Wave diagram (focused):" at every wave boundary.
+        if (!noHtml)
+        {
+            PrintDiagramLink(Path.Combine(primary.PlanDirectory, DiagramHtmlFileName), output);
+        }
+
+        return ExitCodes.Success;
+    }
+
+    /// <summary>
+    /// Write ONE target's <c>diagram.md</c> — and, unless <paramref name="noHtml"/>, its
+    /// <c>diagram.html</c> companion (issue #33) — into <c>plan.PlanDirectory</c>, returning the
+    /// written <c>diagram.md</c> path. <c>diagram.md</c> stays the GitHub render (click-free, since
+    /// GitHub sandboxes Mermaid and the targets are <c>file://</c>-local); <c>diagram.html</c> is
+    /// the pan/zoom/fullscreen viewer whose nodes click through to their source. Both carry the
+    /// SAME <c>source-sha256</c>, so <c>--check</c> governs the pair.
+    /// <para>
+    /// Both are generated, non-authored artifacts, excluded from the <c>guardrails.baseline</c>
+    /// snapshot (SSOT §10/§11) — <see cref="Guardrails.Core.Breakdown.BreakdownManifest"/> drops
+    /// them by their manifest-root-relative name, which covers the plan-level pair and a PER-WAVE
+    /// baseline (the §11 model: <c>lock</c>/<c>merge</c> take a folder argument and operate on
+    /// <c>&lt;plan&gt;/&lt;wave&gt;/</c>). A baseline captured at a WAVED PLAN ROOT sees a wave's
+    /// pair as <c>&lt;wave&gt;/diagram.md</c> — two segments — and does NOT drop it. That predates
+    /// this command and is not changed by it (the run has always written those files at every wave
+    /// boundary), but it is why a plan-root <c>lock --diff</c> on a waved plan lists
+    /// <c>ADDED &lt;wave&gt;/diagram.html</c>; fixing it belongs to the manifest, not here.
+    /// </para>
+    /// <para>
+    /// THE single writer: the plan-level path, the per-wave fan-out (<see cref="DiagramTargets"/>),
+    /// and <see cref="RenderWaveScoped"/> (the run's wave boundaries) all go through it, so no
+    /// scope can ever be written by a divergent second renderer.
+    /// </para>
+    /// </summary>
+    private static string WriteDiagramFiles(PlanDefinition plan, bool noHtml)
+    {
+        string sourceHash = GraphSourceHash.Compute(plan);
+        string diagramPath = Path.Combine(plan.PlanDirectory, DiagramFileName);
+
+        AtomicFile.WriteAllText(diagramPath, ComposeDocument(MermaidRenderer.Render(plan), sourceHash));
+
         if (!noHtml)
         {
             string interactive = MermaidRenderer.RenderInteractive(plan);
             IReadOnlyDictionary<string, string> taskFolderTargets = MermaidRenderer.TaskFolderTargets(plan);
-            AtomicFile.WriteAllText(diagramHtmlPath, HtmlDiagramRenderer.Render(interactive, sourceHash, taskFolderTargets));
-            PrintDiagramLink(diagramHtmlPath, output);
+            AtomicFile.WriteAllText(
+                Path.Combine(plan.PlanDirectory, DiagramHtmlFileName),
+                HtmlDiagramRenderer.Render(interactive, sourceHash, taskFolderTargets));
         }
 
-        return ExitCodes.Success;
+        return diagramPath;
     }
 
     /// <summary>
@@ -289,42 +377,92 @@ public static partial class GraphCommand
     }
 
     /// <summary>
-    /// <c>--check</c>: recompute the source hash and compare it to the one embedded in an
-    /// existing <c>diagram.md</c> provenance comment. Fresh (present and equal) → exit 0;
-    /// stale or missing → one actionable line on stdout and exit <see cref="StaleExitCode"/>
-    /// (2) — the "regenerate" signal (SSOT §7/§10). A genuine load/validate failure never
-    /// reaches here — <see cref="Execute"/> returns <see cref="ExitCodes.HarnessError"/> (1)
-    /// before <c>--check</c> is dispatched — so CI can distinguish "regenerate the diagram"
-    /// (2) from "the plan is broken" (1).
+    /// <c>--check</c>: report freshness across EVERY diagram the invoked folder owns
+    /// (<see cref="DiagramTargets"/>) — exit 0 only when they are ALL fresh; exit
+    /// <see cref="StaleExitCode"/> (2), the "regenerate" signal (SSOT §7/§10), when ANY is stale or
+    /// missing. A genuine load/validate failure never reaches here — <see cref="Execute"/> returns
+    /// <see cref="ExitCodes.HarnessError"/> (1) before <c>--check</c> is dispatched — so CI can
+    /// distinguish "regenerate the diagram" (2) from "the plan is broken" (1).
+    /// <para>
+    /// Every target is evaluated (no short-circuit ACROSS targets) so the output names each stale or
+    /// missing file rather than only the first: on a waved plan the caller needs to know WHICH waves
+    /// drifted, and a single line was how the #447 under-report hid for so long. The regenerate hint
+    /// on every line names the PRIMARY folder, because one <c>guardrails graph &lt;plan&gt;</c> now
+    /// fixes them all.
+    /// </para>
     /// </summary>
-    private static int Check(string diagramPath, string diagramHtmlPath, string sourceHash, TextWriter output)
+    private static int Check(IReadOnlyList<PlanDefinition> targets, TextWriter output)
     {
-        string regenHint = $"run: guardrails graph {QuoteIfNeeded(Path.GetDirectoryName(diagramPath)!)}";
+        // Trim a trailing separator: `Path.GetFullPath("plan/")` keeps one, and a quoted Windows
+        // path ending in a backslash would escape its own closing quote in the copy-pasteable hint
+        // (`"C:\Dev AI\plan\"`). This also reproduces, byte for byte, the hint the pre-#447 code
+        // built from Path.GetDirectoryName(diagramPath), which never carried one.
+        string primaryDir = Path.TrimEndingDirectorySeparator(targets[0].PlanDirectory);
+        string regenHint = $"run: guardrails graph {QuoteIfNeeded(primaryDir)}";
+
+        bool allFresh = true;
+        foreach (PlanDefinition target in targets)
+        {
+            allFresh &= CheckOne(target, primaryDir, regenHint, output);
+        }
+
+        return allFresh ? ExitCodes.Success : StaleExitCode;
+    }
+
+    /// <summary>
+    /// Freshness of ONE target's diagram pair: recompute that target's source hash and compare it
+    /// to the one embedded in its <c>diagram.md</c> provenance comment. Returns <c>true</c> when
+    /// fresh; otherwise writes ONE actionable line naming the offending file and returns
+    /// <c>false</c>. Within a target the checks DO short-circuit — a stale <c>diagram.md</c> is
+    /// reported alone, because the same regenerate rewrites its <c>diagram.html</c> companion too,
+    /// so a second line would add noise, not information.
+    /// <para>
+    /// The <c>diagram.html</c> rule is applied identically at EVERY scope, plan-level and per-wave:
+    /// a MISSING <c>diagram.html</c> is not staleness (the caller may legitimately have used
+    /// <c>--no-html</c>, which suppresses the companion at every scope, so counting a missing one
+    /// would make <c>--check</c> permanently exit 2 for those callers), but a PRESENT one carrying a
+    /// different <c>source-sha256</c> has drifted from its own <c>diagram.md</c> and must regenerate
+    /// (issue #33). A missing per-wave <c>diagram.md</c>, by contrast, IS reported — that is the
+    /// real-incident case where a wave folder had no diagram at all until a run created one (#447).
+    /// </para>
+    /// </summary>
+    private static bool CheckOne(PlanDefinition target, string primaryDir, string regenHint, TextWriter output)
+    {
+        string sourceHash = GraphSourceHash.Compute(target);
+        string diagramPath = Path.Combine(target.PlanDirectory, DiagramFileName);
+        string diagramHtmlPath = Path.Combine(target.PlanDirectory, DiagramHtmlFileName);
 
         if (!File.Exists(diagramPath))
         {
-            output.WriteLine($"{DiagramFileName} missing — {regenHint}");
-            return StaleExitCode;
+            output.WriteLine($"{Describe(diagramPath, primaryDir)} missing — {regenHint}");
+            return false;
         }
 
         if (!string.Equals(ReadEmbeddedHash(File.ReadAllText(diagramPath)), sourceHash, StringComparison.Ordinal))
         {
-            output.WriteLine($"{DiagramFileName} is stale — {regenHint}");
-            return StaleExitCode;
+            output.WriteLine($"{Describe(diagramPath, primaryDir)} is stale — {regenHint}");
+            return false;
         }
 
-        // diagram.html is optional (it is skipped by --no-html), so a MISSING one is not staleness.
-        // But a PRESENT one carrying a different source-sha256 has drifted from diagram.md/the plan
-        // and must regenerate — it shares the same staleness key (issue #33).
         if (File.Exists(diagramHtmlPath) &&
             !string.Equals(ReadEmbeddedHash(File.ReadAllText(diagramHtmlPath)), sourceHash, StringComparison.Ordinal))
         {
-            output.WriteLine($"{DiagramHtmlFileName} is stale — {regenHint}");
-            return StaleExitCode;
+            output.WriteLine($"{Describe(diagramHtmlPath, primaryDir)} is stale — {regenHint}");
+            return false;
         }
 
-        return ExitCodes.Success;
+        return true;
     }
+
+    /// <summary>
+    /// How a diagram file is NAMED in <c>--check</c> output: its path relative to the invoked
+    /// folder, with forward slashes so the line reads the same on every OS. The plan-level file
+    /// renders as bare <c>diagram.md</c> (byte-identical to the pre-#447 message, so a flat plan's
+    /// output is unchanged); a wave's renders as <c>wave-03-provision/diagram.md</c>, which is what
+    /// tells a reader WHICH wave drifted.
+    /// </summary>
+    private static string Describe(string diagramPath, string primaryDir) =>
+        Path.GetRelativePath(primaryDir, diagramPath).Replace('\\', '/');
 
     /// <summary>
     /// One-line italic caption written AFTER the closing mermaid fence (SSOT §10). It lives in

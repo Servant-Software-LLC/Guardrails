@@ -3946,10 +3946,29 @@ needs only a model list, `status` needs a usage surface.
 `flowchart TD`, using the **container model** (design-of-record 09-preflight-first-class),
 and writes two companion files:
 
-**Multi-wave plans (§14):** `guardrails graph <plan>/<wave>` renders each **wave** subfolder's diagram
-unchanged (its Full-Flight-Checks / Terminal-Gate brackets are the wave's entry/exit folders). An OPTIONAL
-plan-level **wave map** (`<plan>/diagram.md`) draws the strict-order chain `wave-01 → wave-02 → …` of
-wave-containers, each `click`-linking to its wave diagram (reuses the container/style machinery).
+**Multi-wave plans (§14) — a waved plan owns `1 + N` diagrams.** A waved plan's diagram set is the
+plan-level pair `<plan>/diagram.{md,html}` PLUS one pair per wave, `<plan>/<wave>/diagram.{md,html}`.
+Each is a first-class artifact with its OWN `source-sha256`:
+
+- **Plan-level** — the whole waved DAG: plan preflights → per-wave (entry gate, a wave subgraph
+  holding that wave's task containers or its ⏸ JIT stub, exit gate) → plan guardrails, with dotted
+  barrier edges between consecutive waves. It is a full render, **not** a wave-map chain of
+  wave-name boxes, so its hash moves when ANY wave's task or check changes.
+- **Per-wave** — the wave-scoped sub-diagram (issue #355): only that wave's task DAG, with its
+  Full-Flight-Checks / Terminal-Gate brackets bound to the wave's own entry/exit folders. Its hash
+  is keyed on that wave alone. `guardrails graph <plan>/<wave>` renders exactly this one, and the
+  run regenerates it at every wave boundary so the per-wave review pause surfaces just that wave.
+
+**`guardrails graph <plan>` on a waved plan writes ALL of them, and `--check` validates ALL of them**
+(issue #447). Both halves are derived from one list, in one pass, by one writer — the same writer the
+run's wave-boundary regeneration uses — because splitting them is exactly how the two contracts came
+apart: `graph` regenerated only the plan-level file while `--check` inspected only the plan-level
+file, so a waved plan could not be brought fresh by the documented command AND `--check` then reported
+exit 0 over per-wave diagrams that were demonstrably stale (one had never been written at all). That
+false "fresh" is not cosmetic: `/guardrails-review` mandates `graph --check` and branches on its exit
+code, so a review pass recorded "diagram fresh" over two stale waves; the next `guardrails run` then
+regenerated those tracked files mid-flight (§10 files are generated, but they ARE tracked in the
+user's checkout), which is how a diagram bug reached the delivery gate.
 
 - **`diagram.md`** — the GitHub render artifact: a provenance comment + fenced Mermaid
   block + structure-only caption. GitHub renders it inline.
@@ -4189,21 +4208,31 @@ styling, or by the legend's wording.
 
 **Command contract.**
 
-- `guardrails graph [folder]` — render and write `diagram.md` + `diagram.html`; print the
-  written `diagram.md` path, then (unless `--no-html`) a `Diagram (interactive): <link>` line
+- `guardrails graph [folder]` — render and write `diagram.md` + `diagram.html` for **every diagram
+  the folder owns** (on a waved plan root: the plan-level pair plus each wave's, §14 above); print
+  one `Wrote <path>` line **per `diagram.md` written**, then (unless `--no-html`) a
+  `Diagram (interactive): <link>` line
   for `diagram.html` — a clickable OSC 8 hyperlink built from the absolute path via .NET's
   `Uri` (reusing `RunCommand.Hyperlink`, the same escape shape `guardrails run`'s `Logs` link
   uses), falling back to the absolute `file://` URI (`new Uri(path).AbsoluteUri` — native-drive,
   percent-encoded) when the terminal cannot render an OSC 8 link or output is redirected, so the
   `plan-breakdown` skill (which captures this stdout) can wrap that URI in a Markdown link for
-  markdown-rendering hosts (issue #256); exit `0`. Building this link in the CLI (issue #249) —
+  markdown-rendering hosts (issue #256); exit `0`. **Exactly ONE `Diagram (interactive):` line is
+  printed even on a waved plan** — it points at the PLAN-LEVEL `diagram.html`, because the
+  `plan-breakdown` skill relays that single line verbatim and a per-wave link each would leave
+  "the" link ambiguous (a wave's own link is still reachable via `graph <plan>/<wave>`, and the run
+  prints `Wave diagram (focused):` at every wave boundary). Building this link in the CLI (issue #249) —
   rather than the caller hand-assembling a `file://` URL from a shell `pwd` — is what keeps it
   correct under Git Bash/MSYS on Windows, whose `pwd` returns the non-resolvable mount form
   (`/f/...`) instead of the native drive form (`F:/...`) a `file://` URI needs. Front-doors
   through load/validate first: on any load/validate error, print diagnostics and exit `1`.
-- `--no-html` — write only `diagram.md`; skip `diagram.html`. Has no effect with `--stdout`.
+- `--no-html` — write only `diagram.md`; skip `diagram.html`. Applies at **every scope** (on a
+  waved plan no wave gets one either). Has no effect with `--stdout`.
 - `--stdout` — print the diagram to stdout; write nothing to disk (neither `diagram.md` nor
-  `diagram.html`); exit `0`.
+  `diagram.html`); exit `0`. On a waved plan root it prints the **plan-level** diagram only —
+  it is a "show me the diagram" affordance, not a regeneration, and concatenating N `flowchart TD`
+  documents into one stream with nothing to delimit them would serve nobody. Ask for a wave's
+  source by folder: `graph <plan>/<wave> --stdout`.
 - `--check` — write nothing. Recompute `source-sha256` (including the plan-level folder
   checks — see above), read the value embedded in an existing `diagram.md`, and exit `0` when
   present and equal (fresh). When `diagram.md` is **stale or missing**, print one actionable
@@ -4211,6 +4240,18 @@ styling, or by the legend's wording.
   different hash**, print one actionable line and exit `2` (a **missing** `diagram.html` is
   NOT stale — the caller may have used `--no-html`). A **load/validate error** front-doors
   first and exits `1`, never reaching the freshness check.
+  **On a waved plan root every one of the `1 + N` diagrams is checked, under the SAME rules at
+  every scope** (issue #447): a missing or hash-mismatched **`<wave>/diagram.md` is staleness**
+  (the real incident had a wave whose diagram did not exist at all), while a **missing
+  `<wave>/diagram.html` is NOT** — identical to the plan-level rule and for the identical reason,
+  since `--no-html` suppresses the companion at every scope, so counting a missing one would leave
+  `--check` stuck at exit 2 forever for those callers. Exit `0` only when ALL are fresh; exit `2`
+  when ANY is stale or missing. Every offending file gets **its own** actionable line, named by its
+  path relative to the invoked folder (`diagram.md`, `wave-03-provision/diagram.md`) — no
+  short-circuit across diagrams, because on a multi-wave plan the caller needs to know WHICH waves
+  drifted, and a single summary line is how the under-report hid. Within one diagram the checks DO
+  short-circuit (a stale `diagram.md` is reported alone; the same regenerate rewrites its
+  `diagram.html`). A flat plan's output is unchanged: exactly one line, in the original wording.
 - `--format <mermaid>` — default and only accepted value is `mermaid` (reserved for future
   formats).
 
