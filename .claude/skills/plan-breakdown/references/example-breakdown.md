@@ -204,9 +204,12 @@ of fixing the code. No `captureHashes`, no `restoreOnRetry`, no downstream `test
   to the state-out path and stop.
 
 ## Task
-Author unit tests in `tests/Inventory.Tests/StatsCommandTests.cs` (trait/category
-`Stats`) that encode the --stats contract BEFORE it is implemented, plus the **minimal
-stub** the tests compile against in `src/Inventory.Cli/StatsCommand.cs`.
+Author unit tests in `tests/Inventory.Tests/StatsCommandTests.cs` — the class MUST be named
+`StatsCommandTests` and carry trait/category `Stats` — that encode the --stats contract BEFORE it
+is implemented, plus the **minimal stub** the tests compile against in
+`src/Inventory.Cli/StatsCommand.cs`. (The class name is pinned because both this task's and task
+02's guardrails filter on `FullyQualifiedName~StatsCommandTests`; renaming the class makes those
+filters match zero tests.)
 
 **Scope boundary (harness-enforced):** Write only to
 `tests/Inventory.Tests/StatsCommandTests.cs` and `src/Inventory.Cli/StatsCommand.cs` (the
@@ -242,14 +245,35 @@ if ($LASTEXITCODE -ne 0) {
 exit 0
 ```
 
-`guardrails/02-tests-fail-on-stubs.ps1`
+`guardrails/02-tests-fail-on-stubs.ps1` — note the filter names **this pair's own test class**, not the
+plan-wide `Category=Stats` trait alone, and carries the zero-match guard (#455; `stacks/dotnet.md §4.3`).
+This plan has a single test-author pair, so the extra term looks redundant here — **emit it anyway.** The
+trait-only form is the shape that silently breaks the moment a plan has two pairs sharing the trait, and
+"there is only one pair" is not a property the next author (or the next regeneration) preserves:
 ```powershell
 # catches: tautological tests — tests that PASS against the NotImplementedException stub encode
 #          nothing about the new behavior. The build being green (guardrail 01) means a non-zero
 #          exit here unambiguously means the tests RAN and FAILED against the stub = TDD red (#155).
-dotnet test tests/Inventory.Tests --filter "Category=Stats" --nologo
-if ($LASTEXITCODE -eq 0) {
-    Write-Output "the Stats tests PASS against the NotImplementedException stub - they are tautological"
+#          The --filter names THIS pair's own test class: keyed on the plan-wide trait alone it would
+#          go green off a SIBLING pair's red tests whether or not these tests fail (#455).
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard reads is LOCALIZED (#455)
+$filter = 'Category=Stats&FullyQualifiedName~StatsCommandTests'
+$out = dotnet test tests/Inventory.Tests --filter $filter --nologo 2>&1
+$testExit = $LASTEXITCODE
+$out | ForEach-Object { Write-Output $_ }
+
+# GUARD FIRST on this INVERSE check (#455): a crashed/never-started test host also exits NON-ZERO,
+# which is this check's SUCCESS condition - guard-second would certify "TDD red" over a run that
+# executed nothing. Key on the EXECUTED count (Passed+Failed; "Total:" also counts [Skip]ped tests),
+# never on the verbosity-dependent "No test matches ..." line (#248).
+$ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
+        ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
+if ($ran -lt 1) {
+    Write-Output "ZERO tests executed - the TDD-red proof certified nothing. The --filter '$filter' matched no tests, is malformed, every matched test is [Skip]ped, or the test host failed to start (read the log above). This is NOT a tautology finding: do NOT rewrite the tests."
+    exit 1
+}
+if ($testExit -eq 0) {
+    Write-Output "the StatsCommandTests tests PASS against the NotImplementedException stub - they are tautological"
     exit 1
 }
 exit 0
@@ -280,7 +304,7 @@ the tests", enforced without any hash compare or `tests-untouched` guardrail.
 Implement the `--stats` flag in `src/Inventory.Cli` by filling real logic into the
 `StatsCommand.Render(...)` stub (replace the `NotImplementedException`) per the format the
 Stats tests encode (total line, then sorted per-category lines, read from data/items.json).
-Make the `Category=Stats` tests pass WITHOUT modifying the tests — editing
+Make the `StatsCommandTests` tests pass WITHOUT modifying the tests — editing
 `tests/Inventory.Tests/StatsCommandTests.cs` is outside this task's writeScope and fails the
 harness's git-diff check. If the authored tests are genuinely wrong, write
 `{"needsHuman": "<why>"}` rather than editing them. Publish nothing to state.
@@ -288,18 +312,29 @@ harness's git-diff check. If the authored tests are genuinely wrong, write
 
 `guardrails/01-build.ps1` → `# catches: code that doesn't compile` + `dotnet build --nologo -v q`, exit-code contract.
 
-`guardrails/02-stats-tests-pass.ps1` — captures the run, emits the full log, then **re-emits the
-failure detail at the END** so the assertion/exception text lands in the harness retry-feedback tail
-(the last ~60 lines), not just the `[FAIL] <name>` summary default `dotnet test` leaves there (#179;
-`stacks/dotnet.md §4.2`):
+`guardrails/02-stats-tests-pass.ps1` — runs the **SAME `$filter` string as task 01's red check, copied
+verbatim** so the two halves of the TDD pair cannot drift (#455), then captures the run, emits the full
+log, and **re-emits the failure detail at the END** so the assertion/exception text lands in the harness
+retry-feedback tail (the last ~60 lines), not just the `[FAIL] <name>` summary default `dotnet test`
+leaves there (#179; `stacks/dotnet.md §4.2` + `§4.3`):
 ```powershell
 # catches: an implementation whose output deviates from the specified format. Re-emits the
 #          assertion/exception lines at the END so they reach the harness retry-feedback tail -
 #          default `dotnet test` prints them mid-run and ends with only `[FAIL] <name>` + a count,
-#          so the tail would otherwise show WHAT failed, not WHY (#179).
-$out = dotnet test tests/Inventory.Tests --filter "Category=Stats" --no-build --nologo 2>&1
+#          so the tail would otherwise show WHAT failed, not WHY (#179). The --filter names THIS
+#          pair's own test class: keyed on the plan-wide trait alone it would also select tests a
+#          DOWNSTREAM task makes green, deadlocking this task behind its own dependent (#455).
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard reads is LOCALIZED (#455)
+$filter = 'Category=Stats&FullyQualifiedName~StatsCommandTests'
+# NO -v q on the TEST command - it suppresses the assertion detail the re-emit below depends on (#179).
+$out = dotnet test tests/Inventory.Tests --filter $filter --no-build --nologo 2>&1
+$testExit = $LASTEXITCODE
 $out | ForEach-Object { Write-Output $_ }
-if ($LASTEXITCODE -ne 0) {
+
+# EXIT CODE FIRST, guard second (#455): a test host that never ran exits NON-zero with no summary, so
+# checking the exit code first reports its real error instead of blaming the filter (and sending the
+# retry agent to rename a correctly-named test class - the one file it IS allowed to edit).
+if ($testExit -ne 0) {
     $detail = $out |
         Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
         ForEach-Object { $_.Line } | Select-Object -First 40
@@ -307,6 +342,16 @@ if ($LASTEXITCODE -ne 0) {
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     Write-Output "Stats tests failing - flag not implemented to spec (see failure details above)"
+    exit 1
+}
+
+# ZERO-MATCH GUARD (#455): exit 0 alone does NOT mean tests passed - a --filter matching nothing, or
+# a malformed one, also exits 0. Key on the EXECUTED count (Passed+Failed; "Total:" would also count
+# [Skip]ped tests), never on an error string (verbosity-dependent, so it never fires - #248).
+$ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
+        ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
+if ($ran -lt 1) {
+    Write-Output "exit 0 but ZERO tests executed - this guardrail certified nothing. The --filter '$filter' matched no tests, is malformed, or every matched test is [Skip]ped. Check it against the tests task 01 authored."
     exit 1
 }
 exit 0
@@ -533,3 +578,71 @@ The producing prompt's `## Task` shows the correct folder-name-keyed fragment, t
 harness-contract header repeats the rule, and the state-output guardrail indexes the
 same folder name (`$fragment.'01-research-tsw-write-mechanism'.tsw_mechanism_recommended`)
 — prompt, header, and guardrail all agree on the folder name as the key.
+
+---
+
+# Negative example — the plan-wide trait reused as a task-level filter (#455)
+
+The worked plan above has ONE test-author pair. Scale it to three (`Stats`, `Dispatch`, `Export`), all
+tagged with one plan-wide trait so the #181 baseline can exclude them (`--filter
+"Category!=InventoryV2"`), and here is the breakdown that halts a real run. It passes `guardrails
+validate` and `guardrails graph --check`, and every guardrail reads correctly **on its own**:
+
+```powershell
+# tasks/02-implement-stats/guardrails/01-tests-pass.ps1        — WRONG
+dotnet test tests/Inventory.Tests --filter "Category=InventoryV2" --nologo
+# tasks/03-author-dispatch-tests/guardrails/02-tests-fail-on-stubs.ps1  — WRONG
+dotnet test tests/Inventory.Tests --filter "Category=InventoryV2" --nologo
+```
+
+Both are the plan-wide trait, so both assert the state of **all** the plan's new tests:
+
+- **Task 02 deadlocks.** Its `tests-pass` selects the deliberately-red tests task 03 authors, which only
+  task 04 turns green — and task 04 `dependsOn` task 02. Task 02 cannot go green until a task that
+  depends on it has run. Nothing in the DAG is cyclic, so `validate` and `graph --check` stay silent; the
+  task burns its retry budget and ends at `needs-human` with its deliverable complete and its own tests
+  green throughout.
+- **Task 03's red proof is vacuous.** It needs only *some* selected test failing — and task 01's red
+  tests are already on the base. It goes green whether or not the dispatch tests it just authored fail.
+  A test file full of `Assert.True(true)` passes it, which is precisely what `tests-fail-on-stubs` exists
+  to catch (#155).
+- **Task 06 passes, and that is the trap's signature.** It carries the identical filter and survives only
+  because it branched before task 03's red tests reached its base. Reorder the merges and it deadlocks
+  like 02. **A currently-passing task with this shape is not evidence the shape is safe.**
+
+The fix — the pair's own class on **both** halves, plus the zero-match guard (`stacks/dotnet.md §4.3`):
+
+```powershell
+# tasks/02-implement-stats/guardrails/01-tests-pass.ps1        — RIGHT
+$filter = 'Category=InventoryV2&FullyQualifiedName~StatsCommandTests'
+# tasks/03-author-dispatch-tests/guardrails/02-tests-fail-on-stubs.ps1  — RIGHT
+$filter = 'Category=InventoryV2&FullyQualifiedName~DispatchTests'
+```
+
+Five ways to get the "fix" wrong, every one of them measured against real `dotnet test` output:
+
+```powershell
+$filter = 'Category=InventoryV2&FullyQualifiedName~Dispatch'   # WRONG - substring: also selects
+                                                               # DispatchRouterTests (2 tests, not 1)
+$filter = 'Category=InventoryV2&(FullyQualifiedName~A\|FullyQualifiedName~B)'   # WRONG - '\' is
+                                    # VSTest's escape char: "Incorrect format for TestCaseFilter",
+                                    # ZERO tests, exit 0. Use a bare '|'. (This spelling is what a
+                                    # markdown TABLE cell forces, which is why the shapes are in a
+                                    # fenced block in stacks/dotnet.md §4.3, not a table.)
+if ($out -match 'No test matches the given testcase filter') { … }   # WRONG - that line is
+                                    # verbosity-dependent (absent under -v q); the guard never fires
+$total = ...'Total:\s*(\d+)'...                                # WRONG twice over: "Total:" counts
+                                    # [Skip]ped tests (a fully-skipped class reads Total: 1 and the
+                                    # guard passes over ZERO executed), AND the summary is LOCALIZED
+                                    # (a German-culture box prints "gesamt:", no "Total:" at all, so
+                                    # the guard fires on every run). Key on Passed+Failed, and pin
+                                    # $env:DOTNET_CLI_UI_LANGUAGE = 'en' first.
+dotnet test … --filter $filter --nologo -v q                   # WRONG on a tests-pass check - -v q
+                                    # suppresses the Error Message/Expected/Actual/Stack Trace block,
+                                    # so #179's re-emit has only [FAIL] <name> to feed the retry tail
+```
+
+The trait is not wrong — it is *load-bearing* for the preflight's `!=` exclusion, and it is perfectly
+fine as the first term of a task-level filter. It is wrong **alone**, which is the whole rule: the class
+term is mandatory, the trait is an optional conjunct, and the trait BY ITSELF belongs in exactly one
+place — the baseline preflight's `!=` exclusion.

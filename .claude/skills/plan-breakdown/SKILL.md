@@ -79,7 +79,10 @@ and only then does `guardrails run` execute it.
      **`--filter`** that selects the CURRENTLY-GREEN existing tests of that area (e.g.
      `tests/Inventory.Tests` filtered to the pre-existing tests — `--filter "Category!=Stats"` if a
      later `author-tests` task will add a `Stats` category to that project). **Never a whole-project
-     `dotnet test`** in the preflight — that hits the #165/#176 compile-coupling trap (Step 5). Record ONE
+     `dotnet test`** in the preflight — that hits the #165/#176 compile-coupling trap (Step 5). **The
+     plan-wide trait you introduce here is for THIS `!=` exclusion and nowhere else (#455)** — it is not
+     the filter for the task-level `tests-pass` / `tests-fail-on-stubs` guardrails, however natural it
+     will look by the time you reach Step 4 (see Step 4's task-level-`--filter` rule). Record ONE
      entry per distinct touched test project (the baseline is deduped one-per-area in Step 5). This is
      the trigger to EMIT the baseline `<plan>/preflights/` check(s) in Step 5 — subject to the worth-it gate there.
    - **Greenfield** = a new project, or no existing tests in the touched area. Set
@@ -420,6 +423,48 @@ optional:
   → "Failure detail must reach the retry tail"; .NET regex in `stacks/dotnet.md §4.2`). The
   INVERSE TDD-red checks (`tests-fail-on-stubs`, where a non-zero exit is success) do NOT
   re-emit. This is in addition to — not a replacement for — the single actionable reason line.
+  **Never carry `-v q` onto a `dotnet test` guardrail** — measured, it suppresses the entire
+  `Error Message:` / `Expected:` / `Actual:` / `Stack Trace:` block and leaves only `[FAIL] <name>`,
+  so the re-emit has nothing but test NAMES to re-emit and #179 is defeated by the flag alone.
+  `-v q` is a **`dotnet build`** rule (`stacks/dotnet.md §4`); `--nologo` is fine on both.
+- **A task-level test `--filter` MUST name THIS task pair's OWN test class (#455).** The class term is
+  **mandatory**; the plan-wide trait is an **optional conjunct**. Emit it on both halves of every TDD
+  pair (`tests-pass` AND `tests-fail-on-stubs`):
+
+  ```
+  --filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"
+  ```
+
+  **ALONE, the plan-wide trait belongs in exactly one place: the Step 5 baseline preflight's `!=`
+  exclusion.** (Keep the word "alone" in it — the rule bans the *bare* trait, not the trait.) The trait
+  is *introduced* for the preflight (`--filter "Category!=<PlanTrait>"` — "everything except the tests
+  this plan is about to write") and, having introduced it, it is the most visible and most
+  authoritative-looking selector in the plan at the exact moment you write the task guardrails.
+  **That is the trap.** A task-level guardrail keyed on the bare trait asserts the state of *every* test
+  in the plan instead of the ones its own pair owns, and it fails in **two opposite directions**:
+  - **forward** — the task's `tests-pass` selects tests only a **downstream** task can make green, so the
+    task cannot go green until a task that `dependsOn` it has run. `guardrails validate` and
+    `graph --check` both PASS (the cycle is between a task and a **sibling's test corpus**, not between
+    tasks — no DAG check models it); the run burns its whole retry budget and ends at `needs-human` with
+    the task's deliverable complete and its own tests green;
+  - **inverse** — `tests-fail-on-stubs` wants *some* matching test red, so it passes off **any sibling's**
+    intended-red tests whether or not this pair's tests fail. The TDD-red proof (#155), the strongest
+    anti-tautology check this skill has, silently degrades into **merge-order luck**. This is the worse
+    half — the forward deadlock at least fails loudly.
+
+  Two companions, neither optional: **(a)** the class-name substring must be **discriminating**
+  (`~Dispatch` also selects `DispatchRouterTests` — check it against every other test class the plan
+  authors and every existing class in the target project, and namespace-qualify when it is not);
+  **(b)** narrowing reintroduces the **zero-match hole** — a `--filter` matching nothing (or malformed)
+  **exits 0** — so every narrowed filter ships with the zero-match guard. Three measured details decide
+  whether that guard actually works, and getting any of them wrong is worse than having no guard: key it
+  on the **executed count (`Passed:` + `Failed:`)**, not `Total:` (which counts `[Skip]`ped tests, so a
+  fully-skipped class passes it); pin **`$env:DOTNET_CLI_UI_LANGUAGE = 'en'`** first (the summary line is
+  LOCALIZED — on a German-culture box it prints `gesamt:` and no `Total:`, inverting the guard into an
+  unconditional failure); and never key it on the "no tests matched" **string** (verbosity-dependent, so
+  it never fires — the #248 failure). The exact syntax, the measured output table, the guard expression,
+  the polarity-dependent ordering, and the two canonical scripts are `stacks/dotnet.md §4.3` (universal
+  rule: catalogue → "Its SCOPE decides whether it proves anything").
 - "All tests pass" appears ONLY in the terminal `<plan>/guardrails/` folder (the terminal gate).
 - **A full build / whole-suite test guardrail in the terminal `<plan>/guardrails/` folder is a
   terminal postcondition → keep it LOCAL (#165).** Do NOT mark `01-solution-builds` /
@@ -969,9 +1014,14 @@ upstream task that creates it:
   advisory context, but the harness ALSO enforces it mechanically — so every test-author prompt
   must carry a **Scope boundary (harness-enforced)** paragraph (#154; Step 6 has the authoring
   rule and exact shape). The test-author `## Task` section must tell the agent: (a) the exact
-  test file path(s), and — for a behavioral type — the exact STUB file path(s) to create with
+  test file path(s) **AND the exact test CLASS NAME(s)** — not just the file — and, for a behavioral
+  type, the exact STUB file path(s) to create with
   `NotImplementedException` skeletons so the test project COMPILES (#155), plus any category/trait
-  convention the repo uses; (b) the tests MUST COMPILE and FAIL against the stubs — failing is
+  convention the repo uses. **Pinning the class name is load-bearing, not tidiness (#455):** the pair's
+  `tests-pass` / `tests-fail-on-stubs` filters are `FullyQualifiedName~<that class>`, so a prompt that
+  leaves the class name to the agent makes a correct filter unwritable and pushes the author back onto
+  the plan-wide trait — the defect's origin. The prompt's class name, the `writeScope` path, and both
+  guardrail filters must agree; (b) the tests MUST COMPILE and FAIL against the stubs — failing is
   intentional, NOT compiling is a mistake to fix; (c) do NOT implement the behavior — write the
   tests and only the minimal throwing stubs. The implementation `## Task` must say plainly: **fill
   real logic over the stub file(s); do NOT edit the authored tests; make them pass by fixing the
@@ -2628,6 +2678,7 @@ authority for every path/signature the new wave references.
 - [ ] Implementation/inheritance checks use the stack file's structural regex, not a bare keyword grep.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
 - [ ] Inserted test-author tasks carry the right TDD "red" for the type under test (#155): a BEHAVIORAL type → the task also writes minimal `NotImplementedException` stubs, its `writeScope` covers test + stub file(s), and its guardrails are `build-passes` + `tests-fail-on-stubs`; a DATA MODEL → collapsed to one task (reason stated) or, if split, `tests-fail-on-current-code` + a STRUCTURAL `[Fact]`/`[Theory]` covers-key-behaviors check. Implementation tasks declare a `writeScope` that EXCLUDES the test file but TARGETS the stub file(s) (TDD test-exclusion — replaces the captureHashes/restoreOnRetry/tests-untouched triad).
+- [ ] (#455) Every TASK-LEVEL test filter (`tests-pass` AND `tests-fail-on-stubs`, both halves of every TDD pair) names **that pair's OWN test class** — `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` — and NO task-level guardrail carries a bare plan-wide trait. The plan-wide trait appears in exactly ONE place: the baseline preflight's `!=` exclusion. The class substring is DISCRIMINATING (checked against every other test class the plan authors — `~Dispatch` also selects `DispatchRouterTests`; namespace-qualify when not), and every narrowed filter carries a **zero-match guard that can actually fire**: keyed on the EXECUTED count (`Passed:` + `Failed:`, NOT `Total:` — which counts `[Skip]`ped tests), with `$env:DOTNET_CLI_UI_LANGUAGE = 'en'` pinned first (the summary line is LOCALIZED — `gesamt:` on a German box), never on the "no tests matched" string (verbosity-dependent, so it never fires — #248), and ORDERED by polarity (forward: exit-code check first, so a never-ran test host is not misreported as a bad filter; inverse: guard first, so a crash is not certified as TDD red). The test-author task's `action.prompt.md` **PINS the exact test file + class name** the filter uses — a prompt that leaves the class name to the agent makes a correct filter unwritable and pushes the author back onto the plan-wide trait. `stacks/dotnet.md §4.3` (two classes → parenthesised `|` alternation; no trait → the FQN term alone; a collapsed data-model task still names its class).
 - [ ] (#154) Every generated test-author `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph after the target-file-path statement: it names the exact allowed path(s) (test + stub), states the harness's post-action `git diff` membership check rejects out-of-scope edits, states an out-of-scope edit fails the task and consumes a retry, and redirects an upstream missing-symbol compile error to `{"needsHuman": …}` rather than editing that file.
 - [ ] A test-author behavior that needs a production injection seam (a fake/double injected into a type with no injection point) → an upstream `add-<component>-<seam>-seam` task (pure structural production change, build + a structural seam-exists check, TDD-exempt) the test-author task `dependsOn`; the seam was NOT left to the test task to invent or to its `needsHuman` escape (#84).
 - [ ] A task that fans out over an external/unknown-size set (crawl, recursive glob, API listing) → modeled as a scripted-ETL `script` action (volume off the turn budget), NOT an agent-per-item loop; discover-size-first probe added where the count is unknown; bulk-capture split from bounded per-item curation (#100).

@@ -26,11 +26,11 @@ Python project.
 | 1 | **file-exists / file-contains** (regex) | script | Any artifact-producing task — almost always guardrail #1 | Agent claimed success without producing the artifact, or produced the wrong shape |
 | 2 | **command-exit-code** | script | Task output is itself runnable; CLI behavior checks | Artifact exists but is broken when actually executed |
 | 3 | **build-passes** | script (`dotnet build`) | Any code-producing task | Code that doesn't compile |
-| 4 | **specific-tests-pass** | script (`dotnet test --filter`) | Behavior implementation — filter to THIS task's tests; whole-suite green belongs to a terminal integration task only. **Re-emit failure DETAIL at the end of stdout so it reaches the retry tail (#179 — "Failure detail must reach the retry tail" below)** | Wrong behavior, regressions in the targeted area |
+| 4 | **specific-tests-pass** | script (`dotnet test --filter`) | Behavior implementation — the filter selects **THIS task pair's OWN test class**, never a plan-wide trait, and carries a **zero-match guard** ("Its SCOPE decides whether it proves anything", #455); whole-suite green belongs to a terminal integration task only. **Re-emit failure DETAIL at the end of stdout so it reaches the retry tail (#179 — "Failure detail must reach the retry tail" below)** | Wrong behavior, regressions in the targeted area |
 | 5 | **lint/format clean** | script | The repo already has a configured linter (never introduce one ad hoc) | Style/usage violations the repo's standards forbid |
 | 6 | **schema-validates** | script | Task emits structured data and a schema exists (or you inserted a schema-author task) | Structurally invalid output |
 | 7 | **port/endpoint-answers** | script (probe + curl, owns process start/stop, with timeout) | Task delivers a running service behavior | Service that builds but doesn't actually serve |
-| 8 | **build-passes + tests-fail-on-stubs** (behavioral) · **tests-fail-on-current-code** (data-model) | script | THE distinctive one — the TDD "red" signal for inserted test-author tasks. The **form depends on the type under test** — see the stub-based TDD section below (it is the SSOT for choosing) | Tautological tests that pass against a stub and verify nothing |
+| 8 | **build-passes + tests-fail-on-stubs** (behavioral) · **tests-fail-on-current-code** (data-model) | script | THE distinctive one — the TDD "red" signal for inserted test-author tasks. The **form depends on the type under test** — see the stub-based TDD section below (it is the SSOT for choosing); its **filter must select this pair's OWN tests + guard the zero match**, or the red proof degrades into merge-order luck (#455) | Tautological tests that pass against a stub and verify nothing |
 
 > **The TDD "red" must COMPILE and FAIL, never merely exit non-zero.** A non-compiling
 > test file exits `dotnet test` non-zero *identically* to a compiling-but-failing one, so a
@@ -429,6 +429,57 @@ A compile failure is a *weak* red (garbage produces it). `build-passes` + `tests
 *strong* red: the file must be type-correct (build) **and** the behavior must be genuinely absent
 (tests fail against throwing stubs). It is strictly stronger than the old single-guardrail form, and
 it removes the dead-end where the implementation task could never repair a non-compiling test file.
+
+## Its SCOPE decides whether it proves anything — a test filter selects the pair's OWN tests, never a plan-wide trait (#455)
+
+Governs **both** test archetypes — the forward `specific-tests-pass` (#4) and the inverse
+`tests-fail-on-stubs` / `tests-fail-on-current-code` (#8) — so it sits outside the stub-based-TDD
+section above rather than inside it. Read in the same breath, though: the red proof just described is
+only as strong as **which tests its filter selects**. Get the scope wrong and the strongest
+anti-tautology check the skill has silently becomes the weakest.
+
+**The rule.** A **task-level** test filter (`tests-pass` and `tests-fail-on-stubs` alike) selects **the
+tests that task pair owns** — the pair's own test class — and nothing else. A **plan-wide** selector (a
+category/trait/tag/marker every new test class in the plan carries, a whole test project, a whole suite)
+is never a task-level filter.
+
+**The attractive wrong turn — name it, because doctrine that only says "do X" does not survive contact
+with the next author.** A plan whose tasks all add tests to one existing test project introduces a
+plan-wide trait so the **baseline preflight** can EXCLUDE the not-yet-written tests (`!=` the trait) from
+its start-from-green check. That is correct — and it means that at the exact moment you sit down to write
+the task guardrails, the plan-wide trait is the most visible, most authoritative-looking selector you
+have. It reads like the natural filter for everything. **The plan-wide trait belongs in exactly two
+places: the baseline preflight's `!=` exclusion, and nowhere else.**
+
+**Both directions break, and only one of them is loud:**
+
+- **Forward (`tests-pass`) — a cycle no DAG check models.** A trait-scoped `tests-pass` on task 02 selects
+  tests task 03 authors red and only task 04 makes green — and task 04 `dependsOn` task 02. Task 02 cannot
+  go green until a task that depends on it has run. `validate` and `graph --check` both PASS: the cycle is
+  between a task and a **sibling's test corpus**, not between tasks. It costs a full retry budget and ends
+  at `needs-human` with the task's own deliverable complete.
+- **Inverse (`tests-fail-on-stubs`) — a tautology that certifies nothing.** The check wants *some*
+  matching test red. Once any sibling's intended-red tests are on the base it passes regardless of this
+  pair's tests — the red proof degrades into **merge-order luck**. This is the worse half: the forward
+  deadlock at least fails loudly.
+
+Which one bites is decided by **merge timing, not correctness** — a third task with the identical filter
+can pass purely because it branched before a sibling's red tests reached its base.
+
+**Two companion rules, both non-optional:**
+
+1. **The narrowed selector must actually be narrow.** Substring/prefix matching re-widens a filter
+   silently (`~Dispatch` selects `DispatchRouterTests` too). Check the chosen selector against every other
+   test class the plan authors and every existing class in the target project; qualify it (namespace, full
+   class name) when it is not discriminating. Same lesson as the orphaned-golden broad-filter trap.
+2. **Narrowing reintroduces the zero-match hole — guard it.** A filter that matches **nothing** typically
+   reports SUCCESS (exit 0), so a typo'd class name turns both halves of the pair into green no-ops. Emit
+   a guard asserting the run actually executed ≥1 test, and key it on the runner's **executed-test COUNT**,
+   not on an error string — the "no tests matched" diagnostic is frequently verbosity-suppressed, which is
+   how a string-keyed guard gets written, executed, and observed never to fire (the #248 failure).
+
+The exact filter syntax, the measured runner-output table, the count-based guard expression, and the two
+canonical emitted scripts are the stack file's job: `stacks/dotnet.md §4.3`.
 
 ## Baseline-green / start-from-green (preflight) — verify a CURRENTLY-GREEN positive precondition holds BEFORE any work runs (#181)
 
@@ -1204,6 +1255,14 @@ log → re-emit the failure-signal lines at the very end**, bounded so the re-em
 This is **deterministic** — it does not depend on logger ordering. You MAY *also* raise verbosity
 (`--logger "console;verbosity=detailed"`, which moves failure messages into the end-of-run summary),
 but the re-emit is the load-bearing part: it puts the detail in the tail even with several failures.
+
+**But you may NOT LOWER it — a quiet flag defeats this rule on its own.** Measured on `dotnet test`:
+under `-v q` the runner prints the `[FAIL] <name>` line and **nothing else** — no `Error Message:`,
+no `Expected:`/`Actual:`, no `Stack Trace:`. There is then no detail in the output for step 3 to
+re-emit, so a perfectly-written capture-and-re-emit guardrail still tails out test NAMES only. Quiet
+flags belong on the **build** command, never on the test command of a check that asserts tests pass
+(`stacks/dotnet.md §4.3`). Treat "is a verbosity flag suppressing the thing I am about to grep for?"
+as part of the #248 verify-against-real-output habit.
 The exact regex and the full PowerShell pattern live in the **stack file**
 (`references/stacks/dotnet.md §4.2`); other stacks instantiate the same capture-and-re-emit shape
 for their runner.

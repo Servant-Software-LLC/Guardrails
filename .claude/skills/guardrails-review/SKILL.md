@@ -99,6 +99,12 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   deterministic archetype that could replace it, or confirm none can (the 4-question
   demotion gate).
 - **Over-broad**: "all tests pass" anywhere except the terminal `<plan>/guardrails/` folder.
+  **Judge the filter's SCOPE, not its presence (#455).** A `--filter` does not make a guardrail
+  narrow — a task-level filter keyed on a **plan-wide** selector (the trait every new test class in the
+  plan carries, a whole test project, a bare namespace) IS this anti-pattern wearing a filter, and it
+  reads perfectly well in isolation. That is how it survived a review pass. Resolve every task-level
+  test filter to the actual SET of tests it selects and compare that set against the tests the task's
+  own pair owns; the full two-direction probe is in §2 below (deadlock / tautology).
 - **Model named but unservable — the pre-run availability check (#224 · `model-tiering-stage-1` charter D)**:
   walk the task folder you are reviewing and collect every model a task names **statically**, then assert
   each one resolves to a runner `guardrails.json` actually configures. **Reports, never rewrites** — the
@@ -261,7 +267,12 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   `stacks/dotnet.md §4.2`). **WEAK** (the run still passes/fails correctly; it degrades retry
   feedback, costing attempts). Do NOT flag the INVERSE `tests-fail-on-stubs` /
   `tests-fail-on-current-code` checks — a non-zero exit is their success, so there is no failure
-  detail to feed back.
+  detail to feed back. **Second tell — a QUIET flag on the test command (`-v q` / `-v quiet` on
+  `dotnet test`) defeats the rule even when the re-emit is present**: measured, `-v q` suppresses the
+  whole `Error Message:` / `Expected:` / `Actual:` / `Stack Trace:` block and leaves only
+  `[FAIL] <name>`, so the `Select-String` re-emits test NAMES and nothing else. Flag it **WEAK**
+  (**BLOCKER** where the plan's own doctrine leans on the re-emit for a hard-to-diagnose task); fix by
+  dropping the flag from the test command — quiet belongs on `dotnet build`, not `dotnet test`.
 - **Grep-scope contamination**: a file-content guardrail that greps the project tree
   (`Get-ChildItem -Recurse | Select-String`) instead of the one file the task owns — a
   same-wave sibling sharing the term can satisfy it. (Catalogue anti-pattern.)
@@ -799,6 +810,109 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   output scripts. (Doctrine: `guardrails-domain-knowledge` → author-time smoke-test gate; plan-breakdown
   Step 7.0d adds the matching authoring rule.)
 <!-- END ADDED PROBE #302 -->
+<!-- BEGIN ADDED PROBE #455 — task-level test filter scoped past the task's own tests -->
+- **Task-level test filter reaches a SIBLING's tests — deadlock (forward) or tautology (inverse) (#455)**:
+  the concrete instance of §2's **"Over-broad: 'all tests pass' anywhere except the terminal
+  `<plan>/guardrails/` folder"** rule, wearing a `--filter` so it does not look over-broad. A task-level
+  `tests-pass` / `tests-fail-on-stubs` whose filter is a **plan-wide selector** (a category/trait/tag every
+  new test class in the plan carries, a whole test project, a bare namespace) asserts the state of **every
+  test in the plan** rather than the ones its own task pair owns.
+
+  **Why the existing probes cannot find this, and what that demands of you.** Both of this skill's other
+  executed probes evaluate a guardrail **in isolation** — #248 runs the underlying TOOL once to check an
+  output-format assumption, #302 executes the guardrail SCRIPT against synthesized samples. Read alone,
+  a `dotnet test <proj> --filter "Category=ModelTieringStage1"` guardrail is **flawless**: correct
+  syntax, correct polarity, real teeth, runs clean. The defect exists only in the relationship between
+  that filter's **SCOPE** and the DAG's **dependency EDGES**. **A probe you can satisfy by looking at one
+  guardrail will fail exactly the way the pass that missed #455 failed.** Do this cross-referencing
+  explicitly, and write the table down — it is the evidence that the probe actually ran:
+
+  | task | guardrail (polarity) | filter | test classes the filter SELECTS | who authors each | who makes each green |
+  |---|---|---|---|---|---|
+
+  Fill it by (1) listing, per task, the test class(es) its `writeScope` and action prompt say it AUTHORS;
+  (2) for each task-level guardrail carrying a test filter, resolving which of those classes the filter
+  selects — a trait/category filter selects **every** class carrying the trait, including classes other
+  tasks author; then ask **both** directions.
+
+  **Resolve the filter's scope against the corpus — do not assume it selects what it was meant to
+  select.** The lazy way to fill column 4 is to copy column 1, which reproduces the exact blind spot this
+  probe exists to close. Two honest ways to fill it: **(a)** when the test classes already exist (a
+  regeneration, a partially-run plan, a brownfield target), ENUMERATE what the filter selects —
+  `dotnet test <proj> --filter "<the guardrail's filter>" --list-tests` names them without running
+  anything, which is both cheaper and more legible than a count, and immune to the localization trap
+  below. Any listed test the task's own pair does not own is the finding, in hand, without reasoning.
+  **(b)** when the classes do not exist yet, resolve on paper against the
+  class names the plan's action prompts PIN. If the prompts **do not pin** their test class names, that is
+  itself a **BLOCKER**: neither the author nor you can determine what any task-level filter selects, and an
+  author who cannot name the class falls back on the plan-wide trait — which is how this defect is born
+  (plan-breakdown `stacks/dotnet.md §4.3` requires the prompt to pin file + class).
+
+  - **Forward — does the filter select tests that only a DOWNSTREAM task can make green?** For a guardrail
+    where exit 0 is the pass, take each selected class authored by another task and find the task that
+    turns it green. If that task is a **descendant** of this one (it `dependsOn` this task, directly or
+    transitively) → **BLOCKER: deadlock.** This task cannot go green until a task that depends on it has
+    run. Note explicitly that `guardrails validate` and `guardrails graph --check` **both PASS** on this —
+    the cycle is between a task and a **sibling's test corpus**, not between tasks, and no DAG check models
+    it, so their green tells you nothing here. Observed cost: 4 attempts and ~$20 to `needs-human`, with
+    the task's deliverable complete and its own tests green the whole time.
+  - **Forward, third mode — a CONCURRENT sibling with no edge either way.** When the task that makes a
+    swept-in class green is neither an ancestor nor a descendant but a **parallel** sibling, the guardrail
+    is not deadlocked — it is **nondeterministic**: it passes or fails on merge order, which is the
+    property that made #455 look intermittent and let a third task ride through green. Flag it **WEAK**
+    (**BLOCKER** when the plan runs those tasks in the same wave, where the race is not hypothetical),
+    with the same narrowing fix. Do not record "no deadlock" as "no finding".
+  - **Inverse — can a SIBLING's tests satisfy the red check?** For a guardrail where NON-zero is the pass
+    (`tests-fail-on-stubs` / `tests-fail-on-current-code`), ask whether the filter selects **any** test
+    class this task's pair does not own. If yes → **BLOCKER: tautology.** The check needs only *some*
+    matching test red, so once any sibling's intended-red tests are on the base it passes **whether or not
+    this pair's own tests fail** — the TDD-red proof (#155) degrades into merge-order luck. Treat this as
+    the more serious half: the forward deadlock fails loudly, this one goes **green while certifying
+    nothing** (it did, three times, in the run that produced this probe).
+
+  **Do not be reassured by a task that currently passes.** Which of the two modes bites is decided by
+  **merge timing, not correctness** — in the motivating run a third task carried the identical over-broad
+  filter and passed only because it branched before the sibling's red tests reached its base. Flag every
+  task carrying the shape, not only the one that failed.
+
+  **Fix:** scope the filter to the test class that task pair owns —
+  `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` — on **both** halves of the
+  pair, copied verbatim so they cannot drift. The class term is MANDATORY and the trait is an OPTIONAL
+  conjunct — **the trait ALONE** belongs in exactly one place, the #181 baseline preflight's `!=`
+  exclusion. (Do not read this as "the trait is banned": it is the correct first term above.)
+
+  Two sub-checks on the fixed form, both **WEAK** on their own (**BLOCKER** when they reinstate the defect
+  above):
+  1. **Non-discriminating substring.** `FullyQualifiedName~` is a substring match, so a class name that is
+     a prefix of a sibling's re-widens the filter silently (`~Dispatch` also selects
+     `DispatchRouterTests`). The cheap mechanical check is
+     `dotnet test <proj> --filter "<the filter>" --list-tests` — it enumerates exactly what the filter
+     selects **without running anything**, so it works on a built repo even when the plan's own tests do
+     not exist yet. The fix is the namespace-qualified name.
+  2. **A zero-match guard that is missing, or present but inert.** A `--filter` matching **nothing** — or
+     one that is **malformed** (`\|` instead of `|`: VSTest reports `Incorrect format for TestCaseFilter`
+     and runs zero tests) — exits **0**, so a typo'd class name turns a `tests-pass` into a green no-op
+     and makes a `tests-fail-on-stubs` report a misleading "tautological tests" failure. Every narrowed
+     filter must assert ≥1 test actually EXECUTED. Read the guard's key, because three spellings look
+     right and are not — flag each **BLOCKER**, since a guard that cannot fire is worse than none (it
+     buys false confidence):
+     - keyed on the **`No test matches…` string** → verbosity-dependent, absent under `-v q`, so it is
+       written, executed, and never fires. #248 in its purest form;
+     - keyed on **`Total:`** → `Total:` counts `[Skip]`ped tests, so a fully-skipped class passes a guard
+       that is supposed to prove tests ran. The executed count is `Passed:` + `Failed:`;
+     - keyed on any English summary token **without pinning `$env:DOTNET_CLI_UI_LANGUAGE = 'en'`** → the
+       summary is LOCALIZED (a German-culture box prints `gesamt:`, no `Total:`), so on such a machine the
+       guard fires on **every** run and the guardrail fails unconditionally.
+
+     Also check the **ordering**, which is polarity-dependent: a **forward** check must test the exit code
+     BEFORE the guard (a crashed/never-started test host exits non-zero with no summary; guard-first
+     misreports it as "the filter matched zero tests" and sends the retry agent to rename a correctly-named
+     test class — the one file inside its `writeScope`); an **inverse** check must run the guard FIRST (a
+     crash exits non-zero, which is that check's success condition, so guard-second certifies "TDD red"
+     over a run that executed nothing). Wrong order → **WEAK**, **BLOCKER** on the inverse (it certifies
+     nothing). (Doctrine: catalogue → "Its SCOPE decides whether it proves anything";
+     `stacks/dotnet.md §4.3`; plan-breakdown Step 4 carries the matching emission rule.)
+<!-- END ADDED PROBE #455 -->
 <!-- BEGIN ADDED PROBES #254 — waved plans (nested layout) -->
 - **Cross-wave `dependsOn` edge (#254)**: in a waved plan, `dependsOn` is **intra-wave only** — a task
   edge naming a task in **another wave** is a hard error (**GR2034**, `validate` catches it). Beyond the
@@ -1078,7 +1192,7 @@ finding remains unaddressed.
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.
 - [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
 - [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.
-- [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
+- [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). No such guardrail carries a QUIET flag on its TEST command (`-v q`/`-v quiet` on `dotnet test`): measured, it suppresses the entire `Error Message:`/`Expected:`/`Actual:`/`Stack Trace:` block, so even a correct re-emit tails out test names only — WEAK, and quiet belongs on `dotnet build`. The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.
 - [ ] Every explicit **"do NOT …"** statement in a task's action prompt has a matching structural guardrail (a negative assertion, #176, for an excluded keyword/scenario; a regex-lock on load-bearing text surviving verbatim, or a count/forbidden-construct scan for a banned approach/shape) — or the breakdown report states explicitly that the forbidden behavior is not structurally checkable. WEAK when the prohibition is merely uncovered by an otherwise-deterministic suite; **BLOCKER** when the task's OTHER guardrail is empirical/statistical (a "run N times, assert it always passes" flake check) and the forbidden shortcut would make THAT guardrail EASIER to pass rather than harder — the perverse-incentive case (#221).
 - [ ] Every task whose prompt references an **earlier-wave sibling's** code was checked for a stale line-number pointer and an unhedged "here's how it currently works" claim (#203/#204): a cited line number into a file the earlier task will still modify is WEAK/BLOCKER (durable marker instead); an unhedged architecture claim about the sibling's not-yet-run implementation is WEAK/BLOCKER (caveat it as authoring-time state, verify before relying on it). Cross-check the paired `maxTurns: 75` bump (Step 4a's fourth archetype) — flag a **half-applied fix** if only one of the two companion rules was applied.
@@ -1091,6 +1205,7 @@ finding remains unaddressed.
 - [ ] Every producer↔consumer derived-name seam has a consumer-driven integration guardrail on a both-sides-present task that drives the real lookup for EVERY item and asserts 200 + a per-item marker — union-safe, no hard-coded name copy, no sampling (#96).
 <!-- END ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every guardrail that pattern-matches/regexes a tool's PRINTED console output (not just its exit code or a file it wrote) was verified by actually RUNNING that tool once against the real repo/workspace and checking the pattern against the real output — not just reasoning about whether the regex looks plausible; a pattern shown to never match the real output is a BLOCKER (the guardrail fails unconditionally, dead-ending every attempt at `needsHuman`), a fragile-but-currently-matching format assumption is WEAK. Does not apply to exit-code-only / file-existence / diff checks — there is no output-format assumption to verify there (#248).
+- [ ] Every TASK-LEVEL guardrail running a test filter was cross-referenced against the DAG's dependency EDGES — not read in isolation, which is why #248/#302 (both single-guardrail probes) cannot see this (#455). The scope×edges table was written out with column 4 RESOLVED (the filter run for a real `Total:` count where the classes exist, or resolved on paper against prompt-PINNED class names — prompts that do not pin their test class names are themselves a BLOCKER, since no one can then tell what any filter selects), and BOTH directions asked: **forward** — a filter selecting tests only a DOWNSTREAM task can make green is a **BLOCKER** (deadlock; `validate` and `graph --check` both PASS, the cycle is task↔sibling-test-corpus, not task↔task); **inverse** — a red check a SIBLING's tests can satisfy is a **BLOCKER** (tautology; the #155 red proof degraded to merge-order luck). Every task carrying the shape is flagged, not only the one that failed (merge timing decides which mode bites). A concurrent sibling with no edge either way is **nondeterministic**, not exempt — WEAK, BLOCKER same-wave. Fix: `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` on both halves of the pair (class term mandatory, trait an optional conjunct; the trait ALONE lives only in the #181 preflight's `!=` exclusion). Sub-checks: the class substring is discriminating (`--list-tests` enumerates what it really selects; `~Dispatch` also selects `DispatchRouterTests`), and each narrowed filter carries a zero-match guard that can actually fire — BLOCKER if keyed on the `No test matches…` string (suppressed by `-v q`), on `Total:` (counts `[Skip]`ped tests), or on English tokens without pinning `$env:DOTNET_CLI_UI_LANGUAGE='en'` (the summary is localized); and the guard's ORDER matches its polarity (forward: exit-code first; inverse: guard first).
 - [ ] Every `.sh`/`.ps1`/`.py` guardrail that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was smoke-tested by EXECUTING the guardrail SCRIPT itself against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only; the highest-value target (a guardrail that renders/executes the task's own not-yet-authored output) was run against a synthesized sample. FAILS the valid sample or PASSES the invalid sample = BLOCKER; runnable-but-unrun = WEAK; not-runnable-at-author-time (live service / built binary / merged HEAD) = syntax pass + honest report deferral, never a block. Distinct from #248 (which runs the underlying TOOL, not the guardrail script) (#302).
 - [ ] (#254) A waved plan was reviewed WAVE-BY-WAVE (each wave a mini-plan): the §2 adversarial probes ran per task within each wave, and each wave's entry/exit gates got the four-folder treatment. No cross-wave `dependsOn` edge (GR2034 — a wave-2 dependency on a wave-1 artifact is the wave-2 ENTRY gate, not an edge; BLOCKER if present). Every waved-plan prompt's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (header + example + state-output guardrail index agree; a bare/wrong-wave key is a BLOCKER, the #164 loop one level up).
 - [ ] (#254) Each wave ≥ 2 has a POSITIVE, positive-monotone-safe ENTRY gate ("prior wave's outputs materialized"; missing = WEAK, negative-polarity = BLOCKER). Each multi-leaf/fan-in wave's EXIT gate satisfies GR2028 (≥1 real integration re-run); every INTERMEDIATE wave's exit gate keeps whole-build/whole-suite LOCAL and any `scope:"integration"` guardrail union-safe/conditional (a whole-suite marked `scope:"integration"` in an intermediate wave = BLOCKER, #125); only the LAST wave's exit gate carries a whole-suite LOCAL `tests-pass`. A declared-but-empty JIT stub wave is NOT flagged as missing tasks; the JIT workflow for it is documented in the breakdown report.
