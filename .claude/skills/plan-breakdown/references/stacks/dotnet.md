@@ -386,12 +386,31 @@ if it were a problem). Match the construct's polarity: re-emit only where exit 0
 
 ### 4.3 Scope a task-level test `--filter` to the pair's OWN test class — and guard the zero match (#455)
 
+> **If you read only one box in this file, read this one.** Every `dotnet test` in a guardrail:
+> 1. **`$env:DOTNET_CLI_UI_LANGUAGE = 'en'`** as the first line — the summary is localized.
+> 2. **`--filter` names THIS pair's own test class** (`&FullyQualifiedName~<Class>`), never the plan-wide
+>    trait alone. Class term mandatory, trait an optional conjunct.
+> 3. **No `-v q`** on the test command (it deletes the failure detail #179 re-emits).
+> 4. **Zero-match guard on the EXECUTED count** (`Passed:` + `Failed:`, not `Total:`) — ordered
+>    exit-code-first on a forward check, guard-first on an inverse one.
+>
+> The rest of this section is why each of those is not negotiable, each point measured.
+
 **The rule.** A **task-level** `tests-pass` / `tests-fail-on-stubs` filter must name **the test class that
 task pair owns**. The plan-wide trait alone is never a task-level filter:
 
 ```
 --filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"
 ```
+
+**Reach — this governs EVERY `dotnet test --filter` a plan emits, in all four folders**, not just the TDD
+pair: the §10a/§10e composition-root and real-seam drivers, the §13 production-seam check, and the §21
+baseline preflight all run filtered test commands and all inherit the zero-match hole, the localization
+trap and the `-v q` trap. (The §21 preflight's `!=` filter is the ONE place the bare plan-wide trait is
+correct — but it still needs the culture pin and the executed-count guard, or a "baseline green" verdict
+can be certified by a run that executed nothing. That is the catalogue's vacuous-baseline warning with a
+concrete mechanism.) Where an older example in this file shows a bare `dotnet test … --filter` skeleton,
+this section is the authority on what actually gets emitted.
 
 **The plan-wide trait is a task-level selector in exactly ONE form — conjoined with the pair's class
 term. ALONE it belongs in exactly one place: the §21 baseline preflight's `!=` exclusion.** Say it with
@@ -1797,13 +1816,17 @@ Notes on the scope and the edges:
   test class to `tests/Inventory.Tests`), use a `--filter` that **excludes** the about-to-be-authored
   category (`--filter "Category!=Stats"` above) so the baseline can never go red on tests that don't
   exist yet. The pre-DAG phase evaluates it against the starting bytes (no new tests), so this is
-  natural — the filter just makes the intent explicit and robust.
-- **THIS `!=` exclusion is one of exactly TWO places the plan-wide trait may appear — and the other is
-  nowhere (#455).** The trait exists to let this preflight say "everything except the tests this plan is
-  about to write." Having introduced it here, it will read like the natural filter for the task-level
-  `tests-pass` / `tests-fail-on-stubs` guardrails too. **It is not** — a task-level guardrail keyed on it
-  asserts the state of every test in the plan, deadlocking a task behind its own dependent and vacating
-  every TDD-red proof. Task-level filters name the pair's OWN test class: **§4.3.**
+  natural — the filter just makes the intent explicit and robust. **This preflight still needs §4.3's
+  culture pin and executed-count guard** — a baseline that executed ZERO tests exits 0 and certifies
+  "the area is green" over nothing, which is the catalogue's vacuous-baseline warning arriving through a
+  filter typo rather than an empty project.
+- **THIS `!=` exclusion is the ONE place the plan-wide trait stands ALONE (#455).** The trait exists to
+  let this preflight say "everything except the tests this plan is about to write." Having introduced it
+  here, it will read like the natural filter for the task-level `tests-pass` / `tests-fail-on-stubs`
+  guardrails too. **Bare, it is not** — a task-level guardrail keyed on the bare trait asserts the state
+  of every test in the plan, deadlocking a task behind its own dependent and vacating every TDD-red
+  proof. The trait is still fine *there* as the first term; what is mandatory is the pair's own class
+  term beside it: **§4.3.**
 - **No edges to author — it runs before the DAG.** The `<plan>/preflights/` folder is evaluated once
   against the starting repo before any wave is built, so every task is implicitly gated on it; you do NOT
   wire work tasks to it (the retired no-op-root model made every area work task `dependsOn` a root — that

@@ -472,11 +472,25 @@ can pass purely because it branched before a sibling's red tests reached its bas
    silently (`~Dispatch` selects `DispatchRouterTests` too). Check the chosen selector against every other
    test class the plan authors and every existing class in the target project; qualify it (namespace, full
    class name) when it is not discriminating. Same lesson as the orphaned-golden broad-filter trap.
-2. **Narrowing reintroduces the zero-match hole — guard it.** A filter that matches **nothing** typically
-   reports SUCCESS (exit 0), so a typo'd class name turns both halves of the pair into green no-ops. Emit
-   a guard asserting the run actually executed ≥1 test, and key it on the runner's **executed-test COUNT**,
-   not on an error string — the "no tests matched" diagnostic is frequently verbosity-suppressed, which is
-   how a string-keyed guard gets written, executed, and observed never to fire (the #248 failure).
+2. **Narrowing reintroduces the zero-match hole — guard it.** A filter that matches **nothing** (or is
+   malformed) typically reports SUCCESS (exit 0), so a typo'd class name turns both halves of the pair
+   into green no-ops. Emit a guard asserting the run actually executed ≥1 test. Three things decide
+   whether such a guard can fire at all, and each has bitten:
+   - key it on the runner's **executed-test COUNT**, not on an error string — the "no tests matched"
+     diagnostic is frequently verbosity-suppressed, which is how a string-keyed guard gets written,
+     executed, and observed never to fire (the #248 failure);
+   - key it on **executed**, not **total** — runners that report a total INCLUDING skipped tests let a
+     fully-skipped class satisfy a guard whose entire job is proving tests ran;
+   - **pin the runner's output language.** Summary lines are LOCALIZED; a guard matching English tokens
+     inverts into an unconditional failure on a non-English machine. This is the axis #248 most often
+     misses: verbosity gets varied during authoring, culture almost never does, so the pattern ships
+     "verified" with its most fragile dimension untested.
+
+   And **order the guard by polarity**: where exit 0 is the pass, check the exit code FIRST (a runner that
+   never started exits non-zero with no summary, and a guard-first script misreports that as "your filter
+   matched nothing" — a confident wrong diagnosis pointing at the test file, which is exactly the artifact
+   the retry agent is allowed to edit). Where non-zero is the pass, the guard must come FIRST, or a
+   crashed runner is certified as TDD red.
 
 The exact filter syntax, the measured runner-output table, the count-based guard expression, and the two
 canonical emitted scripts are the stack file's job: `stacks/dotnet.md §4.3`.
