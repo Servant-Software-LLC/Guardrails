@@ -336,7 +336,11 @@ Three new optional keys per block (full JSON in §12.1):
   keeps working unchanged — the Stage-1 back-compat acceptance). v1 implements only
   `"claude"`; **`"openai-compat"` is the reserved seam #223 fills** (one kind covering
   Ollama / llama.cpp / LM Studio / vLLM — they share the wire protocol); `"codex"` /
-  `"openrouter"` are reserved names, unassigned. A `kind` that is unrecognized OR recognized
+  `"openrouter"` / **`"local"`** are reserved names, unassigned. (**`"local"` was missing from
+  this list until 2026-08-15** — Stage 1 shipped it as a fourth reserved token and Stage 1.5
+  kept it rather than make an unrequested breaking change, so the enum of record is
+  `claude | codex | openrouter | local | openai-compat`. The omission was this document's,
+  not the code's.) A `kind` that is unrecognized OR recognized
   but not yet implemented in the installed harness fails `guardrails validate` with
   **GR2044**, naming the value and the currently supported set — an honest halt at validate
   time, never a silent fallback to Claude. `PromptRunnerRegistry.FromConfig` switches on
@@ -1512,7 +1516,7 @@ Re-verify against the file before landing.
 | GR2047 | `MalformedRoutingGuidance` | error | **v1** | `routing` block invalid: missing/empty `tiers`, a value outside the tier enum, or wrong types |
 | GR2048 | `UnservableTier` | error | **v1** | a USED tier (task tag, frontmatter tag, or a `defaultTier`) in a tiering-configured plan has no **candidate** block at-or-above it (§6.2) — either none serves it, or **the only ones that do are `costly: true`**, which the harness may never select. The message MUST distinguish the two: they have different fixes |
 | GR2049 | `TieringInert` | warning | **v1** | tier tags present but NO block declares `routing` — tags have no effect; plan runs with legacy resolution |
-| GR2050 | `EffortInvalid` | error | **v1** | a present `effort` (block, override, or `action.effort`) fails the GR2030-style shape check (non-empty, no whitespace/control chars) |
+| GR2050 | `EffortInvalid` | error | **v1** | a present `effort` fails the GR2030-style shape check (non-empty, no whitespace/control chars). **TWO sites, not three** — `promptRunners.<name>.effort` and `action.effort`. This row said "block, override, or `action.effort`" until 2026-08-15, but **`guardrailOverrides.effort` is not modelled anywhere**: §12.1's canonical block never showed it, and Stage 1.5 implemented the two sites that exist. The third was an internal inconsistency in this document, not a deferred feature — see §13.4 |
 | GR2051 | `NonRoutableBlockIsDefault` | warning | **v1** | a `costly: true` **or** `routing`-less block is the registry `default` pointer in a tiering-configured file — untagged tasks would fall to a model held out of routing (§4.2; review comment 7's back door) |
 | GR2052 | `CostlyBlockRoutingInert` | warning | **v1** | a `costly: true` block also declares `routing` — the routing can never apply, because the candidacy predicate excludes costly blocks (§6.2). A warning, so GR2048 can report the real consequence |
 | GR2053 | `PinAndTierCoexist` | warning | **v1** | a full pin (`action.runner`/`action.model`) and `action.tier` are both set on one action — the tier is dead weight the pin overrides (§6.1, DA F3) |
@@ -1553,6 +1557,29 @@ without re-verifying, so the remaining eight were re-reserved at GR2047–GR2054
 **v1 (static routing + verifier)** takes **GR2043–GR2053** (#224/#225/#226/#201-verifier) across
 Stages 1–2 — of which GR2043–GR2046 have shipped; **v2** takes **GR2054** with #227's probes.
 CURRENT next-free code: **GR2047** until the §13.2 block lands, **GR2055** once it has.
+
+### 13.4 `guardrailOverrides.effort` — a phantom third site, retired 2026-08-15
+
+§13.2's GR2050 row claimed `effort` had **three** sites: the block, an override, and `action.effort`.
+Stage 1.5 implemented **two**, because the third does not exist and never did:
+
+- `guardrailOverrides` is a partial override of a runner profile (permissions / tools / turns), and
+  **no `effort` key is modelled on it** — not in `RawPromptRunnerOverrides`, not in the resolved model.
+- §12.1's canonical block — the authority this document points generators and hand-editors at — has
+  **never shown** `guardrailOverrides.effort` either.
+
+So the row was internally inconsistent with the schema in the same document. It is corrected rather
+than deferred: **there is no missing feature here, only a sentence that named a key nothing declares.**
+
+**If a judge ever needs its own effort**, that is a real design question and belongs with the verifier
+route (§6.5) — a judge already resolves its own `(provider, model, effort)`, so the question is
+whether the *override profile* should be able to pin the effort independently of the resolved tier.
+Raise it there, as a change with a rationale, rather than resurrecting it from a stale table row.
+
+**The general lesson matches §13's:** a claim about the schema that lives outside the schema decays
+without anything noticing. This one survived a full revision pass and a devil's-advocate gate because
+it read as plausible — it took an implementer trying to build the third site and finding nothing to
+build against.
 
 ## 14. Worked example  [v1 — static routing]
 
