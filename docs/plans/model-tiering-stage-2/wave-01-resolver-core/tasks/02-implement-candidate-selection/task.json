@@ -1,0 +1,10 @@
+{
+  "description": "Implement TierResolver.SelectCandidate per DoR §6.2 (shared predicate, ascending strength, costly floor, climb) so the authored tests pass",
+  "stableId": "p7m4zn",
+  "dependsOn": ["01-author-tests-candidate-selection"],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/TierResolver.cs",
+    "src/Guardrails.Core/Prompts/TierResolution.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

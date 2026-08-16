@@ -1,0 +1,10 @@
+{
+  "description": "Implement TierResolver.Resolve per DoR §6.1 — pin bypass, effort-override-not-bypass, defaultTier, legacy fallback — delegating selection to SelectCandidate",
+  "stableId": "v3n6bd",
+  "dependsOn": ["03-author-tests-resolution-precedence"],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/TierResolver.cs",
+    "src/Guardrails.Core/Prompts/TierResolution.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

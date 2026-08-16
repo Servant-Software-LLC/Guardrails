@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests for DoR §6.1 precedence — full pin bypasses resolution, action.effort alone does NOT, legacy fallback when untiered",
+  "stableId": "r5h8xc",
+  "dependsOn": ["02-implement-candidate-selection"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/TierResolverPrecedenceTests.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

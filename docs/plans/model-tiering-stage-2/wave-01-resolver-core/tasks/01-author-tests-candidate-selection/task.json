@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests for DoR §6.2 candidate selection, plus the minimal TierResolver/TierResolution stubs the whole wave compiles against",
+  "stableId": "t2k9wq",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/TierResolverCandidateSelectionTests.cs",
+    "src/Guardrails.Core/Prompts/TierResolver.cs",
+    "src/Guardrails.Core/Prompts/TierResolution.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}
