@@ -1,6 +1,18 @@
 # 17 — Model tiering, actor + verifier (provider registry + static tier routing; ladder / probes / steering deferred to v2) — design of record (epic #201)
 
-> **Revision 3 (this pass) — what changed and why.** Two forces, neither of which existed when
+> **Revision 4 (2026-08-16) — three amendments from the Stage 2 charter review.** All three are
+> maintainer rulings made while reviewing `model-tiering-stage-2.charter.md`, folded in here rather
+> than left as plan-only text — the Stage 1 lesson being that the DoR wins, so a rule recorded only
+> in a stage charter is a rule the next implementer reverts. **D28** (§6.2): a costly ceiling that
+> actually binds must be logged loudly — it changes what is logged, never what is selected. **D29**
+> (§6.5 rule 5): human sanction propagates — a pinned `costly` actor licenses a `costly` judge bump.
+> **D15a** (§7): every budget-consuming failure gets one same-tier retry before the rung escalates;
+> revision 3 granted that only to the exhaustion family, which was an unintentional split rather
+> than a considered trade. D15a touches a **v2-deferred** section deliberately: the DoR retains the
+> v2 designs precisely so v2 inherits a ratified spec, and a spec with a known-wrong trigger is
+> worse than no spec.
+>
+> **Revision 3 — what changed and why.** Two forces, neither of which existed when
 > revision 2 was written:
 >
 > 1. **The verifier charter landed and was fully reviewed.**
@@ -705,6 +717,18 @@ autonomy-policy dial. The only paths to a costly model are:
 
 Everything else is the harness choosing, and the harness does not choose.
 
+**D28 — a BINDING ceiling must be loud (maintainer, Stage 2 charter review, 2026-08-16).** The floor
+above governs *selection* and says nothing about *surfacing*, which leaves it silent in exactly the
+case a human most needs to hear from it. When a stronger block was excluded **only** because it is
+`costly: true`, and the task then goes to a re-attempt, the harness emits a strong warning naming the
+block it was not permitted to pick. Without it, a failure caused by the weaker model running out of
+reasoning is indistinguishable from an ordinary failure, and neither a human nor a reviewing agent
+can tell that the ceiling was the cause — the operator is left tuning prompts and budgets against a
+constraint they cannot see. **This changes what is LOGGED, never what is SELECTED**, so the floor
+itself is untouched: no override, no dial, no new path to a costly model. The advisory rides the
+existing per-attempt provenance (§9.3); the §6.5 judge case already has its own #229 advisory, and
+this is the actor-side counterpart it was missing.
+
 **Routing DOWN a rung is never automatic.** In v1 the only lever below the never-weaker floor is
 **halt-and-edit-config** (change a block's `routing.tiers`, re-run). *(The v2 steering design
 adds a human-sanctioned mid-run "serve tier X from block Y for the rest of this run" option; that
@@ -826,6 +850,18 @@ deterministic-first; it hardens the one place a model's opinion is load-bearing.
    consequence the charter's disposition 2 flagged for confirmation, and this DoR confirms it *and*
    states the actor-side counterpart the charter left implicit: **the actor does NOT degrade — it
    halts** (§6.2, invariant 5).
+   **D29 — except where the human already sanctioned the spend (maintainer, Stage 2 charter review,
+   2026-08-16).** Rule 5 above applies the costly floor to the judge bump *unconditionally*, which
+   is too broad at one edge: when the **actor** is running on an explicitly pinned `costly` model
+   (§6.1 item 1), costly spend for that task has already been authorized by a human — so the judge
+   **may** bump into a `costly: true` block, with no halt and no further prompt. This is consistent
+   with the floor rather than an exception to it: the floor constrains *the harness choosing*, never
+   *the human assigning*, and here the human has assigned. Note the shape it produces is the one the
+   verifier route exists for — a human who pins a frontier actor gets a judge strong enough to
+   vouch for it, instead of a weaker judge rubber-stamping the strongest actor in the run. **Absent
+   such a pin, rule 5 stands exactly as written.** The `default` pointer does *not* trigger D29: it
+   is a plan-wide fallback rather than a decision about this task, and treating it as sanction would
+   silently license costly judges across an entire plan.
 6. **Specialization breaks ties, and only ties** (charter Decision 7 + `specialization-values`).
    Among candidates that already meet the required strength, prefer `planning-reasoning`, then fall
    back to the §6.2 ascending-strength order. It can neither satisfy nor violate ≥, and a mismatch
@@ -971,13 +1007,30 @@ them a moving actor to act on, not a new mechanism.*
 A deterministic retry policy — the same family as #94's maxTurns escalation, and like it, part
 of the **deterministic floor**, not an overwatcher judgment (§9.2).
 
-- **Trigger (D15):** a budget-consuming logic failure — `guardrail-failed`, `action-failed`,
-  `invalid-fragment` (and a write-scope violation, which is guardrail-class) — escalates the
-  next attempt's rung by one *served* rung. The budget-exhaustion outcomes `timeout` /
-  `max-turns` / `output-cap` keep their tier on first occurrence (their shipped escalators —
-  longer clock, more turns, split-the-write feedback — get one same-tier chance) and escalate
-  the rung on a repeat. `transient`/rate-limit pauses never escalate (not failures; no budget
-  consumed). A `needsHuman` signal short-circuits as today (no retry, no ladder).
+- **Trigger (D15, as amended by D15a):** a budget-consuming failure escalates the next attempt's
+  rung by one *served* rung — but **never before that rung has had one same-tier retry.** The
+  budget-exhaustion outcomes `timeout` / `max-turns` / `output-cap` keep their tier on first
+  occurrence (their shipped escalators — longer clock, more turns, split-the-write feedback — get
+  one same-tier chance) and escalate on a repeat; **`guardrail-failed`, `action-failed` and
+  `invalid-fragment` (and a write-scope violation, which is guardrail-class) now do the same**,
+  where revision 3 escalated them immediately. `transient`/rate-limit pauses never escalate (not
+  failures; no budget consumed). A `needsHuman` signal short-circuits as today (no retry, no
+  ladder).
+- **D15a — the original asymmetry was unintentional (maintainer, Stage 2 charter review,
+  2026-08-16).** Revision 3 granted the exhaustion family a same-tier chance *because those
+  outcomes have shipped escalators*, and escalated logic failures immediately. But a guardrail
+  failure has a shipped escalator too, and it is the strongest one the harness owns: **#179**
+  re-emits the failing assertion / exception / stack detail at the END of stdout precisely so the
+  WHY survives into the ~60-line retry-feedback tail. Escalating on the *first* guardrail failure
+  therefore spends a stronger model while discarding the cheapest fix available — handing the same
+  model its own failure and letting it try again. Applying the stated rationale evenly grants the
+  same chance to both families; the split was an oversight, not a considered trade.
+  **Bound on the grant (so it cannot resurrect a dead attempt):** the same-tier retry is granted
+  **once per rung**, and only where the retry feedback could plausibly change the outcome. A
+  *materially identical* repeat is the **#264** futility signal, and **#174**'s no-op short-circuit
+  already escalates a byte-identical repeat to needs-human on attempt 2 — D15a must not re-open
+  what those rules have already declared futile. An implementer should key the grant on *whether
+  the feedback differed*, not on a flat attempt count.
 - **Budget (D5 — the #201/#228 open question, RESOLVED): an escalated attempt draws from the
   SAME retry pool. No reset.** Rationale: a reset multiplies the worst case by ladder height
   (retries × rungs) — unbounded cost growth and a needs-human that arrives attempts later
@@ -1847,6 +1900,19 @@ floor is reachable — correcting revision 3's own YAGNI argument), is bypassed 
 `runner` pin but never by the advisory, and **degrades to an advisory rather than reaching a costly
 block or climbing a rung** when it cannot be met (§6.5.1, settled 2026-08-12).
 
+**RESOLVED and in v1 — added by revision 4 (the Stage 2 charter review, 2026-08-16):**
+
+**D28 a binding costly ceiling must be LOUD** — when a stronger block is excluded *only* because it
+is `costly: true` and the task re-attempts, the harness warns and names the block it could not pick;
+otherwise a failure caused by the weaker model running out of reasoning is indistinguishable from an
+ordinary one. Changes what is **logged**, never what is **selected** — D22 is untouched (§6.2) ·
+**D29 human sanction propagates to the judge** — when the actor runs on an explicitly **pinned**
+`costly` model, costly spend is already authorized for that task, so the judge may bump into a
+`costly` block with no halt and no prompt; this narrows §6.5 rule 5, which applied the floor
+unconditionally. Consistent with D22 rather than an exception to it — the floor constrains the
+*harness choosing*, never the *human assigning*. The `default` pointer does **not** trigger it
+(plan-wide fallback, not a decision about this task) (§6.5).
+
 **DEFERRED to v2 (retained as ratified designs; each revisited with #230-lite data when/if its
 bet is built):**
 
@@ -1856,9 +1922,12 @@ defensive outcome is v1 (§6.2)* · D10 threshold prompts ride `autonomyPolicy` 
 boundary; no new knob (§8.2, with #231) · D11 probes are deterministic, never prompt spend,
 TTL-cached (60 s) with consecutive-failure doubling, observe-only (§6.4, with #227) · D12 ambient
 steering = structured `--prefer`; prose steering is a further v2 bet (§8.1, with #231) · D14 an
-explicitly-pinned task never enters the ladder (§6.1 / §7, with #228) · D15 ladder triggers:
-logic failures escalate immediately; timeout/max-turns/output-cap get one same-tier retry first
-(§7, with #228) · D16 the ladder owns tier movement, the overwatcher layers guidance/budget on
+explicitly-pinned task never enters the ladder (§6.1 / §7, with #228) · D15 ladder triggers, **as amended by D15a
+(revision 4)**: EVERY budget-consuming failure gets one same-tier retry before the rung escalates —
+revision 3 granted that only to timeout/max-turns/output-cap and escalated logic failures
+immediately, an unintentional split, since `guardrail-failed` has the strongest shipped escalator of
+all (#179 retry feedback). Bounded: once per rung, and never re-opening a materially identical
+repeat that #264/#174 have already called futile (§7, with #228) · D16 the ladder owns tier movement, the overwatcher layers guidance/budget on
 top (§9.2, with #228).
 
 ## 17. Implementation handoff (after the #106 review of this draft)
