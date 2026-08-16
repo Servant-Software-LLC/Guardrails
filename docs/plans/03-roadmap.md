@@ -123,6 +123,20 @@ Each slots into an existing v1 seam — none invalidates the architecture:
   onto the unified `autonomyPolicy`; reporting via `decisions[]` (`boundary:"task"`) + a per-task
   `overwatch.jsonl`. SSOT §9.2; design `docs/plans/11-overwatcher.md`. (M3.) *v2 = auto-heal + inter-wave
   adjustment (bet #6).*
+- **#201 model tiering — design of record `docs/plans/17-model-tiering.md` (DRAFT, pre-build).** Route each
+  prompt attempt to a difficulty-appropriate (provider, model, effort). **v1 = STATIC routing + the verifier
+  rule:** `promptRunners` generalized with `kind`/`effort`/`routing` **and three independent model axes
+  `costly`/`strength`/`specialization`** (#224), a **generated + annotated** registry via `guardrails
+  providers init`, gated `easy|medium|hard` tagging (#225), a **pure deterministic** attempt-launch resolver
+  (#226-static), the **costly floor** (the harness never auto-selects a `costly: true` model — only a user
+  pin does), the **"judge ≥ actor" verifier route** with a weak-actor strength bump (advisory, never
+  blocking — companion charter `model-tiering-verifier.charter.md`), the #229 review check, and a per-tier
+  spend line (#230-lite). **Deferred to named v2 bets:** budget probes (#227), the escalation ladder (#228),
+  and interactive steering / `--prefer` (#231) — each retained in the DoR as a ratified design, revisited
+  once #230-lite measures whether they are worth building. Three stage briefs
+  (`model-tiering-{foundation,consumers,dynamic-behavior}.md`) are the plan-of-record under the DoR;
+  **GR2043–GR2053 reserved, re-verify before landing**; #223 (local `openai-compat` runner) fills the `kind`
+  seam independently. Builds only after the DoR's #106 review.
 - **M1 unified `autonomyPolicy` + `decisions[]` — SHIPPED.** One `prompt`/`halt`/`auto` policy + one
   `boundary: task|wave|drift` decisions log govern drift-resolution (#274), the overwatcher (#269), and
   inter-wave adjustment (#254); folded in the former `driftPolicy`. Prompt-spend from the overwatch diagnose,
