@@ -32,6 +32,7 @@ public static class JournalJson
         AttemptOutcome.NeedsHuman => "needs-human",
         AttemptOutcome.PermissionDenied => "permission-denied",
         AttemptOutcome.TaskPreflightFailed => "task-preflight-failed",
+        AttemptOutcome.NoRoute => "no-route",
         _ => throw new JsonException($"Unhandled attempt outcome '{outcome}'.")
     };
 
@@ -61,6 +62,26 @@ public static class JournalJson
         _ => throw new JsonException($"Unhandled run halt kind '{kind}'.")
     };
 
+    /// <summary>
+    /// The SSOT §7 / DoR §12.4 token for a <see cref="Journal.TierSource"/> (<c>task</c> |
+    /// <c>plan-default</c> | <c>override</c>) — the single source of truth for the kebab spelling of
+    /// <c>provenance.tierSource</c>, reused by the JSON converter and by any run-report labelling
+    /// (model tiering #201).
+    ///
+    /// <para>Explicit rather than <c>Enum.ToString</c> for the same reason
+    /// <c>PromptRunnerKinds.Token</c> is: <c>plan-default</c> carries a hyphen, so the C# member name
+    /// is not the wire spelling. The default System.Text.Json enum handling would write the ORDINAL,
+    /// which is worse still — the journal is read by humans and by tooling that never links against
+    /// this assembly.</para>
+    /// </summary>
+    public static string TierSourceToken(TierSource source) => source switch
+    {
+        TierSource.Task => "task",
+        TierSource.PlanDefault => "plan-default",
+        TierSource.Override => "override",
+        _ => throw new JsonException($"Unhandled tier source '{source}'.")
+    };
+
     private static JsonSerializerOptions Build()
     {
         var options = new JsonSerializerOptions
@@ -77,7 +98,33 @@ public static class JournalJson
         options.Converters.Add(new PlanPhaseStatusConverter());
         options.Converters.Add(new WaveStatusConverter());
         options.Converters.Add(new RunHaltKindConverter());
+        options.Converters.Add(new TierSourceConverter());
         return options;
+    }
+
+    /// <summary>
+    /// Maps <see cref="Journal.TierSource"/> to/from the DoR §12.4 <c>provenance.tierSource</c> strings
+    /// (model tiering #201). Registered for the NON-nullable enum; System.Text.Json wraps it for the
+    /// <c>TierSource?</c> property, and the property's <c>WhenWritingNull</c> ignore condition means a
+    /// null source is ABSENT from the journal — never the string <c>"null"</c>, and never a
+    /// <c>"tierSource": null</c> key on a legacy-fallback or script attempt.
+    /// </summary>
+    private sealed class TierSourceConverter : JsonConverter<TierSource>
+    {
+        public override TierSource Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            string? value = reader.GetString();
+            return value switch
+            {
+                "task" => TierSource.Task,
+                "plan-default" => TierSource.PlanDefault,
+                "override" => TierSource.Override,
+                _ => throw new JsonException($"Unknown tier source '{value}'.")
+            };
+        }
+
+        public override void Write(Utf8JsonWriter writer, TierSource value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(TierSourceToken(value));
     }
 
     /// <summary>Maps <see cref="RunHaltKind"/> to/from the SSOT §7 <c>halt.kind</c> strings (issue #432).</summary>
@@ -180,6 +227,7 @@ public static class JournalJson
                 "needs-human" => AttemptOutcome.NeedsHuman,
                 "permission-denied" => AttemptOutcome.PermissionDenied,
                 "task-preflight-failed" => AttemptOutcome.TaskPreflightFailed,
+                "no-route" => AttemptOutcome.NoRoute,
                 _ => throw new JsonException($"Unknown attempt outcome '{value}'.")
             };
         }
