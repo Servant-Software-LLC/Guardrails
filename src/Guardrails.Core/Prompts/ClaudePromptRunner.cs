@@ -98,14 +98,36 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 transcript?.Feed(line);
             }
 
-            ProcessResult process = await _processRunner.RunAsync(
-                command,
-                invocation.WorkingDirectory,
-                BuildEnvironment(invocation),
-                invocation.Timeout,
-                standardInput: invocation.ComposedPrompt,
-                stdoutLineSink: Tee,
-                cancellationToken).ConfigureAwait(false);
+            ProcessResult process;
+            try
+            {
+                process = await _processRunner.RunAsync(
+                    command,
+                    invocation.WorkingDirectory,
+                    BuildEnvironment(invocation),
+                    invocation.Timeout,
+                    standardInput: invocation.ComposedPrompt,
+                    stdoutLineSink: Tee,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (System.ComponentModel.Win32Exception launchFailure)
+            {
+                // The runner binary itself would not start (DoR §6.3's missing-CLI shape): the command is
+                // not on PATH, or the OS refused the spawn. ProcessRunner calls Process.Start with no try
+                // — deliberately, since it is shared with script actions and guardrails — so the fault
+                // arrives HERE, before any text was ever produced to classify. Without this catch it
+                // escapes RunAsync entirely and the attempt dies as an unhandled executor fault instead
+                // of a classified, pausable one.
+                //
+                // NARROW ON PURPOSE: Win32Exception is the spawn fault on this path and nothing else —
+                // a failure once the child is running comes back as a ProcessResult, and every other
+                // exception type keeps propagating untouched.
+                //
+                // `guardrails validate`'s GR2009 PATH probe already warns about a missing runner command
+                // at validate time; this is the runtime residual of that same fact — the relationship
+                // `no-route` has to GR2048.
+                return LaunchFailureResult(launchFailure);
+            }
 
             // Both files are fully written line-by-line above; Complete() finalizes the transcript's
             // trailing newline so it matches a batch render exactly.
@@ -248,6 +270,43 @@ public sealed class ClaudePromptRunner : IPromptRunner
         }
 
         return new ToolGrantResolution { Effective = effective, Injected = injected };
+    }
+
+    /// <summary>
+    /// The result for a run that never started: the launch fault is classified by the SAME
+    /// <see cref="ClaudeSignalClassifier"/> quarantine every other failure goes through (DoR §6.3 —
+    /// "cannot reach this provider right now" is <see cref="PromptFailureKind.Transient"/>, so it rides
+    /// the shipped #115 bounded pause and does not burn a retry on re-launching a binary that is still
+    /// absent). <see cref="PromptResult.Completed"/> is false and the summary names the command — the
+    /// actionable half, since the harness surfaces this summary and the operator needs to know WHICH
+    /// command could not be launched.
+    /// <para>
+    /// The classified text is TYPE + native code + message rather than <c>ex.Message</c> alone. .NET's
+    /// own launch message ("An error occurred trying to start process 'claude' with working directory
+    /// '…'. The system cannot find the file specified.") is discriminating by itself and classifies
+    /// without help; the <c>ex.ToString()</c>-shaped header
+    /// ("<c>System.ComponentModel.Win32Exception (2): …</c>") is what also classifies the SHORTER form,
+    /// where a Win32Exception carries only the bare OS string — "the system cannot find the file
+    /// specified" is ordinary enough text that the classifier deliberately does not treat it as a signal
+    /// on its own. Composed explicitly rather than taken from <c>ToString()</c> so a stack trace's
+    /// contents can never reach the matcher.
+    /// </para>
+    /// </summary>
+    private PromptResult LaunchFailureResult(System.ComponentModel.Win32Exception launchFailure)
+    {
+        string classificationText =
+            $"{launchFailure.GetType().FullName} ({launchFailure.NativeErrorCode}): {launchFailure.Message}";
+
+        return new PromptResult
+        {
+            Completed = false,
+
+            // Nothing reported an error: the agent never ran. Completed = false already fails the
+            // attempt — the same shape as today's "no terminal result" outcome.
+            IsError = false,
+            FailureKind = ClaudeSignalClassifier.Classify(classificationText),
+            Summary = $"claude could not be launched: '{_command}' — {launchFailure.Message}"
+        };
     }
 
     /// <summary>
