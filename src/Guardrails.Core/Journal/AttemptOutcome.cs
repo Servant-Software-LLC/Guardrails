@@ -83,5 +83,19 @@ public enum AttemptOutcome
     /// two whole-plan phase halts (<c>plan-preflight-failed</c> / <c>plan-guardrail-failed</c>), which live
     /// OUTSIDE <c>tasks{}</c> in the top-level journal sections (SSOT §7).
     /// </summary>
-    TaskPreflightFailed
+    TaskPreflightFailed,
+
+    /// <summary>
+    /// Tier resolution found ZERO registered candidate blocks at or above the task's rung (SSOT §7 /
+    /// DoR §12.4, §6.2, model tiering #201) — a RUNTIME config gap that validation's GR2048 normally
+    /// prevents. The attempt settles <c>needs-human</c> with actionable "register a provider serving
+    /// tier ≥ R" feedback, never a silent fallback to a weaker rung or to the runner's own model
+    /// (D30: legacy fallback is the NO-RUNG path, <c>no-route</c> is the NO-CANDIDATE path, and nothing
+    /// is both). A DISTINCT outcome so a human (and §9 triage) sees a routing-configuration gap rather
+    /// than a generic <see cref="ActionFailed"/>.
+    ///
+    /// <para>Declared LAST deliberately: inserting a member anywhere above would renumber every outcome
+    /// after it.</para>
+    /// </summary>
+    NoRoute
 }

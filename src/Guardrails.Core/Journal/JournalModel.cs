@@ -305,6 +305,66 @@ public sealed record AttemptRecord
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AttemptProvenance? Provenance { get; init; }
+
+    /// <summary>
+    /// OPTIONAL per-attempt token volume (SSOT §7 / DoR §12.4, model tiering #201 / #230-lite): the
+    /// tokens-only accounting surface, so a COSTLESS provider — a local endpoint, a flat-rate
+    /// subscription — still shows how much work an attempt actually did. <see cref="CostUsd"/> answers
+    /// "what did this cost"; on such a provider the honest answer is <c>0</c>, which is why spend alone
+    /// cannot carry the per-tier report. Additive and backward-compatible: absent (never <c>null</c>
+    /// noise) for a script attempt, for a runner that reports no usage, and in every older journal.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AttemptUsage? Usage { get; init; }
+}
+
+/// <summary>
+/// Token volume for one attempt (SSOT §7 <c>usage</c> / DoR §12.4): the <c>{ inputTokens, outputTokens }</c>
+/// pair the per-tier spend line (#230-lite) aggregates alongside cost, so a provider that charges nothing
+/// still reports volume.
+/// </summary>
+public sealed record AttemptUsage
+{
+    /// <summary>Input (prompt) tokens the attempt consumed.</summary>
+    public int InputTokens { get; init; }
+
+    /// <summary>Output (completion) tokens the attempt produced.</summary>
+    public int OutputTokens { get; init; }
+}
+
+/// <summary>
+/// WHICH SITE supplied the rung an attempt resolved on (SSOT §7 <c>provenance.tierSource</c> /
+/// DoR §12.4, D31). Every v1 value has EXACTLY ONE producer — the enum is a record of what the harness
+/// did, not a guess reconstructed afterwards, which is precisely the mistake
+/// <c>PlanValidator</c>'s <c>tier != tiering.defaultTier</c> comparison makes (it misattributes a task
+/// whose own tier spells the same token as the plan default).
+///
+/// <para>There is deliberately NO value for the legacy fallback path (DoR §6.1 item 3, D30): a
+/// legacy-fallback attempt carries no <c>tierSource</c> AT ALL — nothing resolved and nothing was
+/// overridden, so recording a source would be inventing one. (The v2 ladder adds <c>escalated</c>,
+/// DoR §12.7.)</para>
+/// </summary>
+public enum TierSource
+{
+    /// <summary>
+    /// The task's OWN <c>action.tier</c> (or a judge guardrail's frontmatter <c>tier</c>) supplied the
+    /// rung — <see cref="Model.TierOrigin.Task"/> at load time.
+    /// </summary>
+    Task,
+
+    /// <summary>
+    /// The task declared no tier of its own and the plan-wide <c>tiering.defaultTier</c> supplied the
+    /// rung — <see cref="Model.TierOrigin.PlanDefault"/> at load time.
+    /// </summary>
+    PlanDefault,
+
+    /// <summary>
+    /// A full <c>action.runner</c>/<c>action.model</c> pin bypassed tier resolution entirely (DoR §6.1
+    /// item 1, D31). "Bypasses resolution" governs what is SELECTED, not what is LOGGED: the attempt
+    /// still records why it took the route it took, and <c>provenance.tier</c> is absent because no rung
+    /// resolved.
+    /// </summary>
+    Override
 }
 
 /// <summary>
@@ -322,9 +382,58 @@ public sealed record AttemptProvenance
     /// <c>action.model</c> override when the task declares one, else the prompt-runner config's own
     /// <c>model</c>, else the sentinel <c>"(cli default)"</c> when neither is set. Null for a script
     /// attempt (no model).
+    ///
+    /// <para><b>Stage 2 (model tiering #201) makes this the RESOLVED ROUTE's model</b> — the model of the
+    /// block <c>TierResolver</c> selected for this attempt's rung, on top of the pin/legacy sources above.
+    /// It stays the ONE resolved-model field: DoR §12.4's provenance delta adds
+    /// <see cref="Runner"/>/<see cref="Kind"/>/<see cref="Tier"/>/<see cref="TierSource"/>/<see cref="Effort"/>
+    /// AROUND it and deliberately no second <c>resolvedModel</c> key — two fields claiming the same fact
+    /// is how they drift.</para>
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Model { get; init; }
+
+    /// <summary>
+    /// The name of the <c>promptRunners</c> block the attempt resolved to (SSOT §7 / DoR §12.4) — the
+    /// registry KEY, so a reader can go straight to the block that served this attempt instead of
+    /// guessing it back from <see cref="Model"/>. Absent (never <c>null</c> noise) for a script attempt
+    /// and in every journal written before model tiering.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Runner { get; init; }
+
+    /// <summary>
+    /// The resolved block's <c>kind</c> as its WIRE TOKEN (e.g. <c>claude</c>, <c>openai-compat</c>) —
+    /// the same spelling <c>PromptRunnerKinds.Token</c> emits, not the C# enum name and not its ordinal.
+    /// The journal is a wire format read by humans and by tooling that never links against this assembly,
+    /// so the token is the contract. Absent on the same attempts as <see cref="Runner"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>
+    /// The rung that actually RESOLVED (<c>easy</c>|<c>medium</c>|<c>hard</c>) — the tier served, which is
+    /// the requested one unless §6.2's climb moved it. Absent when no rung resolved: a legacy-fallback
+    /// attempt (D30) and a pinned attempt (D31 — the pin bypassed resolution, so
+    /// <see cref="TierSource"/> is <see cref="Journal.TierSource.Override"/> while this stays absent).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Tier { get; init; }
+
+    /// <summary>
+    /// WHICH SITE supplied the rung (DoR §12.4, D31) — see <see cref="Journal.TierSource"/> for the one
+    /// producer of each value. Absent for a legacy-fallback attempt, which has no source to name.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public TierSource? TierSource { get; init; }
+
+    /// <summary>
+    /// The reasoning effort the attempt ran at — the resolved route's own <c>effort</c>, with the task's
+    /// <c>action.effort</c> override applied on top. Absent when neither the block nor the action named
+    /// one (the runner CLI's own default).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Effort { get; init; }
 
     /// <summary>
     /// The segment worktree's git branch name (e.g. <c>guardrails/&lt;runId&gt;/&lt;task&gt;/attempt-1</c>).
