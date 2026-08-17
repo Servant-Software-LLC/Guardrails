@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "reviewedAt": "2026-08-17T04:58:00.873131+00:00",
+  "planHash": "sha256:2e800d076e41d489366fb4868ca07b8f718e4e13af20378153f3ce6ec9118313",
+  "attestation": {
+    "source": "review-artifact",
+    "tool": "guardrails 1.6.0",
+    "actor": "claude-opus-5 (lead) \u002B 5 review agents; DoR rulings by maintainer",
+    "evidence": {
+      "reportPath": "state\\reviews\\review-2e800d076e41-2026-08-17T045706Z.md",
+      "reportDigest": "sha256:47b4e0c02f16ebafc63d75fbd7043b65f8f10ea0fc29b8265d244c9d1f4fd725"
+    }
+  }
+}

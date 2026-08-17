@@ -27,22 +27,38 @@ where they differ.**
   (`task | plan-default | override`) per attempt, plus the resolved model/effort in the attempt log
   header, extending the per-attempt model logging from #198.
 
-  :warning: **`tierSource` is NOT COMPUTABLE as the code stands, and this is a blocker you must resolve
-  before you can honour §12.4.** `PlanLoader` collapses the two sources at load —
-  `Tier = rawAction?.Tier ?? defaultTier` — and `ActionDefinition` keeps no provenance, so nothing
-  downstream can distinguish `task` from `plan-default`. Stage 1 already hit this and works around it
-  with a guess (`PlanValidator.cs`: `tier != plan.Config.Tiering?.DefaultTier`). Shipping as-is would
-  emit `tierSource: "task"` 100% of the time — a green run with a wrong value, which is precisely the
-  Stage 1 failure. Fixing it means preserving provenance in `PlanLoader`/`ActionDefinition`, so **that
-  file must be in a wave-2 task's `writeScope`** (it is in none today, and wave 1 deliberately does not
-  carry the field).
+  :white_check_mark: **`tierSource` IS computable — wave 1 restored its input; do not re-derive it.**
+  The blocker this brief originally carried (the loader collapsing the two sources at
+  `Tier = rawAction?.Tier ?? defaultTier`, with `ActionDefinition` keeping no provenance) was fixed in
+  wave 1 by the pair `05-author-tests-tier-provenance` / `06-implement-tier-provenance`. Read
+  **`ActionDefinition.TierOrigin`** (`None` / `Task` / `PlanDefault`) and map it:
 
-  Note also that the enum's third value, **`override`, has no producing rule anywhere in the DoR** —
-  §12.4 lists it, §6.1 defines nothing that emits it. Either establish the rule with the maintainer or
-  ship only `task` / `plan-default`; do not invent a semantic.
+  | `TierOrigin` | plus | journal `tierSource` | `provenance.tier` |
+  |---|---|---|---|
+  | `Task` | — | `"task"` | the rung |
+  | `PlanDefault` | — | `"plan-default"` | the rung |
+  | *(any)* | a full `action.runner`/`action.model` pin | `"override"` (D31) | **absent** — no rung resolved |
+  | `None` | — | **absent** — legacy fallback (D30) | absent |
+
+  **Do NOT reconstruct the origin by comparing `Tier` to `tiering.defaultTier`.** That is
+  `PlanValidator.cs`'s shipped workaround and it is wrong exactly when a task's own tier equals the
+  default — the common case. Wave 1 has a test pinned on that case
+  (`ActionTier_SameTokenAsDefault_OriginIsStillTask`); re-deriving here would reintroduce the bug
+  behind a green wave-1 gate.
+
+  **`override` now has a producing rule** — DoR revision 5, D31: a full pin is its producer, and
+  "bypasses tier resolution entirely" (§6.1 item 1) governs what is *selected*, not what is *logged*.
+  Every v1 enum value has exactly one producer; §12.4 carries the table.
 - **The `no-route` outcome** — resolution finds zero candidate blocks at runtime for a used rung (a
   config gap GR2048 should have caught). It settles **needs-human** with an actionable message naming
   the rung, not a silent fallback.
+
+  **D30 draws the line, and it moved in DoR revision 5.** Legacy fallback and `no-route` used to both
+  claim "an effective tier exists but no block serves it" — §6.1 item 3 said fall back, §6.2/D26 said
+  halt. Severed in favour of the halt: **legacy is the no-rung path, `no-route` is the no-candidate
+  path, and nothing is both.** So once an effective tier exists, this wave must never route to
+  `promptRunners.<name>.model` — climb (§6.2), then `no-route`. Wave 1 pins the boundary with a test;
+  breaking it here fails the wave-1 tests on the merged tree, not just this wave's own.
 - **§6.3 — connection-level failure classification.** A DNS failure / connection refused / TLS
   timeout / missing CLI at launch is `Transient`/*unavailable* and routes to the **shipped #115
   transient-pause machinery** — no budget consumption, existing bounded backoff. The DoR hands this

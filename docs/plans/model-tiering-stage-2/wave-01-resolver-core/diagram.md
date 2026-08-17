@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=0296951e03b800850ccc2d946a4d8cf07cec1f95e92b8e4e0160056f34f1da8d -->
+<!-- guardrails:graph v1 source-sha256=b10ab1a9934ca7f124fca040edf2faef5cb512b7fe815a37e9ac672a69c46427 -->
 
 ```mermaid
 flowchart TD
@@ -25,15 +25,29 @@ flowchart TD
     task_wave_01_resolver_core_04_implement_resolution_precedence_gr_0["01-precedence-tests-pass"]:::guardrail
   end
   style task_wave_01_resolver_core_04_implement_resolution_precedence fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_01_resolver_core_05_author_tests_tier_provenance["wave-01-resolver-core/05-author-tests-tier-provenance"]
+    task_wave_01_resolver_core_05_author_tests_tier_provenance_gr_0["01-build-passes"]:::guardrail
+    task_wave_01_resolver_core_05_author_tests_tier_provenance_gr_1["02-tests-fail-on-current-code"]:::guardrail
+    task_wave_01_resolver_core_05_author_tests_tier_provenance_gr_2["03-covers-key-behaviors"]:::guardrail
+  end
+  style task_wave_01_resolver_core_05_author_tests_tier_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_01_resolver_core_06_implement_tier_provenance["wave-01-resolver-core/06-implement-tier-provenance"]
+    task_wave_01_resolver_core_06_implement_tier_provenance_gr_0["01-provenance-tests-pass"]:::guardrail
+  end
+  style task_wave_01_resolver_core_06_implement_tier_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-resolver-core-complete"]:::guardrail
+    plan_guardrails_1["02-wave-union-builds"]:::guardrail
   end
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   plan_preflights --> task_wave_01_resolver_core_01_author_tests_candidate_selection
+  plan_preflights --> task_wave_01_resolver_core_05_author_tests_tier_provenance
   task_wave_01_resolver_core_01_author_tests_candidate_selection --> task_wave_01_resolver_core_02_implement_candidate_selection
   task_wave_01_resolver_core_02_implement_candidate_selection --> task_wave_01_resolver_core_03_author_tests_resolution_precedence
   task_wave_01_resolver_core_03_author_tests_resolution_precedence --> task_wave_01_resolver_core_04_implement_resolution_precedence
+  task_wave_01_resolver_core_05_author_tests_tier_provenance --> task_wave_01_resolver_core_06_implement_tier_provenance
   task_wave_01_resolver_core_04_implement_resolution_precedence --> plan_guardrails
+  task_wave_01_resolver_core_06_implement_tier_provenance --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```

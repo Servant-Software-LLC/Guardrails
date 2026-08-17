@@ -43,8 +43,10 @@ foreach ($f in @("src/Guardrails.Core/Prompts/TierResolver.cs")) {
 
 # Invariant 4: the schema delta lands in the SSOT in the SAME change as its code. `tierSource` is the
 # probe token because it is net-new (the SSOT already carried the string `no-route` in 9.6 prose, so
-# a no-route token would have been pre-satisfied). NOTE for wave 2: tierSource is NOT computable
-# without a PlanLoader change - see the wave-2 brief.
+# a no-route token would have been pre-satisfied). Its INPUT is restored in wave 1 by the
+# 05/06 tier-provenance pair (ActionDefinition.TierOrigin); wave 2 maps that to the journal value
+# per DoR D31. The "not computable without a PlanLoader change" caveat this line used to carry was
+# the finding that PRODUCED that pair, and is resolved.
 $ssot = if (Test-Path "docs/plans/02-schemas-and-contracts.md") { Get-Content -Raw "docs/plans/02-schemas-and-contracts.md" } else { "" }
 if ($ssot -cnotmatch 'tierSource') {
     $failures += "[12.4/Invariant 4] docs/plans/02-schemas-and-contracts.md does not mention tierSource - every 12.x schema delta must land in the SSOT in the same change as its code, or a claim about the schema lives outside the schema and decays without anything noticing"
@@ -76,6 +78,11 @@ $behaviours = @(
      Pattern = '(?i)invariant7|invariant_7|routingenabled|zerotag|untagged.*legacy|legacy.*untagged' }
   @{ Id = "6.5/D29  the judge resolves through the SAME resolver (strength bump; pinned-costly actor)"
      Pattern = '(?i)judge|verifier|strengthbump|mintier|pinnedactor' }
+  # --- added by DoR revision 5 (D30/D31). Same v4 shape; two more required behaviours, no new design.
+  @{ Id = "6.1/D30  legacy fires ONLY with no effective tier - a tiered plan with no serving block climbs or no-routes, it never falls back"
+     Pattern = '(?i)d30|neverfallsback|neverlegacy|notlegacy|nofallback|tiered.*norout' }
+  @{ Id = "12.4/D31 a full pin records tierSource=override with provenance.tier ABSENT; legacy records no tierSource at all"
+     Pattern = '(?i)d31|tiersource|pinned.*provenance|provenance.*pin' }
 )
 
 foreach ($b in $behaviours) {

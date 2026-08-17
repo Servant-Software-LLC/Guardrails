@@ -1,5 +1,15 @@
 # 17 — Model tiering, actor + verifier (provider registry + static tier routing; ladder / probes / steering deferred to v2) — design of record (epic #201)
 
+> **Revision 5 (2026-08-17) — two ambiguities the Stage 2 breakdown review could not resolve from
+> the page.** Both were found by *authoring the tasks that had to implement them*, which is the
+> useful part: each read fine in isolation and only contradicted something a section away. **D30**
+> (§6.1 item 3): legacy fallback and `no-route` both claimed "an effective tier exists but no block
+> serves it" — one condition, two opposite behaviours, and a test for either would have failed the
+> other. Severed in favour of D26's halt. **D31** (§6.1 item 1 / §12.4): `tierSource: "override"`
+> was an enum value with no producing rule; a full pin is now named as its producer, and every v1
+> value has exactly one. Neither changes a selection rule — D22's costly floor, D26's asymmetry and
+> the never-weaker floor are all untouched.
+>
 > **Revision 4 (2026-08-16) — three amendments from the Stage 2 charter review.** All three are
 > maintainer rulings made while reviewing `model-tiering-stage-2.charter.md`, folded in here rather
 > than left as plan-only text — the Stage 1 lesson being that the DoR wins, so a rule recorded only
@@ -669,6 +679,10 @@ v2 and slot into this same resolver without moving the seam.
    Shipped semantics unchanged. **This is the sanctioned route to a `costly` model** (§6.2): a pin
    is a human naming a model for a task, which is exactly what charter Decision 3 permits — the
    floor constrains the harness's choices, never the human's. No warning, no dial, no ceremony.
+   **A pinned attempt still RECORDS provenance — `tierSource: "override"` (D31).** "Bypasses tier
+   resolution entirely" describes what is *selected*, not what is *logged*: §12.4's enum lists
+   `override` and nothing else in this design emits it, so a pin is its producer. `provenance.tier`
+   is absent on a pinned attempt (no rung resolved); `tierSource` is present and says why.
    *(Note for the verifier rule: a raw `action.model` pin overrides the model string but not the
    block, so the pinned actor's `strength`/`kind` still come from its block — §6.5 has the data it
    needs even here.)*
@@ -680,8 +694,25 @@ v2 and slot into this same resolver without moving the seam.
    resolved route's effort* (so `{ "tier": "medium", "effort": "xhigh" }` means "route by tier,
    but think hard"). This is the F4 correction: only `action.model`/`action.runner` are full
    pins; `effort` mirrors `model`'s *shape* but not its *bypass*.
-3. **Legacy fallback** — no effective tier, or no block serves it: `promptRunners.<name>.model`
-   else CLI default, exactly today.
+3. **Legacy fallback — ONLY when there is no effective tier (D30).** `promptRunners.<name>.model`
+   else CLI default, exactly today. The trigger is *the action has no rung to resolve*: no
+   `action.tier`, no judge frontmatter `tier`, and no `tiering.defaultTier` — which is also
+   Invariant 7's untagged case, and which holds whether or not `routing` blocks are configured
+   elsewhere in the registry. **Once an effective tier EXISTS, resolution owns the outcome and
+   legacy is unreachable**: an empty `Candidates(R)` climbs to a stronger rung (§6.2), and a
+   genuinely empty registry at-or-above the rung settles **`no-route`** / needs-human. It never
+   silently drops back to the runner's model.
+
+**D30 — legacy and `no-route` must not both claim the same condition (maintainer, 2026-08-17).**
+Through revision 4 this item read "no effective tier, **or no block serves it**" while §6.2/D26 says
+that second half **halts**. One condition, two opposite sanctioned behaviours — proceed quietly on the
+runner's model, or stop and ask a human — and an implementer could satisfy either reading while
+failing the other's test. The disjunction is severed in favour of D26: **legacy is the no-rung path,
+`no-route` is the no-candidate path, and nothing is both.** That keeps each mechanism doing the job it
+exists for — GR2048 as the static gate on a config that cannot route, `no-route` as the runtime
+residual it should have caught, and legacy as the untouched status quo for every plan that never
+opted into tiering. The other reading would have made `no-route` nearly unreachable and quietly
+defeated D26's asymmetry.
 
 **Validate warning (GR-warning, from DA F3):** when a **full pin and a tier coexist** on the same
 action (`action.runner`/`action.model` *and* `action.tier`), `validate` warns — the tier is dead
@@ -1186,7 +1217,8 @@ and #349 then becomes a no-op for those fields. Stage 2's acceptance must theref
 *end state* of the provenance object, not a delta against an unlanded change. On top of that base,
 per-attempt `provenance` gains **`runner`** (resolved block name), **`kind`**, **`tier`** (the rung
 that resolved), and **`tierSource`** (`task | plan-default | override` in v1; `escalated` is added
-by the v2 ladder); plus an optional per-attempt **`usage { inputTokens, outputTokens }`** so a
+by the v2 ladder — §12.4 now names the single producer of each value, D31); plus an optional
+per-attempt **`usage { inputTokens, outputTokens }`** so a
 costless local provider still shows volume for #230-lite. Absent-not-null throughout; old journals
 read fine.
 
@@ -1446,7 +1478,12 @@ applies).
   `resolvedModel` / `effort` is not yet present, in #349's shape** (§9.3), plus:
   `"runner"` (resolved block name), `"kind"`, `"tier"` (the rung that resolved), `"tierSource"`:
   `"task" | "plan-default" | "override"` (the `"escalated"` value is added by the v2 ladder —
-  §12.7). Absent (never null noise) for script attempts / legacy journals.
+  §12.7). Absent (never null noise) for script attempts / legacy journals. **Each v1 value has
+  exactly one producer** — `task` = `action.tier` (or judge frontmatter `tier`) was set;
+  `plan-default` = it was not, and `tiering.defaultTier` supplied the rung; `override` = a full
+  `action.runner`/`action.model` pin bypassed resolution (§6.1 item 1, D31), in which case `"tier"`
+  is **absent** because no rung resolved. A legacy-fallback attempt (§6.1 item 3, D30) carries no
+  `tierSource` at all — nothing resolved and nothing was overridden.
 - Attempt record gains optional `"usage": { "inputTokens": 0, "outputTokens": 0 }` (additive; the
   tokens-only accounting surface for costless providers, #230-lite — unless #349 already carries
   it).
@@ -1912,6 +1949,19 @@ ordinary one. Changes what is **logged**, never what is **selected** — D22 is 
 unconditionally. Consistent with D22 rather than an exception to it — the floor constrains the
 *harness choosing*, never the *human assigning*. The `default` pointer does **not** trigger it
 (plan-wide fallback, not a decision about this task) (§6.5).
+
+**RESOLVED and in v1 — added by revision 5 (the Stage 2 breakdown review, 2026-08-17):**
+
+**D30 legacy fallback and `no-route` do not share a condition** — §6.1 item 3 read "no effective
+tier, *or no block serves it*" while §6.2/D26 says the second half halts, so one condition carried
+two opposite sanctioned behaviours. Severed in favour of D26: **legacy is the no-rung path,
+`no-route` is the no-candidate path, nothing is both.** Once an effective tier exists, resolution
+owns the outcome — climb, then `no-route` — and never drops back to the runner's model (§6.1) ·
+**D31 a full pin is the producer of `tierSource: "override"`** — §12.4 listed the value and §6.1
+defined nothing that emitted it. "Bypasses tier resolution" governs *selection*, not *logging*: a
+pinned attempt records `tierSource: "override"` with `provenance.tier` absent, and a legacy-fallback
+attempt records no `tierSource` at all. Every v1 enum value now has exactly one producer (§6.1,
+§12.4).
 
 **DEFERRED to v2 (retained as ratified designs; each revisited with #230-lite data when/if its
 bet is built):**

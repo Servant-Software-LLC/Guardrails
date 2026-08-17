@@ -1,15 +1,17 @@
-# catches: a wave that merged green per-task but whose combined result does not hold - the selection
-#          and precedence halves were built in separate segments and only meet here. LOCAL, not
+# catches: a wave that merged green per-task but whose combined result does not hold - the selection,
+#          precedence and loader-provenance thirds were built in separate segments and only meet
+#          here (the provenance pair runs in PARALLEL with the resolver chain, so this gate is the
+#          first place all three are on one tree at once). LOCAL, not
 #          scope:"integration" (#165/#125): this is a wave TERMINAL POSTCONDITION ("both halves of the
 #          resolver are done"), which is false at any partial union by construction, so running it at
 #          every union point would red-halt a correct run.
 # Re-emits the failure DETAIL at the END so the WHY reaches the retry-feedback tail (#179).
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard reads is LOCALIZED (#455)
 
-# Named alternation over the two classes THIS WAVE owns - not the bare plan-wide trait. Later waves
+# Named alternation over the three classes THIS WAVE owns - not the bare plan-wide trait. Later waves
 # add more Category=TierResolution classes, and a trait-only filter here would silently widen to
 # include them the moment they land (dotnet.md 4.3, shape 2: parenthesise, bare '|', no backslash).
-$filter = 'Category=TierResolution&(FullyQualifiedName~TierResolverCandidateSelectionTests|FullyQualifiedName~TierResolverPrecedenceTests)'
+$filter = 'Category=TierResolution&(FullyQualifiedName~TierResolverCandidateSelectionTests|FullyQualifiedName~TierResolverPrecedenceTests|FullyQualifiedName~ActionTierProvenanceTests)'
 $out = dotnet test tests/Guardrails.Core.Tests --filter $filter --nologo 2>&1
 $testExit = $LASTEXITCODE                                  # capture BEFORE any other statement
 $out | ForEach-Object { Write-Output $_ }

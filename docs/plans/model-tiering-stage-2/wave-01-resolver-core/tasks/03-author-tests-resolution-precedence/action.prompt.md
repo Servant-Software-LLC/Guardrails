@@ -44,8 +44,17 @@ outside your write scope.
   the block still comes from resolution, not from the presence of `effort`.
 - **Effective tier = `action.tier` ?? `tiering.defaultTier`.** Assert the default is consulted only
   when the action carries no tier of its own.
-- **Legacy fallback.** No effective tier, or no block serves it: `promptRunners.<name>.model`, else
-  the CLI default — exactly today's behavior.
+- **Legacy fallback fires ONLY when there is no effective tier (D30).** No `action.tier`, no judge
+  frontmatter `tier`, and no `tiering.defaultTier` ⇒ `promptRunners.<name>.model`, else the CLI
+  default — exactly today's behavior. It does **not** matter whether `routing` blocks are configured
+  elsewhere in the registry.
+- **The other half of D30, and it needs its own test: an effective tier NEVER falls back to legacy.**
+  Once a rung exists, resolution owns the outcome — an empty `Candidates(R)` climbs to a stronger
+  rung, and a genuinely empty registry at-or-above the rung settles **`no-route`**. Assert that a
+  config with an effective tier and no serving block does **not** quietly produce the runner's model.
+  Through revision 4 the DoR read "no effective tier, *or no block serves it*" here, which
+  contradicted §6.2/D26's halt for the same condition; revision 5 severed it in favour of the halt.
+  This test is what stops the old reading from coming back.
 - **Invariant 7 needs BOTH fixtures, and the second is the one that matters.** Assert (a) a config
   with **no `routing` block anywhere** resolves through the legacy path with no tier-resolution
   activity — the easy case; **and (b) the DoR's own named fixture: `routing` blocks PRESENT, the
@@ -57,13 +66,18 @@ Name the Invariant 7 tests so the two fixtures are distinguishable at a glance �
 routing-enabled/zero-tag/untagged marker precisely because fixture (a) alone reads like coverage and
 is not.
 
-**Not `tierSource`.** DoR §12.4 lists it, but it is **not computable at this layer**: `PlanLoader`
-collapses `action.tier` and `tiering.defaultTier` into one field at load
-(`Tier = rawAction?.Tier ?? defaultTier`) and `ActionDefinition` keeps no provenance, so nothing
-downstream can tell `task` from `plan-default`. `PlanLoader.cs` is outside every wave-1 `writeScope`.
-It is recorded as wave 2's problem, with that caveat, in the wave-2 brief. Do not assert a field the
-shipped model cannot populate honestly — and note the enum's third value, `override`, has **no
-producing rule anywhere in the DoR**, so do not invent one.
+**Not `tierSource` — that is a different pair's job, not a gap.** DoR §12.4's journal field is
+assembled in wave 2. Its *input* — whether the rung came from `action.tier` or `tiering.defaultTier`,
+which `PlanLoader` destroys at load — is restored by the parallel pair
+`05-author-tests-tier-provenance` / `06-implement-tier-provenance` as
+`ActionDefinition.TierOrigin`. `PlanLoader.cs` is outside your write scope and you do not need it.
+Do not assert `tierSource` here, and do not assert `TierOrigin` either — task 05 owns those tests and
+duplicating them just makes two places to fix.
+
+What DOES belong to you is the third enum value: per **D31** (revision 5), a full
+`action.runner`/`action.model` pin is the producer of `tierSource: "override"`. That is a *precedence*
+rule, so assert its observable half — that a pinned action is recognizable as pinned after
+resolution, with no rung resolved — rather than the journal string, which wave 2 writes.
 - **A pin does not silently coexist with a tier.** Where both are present the pin wins (the tier is
   dead weight `validate` warns about) — assert the pin's precedence, not the warning.
 

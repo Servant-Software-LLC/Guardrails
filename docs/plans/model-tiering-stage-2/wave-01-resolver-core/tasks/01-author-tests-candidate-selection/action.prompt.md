@@ -35,13 +35,12 @@ paraphrase below.**
      either retrofit this record after wave 1's exit gate has certified the resolver core complete,
      or re-test `Costly` outside the resolver — which is exactly the duplication D22a forbids and
      which this task's own guardrails reject.
-   *(Not `tierSource`. DoR §12.4 requires it, but it is **not computable at this layer**: the loader
-   collapses `action.tier` and `tiering.defaultTier` into one field at load —
-   `PlanLoader.cs`, `Tier = rawAction?.Tier ?? defaultTier` — and `ActionDefinition` keeps no
-   provenance, so nothing downstream can tell `task` from `plan-default`. Making it computable needs a
-   change to `PlanLoader`/`ActionDefinition`, which is outside every wave-1 `writeScope`. It is
-   recorded as wave 2's problem, with that caveat, in the wave-2 brief. Do not invent a field you
-   cannot populate honestly.)*
+   *(Not `tierSource`. DoR §12.4's journal field is assembled in wave 2, and its missing input —
+   whether the rung came from `action.tier` or `tiering.defaultTier`, which `PlanLoader` destroys at
+   load — is restored by the parallel pair `05-author-tests-tier-provenance` /
+   `06-implement-tier-provenance` as `ActionDefinition.TierOrigin`. Neither file is in your write
+   scope and you need neither: the resolver reads `TierOrigin` in wave 2, it does not compute it. Do
+   not add a `tierSource` field to this record.)*
 2. `src/Guardrails.Core/Prompts/TierResolver.cs` — a **stub only** for this task. Declare BOTH entry
    points the wave needs, each throwing `NotImplementedException`:
    - `SelectCandidate(...)` — the §6.2 selection this task's tests exercise;

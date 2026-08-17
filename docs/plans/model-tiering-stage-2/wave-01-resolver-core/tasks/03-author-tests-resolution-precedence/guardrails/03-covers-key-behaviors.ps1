@@ -23,8 +23,8 @@ $code   = [regex]::Replace($code, '(?m)//.*$', '')
 $lines  = $code -split "`r?`n"
 
 $facts = [regex]::Matches($code, '\[\s*(Fact|Theory)\b').Count
-if ($facts -lt 5) {
-    Write-Output "$path declares only $facts [Fact]/[Theory] test(s) - DoR 6.1 enumerates the runner pin, the model pin, effort-is-not-a-bypass, the defaultTier fallback and the legacy path, plus Invariant 7's two fixtures. This counts DECLARATIONS, not executed tests."
+if ($facts -lt 6) {
+    Write-Output "$path declares only $facts [Fact]/[Theory] test(s) - DoR 6.1 enumerates the runner pin, the model pin, effort-is-not-a-bypass, the defaultTier fallback, the legacy path and D30's tier-never-falls-back-to-legacy boundary, plus Invariant 7's two fixtures. This counts DECLARATIONS, not executed tests."
     exit 1
 }
 
@@ -54,7 +54,20 @@ if (-not (Test-Behavior @('\.Runner\s*=', 'Runner\s*=\s*"', '[Pp]in')))         
 if (-not (Test-Behavior @('\.Model\s*=', 'Model\s*=\s*"', '[Mm]odelPin')))       { $missing += "the action.model full pin (the bare word 'Model' is satisfied by ModelTier and by the namespace line)" }
 if (-not (Test-Behavior @('[Ee]ffort')))                                          { $missing += "action.effort is NOT a bypass - the DoR's own explicit correction, and the precedence rule most likely to be built backwards" }
 if (-not (Test-Behavior @('[Dd]efaultTier')))                                     { $missing += "the tiering.defaultTier fallback" }
-if (-not (Test-Behavior @('[Ll]egacy', '[Ff]allback')))                           { $missing += "the legacy fallback path" }
+# NO bare '[Ll]egacy'/'[Ff]allback' clause here, deliberately - it was MEASURED unearnable-in-isolation
+# and is redundant besides:
+#   * redundant, because the POSITIVE legacy proof is already the Invariant 7 clause below (fixture
+#     (b) IS the legacy path: routing present, no tier, no default => legacy), plus the [Dd]efaultTier
+#     clause above.
+#   * unearnable, because D30's negative test is naturally named '..._NeverFallsBackToLegacy', which
+#     contains 'Legacy' and so credited the POSITIVE clause off the NEGATIVE test - a file asserting
+#     only the boundary went green on both. Negative lookbehinds do not fix it: the negation and the
+#     token are not adjacent ('Never' + 'FallsBackTo' + 'Legacy'), and widening the lookbehind starts
+#     rejecting legitimate names like 'NoTierAnywhere_UsesLegacyPath'. Two clauses that cannot be
+#     earned independently prove less than one clause that can (#468).
+if (-not (Test-Behavior @('[Nn]oRoute', 'no.?route', '[Nn]everLegacy', '[Nn]otLegacy', '[Cc]limb'))) {
+    $missing += "D30's OTHER half - an effective tier NEVER falls back to legacy. Through revision 4 the DoR read 'no effective tier, OR no block serves it' here, contradicting 6.2/D26's halt for the same condition; revision 5 severed it in favour of the halt. Assert that a config WITH a rung and NO serving block climbs or settles no-route, and does not quietly yield the runner's model. Without this test the old reading comes back the first time someone reads item 3 alone"
+}
 if (-not (Test-Behavior @('[Rr]outingEnabled', '[Zz]eroTag', '[Uu]ntagged', '[Ii]nvariant7', '[Ii]nvariant_7'))) {
     $missing += "Invariant 7 fixture (b) - routing blocks PRESENT, no tier on the action, no defaultTier => still the LEGACY path with zero tier-resolution activity. Fixture (a) (no routing anywhere) is the easy half and cannot catch the case an implementer gets wrong"
 }

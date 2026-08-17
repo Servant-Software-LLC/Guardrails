@@ -1,0 +1,10 @@
+{
+  "description": "Populate ActionDefinition.TierOrigin in PlanLoader so the action.tier vs tiering.defaultTier distinction survives load, making the authored provenance tests pass",
+  "stableId": "w9b2fs",
+  "dependsOn": ["05-author-tests-tier-provenance"],
+  "writeScope": [
+    "src/Guardrails.Core/Loading/PlanLoader.cs",
+    "src/Guardrails.Core/Model/ActionDefinition.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

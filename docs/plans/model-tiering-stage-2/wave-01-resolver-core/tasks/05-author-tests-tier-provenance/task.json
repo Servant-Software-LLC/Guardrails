@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests for tier PROVENANCE at load — ActionDefinition must record whether Tier came from action.tier or tiering.defaultTier — plus the ActionDefinition.TierOrigin property the tests compile against",
+  "stableId": "k4x7pt",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/ActionTierProvenanceTests.cs",
+    "src/Guardrails.Core/Model/ActionDefinition.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

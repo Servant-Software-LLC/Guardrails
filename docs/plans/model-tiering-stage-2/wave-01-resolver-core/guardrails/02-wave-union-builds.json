@@ -1,0 +1,3 @@
+{
+  "description": "Wave 1 union soundness (GR2028) — the merged wave HEAD compiles as a whole solution. Required because wave 1 is a PARALLEL topology: the resolver chain and the tier-provenance pair are independent leaves whose disjoint file sets merge without conflict and can still disagree at compile time. LOCAL: a wave terminal postcondition, false at any partial union by construction (#165)."
+}
