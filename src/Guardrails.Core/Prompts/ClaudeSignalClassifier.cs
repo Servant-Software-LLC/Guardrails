@@ -11,7 +11,9 @@ namespace Guardrails.Core.Prompts;
 ///
 /// <para>Matching prefers STRUCTURED signals (an HTTP status 429/503/529, the
 /// <c>error_max_turns</c> terminal subtype) and falls back to a small, explicit set of free-text
-/// phrases. The output-token-cap message (<c>"…exceeded the 32000 output token maximum"</c>) and the
+/// phrases — plus <see cref="ConnectionFailure"/>, the connection-level set (DoR §6.3): a failure to
+/// REACH the provider completes no request, so it carries no status token at all and its wording is the
+/// OS/library's rather than the vendor's. The output-token-cap message (<c>"…exceeded the 32000 output token maximum"</c>) and the
 /// turn-budget message (<c>"Reached maximum number of turns (N)"</c>, issue #129) are each matched
 /// distinctly so the retry can carry actionable, signal-specific feedback (issues #114 / #129). A
 /// miss is conservative: an UNrecognized error yields <see cref="PromptFailureKind.Error"/> (consumes
@@ -43,6 +45,62 @@ internal static class ClaudeSignalClassifier
         "connection reset",
         "connection refused",
     ];
+
+    /// <summary>
+    /// The connection-level failure set (DoR §6.3): the provider could not be REACHED — DNS never
+    /// resolved, the socket was refused/reset, the TLS transport never came up, or the runner binary
+    /// itself would not launch. All of it is <see cref="PromptFailureKind.Transient"/>, which routes
+    /// to the shipped #115 pause (bounded exponential backoff, no retry-budget consumption): a human
+    /// cannot fix a downed provider and an immediate re-launch just re-fails into it.
+    ///
+    /// <para><b>The answer to §6.3's open question — "does the shipped quarantine already catch a bare
+    /// DNS/refused shape, or does it need an additive classification?" — is PARTIALLY, so this set is
+    /// the additive half.</b> ALREADY COVERED, by <see cref="TransientPhrases"/> above and left there:
+    /// the spelled-out English prose <c>"connection refused"</c>, <c>"connection reset"</c> and
+    /// <c>"connection error"</c>. NOT COVERED, and added here: every DNS shape (libuv's
+    /// <c>getaddrinfo ENOTFOUND</c>/<c>EAI_AGAIN</c>, curl's "could not resolve host", glibc's "name or
+    /// service not known", Winsock's "no such host is known"), the errno spellings of the very same
+    /// refused/reset condition (<c>ECONNREFUSED</c>/<c>ECONNRESET</c>, Winsock's "no connection could be
+    /// made…"), the whole TLS/handshake family, and a runner binary that never launched.
+    /// <see cref="TransientStatus"/> could not have caught any of them at any point: no HTTP request
+    /// was ever completed, so there is no 429/503/529 to find. NO new <see cref="PromptFailureKind"/>
+    /// member and no probe enum was introduced — §6.3 rules both out for v1 — this widens what the
+    /// shipped quarantine RECOGNIZES and nothing else.</para>
+    ///
+    /// <para><b>Why each shape is spelled out at length.</b> The classifier's conservative-miss rule is
+    /// the binding constraint: a false <c>Transient</c> is the expensive direction, because a
+    /// deterministic logic failure would then ride the pause machinery to the end of
+    /// <c>transientPauseBudgetSeconds</c> instead of consuming its retry budget and surfacing. So every
+    /// alternative below is long enough to be unambiguous in ordinary compiler/assertion output —
+    /// "could not resolve host" rather than "resolve", the full cmd.exe sentence rather than "is not
+    /// recognized". A shape that would also match a test-failure message gets LONGER; the negative
+    /// control never gets weaker.</para>
+    ///
+    /// <para><b>The launch family is the broadest, and is anchored deliberately.</b>
+    /// <c>Win32Exception</c> alone is not a signal (an agent's own output can carry one) — it must be
+    /// adjacent to a not-found/launch message, which is the shape <see cref="ClaudePromptRunner"/>
+    /// hands us when <c>Process.Start</c> fails (it classifies TYPE + native code + message precisely
+    /// so this anchor exists; the bare OS string "the system cannot find the file specified" is
+    /// deliberately not a signal on its own). The two shell wordings are anchored to their diagnostic
+    /// form ("<c>bash: claude: command not found</c>"), not to the bare words. Residual, accepted: a
+    /// shell "command not found" inside a failed run's captured output classifies Transient — bounded
+    /// by the pause budget, and the launch channel is the shape this exists to catch.</para>
+    /// </summary>
+    private static readonly Regex ConnectionFailure = new(
+        // DNS — the name never resolved, so no connection was even attempted.
+        @"getaddrinfo|\bENOTFOUND\b|\bEAI_AGAIN\b|could not resolve host|name or service not known"
+        + @"|no such host is known"
+        // Refused / reset, in the spellings the prose phrases above miss.
+        + @"|\bECONN(?:REFUSED|RESET)\b|no connection could be made"
+        // TLS / handshake — the transport never came up.
+        + @"|tls handshake timeout|ssl certificate problem|ssl routines"
+        + @"|ssl connection could not be established"
+        // The runner binary would not launch (.NET's Process.Start fault, then the two shell wordings).
+        + @"|an error occurred trying to start process"
+        + @"|\bWin32Exception\b[^\r\n]{0,120}(?:cannot find the file specified|no such file or directory)"
+        + @"|is not recognized as an internal or external command"
+        + @"|:\s*command not found|command not found:",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
     // The output-token-cap message. The numeric cap varies with CLAUDE_CODE_MAX_OUTPUT_TOKENS, so the
     // match is on the stable surrounding phrase, not the number.
@@ -99,7 +157,13 @@ internal static class ClaudeSignalClassifier
         return PromptFailureKind.Error;
     }
 
-    /// <summary>True when <paramref name="text"/> carries a transient (429/503/529 or a known phrase) signal.</summary>
+    /// <summary>
+    /// True when <paramref name="text"/> carries a transient signal: a 429/503/529 status, a known
+    /// phrase, or a <see cref="ConnectionFailure"/> shape (§6.3). Every recogniser lives HERE, below
+    /// both entry points, so this predicate and <see cref="Classify"/> can never disagree — a signal
+    /// added to one and not the other would pause the attempt while the reset-hint path and every
+    /// other <c>IsTransient</c> caller still saw a non-transient failure.
+    /// </summary>
     public static bool IsTransient(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -108,6 +172,11 @@ internal static class ClaudeSignalClassifier
         }
 
         if (TransientStatus.IsMatch(text))
+        {
+            return true;
+        }
+
+        if (ConnectionFailure.IsMatch(text))
         {
             return true;
         }
