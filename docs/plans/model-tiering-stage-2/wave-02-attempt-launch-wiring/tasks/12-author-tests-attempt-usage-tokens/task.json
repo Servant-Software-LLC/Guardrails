@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests for the DoR §12.4 per-attempt usage block — the runner's reported input/output token counts mined from the terminal result event and carried onto the attempt record — plus the ClaudeResult/PromptResult stub members they compile against",
+  "stableId": "r6y3ax",
+  "dependsOn": ["02-implement-journal-tiering-schema"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/AttemptUsageTokensTests.cs",
+    "src/Guardrails.Core/Prompts/PromptInvocation.cs",
+    "src/Guardrails.Core/Prompts/ClaudeStreamParser.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

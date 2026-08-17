@@ -1,0 +1,9 @@
+{
+  "description": "Author the failing Stage2ConformanceTests real-seam suite — nine named clauses over the REAL attempt-launch path (per-attempt resolution, provenance, tierSource, D30, D31, candidacy agreement, Invariant 7, no-route, the climb and the D28 ceiling warning) that the plan terminal gate's behaviour manifest discovers by name",
+  "stableId": "h3d7pm",
+  "dependsOn": ["05-build-conformance-harness"],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2ConformanceTests.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Build the reusable Stage2PlanHarness test host — writes a parameterized routing plan to a temp folder and drives it through the REAL PlanLoader/Scheduler/TaskExecutor with a recording fake IPromptRunner, returning the journal, the captured invocations and the attempt log dirs",
+  "stableId": "j6v9wt",
+  "dependsOn": ["02-implement-journal-tiering-schema"],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

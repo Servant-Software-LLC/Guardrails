@@ -1,0 +1,10 @@
+{
+  "description": "Write the per-attempt route disclosure (attempt-route.log) beside the tool-grant header, carrying the resolved runner/model/effort/rung/tierSource plus the loud D28 binding-costly-ceiling warning on re-attempt and the loud climb warning",
+  "stableId": "f2g8la",
+  "dependsOn": ["08-settle-no-route-as-needs-human"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/AttemptArtifacts.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

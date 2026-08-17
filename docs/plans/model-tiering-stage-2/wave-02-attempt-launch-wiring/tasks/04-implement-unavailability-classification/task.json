@@ -1,0 +1,10 @@
+{
+  "description": "Extend the Claude signal quarantine so DNS / TLS / missing-CLI connection-level failures classify Transient and ride the shipped #115 pause, answering the DoR §6.3 open question without introducing a new probe enum",
+  "stableId": "z8n4hq",
+  "dependsOn": ["03-author-tests-unavailability-classification"],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/ClaudeSignalClassifier.cs",
+    "src/Guardrails.Core/Prompts/ClaudePromptRunner.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

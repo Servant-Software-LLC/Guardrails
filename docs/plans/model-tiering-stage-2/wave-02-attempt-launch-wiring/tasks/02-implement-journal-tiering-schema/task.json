@@ -1,0 +1,11 @@
+{
+  "description": "Implement the DoR §12.4 journal wire mapping in JournalJson — the no-route outcome token both directions and the tierSource token mapping — so the authored schema tests pass",
+  "stableId": "t7c1nx",
+  "dependsOn": ["01-author-tests-journal-tiering-schema"],
+  "writeScope": [
+    "src/Guardrails.Core/Journal/JournalJson.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs",
+    "src/Guardrails.Core/Journal/AttemptOutcome.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

@@ -1,0 +1,12 @@
+{
+  "description": "Wire TierResolver.Resolve into the attempt-launch path: one resolution immediately before EVERY attempt, feeding BOTH the per-attempt provenance record and the model/effort that reach the prompt invocation, replacing the two-level ResolveModelForDisplay fallback",
+  "stableId": "p4k6ye",
+  "dependsOn": ["06-author-tests-stage2-conformance"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/PromptExecutionSupport.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "tests/Guardrails.Core.Tests/PromptExecutionSupportModelTests.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

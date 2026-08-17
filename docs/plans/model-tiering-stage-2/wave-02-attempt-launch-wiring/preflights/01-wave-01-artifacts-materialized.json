@@ -1,0 +1,3 @@
+{
+  "description": "Wave 2 entry gate — wave 1's resolver surface (TierResolver.Resolve/SelectCandidate, every TierResolution datum wave 2 reads, ActionDefinition.TierOrigin) is actually present on the delivered branch. Positive, assert-present only (#181 at the wave boundary)."
+}

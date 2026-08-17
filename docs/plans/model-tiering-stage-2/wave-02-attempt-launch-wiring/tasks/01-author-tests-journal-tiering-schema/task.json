@@ -1,0 +1,11 @@
+{
+  "description": "Author failing tests for the DoR §12.4 journal delta — the no-route attempt outcome, the tier fields on AttemptProvenance, the tierSource enum and its wire tokens, and the optional attempt usage block — plus the minimal model declarations those tests compile against",
+  "stableId": "m2q8vd",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/JournalTieringSchemaTests.cs",
+    "src/Guardrails.Core/Journal/AttemptOutcome.cs",
+    "src/Guardrails.Core/Journal/JournalModel.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

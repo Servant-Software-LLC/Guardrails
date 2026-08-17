@@ -1,0 +1,11 @@
+{
+  "description": "Mine the terminal result event's usage block in ClaudeStreamParser, carry it through ClaudePromptRunner onto PromptResult, and journal it as AttemptRecord.Usage so the authored usage-token tests pass and task 11's aggregator has real volume to report",
+  "stableId": "q8w5tv",
+  "dependsOn": ["12-author-tests-attempt-usage-tokens"],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/ClaudeStreamParser.cs",
+    "src/Guardrails.Core/Prompts/ClaudePromptRunner.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

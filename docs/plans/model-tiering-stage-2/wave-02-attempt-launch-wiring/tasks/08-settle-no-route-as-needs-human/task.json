@@ -1,0 +1,10 @@
+{
+  "description": "Settle a no-route resolution as needs-human before any attempt is launched — the new no-route attempt outcome, journalled, with an actionable message naming the rung and no costly block ever selected",
+  "stableId": "c9s5jw",
+  "dependsOn": ["07-wire-resolution-into-attempt-launch"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

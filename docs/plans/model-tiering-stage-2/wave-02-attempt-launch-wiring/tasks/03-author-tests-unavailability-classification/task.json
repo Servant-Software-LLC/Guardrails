@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests answering the DoR §6.3 open question — which connection-level failure shapes (DNS, TLS timeout, missing CLI at launch) the shipped PromptFailureKind quarantine already classifies Transient, and which it misses",
+  "stableId": "b5r3ku",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/ConnectionUnavailabilityClassificationTests.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

@@ -1,0 +1,3 @@
+{
+  "description": "Wave 2 exit gate — the whole Stage2ConformanceTests real-seam suite (nine clauses, greened by three different tasks) passes on the merged wave HEAD. LOCAL: a wave terminal postcondition, false at any partial union by construction (#165). Filtered, so it deliberately does not credit GR2028 — its sibling 01-wave-union-builds does."
+}

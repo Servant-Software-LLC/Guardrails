@@ -1,0 +1,10 @@
+{
+  "description": "Author failing tests for the #230-lite per-tier spend aggregation and its Invariant 7 suppression rule — a tiering-inactive run must render exactly today's cost line, with no per-tier section and no untiered bucket — plus the JournalTierSpend stub they compile against",
+  "stableId": "v8t2ro",
+  "dependsOn": ["02-implement-journal-tiering-schema"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/PerTierSpendTests.cs",
+    "src/Guardrails.Core/Journal/JournalTierSpend.cs"
+  ],
+  "action": { "maxTurns": 60 }
+}

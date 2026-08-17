@@ -1,0 +1,10 @@
+{
+  "description": "Implement the #230-lite per-tier spend aggregation and render it in the run summary, suppressed entirely on a tiering-inactive run so an untagged plan still prints exactly today's cost line",
+  "stableId": "n5w7ib",
+  "dependsOn": ["10-author-tests-per-tier-spend"],
+  "writeScope": [
+    "src/Guardrails.Core/Journal/JournalTierSpend.cs",
+    "src/Guardrails.Cli/Commands/RunCommand.cs"
+  ],
+  "action": { "maxTurns": 80 }
+}

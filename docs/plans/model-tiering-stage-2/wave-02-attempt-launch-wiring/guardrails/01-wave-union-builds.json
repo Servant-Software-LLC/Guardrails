@@ -1,0 +1,3 @@
+{
+  "description": "Wave 2 union soundness (GR2028) — the merged wave HEAD compiles as a whole solution. This wave is a multi-branch topology whose branches edit different files that reference the SAME new journal types, so a per-file merge cannot conflict and a cross-file mismatch shows up only at compile time. LOCAL: a wave terminal postcondition, false at any partial union by construction (#165)."
+}
