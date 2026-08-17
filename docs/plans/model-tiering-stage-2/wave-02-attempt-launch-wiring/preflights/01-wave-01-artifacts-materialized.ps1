@@ -49,8 +49,11 @@ Require-Match $resolution 'public\s+bool\s+Legacy\s*\{'                         
 
 # --- the loader-restored provenance input (D31 table) ----------------------------------------------
 Require-Match $action 'public\s+TierOrigin\s+TierOrigin\s*\{' 'ActionDefinition.TierOrigin - the task-vs-plan-default origin wave 2 maps to journal tierSource. Wave 2 MUST read this; re-deriving it by comparing Tier to tiering.defaultTier is the shipped PlanValidator workaround and is wrong exactly when a task tier equals the default'
-Require-Match $action '(?m)^\s*PlanDefault\s*$'               'the TierOrigin.PlanDefault member (journal tierSource "plan-default")'
-Require-Match $action '(?m)^\s*Task,\s*$'                     'the TierOrigin.Task member (journal tierSource "task")'
+# Trailing-comma / position-INSENSITIVE. The first form of these two encoded that `Task` carries a
+# comma and `PlanDefault` is last - true of what wave 1 actually shipped, but it made a correct enum
+# false-RED for nothing more than member ORDER, which no rule constrains.
+Require-Match $action '(?m)^\s*PlanDefault\s*[,}]?\s*$'       'the TierOrigin.PlanDefault member (journal tierSource "plan-default")'
+Require-Match $action '(?m)^\s*Task\s*[,}]?\s*$'              'the TierOrigin.Task member (journal tierSource "task")'
 
 if ($failures.Count -gt 0) {
     Write-Output ""

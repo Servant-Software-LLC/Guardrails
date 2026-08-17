@@ -63,8 +63,23 @@ if ($content -notmatch 'attempt-route\.log') {
 # NEGATIVE ASSERTION (#176) - the prohibition the whole suite's worth rests on. GR2026 stays
 # correctly silent on a fail-on-present keyword (it flags only POSITIVE coverage tokens), so do not
 # weaken this to quiet a lint.
-if ($content -match 'TierResolver|TierResolution') {
-    $failures += 'the suite references TierResolver/TierResolution - FORBIDDEN. Asking the resolver what it would have chosen and asserting the answer PASSES against a completely unwired executor: it proves the resolver (wave 1 already did) and says nothing about whether anything calls it. Observe the route through the journal, the captured PromptInvocation, and attempt-route.log'
+#
+# SCANNED OVER STRIPPED SOURCE, and that is LOAD-BEARING, not tidiness. A raw scan for the bare token
+# was MEASURED UNSATISFIABLE: the check above REQUIRES [Trait("Category", "TierResolution")] on the
+# class, and that attribute's own string literal contains "TierResolution" - so the required attribute
+# tripped the ban and NO file could satisfy both clauses. Every attempt would have failed, dead-ending
+# task 06 and with it the whole 07 -> 08 -> 09 wiring chain (#97/#98: never grep a source file for a
+# banned token without first removing comments and string literals).
+#
+# Anchored on a USE, not a mention (#76): a dotted call `TierResolver.Resolve(...)` or a
+# `TierResolution` used as a type. A name inside a string or a comment is not a consultation.
+$scan = [regex]::Replace($content, '/\*[\s\S]*?\*/', '')
+$scan = [regex]::Replace($scan, '(?m)//.*$', '')
+$scan = [regex]::Replace($scan, '"""[\s\S]*?"""', '""')          # raw string literals
+$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')          # verbatim strings
+$scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')          # ordinary strings - kills the Trait value
+if ($scan -match 'TierResolver\s*\.|(?<![\w.])TierResolution(?![\w"])') {
+    $failures += 'the suite CONSULTS TierResolver/TierResolution in real code - FORBIDDEN. Asking the resolver what it would have chosen and asserting the answer PASSES against a completely unwired executor: it proves the resolver (wave 1 already did) and says nothing about whether anything calls it. Observe the route through the journal, the captured PromptInvocation, and attempt-route.log. (The [Trait("Category", "TierResolution")] attribute is NOT this - string literals are stripped before this scan.)'
 }
 
 if ($failures.Count -gt 0) {

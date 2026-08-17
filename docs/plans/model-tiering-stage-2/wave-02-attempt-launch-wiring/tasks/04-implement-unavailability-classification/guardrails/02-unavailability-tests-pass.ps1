@@ -28,12 +28,26 @@ if ($testExit -ne 0) {
     exit 1
 }
 
-# ZERO-MATCH GUARD (#455): a --filter matching nothing, or malformed, also exits 0. Two classes must
-# each contribute; keyed on the EXECUTED count (Passed+Failed), since "Total:" counts [Skip]ped.
+# ZERO-MATCH GUARD (#455): a --filter matching nothing, or malformed, also exits 0. Keyed on the
+# EXECUTED count (Passed+Failed), since "Total:" counts [Skip]ped tests.
+#
+# A TOTAL count cannot police this filter, and a bare `-lt 2` was measured too weak: the PRE-EXISTING
+# ClaudeSignalClassifierTests alone contributes ~32 rows, so any total-based floor is satisfied by
+# that class even when the NEW ConnectionUnavailabilityClassificationTests contributed ZERO - exactly
+# the case worth catching (a misnamed or untagged new class). So assert PER CLASS, by re-listing each
+# side; --list-tests enumerates without running anything.
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
 if ($ran -lt 2) {
     Write-Output "exit 0 but only $ran test(s) executed - this guardrail certified nothing. The --filter '$filter' matched fewer tests than the two classes it names, is malformed, or the matched tests are [Skip]ped."
     exit 1
+}
+foreach ($cls in @('ConnectionUnavailabilityClassificationTests', 'ClaudeSignalClassifierTests')) {
+    $listed = dotnet test tests/Guardrails.Core.Tests --filter "FullyQualifiedName~$cls" --list-tests --nologo 2>&1
+    $hits = @(($listed | Out-String) -split "`r?`n" | Where-Object { $_ -cmatch $cls }).Count
+    if ($hits -lt 1) {
+        Write-Output "exit 0 and $ran test(s) ran, but ZERO of them are in $cls - so this guardrail certified only the OTHER class. The pre-existing ClaudeSignalClassifierTests alone clears any total-based floor, which is why this is checked per class. Most likely the new class is misnamed or missing its [Trait(`"Category`", `"TierResolution`")]."
+        exit 1
+    }
 }
 exit 0
