@@ -37,6 +37,13 @@ public sealed record TierResolution
     /// <summary>
     /// The selected block's name (its <c>promptRunners</c> map key) — the spelling every log line,
     /// journal record and diagnostic uses. Null when <see cref="NoRoute"/>.
+    ///
+    /// <para>On the pinned and legacy paths this is the name that was ASKED for — <c>action.runner</c>
+    /// ?? the <c>promptRunners.default</c> pointer, the same expression today's executor resolves a
+    /// runner by. It is therefore reported even when the registry declares no such block, a residual
+    /// validation already rejects: <see cref="Runner"/> is the field that says whether the name found
+    /// anything, and a diagnostic able to print the name nobody declared beats one that can only say
+    /// "null".</para>
     /// </summary>
     public string? RunnerName { get; init; }
 
