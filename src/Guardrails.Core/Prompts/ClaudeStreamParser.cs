@@ -29,6 +29,35 @@ public sealed record ClaudeResult
 
     /// <summary>The result message's <c>num_turns</c>, if present.</summary>
     public int? NumTurns { get; init; }
+
+    /// <summary>
+    /// The result message's <c>usage</c> block (DoR §12.4 / #230-lite), if present and parseable;
+    /// null when the runner reported none. Null is the truthful "not reported" — a <c>{ 0, 0 }</c>
+    /// record would CLAIM the attempt consumed nothing, and the per-tier spend line degrades on null.
+    /// </summary>
+    public ClaudeUsage? Usage { get; init; }
+}
+
+/// <summary>
+/// Token volume for one attempt, mined from the terminal result event's <c>usage</c> block
+/// (DoR §12.4). The tokens axis exists alongside cost because a costless provider reports no
+/// <c>total_cost_usd</c>, so volume is the only evidence of what it did (#230-lite).
+/// </summary>
+public sealed record ClaudeUsage
+{
+    /// <summary>
+    /// The TOTAL input the attempt consumed:
+    /// <c>input_tokens + cache_creation_input_tokens + cache_read_input_tokens</c>. Cache-read tokens
+    /// are cheap, not free, and they are unambiguously volume — on real runner output
+    /// <c>input_tokens</c> alone understates the total by ~1250x.
+    /// </summary>
+    public int InputTokens { get; init; }
+
+    /// <summary>
+    /// The event's <c>output_tokens</c>. NOT summed with
+    /// <c>output_tokens_details.thinking_tokens</c> — those are already inside <c>output_tokens</c>.
+    /// </summary>
+    public int OutputTokens { get; init; }
 }
 
 /// <summary>
