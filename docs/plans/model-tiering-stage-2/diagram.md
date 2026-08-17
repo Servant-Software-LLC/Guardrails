@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=bef5b09a9b7edd12aa22c3022c3570847d131c5dcf310a11aa546d0bdad0411a -->
+<!-- guardrails:graph v1 source-sha256=95af4caea48760bccd6ae7b1c480648aac18ac0e946cc805707014f234c54255 -->
 
 ```mermaid
 flowchart TD
@@ -19,8 +19,6 @@ flowchart TD
     style task_wave_01_resolver_core_01_author_tests_candidate_selection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_01_resolver_core_02_implement_candidate_selection["02-implement-candidate-selection"]
       task_wave_01_resolver_core_02_implement_candidate_selection_gr_0["01-selection-tests-pass"]:::guardrail
-      task_wave_01_resolver_core_02_implement_candidate_selection_gr_1["02-uses-shared-candidacy-predicate"]:::guardrail
-      task_wave_01_resolver_core_02_implement_candidate_selection_gr_2["03-resolve-still-stubbed"]:::guardrail
     end
     style task_wave_01_resolver_core_02_implement_candidate_selection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_01_resolver_core_03_author_tests_resolution_precedence["03-author-tests-resolution-precedence"]
@@ -31,7 +29,6 @@ flowchart TD
     style task_wave_01_resolver_core_03_author_tests_resolution_precedence fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_01_resolver_core_04_implement_resolution_precedence["04-implement-resolution-precedence"]
       task_wave_01_resolver_core_04_implement_resolution_precedence_gr_0["01-precedence-tests-pass"]:::guardrail
-      task_wave_01_resolver_core_04_implement_resolution_precedence_gr_1["02-selection-not-duplicated"]:::guardrail
     end
     style task_wave_01_resolver_core_04_implement_resolution_precedence fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end

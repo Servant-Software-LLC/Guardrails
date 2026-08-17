@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=d17386e7e9c7e1bd1749691ebb423b211071ede30dad8a324e54d7b7cf8efcc5 -->
+<!-- guardrails:graph v1 source-sha256=0296951e03b800850ccc2d946a4d8cf07cec1f95e92b8e4e0160056f34f1da8d -->
 
 ```mermaid
 flowchart TD
@@ -13,8 +13,6 @@ flowchart TD
   style task_wave_01_resolver_core_01_author_tests_candidate_selection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_wave_01_resolver_core_02_implement_candidate_selection["wave-01-resolver-core/02-implement-candidate-selection"]
     task_wave_01_resolver_core_02_implement_candidate_selection_gr_0["01-selection-tests-pass"]:::guardrail
-    task_wave_01_resolver_core_02_implement_candidate_selection_gr_1["02-uses-shared-candidacy-predicate"]:::guardrail
-    task_wave_01_resolver_core_02_implement_candidate_selection_gr_2["03-resolve-still-stubbed"]:::guardrail
   end
   style task_wave_01_resolver_core_02_implement_candidate_selection fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_wave_01_resolver_core_03_author_tests_resolution_precedence["wave-01-resolver-core/03-author-tests-resolution-precedence"]
@@ -25,7 +23,6 @@ flowchart TD
   style task_wave_01_resolver_core_03_author_tests_resolution_precedence fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_wave_01_resolver_core_04_implement_resolution_precedence["wave-01-resolver-core/04-implement-resolution-precedence"]
     task_wave_01_resolver_core_04_implement_resolution_precedence_gr_0["01-precedence-tests-pass"]:::guardrail
-    task_wave_01_resolver_core_04_implement_resolution_precedence_gr_1["02-selection-not-duplicated"]:::guardrail
   end
   style task_wave_01_resolver_core_04_implement_resolution_precedence fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]

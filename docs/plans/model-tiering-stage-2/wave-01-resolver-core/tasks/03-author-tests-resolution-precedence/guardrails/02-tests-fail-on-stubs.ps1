@@ -15,7 +15,7 @@ $out | ForEach-Object { Write-Output $_ }
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
 if ($ran -lt 1) {
-    Write-Output "ZERO tests executed - the TDD-red proof certified nothing. The --filter '$filter' matched no tests, is malformed, every matched test is [Skip]ped, or the test host failed to start (read the log above). This is NOT a tautology finding: do NOT rewrite the tests."
+    Write-Output "ZERO tests executed - the TDD-red proof certified nothing. MOST LIKELY CAUSE: the tests are missing the Trait attribute for Category = TierResolution, which is what this filter selects on - check that FIRST, and adding it IS an in-scope fix to your own test file. Other causes: the class name does not match '$filter', the filter is malformed, every matched test is [Skip]ped, or the test host failed to start (read the log above). What this is NOT is a tautology finding - do not weaken or delete assertions to make it pass."
     exit 1
 }
 

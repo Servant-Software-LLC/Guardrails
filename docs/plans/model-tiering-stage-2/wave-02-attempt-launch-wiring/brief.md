@@ -25,10 +25,21 @@ where they differ.**
   waves all move an input mid-run. Resolving once per task would silently serve a stale route.
 - **Provenance (§9.3 / §12.4)** — record `runner`, `kind`, `tier` and **`tierSource`**
   (`task | plan-default | override`) per attempt, plus the resolved model/effort in the attempt log
-  header, extending the per-attempt model logging from #198. Wave 1 puts `tierSource` on the
-  `TierResolution` **record**; this wave must carry it into the **journal, per attempt**. Those are
-  different deliverables, and only the second is what §12.4 asks for — do not read wave 1's field as
-  the requirement already met.
+  header, extending the per-attempt model logging from #198.
+
+  :warning: **`tierSource` is NOT COMPUTABLE as the code stands, and this is a blocker you must resolve
+  before you can honour §12.4.** `PlanLoader` collapses the two sources at load —
+  `Tier = rawAction?.Tier ?? defaultTier` — and `ActionDefinition` keeps no provenance, so nothing
+  downstream can distinguish `task` from `plan-default`. Stage 1 already hit this and works around it
+  with a guess (`PlanValidator.cs`: `tier != plan.Config.Tiering?.DefaultTier`). Shipping as-is would
+  emit `tierSource: "task"` 100% of the time — a green run with a wrong value, which is precisely the
+  Stage 1 failure. Fixing it means preserving provenance in `PlanLoader`/`ActionDefinition`, so **that
+  file must be in a wave-2 task's `writeScope`** (it is in none today, and wave 1 deliberately does not
+  carry the field).
+
+  Note also that the enum's third value, **`override`, has no producing rule anywhere in the DoR** —
+  §12.4 lists it, §6.1 defines nothing that emits it. Either establish the rule with the maintainer or
+  ship only `task` / `plan-default`; do not invent a semantic.
 - **The `no-route` outcome** — resolution finds zero candidate blocks at runtime for a used rung (a
   config gap GR2048 should have caught). It settles **needs-human** with an actionable message naming
   the rung, not a silent fallback.
@@ -66,7 +77,12 @@ From wave 1, on the integration worktree — **read the real signatures, do not 
   effort, the rung served, whether the resolver **climbed**, the **D28 binding-ceiling datum**, and
   the **`tierSource`**.
 - `PromptRunnerConfig.ServesTier` / `DeclaresTier` — the shared candidacy predicate (Stage 1).
-  **The resolver must never call `DeclaresTier`** — it is validate's costly-ignoring twin.
+  **Wave 1's resolver legitimately calls `DeclaresTier` internally**: the D28 binding-ceiling datum is
+  definitionally `DeclaresTier ∧ ¬ServesTier`, and the harness computes exactly that in GR2048
+  (`r.Costly is true && atOrAbove.Any(r.DeclaresTier)`, `PlanValidator.cs`). **Wave 2 must not
+  re-derive the ceiling** — read the datum off `TierResolution`. An earlier draft of this brief said
+  "the resolver must never call `DeclaresTier`" flatly; that was wrong, and a wave-2 guardrail
+  enforcing it would red already-merged, correct wave-1 code.
 
 ## The production path to replace (durable markers — grep, do not trust a line number)
 
@@ -88,11 +104,25 @@ wave 1's `TierResolution` record and **no wiring at all**, 10 of its 14 grep cla
 `bool NoRoute` property satisfied "the no-route outcome exists". A grep cannot tell "a property with
 this name exists" from "this value is written to per-attempt provenance".
 
-So the gate now runs **`tests/Guardrails.Integration.Tests/…/Stage2ConformanceTests.cs`** and requires
-**at least 6 executed tests**. If this wave does not author it, the filter matches nothing, `dotnet
-test` exits 0, the executed-count guard fires, and the gate fails — which is exactly how "fails for an
-ABSENT deliverable" is preserved. **This is not optional and it is not a nicety: without it the
-terminal gate certifies nothing about behaviour.**
+So the gate now discovers **`tests/Guardrails.Integration.Tests/…/Stage2ConformanceTests.cs`** with
+`--list-tests` and requires **one named test per required behaviour**, then requires them to pass.
+A bare count was tried first and measured gameable — `dotnet test` counts **theory data rows**, so one
+`[Theory]` with six `[InlineData]` rows cleared an "≥6 executed" floor while proving one behaviour.
+
+**Name each test after what it proves**; the gate matches these markers (case-insensitive):
+
+| behaviour | name must match | owed by |
+|---|---|---|
+| resolution per ATTEMPT → provenance | `per-attempt` / `attempt…provenance` | wave 2 |
+| no candidate ⇒ no-route / needs-human | `no-route` / `needsHuman` | wave 2 |
+| D28 binding ceiling surfaced | `ceiling` / `excludedOnly` / `boundByCost`… | wave 2 |
+| D22a candidate set agrees with `ServesTier` | `ServesTier` / `agree` / `candidacy` | wave 2 |
+| Invariant 7 (routing-enabled, zero-tag ⇒ legacy) | `invariant7` / `routingEnabled` / `zeroTag` | wave 2 |
+| §6.5/D29 judge resolves through the same resolver | `judge` / `verifier` / `strengthBump` / `minTier` | **wave 3** |
+
+This is what makes the gate ratchet: **wave 3 lands a judge test and its clause goes green by itself**
+— nobody has to remember to edit a shell script. Equally, a run that reaches the terminal gate with
+the verifier route unbuilt fails that clause and `mergeOnSuccess` does not deliver.
 
 It is a **real-seam test (#382)**: drive the ACTUAL attempt-launch path. Fake the process/CLI boundary
 underneath if you must, **never the in-process seam itself** — a test that injects the resolver proves

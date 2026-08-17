@@ -52,9 +52,18 @@ outside your write scope.
   action carrying NO tier, and NO `tiering.defaultTier`** ⇒ still legacy resolution, still **zero**
   tier-resolution activity. (b) is the case an implementer gets wrong, because "routing is
   configured" reads like "so route". Fixture (a) alone cannot catch that.
-- **`tierSource` (DoR §12.4).** Assert the resolution records where the effective rung came from —
-  `task` when `action.tier` supplied it, `plan-default` when `tiering.defaultTier` did, `override`
-  for an explicit override. This is precedence-time knowledge, so it is proven here.
+Name the Invariant 7 tests so the two fixtures are distinguishable at a glance — e.g.
+`RoutingEnabled_ZeroTagPlan_ResolvesViaLegacyPath` for (b). Your guardrail looks for a
+routing-enabled/zero-tag/untagged marker precisely because fixture (a) alone reads like coverage and
+is not.
+
+**Not `tierSource`.** DoR §12.4 lists it, but it is **not computable at this layer**: `PlanLoader`
+collapses `action.tier` and `tiering.defaultTier` into one field at load
+(`Tier = rawAction?.Tier ?? defaultTier`) and `ActionDefinition` keeps no provenance, so nothing
+downstream can tell `task` from `plan-default`. `PlanLoader.cs` is outside every wave-1 `writeScope`.
+It is recorded as wave 2's problem, with that caveat, in the wave-2 brief. Do not assert a field the
+shipped model cannot populate honestly — and note the enum's third value, `override`, has **no
+producing rule anywhere in the DoR**, so do not invent one.
 - **A pin does not silently coexist with a tier.** Where both are present the pin wins (the tier is
   dead weight `validate` warns about) — assert the pin's precedence, not the warning.
 

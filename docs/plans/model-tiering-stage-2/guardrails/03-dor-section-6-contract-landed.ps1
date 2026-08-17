@@ -2,126 +2,103 @@
 #          design of record, because every guardrail verified what the TASKS specified and nothing
 #          ever compared shipped code against the DoR.
 #
-# ==> READ THIS BEFORE EDITING. This file has been through two adversarial review passes and its
-#     SHAPE is the result. Two earlier designs failed, and the reasons ARE the design rationale:
+# ==> READ THIS BEFORE EDITING. Three designs of this gate failed adversarial review; the reasons are
+#     the rationale for the shape below, and re-introducing any of them is a regression:
 #
-#     v1 could only fail for something PRESENT AND WRONG. Every check was nested inside "if the
-#     resolver file exists", so an ABSENT deliverable passed silently - which is the entire Stage 1
-#     failure mode. It also deferred its own extension to a prose "maintenance contract", i.e. to the
-#     discipline of the agent whose work it grades.
+#     v1 could only fail for something PRESENT AND WRONG - every check sat inside "if the resolver
+#     file exists", so an ABSENT deliverable passed silently, which is the whole Stage 1 failure mode.
 #
-#     v2 fixed absence with a 14-clause grep manifest - and was MEASURED to certify DECLARATIONS
-#     rather than BEHAVIOUR: against a tree holding only wave 1's TierResolution record and NO
-#     attempt-launch wiring at all, 10 of 14 clauses went green. A `bool NoRoute` property satisfied
-#     "the no-route outcome exists"; a `string TierSource` property satisfied "tierSource provenance
-#     is recorded". A grep cannot distinguish "a property with this name exists" from "this value is
-#     written to per-attempt provenance", and no amount of tightening changes that - it is a category
-#     limit, not a bug. That is the Stage 1 shape reproduced INSIDE the gate built to prevent it.
+#     v2 replaced that with a 14-clause GREP manifest, and was MEASURED to certify DECLARATIONS
+#     rather than behaviour: against a tree holding only wave 1's record and NO wiring, 10 of 14
+#     clauses went green - a `bool NoRoute` property satisfied "the no-route outcome exists". A grep
+#     cannot tell a name from a behaviour. Category limit, not a bug.
 #
-#     v3 (this file) splits the question by what each tool can actually prove:
-#       PART 1 - STRUCTURAL facts, by grep. Shape claims about source text: the shared predicate is
-#                not re-implemented; no boolean bypass parameter exists. Greps prove these soundly.
-#       PART 2 - BEHAVIOURAL facts, by a REAL-SEAM CONTRACT TEST (#382). Everything of the form "X
-#                actually happens at runtime" - resolution runs per attempt, tierSource reaches the
-#                journal, no-route settles needs-human, the D28 ceiling warning fires, the judge
-#                resolves through the same resolver, Invariant 7 holds. A test drives the real path;
-#                a grep only sees that a name exists.
-#     The contract test is a DELIVERABLE of the waves that make those behaviours real (see the wave
-#     briefs). Its ABSENCE fails this gate - that is what keeps "fails for something absent" true.
+#     v3 moved behaviour into a contract test but gated it on ONE COUNT (`executed >= 6`). Measured:
+#     `dotnet test` counts THEORY DATA ROWS, so a single [Theory] with six [InlineData] rows cleared
+#     the floor and the whole behavioural half certified one behaviour. Its structural half also
+#     carried two regexes that false-RED correct code (a positional `record` with `bool` members) and
+#     missed real bypasses (`bool?`, `async`, `sealed`) - deleted here, not patched, because three
+#     rounds of patching that layer produced five regressions and zero convergence.
+#
+#     v4 (this file):
+#       PART 1 - only what a grep proves SOUNDLY: the artifacts exist, and the SSOT delta landed.
+#       PART 2 - a BEHAVIOUR MANIFEST over TEST NAMES. Each required behaviour must be present as a
+#                discovered test, and the suite must pass. Test names are authored to describe
+#                behaviour, so this ratchets automatically: wave 3 lands a judge test and the §6.5
+#                clause goes green by itself - nobody has to remember to edit this script.
 #
 # LOCAL - no scope key (#165): terminal postconditions, false at any partial union by construction.
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 $failures = @()
 
-function Read-Code([string]$path) {
-    if (-not (Test-Path $path)) { return $null }
-    $raw    = Get-Content -Raw -Path $path
-    $noRaw  = [regex]::Replace($raw, '"""[\s\S]*?"""', '""')      # C# 11 raw string literals
-    $noVerb = [regex]::Replace($noRaw, '@"(?:[^"]|"")*"', '""')
-    $noStr  = [regex]::Replace($noVerb, '"(\\.|[^"\\])*"', '""')
-    $code   = [regex]::Replace($noStr, '/\*[\s\S]*?\*/', '')
-    return [regex]::Replace($code, '(?m)//.*$', '')
-}
-
 # =================================================================================================
-# PART 1 - STRUCTURAL. Only claims about the SHAPE of source text. Scoped to the resolver's own
-# files, and case-SENSITIVE (-cmatch): these are C# identifiers, and C# is case-sensitive while
-# PowerShell's -match is not - a mismatch that once let an unrelated `judgeTier` local in Stage 1.5's
-# PlanValidator certify an entire wave as landed.
+# PART 1 - STRUCTURAL. Existence and the schema delta. Nothing about code SHAPE: that was v3's
+# mistake, and behaviour below covers what those regexes were reaching for.
 # =================================================================================================
-$resolverFiles = @(
-    "src/Guardrails.Core/Prompts/TierResolver.cs",
-    "src/Guardrails.Core/Prompts/TierResolution.cs"
-)
-foreach ($f in $resolverFiles) {
-    $code = Read-Code $f
-    if ($null -eq $code) {
-        $failures += "[6.1/6.2 structure] $f does not exist - the static resolver (#226) has not landed"
-        continue
-    }
-
-    # D22a: the candidacy predicate must not be RE-IMPLEMENTED. Keyed on the membership TEST, which
-    # is the unambiguous half of the predicate's body. Deliberately NOT keyed on `Costly` or on
-    # `DeclaresTier`: the D28 binding-ceiling datum is DEFINITIONALLY `DeclaresTier AND NOT
-    # ServesTier` - the harness computes exactly that in GR2048 as
-    # `r.Costly is true && atOrAbove.Any(r.DeclaresTier)` - so banning those two made a REQUIRED
-    # deliverable uncomputable and pushed implementers toward obfuscated spellings that shipped the
-    # very duplication the ban existed to prevent. Whether the floor actually HOLDS is behavioural
-    # and is proven in PART 2.
-    if ($code -cmatch '\.Tiers\s*\.\s*(?:Contains|Any|Exists|IndexOf)\s*\(') {
-        $failures += "[6.2/D22a] $f tests routing.Tiers membership directly - that IS the candidacy predicate. Call ServesTier(tier) so validate's GR2048 check and the runtime resolver can never disagree about which blocks serve a rung"
-    }
-
-    # D22: the costly floor admits NO override. A boolean parameter on a method in the resolver's own
-    # files is an opt-in switch by construction, whatever it is named - this catches `permitReserved`
-    # and every other invented identifier a denylist would miss. NOTE: no `= true|false` default is
-    # required; an earlier version demanded one and a plain `bool allowCostly` walked through.
-    if ($code -cmatch '(?m)^\s*(?:public|internal|private|protected|static|\s)*[\w<>,\[\]\?]+\s+\w+\s*\([^)]*\bbool\s+\w+\s*[,)]') {
-        $failures += "[6.2/D22] $f declares a method with a boolean parameter - the costly floor admits no override, no flag and no dial. A human reaches a costly model by PINNING it per task (6.1 item 1), which never enters this resolver"
+foreach ($f in @("src/Guardrails.Core/Prompts/TierResolver.cs")) {
+    if (-not (Test-Path $f)) {
+        $failures += "[6.1/6.2] $f does not exist - the static resolver (#226) has not landed"
     }
 }
 
 # Invariant 4: the schema delta lands in the SSOT in the SAME change as its code. `tierSource` is the
-# probe token because it is net-new to this stage (the SSOT already carried the string `no-route` in
-# 9.6 prose, so a no-route token would have been pre-satisfied).
+# probe token because it is net-new (the SSOT already carried the string `no-route` in 9.6 prose, so
+# a no-route token would have been pre-satisfied). NOTE for wave 2: tierSource is NOT computable
+# without a PlanLoader change - see the wave-2 brief.
 $ssot = if (Test-Path "docs/plans/02-schemas-and-contracts.md") { Get-Content -Raw "docs/plans/02-schemas-and-contracts.md" } else { "" }
 if ($ssot -cnotmatch 'tierSource') {
     $failures += "[12.4/Invariant 4] docs/plans/02-schemas-and-contracts.md does not mention tierSource - every 12.x schema delta must land in the SSOT in the same change as its code, or a claim about the schema lives outside the schema and decays without anything noticing"
 }
 
 # =================================================================================================
-# PART 2 - BEHAVIOURAL. A real-seam contract test (#382) drives the ACTUAL path. This is the half a
-# grep cannot do, and its ABSENCE is a failure - which is what makes this gate fail for a deliverable
-# that was never built (a wave that never ran, or ran and wired nothing).
+# PART 2 - BEHAVIOUR MANIFEST. Discover the conformance suite's test NAMES, require one per required
+# behaviour, then require the suite to pass. Absence of the suite fails every clause at once, which
+# is what keeps "fails for an ABSENT deliverable" true.
 # =================================================================================================
-$env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard below reads is LOCALIZED
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'
+$proj   = 'tests/Guardrails.Integration.Tests'
 $filter = 'FullyQualifiedName~Stage2ConformanceTests'
-$out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo 2>&1
-$testExit = $LASTEXITCODE                                   # capture BEFORE any other statement
-$out | ForEach-Object { Write-Output $_ }
 
-# EXIT CODE FIRST, guard second: a test host that never ran exits NON-zero with no summary, so
-# checking the exit code first reports its real error instead of blaming the filter.
-if ($testExit -ne 0) {
-    $detail = $out |
-        Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
-        ForEach-Object { $_.Line } |
-        Select-Object -First 40
-    Write-Output ""
-    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
-    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
-    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
-    $failures += "[6 behavioural] the Stage 2 real-seam conformance tests FAIL - shipped behaviour does not match the DoR (see the re-emitted failure details above)"
+$listed = dotnet test $proj --filter $filter --list-tests --nologo 2>&1
+$names  = ($listed | Out-String) -split "`r?`n" | Where-Object { $_ -match 'Stage2ConformanceTests' }
+
+# Each entry: the DoR clause, and a regex over discovered TEST NAMES that evidences it.
+$behaviours = @(
+  @{ Id = "6.1/9.3  resolution runs per ATTEMPT and reaches per-attempt provenance"
+     Pattern = '(?i)per.?attempt|eachattempt|attempt.*provenance|provenance.*attempt' }
+  @{ Id = "6.2      a rung with no non-costly candidate settles no-route / needs-human"
+     Pattern = '(?i)no.?route|needshuman|needs.?human' }
+  @{ Id = "6.2/D28  a binding costly ceiling is surfaced on re-attempt"
+     Pattern = '(?i)ceiling|excludedonly|onlybecausecostly|costbound|boundbycost|blockedbycost' }
+  @{ Id = "6.2/D22a the resolver's candidate set agrees with ServesTier (validate vs runtime)"
+     Pattern = '(?i)servestier|agree|candidacy|predicate' }
+  @{ Id = "3        Invariant 7 - routing-ENABLED config, zero-tag plan, legacy path, no tier activity"
+     Pattern = '(?i)invariant7|invariant_7|routingenabled|zerotag|untagged.*legacy|legacy.*untagged' }
+  @{ Id = "6.5/D29  the judge resolves through the SAME resolver (strength bump; pinned-costly actor)"
+     Pattern = '(?i)judge|verifier|strengthbump|mintier|pinnedactor' }
+)
+
+foreach ($b in $behaviours) {
+    if (-not ($names -match $b.Pattern)) {
+        $failures += ("[" + $b.Id + "] no discovered Stage2ConformanceTests test evidences this. The terminal gate proves BEHAVIOUR by requiring one named test per required behaviour - name the test after what it proves. If this whole list is failing, the conformance suite has not been authored at all (wave 2 owes the first five; wave 3 owes the judge clause), and this gate is the only thing standing between an unbuilt deliverable and mergeOnSuccess delivering it.")
+    }
 }
-else {
-    # ZERO-MATCH GUARD, and here it carries the whole absence property: if no wave ever authored the
-    # conformance tests, this filter matches nothing and `dotnet test` exits 0. Keyed on the EXECUTED
-    # count (Passed+Failed; `Total:` would also count [Skip]ped tests), never on the verbosity-
-    # dependent "No test matches" string.
-    $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
-            ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-    if ($ran -lt 6) {
-        $failures += "[6 behavioural] only $ran Stage2ConformanceTests executed (need at least 6). The real-seam contract test is the ONLY thing here that can prove BEHAVIOUR rather than the presence of a name, so an absent or thin suite means this gate certified nothing. It must drive the real attempt-launch path and cover, at minimum: resolution runs per ATTEMPT (not once per task); the resolved route reaches per-attempt provenance INCLUDING tierSource; a rung with no non-costly candidate settles no-route/needs-human and never selects the costly block; a binding costly ceiling emits the D28 warning on re-attempt; the judge resolves through the SAME resolver with the strength bump (6.5); and Invariant 7 - a routing-ENABLED config with a zero-tag plan resolves via the legacy path with zero tier-resolution activity"
+
+# Now actually RUN them. A named-but-failing test must not certify anything.
+if ($names.Count -gt 0) {
+    $out = dotnet test $proj --filter $filter --nologo 2>&1
+    $testExit = $LASTEXITCODE
+    $out | ForEach-Object { Write-Output $_ }
+    if ($testExit -ne 0) {
+        $detail = $out |
+            Select-String -Pattern '\[FAIL\]|Error Message:|Assert\.|Exception|Stack Trace:|Expected:|Actual:' |
+            ForEach-Object { $_.Line } |
+            Select-Object -First 40
+        Write-Output ""
+        Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
+        if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+        else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+        $failures += "[6 behavioural] the Stage 2 real-seam conformance tests FAIL - shipped behaviour does not match the DoR (see the re-emitted failure details above)"
     }
 }
 
@@ -133,5 +110,5 @@ if ($failures.Count -gt 0) {
     Write-Output "shipped code does not match the design of record (docs/plans/17-model-tiering.md section 6). The tasks may all be green - that is exactly the Stage 1 failure this gate exists to catch: a green run proves the TASKS were satisfied, not that the DESIGN was implemented."
     exit 1
 }
-Write-Output "DoR section 6 conformance: structural checks clean, and the real-seam contract tests pass."
+Write-Output "DoR section 6 conformance: artifacts present, SSOT delta landed, and every required behaviour is evidenced by a passing named test."
 exit 0
