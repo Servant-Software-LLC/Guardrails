@@ -574,8 +574,24 @@ no `/plan-breakdown` run ever saw.
 
 An **absent** `tiering` block means there is **no** plan-wide default: every untagged task stays
 `null` and **nothing is substituted**. That is the load-bearing additive guarantee — a plan that
-never mentions a tier parses, validates and runs exactly as it does today. Nothing **routes** on a
-tier in this stage; the plan only gets to *say* what it has, and `validate` holds it to that.
+never mentions a tier parses, validates and runs exactly as it does today. A tier that IS present now
+**routes**: the attempt-launch resolver (§9.6) turns it into a concrete block, model and effort
+immediately before every attempt. An untagged task never reaches that resolver's tier branch at all.
+
+**`action.TierOrigin` — the load-time record of WHICH SITE supplied the tier (model tiering #201).**
+The precedence above is a *collapse*: `action.tier ?? tiering.defaultTier` leaves one field holding a
+rung and no answer to "where did this rung come from?". `PlanLoader` therefore records the origin
+alongside the collapsed value — `None` (no tier resolved, so the tier is `null`) / `Task` / `PlanDefault`
+— and that origin is the **input** the journal's `provenance.tierSource` is derived from (§7), together
+with the pin check that produces `override`. It is an **in-memory loader field, NOT a `task.json` key**:
+nothing declares it, nothing validates it, and writing `tierOrigin` into a `task.json` configures
+nothing.
+
+Deriving the origin instead by **comparing** the task's tier to `tiering.defaultTier` is wrong, and
+wrong in the most ordinary case there is: a task that explicitly writes the same token the plan already
+defaults to is then misreported as `plan-default`, and one whose plan has no default at all cannot be
+distinguished from one that matched it. The origin is recorded where it is *known* rather than
+reconstructed where it has already been destroyed.
 
 A declared tier that is not one of the three tokens is a **`GR2043` error**, checked at **all four**
 declaration sites (#201 Stage 1.5 — Stage 1 shipped only the first and third):
@@ -602,8 +618,9 @@ control characters; **`GR2050`** otherwise) — but deliberately **not** its **b
 `action.model`/`action.runner` are full pins that skip tier resolution entirely, whereas
 `action.effort` *alone* leaves resolution in charge of selecting the block and overrides only that
 route's effort. `{ "tier": "medium", "effort": "xhigh" }` therefore means *"route by tier, but think
-hard"*. Nothing consumes it yet — the static resolver (#226) is its first reader — so this stage only
-guarantees it parses, validates, and round-trips.
+hard"*. The static resolver (§9.6) is its first reader and now applies it over the resolved route, which
+**records** the result in per-attempt provenance (§7); no runner CLI exposes a thinking-effort flag yet,
+so nothing is emitted to a command line from it.
 
 *(Former §3.1/§3.1.1 — the `captureHashes`/`restoreOnRetry` triad — are **removed in this change**,
 along with the harness `CapturedFileStore`/`FileHashCapture`/`RestoreAncestorCaptures`/`WorkspaceLock`
@@ -1753,16 +1770,33 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "attempt": 1,
           "startedAt": "…", "endedAt": "…",
           "actionExitCode": 0,
-          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied | task-preflight-failed
+          "outcome": "succeeded",   // succeeded | action-failed | guardrail-failed | timeout | output-cap | rate-limited | cancelled | invalid-fragment | needs-human | permission-denied | task-preflight-failed | no-route
           "failedGuardrails": [ { "name": "02-tests-exist", "reason": "no *.Tests.csproj found" } ],
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
+          "usage": {                // OPTIONAL tokens-only volume (#201): the accounting surface a COSTLESS
+            "inputTokens": 18240,   //   provider still has. ABSENT (never null) for a script attempt, a runner
+            "outputTokens": 3110    //   reporting no usage, and every older journal. NOTHING WRITES IT YET —
+          },                        //   see "Per-attempt tier provenance" below (#475)
           "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1",
           // OPTIONAL per-attempt provenance the harness knew at launch (#198). Additive — a script /
           // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
-          // Also mirrored to <attempt>/attempt-provenance.json (§8).
+          // Also mirrored to <attempt>/attempt-provenance.json and, for humans, rendered as
+          // <attempt>/attempt-route.log on any attempt that resolved a route (§8).
           "provenance": {
-            "model": "claude-…",    // FULLY RESOLVED --model (#200): task.json action.model if set, else
-                                     //   promptRunners.<name>.model, else "(cli default)"; ABSENT for a script task
+            "model": "claude-…",    // FULLY RESOLVED --model (#200, #201): the RESOLVED ROUTE's model — the
+                                     //   task.json action.model/action.runner pin, else the block tier
+                                     //   resolution selected, else promptRunners.<name>.model, else
+                                     //   "(cli default)" (§9.6); ABSENT for a script task
+            // The five route fields (#201, DoR §12.4). All ABSENT — never null — on a script attempt and in
+            // every journal written before model tiering; see "Per-attempt tier provenance" below.
+            "runner": "primary",    // the promptRunners block name the attempt resolved to
+            "kind": "claude",       // that block's `kind` as its WIRE TOKEN (not the C# name, not an ordinal)
+            "tier": "hard",         // the rung that SERVED — the requested one unless §9.6's climb moved it.
+                                     //   ABSENT when no rung resolved: a pin, or a legacy fallback
+            "tierSource": "task",   // task | plan-default | override — WHICH SITE supplied the rung; each has
+                                     //   exactly one producer. ABSENT on a legacy fallback
+            "effort": "xhigh",      // the resolved route's effort, with action.effort applied over it.
+                                     //   RECORDED, not yet emitted as a CLI flag (§9). ABSENT when unnamed
             "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
             "worktreePath": "/…/gr-wt/…",
             "baseCommit": "sha…"    // the commit the segment forked from (taskBase); ABSENT in serial mode
@@ -1990,6 +2024,19 @@ existing `decisions[]` consumer (the CLI renderer, the log viewer) ignores the n
   second attempt) and no transient `running` status is ever written. Distinct from the two whole-plan
   phase halts (`plan-preflight-failed`/`plan-guardrail-failed`), which live OUTSIDE `tasks{}` in the
   top-level sections below.
+- `no-route` — tier resolution (§9.6) found **zero candidate blocks at or above the rung the task asked
+  for** (model tiering #201). A runtime **configuration** gap, which `validate`'s GR2048 normally catches
+  statically before a token is spent. The attempt is **never launched** — no model ran, no guardrail was
+  evaluated, no retry was burned — and the task settles `needs-human` immediately with feedback naming the
+  unservable rung, the same short-circuit shape the `needsHuman` signal uses and for the same reason: v1
+  resolution is a pure function of the tier tag and the registry, so a further attempt resolves
+  identically. The record carries `provenance` **as usual** — its `tierSource` and the requested rung are
+  how a reader learns WHICH rung could not be served — while `provenance.tier`, the rung actually
+  *served*, is absent because none was. It never names a route: a `costly` block excluded by the floor
+  (§9.6) is a **cause**, never a destination. The harness does not fall back to the runner's own model
+  (D30 — legacy is the no-*rung* path, `no-route` is the no-*candidate* path, and nothing is both) and
+  never routes weaker than asked. (The SSOT already used the string `no-route` in §9.6 prose; this is the
+  **enum value**, and it is declared LAST in `AttemptOutcome` so nothing above it renumbers.)
 
 **A succeeded task records a real attempt in BOTH modes (#196).** A task that settles `succeeded` journals
 a `succeeded` attempt record in `attempts[]` — in **serial** mode inline as the attempt completes, and in
@@ -1999,6 +2046,54 @@ paths write the identical attempt shape, so a succeeded task's `attempts[]` is n
 mode. Each attempt also carries the OPTIONAL `provenance` block (#198) — the model + segment worktree +
 base commit the harness knew at launch (see the wire example above); it is mirrored to
 `<attempt>/attempt-provenance.json` (§8).
+
+**Per-attempt tier provenance (model tiering #201, DoR `docs/plans/17-model-tiering.md` §12.4).**
+Resolution (§9.6) runs immediately before **every** attempt launch, retries included, and the ONE
+resolution it produces feeds BOTH the invocation and this record — so what ran and what is recorded
+cannot disagree. On top of the shipped `model`, `provenance` gains **`runner`** (the resolved block
+name), **`kind`** (that block's wire token), **`tier`** (the rung that resolved), **`tierSource`**, and
+**`effort`**. `tierSource` has exactly **one producer per value**, which is what makes it a record of
+what the harness did rather than a guess reconstructed afterwards:
+
+| `tierSource` | produced by | `provenance.tier` |
+|---|---|---|
+| `"task"` | the task's own `action.tier` — or a judge guardrail's frontmatter `tier` — supplied the rung | the rung that served |
+| `"plan-default"` | the task declared none, and the plan-wide `tiering.defaultTier` supplied it | the rung that served |
+| `"override"` | a full `action.runner`/`action.model` **pin** bypassed resolution entirely (§9.6, precedence item 1) | **absent** — no rung resolved |
+| *(absent)* | the **legacy fallback**: no effective tier anywhere, so nothing resolved and nothing was overridden | absent |
+
+There is deliberately **no enum value for the legacy path** (D30). "Absent" and `"override"` are
+different facts about how the attempt got its model, and a reader must be able to tell them apart —
+inventing a fourth token for "nothing happened" would erase that distinction. Conversely a pin DOES
+record: *"bypasses tier resolution entirely"* governs what is **selected**, not what is **logged**
+(D31), so a pinned attempt still says why it took the route it took, with `tier` absent beside it.
+
+**The source is READ, never reconstructed** — it comes from the `TierOrigin` the loader recorded (§3)
+and from which precedence branch the resolver took, never from comparing the task's tier to
+`tiering.defaultTier`. That comparison is wrong in the most ordinary case there is: a task that
+explicitly writes the same token the plan already defaults to would be attributed to the plan.
+
+**`usage` — the field exists; nothing populates it yet.** The optional
+`usage { inputTokens, outputTokens }` block above is the tokens-only accounting surface for a costless
+provider (a local endpoint, a flat-rate subscription), where `costUsd` is honestly `0` for a run that
+did enormous work. **As of this change the value reaches `PromptResult` and stops**: the runner mines
+the terminal result event's usage block, but journalling it onto the attempt record needs
+`ActionRun`/`RunReport`/`Scheduler` changes that were deferred (issue #475). So the schema is landed and
+the wire shape is fixed, and every attempt record written today simply **omits** it — which is exactly
+what an absent-not-null optional field is supposed to look like while its producer is still missing.
+
+**`judge` — the reserved verifier-route shape.** DoR §12.4 gives the attempt record an optional
+**`judge { runner, kind, model, effort, tier, strength, bumped }`** — the route the verifier that graded
+this attempt resolved to, with `bumped: true` when the weak-actor strength bump fired — **absent
+entirely when no judge resolved through routing (Invariant 7)**. The §6.5 verifier route is **not wired
+in this change**: prompt guardrails still resolve their runner by name, so nothing emits this object and
+no attempt record carries it. It is documented here so the shape is fixed in one place before its first
+producer exists, not because it is live.
+
+**Absent, never null, throughout.** Every field above is optional and additive: an older journal reads
+back unchanged, a script attempt simply omits the whole route half (there is no model, no rung and no
+route to record), and an untagged task in a routing-enabled config records exactly what it recorded
+before tiering existed. Nothing here removes or renames a shipped field.
 
 **Top-level plan-phase sections (two-scope preflights, F9 split)**
 
@@ -2695,6 +2790,10 @@ whole-plan hash entirely and the marker kept vouching for a waved plan whose gat
 logs/<runId>/<task-id>/attempt-N/
 ├── state-in.json            # the snapshot given to this attempt
 ├── attempt-provenance.json  # #198: model + segment worktree (branch + path) + base commit known at launch; absent for a serial script attempt
+├── attempt-route.log        # #201: the HUMAN-readable twin of the route half above — resolved runner block /
+                             #   model / effort, the rung REQUESTED vs the rung SERVED, the tierSource, and the
+                             #   two loud lines §9.6 requires (a climb, and a binding costly ceiling from
+                             #   attempt 2). Absent when no route resolved (a script action)
 ├── action-stdout.log / action-stderr.log
 ├── action-result.json
 ├── action-out-fragment.json # the harness-PROMOTED GUARDRAILS_STATE_OUT result (§9.5); a SCRIPT
@@ -2870,11 +2969,23 @@ task's prompt links to (§9, #26) — the raw stream stays as the debug artifact
 `promptRunners` (§2) maps names to runner configs. The `IPromptRunner` C# interface
 quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`:
 
+- **Which CLASS serves a block is its `kind`, and the switch is `PromptRunnerRegistry.FromConfig`**
+  (issue #224): the registry dispatches each `promptRunners` block on `kind`, not on the map key, and a
+  kind this build cannot serve **fails construction** rather than being quietly served by Claude — a
+  substituted model would spend a real run against a provider the config never asked for. That throw is
+  the BACKSTOP; the GATE is `guardrails validate`'s **GR2044** (§9.6). Adding a CLI is a new class plus
+  one arm of that switch.
 - Invocation: `claude -p --output-format stream-json --verbose --permission-mode <m>
-  --allowedTools <list> --max-turns <n> [--model <m>] [extraArgs…]`. The resolved `<m>` (issue #200)
-  is the task's `task.json action.model` when the task declares one, else the runner's configured
-  `promptRunners.<name>.model`, else `--model` is **omitted entirely** (the CLI's own default) — see
-  §3 for the full precedence.
+  --allowedTools <list> --max-turns <n> [--model <m>] [extraArgs…]`. **`--model` is emitted from the
+  RESOLVED ROUTE** (issues #200/#201): tier resolution runs immediately before every attempt (§9.6) and
+  the block/model it selects is what reaches the command line AND what per-attempt provenance records
+  (§7) — one object, not two derivations that agree only by construction. A full `action.model`/
+  `action.runner` pin is folded into that resolution's own precedence, an untagged task resolves on the
+  **legacy** branch (`promptRunners.<name>.model`, else the CLI's own default — exactly today), and a
+  resolved route that names no model means `--model` is **omitted entirely**, never a silent fall-back to
+  some other block's model. See §3 and §9.6 for the full precedence. The route's **effort** is resolved
+  and recorded on the same object but is **not** emitted as a flag: no runner CLI exposes a
+  thinking-effort knob today, and spelling one here would invent a vendor argument that does not exist.
 - Prompt delivered via **stdin** (no arg-length/quoting issues).
 - cwd = the effective workspace (§5.1: the segment worktree in worktree mode, the plan workspace in
   serial mode — #134); `--add-dir <GUARDRAILS_PLAN_DIR>` grants access to state/verdict paths and
@@ -2896,6 +3007,18 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
   `guardrails status` print a final `Total prompt cost: $X.XXXX` line summing every
   recorded attempt's `costUsd`; the line is omitted entirely when no attempt recorded a
   cost (deterministic-only plans stay noise-free).
+- **Per-tier spend (model tiering #230-lite, DoR §9.3).** The `run` summary adds a
+  `Per-tier spend: easy: 180k tok / $0 · hard: 42k tok / $3.1200` line — pure aggregation over the
+  per-attempt `provenance.tier` + `costUsd` + `usage` above, one segment per rung in ascending
+  difficulty, every attempt counted independently (a retry resolved and spent again). A half that was
+  never reported is **dropped**, not zeroed: a rung with volume and no cost prints the volume alone
+  rather than asserting `$0.00` the runner never said, and a rung that routed but reported neither reads
+  `no spend reported`. It is **additive to** the total line, never a replacement — the total also folds
+  in `overheadCostUsd` (§7), which belongs to no rung and appears in no bucket.
+  **Invariant 7 suppression:** on a run where **no** attempt resolved through routing there is no
+  section, no header, and **no `untiered:` bucket** — a plan that tags nothing prints exactly today's
+  cost line and not one character more. (Until #475 lands, no attempt carries `usage`, so every segment
+  renders its cost half only.)
 - `guardrails validate` probes each DECLARED runner's `command` on PATH and emits a
   **warning** (GR2009) if it does not resolve — not an error, since the plan may run on
   another machine where the runner is installed.
@@ -3135,6 +3258,11 @@ subject to Claude Code's tool-permission layer — to perform the write on its b
     emitted; a transient pause is never journaled unless its budget is exhausted (→ `rate-limited`).
     The signal is read from the terminal `result` error text OR, when there is no terminal result (the
     instant-rejection case), the captured process stdout/stderr — both inside the runner quarantine.
+    **A connection-level failure — the provider was never REACHED — is also `Transient`**, including the
+    case where the runner binary never launched at all: the runner wraps its process start and classifies
+    the launch fault's own text, so that shape reaches the quarantine instead of escaping as an
+    exception before any text exists to classify. The signal families, and why they needed adding, are
+    §9.6 "Provider unavailability".
   - **`OutputCap`** (issue #114): consumes the budget like `Error` but composes actionable feedback
     ("write incrementally / split; or `needsHuman` if inherently too large") and records the distinct
     `output-cap` outcome (§7).
@@ -3770,10 +3898,11 @@ again. §9.3's halt rule now fires only for its originally-intended scope — a 
 
 ### 9.6 Tier routing (model tiering, issue #201) — the schema and its checks
 
-> **Scope note.** This section defines the CONTRACT the loader/validator enforce today. **There is no
-> resolver yet** — no ladder, no probes, no steering, and no attempt-launch tier resolution. Design of
-> record: `docs/plans/17-model-tiering.md`. What is normative here is the schema, the candidacy predicate,
-> and the four diagnostics; everything about *selection* lands with #226.
+> **Scope note.** This section defines the schema the loader/validator enforce, the candidacy predicate,
+> the diagnostics, **and — as of Stage 2 (#226-static) — the attempt-launch resolver they gate**. There is
+> still **no ladder, no probes and no steering**: v1 resolution is a pure function of (effective tier +
+> registry), so it yields the same block on every attempt of a task, and the deferred dynamic inputs slot
+> into the same seam without moving it. Design of record: `docs/plans/17-model-tiering.md`.
 
 **The tier enum is `easy | medium | hard`** — closed, lowercase, ordered `easy(1) < medium(2) < hard(3)`.
 It names **task difficulty** (a property of the *work*), deliberately not model capability (`strength`, a
@@ -3794,7 +3923,7 @@ decision, spend, and execution path to a pre-tiering build.* Observability enric
 additive; decisions and spend are not.
 
 **The ONE candidacy predicate.** Written once, used by everything — GR2048's validate-time check, the
-future resolver, the `no-route` outcome, and the verifier route:
+attempt-launch resolver, the `no-route` outcome, and the verifier route:
 
 > **`Candidates(R)` = blocks where `routing` is present AND `R ∈ routing.tiers` AND `costly` is not
 > `true`.** Ordered by **ascending `strength`** (unspecified last), ties by declaration order — *the
@@ -3816,6 +3945,98 @@ own, a climbed-to stronger rung, and (later) a ladder escalation or a judge bump
 **harness autonomy**, with no override, no `--force` and no autonomy dial. The only paths to a costly
 model are an explicit **task pin** (`action.runner`/`action.model`) or the registry **`default` pointer**
 — both user assignments. Everything else is the harness choosing, and the harness does not choose.
+
+**Attempt-launch resolution — the precedence (Stage 2, #226-static).** Resolution runs immediately
+before **every** attempt launch, retries included, and the single resolution it produces feeds BOTH the
+model/effort that reach the invocation and the per-attempt provenance record (§7). It replaces the
+two-level `action.model` → runner-model fallback the harness previously computed twice — once for the
+command line and once for the record — which is precisely how the two could drift:
+
+1. **Full pin — `action.runner` or `action.model`.** Explicit always wins, and it wins **before any rung
+   is read**: the pinned block is never put to the candidacy predicate at all. That is what makes a pin
+   the sanctioned route to a `costly: true` block — the floor constrains what the *harness* may choose,
+   never what a *human* may assign. `action.runner` selects the named block; a raw `action.model` pin
+   overrides the model string but not the block. Journalled `tierSource: "override"`, with
+   `provenance.tier` absent (§7).
+2. **Tier resolution.** Effective tier = `action.tier` (or a judge guardrail's frontmatter `tier`) ??
+   `tiering.defaultTier`, routed through `Candidates(R)` above. **`action.effort` alone is NOT a
+   bypass** — selection still chooses the block and the override lands on *that* route's effort, so
+   `{ "tier": "medium", "effort": "xhigh" }` means *"route by tier, but think hard"*.
+3. **Legacy fallback — ONLY when there is no effective tier at all.** `promptRunners.<name>.model`, else
+   the CLI's own default: exactly today's behaviour, and no `tierSource` is journalled. **Once an
+   effective tier exists, resolution OWNS the outcome** — an empty candidate set climbs, and a genuinely
+   empty one at-or-above the rung settles `no-route`. It never silently drops back to the runner's model.
+
+**Legacy and `no-route` never claim the same condition.** Legacy is the **no-rung** path; `no-route` is
+the **no-candidate** path; nothing is both. The other reading — "no tier *or* nothing serves it" → run on
+the runner's model — makes `no-route` nearly unreachable and quietly defeats the halt-what-is-load-bearing
+asymmetry: it would route a `hard` task onto whatever model happened to be configured, silently.
+
+**`no-route` — the runtime residual (§7 attempt outcome).** When no rung at or above the requested one has
+a candidate, the attempt is **not launched**: the task settles `needs-human` with feedback naming the
+unservable rung and telling the operator to register a provider serving tier ≥ R. No model runs, no
+guardrail is evaluated, no retry is burned, and **no `costly` block is ever selected as the escape** — a
+block the floor excluded is the *cause* being reported, never a destination. GR2048 reports the same gap
+statically, before a token is spent; `no-route` is the defensive residual for the config that reaches a
+run anyway (a plan run without `validate`, or a registry edited between validate and run). An
+unrecognized tier token also settles here rather than being guessed onto the ladder — GR2043 already
+errors on it, and inventing a rung for it would invent a route this design does not have.
+
+**Disclosure — a climb and a binding ceiling must be LOUD (D28).** Selection says nothing about
+surfacing, which leaves it silent in exactly the case a human most needs to hear from it. Each attempt
+that resolved a route therefore also writes `<attempt>/attempt-route.log` (§8) beside the tool-grant
+header, naming the resolved runner block, model, effort, the rung **requested**, the rung **served** and
+the `tierSource` — plus two loud lines:
+
+- **the climb**, on one line carrying **both** rungs. "Served at `hard`" alone reads as an ordinary
+  `hard` task unless the `medium` request it replaced is sitting right beside it, and a route change the
+  operator cannot see is a cost and latency change they will attribute to the prompt.
+- **the binding costly ceiling**, from attempt 2 onward: when a block declaring this rung (or a stronger
+  one) was excluded **only** because it is `costly: true`, the re-attempt says so and names the block.
+  Without it, a failure caused by the weaker model running out of reasoning is indistinguishable from an
+  ordinary failure, and the operator tunes prompts against a constraint they cannot see. It is withheld
+  on attempt 1 because nothing has failed yet, where it would be noise on every tiered run.
+
+Both facts are **read off the resolution**, not re-derived — re-testing the `costly` flag at the
+disclosure site would be a second copy of the one candidacy predicate. **This changes what is LOGGED,
+never what is SELECTED:** a warning is not a new path to a costly model.
+
+**Provider unavailability — connection failures ride the shipped #115 pause.** A failure to *reach* the
+provider is classified **`Transient`** by the runner quarantine (§9) and routed to the shipped
+transient-pause machinery: bounded exponential backoff, **no retry-budget consumption**, capped by
+`transientPauseBudgetSeconds`. The never-weaker floor still holds while it waits — during a frontier
+outage with a local provider up, `easy`/`medium` continue on their serving local blocks with no special
+case, and a `hard` task with no local block serving `hard` **pauses** rather than routing down, settling
+`rate-limited`/needs-human honestly if the pause budget is spent.
+
+The shipped quarantine covered this **partially**, so v1 widened the signal set — and widened *only* the
+signal set. Already covered, and left where it was: the spelled-out English prose `connection refused`,
+`connection reset` and `connection error` (verbatim entries in `TransientPhrases`). Added, because every
+one of them classified `Error` and so would have consumed the retry budget and re-launched straight back
+into a provider that is still down:
+
+| Family | Shapes |
+|---|---|
+| DNS | `getaddrinfo`, `ENOTFOUND`, `EAI_AGAIN`, "could not resolve host", "name or service not known", "no such host is known" |
+| refused/reset, in errno spelling | `ECONNREFUSED`, `ECONNRESET`, Winsock's "no connection could be made…" |
+| TLS / handshake | "tls handshake timeout", "ssl certificate problem", "ssl routines", "the ssl connection could not be established" |
+| the runner binary never launched | ".NET: an error occurred trying to start process", a `Win32Exception` **adjacent to** "cannot find the file specified"/"no such file or directory", cmd.exe's "is not recognized as an internal or external command", a colon-anchored shell "command not found" |
+
+`TransientStatus` (429/503/529) could never have caught any of them: a connection-level failure completes
+no HTTP request, so there is no status token to match. **No new `PromptFailureKind` member and no probe
+enum was introduced** — v1 rules both out; a connection failure *is* `Transient`, and the DA's
+`unreachable` probe state stays with the v2 probes. The conservative-miss rule is unchanged and is the
+binding constraint on how these are spelled: an unrecognized error still yields `Error`, because a false
+`Transient` is the expensive direction — a deterministic logic failure would ride the pause machinery to
+the end of the pause budget instead of consuming its retry budget and surfacing. So every alternative is
+a discriminating shape ("could not resolve host", not "resolve"; the full cmd.exe sentence, not "is not
+recognized"), and a `Win32Exception` alone is **not** a signal. The launch family reaches the quarantine
+at all because the runner wraps its process start and classifies the fault's own text; before that, a
+missing CLI escaped as an exception with no text to classify.
+
+**No ladder, no probes, no steering in v1.** Nothing re-resolves a task onto a stronger rung after a
+failure, nothing consults provider health before selecting, and nothing biases the strength order at run
+time. A rung is chosen from the tag and the registry, once per attempt, identically every attempt.
 
 **Validation (Stage 1.5).**
 
@@ -3858,9 +4079,12 @@ no verifier condition may ever fail one.
 result that came out below it, and it can only ever raise, never lower. A plan-wide `easy` *default* would
 drag every judge down; a plan-wide `easy` *floor* does nothing at all.
 
-**Nothing in the harness consumes `routing.tiers`, `effort`, `strength`, `specialization`, `costly` or
-`verifier.minTier` at runtime yet.** Stage 1.5 guarantees exactly that they parse, validate, and
-round-trip — so the resolver (#226) inherits a checked contract instead of a hopeful one.
+**What the harness READS at run time, and what it still only round-trips.** Stage 2's resolver consumes
+`routing.tiers`, `costly` and `strength` (the candidacy predicate and its ordering) and `effort` (carried
+onto the route and recorded in provenance, §7). **`specialization` and `tiering.verifier.minTier` are
+still parsed, validated and round-tripped only** — the §6.5 verifier route that reads them is not wired,
+which is also why no attempt record carries a `judge` object (§7). Stage 1.5 guarantees they arrive as a
+checked contract rather than a hopeful one; their first reader is still ahead of them.
 
 ### 9.7 The generated registry — `guardrails providers init` (model tiering, issue #201) — the CLI contract
 
