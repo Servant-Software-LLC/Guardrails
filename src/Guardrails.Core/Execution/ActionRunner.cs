@@ -40,6 +40,12 @@ internal sealed class ActionRunner
     /// normalizes both into the disposition the attempt loop needs: success, exit code (for the
     /// journal), timeout, cost, a needsHuman question (if any), and failure feedback/summary.
     /// </summary>
+    /// <param name="route">
+    /// The §6 attempt-launch resolution <see cref="TaskExecutor"/> ran immediately before this attempt
+    /// (issue #201) — the SAME object its per-attempt provenance was built from, so the model RECORDED
+    /// and the model INVOKED are one resolution read twice. Null for a script action, which resolves no
+    /// route at all.
+    /// </param>
     public async Task<ActionRun> RunAsync(
         TaskNode task,
         int attemptNumber,
@@ -52,6 +58,7 @@ internal sealed class ActionRunner
         double timeoutMultiplier,
         string? stagingDir,
         double maxTurnsMultiplier,
+        TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot = null)
     {
@@ -66,7 +73,7 @@ internal sealed class ActionRunner
 
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken, worktreeRoot).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRoot).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
@@ -92,6 +99,7 @@ internal sealed class ActionRunner
         double timeoutMultiplier,
         string? stagingDir,
         double maxTurnsMultiplier,
+        TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot)
     {
@@ -136,11 +144,20 @@ internal sealed class ActionRunner
             runnerConfig.EffectiveSettings(isGuardrail: false),
             task.Action.MaxTurns ?? promptFile.Frontmatter.MaxTurns);
 
-        // task.json action.model override (issue #200): task override > the runner's own configured
-        // model (already resolved into `settings.Model` above) > whatever the CLI's own default is —
-        // ApplyModelOverride leaves `settings` untouched when there is no task-level override, so a
-        // null Model still falls through to ClaudePromptRunner's "omit --model entirely" behavior.
-        settings = PromptExecutionSupport.ApplyModelOverride(settings, task.Action.Model);
+        // The model comes from the RESOLVED ROUTE (issues #200/#201, DoR §6.1/§12.5) — the one
+        // resolution the attempt launcher ran, which is also what its provenance recorded. A task-level
+        // action.model pin is honoured INSIDE that resolution's own §6.1 precedence, so a pinned task
+        // still gets its model here; a legacy (no-rung) route applies no override at all and leaves the
+        // runner config's own model exactly as before tiering existed (Invariant 7). A resolved route
+        // that names no model leaves Model null, which is still ClaudePromptRunner's "omit --model
+        // entirely" behaviour.
+        //
+        // The route's `effort` is deliberately NOT spelled into argv: the Claude runner exposes no
+        // effort/thinking flag today and PromptRunnerSettings carries no field for one, so inventing a
+        // vendor knob here would emit a flag the CLI would reject. It is RECORDED in the attempt's
+        // provenance instead (TaskExecutor.BuildProvenance), and the day a runner class gains such a
+        // flag it reads this same resolved value.
+        settings = PromptExecutionSupport.ApplyModelOverride(settings, route);
 
         // Auto-escalate the turn budget after a prior max-turns exhaustion (issue #129 / #94): raise
         // the effective maxTurns by the multiplier so the retry has headroom instead of re-hitting the
