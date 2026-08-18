@@ -4,10 +4,10 @@
   GUARDRAILS_STATE_OUT.
 - Write everything you publish under your task's FOLDER NAME as the single top-level
   key — in a WAVED plan that key is the WAVE-QUALIFIED id, i.e.
-  `wave-03-verifier-route/07-carry-judge-provenance-to-journal`, NOT the stableId and NOT
+  `wave-03-verifier-route/08-carry-judge-provenance-to-journal`, NOT the stableId and NOT
   the bare folder name. The harness REJECTS a fragment keyed by anything else (every
   attempt), so:
-  `{ "wave-03-verifier-route/07-carry-judge-provenance-to-journal": { "someKey": "someValue" } }`.
+  `{ "wave-03-verifier-route/08-carry-judge-provenance-to-journal": { "someKey": "someValue" } }`.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - If you cannot proceed without a human decision, write
