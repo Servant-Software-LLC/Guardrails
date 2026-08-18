@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=14d8a7cb65c8c3c5b160321304cf6762408bdf3e7f37da79bd5f136bf0bda16b -->
+<!-- guardrails:graph v1 source-sha256=13485c3fad7c06e368a04137337df3bebf3a002635895a6c8e5a833668d52a07 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -115,36 +115,41 @@
     task_wave_03_verifier_route_04_implement_judge_provenance_schema_gr_0["01-schema-tests-pass"]:::guardrail
   end
   style task_wave_03_verifier_route_04_implement_judge_provenance_schema fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge["wave-03-verifier-route/05-author-tests-stage2-conformance-judge"]
-    task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge_gr_0["01-covers-required-judge-behaviors"]:::guardrail
-    task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge_gr_1["02-build-passes"]:::guardrail
-    task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge_gr_2["03-tests-fail-on-current-code"]:::guardrail
+  subgraph task_wave_03_verifier_route_05_extend_conformance_harness_for_judges["wave-03-verifier-route/05-extend-conformance-harness-for-judges"]
+    task_wave_03_verifier_route_05_extend_conformance_harness_for_judges_gr_0["01-harness-emits-judge-guardrail"]:::guardrail
+    task_wave_03_verifier_route_05_extend_conformance_harness_for_judges_gr_1["02-build-passes"]:::guardrail
   end
-  style task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner["wave-03-verifier-route/06-wire-judge-resolution-into-guardrail-runner"]
-    task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner_gr_0["01-judge-route-actually-used"]:::guardrail
-    task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner_gr_1["02-conformance-judge-tests-pass"]:::guardrail
+  style task_wave_03_verifier_route_05_extend_conformance_harness_for_judges fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge["wave-03-verifier-route/06-author-tests-stage2-conformance-judge"]
+    task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge_gr_0["01-covers-required-judge-behaviors"]:::guardrail
+    task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge_gr_1["02-build-passes"]:::guardrail
+    task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge_gr_2["03-tests-fail-on-current-code"]:::guardrail
   end
-  style task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_verifier_route_07_carry_judge_provenance_to_journal["wave-03-verifier-route/07-carry-judge-provenance-to-journal"]
-    task_wave_03_verifier_route_07_carry_judge_provenance_to_journal_gr_0["01-both-journal-paths-carry-judge"]:::guardrail
-    task_wave_03_verifier_route_07_carry_judge_provenance_to_journal_gr_1["02-conformance-suite-passes"]:::guardrail
+  style task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner["wave-03-verifier-route/07-wire-judge-resolution-into-guardrail-runner"]
+    task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner_gr_0["01-judge-route-actually-used"]:::guardrail
+    task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner_gr_1["02-conformance-judge-tests-pass"]:::guardrail
   end
-  style task_wave_03_verifier_route_07_carry_judge_provenance_to_journal fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_verifier_route_08_author_tests_verifier_advisory["wave-03-verifier-route/08-author-tests-verifier-advisory"]
-    task_wave_03_verifier_route_08_author_tests_verifier_advisory_gr_0["01-build-passes"]:::guardrail
-    task_wave_03_verifier_route_08_author_tests_verifier_advisory_gr_1["02-tests-fail-on-stubs"]:::guardrail
-    task_wave_03_verifier_route_08_author_tests_verifier_advisory_gr_2["03-covers-advisory-behaviors"]:::guardrail
+  style task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_08_carry_judge_provenance_to_journal["wave-03-verifier-route/08-carry-judge-provenance-to-journal"]
+    task_wave_03_verifier_route_08_carry_judge_provenance_to_journal_gr_0["01-both-journal-paths-carry-judge"]:::guardrail
+    task_wave_03_verifier_route_08_carry_judge_provenance_to_journal_gr_1["02-conformance-suite-passes"]:::guardrail
   end
-  style task_wave_03_verifier_route_08_author_tests_verifier_advisory fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_verifier_route_09_implement_verifier_advisory["wave-03-verifier-route/09-implement-verifier-advisory"]
-    task_wave_03_verifier_route_09_implement_verifier_advisory_gr_0["01-advisory-tests-pass"]:::guardrail
+  style task_wave_03_verifier_route_08_carry_judge_provenance_to_journal fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_09_author_tests_verifier_advisory["wave-03-verifier-route/09-author-tests-verifier-advisory"]
+    task_wave_03_verifier_route_09_author_tests_verifier_advisory_gr_0["01-build-passes"]:::guardrail
+    task_wave_03_verifier_route_09_author_tests_verifier_advisory_gr_1["02-tests-fail-on-stubs"]:::guardrail
+    task_wave_03_verifier_route_09_author_tests_verifier_advisory_gr_2["03-covers-advisory-behaviors"]:::guardrail
   end
-  style task_wave_03_verifier_route_09_implement_verifier_advisory fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
-  subgraph task_wave_03_verifier_route_10_land_ssot_judge_deltas["wave-03-verifier-route/10-land-ssot-judge-deltas"]
-    task_wave_03_verifier_route_10_land_ssot_judge_deltas_gr_0["01-ssot-judge-deltas-landed"]:::guardrail
+  style task_wave_03_verifier_route_09_author_tests_verifier_advisory fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_10_implement_verifier_advisory["wave-03-verifier-route/10-implement-verifier-advisory"]
+    task_wave_03_verifier_route_10_implement_verifier_advisory_gr_0["01-advisory-tests-pass"]:::guardrail
   end
-  style task_wave_03_verifier_route_10_land_ssot_judge_deltas fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  style task_wave_03_verifier_route_10_implement_verifier_advisory fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_11_land_ssot_judge_deltas["wave-03-verifier-route/11-land-ssot-judge-deltas"]
+    task_wave_03_verifier_route_11_land_ssot_judge_deltas_gr_0["01-ssot-judge-deltas-landed"]:::guardrail
+  end
+  style task_wave_03_verifier_route_11_land_ssot_judge_deltas fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-wave-union-builds"]:::guardrail
     plan_guardrails_1["02-stage2-conformance-green"]:::guardrail
@@ -153,17 +158,19 @@
   style plan_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   plan_preflights --> task_wave_03_verifier_route_01_author_tests_judge_resolution
   plan_preflights --> task_wave_03_verifier_route_03_author_tests_judge_provenance_schema
+  plan_preflights --> task_wave_03_verifier_route_05_extend_conformance_harness_for_judges
   task_wave_03_verifier_route_01_author_tests_judge_resolution --> task_wave_03_verifier_route_02_implement_judge_resolution
-  task_wave_03_verifier_route_02_implement_judge_resolution --> task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge
-  task_wave_03_verifier_route_02_implement_judge_resolution --> task_wave_03_verifier_route_08_author_tests_verifier_advisory
+  task_wave_03_verifier_route_02_implement_judge_resolution --> task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge
+  task_wave_03_verifier_route_02_implement_judge_resolution --> task_wave_03_verifier_route_09_author_tests_verifier_advisory
   task_wave_03_verifier_route_03_author_tests_judge_provenance_schema --> task_wave_03_verifier_route_04_implement_judge_provenance_schema
-  task_wave_03_verifier_route_04_implement_judge_provenance_schema --> task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge
-  task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge --> task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner
-  task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner --> task_wave_03_verifier_route_07_carry_judge_provenance_to_journal
-  task_wave_03_verifier_route_07_carry_judge_provenance_to_journal --> task_wave_03_verifier_route_10_land_ssot_judge_deltas
-  task_wave_03_verifier_route_08_author_tests_verifier_advisory --> task_wave_03_verifier_route_09_implement_verifier_advisory
-  task_wave_03_verifier_route_09_implement_verifier_advisory --> task_wave_03_verifier_route_10_land_ssot_judge_deltas
-  task_wave_03_verifier_route_10_land_ssot_judge_deltas --> plan_guardrails
+  task_wave_03_verifier_route_04_implement_judge_provenance_schema --> task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge
+  task_wave_03_verifier_route_05_extend_conformance_harness_for_judges --> task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge
+  task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge --> task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner
+  task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner --> task_wave_03_verifier_route_08_carry_judge_provenance_to_journal
+  task_wave_03_verifier_route_08_carry_judge_provenance_to_journal --> task_wave_03_verifier_route_11_land_ssot_judge_deltas
+  task_wave_03_verifier_route_09_author_tests_verifier_advisory --> task_wave_03_verifier_route_10_implement_verifier_advisory
+  task_wave_03_verifier_route_10_implement_verifier_advisory --> task_wave_03_verifier_route_11_land_ssot_judge_deltas
+  task_wave_03_verifier_route_11_land_ssot_judge_deltas --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   click plan_preflights_0 href "preflights/01-wave-02-artifacts-materialized.ps1" "Wave 3 ENTRY gate — the wave-1/2 artifacts this wave builds on are materialized on the branch: the resolver entry points, the ServesTier candidacy predicate, the strength/specialization/costly axes, TieringVerifierConfig.MinTier (unread until now), and the Stage2 harness + conformance suite it extends. POSITIVE and assert-present only (SSOT 14.2, the #181 archetype at the wave boundary)." _blank
@@ -175,22 +182,24 @@
   click task_wave_03_verifier_route_03_author_tests_judge_provenance_schema_gr_1 href "tasks/03-author-tests-judge-provenance-schema/guardrails/02-tests-fail-on-current-code.ps1" "02-tests-fail-on-current-code" _blank
   click task_wave_03_verifier_route_03_author_tests_judge_provenance_schema_gr_2 href "tasks/03-author-tests-judge-provenance-schema/guardrails/03-covers-key-behaviors.ps1" "03-covers-key-behaviors" _blank
   click task_wave_03_verifier_route_04_implement_judge_provenance_schema_gr_0 href "tasks/04-implement-judge-provenance-schema/guardrails/01-schema-tests-pass.ps1" "01-schema-tests-pass" _blank
-  click task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge_gr_0 href "tasks/05-author-tests-stage2-conformance-judge/guardrails/01-covers-required-judge-behaviors.ps1" "01-covers-required-judge-behaviors" _blank
-  click task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge_gr_1 href "tasks/05-author-tests-stage2-conformance-judge/guardrails/02-build-passes.ps1" "02-build-passes" _blank
-  click task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge_gr_2 href "tasks/05-author-tests-stage2-conformance-judge/guardrails/03-tests-fail-on-current-code.ps1" "03-tests-fail-on-current-code" _blank
-  click task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner_gr_0 href "tasks/06-wire-judge-resolution-into-guardrail-runner/guardrails/01-judge-route-actually-used.ps1" "01-judge-route-actually-used" _blank
-  click task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner_gr_1 href "tasks/06-wire-judge-resolution-into-guardrail-runner/guardrails/02-conformance-judge-tests-pass.ps1" "02-conformance-judge-tests-pass" _blank
-  click task_wave_03_verifier_route_07_carry_judge_provenance_to_journal_gr_0 href "tasks/07-carry-judge-provenance-to-journal/guardrails/01-both-journal-paths-carry-judge.ps1" "01-both-journal-paths-carry-judge" _blank
-  click task_wave_03_verifier_route_07_carry_judge_provenance_to_journal_gr_1 href "tasks/07-carry-judge-provenance-to-journal/guardrails/02-conformance-suite-passes.ps1" "02-conformance-suite-passes" _blank
-  click task_wave_03_verifier_route_08_author_tests_verifier_advisory_gr_0 href "tasks/08-author-tests-verifier-advisory/guardrails/01-build-passes.ps1" "01-build-passes" _blank
-  click task_wave_03_verifier_route_08_author_tests_verifier_advisory_gr_1 href "tasks/08-author-tests-verifier-advisory/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
-  click task_wave_03_verifier_route_08_author_tests_verifier_advisory_gr_2 href "tasks/08-author-tests-verifier-advisory/guardrails/03-covers-advisory-behaviors.ps1" "03-covers-advisory-behaviors" _blank
-  click task_wave_03_verifier_route_09_implement_verifier_advisory_gr_0 href "tasks/09-implement-verifier-advisory/guardrails/01-advisory-tests-pass.ps1" "01-advisory-tests-pass" _blank
-  click task_wave_03_verifier_route_10_land_ssot_judge_deltas_gr_0 href "tasks/10-land-ssot-judge-deltas/guardrails/01-ssot-judge-deltas-landed.ps1" "01-ssot-judge-deltas-landed" _blank
+  click task_wave_03_verifier_route_05_extend_conformance_harness_for_judges_gr_0 href "tasks/05-extend-conformance-harness-for-judges/guardrails/01-harness-emits-judge-guardrail.ps1" "01-harness-emits-judge-guardrail" _blank
+  click task_wave_03_verifier_route_05_extend_conformance_harness_for_judges_gr_1 href "tasks/05-extend-conformance-harness-for-judges/guardrails/02-build-passes.ps1" "02-build-passes" _blank
+  click task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge_gr_0 href "tasks/06-author-tests-stage2-conformance-judge/guardrails/01-covers-required-judge-behaviors.ps1" "01-covers-required-judge-behaviors" _blank
+  click task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge_gr_1 href "tasks/06-author-tests-stage2-conformance-judge/guardrails/02-build-passes.ps1" "02-build-passes" _blank
+  click task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge_gr_2 href "tasks/06-author-tests-stage2-conformance-judge/guardrails/03-tests-fail-on-current-code.ps1" "03-tests-fail-on-current-code" _blank
+  click task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner_gr_0 href "tasks/07-wire-judge-resolution-into-guardrail-runner/guardrails/01-judge-route-actually-used.ps1" "01-judge-route-actually-used" _blank
+  click task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner_gr_1 href "tasks/07-wire-judge-resolution-into-guardrail-runner/guardrails/02-conformance-judge-tests-pass.ps1" "02-conformance-judge-tests-pass" _blank
+  click task_wave_03_verifier_route_08_carry_judge_provenance_to_journal_gr_0 href "tasks/08-carry-judge-provenance-to-journal/guardrails/01-both-journal-paths-carry-judge.ps1" "01-both-journal-paths-carry-judge" _blank
+  click task_wave_03_verifier_route_08_carry_judge_provenance_to_journal_gr_1 href "tasks/08-carry-judge-provenance-to-journal/guardrails/02-conformance-suite-passes.ps1" "02-conformance-suite-passes" _blank
+  click task_wave_03_verifier_route_09_author_tests_verifier_advisory_gr_0 href "tasks/09-author-tests-verifier-advisory/guardrails/01-build-passes.ps1" "01-build-passes" _blank
+  click task_wave_03_verifier_route_09_author_tests_verifier_advisory_gr_1 href "tasks/09-author-tests-verifier-advisory/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
+  click task_wave_03_verifier_route_09_author_tests_verifier_advisory_gr_2 href "tasks/09-author-tests-verifier-advisory/guardrails/03-covers-advisory-behaviors.ps1" "03-covers-advisory-behaviors" _blank
+  click task_wave_03_verifier_route_10_implement_verifier_advisory_gr_0 href "tasks/10-implement-verifier-advisory/guardrails/01-advisory-tests-pass.ps1" "01-advisory-tests-pass" _blank
+  click task_wave_03_verifier_route_11_land_ssot_judge_deltas_gr_0 href "tasks/11-land-ssot-judge-deltas/guardrails/01-ssot-judge-deltas-landed.ps1" "01-ssot-judge-deltas-landed" _blank
   click plan_guardrails_0 href "guardrails/01-wave-union-builds.ps1" "Wave 3 union soundness (GR2028) — the merged wave HEAD compiles as a whole solution. Required because wave 3 is a PARALLEL topology: four independent branches whose disjoint file sets merge without conflict and can still disagree at compile time. LOCAL: a wave terminal postcondition, false at any partial union by construction (#165)." _blank
   click plan_guardrails_1 href "guardrails/02-stage2-conformance-green.ps1" "Wave 3 exit gate — the Stage 2 real-seam conformance suite is green on the merged wave HEAD, at the raised 14-fact floor (wave 2's nine plus wave 3's five judge clauses). LOCAL: false at any partial union inside this wave by construction (#165)." _blank
   click plan_guardrails_2 href "guardrails/03-wave3-unit-suites-green.ps1" "Wave 3 exit gate — the three Core.Tests classes this wave authors (judge resolution, judge provenance schema, verifier advisory) are green together on the merged wave HEAD. Distinct from the union build (compiles) and the conformance gate (integration seam). LOCAL: false at any partial union inside this wave by construction (#165)." _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_wave_03_verifier_route_01_author_tests_judge_resolution":"tasks/01-author-tests-judge-resolution/","task_wave_03_verifier_route_02_implement_judge_resolution":"tasks/02-implement-judge-resolution/","task_wave_03_verifier_route_03_author_tests_judge_provenance_schema":"tasks/03-author-tests-judge-provenance-schema/","task_wave_03_verifier_route_04_implement_judge_provenance_schema":"tasks/04-implement-judge-provenance-schema/","task_wave_03_verifier_route_05_author_tests_stage2_conformance_judge":"tasks/05-author-tests-stage2-conformance-judge/","task_wave_03_verifier_route_06_wire_judge_resolution_into_guardrail_runner":"tasks/06-wire-judge-resolution-into-guardrail-runner/","task_wave_03_verifier_route_07_carry_judge_provenance_to_journal":"tasks/07-carry-judge-provenance-to-journal/","task_wave_03_verifier_route_08_author_tests_verifier_advisory":"tasks/08-author-tests-verifier-advisory/","task_wave_03_verifier_route_09_implement_verifier_advisory":"tasks/09-implement-verifier-advisory/","task_wave_03_verifier_route_10_land_ssot_judge_deltas":"tasks/10-land-ssot-judge-deltas/"}</script>
+<script type="application/json" id="task-folder-targets">{"task_wave_03_verifier_route_01_author_tests_judge_resolution":"tasks/01-author-tests-judge-resolution/","task_wave_03_verifier_route_02_implement_judge_resolution":"tasks/02-implement-judge-resolution/","task_wave_03_verifier_route_03_author_tests_judge_provenance_schema":"tasks/03-author-tests-judge-provenance-schema/","task_wave_03_verifier_route_04_implement_judge_provenance_schema":"tasks/04-implement-judge-provenance-schema/","task_wave_03_verifier_route_05_extend_conformance_harness_for_judges":"tasks/05-extend-conformance-harness-for-judges/","task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge":"tasks/06-author-tests-stage2-conformance-judge/","task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner":"tasks/07-wire-judge-resolution-into-guardrail-runner/","task_wave_03_verifier_route_08_carry_judge_provenance_to_journal":"tasks/08-carry-judge-provenance-to-journal/","task_wave_03_verifier_route_09_author_tests_verifier_advisory":"tasks/09-author-tests-verifier-advisory/","task_wave_03_verifier_route_10_implement_verifier_advisory":"tasks/10-implement-verifier-advisory/","task_wave_03_verifier_route_11_land_ssot_judge_deltas":"tasks/11-land-ssot-judge-deltas/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">

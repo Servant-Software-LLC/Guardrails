@@ -47,7 +47,7 @@ construction. Call it on the actor's block, or on the frontmatter block, and eve
 silently mis-profiled with another block's permissions, tools and turn budget. Nothing else in the
 system will notice.
 
-**Make the resolved judge datum available to task 07.** Task 07 carries it to the journal, and it
+**Make the resolved judge datum available to task 08.** Task 07 carries it to the journal, and it
 cannot invent what you do not expose — put the `JudgeResolution` on the result this method already
 returns rather than leaving it a local. Wave 2 lost a task to exactly this (a datum with no path to
 its sink, #474).
@@ -57,7 +57,7 @@ its sink, #474).
 **Scope boundary (harness-enforced):** Write only to
 `src/Guardrails.Core/Execution/GuardrailRunner.cs`. After this task completes, the harness runs a
 `git diff` check and rejects any edit outside that path — including the conformance tests (task 05
-owns them), `TierResolver.cs` (task 02), `AttemptJournaler.cs`/`Scheduler.cs` (task 07), or the
+owns them), `TierResolver.cs` (task 02), `AttemptJournaler.cs`/`Scheduler.cs` (task 08), or the
 `.csproj`. An out-of-scope edit fails the task immediately and consumes a retry.
 
 If making the clauses pass genuinely requires a change outside this file, write

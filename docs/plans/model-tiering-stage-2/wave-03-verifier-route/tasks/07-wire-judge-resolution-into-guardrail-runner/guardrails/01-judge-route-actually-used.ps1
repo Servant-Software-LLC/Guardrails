@@ -23,9 +23,9 @@ if ($code -cnotmatch 'TierResolver\s*\.\s*ResolveJudge\s*\(') {
     $failures += 'GuardrailRunner never CALLS TierResolver.ResolveJudge in real code - the judge is still resolved from frontmatter-or-default with no tier awareness, which is the state this task exists to change'
 }
 
-# The resolved datum must be exposed, or task 07 has nothing to carry to the journal (#474).
+# The resolved datum must be exposed, or task 08 has nothing to carry to the journal (#474).
 if ($code -cnotmatch 'JudgeResolution') {
-    $failures += 'GuardrailRunner never mentions JudgeResolution in real code - even a correct resolution is useless if it stays a local: task 07 carries it to the journal and cannot invent what this task does not expose (wave 2 lost a task to exactly this severed-path shape)'
+    $failures += 'GuardrailRunner never mentions JudgeResolution in real code - even a correct resolution is useless if it stays a local: task 08 carries it to the journal and cannot invent what this task does not expose (wave 2 lost a task to exactly this severed-path shape)'
 }
 
 if ($failures.Count -gt 0) {

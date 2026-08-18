@@ -40,5 +40,5 @@ After this task completes, the harness runs a `git diff` check and rejects any e
 paths — including the test file, `AttemptJournaler.cs`, or the `.csproj`. An out-of-scope edit fails
 the task immediately and consumes a retry.
 
-**Populating the field is NOT your job** — task 07 carries the datum from `GuardrailRunner` to the
+**Populating the field is NOT your job** — task 08 carries the datum from `GuardrailRunner` to the
 record. You are landing the schema it will write into. Do not touch the execution path.

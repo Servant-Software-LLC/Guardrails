@@ -43,7 +43,7 @@ Wave 2 shipped the actor half. Read it first — `TierResolver.SelectCandidate` 
 2. **`src/Guardrails.Core/Prompts/TierResolution.cs`** — a **`JudgeResolution`** record carrying what
    §12.4's `judge {...}` object needs: the resolved block/runner name, kind, model, effort, tier,
    strength, and **`Bumped`** (true when the weak-actor strength bump fired). Add whatever datum the
-   advisory needs to know a judge came out weak — task 08 consumes it, so make it observable rather
+   advisory needs to know a judge came out weak — task 09 consumes it, so make it observable rather
    than re-derivable.
 3. **`src/Guardrails.Core/Prompts/PromptFile.cs`** — add an optional **`Tier`** to
    `PromptFrontmatter` and parse it, so rule 1's frontmatter pin is expressible. It is genuinely
@@ -101,7 +101,7 @@ implement `ResolveJudge`.
 `tests/Guardrails.Core.Tests/ModelTiering/JudgeResolutionTests.cs`,
 `src/Guardrails.Core/Prompts/TierResolver.cs`, `src/Guardrails.Core/Prompts/TierResolution.cs` and
 `src/Guardrails.Core/Prompts/PromptFile.cs`. After this task completes, the harness runs a `git diff`
-check and rejects any edit outside those paths — including `GuardrailRunner.cs` (task 06 owns the
+check and rejects any edit outside those paths — including `GuardrailRunner.cs` (task 07 owns the
 wiring), `JournalModel.cs` (tasks 03/04), or the `.csproj`. An out-of-scope edit fails the task
 immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another
 file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and

@@ -1,0 +1,9 @@
+{
+  "description": "Extend Stage2PlanHarness so a spec can declare a prompt-JUDGE guardrail and the invocation ledger captures the judge's call — the capability wave 3's conformance clauses are built on, which the harness does not have today",
+  "stableId": "b8j5rq",
+  "dependsOn": [],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

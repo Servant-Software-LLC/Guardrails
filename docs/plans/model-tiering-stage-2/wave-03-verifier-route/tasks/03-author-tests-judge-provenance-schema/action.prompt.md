@@ -29,7 +29,7 @@ attempt record as an optional member with `[JsonIgnore(Condition = JsonIgnoreCon
 **Read how `AttemptProvenance` and `AttemptUsage` already do this and follow it exactly** — the
 absent-not-null discipline and the `JsonIgnore` attribute are the house pattern, not a choice.
 
-**Where it hangs is a real decision, and task 07 has to live with it.** Wave 2 learned this the
+**Where it hangs is a real decision, and task 08 has to live with it.** Wave 2 learned this the
 expensive way (#474/#475): a member is useless if the datum cannot reach it. A judge is resolved
 during **guardrail evaluation**, i.e. AFTER attempt launch — so it cannot ride launch-time
 `AttemptProvenance`, which is documented as "the facts the harness already knows at attempt launch".
@@ -71,6 +71,6 @@ implement the serialization behaviour; task 04 does.
 `tests/Guardrails.Core.Tests/ModelTiering/JudgeProvenanceSchemaTests.cs` and
 `src/Guardrails.Core/Journal/JournalModel.cs`. After this task completes, the harness runs a
 `git diff` check and rejects any edit outside those paths — including `JournalJson.cs` (task 04),
-`AttemptJournaler.cs` (task 07), or the `.csproj`. An out-of-scope edit fails the task immediately
+`AttemptJournaler.cs` (task 08), or the `.csproj`. An out-of-scope edit fails the task immediately
 and consumes a retry. If you hit a compile error caused by a missing symbol in another file, do NOT
 edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and stop.

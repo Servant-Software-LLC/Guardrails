@@ -1,6 +1,6 @@
 # catches: an integration suite that does not COMPILE being accepted as the red. A non-compiling test
 #          exits dotnet test non-zero identically to one that compiles and fails, so without this the
-#          sibling red check passes on garbage (#155) - and task 06 could not fix it, because its
+#          sibling red check passes on garbage (#155) - and task 07 could not fix it, because its
 #          writeScope excludes these test files.
 # -v q is correct on a BUILD; it is FORBIDDEN on dotnet test (dotnet.md 4/4.2, #462).
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'

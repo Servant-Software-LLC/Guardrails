@@ -63,7 +63,7 @@ behaviour named in a comment earns nothing. Add more tests freely; do not rename
 | the quiet path | `Jit_LogsOnlyWhenObservedDiffersFromPreflight` |
 
 Tests must **COMPILE and FAIL** — failing is intentional; NOT compiling is a mistake to fix. Do not
-implement the detection; task 09 does.
+implement the detection; task 10 does.
 
 **Scope boundary (harness-enforced):** Write only to
 `tests/Guardrails.Core.Tests/ModelTiering/VerifierAdvisoryTests.cs` and

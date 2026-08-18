@@ -4,10 +4,10 @@
   GUARDRAILS_STATE_OUT.
 - Write everything you publish under your task's FOLDER NAME as the single top-level
   key — in a WAVED plan that key is the WAVE-QUALIFIED id, i.e.
-  `wave-03-verifier-route/05-author-tests-stage2-conformance-judge`, NOT the stableId and NOT
+  `wave-03-verifier-route/06-author-tests-stage2-conformance-judge`, NOT the stableId and NOT
   the bare folder name. The harness REJECTS a fragment keyed by anything else (every
   attempt), so:
-  `{ "wave-03-verifier-route/05-author-tests-stage2-conformance-judge": { "someKey": "someValue" } }`.
+  `{ "wave-03-verifier-route/06-author-tests-stage2-conformance-judge": { "someKey": "someValue" } }`.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
 - If you cannot proceed without a human decision, write
@@ -20,7 +20,7 @@ real-seam judge clauses. This is the suite the **plan terminal gate** reads by N
 `6.5/D29` clause is the ONE unsatisfied clause in the whole plan — the reason wave 3 exists.
 
 **The five test METHOD NAMES below are pinned.** The terminal gate matches discovered names against
-`(?i)judge|verifier|strengthbump|mintier|pinnedactor`, and task 06's guardrail filters on them:
+`(?i)judge|verifier|strengthbump|mintier|pinnedactor`, and task 07's guardrail filters on them:
 
 | # | method | asserts |
 |---|---|---|
@@ -44,11 +44,11 @@ asserting the answer PASSES against a completely unwired `GuardrailRunner`: it p
 (waves 1–2 already did) and says nothing about whether anything CALLS it. Observe the judge route
 through the **journal** and the **captured prompt invocation** instead.
 
-These tests are **RED until task 06 lands the wiring** — that is correct and intended. Today
+These tests are **RED until task 07 lands the wiring** — that is correct and intended. Today
 `GuardrailRunner` picks a judge's block from frontmatter-or-default with no tier awareness at all.
 
 **Wave 2's nine facts must keep passing.** You are extending a green suite; a regression there fails
-the wave exit gate, which asserts a floor on the executed count. Raising that floor is task 06's
+the wave exit gate, which asserts a floor on the executed count. Raising that floor is task 07's
 concern — do not lower an existing assertion to make room.
 
 **Scope boundary (harness-enforced):** Write only to

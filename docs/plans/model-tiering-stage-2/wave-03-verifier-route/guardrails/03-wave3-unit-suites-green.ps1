@@ -1,7 +1,7 @@
 # catches: a wave-3 branch whose OWN unit suite regressed once merged with its siblings. The three
 #          Core.Tests classes this wave authors are made green in three INDEPENDENT segments that
 #          never see each other - the judge-resolution pair (01/02), the provenance-schema pair
-#          (03/04) and the advisory pair (08/09). Two of them write to overlapping type surfaces
+#          (03/04) and the advisory pair (09/10). Two of them write to overlapping type surfaces
 #          (TierResolution / JudgeResolution), so this is the first tree on which all three run
 #          together.
 #

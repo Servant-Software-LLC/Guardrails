@@ -4,8 +4,14 @@
 #          green until tasks it does NOT depend on had run - a deadlock validate and graph --check
 #          cannot see. Re-emits the assertion lines at the END so they reach the retry tail (#179).
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'    # the run summary the guard reads is LOCALIZED (#455)
-# The SAME $filter string as the pair's inverse check, copied verbatim so the two cannot drift.
-$filter = 'Category=TierResolution&FullyQualifiedName~JudgeResolutionTests'
+# The pair's own class FIRST (matching the inverse check), then the settled actor classes.
+# Plus the SETTLED actor classes from waves 1-2, as a REGRESSION guard. This task extends
+# TierResolver.cs, whose SelectCandidate/Resolve the prompt forbids it to change - and the
+# wave-3 exit gate filters to the three NEW classes only, so without this a broken actor half
+# would surface at the plan TERMINAL gate, after the whole wave had run. These two classes are
+# already green and owned by earlier waves: including them is a regression check, not the #455
+# over-broad shape (no sibling in THIS wave can turn them red or green).
+$filter = 'Category=TierResolution&(FullyQualifiedName~JudgeResolutionTests|FullyQualifiedName~TierResolverCandidateSelectionTests|FullyQualifiedName~TierResolverPrecedenceTests)'
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual block, so the re-emit
 # below would have only test NAMES to re-emit and #179 is defeated by the flag alone (#462).
 $out = dotnet test tests/Guardrails.Core.Tests --filter $filter --nologo 2>&1
@@ -33,6 +39,17 @@ $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
 if ($ran -lt 1) {
     Write-Output "exit 0 but ZERO tests executed - this guardrail certified nothing. The --filter '$filter' matched no tests, is malformed, or every matched test is [Skip]ped."
+    exit 1
+}
+
+# A TOTAL count cannot police this filter: the two settled ACTOR classes contribute dozens of tests,
+# so any total-based floor is cleared by them even when THIS pair's JudgeResolutionTests contributed
+# ZERO - which is exactly the case worth catching (a misnamed or untagged new class). Assert PER
+# CLASS; --list-tests enumerates without running anything.
+$listed = dotnet test tests/Guardrails.Core.Tests --filter 'FullyQualifiedName~JudgeResolutionTests' --list-tests --nologo 2>&1
+$own = @(($listed | Out-String) -split "`r?`n" | Where-Object { $_ -cmatch 'JudgeResolutionTests' }).Count
+if ($own -lt 1) {
+    Write-Output "exit 0 and $ran test(s) ran, but ZERO of them are in JudgeResolutionTests - so this guardrail certified only the settled actor classes. Most likely the pair's own class is misnamed or missing its class-level Trait attribute for Category = TierResolution."
     exit 1
 }
 exit 0

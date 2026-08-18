@@ -1,5 +1,5 @@
 # catches: a wave that merged green per-task but whose real-seam proof does not hold as a whole. The
-#          five judge clauses are made green by the wiring (06) and must SURVIVE the carry (07),
+#          five judge clauses are made green by the wiring (07) and must SURVIVE the carry (08),
 #          which edits TaskExecutor and Scheduler - the files every task of every plan runs through.
 #          This is the first and only place the WHOLE class runs at once after both, so a later task
 #          that regressed an earlier one's clause is caught HERE, at the wave boundary, rather than
