@@ -260,10 +260,11 @@ public sealed class TaskExecutor : ITaskExecutor
             }
 
             // Other terminal outcomes do not retry: cancellation, plus the needs-human escalations that
-            // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9) and the
+            // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9), the
             // permission-wall halt (issues #86 / #104 / #325: an EAGER #86 repeated-path halt, or an
-            // outcome-aware structural .claude/ halt on a non-converged attempt), both of which surface
-            // as TaskOutcome.NeedsHuman.
+            // outcome-aware structural .claude/ halt on a non-converged attempt), and the §6.2 no-route
+            // settle (#201) that never launched an attempt at all, all of which surface as
+            // TaskOutcome.NeedsHuman.
             if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 // #269 overwatcher: a PERMISSION WALL (a floor boundary that may fire on attempt 1) gets a
@@ -634,11 +635,9 @@ public sealed class TaskExecutor : ITaskExecutor
         // consumers — never two derivations that agree only by construction, which is the drift #198's
         // provenance and #200's argv override used to have.
         //
-        // §6.2's no-route outcome (nothing serves the rung, at it or above it) is deliberately NOT
-        // handled here — task 08 settles NoRoute as needs-human, BEFORE an attempt is launched, with the
-        // "register a provider serving tier >= R" remedy. Quietly turning it into a legacy launch is the
-        // silent fallback D30 severed, so the branch is left explicitly unhandled rather than papered
-        // over. (task 08 settles NoRoute)
+        // §6.2's no-route outcome (nothing serves the rung, at it or above it) is settled just below,
+        // BEFORE anything launches. Quietly turning it into a legacy launch is the silent fallback D30
+        // severed, so it gets its own branch rather than being papered over.
         TierResolution? route = ResolveRoute(task);
 
         // #198: the provenance the harness knows BEFORE the attempt runs — the resolved route, the
@@ -650,6 +649,24 @@ public sealed class TaskExecutor : ITaskExecutor
         // #382: the same grant split, in prose, at the head of the attempt's own log dir — a human
         // reading logs sees what the harness ADDED to what the plan DECLARED without querying run.json.
         WriteToolGrantHeader(logDir, provenance);
+
+        // #201 / DoR §6.2: NO candidate block exists at the requested rung or at any stronger one.
+        // Settle needs-human HERE — above the state snapshot, the environment and the runner call —
+        // journalling the distinct AttemptOutcome.NoRoute (§12.4) so a human, and #9 triage, reads a
+        // routing CONFIG gap rather than a generic action failure. A no-route DISCOVERED AFTER an
+        // attempt ran on some fallback is not a no-route, it is a silent fallback wearing the name, and
+        // there is nothing to fall back TO: D30 makes legacy the no-RUNG path and this the no-CANDIDATE
+        // path, so the runner's own model is out, and a costly block a ceiling excluded is out too —
+        // that floor constrains what the HARNESS may choose, and only a human's pin crosses it (D22).
+        // No retry either: resolution is a pure function of the tag and the registry, so every further
+        // attempt resolves identically. The provenance built above rides the record — `tierSource` says
+        // WHERE the unservable rung was asked for, while `provenance.tier`, the rung SERVED, is absent
+        // because none was.
+        if (route is { NoRoute: true })
+        {
+            return _journaler.NoRoute(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, provenance, NoRouteReason(route));
+        }
 
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
@@ -1522,6 +1539,42 @@ public sealed class TaskExecutor : ITaskExecutor
         task.Action.Kind == ActionKind.Prompt
             ? TierResolver.Resolve(task.Action, _plan.Config, cliDefaultModel: null)
             : null;
+
+    /// <summary>
+    /// The operator-facing diagnosis a §6.2 no-route settle carries (DoR §12.4) — the text that becomes
+    /// the <see cref="AttemptOutcome.NoRoute"/> attempt's summary and its <c>feedback.md</c>. It NAMES
+    /// the rung that could not be served and says what to CHANGE: "no route" on its own tells an
+    /// operator nothing, and this is the one message a human gets before the run stops.
+    ///
+    /// <para><b>The two causes GR2048 already distinguishes, because their fixes differ.</b> Nothing
+    /// DECLARES the rung ⇒ the operator needs a new or widened <c>routing.tiers</c>. The only blocks
+    /// declaring it are <c>costly: true</c> ⇒ the operator needs a pin, or to clear the flag; the floor
+    /// itself does not move, so the excluded block is named as the CAUSE and never offered as a route
+    /// (D22).</para>
+    ///
+    /// <para><b>Which case it is, is READ off the resolution.</b> The D28 pair
+    /// (<c>CostlyCeilingBound</c> and the blocks behind it) fell out of the candidacy sweep and rides
+    /// here for exactly this. Re-testing <c>costly</c> would be a second copy of the candidacy
+    /// predicate — which D22a forbids, and which would disagree with the resolver the day that
+    /// predicate moves.</para>
+    /// </summary>
+    private static string NoRouteReason(TierResolution route)
+    {
+        // The rung ASKED for. A no-route always has one (it is the input to the candidacy sweep); the
+        // fallback keeps a defensive residual readable rather than printing an empty quote.
+        string rung = route.RequestedTier ?? "(unknown)";
+        string remedy = $"register a provider serving tier >= '{rung}'";
+
+        return route is { CostlyCeilingBound: true, CostlyCeilingBlocks.Count: > 0 }
+            ? $"no route for tier '{rung}': the only block(s) declaring '{rung}' or a stronger tier " +
+              $"({string.Join(", ", route.CostlyCeilingBlocks.Select(name => $"promptRunners.{name}"))}) " +
+              $"are marked `costly: true`, which the harness never auto-selects — {remedy} that is not " +
+              "costly, or pin one of those blocks on the task (`action.runner` + `action.model`), or " +
+              "clear its `costly` flag. `guardrails validate` reports this statically as GR2048."
+            : $"no route for tier '{rung}': no promptRunners block declares '{rung}' or any stronger " +
+              $"tier in its `routing.tiers` — {remedy}, or add the tier to an existing block's " +
+              "`routing.tiers`. `guardrails validate` reports this statically as GR2048.";
+    }
 
     private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 

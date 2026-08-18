@@ -374,6 +374,73 @@ internal sealed class AttemptJournaler
     }
 
     /// <summary>
+    /// The §6.2 <c>no-route</c> settle (DoR §6.2/§12.4, model tiering #201): tier resolution found NO
+    /// candidate block at the rung this attempt asked for, nor at any STRONGER one, so the attempt was
+    /// never launched — no model ran, no guardrail was evaluated, no retry was burned. Record ONE
+    /// attempt with the distinct <see cref="AttemptOutcome.NoRoute"/> outcome, write an actionable
+    /// <c>feedback.md</c>, and settle the task <c>needs-human</c> immediately: the same shape
+    /// <see cref="NeedsHuman"/> uses, and for the same reason it skips the rest of the budget — a
+    /// further attempt resolves IDENTICALLY, because v1 resolution is a pure function of the tier tag
+    /// and the registry, and neither changes between attempts of one run.
+    ///
+    /// <para><b>The wording is the CALLER's; the record shape is this method's.</b>
+    /// <paramref name="reason"/> arrives already composed from the resolution's own D28 data (its
+    /// costly-ceiling flag and the blocks behind it), exactly as <see cref="RateLimitExhausted"/>
+    /// receives its reason. Re-deriving that diagnosis here would need a second copy of the candidacy
+    /// predicate, which D22a forbids.</para>
+    ///
+    /// <para><paramref name="provenance"/> rides the record AS USUAL — its <c>tierSource</c> and the
+    /// REQUESTED rung are how a reader learns WHICH rung could not be served — while
+    /// <see cref="AttemptProvenance.Tier"/>, the rung actually SERVED, is absent because none was.
+    /// Nothing here names a route: a costly block the ceiling excluded is a CAUSE, never a
+    /// destination (D22).</para>
+    /// </summary>
+    public AttemptResult NoRoute(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        AttemptProvenance? provenance,
+        string reason)
+    {
+        Directory.CreateDirectory(logDir);
+
+        string feedback =
+            $"# Task '{task.Id}' has no route for the tier it asked for\n\n" +
+            $"Task: {task.Description}\n\n" +
+            $"{reason}\n\n" +
+            "The attempt was NOT launched: no model ran, no guardrail was evaluated and no retry was " +
+            "burned. Once an effective tier exists, resolution OWNS the outcome (DoR §6.1, D30) — the " +
+            "harness does not fall back to the runner's own model, and never routes weaker than " +
+            "asked.\n\n" +
+            "This is a routing-CONFIGURATION gap, not a task defect, so no number of retries can clear " +
+            "it. `guardrails validate` reports the same gap statically as GR2048, before a token is " +
+            "spent; run it against this plan to catch it there next time.\n";
+        AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            // Nothing ran: no process exited, and nothing was spent.
+            ActionExitCode = null,
+            Outcome = AttemptOutcome.NoRoute,
+            LogDir = relativeLogDir,
+            Provenance = provenance
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            Summary = $"needs human: {reason}"
+        }, FeedbackPath: null, Outcome: AttemptOutcome.NoRoute);
+    }
+
+    /// <summary>
     /// The permission-wall early halt (issues #86 / #104): the runtime refused a write/edit on a path
     /// retrying cannot clear (a <c>.claude/</c> structural path, or the same path across repeated
     /// attempts). Record ONE attempt with the distinct <see cref="AttemptOutcome.PermissionDenied"/>
