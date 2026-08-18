@@ -1,0 +1,10 @@
+{
+  "description": "Extend Stage2ConformanceTests with the real-seam judge clauses the plan terminal gate's 6.5/D29 behaviour manifest matches by NAME — the judge resolving through the same resolver, the strength bump, the costly-ceiling degrade, D29's pinned-costly-actor carve-out and the verifier floor — red until the wiring lands",
+  "stableId": "t8k4gz",
+  "dependsOn": ["02-implement-judge-resolution", "04-implement-judge-provenance-schema"],
+  "writeScope": [
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2ConformanceTests.cs",
+    "tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

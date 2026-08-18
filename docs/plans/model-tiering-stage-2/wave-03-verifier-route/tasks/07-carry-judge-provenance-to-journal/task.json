@@ -1,0 +1,11 @@
+{
+  "description": "Carry the resolved judge datum from GuardrailRunner through TaskExecutor into both AttemptRecord construction paths (AttemptJournaler and the Scheduler worktree-mode settle) so judge provenance actually reaches run.json",
+  "stableId": "r2h6ws",
+  "dependsOn": ["06-wire-judge-resolution-into-guardrail-runner"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs"
+  ]
+}

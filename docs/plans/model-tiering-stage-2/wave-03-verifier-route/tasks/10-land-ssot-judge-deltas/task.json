@@ -1,0 +1,8 @@
+{
+  "description": "Land wave 3's schema and contract deltas in the SSOT (docs/plans/02-schemas-and-contracts.md) in the same change as the code: §4.2 frontmatter tier, §12.4's judge provenance object, and §9.6's verifier-route rules including the floor and D29",
+  "stableId": "f6s2vp",
+  "dependsOn": ["07-carry-judge-provenance-to-journal", "09-implement-verifier-advisory"],
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ]
+}

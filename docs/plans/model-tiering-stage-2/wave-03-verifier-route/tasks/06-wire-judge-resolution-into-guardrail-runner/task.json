@@ -1,0 +1,9 @@
+{
+  "description": "Wire TierResolver.ResolveJudge into GuardrailRunner's prompt-guardrail path so a judge's block is the RESOLVED route rather than frontmatter-or-default, and its guardrailOverrides therefore compose with that resolved block (rule 7)",
+  "stableId": "z5c9nf",
+  "dependsOn": ["05-author-tests-stage2-conformance-judge"],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs"
+  ],
+  "action": { "maxTurns": 75 }
+}

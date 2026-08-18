@@ -1,0 +1,3 @@
+{
+  "description": "Wave 3 ENTRY gate — the wave-1/2 artifacts this wave builds on are materialized on the branch: the resolver entry points, the ServesTier candidacy predicate, the strength/specialization/costly axes, TieringVerifierConfig.MinTier (unread until now), and the Stage2 harness + conformance suite it extends. POSITIVE and assert-present only (SSOT 14.2, the #181 archetype at the wave boundary)."
+}

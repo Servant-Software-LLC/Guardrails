@@ -1,0 +1,3 @@
+{
+  "description": "Wave 3 exit gate — the three Core.Tests classes this wave authors (judge resolution, judge provenance schema, verifier advisory) are green together on the merged wave HEAD. Distinct from the union build (compiles) and the conformance gate (integration seam). LOCAL: false at any partial union inside this wave by construction (#165)."
+}

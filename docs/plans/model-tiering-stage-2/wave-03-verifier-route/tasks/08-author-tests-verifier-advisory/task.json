@@ -1,0 +1,9 @@
+{
+  "description": "Author failing tests for the DoR §6.5 verifier advisory — a judge weaker than, or equal-and-weak to, its actor is surfaced and NEVER halts — plus the de-duplication rule across the preflight and JIT boundaries, and the VerifierAdvisory stub they compile against",
+  "stableId": "c7y3bm",
+  "dependsOn": ["02-implement-judge-resolution"],
+  "writeScope": [
+    "tests/Guardrails.Core.Tests/ModelTiering/VerifierAdvisoryTests.cs",
+    "src/Guardrails.Core/Prompts/VerifierAdvisory.cs"
+  ]
+}

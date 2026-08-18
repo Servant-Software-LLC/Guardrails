@@ -1,0 +1,9 @@
+{
+  "description": "Implement TierResolver.ResolveJudge per DoR §6.5 rules 1-7 and the §6.5.1 floor so the authored judge-resolution tests pass, consuming the shared ServesTier candidacy predicate rather than re-implementing it",
+  "stableId": "v6b2xr",
+  "dependsOn": ["01-author-tests-judge-resolution"],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/TierResolver.cs",
+    "src/Guardrails.Core/Prompts/TierResolution.cs"
+  ]
+}

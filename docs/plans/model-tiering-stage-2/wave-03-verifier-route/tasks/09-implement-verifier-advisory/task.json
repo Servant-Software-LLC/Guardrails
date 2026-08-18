@@ -1,0 +1,8 @@
+{
+  "description": "Implement VerifierAdvisory so the authored tests pass: detect the weak/equal-and-weak judge condition, and apply the de-duplication rule that keeps three reporting surfaces from shouting one condition",
+  "stableId": "n4q8jd",
+  "dependsOn": ["08-author-tests-verifier-advisory"],
+  "writeScope": [
+    "src/Guardrails.Core/Prompts/VerifierAdvisory.cs"
+  ]
+}

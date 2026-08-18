@@ -1,0 +1,3 @@
+{
+  "description": "Wave 3 union soundness (GR2028) — the merged wave HEAD compiles as a whole solution. Required because wave 3 is a PARALLEL topology: four independent branches whose disjoint file sets merge without conflict and can still disagree at compile time. LOCAL: a wave terminal postcondition, false at any partial union by construction (#165)."
+}
