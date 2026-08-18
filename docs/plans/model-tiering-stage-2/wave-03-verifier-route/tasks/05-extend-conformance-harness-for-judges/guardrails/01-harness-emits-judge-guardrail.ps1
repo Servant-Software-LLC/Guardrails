@@ -14,9 +14,14 @@
 #       guardrail never re-runs - so without this clause the prohibition would be unenforced for the
 #       one task able to violate it.
 #
-# SOUND ABSENCE / PRESENCE ONLY (#468). The positive probes below are absence checks whose FAILURE is
-# conclusive: a harness that never names the construct cannot be emitting it. Presence proves nothing
-# on its own - task 06's clauses, driven through this harness, are what prove it actually works.
+# TOKENS ARE MEASURED, NOT ASSUMED. An earlier draft of this guardrail keyed on `.prompt.md` with the
+# comment "appears nowhere else" - it appears TWICE in this very file already (the ACTION prompt, at
+# the task-folder write), so the clause was satisfied on arrival and one unused constant would have
+# passed the whole task. The two identifiers below were counted across src/ and tests/ before being
+# pinned in the prompt:  Stage2GuardrailSpec = 0,  JudgeGuardrail = 0.
+#
+# SOUND ABSENCE / PRESENCE ONLY (#468) for the structural half. Clause (c) is the BEHAVIOURAL half and
+# is the one that actually proves something: it runs the existing suite through the modified harness.
 $ErrorActionPreference = 'Continue'
 $file = 'tests/Guardrails.Integration.Tests/ModelTiering/Stage2PlanHarness.cs'
 $failures = @()
@@ -33,23 +38,40 @@ $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', '')
 $code = [regex]::Replace($code, '(?m)//.*$', '')
 $code = [regex]::Replace($code, '"""[\s\S]*?"""', '""')
 $code = [regex]::Replace($code, '@"(?:[^"]|"")*"', '""')
-$code = [regex]::Replace($code, '"(\\.|[^"\\])*"', '""')
+$code = [regex]::Replace($code, '"(\.|[^"\])*"', '""')
 
 if ($code -cnotmatch 'class\s+Stage2PlanHarness\b') {
     $failures += 'no `class Stage2PlanHarness` declaration - task 06 and its guardrails reference that exact type name'
 }
 
-# --- (a) the capability: a real prompt guardrail, and a ledger that distinguishes the judge --------
-# Keyed on the FILE EXTENSION the harness must write, which is unambiguous and appears nowhere else
-# in a harness that only ever wrote .cmd/.sh guardrails.
-if ($raw -cnotmatch '\.prompt\.md') {
-    $failures += 'the harness never writes a `.prompt.md` guardrail - it still emits only the deterministic 01-ok.cmd/.sh stub, so a plan spec cannot declare a prompt-JUDGE guardrail and every wave-3 conformance clause is unwritable'
+# --- (a) the capability, keyed on the PINNED names (measured zero before pinning) ----------------
+if ($code -cnotmatch '\bStage2GuardrailSpec\b') {
+    $failures += 'no Stage2GuardrailSpec in real code - that is the PINNED name for the record describing a judge guardrail on a task spec. Without a way to DECLARE one, the harness still emits only the deterministic 01-ok stub and every wave-3 conformance clause is unwritable.'
 }
-if ($code -cnotmatch '(?i)judge') {
-    $failures += 'the harness never mentions a judge in real code - the invocation ledger must DISTINGUISH a judge call from the action call and expose the runner/model/effort that carried it, or task 06 has nothing to assert on'
+if ($code -cnotmatch '\bJudgeGuardrail\b') {
+    $failures += 'no JudgeGuardrail member in real code - that is the PINNED name on Stage2TaskSpec carrying the judge guardrail declaration. Task 06 writes specs against this name.'
+}
+# The verdict contract: a fake that never reads GUARDRAILS_VERDICT_OUT writes no verdict, and a
+# prompt guardrail with no verdict FAILS by contract - so every clause task 06 builds would die for a
+# reason unrelated to routing. Checked over the RAW text: here the name legitimately appears as a
+# string literal key into invocation.Environment, which the stripped scan would have removed.
+if ($raw -cnotmatch 'GUARDRAILS_VERDICT_OUT') {
+    $failures += 'the harness never mentions GUARDRAILS_VERDICT_OUT - a prompt guardrail passes or fails SOLELY by its verdict file (a missing verdict is a contractual FAIL), so the fake runner must read that env var and write the verdict. FakeClaudePlanBuilder.cs in this same project already does exactly this; follow it.'
 }
 
-# --- (b) the prohibition, fail-on-present over STRIPPED source (#176 negative assertion) -----------
+# The harness must actually WRITE a prompt guardrail into a task's guardrails/ folder. This is the
+# clause declarations alone cannot satisfy: the two pinned names above can be declared as empty types
+# that do nothing, but a write pairing the guardrails DIRECTORY with a .prompt.md FILE is the
+# capability itself. Measured 0 in this file today (it writes "action.prompt.md" at the task root -
+# no guardrails dir - and 01-ok.cmd/.sh INTO guardrails - no prompt). Raw text, since the whole point
+# is the string literals. Constrained to ONE STATEMENT ([^;]) after measuring that a dotall window
+# matched ACROSS a boundary: CreateDirectory(..."guardrails")); then "action.prompt.md" two lines
+# later - pre-satisfied. That was the THIRD instance of this trap found while reviewing this wave.
+if ($raw -cnotmatch '"guardrails"[^;]{0,200}?prompt\.md') {
+    $failures += 'the harness never writes a .prompt.md INTO a task guardrails/ folder - it still emits only the deterministic 01-ok.cmd/.sh stub, so a plan spec cannot declare a prompt-JUDGE guardrail and every wave-3 conformance clause is unwritable. (The "action.prompt.md" it already writes is the ACTION, at the task root - not a guardrail.)'
+}
+
+# --- (b) the prohibition, fail-on-present over STRIPPED source (#176 negative assertion) ---------
 if ($code -cmatch 'TierResolver|TierResolution') {
     $failures += 'the harness CONSULTS TierResolver/TierResolution in real code - FORBIDDEN. Asking the resolver what it would have chosen makes every clause built on this harness PASS against an unwired GuardrailRunner: it proves the resolver, not the wiring. Observe the route through the JOURNAL and the CAPTURED INVOCATION instead. (Explaining the rule in a comment or a string is fine - this scan strips both.)'
 }
@@ -62,4 +84,28 @@ if ($failures.Count -gt 0) {
     Write-Output "This harness is the real-seam host the whole wave rests on: it drives the REAL PlanLoader/TaskExecutor/Scheduler and fakes only IPromptRunner, the process boundary. Extending it is this task's entire deliverable; authoring clauses on top of it is task 06's."
     exit 1
 }
+
+# --- (c) the BEHAVIOURAL half: the existing suite still passes THROUGH the modified harness -------
+# Everything above is structure and can be satisfied by declarations that do nothing. This clause is
+# what makes the task's deliverable real: wave 2's conformance facts run on this exact host, so a
+# harness that compiles but no longer DRIVES the seam correctly fails here. Scoped to the existing
+# conformance class by name (#455) - not the project, not the trait.
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'
+Write-Output "Running the existing Stage2 conformance suite through the modified harness..."
+$testOut = dotnet test tests/Guardrails.Integration.Tests --filter 'FullyQualifiedName~Stage2ConformanceTests' --nologo 2>&1
+$testExit = $LASTEXITCODE
+if ($testExit -ne 0) {
+    # #179: the WHY must reach the ~60-line retry-feedback tail, so re-emit the failure detail LAST.
+    $detail = ($testOut | Out-String) -split "`r?`n" | Where-Object {
+        $_ -match '\[FAIL\]|Assert\.|Expected:|Actual:|error CS|Exception|at Guardrails'
+    }
+    Write-Output ""
+    Write-Output "=== the existing Stage2 conformance suite BROKE on the modified harness (exit $testExit) ==="
+    Write-Output "This task EXTENDS the harness; it does not replace it. Every wave-2 clause runs on this host."
+    Write-Output ""
+    if ($detail) { $detail | Select-Object -Last 40 | ForEach-Object { Write-Output $_ } }
+    else { ($testOut | Out-String) -split "`r?`n" | Select-Object -Last 40 | ForEach-Object { Write-Output $_ } }
+    exit 1
+}
+Write-Output "existing conformance suite still green through the extended harness."
 exit 0

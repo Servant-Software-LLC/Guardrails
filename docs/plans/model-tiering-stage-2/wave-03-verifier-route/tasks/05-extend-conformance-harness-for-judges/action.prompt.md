@@ -25,21 +25,51 @@ guardrail"* — an `01-ok.cmd` / `01-ok.sh` containing `exit 0`. There is no way
 unwritable. That is why this is its own task rather than a footnote in the one that authors the
 clauses.
 
-### What to add
+### What to add — the names below are PINNED
 
-- A way for a `Stage2PlanSpec` to declare that a task carries a **prompt-judge guardrail** — the
-  harness writes a real `NN-<name>.prompt.md` into the task's `guardrails/` folder, with frontmatter
-  (at minimum an optional `runner` and, once wave 3 lands it, `tier`).
-- The **invocation ledger must distinguish a judge call from the action call** and expose what a
-  clause needs to assert on: which runner/block carried it, the model and effort it ran with, and
-  the guardrail it belongs to. Task 06's clauses observe the judge route through this ledger and
-  through the journal — they cannot see anything you do not surface.
-- Keep the existing deterministic-guardrail path working. Every wave-2 clause runs on this harness
-  and must keep passing; this is an extension, not a replacement.
+Your guardrail keys on these exact identifiers. Both are measured at **zero occurrences** across
+`src/` and `tests/` today, so they can only appear as a result of your work. Add whatever else you
+need; do not rename these.
 
-Follow the harness's existing shape — how it builds `guardrails.json` as a real JSON document, how
-it materialises a task folder, how it records invocations. Do not introduce a parallel mechanism
-beside one that already works.
+| what | pinned name |
+|---|---|
+| the record describing a judge guardrail on a task spec | **`Stage2GuardrailSpec`** |
+| the member on `Stage2TaskSpec` that carries it | **`JudgeGuardrail`** |
+
+- A `Stage2TaskSpec` carrying a `JudgeGuardrail` makes the harness write a real
+  `NN-<name>.prompt.md` into that task's `guardrails/` folder, with frontmatter (at minimum an
+  optional `runner` and `tier`). A task without one keeps today's deterministic `01-ok` guardrail.
+- The **invocation ledger must distinguish the judge call from the action call**. `Stage2RecordedCall`
+  already declares `IsGuardrail` — wave 2 added it with the comment *"always false for the plans this
+  harness emits … recorded so it stays true if a later wave adds a judge guardrail."* **That already works** — it is derived from the presence of `GUARDRAILS_ACTION_RESULT` in the
+  invocation environment, which is true for a judge call by construction, so do not rebuild it and
+  do not break it. What you must ADD is what a clause needs to assert on beyond the flag: which
+  runner/block carried the judge call, and the model and effort it ran with.
+
+### The verdict contract — get this wrong and EVERY judge guardrail fails
+
+A prompt guardrail passes or fails **solely by its verdict file, never by the runner's exit code**. A
+missing or invalid verdict is a FAIL with the reason `guardrail produced no valid verdict (see logs)`.
+So a fake runner that returns a successful `PromptResult` and writes nothing produces a judge
+guardrail that always fails, and every clause task 06 builds on it dies for a reason that has nothing
+to do with routing.
+
+The harness sets **`GUARDRAILS_VERDICT_OUT`** in the guardrail invocation's environment (a staged path
+the runner promotes the instant the call returns). Your fake must read it from
+`invocation.Environment` and write `{"pass": true, "reason": "..."}` there.
+
+**There is prior art in this very project — read it before you write anything.**
+`tests/Guardrails.Integration.Tests/FakeClaudePlanBuilder.cs` already emits a prompt guardrail
+(`Path.Combine(taskDir, "guardrails", "01-verdict.prompt.md")`) and its fake already branches on
+`GUARDRAILS_VERDICT_OUT` to write a verdict; `PromptOutputStagingTests.cs` does the same. Follow
+their shape — the only difference is that `Stage2PlanHarness` fakes `IPromptRunner` in-process
+rather than a CLI.
+
+### Keep the existing path working
+
+Every wave-2 clause runs on this harness and must keep passing — this is an extension, not a
+replacement. Your guardrail RUNS the existing conformance suite and fails if any of it breaks, so a
+restructure that "cleans up" the deterministic path is caught here rather than by task 06.
 
 ### The prohibition that makes this harness worth having
 
