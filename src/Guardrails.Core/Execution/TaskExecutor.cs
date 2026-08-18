@@ -649,6 +649,11 @@ public sealed class TaskExecutor : ITaskExecutor
         // #382: the same grant split, in prose, at the head of the attempt's own log dir — a human
         // reading logs sees what the harness ADDED to what the plan DECLARED without querying run.json.
         WriteToolGrantHeader(logDir, provenance);
+        // #201 / DoR §6.2: the same ROUTE, in prose, beside it — plus the two lines §6.2 requires to be
+        // LOUD (a climb, and a binding D28 costly ceiling once this task is on a re-attempt). Built from
+        // the SAME `route` and the SAME provenance object resolved above: a disclosure that resolved
+        // again would be the third derivation of a decision that must have exactly one.
+        WriteRouteDisclosure(logDir, attemptNumber, route, provenance);
 
         // #201 / DoR §6.2: NO candidate block exists at the requested rung or at any stronger one.
         // Settle needs-human HERE — above the state snapshot, the environment and the runner call —
@@ -1513,6 +1518,98 @@ public sealed class TaskExecutor : ITaskExecutor
 
     private static string Describe(IReadOnlyList<string> grants) =>
         grants.Count == 0 ? "(none)" : string.Join(", ", grants);
+
+    /// <summary>
+    /// Write <c>attempt-route.log</c> — the human-readable twin of <c>attempt-provenance.json</c>
+    /// (issue #201, DoR §6.2/§9.3), a sibling of <c>attempt-tool-grants.log</c> in the attempt's own
+    /// log dir. It names the resolved runner block, model and effort, the rung REQUESTED and the rung
+    /// SERVED, and the <c>tierSource</c> — then carries the two lines §6.2 requires to be LOUD:
+    /// <list type="bullet">
+    ///   <item>a <b>climb</b>, naming BOTH rungs — a route change the operator cannot see is a cost and
+    ///     latency change they will attribute to the prompt, so §6.2 says a climb is recorded
+    ///     <i>and</i> logged rather than silently absorbed.</item>
+    ///   <item>a <b>binding D28 costly ceiling on a re-attempt</b>, naming the blocks the harness was
+    ///     not permitted to pick. Without it, a failure caused by the weaker model running out of
+    ///     reasoning is indistinguishable from an ordinary failure and the operator tunes prompts
+    ///     against a constraint they cannot see. From attempt 2 only: the first attempt has not failed
+    ///     yet, so a ceiling warning there is noise on every single tiered run.</item>
+    /// </list>
+    ///
+    /// <para><b>Both data are READ off <paramref name="route"/>, never re-derived.</b>
+    /// <see cref="TierResolution.Climbed"/> and the
+    /// <see cref="TierResolution.CostlyCeilingBound"/>/<see cref="TierResolution.CostlyCeilingBlocks"/>
+    /// pair fall out of the resolver's candidacy sweep; re-testing the costly flag here would be a
+    /// second copy of the one candidacy predicate D22a forbids duplicating. This changes what is
+    /// LOGGED, never what is SELECTED — the costly floor is untouched, and a warning is not a new path
+    /// to a costly model.</para>
+    ///
+    /// <para>No-op when there is no resolution to report: a script attempt has no route at all, and an
+    /// attempt with no provenance has no model to disclose. Best-effort, exactly like the tool-grant
+    /// header — an IO hiccup must never fail an attempt over a disclosure artifact, and the
+    /// machine-readable copy is already safe in <c>attempt-provenance.json</c>.</para>
+    /// </summary>
+    private static void WriteRouteDisclosure(
+        string logDir,
+        int attemptNumber,
+        TierResolution? route,
+        Journal.AttemptProvenance? provenance)
+    {
+        if (route is null || provenance is null)
+        {
+            return;
+        }
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# route resolved for this attempt (issue #201, DoR §6)");
+        sb.AppendLine("# The prose twin of attempt-provenance.json: the promptRunners block, the model");
+        sb.AppendLine("# and the effort this attempt launched on, plus which rung was asked for versus");
+        sb.AppendLine("# which one was served. §6.2 requires a route change and a bound cost ceiling to");
+        sb.AppendLine("# be loud, not merely recorded in a JSON field nobody reads mid-run.");
+        sb.Append("runner block: ").AppendLine(route.RunnerName ?? "(none — no block was selected)");
+        sb.Append("model: ").AppendLine(provenance.Model ?? "(none)");
+        sb.Append("effort: ").AppendLine(route.Effort ?? "(none — the runner's own default applies)");
+        sb.Append("requested tier: ").AppendLine(RungOrNone(route.RequestedTier));
+        sb.Append("served tier: ").AppendLine(RungOrNone(route.Tier));
+        sb.Append("tierSource: ").AppendLine(
+            provenance.TierSource is { } source
+                ? Journal.JournalJson.TierSourceToken(source)
+                : "(none — nothing resolved through routing and nothing was overridden)");
+
+        // §6.2's climb, on ONE line carrying BOTH rungs: "served at X" alone reads as an ordinary task
+        // at X unless the request it replaced is sitting right beside it.
+        if (route.Climbed)
+        {
+            sb.Append("WARNING: tier climb — asked for '").Append(route.RequestedTier)
+                .Append("', served at '").Append(route.Tier)
+                .AppendLine("'. No promptRunners block is a candidate at the rung asked for, so the nearest stronger rung with one served this attempt (DoR §6.2). This is a cost and latency change the plan did not ask for; widen a block's `routing.tiers` if it was not intended.");
+        }
+
+        // D28: the ceiling becomes news exactly when the cheaper route has already lost once. The pair
+        // is READ off the resolution — the sweep that computed it is the only place it can be computed.
+        if (attemptNumber >= 2 && route is { CostlyCeilingBound: true, CostlyCeilingBlocks.Count: > 0 })
+        {
+            sb.Append("WARNING: a cost ceiling bound this re-attempt — ")
+                .Append(string.Join(", ", route.CostlyCeilingBlocks.Select(name => $"promptRunners.{name}")))
+                .Append(" declare tier '").Append(route.RequestedTier)
+                .AppendLine("' or a stronger one but are marked `costly: true`, which the harness never auto-selects (D22/D28), so this re-attempt ran on the weaker route again. A failure here may be the ceiling rather than the prompt: pin one of those blocks on the task (`action.runner` + `action.model`) or clear the flag that excluded it.");
+        }
+
+        try
+        {
+            AtomicFile.WriteAllText(Path.Combine(logDir, "attempt-route.log"), sb.ToString());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Disclosure is best-effort; attempt-provenance.json still carries the machine-readable copy.
+        }
+    }
+
+    /// <summary>
+    /// A rung for the disclosure, or the reason there is none — never an empty quote. The absent form
+    /// deliberately spells no rung TOKEN, so "a run with zero tier activity names no rung anywhere"
+    /// stays literally true of this file.
+    /// </summary>
+    private static string RungOrNone(string? tier) => tier ?? "(none — no rung resolved)";
 
     /// <summary>
     /// The ONE §6 attempt-launch resolution for <paramref name="task"/> (issues #198/#200/#201): which
