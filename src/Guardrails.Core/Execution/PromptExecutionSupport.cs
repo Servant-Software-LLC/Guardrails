@@ -37,30 +37,49 @@ internal sealed class PromptExecutionSupport
         maxTurns is { } turns ? settings with { MaxTurns = turns } : settings;
 
     /// <summary>
-    /// Apply a task-level <c>action.model</c> override over the runner-config settings (issue #200).
-    /// Precedence: a non-null <paramref name="modelOverride"/> wins outright; otherwise
-    /// <paramref name="settings"/>'s own <c>Model</c> (already the runner/guardrailOverrides-resolved
-    /// value) passes through unchanged — which is itself null when nothing configures a model, so the
-    /// runner falls through to the CLI's own default. Mirrors <see cref="ApplyPromptOverrides"/>'s
-    /// <c>maxTurns</c> shape exactly; kept as a separate method (rather than folded into it) because
-    /// only <see cref="ActionRunner"/> applies a model override — <see cref="GuardrailRunner"/> has no
-    /// task.json-level guardrail equivalent to apply.
+    /// Apply the RESOLVED ROUTE's model over the runner-config settings (issues #200/#201, DoR
+    /// <c>docs/plans/17-model-tiering.md</c> §6.1 and §12.5 — "<c>--model</c>/effort flags are emitted
+    /// from the RESOLVED route"). <paramref name="route"/> is the ONE resolution
+    /// <see cref="TaskExecutor"/> ran immediately before this attempt launched, so the string that
+    /// reaches the CLI and the string <c>run.json</c> records come from the same object rather than from
+    /// two derivations that agree only by construction.
+    ///
+    /// <para><b>A pinned or tier-resolved route decides OUTRIGHT — null included.</b> §6.1 folds the
+    /// task's own <c>action.model</c> pin into the resolution's own precedence, so a pinned task still
+    /// gets its model here; and a resolved block that names NO model means "pass no <c>--model</c>, let
+    /// the runner CLI pick", which must not silently fall back to the model of whichever block
+    /// <paramref name="settings"/> came from. That fallback is exactly the drift this seam removes —
+    /// provenance would record the sentinel while the invocation carried a real model.</para>
+    ///
+    /// <para><b>The LEGACY route applies no override at all</b> (Invariant 7). It IS today's two-level
+    /// fallback — <c>promptRunners.&lt;name&gt;.model</c> else the CLI's own default — and
+    /// <paramref name="settings"/> already carries that answer, including for the prompt-frontmatter
+    /// <c>runner:</c> selection an <c>ActionDefinition</c>-only resolution cannot see. So an untagged
+    /// task in a routing-enabled config runs byte-identically to before tiering existed.</para>
+    ///
+    /// <para>A null <paramref name="route"/> means nothing was resolved — a SCRIPT action, which never
+    /// reaches the prompt path — and likewise leaves the settings untouched.</para>
     /// </summary>
-    public static PromptRunnerSettings ApplyModelOverride(PromptRunnerSettings settings, string? modelOverride) =>
-        modelOverride is { } model ? settings with { Model = model } : settings;
+    public static PromptRunnerSettings ApplyModelOverride(PromptRunnerSettings settings, TierResolution? route) =>
+        route is null || route.Legacy ? settings : settings with { Model = route.Model };
 
     /// <summary>
-    /// The ONE precedence resolver for "what model does/did this prompt task run on" (issue #200,
-    /// fixing the #198 provenance gap): task.json <c>action.model</c> (if set) &gt; the runner
-    /// config's own <paramref name="runnerModel"/> (if set, itself already
-    /// <c>guardrailOverrides</c>-resolved by the caller when relevant) &gt; the sentinel
-    /// <c>"(cli default)"</c> — DISPLAY-ONLY, never passed as a real <c>--model</c> value — when
-    /// neither is set, so provenance is never a silent gap for a prompt task. Shared by
-    /// <see cref="ActionRunner"/> (via <see cref="ApplyModelOverride"/>, which needs the real
-    /// resolved-or-null value to decide whether to pass <c>--model</c> at all) and
-    /// <see cref="TaskExecutor.ResolveModel"/> (which needs the same precedence for provenance
-    /// display) so the two can never drift apart.
+    /// The DISPLAY-ONLY stand-in recorded when nothing configured a model at all, so the runner CLI
+    /// picks its own (issue #200). NEVER passed as a real <c>--model</c> value — it exists so per-attempt
+    /// provenance is not a silent gap for a prompt task.
     /// </summary>
-    public static string ResolveModelForDisplay(string? taskModelOverride, string? runnerModel) =>
-        taskModelOverride ?? runnerModel ?? "(cli default)";
+    public const string CliDefaultModelDisplay = "(cli default)";
+
+    /// <summary>
+    /// The provenance form of an ALREADY-RESOLVED route's model (issues #198/#200/#201): the resolved
+    /// string when the route names one, else <see cref="CliDefaultModelDisplay"/>.
+    ///
+    /// <para><b>This is all that is left of the shipped two-level fallback.</b> Its precedence —
+    /// <c>action.model</c> &gt; the runner block's <c>model</c> &gt; the sentinel — now lives inside
+    /// <see cref="TierResolver.Resolve"/>'s own §6.1 branches (D30 makes the legacy branch exactly that
+    /// fallback), so re-spelling the first two levels here would be the second derivation this wave
+    /// exists to delete. Only the sentinel is a DISPLAY concern, and only it stays here.</para>
+    /// </summary>
+    public static string ResolvedModelForDisplay(string? resolvedModel) =>
+        resolvedModel ?? CliDefaultModelDisplay;
 }
