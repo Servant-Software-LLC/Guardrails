@@ -149,6 +149,15 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 ResultText = result.ResultText,
                 CostUsd = result.CostUsd,
                 NumTurns = result.NumTurns,
+
+                // A straight CARRY of what the parser mined (DoR §12.4 / #230-lite) — no recomputation
+                // and no defaulting to { 0, 0 }: a runner that reported no usage stays null, so the
+                // per-tier spend line can tell "not reported" from "consumed nothing". The Claude-shaped
+                // ClaudeUsage is restated as the runner-agnostic PromptUsage here, where the quarantine
+                // (SSOT §9) ends.
+                Usage = result.Usage is { } usage
+                    ? new PromptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
+                    : null,
                 FailureKind = failureKind,
                 ResetHint = resetHint,
                 BlockedWritePaths = permissionScanner.BlockedWritePaths,
