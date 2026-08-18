@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=227253a7ed38d8d971d678c4bc1d1de0e9b42aaba4099de96426ff1ce9dff5fa -->
+<!-- guardrails:graph v1 source-sha256=c0148b9f17da22c91d5f5b3ba5c2874341b5e9c6d3aba0005b2464e55551942b -->
 
 ```mermaid
 flowchart TD
@@ -136,6 +136,17 @@ flowchart TD
     wave_2_guardrails_2["03-wave2-unit-suites-green"]:::guardrail
   end
   style wave_2_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_3_preflights["Wave 3 Entry Gate"]
+  end
+  style wave_3_preflights fill:#d4edda,stroke:#2e7d32,color:#10341a;
+  subgraph wave_3["Wave 3 — verifier-route"]
+    wave_3_stub["⏸ JIT stub — run halts here for breakdown"]
+    style wave_3_stub fill:#fef9c3,stroke:#ca8a04,color:#713f12;
+  end
+  style wave_3 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
+  subgraph wave_3_guardrails["Wave 3 Exit Gate"]
+  end
+  style wave_3_guardrails fill:#d4edda,stroke:#2e7d32,color:#10341a;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-solution-builds"]:::guardrail
     plan_guardrails_1["02-all-tests-pass"]:::guardrail
@@ -169,8 +180,11 @@ flowchart TD
   task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens --> task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens
   task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
   task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas --> wave_2_guardrails
+  wave_3_preflights --> wave_3_stub
+  wave_3_stub --> wave_3_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
-  wave_2_guardrails --> plan_guardrails
+  wave_2_guardrails -.->|"🔒 wave barrier"| wave_3_preflights
+  wave_3_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
 ```
