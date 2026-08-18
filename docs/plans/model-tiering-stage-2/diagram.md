@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=0e5935f6eaafb4f9bc34ebb8545ad0717d6ab0347043333d4621b87984c89eff -->
+<!-- guardrails:graph v1 source-sha256=227253a7ed38d8d971d678c4bc1d1de0e9b42aaba4099de96426ff1ce9dff5fa -->
 
 ```mermaid
 flowchart TD
@@ -120,10 +120,14 @@ flowchart TD
     end
     style task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
     subgraph task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens["13-implement-attempt-usage-tokens"]
-      task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_0["01-all-three-hops-landed"]:::guardrail
+      task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_0["01-both-hops-landed"]:::guardrail
       task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_1["02-usage-tokens-tests-pass"]:::guardrail
     end
     style task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+    subgraph task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas["14-land-ssot-schema-deltas"]
+      task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas_gr_0["01-ssot-deltas-landed"]:::guardrail
+    end
+    style task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   end
   style wave_2 fill:#f0f4f8,stroke:#64748b,color:#0f172a;
   subgraph wave_2_guardrails["Wave 2 Exit Gate"]
@@ -154,16 +158,17 @@ flowchart TD
   task_wave_02_attempt_launch_wiring_02_implement_journal_tiering_schema --> task_wave_02_attempt_launch_wiring_10_author_tests_per_tier_spend
   task_wave_02_attempt_launch_wiring_02_implement_journal_tiering_schema --> task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens
   task_wave_02_attempt_launch_wiring_03_author_tests_unavailability_classification --> task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification
+  task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
   task_wave_02_attempt_launch_wiring_05_build_conformance_harness --> task_wave_02_attempt_launch_wiring_06_author_tests_stage2_conformance
   task_wave_02_attempt_launch_wiring_06_author_tests_stage2_conformance --> task_wave_02_attempt_launch_wiring_07_wire_resolution_into_attempt_launch
   task_wave_02_attempt_launch_wiring_07_wire_resolution_into_attempt_launch --> task_wave_02_attempt_launch_wiring_08_settle_no_route_as_needs_human
   task_wave_02_attempt_launch_wiring_08_settle_no_route_as_needs_human --> task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings
+  task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
   task_wave_02_attempt_launch_wiring_10_author_tests_per_tier_spend --> task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend
+  task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
   task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens --> task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens
-  task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification --> wave_2_guardrails
-  task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings --> wave_2_guardrails
-  task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend --> wave_2_guardrails
-  task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens --> wave_2_guardrails
+  task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
+  task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas --> wave_2_guardrails
   wave_1_guardrails -.->|"🔒 wave barrier"| wave_2_preflights
   wave_2_guardrails --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;

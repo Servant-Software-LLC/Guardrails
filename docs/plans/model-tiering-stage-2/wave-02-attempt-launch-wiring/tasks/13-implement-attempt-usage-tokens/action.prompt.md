@@ -16,17 +16,17 @@
 ## Task
 
 Fill real logic over the `Usage` stub members so the tests authored by
-`12-author-tests-attempt-usage-tokens` pass, and carry the numbers all the way to the journal.
-**Do NOT edit those tests.** If they are genuinely wrong or incompatible, write
-`{"needsHuman": "<why>"}` to the state-out path rather than changing them.
+`12-author-tests-attempt-usage-tokens` pass. **Do NOT edit those tests.** If they are genuinely wrong
+or incompatible, write `{"needsHuman": "<why>"}` to the state-out path rather than changing them.
 
 **`docs/plans/17-model-tiering.md` §12.4 is the design of record and wins over any paraphrase here.**
 
-Without this task, `AttemptRecord.Usage` is a schema member nothing ever populates and task 11's
-per-tier line reports cost only — which defeats the reason the token axis exists at all: a **costless
-local provider** reports no `total_cost_usd`, so tokens are the *only* evidence of what it did.
+The token axis exists because a **costless local provider** reports no `total_cost_usd`, so tokens
+are the *only* evidence of what it did. Task 11's per-tier line is its first consumer.
 
-There are three hops, and all three must land or the datum never reaches the journal.
+**TWO hops, both in your write scope: PARSE, then CARRY.** A third hop — journalling the value onto
+`AttemptRecord` — is deliberately NOT part of this task; §3 below explains why, and you must not
+attempt it.
 
 ### 1. Parse — `src/Guardrails.Core/Prompts/ClaudeStreamParser.cs`
 
@@ -67,35 +67,45 @@ define it. If its shape is genuinely wrong for what the parser produces, write
 12's tests compile against that declaration and changing it under them is how a pair silently stops
 proving anything.
 
-### 3. Journal — `src/Guardrails.Core/Execution/AttemptJournaler.cs`
+### 3. Journalling is NOT your job — and this is why
 
-Populate `AttemptRecord.Usage` from the prompt result. `AttemptUsage` and `AttemptRecord.Usage`
-already exist — task `01`/`02` own `JournalModel.cs` and have landed them; that file is **outside
-your write scope** and you must not edit it. If the member you need is genuinely missing, write
-`{"needsHuman": "<what is missing>"}` rather than declaring it yourself.
+DoR §12.4 also wants the datum on `AttemptRecord.Usage`, and an earlier revision of this task asked
+for it. **That hop is severed and no edit inside your write scope can reach it.** `AttemptJournaler`
+does not build an `AttemptRecord` from a `PromptResult` — it builds one from an **`ActionRun`**, and
+`ActionRun` carries `CostUsd` and no usage sibling:
 
-Follow the shape `Provenance` already uses: `[JsonIgnore(WhenWritingNull)]`, so a **deterministic
-(script) attempt, a runner that reported no usage, and every older journal all simply OMIT the key**.
-Adding `"usage": null` to every script attempt's record would be new noise in `run.json` for users
-who never opted into any of this.
+```
+ActionRunner.cs:347   internal sealed record ActionRun
+ActionRunner.cs:352       public decimal? CostUsd { get; init; }    <- no Usage
+ActionRunner.cs:439       CostUsd = result.CostUsd,                 <- where the carry would go
+AttemptJournaler.cs:81        CostUsd = action.CostUsd,             <- reads ActionRun, not PromptResult
+```
+
+Landing it needs `ActionRunner.cs`, `RunReport.cs` (`PendingAttempt` has no `Usage` either) and
+`Scheduler.cs` (`RecordSucceededSettle` builds a **second** `AttemptRecord` that bypasses the
+journaler entirely) — none of which is yours. A previous attempt of this task found exactly this and
+correctly halted rather than satisfying a guardrail with a token that journals nothing.
+
+**So do not touch `AttemptJournaler.cs`, and do not add a `Usage` member anywhere in
+`src/Guardrails.Core/Execution/`.** Your guardrail no longer asks for it. Getting the value onto
+`PromptResult` correctly is the whole deliverable; a separate task owns the trip from there to
+`run.json`.
 
 ### The regression risk this task carries
 
-`AttemptJournaler` is also edited by task `08-settle-no-route-as-needs-human`, and you meet its work
-for the first time at the wave union gate. A merged journaler that records usage but **no longer
-records the `no-route` outcome** compiles cleanly and passes your own filtered tests — the wave's
-`03-wave2-unit-suites-green` and `02-stage2-conformance-green` gates are what catch it. Add your
-field; do not restructure the method around it.
+Your two files sit on the path every prompt attempt takes. `ClaudeStreamParser` is fed **untrusted
+runner output on every attempt** — a malformed `usage` that throws would fail an otherwise-successful
+task — and `ClaudePromptRunner` builds the result every attempt depends on. Add your member beside
+the existing `CostUsd` handling; do not restructure either method around it.
 
 **Scope boundary (harness-enforced):** Write only to
-`src/Guardrails.Core/Prompts/ClaudeStreamParser.cs`,
-`src/Guardrails.Core/Prompts/ClaudePromptRunner.cs` and
-`src/Guardrails.Core/Execution/AttemptJournaler.cs`. After this task completes, the harness runs a
-`git diff` check and rejects any edit outside these paths — including the test file,
-`PromptInvocation.cs` (task 12 owns the declaration), `JournalModel.cs` (task 01/02),
-`ClaudeStreamParserTests.cs`, `TaskExecutor.cs`, or the `.csproj`. An out-of-scope edit fails the
-task immediately and consumes a retry.
+`src/Guardrails.Core/Prompts/ClaudeStreamParser.cs` and
+`src/Guardrails.Core/Prompts/ClaudePromptRunner.cs`. After this task completes, the harness runs a
+`git diff` check and rejects any edit outside those paths — including the test file,
+`PromptInvocation.cs` (task 12 owns the declaration), `AttemptJournaler.cs` / `ActionRunner.cs` /
+`Scheduler.cs` (out of scope by design, see above), `JournalModel.cs` (task 01/02), or the `.csproj`.
+An out-of-scope edit fails the task immediately and consumes a retry.
 
 Nothing here changes routing or cost accounting. If you find yourself reading `promptRunners`,
-`TierResolution` or `JournalCost`, stop: this task moves token counts from the runner's output to the
-journal, and nothing else.
+`TierResolution` or `JournalCost`, stop: this task moves token counts from the runner's raw output
+onto `PromptResult`, and nothing else.

@@ -1,14 +1,14 @@
 {
   "version": 2,
-  "reviewedAt": "2026-08-17T21:34:12.8514843+00:00",
-  "planHash": "sha256:7bed43c2a6a521885f38344dfc12e567a724e61e610307a7b571afbbe2cc6db6",
+  "reviewedAt": "2026-08-18T04:33:27.8628476+00:00",
+  "planHash": "sha256:5275f70ca1d853b42aa62c2f1254428b3f6044457a855d4357afbba03bf6321b",
   "attestation": {
     "source": "review-artifact",
     "tool": "guardrails 1.6.0",
-    "actor": "claude-opus-5 (lead) \u2014 wave-02 adversarial pass, 21 executed two-sided cases",
+    "actor": "claude-opus-5 (lead) \u2014 post-run remediation addendum",
     "evidence": {
-      "reportPath": "state\\reviews\\review-7bed43c2a6a5-2026-08-17T213231Z.md",
-      "reportDigest": "sha256:f924298b9992facf84d79d9cd32e81ad70b0ea03877e1738a1908cb8ecae11e2"
+      "reportPath": "state\\reviews\\review-5275f70ca1d8-2026-08-18T043247Z.md",
+      "reportDigest": "sha256:f3c3ad8f6938219b080f09fb4ad8c9cd134ab2affdf96e03a763d1ea2011975d"
     }
   }
 }

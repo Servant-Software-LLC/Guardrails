@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=dd967714cb44c530743e2da4ee35e2503265b41dcfa0032646d1faa935eafaf5 -->
+<!-- guardrails:graph v1 source-sha256=17dfce2ac8e81b9c1bb5069800f2b5b600dc4a0d0e9760e86a018bda1a157149 -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -162,10 +162,14 @@
   end
   style task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens["wave-02-attempt-launch-wiring/13-implement-attempt-usage-tokens"]
-    task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_0["01-all-three-hops-landed"]:::guardrail
+    task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_0["01-both-hops-landed"]:::guardrail
     task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_1["02-usage-tokens-tests-pass"]:::guardrail
   end
   style task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas["wave-02-attempt-launch-wiring/14-land-ssot-schema-deltas"]
+    task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas_gr_0["01-ssot-deltas-landed"]:::guardrail
+  end
+  style task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-wave-union-builds"]:::guardrail
     plan_guardrails_1["02-stage2-conformance-green"]:::guardrail
@@ -179,16 +183,17 @@
   task_wave_02_attempt_launch_wiring_02_implement_journal_tiering_schema --> task_wave_02_attempt_launch_wiring_10_author_tests_per_tier_spend
   task_wave_02_attempt_launch_wiring_02_implement_journal_tiering_schema --> task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens
   task_wave_02_attempt_launch_wiring_03_author_tests_unavailability_classification --> task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification
+  task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
   task_wave_02_attempt_launch_wiring_05_build_conformance_harness --> task_wave_02_attempt_launch_wiring_06_author_tests_stage2_conformance
   task_wave_02_attempt_launch_wiring_06_author_tests_stage2_conformance --> task_wave_02_attempt_launch_wiring_07_wire_resolution_into_attempt_launch
   task_wave_02_attempt_launch_wiring_07_wire_resolution_into_attempt_launch --> task_wave_02_attempt_launch_wiring_08_settle_no_route_as_needs_human
   task_wave_02_attempt_launch_wiring_08_settle_no_route_as_needs_human --> task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings
+  task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
   task_wave_02_attempt_launch_wiring_10_author_tests_per_tier_spend --> task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend
+  task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
   task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens --> task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens
-  task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification --> plan_guardrails
-  task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings --> plan_guardrails
-  task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend --> plan_guardrails
-  task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens --> plan_guardrails
+  task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens --> task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas
+  task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;
   click plan_preflights_0 href "preflights/01-wave-01-artifacts-materialized.ps1" "Wave 2 entry gate — wave 1's resolver surface (TierResolver.Resolve/SelectCandidate, every TierResolution datum wave 2 reads, ActionDefinition.TierOrigin) is actually present on the delivered branch. Positive, assert-present only (#181 at the wave boundary)." _blank
@@ -222,12 +227,13 @@
   click task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens_gr_0 href "tasks/12-author-tests-attempt-usage-tokens/guardrails/01-build-passes.ps1" "01-build-passes" _blank
   click task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens_gr_1 href "tasks/12-author-tests-attempt-usage-tokens/guardrails/02-tests-fail-on-stubs.ps1" "02-tests-fail-on-stubs" _blank
   click task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens_gr_2 href "tasks/12-author-tests-attempt-usage-tokens/guardrails/03-covers-cache-token-total.ps1" "03-covers-cache-token-total" _blank
-  click task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_0 href "tasks/13-implement-attempt-usage-tokens/guardrails/01-all-three-hops-landed.ps1" "01-all-three-hops-landed" _blank
+  click task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_0 href "tasks/13-implement-attempt-usage-tokens/guardrails/01-both-hops-landed.ps1" "01-both-hops-landed" _blank
   click task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens_gr_1 href "tasks/13-implement-attempt-usage-tokens/guardrails/02-usage-tokens-tests-pass.ps1" "02-usage-tokens-tests-pass" _blank
+  click task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas_gr_0 href "tasks/14-land-ssot-schema-deltas/guardrails/01-ssot-deltas-landed.ps1" "01-ssot-deltas-landed" _blank
   click plan_guardrails_0 href "guardrails/01-wave-union-builds.ps1" "Wave 2 union soundness (GR2028) — the merged wave HEAD compiles as a whole solution. This wave is a multi-branch topology whose branches edit different files that reference the SAME new journal types, so a per-file merge cannot conflict and a cross-file mismatch shows up only at compile time. LOCAL: a wave terminal postcondition, false at any partial union by construction (#165)." _blank
   click plan_guardrails_1 href "guardrails/02-stage2-conformance-green.ps1" "Wave 2 exit gate — the whole Stage2ConformanceTests real-seam suite (nine clauses, greened by three different tasks) passes on the merged wave HEAD. LOCAL: a wave terminal postcondition, false at any partial union by construction (#165). Filtered, so it deliberately does not credit GR2028 — its sibling 01-wave-union-builds does." _blank
   click plan_guardrails_2 href "guardrails/03-wave2-unit-suites-green.ps1" "Wave 2 exit gate — the four Core.Tests classes this wave authors (journal-tiering schema, connection-unavailability classification, per-tier spend, attempt usage tokens) all pass on the merged wave HEAD. LOCAL: a wave terminal postcondition (#165). Filtered, so it does not credit GR2028." _blank</script>
-<script type="application/json" id="task-folder-targets">{"task_wave_02_attempt_launch_wiring_01_author_tests_journal_tiering_schema":"tasks/01-author-tests-journal-tiering-schema/","task_wave_02_attempt_launch_wiring_02_implement_journal_tiering_schema":"tasks/02-implement-journal-tiering-schema/","task_wave_02_attempt_launch_wiring_03_author_tests_unavailability_classification":"tasks/03-author-tests-unavailability-classification/","task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification":"tasks/04-implement-unavailability-classification/","task_wave_02_attempt_launch_wiring_05_build_conformance_harness":"tasks/05-build-conformance-harness/","task_wave_02_attempt_launch_wiring_06_author_tests_stage2_conformance":"tasks/06-author-tests-stage2-conformance/","task_wave_02_attempt_launch_wiring_07_wire_resolution_into_attempt_launch":"tasks/07-wire-resolution-into-attempt-launch/","task_wave_02_attempt_launch_wiring_08_settle_no_route_as_needs_human":"tasks/08-settle-no-route-as-needs-human/","task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings":"tasks/09-disclose-resolved-route-and-warnings/","task_wave_02_attempt_launch_wiring_10_author_tests_per_tier_spend":"tasks/10-author-tests-per-tier-spend/","task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend":"tasks/11-implement-per-tier-spend/","task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens":"tasks/12-author-tests-attempt-usage-tokens/","task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens":"tasks/13-implement-attempt-usage-tokens/"}</script>
+<script type="application/json" id="task-folder-targets">{"task_wave_02_attempt_launch_wiring_01_author_tests_journal_tiering_schema":"tasks/01-author-tests-journal-tiering-schema/","task_wave_02_attempt_launch_wiring_02_implement_journal_tiering_schema":"tasks/02-implement-journal-tiering-schema/","task_wave_02_attempt_launch_wiring_03_author_tests_unavailability_classification":"tasks/03-author-tests-unavailability-classification/","task_wave_02_attempt_launch_wiring_04_implement_unavailability_classification":"tasks/04-implement-unavailability-classification/","task_wave_02_attempt_launch_wiring_05_build_conformance_harness":"tasks/05-build-conformance-harness/","task_wave_02_attempt_launch_wiring_06_author_tests_stage2_conformance":"tasks/06-author-tests-stage2-conformance/","task_wave_02_attempt_launch_wiring_07_wire_resolution_into_attempt_launch":"tasks/07-wire-resolution-into-attempt-launch/","task_wave_02_attempt_launch_wiring_08_settle_no_route_as_needs_human":"tasks/08-settle-no-route-as-needs-human/","task_wave_02_attempt_launch_wiring_09_disclose_resolved_route_and_warnings":"tasks/09-disclose-resolved-route-and-warnings/","task_wave_02_attempt_launch_wiring_10_author_tests_per_tier_spend":"tasks/10-author-tests-per-tier-spend/","task_wave_02_attempt_launch_wiring_11_implement_per_tier_spend":"tasks/11-implement-per-tier-spend/","task_wave_02_attempt_launch_wiring_12_author_tests_attempt_usage_tokens":"tasks/12-author-tests-attempt-usage-tokens/","task_wave_02_attempt_launch_wiring_13_implement_attempt_usage_tokens":"tasks/13-implement-attempt-usage-tokens/","task_wave_02_attempt_launch_wiring_14_land_ssot_schema_deltas":"tasks/14-land-ssot-schema-deltas/"}</script>
 <script type="application/json" id="node-status">{}</script>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
 <script type="module">

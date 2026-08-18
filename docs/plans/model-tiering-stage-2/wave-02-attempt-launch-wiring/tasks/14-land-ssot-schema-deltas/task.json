@@ -1,0 +1,14 @@
+{
+  "description": "Land wave 2's schema deltas in the SSOT (docs/plans/02-schemas-and-contracts.md) in the same change as the code they describe — §12.4 provenance/tierSource/usage/no-route, §3 ActionDefinition.TierOrigin, and §9.6's v1 routing content including the §6.3 answer task 04 published to state",
+  "stableId": "h2r7mk",
+  "dependsOn": [
+    "04-implement-unavailability-classification",
+    "09-disclose-resolved-route-and-warnings",
+    "11-implement-per-tier-spend",
+    "13-implement-attempt-usage-tokens"
+  ],
+  "writeScope": [
+    "docs/plans/02-schemas-and-contracts.md"
+  ],
+  "action": { "maxTurns": 60 }
+}
