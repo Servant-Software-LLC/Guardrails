@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Guardrails.Core.Journal;
 
 /// <summary>
@@ -45,10 +47,76 @@ public static class JournalTierSpend
     /// Attempts without one (a legacy-fallback route, a pin, a script action, any older journal) are
     /// excluded from the aggregation entirely and are NOT collected into a bucket of their own.</para>
     /// </summary>
-    public static IReadOnlyList<TierSpend>? Summarize(JournalDocument document) =>
-        throw new NotImplementedException(
-            "JournalTierSpend.Summarize is the #230-lite per-tier aggregation stub — implemented by " +
-            "wave-02-attempt-launch-wiring/11.");
+    public static IReadOnlyList<TierSpend>? Summarize(JournalDocument document)
+    {
+        Dictionary<string, RungAccumulator> byRung = new(StringComparer.Ordinal);
+
+        foreach (TaskJournalEntry entry in document.Tasks.Values)
+        {
+            // Every ATTEMPT counts independently, retries included: resolution runs per attempt, so a
+            // retry resolved and spent again. Folding a task down to its final attempt would under-report
+            // the rung by exactly the retry spend — the spend this measurement most needs to see.
+            foreach (AttemptRecord attempt in entry.Attempts)
+            {
+                string? tier = attempt.Provenance?.Tier;
+
+                // No rung resolved — a legacy-fallback route (D30), a pin (D31), a script attempt, any
+                // journal written before tiering. Excluded from the aggregation OUTRIGHT: it is NOT
+                // collected into a bucket of its own, which is the Invariant 7 breakage §9.3 forbids by
+                // name and the one that would land on every existing single-model user's run.
+                if (string.IsNullOrWhiteSpace(tier))
+                {
+                    continue;
+                }
+
+                if (!byRung.TryGetValue(tier, out RungAccumulator? rung))
+                {
+                    rung = new RungAccumulator();
+                    byRung.Add(tier, rung);
+                }
+
+                rung.Add(attempt);
+            }
+        }
+
+        // NOT an empty list: a tiering-inactive run has nothing to report, and the null is what lets the
+        // caller spell the suppression as `is { }` rather than testing a rendered line for emptiness.
+        // document.OverheadCostUsd never reaches here at all — it is not a task attempt and resolved no
+        // rung, so it belongs to none of these buckets (JournalCost.Total keeps folding it into the run
+        // total exactly as it does today).
+        if (byRung.Count == 0)
+        {
+            return null;
+        }
+
+        return AscendingRungs(byRung).Select(tier => byRung[tier].ToSpend(tier)).ToList();
+    }
+
+    /// <summary>
+    /// The present rungs in <c>Model.ActionTiers.All</c>'s ASCENDING order — not dictionary order and not
+    /// first-appearance order, so the line does not shuffle between runs of the same plan. A rung nothing
+    /// resolved on is simply skipped, never an empty row.
+    /// </summary>
+    private static IEnumerable<string> AscendingRungs(Dictionary<string, RungAccumulator> byRung)
+    {
+        foreach (string tier in Model.ActionTiers.All)
+        {
+            if (byRung.ContainsKey(tier))
+            {
+                yield return tier;
+            }
+        }
+
+        // A rung this build does not recognize is still REPORTED rather than silently dropped: the job
+        // here is to account for recorded spend, not to re-validate a token the loader already gated.
+        // Ordinal, after the known rungs, keeps the order deterministic all the same.
+        foreach (string tier in byRung.Keys
+                     .Where(t => !Model.ActionTiers.IsRecognized(t))
+                     .OrderBy(t => t, StringComparer.Ordinal))
+        {
+            yield return tier;
+        }
+    }
 
     /// <summary>
     /// The operator-facing per-tier spend line for <paramref name="document"/> — DoR §9.3's worked example
@@ -74,9 +142,90 @@ public static class JournalTierSpend
     /// value and the caller owns how it is labelled.</para>
     /// </summary>
     public static string? Render(JournalDocument document) =>
-        throw new NotImplementedException(
-            "JournalTierSpend.Render is the #230-lite per-tier spend line stub — implemented by " +
-            "wave-02-attempt-launch-wiring/11.");
+        Summarize(document) is { } summary ? string.Join(" · ", summary.Select(Segment)) : null;
+
+    /// <summary>
+    /// One rung's segment: <c>"&lt;tier&gt;: &lt;tokens&gt; tok / $&lt;cost&gt;"</c> minus whichever half
+    /// was never reported. The rung is labelled with the wire token VERBATIM as the journal recorded it —
+    /// the same spelling the manifest's <c>tier:</c> and the journal's <c>"tier"</c> use, because three
+    /// spellings of one concept is how a measurement stops being greppable.
+    /// </summary>
+    private static string Segment(TierSpend rung)
+    {
+        // A rung with tokens and no cost prints the volume ALONE — never "$0.00", a number the runner
+        // never said. A RECORDED $0 is a reported fact and does print (§9.3's `easy: … / $0`), the same
+        // distinction JournalCost.Total already draws between a null cost and a zero one.
+        string? tokens = rung.TotalTokens is { } total ? $"{Volume(total)} tok" : null;
+        string? money = rung.CostUsd is { } cost
+            ? "$" + cost.ToString("F4", CultureInfo.InvariantCulture)
+            : null;
+
+        if (tokens is not null && money is not null)
+        {
+            return $"{rung.Tier}: {tokens} / {money}";
+        }
+
+        if (tokens is not null)
+        {
+            return $"{rung.Tier}: {tokens}";
+        }
+
+        if (money is not null)
+        {
+            return $"{rung.Tier}: {money}";
+        }
+
+        // Routing HAPPENED — that is itself evidence, so the rung is still named — but the runner
+        // reported neither half, and a zero of either kind would be invented rather than measured.
+        return $"{rung.Tier}: no spend reported";
+    }
+
+    /// <summary>
+    /// Token volume: the exact count below a thousand (<c>"640"</c>), whole thousands with a <c>k</c>
+    /// suffix at or above it (<c>"42k"</c>), invariant culture so the line reads the same everywhere.
+    /// </summary>
+    private static string Volume(long tokens) =>
+        tokens >= 1_000
+            ? (tokens / 1_000).ToString(CultureInfo.InvariantCulture) + "k"
+            : tokens.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// One rung's running totals while <see cref="Summarize"/> walks the journal. Cost and usage are
+    /// tracked with SEPARATE "was any reported" flags because they are separately reported: null means
+    /// "never reported", which is not the claim zero makes.
+    /// </summary>
+    private sealed class RungAccumulator
+    {
+        private decimal costUsd;
+        private bool anyCost;
+        private long inputTokens;
+        private long outputTokens;
+        private bool anyUsage;
+
+        internal void Add(AttemptRecord attempt)
+        {
+            if (attempt.CostUsd is { } cost)
+            {
+                costUsd += cost;
+                anyCost = true;
+            }
+
+            if (attempt.Usage is { } usage)
+            {
+                inputTokens += usage.InputTokens;
+                outputTokens += usage.OutputTokens;
+                anyUsage = true;
+            }
+        }
+
+        internal TierSpend ToSpend(string tier) => new()
+        {
+            Tier = tier,
+            CostUsd = anyCost ? costUsd : null,
+            InputTokens = anyUsage ? inputTokens : null,
+            OutputTokens = anyUsage ? outputTokens : null
+        };
+    }
 }
 
 /// <summary>
