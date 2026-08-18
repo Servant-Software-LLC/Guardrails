@@ -38,7 +38,15 @@ $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', '')
 $code = [regex]::Replace($code, '(?m)//.*$', '')
 $code = [regex]::Replace($code, '"""[\s\S]*?"""', '""')
 $code = [regex]::Replace($code, '@"(?:[^"]|"")*"', '""')
-$code = [regex]::Replace($code, '"(\.|[^"\])*"', '""')
+# The ordinary-string pattern is BUILT from [char]92 rather than written with escaped
+# backslashes. Authoring it literally produced '"(\.|[^"\])*"' - an INVALID regex
+# ("Unterminated [] set") that THROWS at runtime. With ErrorActionPreference='Continue' the
+# throw is not fatal: the strip is silently skipped, string literals survive, and the
+# [Trait("Category", "TierResolution")] attribute then trips the ban below - making the
+# guardrail UNSATISFIABLE every attempt. That is the exact failure wave 2 measured and fixed;
+# this form cannot regress into it.
+$bs = [char]92
+$code = [regex]::Replace($code, ([string][char]34 + '(' + $bs + $bs + '.|[^' + [string][char]34 + $bs + $bs + '])*' + [string][char]34), [string][char]34 + [string][char]34)   # ordinary strings - kills the Trait value
 
 if ($code -cnotmatch 'class\s+Stage2PlanHarness\b') {
     $failures += 'no `class Stage2PlanHarness` declaration - task 06 and its guardrails reference that exact type name'

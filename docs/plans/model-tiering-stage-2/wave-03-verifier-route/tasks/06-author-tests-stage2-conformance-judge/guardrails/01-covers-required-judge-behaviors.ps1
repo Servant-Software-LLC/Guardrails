@@ -44,6 +44,46 @@ foreach ($b in $behaviours) {
         $missing += ($b.Id + "  [expected a discovered test named: " + $b.Marker + "]")
     }
 }
+
+# --- the PROHIBITION wave 2 carries and wave 3 must not drop -------------------------------------
+# Wave 2's equivalent guardrail bans this on the same file. Wave 2's guardrails never re-run, and
+# THIS task is the one that edits Stage2ConformanceTests.cs - so without the clause below the
+# prohibition would be unenforced for the only task able to violate it.
+#
+# Why it matters more here than anywhere: a clause that asks TierResolver what it WOULD have chosen
+# and asserts the answer goes RED before task 07 and GREEN after - including under the exact half-wire
+# task 07's own guardrail warns about (a route computed and then not executed on). It would prove the
+# resolver, which waves 1-2 already proved, and say nothing about whether anything CALLS it (#382).
+#
+# STRING LITERALS ARE STRIPPED FIRST, and that is load-bearing, not hygiene: the class carries
+# [Trait("Category", "TierResolution")], whose own string value contains the banned token. Wave 2
+# MEASURED this - without stripping, the required attribute trips the ban and NO file can satisfy
+# both clauses, dead-ending the task every attempt (#97/#98/#470).
+#
+# Anchored on a USE, not a mention (#76): a dotted call TierResolver.Resolve(...) or TierResolution
+# used as a type. A name inside a comment or a string is not a consultation.
+$suite = 'tests/Guardrails.Integration.Tests/ModelTiering/Stage2ConformanceTests.cs'
+if (-not (Test-Path $suite)) {
+    Write-Output "$suite does not exist - it is this task's deliverable and the wave exit gate reads it by name"
+    exit 1
+}
+$content = Get-Content -Raw $suite
+$scan = [regex]::Replace($content, '/\*[\s\S]*?\*/', '')
+$scan = [regex]::Replace($scan, '(?m)//.*$', '')
+$scan = [regex]::Replace($scan, '"""[\s\S]*?"""', '""')
+$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')
+# The ordinary-string pattern is BUILT from [char]92 rather than written with escaped
+# backslashes. Authoring it literally produced '"(\.|[^"\])*"' - an INVALID regex
+# ("Unterminated [] set") that THROWS at runtime. With ErrorActionPreference='Continue' the
+# throw is not fatal: the strip is silently skipped, string literals survive, and the
+# [Trait("Category", "TierResolution")] attribute then trips the ban below - making the
+# guardrail UNSATISFIABLE every attempt. That is the exact failure wave 2 measured and fixed;
+# this form cannot regress into it.
+$bs = [char]92
+$scan = [regex]::Replace($scan, ([string][char]34 + '(' + $bs + $bs + '.|[^' + [string][char]34 + $bs + $bs + '])*' + [string][char]34), [string][char]34 + [string][char]34)   # ordinary strings - kills the Trait value
+if ($scan -match 'TierResolver\s*\.|(?<![\w.])TierResolution(?![\w"])') {
+    $missing += 'the suite CONSULTS TierResolver/TierResolution in real code - FORBIDDEN. Asking the resolver what it would have chosen and asserting the answer PASSES against an unwired GuardrailRunner: it proves the resolver (waves 1-2 already did) and says nothing about whether anything calls it. Observe the judge route through the JOURNAL, the captured PromptInvocation, and the harness invocation ledger. (The [Trait("Category", "TierResolution")] attribute is NOT this - string literals are stripped before this scan.)'
+}
 if ($missing.Count -gt 0) {
     Write-Output "Discovered $($names.Count) Stage2ConformanceTests, but these required judge behaviours have no test:"
     $missing | ForEach-Object { Write-Output ("  - " + $_) }
