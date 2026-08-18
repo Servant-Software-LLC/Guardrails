@@ -21,7 +21,7 @@ if ($testExit -ne 0) {
     Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
     if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
     else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
-    Write-Output "the #230-lite per-tier aggregation is not to DoR 9.3. If a suppression test is the failing one, a tiering-INACTIVE journal must summarize to NOTHING - not an empty section and not an `untiered` bucket (see failure details above)."
+    Write-Output "the #230-lite per-tier aggregation is not to DoR 9.3. If a suppression test is the failing one, a tiering-INACTIVE journal must summarize to NOTHING - not an empty section and not an 'untiered' bucket (see failure details above)."
     exit 1
 }
 
