@@ -15,48 +15,62 @@
 
 ## Task
 
-Carry the resolved judge datum from `GuardrailRunner` all the way to `run.json`, so DoR §12.4's judge
-provenance is a field something actually writes.
+Carry the resolved judge datum from `GuardrailRunner` to `run.json`, so DoR §12.4's judge provenance
+is a field something actually writes.
 
-**This task exists because wave 2 shipped a schema member nothing populated** (#475): the datum was
-mined correctly, reached one hop short of the journal, and the field stayed null forever. Do not
-repeat it — the deliverable is the value ARRIVING, not a member existing.
+**This task exists because wave 2 shipped a schema member nothing populated** (#475): `AttemptRecord.Usage`
+is declared, is READ by the per-tier spend aggregation, and is assigned by **none** of its twelve
+construction sites. Every guardrail was green. The deliverable here is the value ARRIVING, not a
+member existing.
 
-### The path — traced, not guessed
-
-`FailedGuardrails` is the sibling datum that already makes this exact trip. Follow it:
+### The path — traced against the real tree, not guessed
 
 ```
-GuardrailRunner  ->  GuardrailRunResult  ->  TaskExecutor  ->  AttemptJournaler  ->  AttemptRecord
+GuardrailRunner -> GuardrailRunResult.Judge -> TaskExecutor (fold into `provenance`) -> both record paths
 ```
 
-Grep for `FailedGuardrails` across `src/Guardrails.Core/Execution/` and put the judge datum on the
-same surfaces at the same sites. Task 06 has already exposed it on the result `GuardrailRunner`
-returns.
+Task 07 has already exposed the resolved judge on `GuardrailRunResult`. Your job is the fold:
 
-**There are TWO AttemptRecord construction paths and BOTH must carry it.** Miss the second and judge
-provenance lands in serial runs and silently vanishes in worktree runs — which is the default:
+In `TaskExecutor.RunAttemptAsync`, the attempt's provenance is built BEFORE the action runs — grep
+for `BuildProvenance(task, worktree, route)`. After the guardrail call returns, fold the judge into
+that same object with a `with` expression before the journaller is called:
 
-1. **`AttemptJournaler`** — grep for where it assigns `FailedGuardrails`; there are several call
-   sites, including the succeeded path (`CompleteSucceededOrInvalidFragment`).
-2. **`Scheduler.RecordSucceededSettle`** — builds its **own** `AttemptRecord` from a `PendingAttempt`,
-   bypassing `AttemptJournaler` entirely. If `PendingAttempt` cannot carry the datum, extending it is
-   part of this task, not a reason to skip the path.
+```csharp
+provenance = provenance is null ? null : provenance with { Judge = /* from the guardrail result */ };
+```
 
-**Absent, never null.** A script attempt, and a task whose guardrails are all deterministic, have no
-judge — their records must omit the key entirely, exactly as the schema (task 04) requires.
+**Why this is the whole job — and why `Scheduler.cs` is NOT in your scope.** `AttemptProvenance` is
+the one member that already rides `PendingAttempt`, so a value folded onto it reaches BOTH attempt
+record construction paths with no further edit:
+
+- **serial** — `AttemptJournaler` sets `Provenance = provenance` on the record it builds;
+- **worktree (the DEFAULT)** — `AttemptJournaler` also sets `Provenance = provenance` on the
+  `PendingAttempt`, and `Scheduler.RecordSucceededSettle` copies it straight across
+  (`Provenance = pending.Provenance`). That settle record has eight members and is the reason
+  placement was decided this way (D32).
+
+This is exactly how wave 2's actor tier provenance already reaches the journal: `Tier`, `TierSource`,
+`Runner`, `Kind` and `Model` all sit on `AttemptProvenance` for the same reason. Your judge object
+hangs one level down from them, and the two halves of the routing story end up in one place.
+
+**If you find yourself needing to edit `Scheduler.cs`, `RunReport.cs` or `AttemptJournaler.cs`, STOP.**
+That is the signal that the datum went onto the wrong record, not that the scope is too small. Re-read
+where task 03 put it. Do not work around this with a fifth file — write
+`{"needsHuman": "<what you found>"}` instead. `Scheduler.cs` runs every task of every plan in this
+repo; a regression there fails every other plan, and this task should not be touching it at all.
+
+**Absent, never null.** A script attempt, a task whose guardrails are all deterministic, and the
+`RevalidateAsync` re-verification path have no judge — their provenance must omit the key entirely,
+exactly as the schema (task 04) requires. A judge object built out of nulls is worse than no object:
+it reads as "a judge resolved and every field was empty".
 
 ### Scope
 
 **Scope boundary (harness-enforced):** Write only to
-`src/Guardrails.Core/Execution/GuardrailRunner.cs`,
-`src/Guardrails.Core/Execution/TaskExecutor.cs`,
-`src/Guardrails.Core/Execution/AttemptJournaler.cs` and
-`src/Guardrails.Core/Execution/Scheduler.cs`. After this task completes, the harness runs a
-`git diff` check and rejects any edit outside those paths — including `JournalModel.cs` (tasks 03/04
-own the schema), the conformance tests, or the `.csproj`. An out-of-scope edit fails the task
-immediately and consumes a retry.
-
-`Scheduler.cs` is the most load-bearing file in the harness — it runs every task of every plan. Add
-your field beside the ones already there; **do not restructure a method around it.** A regression
-here fails every downstream wave and every other plan in this repo.
+`src/Guardrails.Core/Execution/GuardrailRunner.cs` and
+`src/Guardrails.Core/Execution/TaskExecutor.cs`. Task 07 touched both before you — your change is the
+FOLD (and whatever `GuardrailRunner` must expose to make it possible), not a redo of task 07's
+wiring. After this task completes, the harness runs a `git diff` check and rejects any edit outside
+those two paths — including `JournalModel.cs` (tasks 03/04 own the schema), `Scheduler.cs`,
+`AttemptJournaler.cs`, `RunReport.cs`, the conformance tests, or the `.csproj`. An out-of-scope edit
+fails the task immediately and consumes a retry.

@@ -1,5 +1,5 @@
 {
-  "description": "Author failing tests for the DoR §12.4 judge provenance object — AttemptJudge { runner, kind, model, effort, tier, strength, bumped } and its attempt-record member — plus the schema stub they compile against",
+  "description": "Author failing tests for the DoR 12.4 judge provenance object - AttemptJudge { runner, kind, model, effort, tier, strength, bumped, advisory } hung off AttemptProvenance (D32) - plus the deliberately naive schema stub (no JsonIgnore) they compile against and genuinely fail on",
   "stableId": "p9d5tk",
   "dependsOn": [],
   "writeScope": [

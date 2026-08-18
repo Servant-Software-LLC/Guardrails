@@ -1,7 +1,9 @@
 {
-  "description": "Make the judge provenance schema round-trip: serialize AttemptJudge absent-not-null and read older journals unchanged, so the authored schema tests pass",
+  "description": "Make the judge provenance schema tests pass: add the absent-when-null JsonIgnore discipline to the Judge member so an attempt with no judge serializes byte-identically to before, and confirm the attempt-provenance mirror artifact carries the judge when present",
   "stableId": "m3w7hc",
-  "dependsOn": ["03-author-tests-judge-provenance-schema"],
+  "dependsOn": [
+    "03-author-tests-judge-provenance-schema"
+  ],
   "writeScope": [
     "src/Guardrails.Core/Journal/JournalModel.cs",
     "src/Guardrails.Core/Journal/JournalJson.cs"

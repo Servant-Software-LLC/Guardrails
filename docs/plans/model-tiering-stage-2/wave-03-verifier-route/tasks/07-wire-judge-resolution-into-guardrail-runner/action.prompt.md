@@ -32,6 +32,28 @@ PromptResult promptResult = await registry.Resolve(promptFile.Frontmatter.Runner
 
 The block comes from `frontmatter.Runner` or the default — never from the actor's rung, never bumped.
 
+### Where the actor's resolution comes from — THREAD it, never re-derive it
+
+`GuardrailRunner` has no route today, and you must **not** give it a `TierResolver.Resolve` call of
+its own. Wave 2 already solved this exact problem for the action path, and you are copying that shape:
+
+- `TaskExecutor.RunAttemptAsync` resolves the actor's route ONCE into a local — grep for
+  `TierResolution? route = ResolveRoute(task)` — and that same object is already threaded into
+  `_actionRunner.RunAsync(...)` and into `BuildProvenance(task, worktree, route)`.
+- Do the same for guardrails: add the route as a parameter on `GuardrailRunner.RunAsync` and pass the
+  SAME local at the `_guardrailRunner.RunAsync(` call site inside `RunAttemptAsync`.
+
+That is why `TaskExecutor.cs` is in your write scope: one parameter, one argument.
+
+**A second `TierResolver.Resolve(` call inside `GuardrailRunner` is FORBIDDEN and your guardrail
+fails on it.** Two resolution sites drift — one gets a fix, the other does not, and the judge is
+graded against a rung the actor never ran at. This is not hypothetical tidiness: the `route` local
+exists in exactly that shape *because* wave 2 severed a duplicate derivation already.
+
+The OTHER call site (`RevalidateAsync`, the union re-verification path) has no attempt and no actor
+route; pass `null` there and let the judge fall back to today's behaviour. Do not invent a route for
+it — that path is out of scope for this wave.
+
 ### What to change
 
 Resolve the judge's route through `ResolveJudge` (given the actor's resolution for this attempt) and
@@ -47,18 +69,25 @@ construction. Call it on the actor's block, or on the frontmatter block, and eve
 silently mis-profiled with another block's permissions, tools and turn budget. Nothing else in the
 system will notice.
 
-**Make the resolved judge datum available to task 08.** Task 07 carries it to the journal, and it
-cannot invent what you do not expose — put the `JudgeResolution` on the result this method already
-returns rather than leaving it a local. Wave 2 lost a task to exactly this (a datum with no path to
-its sink, #474).
+**Make the resolved judge datum available to task 08.** Task **08** carries it to the journal, and it
+cannot invent what you do not expose — add the resolved judge to **`GuardrailRunResult`** (the record
+this method already returns: `Results`, `AnyFailed`, `TimedOut`) rather than leaving it a local.
+
+Wave 2 lost a task to exactly this shape (#474), and shipped a live instance of it (#475:
+`AttemptRecord.Usage` is declared, is READ by the per-tier spend aggregation, and is assigned by
+NONE of the twelve construction sites — the feature is structurally dead and every guardrail was
+green). Exposing the datum here is what keeps wave 3 off that list.
 
 ### Scope
 
 **Scope boundary (harness-enforced):** Write only to
-`src/Guardrails.Core/Execution/GuardrailRunner.cs`. After this task completes, the harness runs a
-`git diff` check and rejects any edit outside that path — including the conformance tests (task 05
-owns them), `TierResolver.cs` (task 02), `AttemptJournaler.cs`/`Scheduler.cs` (task 08), or the
-`.csproj`. An out-of-scope edit fails the task immediately and consumes a retry.
+`src/Guardrails.Core/Execution/GuardrailRunner.cs` and
+`src/Guardrails.Core/Execution/TaskExecutor.cs`. Your `TaskExecutor` edit is NARROW — the route
+parameter at the `_guardrailRunner.RunAsync(` call sites and nothing else; task 08 makes the
+provenance change in that same file and must not find its work already done. After this task
+completes, the harness runs a `git diff` check and rejects any edit outside those two paths —
+including the conformance tests (task 05 owns them), `TierResolver.cs` (task 02),
+`JournalModel.cs` (tasks 03/04), or the `.csproj`. An out-of-scope edit fails the task immediately and consumes a retry.
 
 If making the clauses pass genuinely requires a change outside this file, write
 `{"needsHuman": "<the file and why>"}` rather than an out-of-scope edit — that is the honest halt,

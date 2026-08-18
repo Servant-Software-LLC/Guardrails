@@ -26,19 +26,30 @@ if ($names.Count -lt 1) {
     exit 1
 }
 
-# One clause per REQUIRED behaviour, keyed on a discriminating substring of the pinned method name.
+# One clause per REQUIRED behaviour, keyed on the FULL PINNED METHOD NAME.
+#
+# FULL names, not discriminating substrings. A substring manifest ('RoundTrip', 'Absent', 'Bumped')
+# is satisfiable by ONE test called Judge_RoundTrips_AbsentBumped_Older - three behaviours credited
+# to a single method, which is precisely the "exercises only the easy half" failure this guardrail
+# exists to catch, wearing a manifest. The names are pinned in the prompt's table, so requiring them
+# verbatim costs the author nothing and closes the substring hole.
 $behaviours = @(
-    @{ Marker = 'RoundTrip|Roundtrip'; Id = "12.4  every judge member survives a serialize/deserialize cycle" }
-    @{ Marker = 'Absent|Omitted'; Id = "12.4  the key is ABSENT from the emitted JSON when null - assert on the JSON TEXT; a structural assertion on a deserialized object cannot tell absent from null" }
-    @{ Marker = 'Older|Legacy|Backward'; Id = "12.4  a journal written before this wave still reads, yielding a null member" }
-    @{ Marker = 'Bumped'; Id = "12.4  Bumped records false rather than absent when no bump fired - it is the datum #230-lite reads to answer whether a bumped judge is worth its cost" }
+    @{ Name = 'Judge_RoundTrips_WhenPresent'; Id = "12.4  every judge member survives a serialize/deserialize cycle" }
+    @{ Name = 'Judge_AbsentFromJson_WhenNull'; Id = "12.4  the key is ABSENT from the emitted JSON when null - assert on the JSON TEXT; a structural assertion on a deserialized object cannot tell absent from null" }
+    @{ Name = 'OlderJournal_WithoutJudge_StillReads'; Id = "12.4  a journal written before this wave still reads, yielding a null member" }
+    @{ Name = 'Bumped_RecordsFalse_NotAbsent_WhenNoBumpFired'; Id = "12.4  Bumped records false rather than absent when no bump fired - it is the datum #230-lite reads to answer whether a bumped judge is worth its cost" }
+    @{ Name = 'ProvenanceWithoutJudge_SerializesUnchanged'; Id = "12.4  a provenance carrying NO judge serializes exactly as before - the regression a null-emitting member causes, and half of this task's intended RED" }
+    @{ Name = 'Advisory_RoundTrips_AndIsAbsentWhenNoFinding'; Id = "6.5/12.4  the advisory finding rides the judge object, optional and independent of Bumped" }
 )
 
 $missing = @()
 foreach ($b in $behaviours) {
-    # -cmatch: C# identifiers are case-SENSITIVE and PowerShell's -match is not (#455 family).
-    if (-not (@($names | Where-Object { $_ -cmatch $b.Marker }).Count -ge 1)) {
-        $missing += ($b.Id + "  [expected a discovered test whose name contains: " + $b.Marker + "]")
+    # -cmatch on the escaped FULL name: C# identifiers are case-SENSITIVE and PowerShell's -match is
+    # not (#455 family). Escaped so an underscore-heavy name is matched literally, and anchored on a
+    # word boundary so a LONGER name that merely CONTAINS a pinned one does not credit it.
+    $pattern = '(^|\.)' + [regex]::Escape($b.Name) + '$'
+    if (-not (@($names | Where-Object { ($_.Trim() -split '\s')[0] -cmatch $pattern }).Count -ge 1)) {
+        $missing += ($b.Id + "  [expected a discovered test named EXACTLY: " + $b.Name + "]")
     }
 }
 

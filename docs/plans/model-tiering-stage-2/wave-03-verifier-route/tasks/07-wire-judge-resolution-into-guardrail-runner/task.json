@@ -5,7 +5,8 @@
     "06-author-tests-stage2-conformance-judge"
   ],
   "writeScope": [
-    "src/Guardrails.Core/Execution/GuardrailRunner.cs"
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs"
   ],
   "action": {
     "maxTurns": 75

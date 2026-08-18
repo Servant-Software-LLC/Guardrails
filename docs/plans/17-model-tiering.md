@@ -1223,9 +1223,11 @@ costless local provider still shows volume for #230-lite. Absent-not-null throug
 read fine.
 
 **Judge provenance (§6.5).** When a judge guardrail resolved through routing, its attempt record
-carries a parallel **`judge { runner, kind, model, effort, tier, strength, bumped }`** object —
-`bumped: true` when the weak-actor strength bump fired, and absent entirely when no judge resolved
-through routing (Invariant 7). This is what makes the verifier half *measurable* rather than
+carries a parallel **`judge { runner, kind, model, effort, tier, strength, bumped, advisory }`**
+object — `bumped: true` when the weak-actor strength bump fired, `advisory` carrying the §6.5
+weak/equal-and-weak finding when there is one, and absent entirely when no judge resolved through
+routing (Invariant 7). **It hangs off `AttemptProvenance` (D32)**, which is the member that already
+reaches BOTH attempt-record construction paths — the serial journaller and the worktree settle. This is what makes the verifier half *measurable* rather than
 merely asserted: #230-lite can then report the actor/verifier spend split, and the question "is a
 bumped judge worth what it costs" becomes a number instead of an argument.
 
@@ -1488,9 +1490,19 @@ applies).
   tokens-only accounting surface for costless providers, #230-lite — unless #349 already carries
   it).
 - Attempt record gains optional **`"judge": { "runner", "kind", "model", "effort", "tier",
-  "strength", "bumped" }`** — the verifier route that graded this attempt (§6.5). Absent entirely
-  when no judge resolved through routing (Invariant 7); `"bumped": true` when the weak-actor
-  strength bump fired.
+  "strength", "bumped", "advisory" }`** — the verifier route that graded this attempt (§6.5). Absent
+  entirely when no judge resolved through routing (Invariant 7); `"bumped": true` when the weak-actor
+  strength bump fired; **`"advisory"`** carries the §6.5 weak/equal-and-weak finding, recorded on
+  EVERY attempt that resolved a judge (the de-duplication ruling's "provenance always" half) and
+  absent when the judge is not weak.
+  **Placement — D32.** The object hangs off **`provenance`**, not directly off the attempt record.
+  This is not cosmetic: `AttemptProvenance` is the ONLY member that already rides `PendingAttempt`
+  and therefore reaches BOTH construction paths — `AttemptJournaler` (serial) and
+  `Scheduler.RecordSucceededSettle` (worktree, the default). A member hung directly off
+  `AttemptRecord` reaches the serial path and silently vanishes in worktree mode, which is exactly
+  the #475 failure this design already paid for once. "Built at launch" describes when
+  `AttemptProvenance` is CONSTRUCTED, not what may be recorded on it before the record is written;
+  a `with` expression at settle time is the intended shape.
 - Attempt `outcome` enum gains **`no-route`** — resolution found zero registered candidate blocks
   at-or-above the task's rung (a runtime config gap; validation GR2048 normally prevents it).
   Settles needs-human with "register a provider serving tier ≥ R" feedback. This is a v1 defensive
