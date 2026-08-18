@@ -1,11 +1,10 @@
 {
-  "description": "Author failing tests for DoR §6.5 judge resolution (rules 1-7) and §6.5.1's verifier floor, plus the minimal stubs they compile against: TierResolver.ResolveJudge, the JudgeResolution record, and PromptFrontmatter.Tier",
+  "description": "Author failing tests for DoR 6.5 judge resolution (rules 1-7) and 6.5.1's verifier floor, plus the minimal stubs they compile against: TierResolver.ResolveJudge and the JudgeResolution record",
   "stableId": "j4n8qv",
   "dependsOn": [],
   "writeScope": [
     "tests/Guardrails.Core.Tests/ModelTiering/JudgeResolutionTests.cs",
     "src/Guardrails.Core/Prompts/TierResolver.cs",
-    "src/Guardrails.Core/Prompts/TierResolution.cs",
-    "src/Guardrails.Core/Prompts/PromptFile.cs"
+    "src/Guardrails.Core/Prompts/TierResolution.cs"
   ]
 }

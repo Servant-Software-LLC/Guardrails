@@ -1,0 +1,12 @@
+{
+  "description": "Record the DoR §6.5 verifier advisory onto the judge provenance at the JIT boundary — GuardrailRunner computes it when it resolves the judge, and it rides the judge object into run.json on both record paths",
+  "stableId": "v6k2pf",
+  "dependsOn": [
+    "08-carry-judge-provenance-to-journal",
+    "10-implement-verifier-advisory"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/GuardrailRunner.cs"
+  ],
+  "maxTurns": 40
+}

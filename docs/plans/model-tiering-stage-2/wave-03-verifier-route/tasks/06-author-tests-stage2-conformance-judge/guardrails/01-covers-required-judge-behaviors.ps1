@@ -31,17 +31,18 @@ if ($names.Count -lt 14) {
 }
 
 $behaviours = @(
-    @{ Marker = 'Judge_ResolvesThroughSameResolver_AtActorsRung';        Id = "6.5 rules 2-3  the judge resolves through the SAME resolver, at the actor's rung" }
-    @{ Marker = 'Judge_WeakActor_StrengthBump_NotTierBump';              Id = "D24a  the bump is in STRENGTH, the rung is unchanged - a tier bump satisfies 'stronger' and is exactly what D24a forbids" }
-    @{ Marker = 'Judge_OnlyStrongerBlockIsCostly_DegradesAndProceeds';   Id = "6.5 rule 5  degrade and PROCEED - the actor halts in the same case, and the run-proceeds half is what distinguishes them" }
-    @{ Marker = 'Judge_PinnedCostlyActor_MayBumpIntoCostly_D29';         Id = "D29  a pinned costly actor licenses a costly judge bump; the default pointer does NOT" }
-    @{ Marker = 'Judge_VerifierMinTier_RaisesNeverLowers';               Id = "6.5.1  the verifier floor only ever raises" }
+    @{ Name = 'Judge_ResolvesThroughSameResolver_AtActorsRung';        Id = "6.5 rules 2-3  the judge resolves through the SAME resolver, at the actor's rung" }
+    @{ Name = 'Judge_WeakActor_StrengthBump_NotTierBump';              Id = "D24a  the bump is in STRENGTH, the rung is unchanged - a tier bump satisfies 'stronger' and is exactly what D24a forbids" }
+    @{ Name = 'Judge_OnlyStrongerBlockIsCostly_DegradesAndProceeds';   Id = "6.5 rule 5  degrade and PROCEED - the actor halts in the same case, and the run-proceeds half is what distinguishes them" }
+    @{ Name = 'Judge_PinnedCostlyActor_MayBumpIntoCostly_D29';         Id = "D29  a pinned costly actor licenses a costly judge bump; the default pointer does NOT" }
+    @{ Name = 'Judge_VerifierMinTier_RaisesNeverLowers';               Id = "6.5.1  the verifier floor only ever raises" }
 )
 
 $missing = @()
 foreach ($b in $behaviours) {
-    if (-not (@($names | Where-Object { $_ -cmatch $b.Marker }).Count -ge 1)) {
-        $missing += ($b.Id + "  [expected a discovered test named: " + $b.Marker + "]")
+    $pattern = '(^|\.)' + [regex]::Escape($b.Name) + '$'
+    if (-not (@($names | Where-Object { ($_.Trim() -split '\s')[0] -cmatch $pattern }).Count -ge 1)) {
+        $missing += ($b.Id + "  [expected a discovered test named EXACTLY: " + $b.Name + "]")
     }
 }
 

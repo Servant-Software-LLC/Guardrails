@@ -27,12 +27,23 @@ at the terminal gate, after every task had run.
 
 ### What to document
 
-1. **§4.2 — prompt frontmatter gains `tier`.** The optional key that lets a judge guardrail pin its
-   own rung (§6.5 rule 1). Document it beside the existing frontmatter keys.
+1. **§4.2 — a judge guardrail's `tier` pin, documented as the EXISTING mechanism it is.** Rule 1's
+   frontmatter pin needed no new code: `GuardrailDefinition.Tier` already exists, and
+   `PlanLoader.ApplyPromptFrontmatter` already parses `tier` out of a guardrail prompt's frontmatter
+   and folds it onto that member. What §4.2 lacks is the DOCUMENTATION that this is how a judge pins
+   its own rung. Do **not** document a `PromptFrontmatter.Tier` — there is no such member, deliberately:
+   a second copy of the datum would leave the resolver two places to read a judge's tier from.
 2. **§12.4 — the judge provenance object, `AttemptJudge`.** `judge { runner, kind, model, effort,
-   tier, strength, bumped }` on the attempt record: **absent entirely** when no judge resolved through routing
-   (Invariant 7), and `bumped: true` when the weak-actor strength bump fired. Absent-not-null, like
+   tier, strength, bumped, advisory }` — **eight** members: **absent entirely** when no judge resolved
+   through routing (Invariant 7), `bumped: true` when the weak-actor strength bump fired, and
+   `advisory` carrying the §6.5 weak/equal-and-weak finding when there is one. Absent-not-null, like
    every other §12.4 addition.
+   **Document the PLACEMENT (D32), not just the shape.** The object hangs off **`provenance`**, not
+   directly off the attempt record, and the reason is load-bearing: `AttemptProvenance` is the only
+   member that already rides `PendingAttempt`, so it reaches BOTH construction paths — the serial
+   journaller and `Scheduler.RecordSucceededSettle` (worktree, the default). A member hung directly
+   off `AttemptRecord` reaches the serial path and silently vanishes in worktree mode. #475 is the
+   live instance of that class of bug and is worth naming as the cautionary case.
 3. **§9.6 — the verifier route's normative rules.** The judge resolves in the SAME `TierResolver` as
    the actor; its rung is the actor's rung; the bump is in **STRENGTH, never in tier** (D24a);
    equal-and-strong needs no bump and equal-and-weak does; `guardrailOverrides` compose with the
@@ -47,7 +58,10 @@ at the terminal gate, after every task had run.
    plan-wide `easy` value must never drag a `hard` judge down.
 5. **D29** — a pinned `costly` ACTOR licenses a costly judge bump; the `default` pointer does not,
    because it is a plan-wide fallback rather than a decision about this task.
-6. **The advisory is advisory** — surfaced at both boundaries, never a hard error, never a halt, in
+6. **The advisory is advisory, and BOTH its surfaces shipped** — the run-start line (one per affected
+   task, before the DAG, via the `IRunObserver` event) and the JIT boundary (recorded into the
+   attempt's judge provenance always, logged only when the observed finding differs from what the
+   preflight predicted). Never a hard error, never a halt, in
    attended or unattended mode — plus the de-duplication rule (one preflight line per affected task;
    provenance always; a log line only on preflight/JIT disagreement).
 

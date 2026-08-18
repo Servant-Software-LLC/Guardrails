@@ -43,12 +43,39 @@ if ($testExit -ne 0) {
     exit 1
 }
 
+# PER-CLASS FLOOR, not a total (#455 family). The previous form summed the executed count across
+# the whole union and required 3 - so ONE class contributing 25 tests while the other two contributed
+# ZERO passed the gate. That is the exact failure this guard exists to catch, wearing a threshold:
+# a suite that was never authored, whose class was renamed, or whose every test is [Skip]ped is
+# indistinguishable from a green one when only the total is read.
+#
+# Discovery is the per-class probe. The run above already proved the union PASSES; --list-tests then
+# proves each named class independently CONTRIBUTES to it. Discovery cannot be satisfied by a skip,
+# a rename, or an empty file, and it names WHICH class is missing instead of reporting a bare count.
+$missingClasses = @()
+foreach ($c in $classes) {
+    $listed = dotnet test tests/Guardrails.Core.Tests --filter "Category=TierResolution&FullyQualifiedName~$c" --list-tests --nologo 2>&1
+    $listExit = $LASTEXITCODE
+    $found = @(($listed | Out-String) -split "`r?`n" | Where-Object { $_ -cmatch [regex]::Escape($c) }).Count
+    if ($listExit -ne 0 -or $found -lt 1) {
+        $missingClasses += "$c (discovery exit $listExit, $found test(s) found)"
+    }
+}
+if ($missingClasses.Count -gt 0) {
+    Write-Output ""
+    Write-Output "=== the union passed, but $($missingClasses.Count) of $($classes.Count) wave-3 unit classes contributed NOTHING ==="
+    $missingClasses | ForEach-Object { Write-Output "  - $_" }
+    Write-Output ""
+    Write-Output "A green union proves nothing about a class that is absent from it. Most likely: the class was never authored, it is missing the class-level [Trait(\"Category\", \"TierResolution\")] this filter selects on, it was renamed, or every one of its tests is [Skip]ped."
+    exit 1
+}
+
 # ZERO-MATCH GUARD (#455): exit 0 alone does not mean the wave is done. Three classes must each
 # contribute; keyed on the EXECUTED count (Passed+Failed), since Total: counts [Skip]ped tests.
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-if ($ran -lt 3) {
-    Write-Output "exit 0 but only $ran test(s) executed - this wave gate certified nothing. The --filter matched fewer tests than the three classes it names, is malformed, or the matched tests are [Skip]ped."
+if ($ran -lt $classes.Count) {
+    Write-Output "exit 0 but only $ran test(s) executed across $($classes.Count) classes - this wave gate certified nothing. The --filter is malformed or every matched test is [Skip]ped. (The per-class check above is the real floor; this is the cheap backstop.)"
     exit 1
 }
 exit 0

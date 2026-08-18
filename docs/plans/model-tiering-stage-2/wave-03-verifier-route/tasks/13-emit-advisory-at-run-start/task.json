@@ -1,0 +1,15 @@
+{
+  "description": "Emit the DoR §6.5 verifier advisory at RUN START — one line per affected task, before the DAG — via a new IRunObserver event that every observer decorator forwards",
+  "stableId": "b3w9xr",
+  "dependsOn": [
+    "10-implement-verifier-advisory"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/IRunObserver.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Cli/ConsoleRunObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
+    "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs"
+  ],
+  "maxTurns": 45
+}

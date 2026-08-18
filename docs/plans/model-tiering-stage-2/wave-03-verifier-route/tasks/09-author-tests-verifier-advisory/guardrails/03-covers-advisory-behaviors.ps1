@@ -27,19 +27,21 @@ if ($names.Count -lt 1) {
 }
 
 $behaviours = @(
-    @{ Marker = 'Weak|Weaker';            Id = "6.5  a judge WEAKER than its actor is an advisory condition" }
-    @{ Marker = 'EqualAndStrong|NoAdvis'; Id = "6.5  equal-and-STRONG is NOT flagged - Opus judging Opus is a real check, and flagging it trains people to ignore the advisory" }
-    @{ Marker = 'NeverHalt|Proceed';      Id = "6.5  the advisory NEVER halts, attended or unattended - the run proceeds. This is the property most likely to be 'improved' into a gate" }
-    @{ Marker = 'Preflight';              Id = "6.5  the preflight emits ONE pre-run summary line per affected task" }
-    @{ Marker = 'Always|Provenance';      Id = "6.5  the JIT re-check records the advisory into provenance ALWAYS" }
-    @{ Marker = 'Differ|Disagree|Quiet';  Id = "6.5  the JIT re-check emits a LOG LINE ONLY when the observed pair DIFFERS from the preflight's prediction - the de-duplication rule, and the whole reason three surfaces are tolerable" }
+    @{ Name = 'WeakerJudge_IsAdvisoryCondition'; Id = "6.5  a judge WEAKER than its actor is an advisory condition" }
+    @{ Name = 'EqualAndWeak_IsAdvisoryCondition'; Id = "6.5  equal-and-WEAK is also an advisory condition - the half that makes 'weaker' insufficient on its own" }
+    @{ Name = 'EqualAndStrong_NoAdvisory'; Id = "6.5  equal-and-STRONG is NOT flagged - Opus judging Opus is a real check, and flagging it trains people to ignore the advisory entirely" }
+    @{ Name = 'Advisory_NeverHalts_RunProceeds'; Id = "6.5  the advisory NEVER halts, attended or unattended - the run proceeds. This is the property most likely to be 'improved' into a gate" }
+    @{ Name = 'Preflight_EmitsOneLinePerAffectedTask'; Id = "6.5  the run-start surface emits ONE line per affected task (task 13 wires it; this pins the DECISION)" }
+    @{ Name = 'Jit_RecordsAdvisoryIntoProvenance_Always'; Id = "6.5  the JIT re-check records the advisory into provenance ALWAYS (task 12 wires it; this pins the DECISION)" }
+    @{ Name = 'Jit_LogsOnlyWhenObservedDiffersFromPreflight'; Id = "6.5  the JIT re-check LOGS only when the observed pair DIFFERS from the run-start prediction - the de-duplication rule, and the whole reason two surfaces are tolerable rather than noise" }
 )
 
 $missing = @()
 foreach ($b in $behaviours) {
     # -cmatch: C# identifiers are case-SENSITIVE and PowerShell's -match is not (#455 family).
-    if (-not (@($names | Where-Object { $_ -cmatch $b.Marker }).Count -ge 1)) {
-        $missing += ($b.Id + "  [expected a discovered test whose name contains: " + $b.Marker + "]")
+    $pattern = '(^|\.)' + [regex]::Escape($b.Name) + '$'
+    if (-not (@($names | Where-Object { ($_.Trim() -split '\s')[0] -cmatch $pattern }).Count -ge 1)) {
+        $missing += ($b.Id + "  [expected a discovered test named EXACTLY: " + $b.Name + "]")
     }
 }
 

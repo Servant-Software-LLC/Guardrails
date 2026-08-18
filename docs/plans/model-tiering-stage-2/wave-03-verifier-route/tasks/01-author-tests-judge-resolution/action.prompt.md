@@ -45,9 +45,17 @@ Wave 2 shipped the actor half. Read it first — `TierResolver.SelectCandidate` 
    strength, and **`Bumped`** (true when the weak-actor strength bump fired). Add whatever datum the
    advisory needs to know a judge came out weak — task 09 consumes it, so make it observable rather
    than re-derivable.
-3. **`src/Guardrails.Core/Prompts/PromptFile.cs`** — add an optional **`Tier`** to
-   `PromptFrontmatter` and parse it, so rule 1's frontmatter pin is expressible. It is genuinely
-   absent today (verify), and SSOT §4.2 is where it lands.
+**Do NOT add a `Tier` to `PromptFrontmatter` — rule 1's frontmatter pin ALREADY WORKS.** An earlier
+draft of this task told you to; it was wrong, and `PromptFile.cs` has been removed from the write
+scope accordingly. Verified on this tree: `GuardrailDefinition.Tier` already exists, and
+`PlanLoader.ApplyPromptFrontmatter` already parses `tier` out of a guardrail prompt's frontmatter and
+folds it onto that member (grep `ParseFrontmatterScalar(frontmatter, "tier")`). A second copy on
+`PromptFrontmatter` would be an unread duplicate of the same datum, and would leave task 07 with two
+places to read a judge's tier from — which is exactly the divergence D22a exists to forbid, one level
+down.
+
+So **`ResolveJudge` takes the `GuardrailDefinition`** (or its already-resolved `Tier` and `Runner`),
+not a frontmatter record. Read `GuardrailDefinition.Tier` and treat it as the judge's explicit pin.
 
 ### The behaviours the tests MUST encode
 
@@ -90,19 +98,28 @@ nothing and a renamed test reads as a missing one. Add more tests freely; do not
 | rule 2 | `JudgeRung_IsActorsRung_NotActorsStrength` |
 | rule 3 / D24a | `WeakActor_StrengthBump_KeepsActorsRung` |
 | rule 4 | `EqualAndStrong_NoBump` and `EqualAndWeak_Bumps` |
+| rule 6 | `Specialization_BreaksTie_AmongEqualCandidates` |
 | rule 5 | `OnlyStrongerBlockCostly_DegradesAndProceeds` |
 | D29 | `D29_PinnedCostlyActor_MayBumpIntoCostly` and `D29_DefaultPointer_DoesNotLicenseIt` |
 | §6.5.1 | `MinTierFloor_RaisesTooLow` and `MinTierFloor_NeverLowersHigher` |
+| D22a | `JudgeCandidacy_AgreesWith_ServesTier` |
+
+**On `JudgeCandidacy_AgreesWith_ServesTier` (D22a).** Wave 1 already property-tests that the ACTOR
+path only ever selects blocks satisfying `PromptRunnerConfig.ServesTier`. Nothing yet says the same
+of the judge path, so a second and slightly different candidacy rule could grow there and no test in
+this wave would notice. Write it as a PROPERTY over a candidate space, not a single example: for
+every block `ResolveJudge` can select, `ServesTier` must hold. `ResolveJudge` must CALL the shared
+predicate, never re-implement it — that is the whole content of D22a.
 
 Tests must **COMPILE and FAIL** — failing is intentional; NOT compiling is a mistake to fix. Do not
 implement `ResolveJudge`.
 
 **Scope boundary (harness-enforced):** Write only to
 `tests/Guardrails.Core.Tests/ModelTiering/JudgeResolutionTests.cs`,
-`src/Guardrails.Core/Prompts/TierResolver.cs`, `src/Guardrails.Core/Prompts/TierResolution.cs` and
-`src/Guardrails.Core/Prompts/PromptFile.cs`. After this task completes, the harness runs a `git diff`
-check and rejects any edit outside those paths — including `GuardrailRunner.cs` (task 07 owns the
-wiring), `JournalModel.cs` (tasks 03/04), or the `.csproj`. An out-of-scope edit fails the task
+`src/Guardrails.Core/Prompts/TierResolver.cs` and `src/Guardrails.Core/Prompts/TierResolution.cs`.
+After this task completes, the harness runs a `git diff` check and rejects any edit outside those
+paths — including `PromptFile.cs` (nothing there needs changing, see above), `GuardrailRunner.cs`
+(task 07 owns the wiring), `PlanLoader.cs`, `JournalModel.cs` (tasks 03/04), or the `.csproj`. An out-of-scope edit fails the task
 immediately and consumes a retry. If you hit a compile error caused by a missing symbol in another
 file, do NOT edit that file — write `{"needsHuman": "<what is missing>"}` to the state-out path and
 stop.

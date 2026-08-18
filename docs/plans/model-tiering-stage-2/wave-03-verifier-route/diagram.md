@@ -1,4 +1,4 @@
-<!-- guardrails:graph v1 source-sha256=13485c3fad7c06e368a04137337df3bebf3a002635895a6c8e5a833668d52a07 -->
+<!-- guardrails:graph v1 source-sha256=8928cd92d1511b8fff8a7f7c5944c662c63bfa9c373202227abc0e68e5e1a696 -->
 
 ```mermaid
 flowchart TD
@@ -61,6 +61,14 @@ flowchart TD
     task_wave_03_verifier_route_11_land_ssot_judge_deltas_gr_0["01-ssot-judge-deltas-landed"]:::guardrail
   end
   style task_wave_03_verifier_route_11_land_ssot_judge_deltas fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_12_record_advisory_into_judge_provenance["wave-03-verifier-route/12-record-advisory-into-judge-provenance"]
+    task_wave_03_verifier_route_12_record_advisory_into_judge_provenance_gr_0["01-advisory-recorded-at-jit"]:::guardrail
+  end
+  style task_wave_03_verifier_route_12_record_advisory_into_judge_provenance fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
+  subgraph task_wave_03_verifier_route_13_emit_advisory_at_run_start["wave-03-verifier-route/13-emit-advisory-at-run-start"]
+    task_wave_03_verifier_route_13_emit_advisory_at_run_start_gr_0["01-advisory-surfaced-and-forwarded"]:::guardrail
+  end
+  style task_wave_03_verifier_route_13_emit_advisory_at_run_start fill:#cfe8ff,stroke:#1b6ec2,color:#0b2545;
   subgraph plan_guardrails["Terminal Gate"]
     plan_guardrails_0["01-wave-union-builds"]:::guardrail
     plan_guardrails_1["02-stage2-conformance-green"]:::guardrail
@@ -79,8 +87,13 @@ flowchart TD
   task_wave_03_verifier_route_06_author_tests_stage2_conformance_judge --> task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner
   task_wave_03_verifier_route_07_wire_judge_resolution_into_guardrail_runner --> task_wave_03_verifier_route_08_carry_judge_provenance_to_journal
   task_wave_03_verifier_route_08_carry_judge_provenance_to_journal --> task_wave_03_verifier_route_11_land_ssot_judge_deltas
+  task_wave_03_verifier_route_08_carry_judge_provenance_to_journal --> task_wave_03_verifier_route_12_record_advisory_into_judge_provenance
   task_wave_03_verifier_route_09_author_tests_verifier_advisory --> task_wave_03_verifier_route_10_implement_verifier_advisory
   task_wave_03_verifier_route_10_implement_verifier_advisory --> task_wave_03_verifier_route_11_land_ssot_judge_deltas
+  task_wave_03_verifier_route_10_implement_verifier_advisory --> task_wave_03_verifier_route_12_record_advisory_into_judge_provenance
+  task_wave_03_verifier_route_10_implement_verifier_advisory --> task_wave_03_verifier_route_13_emit_advisory_at_run_start
+  task_wave_03_verifier_route_12_record_advisory_into_judge_provenance --> task_wave_03_verifier_route_11_land_ssot_judge_deltas
+  task_wave_03_verifier_route_13_emit_advisory_at_run_start --> task_wave_03_verifier_route_11_land_ssot_judge_deltas
   task_wave_03_verifier_route_11_land_ssot_judge_deltas --> plan_guardrails
   classDef preflight fill:#e6d7ff,stroke:#6f42c1,color:#2e1065;
   classDef guardrail fill:#fff3cd,stroke:#b8860b,color:#3d2c00;

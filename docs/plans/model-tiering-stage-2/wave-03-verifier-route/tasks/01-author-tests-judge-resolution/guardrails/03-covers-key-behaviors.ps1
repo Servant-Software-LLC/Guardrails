@@ -28,20 +28,29 @@ if ($names.Count -lt 1) {
 
 # One clause per REQUIRED behaviour, keyed on a discriminating substring of the pinned method name.
 $behaviours = @(
-    @{ Marker = 'Pin|Frontmatter'; Id = "6.5 rule 1  an explicit frontmatter tier/runner pin wins outright" }
-    @{ Marker = 'Rung'; Id = "6.5 rule 2  the judge's rung is the ACTOR's rung (not the actor's strength)" }
-    @{ Marker = 'Strength|Bump'; Id = "6.5 rule 3/D24a  the bump is in STRENGTH at the same rung, never a TIER bump" }
-    @{ Marker = 'EqualAndStrong|NoBump'; Id = "6.5 rule 4  equal-and-strong needs NO bump (Opus judging Opus is a real check)" }
-    @{ Marker = 'Costly|Degrade'; Id = "6.5 rule 5  the only stronger block being costly DEGRADES and the run PROCEEDS - the actor halts in the same case, and a test that only checks 'no bump' cannot tell degrade from halt" }
-    @{ Marker = 'D29|Pinned'; Id = "D29  a PINNED costly actor licenses a costly judge bump; the default pointer does NOT" }
-    @{ Marker = 'MinTier|Floor'; Id = "6.5.1  the verifier floor RAISES a too-low result and NEVER lowers a high one - the asymmetry that makes it a floor rather than a default" }
+    @{ Name = 'FrontmatterPin_WinsOutright'; Id = "6.5 rule 1  an explicit frontmatter tier/runner pin wins outright" }
+    @{ Name = 'JudgeRung_IsActorsRung_NotActorsStrength'; Id = "6.5 rule 2  the judge's rung is the ACTOR's rung (not the actor's strength)" }
+    @{ Name = 'WeakActor_StrengthBump_KeepsActorsRung'; Id = "6.5 rule 3/D24a  the bump is in STRENGTH at the same rung, never a TIER bump" }
+    @{ Name = 'EqualAndStrong_NoBump'; Id = "6.5 rule 4a  equal-and-strong needs NO bump (Opus judging Opus is a real check)" }
+    @{ Name = 'EqualAndWeak_Bumps'; Id = "6.5 rule 4b  equal-and-WEAK does bump - the half that distinguishes rule 4 from 'never bump on equal'" }
+    @{ Name = 'Specialization_BreaksTie_AmongEqualCandidates'; Id = "6.5 rule 6  specialization breaks a tie among otherwise-equal candidates - untested, the rule silently never fires" }
+    @{ Name = 'OnlyStrongerBlockCostly_DegradesAndProceeds'; Id = "6.5 rule 5  the only stronger block being costly DEGRADES and the run PROCEEDS - the actor HALTS in the same case, and a test that only checks 'no bump' cannot tell degrade from halt" }
+    @{ Name = 'D29_PinnedCostlyActor_MayBumpIntoCostly'; Id = "D29a  a PINNED costly actor licenses a costly judge bump" }
+    @{ Name = 'D29_DefaultPointer_DoesNotLicenseIt'; Id = "D29b  the default pointer does NOT license it - the half that makes D29 a rule rather than a permission" }
+    @{ Name = 'MinTierFloor_RaisesTooLow'; Id = "6.5.1a  the verifier floor RAISES a too-low result" }
+    @{ Name = 'MinTierFloor_NeverLowersHigher'; Id = "6.5.1b  and NEVER lowers a high one - the asymmetry that makes it a FLOOR rather than a default (D27)" }
+    @{ Name = 'JudgeCandidacy_AgreesWith_ServesTier'; Id = "D22a  every block ResolveJudge selects must satisfy the SHARED ServesTier predicate. Wave 1's property test covers the ACTOR path only; without this the judge path can grow a second, divergent candidacy rule - exactly what D22a exists to forbid, and nothing else in this wave would notice." }
 )
 
 $missing = @()
 foreach ($b in $behaviours) {
-    # -cmatch: C# identifiers are case-SENSITIVE and PowerShell's -match is not (#455 family).
-    if (-not (@($names | Where-Object { $_ -cmatch $b.Marker }).Count -ge 1)) {
-        $missing += ($b.Id + "  [expected a discovered test whose name contains: " + $b.Marker + "]")
+    # -cmatch on the escaped FULL name: C# identifiers are case-SENSITIVE and PowerShell's
+    # -match is not (#455 family). FULL names, not discriminating substrings: a substring
+    # manifest is satisfiable by ONE omnibus method name crediting many behaviours at once,
+    # which is the very 'exercises only the easy half' failure this guardrail exists to catch.
+    $pattern = '(^|\.)' + [regex]::Escape($b.Name) + '$'
+    if (-not (@($names | Where-Object { ($_.Trim() -split '\s')[0] -cmatch $pattern }).Count -ge 1)) {
+        $missing += ($b.Id + "  [expected a discovered test named EXACTLY: " + $b.Name + "]")
     }
 }
 

@@ -48,6 +48,25 @@ against.
    by definition a resolver bug no preflight could catch, which is precisely why both boundaries
    exist rather than one.
 
+### These are DECISION tests, not surface tests
+
+Your write scope is `VerifierAdvisory.cs` and your own test file — nothing else. So the two
+surface-named behaviours below (`Preflight_...` and `Jit_...`) are tests of **what `VerifierAdvisory`
+DECIDES**, not of the Scheduler or the GuardrailRunner:
+
+- `Preflight_EmitsOneLinePerAffectedTask` — given a set of task/judge pairs, the class yields exactly
+  one finding per affected task and none for the unaffected ones.
+- `Jit_RecordsAdvisoryIntoProvenance_Always` — the class reports a finding for recording on every
+  judge resolution, independently of whether anything should be LOGGED.
+- `Jit_LogsOnlyWhenObservedDiffersFromPreflight` — the de-duplication decision itself: given a
+  predicted finding and an observed one, should this be logged? Only when they differ.
+
+Expose those as **callable decisions** (a method returning the finding, and a method answering the
+should-log question). Tasks **12** and **13** wire them to the real surfaces — task 12 to the judge
+provenance at the JIT boundary, task 13 to the run-start `IRunObserver` event — and both are
+forbidden from re-deriving the rule. If your API does not let them ask these questions without
+recomputing anything, they cannot comply, so design the surface for those two callers.
+
 ### The test METHOD NAMES are PINNED
 
 Your `03-covers-advisory-behaviors` guardrail matches DISCOVERED test names, never file text — a
