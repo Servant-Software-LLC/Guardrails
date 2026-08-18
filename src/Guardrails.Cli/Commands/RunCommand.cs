@@ -1910,8 +1910,10 @@ public static class RunCommand
 
     /// <summary>
     /// Print the run-level cost line (SSOT §7 <c>costUsd</c>) from the freshly-persisted
-    /// journal. Omitted when no attempt recorded a cost, so deterministic-only plans stay
-    /// noise-free.
+    /// journal, plus the #230-lite PER-TIER split of that same spend (DoR §9.3). Each line is
+    /// omitted when there is nothing to report — no attempt recorded a cost, and no attempt
+    /// resolved through routing — so deterministic-only plans stay noise-free and a
+    /// tiering-inactive run prints EXACTLY the cost line it prints today.
     /// </summary>
     private static void PrintTotalCost(string planDirectory, TextWriter output)
     {
@@ -1925,6 +1927,17 @@ public static class RunCommand
         if (JournalCost.Total(document) is { } total)
         {
             output.WriteLine($"Total prompt cost: ${total:F4}");
+        }
+
+        // The per-tier split is ADDITIVE to the total above, never a replacement — the two answer
+        // different questions (the total includes overhead spend that resolved no rung). Suppression is
+        // this PATTERN-MATCH on "there is nothing to report", deliberately not a string-emptiness test on
+        // a rendered line: on a run where nothing resolved through routing there is no section, no
+        // header, and no bucket for the attempts that routed nowhere (§9.3 Invariant 7) — and keying on
+        // the null keeps that true the day some future edit gives the renderer a prefix.
+        if (JournalTierSpend.Render(document) is { } perTier)
+        {
+            output.WriteLine($"Per-tier spend: {perTier}");
         }
     }
 
