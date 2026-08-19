@@ -13,6 +13,12 @@ namespace Guardrails.Core.Tests;
 /// <see cref="Symlink_TargetEscapesWorktree_NotDetected_KnownConsistentGap"/>). The script is
 /// spawned via the SAME <see cref="InterpreterMap"/> + <see cref="ProcessRunner"/> the harness uses
 /// for any script action — no bespoke process-launch code under test.
+///
+/// <para><b>Scope limit, deliberately named (issue #464).</b> Every test here builds the baked root
+/// and the candidate path from the SAME string (<c>_root</c>/<c>_worktree</c>), so the two sides of
+/// the comparison always carry one spelling. That shape cannot express the aliased-root hazard —
+/// one directory, two absolute spellings — no matter what is asserted about it.
+/// <see cref="WorktreeContainmentHookAliasedRootTests"/> is the fixture that can.</para>
 /// </summary>
 public sealed class WorktreeContainmentHookTests : IDisposable
 {
@@ -82,30 +88,11 @@ public sealed class WorktreeContainmentHookTests : IDisposable
 
     // --- real script execution (standalone, synthetic stdin, no `claude` binary) -----------
 
-    private async Task<(int ExitCode, string StandardError)> RunHookAsync(string toolCallJson)
-    {
-        string scriptPath = Path.Combine(_logDir,
-            OperatingSystem.IsWindows() ? WorktreeContainmentHook.ScriptFileNameWindows : WorktreeContainmentHook.ScriptFileNameUnix);
-
-        var interpreterMap = new InterpreterMap(new PathExecutableProbe());
-        InterpreterMap.Resolution resolution = interpreterMap.Resolve(scriptPath, []);
-        Assert.Equal(InterpreterMap.Status.Resolved, resolution.Status);
-
-        var processRunner = new ProcessRunner();
-        ProcessResult result = await processRunner.RunAsync(
-            resolution.Command!,
-            _worktree,
-            new Dictionary<string, string>(),
-            TimeSpan.FromSeconds(30),
-            standardInput: toolCallJson,
-            stdoutLineSink: null,
-            TestContext.Current.CancellationToken);
-
-        return (result.ExitCode, result.StandardError);
-    }
+    private Task<(int ExitCode, string StandardError)> RunHookAsync(string toolCallJson) =>
+        ContainmentHookScript.RunAsync(_logDir, _worktree, toolCallJson, TestContext.Current.CancellationToken);
 
     private static string ToolCall(string toolName, string inputJson) =>
-        $$"""{"tool_name":"{{toolName}}","tool_input":{{inputJson}}}""";
+        ContainmentHookScript.ToolCall(toolName, inputJson);
 
     [Fact]
     public async Task Write_InsideWorktree_Allowed()

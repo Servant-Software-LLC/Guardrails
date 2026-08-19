@@ -1,5 +1,6 @@
 using System.Text;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 using Guardrails.Core.State;
 
 namespace Guardrails.Core.Prompts;
@@ -27,7 +28,10 @@ namespace Guardrails.Core.Prompts;
 /// normalization with NO symlink resolution and no external <c>realpath</c>/<c>readlink</c>
 /// dependency — identical behavior on every OS, deliberately consistent rather than the bash
 /// side attempting (and, on macOS's BSD coreutils, silently failing at) a "stronger" symlink-aware
-/// check. It ALSO blocks the <c>git stash</c>
+/// check. What the scripts DO get is a LIST of accepted root spellings, canonicalised once in C#
+/// at generation time (<see cref="AcceptedRoots"/>) — the symlink knowledge lives on the .NET side
+/// of the boundary, where it is portable, and the scripts stay pure string comparison against N
+/// literals instead of one. It ALSO blocks the <c>git stash</c>
 /// family (issue #192): <c>refs/stash</c> is repo-wide, not worktree-scoped, so a concurrent
 /// task's <c>stash pop</c> can silently apply into the WRONG worktree. Both rules live in the
 /// SAME hook script and settings file — one mechanism, two additive checks.</para>
@@ -138,7 +142,141 @@ public static class WorktreeContainmentHook
     }
 
     /// <summary>
-    /// The bash hook script body (issue #199/#192), worktree root baked in as a literal. Reads the
+    /// The root spellings the generated script ACCEPTS a candidate path under (issue #464): the root
+    /// exactly as the harness spelled it (lexically normalised) first — the PRIMARY, used for joining
+    /// relative candidates and for naming the worktree in the block message — followed by its fully
+    /// symlink-resolved form (<see cref="RealPath.Resolve"/>) when that differs. Deduped with
+    /// <see cref="RealPath.Comparison"/>, so on a filesystem with no links in play there is exactly one
+    /// entry and the script behaves precisely as it did before this existed.
+    ///
+    /// <para><b>Why a LIST.</b> One directory can have more than one absolute spelling. On macOS
+    /// <c>/var</c> is a symlink to <c>/private/var</c> and <see cref="Path.GetTempPath"/> lives under
+    /// it, so the harness derives a worktree root spelled <c>/var/folders/…/wt</c> while the very same
+    /// directory is spelled <c>/private/var/folders/…/wt</c> by anything that resolves it — git, the
+    /// OS's own idea of the agent's working directory. Baking ONE literal and comparing by pure string
+    /// normalisation then refuses a perfectly legitimate write inside the agent's own worktree, exit 2,
+    /// on every write of every task — and because the hook's job is to block, it reads as the hook
+    /// working correctly. Resolving symlinks in the SCRIPTS is not an option: that is exactly the
+    /// <c>realpath -m</c> regression documented on <see cref="BashScript"/> (GNU-only flag, 13
+    /// macOS-only CI failures). So the resolution happens ONCE, here, in portable .NET, and the scripts
+    /// receive data rather than a new rule.
+    /// </para>
+    ///
+    /// <para><b>This can only ever turn a WRONG block into an allow.</b> Every added spelling names the
+    /// SAME directory as the primary — a path accepted under the resolved root IS a path inside the
+    /// worktree, reached by another name. Nothing is removed: the rooted-path rejection, the
+    /// <c>.</c>/<c>..</c> collapse and the directory-boundary comparison run against EACH entry
+    /// unchanged, so a genuine escape is still blocked no matter how many entries the list has (and a
+    /// sibling such as <c>…/wt-evil</c> is still not under <c>…/wt</c> in any spelling).
+    /// </para>
+    ///
+    /// <para><b>Bounded gap — what this does NOT cover.</b> The set is
+    /// <c>{as-given, resolved(as-given)}</c>, which covers the direction where the as-given root is the
+    /// ALIAS (both spellings are then enumerable, and both are accepted). It does NOT cover the inverse
+    /// — a root baked in its CANONICAL spelling while a candidate arrives through an alias — because
+    /// canonical→alias is not enumerable in general: a directory can be reachable through arbitrarily
+    /// many links, and nothing can list them from the target end. That inverse is unreachable HERE by
+    /// construction rather than by luck, and the mechanism is worth naming because it is the whole
+    /// reason a two-element set suffices: the root baked in is always the harness's OWN spelling, never
+    /// git's. Both call sites (<c>ActionRunner</c>, <c>GuardrailRunner</c>) receive one value —
+    /// <c>WorktreeHandle.WorktreePath</c>, via <c>TaskExecutor</c> — and every producer of that
+    /// property in <c>GitWorktreeProvider</c> builds it with
+    /// <see cref="Path.Combine(string, string)"/> under the run's worktree root (fresh segment, fork)
+    /// or copies another handle's already-built string (reuse). Nothing reads a segment path back out
+    /// of <c>git worktree list</c>; the one path in that provider that DOES come from git is the
+    /// resume-adopted INTEGRATION worktree, a different type that never reaches this method (its
+    /// re-verification runs script guardrails only, so no hook is generated for it). And the baked
+    /// string is byte-for-byte the child process's working directory, so the agent's own
+    /// relative→absolute resolution starts from the spelling that is baked. A CANONICAL candidate can
+    /// still arrive — the OS resolves a cwd, <c>git rev-parse --show-toplevel</c> and <c>pwd -P</c>
+    /// print resolved paths, an agent may echo one back — and that is precisely the direction the
+    /// resolved entry covers.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<string> AcceptedRoots(string worktreeRoot)
+    {
+        var accepted = new List<string>(2);
+        AddDistinct(accepted, Lexical(worktreeRoot));
+        AddDistinct(accepted, RealPath.Resolve(worktreeRoot));
+        if (accepted.Count == 0)
+        {
+            accepted.Add(worktreeRoot); // degenerate input — keep the caller's own spelling rather than nothing
+        }
+
+        return accepted;
+    }
+
+    private static void AddDistinct(List<string> accepted, string spelling)
+    {
+        if (spelling.Length == 0)
+        {
+            return;
+        }
+
+        foreach (string existing in accepted)
+        {
+            if (string.Equals(existing, spelling, RealPath.Comparison))
+            {
+                return;
+            }
+        }
+
+        accepted.Add(spelling);
+    }
+
+    /// <summary>
+    /// <see cref="Path.GetFullPath(string)"/> normalisation (separators, <c>.</c>/<c>..</c>, no trailing
+    /// separator) that never throws — the literal spelling stands for anything <see cref="Path"/> refuses.
+    /// </summary>
+    private static string Lexical(string path)
+    {
+        try
+        {
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+        {
+            return path;
+        }
+    }
+
+    /// <summary>
+    /// The accepted roots as one newline-separated block of SINGLE-quoted shell literals, ready to drop
+    /// inside a bash <c>ARRAY=( … )</c>.
+    /// <para>
+    /// Single quotes, not the double quotes the root used to be interpolated into raw: inside <c>'…'</c>
+    /// bash performs no expansion at all, so a path containing <c>$</c>, a backtick, a backslash or a
+    /// double quote is inert rather than executed or mangled. The one character that must be broken out
+    /// is <c>'</c> itself, via the standard <c>'\''</c> idiom. (A path with any of these is unusual, not
+    /// impossible — and this file emits N literals now instead of one.)
+    /// </para>
+    /// </summary>
+    private static string BashRootLiterals(string worktreeRoot) =>
+        string.Join("\n", AcceptedRoots(worktreeRoot).Select(BashLiteral));
+
+    private static string BashLiteral(string value) =>
+        "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
+
+    /// <summary>
+    /// The accepted roots as one newline-separated block of SINGLE-quoted PowerShell literals, ready to
+    /// drop inside <c>@( … )</c> (newlines separate elements there).
+    /// <para>
+    /// Single quotes for the same reason as <see cref="BashRootLiterals"/>, and it fixes a real hole: the
+    /// root used to be emitted into a DOUBLE-quoted PowerShell string with only the backtick and the
+    /// double quote escaped, so a perfectly legal Windows path containing <c>$</c> (say
+    /// <c>C:\build\$tmp\wt</c>) was interpolated as a variable and silently became something else. A
+    /// single-quoted string interpolates nothing; only <c>'</c> needs doubling.
+    /// </para>
+    /// </summary>
+    private static string PowerShellRootLiterals(string worktreeRoot) =>
+        string.Join("\n", AcceptedRoots(worktreeRoot).Select(PowerShellLiteral));
+
+    private static string PowerShellLiteral(string value) =>
+        "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+
+    /// <summary>
+    /// The bash hook script body (issue #199/#192), the accepted worktree-root spellings
+    /// (<see cref="AcceptedRoots"/>) baked in as single-quoted literals. Reads the
     /// PreToolUse tool-call JSON from stdin via a small dependency-free field extractor (no <c>jq</c>
     /// assumed on the agent's PATH); exit 2 + stderr is Claude Code's documented block contract.
     ///
@@ -152,14 +290,31 @@ public static class WorktreeContainmentHook
     /// symlinks now — that is a known, accepted, CONSISTENT gap (see <see cref="PowerShellScript"/>'s
     /// doc comment), not an asymmetry between them, and it trades away zero portability for a rule that
     /// cannot silently diverge by core-utils flavor again.</para>
+    ///
+    /// <para>What the script gets INSTEAD of symlink resolution is a baked ARRAY of accepted root
+    /// spellings (issue #464): the same equality/directory-boundary test, run once per entry, allowing
+    /// on the first hit and falling through to <c>block</c> only when NONE match. The symlink knowledge
+    /// is computed in C# by <see cref="AcceptedRoots"/>, where it is portable; the script's own rule is
+    /// unchanged and still pure string comparison. The PowerShell twin's <c>Test-Escapes</c> loops over
+    /// the identical list in the identical order — whatever happens to this <c>case</c> happens
+    /// there.</para>
     /// </summary>
     internal static string BashScript(string worktreeRoot) => $$"""
         #!/usr/bin/env bash
         # Guardrails worktree-containment PreToolUse hook (issue #199 / #192). Generated per attempt;
-        # the worktree root below is a literal baked in at generation time, not read from the environment.
+        # the accepted worktree-root spellings below are literals baked in at generation time, not read
+        # from the environment. There is a LIST rather than one root because a single directory can have
+        # more than one absolute spelling (macOS: /var/folders/... and /private/var/folders/... name the
+        # same place), and this script deliberately does NOT resolve symlinks -- see the C# AcceptedRoots
+        # helper (issue #464). Adding a spelling is a DATA change here, never a control-flow one.
         set -u
 
-        WORKTREE_ROOT="{{worktreeRoot}}"
+        ACCEPTED_ROOTS=(
+        {{BashRootLiterals(worktreeRoot)}}
+        )
+
+        # The PRIMARY spelling: what a relative candidate is joined to, and what a block message names.
+        WORKTREE_ROOT="${ACCEPTED_ROOTS[0]}"
 
         input="$(cat)"
 
@@ -221,6 +376,15 @@ public static class WorktreeContainmentHook
           printf '%s' "$result"
         }
 
+        # Normalize every accepted root ONCE, up front (bash 3.2-safe: the array is never empty, so the
+        # `set -u` expansion of "${ACCEPTED_ROOTS[@]}" is always defined).
+        ROOT_NORMS=()
+        for accepted_root in "${ACCEPTED_ROOTS[@]}"; do
+          accepted_norm="$(normalize_path "$accepted_root")"
+          ROOT_NORMS+=("${accepted_norm%/}")
+        done
+        ROOT_PRIMARY="${ROOT_NORMS[0]}"
+
         resolve_and_check() {
           local candidate="$1"
           [ -z "$candidate" ] && return 0
@@ -235,14 +399,16 @@ public static class WorktreeContainmentHook
           local resolved
           resolved="$(normalize_path "$absolute")"
 
+          # Same rule as before, once per accepted spelling: equality, or nesting on a DIRECTORY
+          # boundary (so a sibling '<root>-evil' is never under '<root>', in any spelling).
           local root_norm
-          root_norm="$(normalize_path "$WORKTREE_ROOT")"
-          root_norm="${root_norm%/}"
+          for root_norm in "${ROOT_NORMS[@]}"; do
+            case "$resolved" in
+              "$root_norm"|"$root_norm"/*) return 0 ;;
+            esac
+          done
 
-          case "$resolved" in
-            "$root_norm"|"$root_norm"/*) return 0 ;;
-            *) block "path '$candidate' resolves to '$resolved', outside the task worktree '$root_norm'" ;;
-          esac
+          block "path '$candidate' resolves to '$resolved', outside the task worktree '$ROOT_PRIMARY'"
         }
 
         case "$tool_name" in
@@ -314,20 +480,31 @@ public static class WorktreeContainmentHook
         """;
 
     /// <summary>
-    /// The PowerShell hook script body (issue #199/#192), worktree root baked in as a literal. This
+    /// The PowerShell hook script body (issue #199/#192), the accepted worktree-root spellings
+    /// (<see cref="AcceptedRoots"/>) baked in as single-quoted literals. This
     /// is the LITERAL mirror of <see cref="WorkspaceContainment.Escapes"/> (rooted-path rejection,
     /// <c>GetFullPath</c> normalization, directory-boundary comparison) — no symlink resolution,
     /// exactly matching the reused C# decision function's semantics.
+    ///
+    /// <para><c>Test-Escapes</c> loops over the SAME accepted-root array, in the same order, with the
+    /// same "any match wins" semantics as the bash <c>case</c> (issue #464). The two scripts are kept
+    /// behaviourally identical on purpose: the rule must not be able to diverge by platform, which is
+    /// exactly how the <c>realpath -m</c> regression documented on <see cref="BashScript"/> happened.
+    /// </para>
     /// </summary>
     internal static string PowerShellScript(string worktreeRoot)
     {
-        string escapedRoot = worktreeRoot.Replace("`", "``").Replace("\"", "`\"");
         return $$"""
         # Guardrails worktree-containment PreToolUse hook (issue #199 / #192). Generated per attempt;
-        # the worktree root below is a literal baked in at generation time, not read from the environment.
+        # the accepted worktree-root spellings below are literals baked in at generation time, not read
+        # from the environment. There is a LIST rather than one root because a single directory can have
+        # more than one absolute spelling (a junctioned or symlinked temp dir), and this script
+        # deliberately does NOT resolve symlinks -- see the C# AcceptedRoots helper (issue #464).
         $ErrorActionPreference = 'Stop'
 
-        $WorktreeRoot = "{{escapedRoot}}"
+        $AcceptedRoots = @(
+        {{PowerShellRootLiterals(worktreeRoot)}}
+        )
 
         $stdin = [Console]::In.ReadToEnd()
 
@@ -336,7 +513,13 @@ public static class WorktreeContainmentHook
             exit 2
         }
 
-        $rootFull = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($WorktreeRoot))
+        $acceptedFull = @()
+        foreach ($acceptedRoot in $AcceptedRoots) {
+            $acceptedFull += [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($acceptedRoot))
+        }
+
+        # The PRIMARY spelling: what a relative candidate is joined to, and what a block message names.
+        $rootFull = $acceptedFull[0]
 
         function Test-Escapes([string]$candidate) {
             if ([string]::IsNullOrWhiteSpace($candidate)) { return $false }
@@ -347,8 +530,14 @@ public static class WorktreeContainmentHook
 
             $resolved = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($candidate))
 
-            if ($resolved -ieq $rootFull) { return $false }
-            return -not $resolved.StartsWith($rootFull + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+            # Same rule as before, once per accepted spelling: equality, or nesting on a DIRECTORY
+            # boundary (so a sibling '<root>-evil' is never under '<root>', in any spelling).
+            foreach ($root in $acceptedFull) {
+                if ($resolved -ieq $root) { return $false }
+                if ($resolved.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+            }
+
+            return $true
         }
 
         function Resolve-AndCheck([string]$candidate) {

@@ -3921,8 +3921,9 @@ the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`).
   worktreeRoot)` writes two files into the attempt's **log dir** (`logs/<runId>/<task-id>/attempt-N/`
   — harness-owned, OUTSIDE the segment worktree, so the generated files never pollute `git status` /
   the write-scope diff): an OS-picked hook script (`containment-hook.ps1` on Windows,
-  `containment-hook.sh` on Unix — the segment worktree root is baked into the script as a literal, one
-  script per attempt, no extra env/arg plumbing) and `containment-settings.json` (one `PreToolUse`
+  `containment-hook.sh` on Unix — the segment worktree root is baked into the script as a literal
+  (since #464, as a **LIST** of accepted root spellings — see below), one script per attempt, no extra
+  env/arg plumbing) and `containment-settings.json` (one `PreToolUse`
   matcher group covering `Write|Edit|MultiEdit|NotebookEdit|Bash`, one `command` hook pointing at the
   script). `ActionRunner`/`GuardrailRunner` append `--settings <path-to-that-file>` to the invocation's
   `ExtraArgs` whenever a real segment worktree is present.
@@ -3943,6 +3944,32 @@ the user's own `~/.claude/settings.json` or the repo's `.claude/settings.json`).
   entirely rather than chase a portable flag: both platforms now implement the identical rule,
   in-process, with no core-utils-flavor dependence.) The no-symlink-resolution gap is therefore
   **consistent across platforms** — a known, accepted limitation, not a macOS-specific regression.
+- **Accepted root spellings (issue #464).** One directory can have more than one absolute spelling:
+  on macOS `/var` is a symlink to `/private/var` and `Path.GetTempPath()` lives under it, so the
+  harness derives a worktree root spelled `/var/folders/…/wt` while anything that RESOLVES the path
+  (the OS's own idea of the agent's cwd, `git rev-parse --show-toplevel`, `pwd -P`) spells the same
+  directory `/private/var/folders/…/wt`. Baking one literal and comparing by pure string
+  normalization then **BLOCKS a legitimate write inside the agent's own worktree** — every write, of
+  every task, presenting as the hook working correctly. The fix keeps the scripts symlink-blind and
+  moves the knowledge to the .NET side of the boundary: `WorktreeContainmentHook.AcceptedRoots`
+  canonicalises ONCE at generation time and bakes an ARRAY of literals — `{as-given (lexically
+  normalized), RealPath.Resolve(as-given)}`, deduped — which both scripts loop over with the
+  **unchanged** equality/directory-boundary test, allowing on the first hit and blocking only when
+  NONE match (bash array + `for`; PowerShell `@(…)` + `foreach` in `Test-Escapes` — behaviourally
+  identical, by construction). Adding a spelling is a DATA change, not a control-flow one. This can
+  only ever turn a WRONG block into an allow: every entry names the same directory as the primary, so
+  a path accepted under the resolved root **is** a path inside the worktree reached by another name;
+  a genuine escape (including a prefix-sharing sibling such as `…/wt-evil`) is still blocked against
+  every entry. **Bounded gap:** the set covers the direction where the as-given root is the ALIAS, not
+  the inverse (a CANONICAL root baked, an ALIASED candidate supplied) — canonical→alias is not
+  enumerable in general. That inverse is unreachable by construction: the root baked in is always
+  `WorktreeHandle.WorktreePath`, which `GitWorktreeProvider` always builds by `Path.Combine` under the
+  run's worktree root (fresh segment, fork) or copies from another handle (reuse) — never read back
+  from `git worktree list` — and it is byte-for-byte the string used as the agent process's working
+  directory. (The one git-reported path in that provider, the resume-adopted **integration** worktree,
+  is a different type that never reaches `WriteHookFiles`; its re-verification runs script guardrails
+  only, so no hook is generated for it.) The block message names the PRIMARY (as-given) spelling —
+  the one the agent's own cwd is expressed in — not the whole list.
 - **git-stash safety (#192), same mechanism, additive rule.** `git stash`'s stack (`refs/stash`) is
   repo-wide, not per-worktree: concurrent worktree-mode tasks (or a human's own diagnostic worktree)
   independently reaching for `git stash`/`git stash pop` around the same time can grab the WRONG

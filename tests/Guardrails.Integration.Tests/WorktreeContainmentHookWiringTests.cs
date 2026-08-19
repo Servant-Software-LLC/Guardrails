@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Guardrails.Core.Execution;
+using Guardrails.Core.Io;
 using Guardrails.Core.Loading;
 using Guardrails.Core.Prompts;
 
@@ -120,6 +121,36 @@ public sealed class WorktreeContainmentHookWiringTests : IDisposable
         Assert.Contains("PreToolUse", settingsJson, StringComparison.Ordinal);
         Assert.Contains(WorktreeContainmentHook.Matcher, settingsJson, StringComparison.Ordinal);
 
+        // (a2) The root BAKED into that script is THIS task's segment worktree — nothing asserted that
+        // before, so a wiring bug that baked the plan dir or the user's own checkout would have gone
+        // unseen here (and would have handed the agent a hook that polices the wrong tree). The
+        // `<taskId>/attempt-N` tail is the shape GitWorktreeProvider.CreateSegment builds; the negative
+        // half is the one that matters most — the harness's OUTER boundary may never be the checkout.
+        IReadOnlyList<string> bakedRoots = BakedAcceptedRoots(File.ReadAllText(scriptPath));
+        Assert.NotEmpty(bakedRoots);
+        Assert.All(bakedRoots, r => Assert.True(Path.IsPathRooted(r), $"baked root '{r}' must be absolute"));
+        Assert.Equal(
+            Path.Combine("01-generate", "attempt-1"),
+            string.Join(Path.DirectorySeparatorChar, bakedRoots[0].Split(Path.DirectorySeparatorChar)[^2..]),
+            StringComparer.FromComparison(RealPath.Comparison));
+        Assert.All(
+            bakedRoots,
+            r => Assert.False(
+                RealPath.IsUnder(r, _repoPath),
+                $"the containment root '{r}' must be a segment worktree, never the user's checkout '{_repoPath}'"));
+
+        // (a3) Issue #464, asserted at the COMPOSITION ROOT rather than against a synthetic root: the
+        // script must accept the segment worktree in its symlink-RESOLVED spelling too, because that is
+        // the spelling the OS, git and the agent's own resolved cwd produce. HONEST SCOPE — this bites
+        // only where the harness's worktree root is reached through a link (macOS CI: Path.GetTempPath()
+        // lives under /var, a symlink to /private/var); elsewhere Resolve is the identity and the
+        // primary entry satisfies it trivially. The every-OS proof of the same property is
+        // WorktreeContainmentHookAliasedRootTests in Core.Tests, which builds the link itself.
+        Assert.Contains(
+            RealPath.Resolve(bakedRoots[0]),
+            bakedRoots,
+            StringComparer.FromComparison(RealPath.Comparison));
+
         // (b) The real invocation received --settings pointing at exactly that file.
         Assert.True(File.Exists(_argvLogPath), "fake CLI should have logged its received argv");
         string argv = File.ReadAllText(_argvLogPath);
@@ -169,6 +200,30 @@ public sealed class WorktreeContainmentHookWiringTests : IDisposable
     }
 
     // --- fixture plumbing --------------------------------------------------------------------
+
+    /// <summary>
+    /// The accepted worktree roots (#464) the generator baked into the script, read back out of the
+    /// generated text: the single-quoted literals between <c>ACCEPTED_ROOTS=(</c> / <c>$AcceptedRoots =
+    /// @(</c> and the closing <c>)</c>. The quote-stripping is deliberately naive — a harness worktree
+    /// path under the temp root cannot contain a quote — so a parse that goes wrong shows up as a
+    /// failing assertion on the value, not as a silently-empty list.
+    /// </summary>
+    private static IReadOnlyList<string> BakedAcceptedRoots(string scriptText)
+    {
+        string[] lines = scriptText.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        int open = Array.FindIndex(
+            lines,
+            l => l.EndsWith('(') && l.Contains("ccepted", StringComparison.OrdinalIgnoreCase));
+        Assert.True(open >= 0, "the generated script must open an accepted-roots array");
+
+        var roots = new List<string>();
+        for (int i = open + 1; i < lines.Length && lines[i].Trim() != ")"; i++)
+        {
+            roots.Add(lines[i].Trim().Trim('\''));
+        }
+
+        return roots;
+    }
 
     private static string GreenGuardrailScript() => Windows ? "exit 0\n" : "#!/usr/bin/env bash\nexit 0\n";
 
