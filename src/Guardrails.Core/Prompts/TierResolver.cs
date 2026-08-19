@@ -288,10 +288,158 @@ public static class TierResolver
         string? runnerPin,
         TierResolution? actor,
         RunConfig config,
-        string? cliDefaultModel = null) =>
-        throw new NotImplementedException(
-            "DoR §6.5/§6.5.1 judge resolution — implemented by wave 3 task 02 " +
-            "(02-implement-judge-resolution). JudgeResolutionTests pins the contract stated above.");
+        string? cliDefaultModel = null)
+    {
+        ArgumentNullException.ThrowIfNull(judge);
+        ArgumentNullException.ThrowIfNull(config);
+
+        // ── 1. Explicit wins ─────────────────────────────────────────────────────────────────────
+        // Rule 1 wins outright and stops every rule below it, the §6.5.1 floor included: the floor is
+        // stated over "the rung from (2)–(3)", and a pin never produces one of those. A runner pin is
+        // reported exactly as §6.1 item 1 reports an action's — the name that was ASKED for, even when
+        // the registry declares no such block (a residual validation already rejects), because a
+        // diagnostic able to print the name nobody declared beats one that can only say "null".
+        if (runnerPin is not null)
+        {
+            PromptRunnerConfig? pinned = NamedBlock(config, runnerPin);
+
+            return new JudgeResolution
+            {
+                Pinned = true,
+                Runner = pinned,
+                RunnerName = runnerPin,
+                Kind = pinned?.Kind,
+                Model = pinned?.Settings.Model ?? cliDefaultModel,
+                Effort = pinned?.Effort,
+                Strength = pinned?.Strength,
+                Weak = IsWeakVerifier(pinned)
+            };
+        }
+
+        // A frontmatter TIER pin names a rung rather than a block, so it resolves through the one
+        // candidate selector §6.1 item 2 uses. Pinned or not, exactly one method in this file filters
+        // candidates (D22a) — a "pinned rung" path with its own candidacy rule would be the divergence
+        // wearing a different hat.
+        if (judge.Tier is { } pinnedRung)
+        {
+            TierResolution byRung = SelectCandidate(config, pinnedRung);
+
+            return byRung.Runner is { } pinnedBlock
+                ? Selected(pinnedBlock, byRung.Tier, cliDefaultModel) with { Pinned = true }
+                // The judge-side of no-route. The ACTOR halts here; a judge may not (§12.6), so an
+                // unservable pinned rung falls back to the default pointer exactly as an unconfigured
+                // plan does and carries the advisory instead. CostlyCeilingBound is the resolver's own
+                // answer to "was a block refused for cost", which IS rule 5's degrade condition — asking
+                // it again here would be a second copy of a datum the sweep already computed.
+                : DefaultPointer(config, cliDefaultModel) with
+                {
+                    Pinned = true,
+                    Degraded = byRung.CostlyCeilingBound
+                };
+        }
+
+        // ── 2. The judge's rung is the ACTOR's rung ──────────────────────────────────────────────
+        // The rung, never the actor's strength. A PINNED or LEGACY actor resolved no rung of its own,
+        // so the rung falls back to the plan-wide default — the rung this task WOULD have resolved at,
+        // filtered exactly as the actor path filters it (an unrecognized default does not propagate,
+        // because GR2043 has already declared it non-propagating at validate time).
+        string? rung = actor?.Tier ?? PropagatableDefaultTier(config);
+        PromptRunnerConfig? actorBlock = actor?.Runner;
+
+        // ── 3. The weak-actor bump — in STRENGTH, at that FIXED rung (D24a) ──────────────────────
+        // A weak actor needs a STRICTLY stronger judge (equal-and-weak is one blind spot talking to
+        // itself); anything else needs only an equal one (Opus judging Opus is a real check). With no
+        // actor there is no bump to want: rule 3 is the weak-ACTOR rule, and the re-verification path
+        // has no actor to be weak.
+        bool bump = actor is not null && IsWeakVerifier(actorBlock);
+        int required = actorBlock?.Strength ?? UnrankedStrength;
+
+        // D29, and its narrowness is the rule. A PINNED costly actor is a human authorizing costly spend
+        // for THIS task, which licenses a costly judge bump. `Pinned` is the whole test: the
+        // `promptRunners.default` pointer is a plan-wide fallback rather than a decision about this task,
+        // and reading it as sanction would silently license costly judges across an entire plan.
+        bool licensed = actor is { Pinned: true } && actorBlock?.Costly is true;
+
+        IReadOnlyList<PromptRunnerConfig> registry = [.. config.PromptRunners.Values];
+
+        (PromptRunnerConfig? Winner, bool CostRefused) pick = Pick(registry, rung, required, bump, licensed);
+        string? resolvedTier = rung;
+        bool floorRaised = false;
+        bool degraded = pick.CostRefused;
+
+        // ── 4. The floor — it RAISES, and only raises (§6.5.1) ───────────────────────────────────
+        // A result at or above minTier is UNTOUCHED, which is the entire difference between a floor and
+        // a default: a plan-wide `easy` default would drag every judge in the plan down, while a
+        // plan-wide `easy` floor does nothing at all. "No rung at all" is below every rung, so there the
+        // floor SUPPLIES one rather than raising one — the same mechanism stated from the other end.
+        if (VerifierFloor(config) is { } floor && IsBelowRung(rung, floor))
+        {
+            (PromptRunnerConfig? Winner, bool CostRefused) raised = Pick(registry, floor, required, bump, licensed);
+
+            if (raised.Winner is not null)
+            {
+                pick = raised;
+                resolvedTier = floor;
+                floorRaised = true;
+                degraded = false;
+            }
+            else
+            {
+                // §6.5.1: an unmeetable floor DEGRADES to the best result from steps 2–3 and fires the
+                // advisory. It does NOT climb to a stronger rung (that spends more to satisfy a
+                // preference), it does not reach the costly block, and it is not an error — an
+                // unsatisfiable ACTOR tier is GR2048, an unsatisfiable VERIFIER floor is an advisory line.
+                degraded |= raised.CostRefused;
+            }
+        }
+
+        if (pick.Winner is { } winner)
+        {
+            return Selected(winner, resolvedTier, cliDefaultModel) with
+            {
+                // Bumped says the bump FIRED, not that one was wanted: every selection above applied the
+                // strict comparison when `bump` was set, so reaching a winner IS the bump landing.
+                Bumped = bump,
+                FloorRaised = floorRaised,
+                // A winner AND a degrade is one case and only one: the §6.5.1 floor that could not be met
+                // without a costly block, which keeps the steps-2–3 result and fires the same advisory.
+                // The route is real, so nothing halts — but dropping the flag here would silently lose the
+                // only report of a policy the operator configured and did not get.
+                Degraded = degraded
+            };
+        }
+
+        // ── 5. Nothing qualified: stay at the ACTOR's route, and the run PROCEEDS ────────────────
+        // The asymmetry, and the one an implementer gets backwards: the actor HALTS here (NoRoute), the
+        // judge DEGRADES — degrade what is advisory, halt what is load-bearing. There is deliberately no
+        // halt path to reuse, because §12.6 forbids a verifier condition from ever failing a build.
+        //
+        // `degraded` stays reserved for the COSTLY refusal, which is a different fact from "there is
+        // simply nothing stronger at this rung" and the advisory has to tell them apart: only the first
+        // can say "your judge is no stronger than the work BECAUSE the stronger block is reserved".
+        if (actor is not null)
+        {
+            return new JudgeResolution
+            {
+                Runner = actorBlock,
+                RunnerName = actor.RunnerName,
+                Kind = actorBlock?.Kind,
+                // The actor's ROUTE, not merely its block: an `action.model` pin overrode the block's
+                // model string for the actor, and "stays at the actor's route" means the same model.
+                Model = actor.Model ?? actorBlock?.Settings.Model ?? cliDefaultModel,
+                Effort = actor.Effort ?? actorBlock?.Effort,
+                Tier = resolvedTier,
+                Strength = actorBlock?.Strength,
+                Weak = IsWeakVerifier(actorBlock),
+                Degraded = degraded
+            };
+        }
+
+        // No actor and no rung anywhere: Invariant 7's runtime half at the judge. Nothing tiering-specific
+        // to do, so the judge runs on the `default` pointer's block — EXACTLY today's behaviour, which is
+        // what makes the verifier route inert for a user who never opted into any of this.
+        return DefaultPointer(config, cliDefaultModel) with { Degraded = degraded };
+    }
 
     /// <summary>
     /// The ONE weakness predicate for the verifier route (§6.5 rule 4 + §4.1's D21a correction),
@@ -311,6 +459,167 @@ public static class TierResolver
     /// </summary>
     public static bool IsWeakVerifier(PromptRunnerConfig? block) =>
         block is null || (block.Strength is null && block.Kind != PromptRunnerKind.Claude);
+
+    /// <summary>
+    /// The strength an UNRANKED block counts as when the §6.5 rule-3 comparison is made — and the one
+    /// place this design reads a null <c>strength</c> as a NUMBER rather than as a sort position.
+    ///
+    /// <para>§6.2 sorts unspecified strength LAST (<c>int.MaxValue</c>) so a block nobody ranked never
+    /// outranks one they did. That is an ORDERING convention and it cannot be reused as a comparison
+    /// value here: at <c>MaxValue</c> an unranked block would be "strictly greater" than every ranked
+    /// one and equal to another unranked one, which inverts rule 4 exactly — Qwen would be a licensed
+    /// judge for Opus, and Qwen judging Qwen would satisfy the bump. Zero gives the two readings the
+    /// design actually states: an unranked block can never satisfy a bump, and a ranked one always
+    /// out-strengthens an unranked actor.</para>
+    /// </summary>
+    private const int UnrankedStrength = 0;
+
+    /// <summary>
+    /// One §6.5 selection at ONE rung: the qualifying block, plus whether the costly floor is the reason
+    /// there is none.
+    ///
+    /// <para>The second value is what separates rule 5's DEGRADE ("a stronger block exists and the
+    /// harness may not have it") from "there is simply nothing stronger at this rung". Both leave the
+    /// judge where it was, but only the first is a thing to tell the operator about, so the question is
+    /// asked HERE — once, next to the selection that failed — rather than re-derived by an advisory that
+    /// would need its own copy of the candidacy predicate to ask it.</para>
+    ///
+    /// <para>A null <paramref name="rung"/> is not an error: it is "no rung to select at" (a pinned or
+    /// legacy actor in a plan with no <c>defaultTier</c>, or no actor at all), and it yields no winner
+    /// and no refusal — nothing was refused, because nothing was asked.</para>
+    /// </summary>
+    private static (PromptRunnerConfig? Winner, bool CostRefused) Pick(
+        IReadOnlyList<PromptRunnerConfig> registry,
+        string? rung,
+        int required,
+        bool strict,
+        bool licensed)
+    {
+        if (rung is null)
+        {
+            return (null, false);
+        }
+
+        if (BestJudge(registry, rung, required, strict, licensed) is { } winner)
+        {
+            return (winner, false);
+        }
+
+        // Would a block have qualified if the costly floor were lifted? Asked ONLY when the licence is
+        // absent — with it the pass above already looked at those blocks, so a second look could only
+        // report a refusal that never happened.
+        return (null, !licensed && BestJudge(registry, rung, required, strict, licensed: true) is not null);
+    }
+
+    /// <summary>
+    /// The §6.5 winner at <paramref name="rung"/>: the weakest block that CAN judge this work, or null
+    /// when none can.
+    ///
+    /// <para><b>Candidacy is <see cref="PromptRunnerConfig.ServesTier"/> and nothing else (D22a)</b> —
+    /// CALLED, never re-spelled, so this path and GR2048 cannot drift. <paramref name="licensed"/> is
+    /// D29 and widens candidacy by exactly one step, to
+    /// <see cref="PromptRunnerConfig.DeclaresTier"/> — the OTHER shared predicate, the same pair GR2048
+    /// computes. Neither branch re-reads <c>routing</c> or <c>costly</c> here, which is the property that
+    /// keeps a costly block unreachable to the harness by construction rather than by care.</para>
+    ///
+    /// <para>Rule 6 leads the ORDER but never the FILTER: the strength test runs first, so specialization
+    /// can neither satisfy nor violate ≥ and a specialized-but-too-weak block is never chosen. Among the
+    /// blocks that already qualify, <c>planning-reasoning</c> is preferred and §6.2's ascending strength
+    /// decides the rest; both sorts are STABLE, so full ties keep declaration order.</para>
+    /// </summary>
+    private static PromptRunnerConfig? BestJudge(
+        IReadOnlyList<PromptRunnerConfig> registry,
+        string rung,
+        int required,
+        bool strict,
+        bool licensed) =>
+        registry
+            .Where(runner =>
+                (runner.ServesTier(rung) || (licensed && runner.DeclaresTier(rung)))
+                && Qualifies(runner.Strength ?? UnrankedStrength, required, strict))
+            .OrderBy(runner => runner.Specialization == PromptRunnerSpecialization.PlanningReasoning ? 0 : 1)
+            .ThenBy(runner => runner.Strength ?? int.MaxValue)
+            .FirstOrDefault();
+
+    /// <summary>
+    /// The §6.5 rule 3/4 strength test: <b>strictly</b> greater when the actor is weak, equal-or-greater
+    /// otherwise. The whole of rule 4 is this one bool — equal-and-strong needs no bump, equal-and-weak
+    /// does.
+    /// </summary>
+    private static bool Qualifies(int strength, int required, bool strict) =>
+        strict ? strength > required : strength >= required;
+
+    /// <summary>
+    /// A <see cref="JudgeResolution"/> over a block this resolver SELECTED — the §12.4 <c>judge {...}</c>
+    /// object, assembled in one place so no caller and no later rule assembles a second, partial copy.
+    /// </summary>
+    private static JudgeResolution Selected(PromptRunnerConfig block, string? tier, string? cliDefaultModel) =>
+        new()
+        {
+            Runner = block,
+            RunnerName = block.Name,
+            Kind = block.Kind,
+            Model = block.Settings.Model ?? cliDefaultModel,
+            Effort = block.Effort,
+            Tier = tier,
+            Strength = block.Strength,
+            Weak = IsWeakVerifier(block)
+        };
+
+    /// <summary>
+    /// The <c>promptRunners.default</c> pointer's block as a judge route — today's behaviour, which is
+    /// what an unconfigured plan (Invariant 7) and an unservable pinned rung both fall back to. No rung,
+    /// so no <see cref="JudgeResolution.Tier"/>.
+    /// </summary>
+    private static JudgeResolution DefaultPointer(RunConfig config, string? cliDefaultModel)
+    {
+        PromptRunnerConfig? block = NamedBlock(config, config.DefaultPromptRunner);
+
+        return new JudgeResolution
+        {
+            Runner = block,
+            RunnerName = config.DefaultPromptRunner,
+            Kind = block?.Kind,
+            Model = block?.Settings.Model ?? cliDefaultModel,
+            Effort = block?.Effort,
+            Strength = block?.Strength,
+            Weak = IsWeakVerifier(block)
+        };
+    }
+
+    /// <summary>
+    /// The §6.5.1 floor as it actually reaches a judge: only a RECOGNIZED token is a floor, deliberately
+    /// the same filter <see cref="PropagatableDefaultTier"/> applies to the plan-wide default and for the
+    /// same reason — GR2043 reports an unrecognized token at validate time, and fabricating a rung out of
+    /// one here would raise every judge in the plan onto a rung the validator said does not exist. Null =
+    /// no <c>tiering</c> block, no <c>verifier</c> sub-block, no <c>minTier</c>, or a token off the ladder.
+    /// </summary>
+    private static string? VerifierFloor(RunConfig config) =>
+        ActionTiers.IsRecognized(config.Tiering?.Verifier?.MinTier) ? config.Tiering!.Verifier!.MinTier : null;
+
+    /// <summary>
+    /// True when <paramref name="rung"/> sits BELOW <paramref name="floor"/> on the difficulty ladder —
+    /// the one comparison §6.5.1 turns on. A null (or off-ladder) rung is below every rung, which is how
+    /// "the floor SUPPLIES a rung where resolution had none" falls out of the same test that raises one.
+    /// </summary>
+    private static bool IsBelowRung(string? rung, string floor) => RungIndex(rung) < RungIndex(floor);
+
+    /// <summary>
+    /// The rung's position on <see cref="ActionTiers.All"/> (ascending difficulty), or -1 when it is not
+    /// on the ladder at all — null, or a token bound verbatim from a manifest that GR2043 rejects.
+    /// </summary>
+    private static int RungIndex(string? rung)
+    {
+        for (int i = 0; i < ActionTiers.All.Count; i++)
+        {
+            if (string.Equals(ActionTiers.All[i], rung, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
 
     /// <summary>
     /// The EFFECTIVE tier for this action — <c>action.tier</c> ?? the plan-wide
@@ -377,14 +686,8 @@ public static class TierResolver
     /// </summary>
     private static IReadOnlyList<string> RungsAtOrAbove(string tier)
     {
-        for (int i = 0; i < ActionTiers.All.Count; i++)
-        {
-            if (string.Equals(ActionTiers.All[i], tier, StringComparison.Ordinal))
-            {
-                return [.. ActionTiers.All.Skip(i)];
-            }
-        }
+        int index = RungIndex(tier);
 
-        return [];
+        return index < 0 ? [] : [.. ActionTiers.All.Skip(index)];
     }
 }
