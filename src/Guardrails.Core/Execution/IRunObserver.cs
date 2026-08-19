@@ -82,6 +82,27 @@ public interface IRunObserver
     void DecisionRecorded(DecisionEntry entry) { }
 
     /// <summary>
+    /// The DoR §6.5 <b>verifier advisory</b> (#229), raised at RUN START — once per AFFECTED task,
+    /// before the DAG executes — so an operator learns that a judge is weaker than (or equal-and-weak
+    /// to) the work it grades BEFORE paying for the run, instead of reading it out of <c>run.json</c>
+    /// afterwards. <paramref name="taskId"/> is the task the advisory is about;
+    /// <paramref name="finding"/> is the already-composed human line from <c>VerifierAdvisory</c>, the
+    /// ONE owner of the rule — no observer re-derives "is this judge weak" (D22a).
+    ///
+    /// <para><b>Advisory means advisory.</b> §12.6 forbids any verifier condition from failing a
+    /// build, so this event only reports and nothing branches on it; a run with no findings raises it
+    /// zero times and prints nothing at all. Both parameters are primitives on purpose — this
+    /// interface is public, <c>Guardrails.Cli</c> has no <c>InternalsVisibleTo</c> into
+    /// <c>Guardrails.Core</c>, and a finding TYPE on this signature would be inconsistent
+    /// accessibility (CS0051) the moment the type is not public.</para>
+    ///
+    /// <para>Default no-op so non-CLI observers need not handle it — but a transparent DECORATOR must
+    /// still forward it EXPLICITLY: an unforwarded call resolves to this empty body and the advisory
+    /// is swallowed silently, in exactly the mode most operators run.</para>
+    /// </summary>
+    void VerifierAdvisoryFound(string taskId, string finding) { }
+
+    /// <summary>
     /// A WAVED plan's wave <paramref name="wave"/> (the <paramref name="index"/>-th of
     /// <paramref name="total"/>, 1-based) is about to run its DAG drain (SSOT §14.4). The harness runs
     /// waves in strict order behind a hard barrier; this lets the UI retitle/segment the task table per

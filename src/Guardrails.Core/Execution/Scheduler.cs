@@ -155,6 +155,13 @@ public sealed class Scheduler
             throw new InvalidOperationException($"Dependency cycle: {string.Join(" -> ", cycle)}");
         }
 
+        // #229 / DoR §6.5 — the RUN-START half of the advisory's de-duplication ruling: say it ONCE,
+        // up front, before anything is paid for. The JIT half (record into judge provenance always,
+        // log only on a DIFFERENCE) lives at the guardrail boundary and deliberately stays quiet when
+        // it agrees with what this walk predicted. Runs before the integration handle exists because
+        // it touches nothing but the plan: no worktree, no journal, no DAG.
+        EmitVerifierAdvisories(plan);
+
         // Shared, CONTINUOUS run state across every wave (SSOT §14): ONE settled map (all waves' task
         // results coexist in the final report), ONE directoryOwner map for the end-of-run sweep, ONE
         // runId, ONE integration handle / plan branch, and ONE journal (_journal). A WAVED run drives N
@@ -206,6 +213,105 @@ public sealed class Scheduler
         return plan.IsWaved
             ? await RunWavedAsync(plan, integ, settled, directoryOwner, planBranchRecords, trailerTracking, cancellationToken).ConfigureAwait(false)
             : await RunFlatAsync(plan, fullGraph, integ, settled, directoryOwner, planBranchRecords, trailerTracking, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The DoR §6.5 (#229) RUN-START verifier advisory: walk the plan once, ask
+    /// <see cref="Prompts.VerifierAdvisory"/> which tasks are affected, and raise ONE
+    /// <see cref="IRunObserver.VerifierAdvisoryFound"/> per affected task. A run whose judges are all
+    /// strong enough raises nothing and prints nothing at all.
+    ///
+    /// <para><b>It never halts and never blocks the DAG.</b> §12.6 forbids a verifier condition from
+    /// failing a build, so every step here is contained: a task whose route or judge cannot be
+    /// resolved is SKIPPED rather than surfaced as an error, and the whole walk is wrapped so a
+    /// diagnostic can never abort the run it was added to describe. A diagnostic that can kill a run
+    /// is strictly worse than no diagnostic.</para>
+    ///
+    /// <para><b>The rule is not re-derived here.</b> "Is this judge weak" is decided ONCE, by
+    /// <see cref="Prompts.VerifierAdvisory"/> over <see cref="Prompts.TierResolver"/>'s resolutions;
+    /// this method only supplies the (actor, judge) pairs and prints what comes back. A second
+    /// implementation of the condition is the exact divergence D22a forbids — and it would stay
+    /// invisible until the day the two answers disagreed.</para>
+    ///
+    /// <para><c>plan.Tasks</c> is already the flattened union of every wave's tasks, so ONE walk
+    /// covers a waved plan as well as a flat one — deliberately, because the advisory is about what
+    /// the operator is about to pay for, and that is the whole run rather than wave 1.</para>
+    /// </summary>
+    private void EmitVerifierAdvisories(PlanDefinition plan)
+    {
+        try
+        {
+            List<Prompts.VerifierAdvisoryPair> pairs = [];
+
+            foreach (TaskNode task in plan.Tasks)
+            {
+                // Contained PER TASK: an unreadable guardrail prompt file, or a registry a resolver
+                // rejects, costs that task's advisory line and nothing else. The alternative — one
+                // throw taking the run down before the DAG starts — is the failure mode this whole
+                // walk is not allowed to have.
+                try
+                {
+                    // The PROMPT guard, carried from TaskExecutor.ResolveRoute (which is private, so the
+                    // call is spelled again here rather than shared). A script action resolves no route
+                    // and grades against no judge; walking it anyway would emit advisories an operator
+                    // cannot act on, which is how a diagnostic teaches people to stop reading it.
+                    if (task.Action.Kind != ActionKind.Prompt)
+                    {
+                        continue;
+                    }
+
+                    Prompts.TierResolution actor =
+                        Prompts.TierResolver.Resolve(task.Action, plan.Config, cliDefaultModel: null);
+
+                    // Every PROMPT guardrail is a judge; a script guardrail runs no model and can never
+                    // be one. Each contributes a pair, so a task whose FIRST prompt guardrail resolves a
+                    // strong judge and whose second does not is still reported — while the emit loop
+                    // below keeps the operator-facing contract at one line per affected task.
+                    foreach (GuardrailDefinition judgeGuardrail in task.Guardrails)
+                    {
+                        if (judgeGuardrail.Kind != ActionKind.Prompt)
+                        {
+                            continue;
+                        }
+
+                        // Rule 1's other spelling — the judge prompt's frontmatter `runner` — read the
+                        // same way GuardrailRunner reads it at the JIT boundary, so the preflight is a
+                        // model of that resolution rather than a different one.
+                        string? runnerPin = PromptExecutionSupport
+                            .LoadPromptFile(judgeGuardrail.Path).Frontmatter.Runner;
+
+                        Prompts.JudgeResolution judge = Prompts.TierResolver.ResolveJudge(
+                            judgeGuardrail, runnerPin, actor, plan.Config, cliDefaultModel: null);
+
+                        pairs.Add(new Prompts.VerifierAdvisoryPair(task.Id, actor, judge));
+                    }
+                }
+                catch (Exception)
+                {
+                    // Skip this task. Nothing to report and nothing to fail: see the class remark above.
+                }
+            }
+
+            // THE rule owner decides which pairs are findings and in what order — Preflight is where
+            // "one line per AFFECTED task" lives, next to the condition it depends on.
+            var reported = new HashSet<string>(StringComparer.Ordinal);
+            foreach (Prompts.VerifierAdvisoryFinding finding in Prompts.VerifierAdvisory.Preflight(pairs))
+            {
+                string taskId = finding.TaskId ?? string.Empty;
+
+                // One line per affected TASK, not per affected guardrail: several judges on one task
+                // usually resolve identically, and repeating the same sentence three times before the
+                // run starts is how an operator learns to skip the block entirely.
+                if (reported.Add(taskId))
+                {
+                    _observer.VerifierAdvisoryFound(taskId, finding.Message);
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // The outer containment. An advisory is not allowed to be the reason a run does not start.
+        }
     }
 
     /// <summary>

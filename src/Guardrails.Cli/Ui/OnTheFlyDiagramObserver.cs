@@ -204,6 +204,11 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
 
     public void ParallelismClampedNoProvider(int requested) => _inner.ParallelismClampedNoProvider(requested);
 
+    // #229 §6.5: forwarded EXPLICITLY. The interface default is an empty body, so a decorator that
+    // simply omits this swallows the run-start advisory with no trace at all — and this decorator is
+    // in BOTH chains, so the omission would hide it in every mode.
+    public void VerifierAdvisoryFound(string taskId, string finding) => _inner.VerifierAdvisoryFound(taskId, finding);
+
     public void CleanupFailed(string owner, Exception error) => _inner.CleanupFailed(owner, error);
 
     public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount) =>

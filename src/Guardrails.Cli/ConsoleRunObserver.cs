@@ -146,4 +146,16 @@ public sealed class ConsoleRunObserver : IRunObserver
             _output.WriteLine();
         }
     }
+
+    public void VerifierAdvisoryFound(string taskId, string finding)
+    {
+        lock (_gate)
+        {
+            // The DoR §6.5 run-start advisory (#229) — one line per affected task, before the DAG.
+            // Tagged rather than banner-wrapped: §12.6 forbids a verifier condition from failing a
+            // build, and a WARNING banner in the same stream that carries real failures costs the
+            // operator a triage they do not owe. A run with no findings prints nothing here at all.
+            _output.WriteLine($"[verifier-advisory] {taskId}: {finding}");
+        }
+    }
 }

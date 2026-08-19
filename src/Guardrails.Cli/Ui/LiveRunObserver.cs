@@ -325,6 +325,22 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void VerifierAdvisoryFound(string taskId, string finding)
+    {
+        lock (_gate)
+        {
+            // The DoR §6.5 run-start advisory (#229), one line per affected task. Written above the
+            // live region under _gate exactly like PlanHashMismatch/DecisionRecorded: the Scheduler
+            // raises this from INSIDE the Spectre live region, so a raw Console.Write here corrupts
+            // the task table (#145). Yellow, not red — §12.6 forbids a verifier condition from ever
+            // failing a build, and colouring it as a failure buys the operator a triage they do not
+            // owe. Both strings come from the harness, but both are escaped: a runner name with a
+            // bracket in it would otherwise be read as Spectre markup.
+            AnsiConsole.MarkupLine(
+                $"[yellow]verifier advisory[/] [grey]{Markup.Escape(taskId)}[/]: {Markup.Escape(finding)}");
+        }
+    }
+
     /// <summary>Stop the live region (the final summary prints after disposal).</summary>
     public async ValueTask DisposeAsync()
     {
