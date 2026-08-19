@@ -240,7 +240,10 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             detail += $" · {link}";
         }
 
-        Update(result.TaskId, StatusMarkup(result.Outcome), detail);
+        // #485: the kind qualifies the STATUS cell only. The Detail cell is left untouched in all three
+        // cases — it already carries the question, and it is the most elastic cell, so a prefix there
+        // would push the question off-screen on a narrow terminal.
+        Update(result.TaskId, StatusMarkup(result.Outcome, result.NeedsHumanKind), detail);
     }
 
     public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount)
@@ -411,13 +414,22 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     }
 
     /// <summary>
-    /// The Spectre markup for a finished task's Status cell, keyed on its <see cref="TaskOutcome"/>.
+    /// The Spectre markup for a finished task's Status cell, keyed on its <see cref="TaskOutcome"/> and —
+    /// for a needs-human halt — the agent's optional <paramref name="needsHumanKind"/> claim (issue #485).
     /// Public (not private) for the same reason <see cref="Commands.RunCommand.Hyperlink"/> is — the
     /// Cli assembly ships no <c>InternalsVisibleTo</c>, so a pure mapping method is the test seam
     /// (issue #190: proves <see cref="TaskOutcome.RateLimited"/> renders distinctly from the generic
     /// needs-human red).
+    ///
+    /// <para>#485 uses the width-scarce TERSE form (<c>needs human (work)</c> / <c>needs human (guardrail)</c>)
+    /// because this is the narrowest surface in the product; every other surface prints the full contract
+    /// token. UNCLASSIFIED renders the unqualified <c>needs human</c> — byte-for-byte what every run has
+    /// always printed — so it cannot read as either kind, cannot look broken, and costs zero characters.
+    /// Colour stays red for all three: #190 spent blue on "provider-side, re-run later", and a defective
+    /// guardrail is not re-run-later, so a second colour would blur that signal for no gain the text does
+    /// not already carry.</para>
     /// </summary>
-    public static string StatusMarkup(TaskOutcome outcome) => outcome switch
+    public static string StatusMarkup(TaskOutcome outcome, string? needsHumanKind = null) => outcome switch
     {
         TaskOutcome.Succeeded => "[green]succeeded[/]",
         TaskOutcome.Skipped => "[green]skipped[/]",
@@ -427,6 +439,8 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         // color convention above, so a human reading the table associates blue with "provider-side,
         // re-run later", never "your task is broken" (red).
         TaskOutcome.RateLimited => "[blue]rate limited[/]",
-        _ => "[red]needs human[/]"
+        _ => NeedsHumanKinds.Terse(needsHumanKind) is { } terse
+            ? $"[red]needs human ({terse})[/]"
+            : "[red]needs human[/]"
     };
 }

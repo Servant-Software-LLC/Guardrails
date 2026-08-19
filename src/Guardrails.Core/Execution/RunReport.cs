@@ -43,6 +43,21 @@ public sealed record TaskResult
     public IReadOnlyList<string> NeedsHumanOptions { get; init; } = [];
 
     /// <summary>
+    /// The agent's optional classification of a needs-human halt (issue #485):
+    /// <see cref="NeedsHumanKinds.BlockedWork"/> ("I cannot complete this work" — look at the TASK) or
+    /// <see cref="NeedsHumanKinds.DefectiveGuardrail"/> ("this check is itself wrong" — look at the CHECK).
+    /// Null means UNCLASSIFIED, and the harness invents no default: it records what the agent asserted and
+    /// lets a human adjudicate. Rides HERE, beside <see cref="NeedsHumanOptions"/> and for the same reason
+    /// (the #387 precedent), so no <see cref="IRunObserver"/> member is needed — <c>TaskFinished</c> already
+    /// delivers it to every observer.
+    /// <para><b>Never stamped into <see cref="Summary"/>.</b> <c>Scheduler.ExtractNeedsHumanQuestion</c>
+    /// parses the literal <c>needs human: </c> prefix out of the summary and treats the remainder as the
+    /// escalation's question; a kind spliced in there would either break that dispatch or pollute the
+    /// recorded question. It is a FIELD, never a substring.</para>
+    /// </summary>
+    public string? NeedsHumanKind { get; init; }
+
+    /// <summary>
     /// In worktree mode, the path to the validated fragment file for deferred B1 settle in the
     /// Scheduler. Null in serial mode (AttemptJournaler handles the merge immediately).
     /// </summary>

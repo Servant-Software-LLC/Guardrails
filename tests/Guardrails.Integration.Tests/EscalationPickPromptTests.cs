@@ -84,8 +84,46 @@ public sealed class EscalationPickPromptTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_escDir, "7-needs-human.answer.json")));
     }
 
+    // ── #485: the rare options-carrying defective-guardrail claim ────────────────────────────────
+
+    [Fact]
+    public void OfferPicks_DefectiveGuardrailClaim_StillOffersThePick_ButWarnsFirst()
+    {
+        // The answerability floor is untouched (a pick IS offered and written), but answering a bounded
+        // question does not repair a broken check — so the surface says so before the SelectionPrompt.
+        WriteEscalation(seq: 3, gate: "needs-human", subject: TaskId, options: Options, criticality: "moderate",
+            kind: NeedsHumanKinds.DefectiveGuardrail);
+        using var output = new StringWriter();
+
+        int written = EscalationPickPrompt.OfferPicks(
+            _escDir, proceedUnreviewed: false, chooseOption: _ => Options[0], answeredBy: "interactive-pick",
+            output: output);
+
+        Assert.Equal(1, written);
+        Assert.Contains(
+            "Note: this task escalated as [defective-guardrail]. Answering does not fix a guardrail — if the "
+            + "claim holds, fix the check in the plan folder instead of picking here.",
+            output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OfferPicks_BlockedWorkOrUnclassified_PrintsNoAdvisory()
+    {
+        WriteEscalation(seq: 3, gate: "needs-human", subject: TaskId, options: Options, criticality: "moderate",
+            kind: NeedsHumanKinds.BlockedWork);
+        WriteEscalation(seq: 4, gate: "needs-human", subject: TaskId, options: Options, criticality: "moderate");
+        using var output = new StringWriter();
+
+        EscalationPickPrompt.OfferPicks(
+            _escDir, proceedUnreviewed: false, chooseOption: _ => Options[0], answeredBy: "interactive-pick",
+            output: output);
+
+        Assert.DoesNotContain("Note: this task escalated as", output.ToString(), StringComparison.Ordinal);
+    }
+
     private void WriteEscalation(
-        int seq, string gate, string subject, IReadOnlyList<string> options, string? criticality)
+        int seq, string gate, string subject, IReadOnlyList<string> options, string? criticality,
+        string? kind = null)
     {
         var record = new
         {
@@ -98,7 +136,8 @@ public sealed class EscalationPickPromptTests : IDisposable
             at = "2026-07-24T10:59:00Z",
             id = new { runId = RunId, seq, gate, subject },
             status = "open",
-            options
+            options,
+            kind
         };
         File.WriteAllText(Path.Combine(_escDir, $"{seq}-{gate}.json"),
             JsonSerializer.Serialize(record, new JsonSerializerOptions { WriteIndented = true }));

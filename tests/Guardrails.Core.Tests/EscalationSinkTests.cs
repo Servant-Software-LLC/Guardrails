@@ -74,6 +74,39 @@ public sealed class EscalationSinkTests : IDisposable
         Assert.Contains(id.RunId, raw);
     }
 
+    // --- #485: the agent's kind claim on the escalation record -------------------------------------
+
+    [Fact]
+    public void Escalate_WithNeedsHumanKind_RecordsTheClaimVerbatim()
+    {
+        // The record is the #479 probe corpus: a `defective-guardrail` claim in
+        // logs/<runId>/escalations/*.json makes "every guardrail that reached a live run and should not
+        // have" a jq query over files that already exist — no new export command, no new artifact.
+        RunJournal journal = RunJournal.LoadOrCreate(BuildPlan());
+        var sink = new FileEscalationSink(LogsRoot, journal, IRunObserver.Null, Threshold);
+
+        EscalationId id = sink.Escalate(
+            Request("needs-human", "08-implement", "moderate") with { Kind = NeedsHumanKinds.DefectiveGuardrail });
+
+        using JsonDocument doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+            LogsRoot, journal.Document.RunId, "escalations", $"{id.Seq}-{id.Gate}.json")));
+        Assert.Equal("defective-guardrail", doc.RootElement.GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public void Escalate_WithoutNeedsHumanKind_OmitsTheFieldEntirely()
+    {
+        // Unclassified adds nothing to the record — a pre-#485-shaped escalation file is unchanged.
+        RunJournal journal = RunJournal.LoadOrCreate(BuildPlan());
+        var sink = new FileEscalationSink(LogsRoot, journal, IRunObserver.Null, Threshold);
+
+        EscalationId id = sink.Escalate(Request("needs-human", "08-implement", "moderate"));
+
+        string raw = File.ReadAllText(Path.Combine(
+            LogsRoot, journal.Document.RunId, "escalations", $"{id.Seq}-{id.Gate}.json"));
+        Assert.DoesNotContain("\"kind\"", raw, StringComparison.Ordinal);
+    }
+
     // --- §7.2 (2): decisions[] 'escalated' entry + IRunObserver.DecisionRecorded --------------------
 
     [Fact]

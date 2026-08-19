@@ -352,7 +352,8 @@ internal sealed class AttemptJournaler
         string logDir,
         ActionRun action,
         string question,
-        IReadOnlyList<string> options)
+        IReadOnlyList<string> options,
+        string? kind = null)
     {
         string feedback =
             $"# Task '{task.Id}' needs a human\n\n" +
@@ -369,7 +370,10 @@ internal sealed class AttemptJournaler
             Outcome = AttemptOutcome.NeedsHuman,
             CostUsd = action.CostUsd,
             Usage = action.Usage,
-            LogDir = relativeLogDir
+            LogDir = relativeLogDir,
+            // #485: the agent's claim, canonicalized once more at the journal boundary so a caller that
+            // hand-builds a kind cannot write an unrecognised token into run.json.
+            NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
 
@@ -378,8 +382,11 @@ internal sealed class AttemptJournaler
             TaskId = task.Id,
             Outcome = TaskOutcome.NeedsHuman,
             ActionExitCode = action.ExitCode,
+            // The kind is deliberately NOT spliced into this summary: Scheduler.ExtractNeedsHumanQuestion
+            // parses the `needs human: ` prefix and treats the remainder as the escalation's question.
             Summary = $"needs human: {question}",
-            NeedsHumanOptions = options
+            NeedsHumanOptions = options,
+            NeedsHumanKind = NeedsHumanKinds.Parse(kind)
         }, FeedbackPath: null);
     }
 

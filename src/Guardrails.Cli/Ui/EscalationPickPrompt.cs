@@ -84,6 +84,16 @@ public static class EscalationPickPrompt
                 continue;
             }
 
+            // #485: the RARE case — an escalation that both claims a defective guardrail AND enumerates
+            // options. The pick is still offered (the answerability floor is orthogonal and deliberately
+            // unchanged), but picking answers a question; it does not repair a check. Say so once, here.
+            if (NeedsHumanKinds.Parse(escalation.Kind) == NeedsHumanKinds.DefectiveGuardrail)
+            {
+                output.WriteLine(
+                    $"    Note: this task escalated as [{NeedsHumanKinds.DefectiveGuardrail}]. Answering does not fix a " +
+                    "guardrail — if the claim holds, fix the check in the plan folder instead of picking here.");
+            }
+
             string? chosen = chooseOption(escalation);
             if (chosen is null)
             {

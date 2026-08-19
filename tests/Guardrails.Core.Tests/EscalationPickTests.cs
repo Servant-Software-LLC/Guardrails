@@ -71,6 +71,48 @@ public sealed class EscalationPickTests : IDisposable
         Assert.Contains("proceed-unreviewed", pick.NonAnswerableReason!);
     }
 
+    // ── #485: the agent's kind claim rides onto the pickable view, and NEVER changes answerability ──
+
+    [Fact]
+    public void ReadOpen_CarriesTheNeedsHumanKindClaim_WithoutChangingAnswerability()
+    {
+        WriteEscalation(seq: 4, gate: "needs-human", subject: TaskId, options: Options,
+            criticality: "moderate", kind: NeedsHumanKinds.DefectiveGuardrail);
+
+        PickableEscalation pick = Assert.Single(EscalationPick.ReadOpen(_escDir, proceedUnreviewed: false));
+
+        Assert.Equal(NeedsHumanKinds.DefectiveGuardrail, pick.Kind);
+
+        // The answerability floor is ORTHOGONAL (#387): narrowing it by kind would be an unrequested
+        // contract change. A defective-guardrail claim is still offered a pick — the surface merely warns.
+        Assert.True(pick.Answerable);
+        Assert.Null(pick.NonAnswerableReason);
+    }
+
+    [Fact]
+    public void ReadOpen_UnrecognisedOrAbsentKind_IsUnclassified_NotAnError()
+    {
+        WriteEscalation(seq: 1, gate: "needs-human", subject: TaskId, options: Options, kind: "some-future-kind");
+        WriteEscalation(seq: 2, gate: "needs-human", subject: TaskId, options: Options);  // pre-#485 record
+
+        IReadOnlyList<PickableEscalation> picks = EscalationPick.ReadOpen(_escDir, proceedUnreviewed: false);
+
+        Assert.Equal(2, picks.Count);
+        Assert.All(picks, p => Assert.Null(p.Kind));
+    }
+
+    [Fact]
+    public void ReadOpen_ZeroOptionFilter_IsNotWidenedByKind()
+    {
+        // A #481-style escalation is a question plus evidence with NO options[]. It must STILL be excluded:
+        // widening the filter would force the escalations panel to render non-pickable entries, a separate
+        // design with its own answerability-confusion risk.
+        WriteEscalation(seq: 1, gate: "needs-human", subject: TaskId, options: [],
+            kind: NeedsHumanKinds.DefectiveGuardrail);
+
+        Assert.Empty(EscalationPick.ReadOpen(_escDir, proceedUnreviewed: false));
+    }
+
     // ── WriteChoice: the happy path is a REAL answer file the REAL consumer injects ───────────────
 
     [Fact]
@@ -186,7 +228,7 @@ public sealed class EscalationPickTests : IDisposable
     /// <summary>Author an escalation record in the exact FileEscalationSink shape (nested <c>id</c> + top-level fields + <c>options</c>).</summary>
     private void WriteEscalation(
         int seq, string gate, string subject, IReadOnlyList<string> options,
-        string? criticality = "moderate", string status = "open")
+        string? criticality = "moderate", string status = "open", string? kind = null)
     {
         var record = new JsonObject
         {
@@ -209,6 +251,11 @@ public sealed class EscalationPickTests : IDisposable
         if (criticality is not null)
         {
             record["criticality"] = criticality;
+        }
+
+        if (kind is not null)
+        {
+            record["kind"] = kind;
         }
 
         File.WriteAllText(Path.Combine(_escDir, $"{seq}-{gate}.json"), record.ToJsonString());

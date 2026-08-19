@@ -1877,6 +1877,14 @@ public static class RunCommand
             output.WriteLine();
             output.WriteLine($"NEEDS HUMAN: {needsHuman.TaskId} — {needsHuman.Summary}");
 
+            // #485: the agent's own classification of the halt, immediately under the headline that carries
+            // its question — the agent-asserted half of the section, above the harness's AI triage below.
+            // Unclassified prints nothing, so a pre-#485 escalation renders byte-for-byte as before.
+            if (NeedsHumanClaimLine(needsHuman.NeedsHumanKind) is { } claim)
+            {
+                output.WriteLine(claim);
+            }
+
             string taskLogDir = Path.Combine(logsRoot, needsHuman.TaskId);
             if (triageFor(taskLogDir) is { } triage)
             {
@@ -1904,9 +1912,41 @@ public static class RunCommand
             }
 
             output.WriteLine($"  Inspect {taskLogDir}{Path.DirectorySeparatorChar} (latest attempt's feedback.md has the full failure detail),");
-            output.WriteLine("  fix the action or guardrails, then re-run to resume.");
+            output.WriteLine(NeedsHumanClosingLine(needsHuman.NeedsHumanKind));
         }
     }
+
+    /// <summary>
+    /// The agent's needs-human classification (issue #485) as one indented line in the existing
+    /// <c>  Root cause [...]</c> idiom, or null when UNCLASSIFIED — in which case nothing is printed and the
+    /// section is byte-identical to every pre-#485 run.
+    /// <para>The wording names the harness's posture explicitly ("records this claim; it does not verify
+    /// it") because the harness genuinely cannot adjudicate which kind a halt is: it can only report what
+    /// the agent asserted, the same way #481's evidence requirement works.</para>
+    /// </summary>
+    private static string? NeedsHumanClaimLine(string? kind) => NeedsHumanKinds.Parse(kind) switch
+    {
+        NeedsHumanKinds.BlockedWork =>
+            $"  Agent's claim [{NeedsHumanKinds.BlockedWork}] — look at the TASK. The harness records this claim; it does not verify it.",
+        NeedsHumanKinds.DefectiveGuardrail =>
+            $"  Agent's claim [{NeedsHumanKinds.DefectiveGuardrail}] — look at the CHECK, not the task. The harness records this claim; it does not verify it. Evidence: the latest attempt's action-out-fragment.json.",
+        _ => null
+    };
+
+    /// <summary>
+    /// The section's closing guidance line, which is REPLACED (never appended to) for a classified halt:
+    /// "fix the action or guardrails" actively MISDIRECTS for both kinds — a <c>blocked-work</c> halt needs
+    /// a decision or a re-scope rather than a fix, and a <c>defective-guardrail</c> halt is a claim that the
+    /// work is already right and the CHECK is wrong. Unclassified keeps the shipped line verbatim.
+    /// </summary>
+    private static string NeedsHumanClosingLine(string? kind) => NeedsHumanKinds.Parse(kind) switch
+    {
+        NeedsHumanKinds.BlockedWork =>
+            "  answer the question or re-scope the task (action, writeScope, dependencies), then re-run to resume.",
+        NeedsHumanKinds.DefectiveGuardrail =>
+            "  and if the claim holds fix the guardrail (/guardrails-review) — the work may already be complete.",
+        _ => "  fix the action or guardrails, then re-run to resume."
+    };
 
     /// <summary>
     /// Print the run-level cost line (SSOT §7 <c>costUsd</c>) from the freshly-persisted

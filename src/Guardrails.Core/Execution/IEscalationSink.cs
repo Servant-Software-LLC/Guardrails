@@ -48,6 +48,16 @@ public sealed record EscalationRequest
     /// </summary>
     public IReadOnlyList<string> Options { get; init; } = [];
 
+    /// <summary>
+    /// The agent's optional classification of a <c>needs-human</c> escalation (issue #485):
+    /// <see cref="NeedsHumanKinds.BlockedWork"/> or <see cref="NeedsHumanKinds.DefectiveGuardrail"/>. Null
+    /// for an unclassified escalation and for every non-<c>needs-human</c> gate. Recorded verbatim on the
+    /// escalation record so a downstream reader (a <c>jq</c> over <c>logs/&lt;runId&gt;/escalations/*.json</c>,
+    /// the #479 probe corpus) can select the defective-guardrail claims without parsing prose. It is a CLAIM,
+    /// not a verdict — the harness never derives or defaults it.
+    /// </summary>
+    public string? Kind { get; init; }
+
     /// <summary>Full context to reconstruct the gate: logs pointers, failure detail, and the best-guess considered.</summary>
     public required string Context { get; init; }
 

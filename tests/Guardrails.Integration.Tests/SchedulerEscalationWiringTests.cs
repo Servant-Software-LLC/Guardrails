@@ -148,6 +148,39 @@ public sealed class SchedulerEscalationWiringTests
         Assert.Empty(doc["options"]!.AsArray());
     }
 
+    // ── (1c) #485: the agent's needsHuman.kind claim reaches the escalation record ─────────────────
+
+    [Fact]
+    public async Task ClassifiedNeedsHuman_EscalationRecordCarriesTheKindClaim()
+    {
+        // dial=high; assess CRITICAL ⇒ escalate. The #481 shape — a question plus evidence, NO options[] —
+        // now names its kind, and that claim must reach logs/<runId>/escalations/*.json through the REAL
+        // factory. That file is the #479 probe corpus: every defective-guardrail claim is a guardrail that
+        // reached a live run and should not have.
+        using var plan = new EscalationPlanBuilder(escalationThreshold: "high", overwatchAssessment: AssessCritical)
+            .AddNeedsHumanKindTask(
+                "01-design", "01-check claims the type is absent; it is at Foo.cs:14",
+                NeedsHumanKinds.DefectiveGuardrail);
+
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        string record = Assert.Single(Directory.GetFiles(EscalationsDir(plan.PlanDir), "*-needs-human.json"));
+        JsonNode doc = JsonNode.Parse(File.ReadAllText(record))!;
+        Assert.Equal("defective-guardrail", (string?)doc["kind"]);
+    }
+
+    [Fact]
+    public async Task UnclassifiedNeedsHuman_EscalationRecordOmitsTheKind_BackCompatUnchanged()
+    {
+        using var plan = new EscalationPlanBuilder(escalationThreshold: "high", overwatchAssessment: AssessCritical)
+            .AddNeedsHumanTask("01-design", "which database engine should I target");
+
+        await RunViaFactoryAsync(plan.PlanDir, TestContext.Current.CancellationToken);
+
+        string record = Assert.Single(Directory.GetFiles(EscalationsDir(plan.PlanDir), "*-needs-human.json"));
+        Assert.Null(JsonNode.Parse(File.ReadAllText(record))!["kind"]);
+    }
+
     // ── (2) Below threshold: PROCEED on a recorded best-guess, injected into the next attempt ─────
 
     [Fact]
@@ -487,6 +520,16 @@ public sealed class SchedulerEscalationWiringTests
             return this;
         }
 
+        /// <summary>
+        /// An agent-emitted CLASSIFIED <c>{"needsHuman": {"question": …, "kind": …}}</c> halt (issue #485) —
+        /// the #481 shape: a question plus evidence, with NO <c>options[]</c>.
+        /// </summary>
+        public EscalationPlanBuilder AddNeedsHumanKindTask(string id, string question, string kind)
+        {
+            WriteTask(id, mode: "needshuman-kind", question: question, kind: kind);
+            return this;
+        }
+
         /// <summary>A class-(b) transient blocker (503/overloaded) that clears on the second run.</summary>
         public EscalationPlanBuilder AddTransientTask(string id)
         {
@@ -494,7 +537,7 @@ public sealed class SchedulerEscalationWiringTests
             return this;
         }
 
-        private void WriteTask(string id, string mode, string question, string? optionsJson = null)
+        private void WriteTask(string id, string mode, string question, string? optionsJson = null, string? kind = null)
         {
             string taskDir = Path.Combine(_root, "tasks", id);
             Directory.CreateDirectory(Path.Combine(taskDir, "guardrails"));
@@ -506,6 +549,9 @@ public sealed class SchedulerEscalationWiringTests
                 ? ""
                 : $", \"FAKE_OPTIONS\": \"{optionsJson.Replace("\"", "\\\"")}\"";
 
+            // The #485 needsHuman.kind claim, likewise carried into the fake CLI through the action env.
+            string kindEnv = kind is null ? "" : $", \"FAKE_KIND\": \"{kind}\"";
+
             File.WriteAllText(Path.Combine(taskDir, "task.json"),
                 $$"""
                 {
@@ -514,7 +560,7 @@ public sealed class SchedulerEscalationWiringTests
                   "dependsOn": [],
                   "action": {
                     "path": "action.prompt.md",
-                    "env": { "FAKE_MODE": "{{mode}}", "FAKE_QUESTION": "{{question}}"{{optionsEnv}} }
+                    "env": { "FAKE_MODE": "{{mode}}", "FAKE_QUESTION": "{{question}}"{{optionsEnv}}{{kindEnv}} }
                   }
                 }
                 """);
@@ -574,6 +620,12 @@ public sealed class SchedulerEscalationWiringTests
                 }
                 Write-Output '{"type":"result","is_error":false,"result":"asked a human (options)","num_turns":1}'
             }
+            elseif ($mode -eq 'needshuman-kind') {
+                if ($env:GUARDRAILS_STATE_OUT) {
+                    Set-Content -NoNewline -Path $env:GUARDRAILS_STATE_OUT -Value ('{"needsHuman": {"question": "' + $env:FAKE_QUESTION + '", "kind": "' + $env:FAKE_KIND + '"}}')
+                }
+                Write-Output '{"type":"result","is_error":false,"result":"asked a human (kind)","num_turns":1}'
+            }
             elseif ($mode -eq 'transient') {
                 $counter = Join-Path $env:GUARDRAILS_PLAN_DIR 'transient.count'
                 Add-Content -Path $counter -Value 'x'
@@ -610,6 +662,11 @@ public sealed class SchedulerEscalationWiringTests
                 printf '{"needsHuman": {"question": "%s", "options": %s}}' "$FAKE_QUESTION" "$FAKE_OPTIONS" > "$GUARDRAILS_STATE_OUT"
               fi
               printf '{"type":"result","is_error":false,"result":"asked a human (options)","num_turns":1}\n'
+            elif [ "$mode" = "needshuman-kind" ]; then
+              if [ -n "$GUARDRAILS_STATE_OUT" ]; then
+                printf '{"needsHuman": {"question": "%s", "kind": "%s"}}' "$FAKE_QUESTION" "$FAKE_KIND" > "$GUARDRAILS_STATE_OUT"
+              fi
+              printf '{"type":"result","is_error":false,"result":"asked a human (kind)","num_turns":1}\n'
             elif [ "$mode" = "transient" ]; then
               counter="$GUARDRAILS_PLAN_DIR/transient.count"
               echo x >> "$counter"

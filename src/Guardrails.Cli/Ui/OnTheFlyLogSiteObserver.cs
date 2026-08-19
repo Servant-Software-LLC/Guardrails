@@ -42,6 +42,12 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     private readonly object _gate = new();
     private readonly Dictionary<string, string> _statusByTask;
 
+    // Per-task needs-human CLAIM (issue #485), populated only when a task settles with one. Kept beside
+    // _statusByTask and under the SAME lock — one snapshot feeds one render, so a cell can never show a
+    // status from one event and a claim from another. No new lock, no new mutable observer state beyond
+    // this map, and nothing is written during the Spectre Live region (#145/#372).
+    private readonly Dictionary<string, string?> _claimByTask = new(StringComparer.Ordinal);
+
     /// <param name="inner">The real observer every event is forwarded to (live or console).</param>
     /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree the site is written into.</param>
     /// <param name="runId">The run id (titles the rendered index).</param>
@@ -145,13 +151,15 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void TaskFinished(TaskResult result)
     {
         _inner.TaskFinished(result);
-        SetStatus(result.TaskId, StatusWord(result.Outcome));
+        string status = StatusWord(result.Outcome);
+        string? claim = NeedsHumanKinds.Parse(result.NeedsHumanKind);
+        SetStatus(result.TaskId, status, claim);
 
         // Write the finished task's static page so the index's link to it (and the terminal's
         // post-mortem link, #141 item 1) resolves to a rendered page, not a 404.
         if (_tasksById.TryGetValue(result.TaskId, out TaskNode? task))
         {
-            TryRender(() => LogSiteRenderer.WriteTaskPageIfHasAttempts(_logsRoot, task));
+            TryRender(() => LogSiteRenderer.WriteTaskPageIfHasAttempts(_logsRoot, task, status, claim));
         }
 
         RenderIndex();
@@ -184,11 +192,12 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
 
     // --- site projection --------------------------------------------------------------------
 
-    private void SetStatus(string taskId, string status)
+    private void SetStatus(string taskId, string status, string? claim = null)
     {
         lock (_gate)
         {
             _statusByTask[taskId] = status;
+            _claimByTask[taskId] = claim;
         }
     }
 
@@ -204,7 +213,9 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         {
             // Snapshot the statuses inside the lock so the resolver closures read a stable view.
             var statuses = new Dictionary<string, string>(_statusByTask, StringComparer.Ordinal);
+            var claims = new Dictionary<string, string?>(_claimByTask, StringComparer.Ordinal);
             string StatusOf(string id) => statuses.TryGetValue(id, out string? s) ? s : "unknown";
+            string? ClaimOf(string id) => claims.TryGetValue(id, out string? c) ? c : null;
             LogSiteRenderer.IndexLink LinkOf(string id) => ResolveLink(id, statuses);
 
             TryRender(() => LogSiteRenderer.WriteIndex(
@@ -214,7 +225,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 statusResolver: StatusOf,
                 linkResolver: LinkOf,
                 includeRefresh: true,
-                waves: _waves));
+                waves: _waves,
+                claimResolver: ClaimOf));
 
             // Rewrite each wave's own index too (issue #380), from the same status snapshot, so a
             // waved run's per-wave drill-down refreshes as the wave progresses.
@@ -227,7 +239,9 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                     w,
                     statusResolver: StatusOf,
                     linkResolver: LinkOf,
-                    includeRefresh: true));
+                    includeRefresh: true,
+                    halt: null,
+                    claimResolver: ClaimOf));
             }
         }
     }

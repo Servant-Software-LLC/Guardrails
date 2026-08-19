@@ -547,7 +547,12 @@ Humans review the *checks* once instead of reviewing *every agent output* foreve
   was **halted** (`Conflict`/`DirtyWorkingTree`/`HookRejected` — work durable on the plan branch) /
   3 cancelled. See SSOT section 7.1.
 - A prompt action can short-circuit with `{ "needsHuman": "<question>" }` in its fragment --
-  no retry burn on a genuine human decision.
+  no retry burn on a genuine human decision. The OBJECT form carries `options[]` (#387, an
+  enumerated choice a human can pick) and `kind` (#485, `blocked-work` | `defective-guardrail`):
+  "I cannot complete this work" and "this guardrail is defective" need OPPOSITE follow-ups --
+  re-scope the task, versus fix the plan folder because the work may already be correct. `kind`
+  is the AGENT's claim, never the harness's judgement: absent or unrecognised is UNCLASSIFIED
+  and the harness invents no default, rendering exactly as it always did.
 - **`needsHarnessWrite` (issues #191, #437, #445)**: a SECOND fragment escape hatch, parallel to `needsHuman`
   -- asks the .NET HARNESS PROCESS ITSELF (never subject to Claude Code's tool-permission layer) to
   write a `.claude/` file the action's own subprocess can never write (broader than #101's

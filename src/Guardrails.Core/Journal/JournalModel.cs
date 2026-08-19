@@ -316,6 +316,17 @@ public sealed record AttemptRecord
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AttemptUsage? Usage { get; init; }
+
+    /// <summary>
+    /// OPTIONAL agent-asserted classification of a <c>needs-human</c> attempt (SSOT §7/§9, issue #485):
+    /// <c>blocked-work</c> ("I cannot complete this work") or <c>defective-guardrail</c> ("this check is
+    /// itself wrong"). Absent means UNCLASSIFIED — the harness invents no default. Journaled because
+    /// <c>guardrails status</c> and the static log-site export read ONLY the journal; without it, a halt's
+    /// claim would survive the run in <c>action-out-fragment.json</c> alone. Additive and backward-compatible:
+    /// omitted (never <c>null</c> noise) for every non-needs-human attempt and in every pre-#485 journal.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NeedsHumanKind { get; init; }
 }
 
 /// <summary>

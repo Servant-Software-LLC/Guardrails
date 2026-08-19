@@ -300,19 +300,20 @@ internal sealed class ActionRunner
                 return null;
             }
 
-            // Free-text form: needsHuman is a bare string (the question); no options.
+            // Free-text form: needsHuman is a bare string (the question); no options, no kind.
             if (needsHuman.ValueKind == JsonValueKind.String)
             {
-                return needsHuman.GetString() is { Length: > 0 } q ? new NeedsHumanSignal(q, []) : null;
+                return needsHuman.GetString() is { Length: > 0 } q ? new NeedsHumanSignal(q, [], null) : null;
             }
 
-            // Structured form: needsHuman is an object carrying the question + an optional bounded options[].
+            // Structured form: needsHuman is an object carrying the question + an optional bounded options[]
+            // + an optional kind (issue #485). Both extras are read from the OBJECT form only.
             if (needsHuman.ValueKind == JsonValueKind.Object &&
                 needsHuman.TryGetProperty("question", out JsonElement question) &&
                 question.ValueKind == JsonValueKind.String &&
                 question.GetString() is { Length: > 0 } structuredQuestion)
             {
-                return new NeedsHumanSignal(structuredQuestion, ReadOptions(needsHuman));
+                return new NeedsHumanSignal(structuredQuestion, ReadOptions(needsHuman), ReadKind(needsHuman));
             }
         }
         catch (JsonException)
@@ -343,14 +344,29 @@ internal sealed class ActionRunner
 
         return list;
     }
+
+    /// <summary>
+    /// Read the structured <c>needsHuman.kind</c> classification (issue #485) — the agent's own claim about
+    /// which follow-up the halt calls for. Canonicalized through the single <see cref="NeedsHumanKinds.Parse"/>
+    /// decision point, so an absent, non-string, or unrecognised value is UNCLASSIFIED (null) and the harness
+    /// invents no default.
+    /// </summary>
+    private static string? ReadKind(JsonElement needsHuman) =>
+        needsHuman.TryGetProperty("kind", out JsonElement kind) && kind.ValueKind == JsonValueKind.String
+            ? NeedsHumanKinds.Parse(kind.GetString())
+            : null;
 }
 
 /// <summary>
 /// A parsed <c>needsHuman</c> escape (SSOT §9, issue #387): the human-answerable <see cref="Question"/> plus an
 /// optional bounded <see cref="Options"/> list an operator can PICK from. <see cref="Options"/> is empty for the
 /// free-text form (<c>{"needsHuman": "…"}</c>) and carries the enumerated choices for the structured form.
+/// <see cref="Kind"/> (issue #485) is the agent's optional classification of the halt
+/// (<see cref="NeedsHumanKinds.BlockedWork"/> / <see cref="NeedsHumanKinds.DefectiveGuardrail"/>), already
+/// canonicalized; null means UNCLASSIFIED — for the free-text form, for an absent kind, and for a value this
+/// harness version does not recognise.
 /// </summary>
-internal sealed record NeedsHumanSignal(string Question, IReadOnlyList<string> Options);
+internal sealed record NeedsHumanSignal(string Question, IReadOnlyList<string> Options, string? Kind);
 
 /// <summary>
 /// A normalized view of an action run — script OR prompt — carrying exactly what the
@@ -387,6 +403,15 @@ internal sealed record ActionRun
     /// SelectionPrompt / web button) can present the choices.
     /// </summary>
     public IReadOnlyList<string> NeedsHumanOptions { get; init; } = [];
+
+    /// <summary>
+    /// The agent's optional classification of a <c>needsHuman</c> halt (issue #485,
+    /// <c>{"needsHuman": {"question": …, "kind": "blocked-work" | "defective-guardrail"}}</c>), already
+    /// canonicalized by <see cref="NeedsHumanKinds.Parse"/>. Null means UNCLASSIFIED — the free-text form,
+    /// an absent kind, or an unrecognised value — and the harness invents no default: the classification is
+    /// the AGENT's claim, never the harness's judgement.
+    /// </summary>
+    public string? NeedsHumanKind { get; init; }
 
     /// <summary>
     /// The <c>needsHarnessWrite</c> batch parsed from the action's fragment (issues #191, #445, SSOT §9),
@@ -445,6 +470,7 @@ internal sealed record ActionRun
         StandardError = result.StandardError,
         NeedsHumanQuestion = needsHuman?.Question,
         NeedsHumanOptions = needsHuman?.Options ?? [],
+        NeedsHumanKind = needsHuman?.Kind,
         HarnessWriteBatch = harnessWrite,
         // A script timeout is classified Timeout so it shares the timeout-specific retry handling
         // (issue #119); any other non-zero exit is a generic action failure (no Claude signals apply).
@@ -476,6 +502,7 @@ internal sealed record ActionRun
                 : null,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
+            NeedsHumanKind = needsHuman?.Kind,
             HarnessWriteBatch = harnessWrite,
             FailureFeedback = feedback,
             FailureKind = succeeded ? PromptFailureKind.None : result.FailureKind,

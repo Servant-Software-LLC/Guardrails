@@ -140,9 +140,19 @@ public static class PromptComposer
         text.Append("Write ONLY your own keys (conventionally namespaced under your task id). Do NOT ");
         text.Append("modify state.json directly — the harness is the single writer and merges your ");
         text.Append("fragment after guardrails pass. If you have nothing to contribute, write nothing.\n\n");
+        // #485: the two kinds of needs-human halt call for OPPOSITE follow-ups, and only the agent knows
+        // which it is raising. `blocked-work` has to be reachable HERE because the defective-guardrail
+        // affordance lives in the retry block (below) — first-attempt-only, retry-only respectively. Without
+        // this edit every classified halt would be `defective-guardrail`, and "unclassified" would silently
+        // become the de-facto blocked-work bucket, reintroducing the exact ambiguity #485 removes.
         text.Append("If you cannot proceed without a human decision, write exactly ");
-        text.Append("`{ \"needsHuman\": \"<your question>\" }` to that same path and stop — the harness will ");
-        text.Append("escalate to a human without burning further retries.\n");
+        text.Append("`{ \"needsHuman\": { \"question\": \"<your question>\", \"kind\": \"blocked-work\" } }` ");
+        text.Append("to that same path and stop — the harness will escalate to a human without burning ");
+        text.Append("further retries. `blocked-work` means YOU are blocked: a missing decision, an ");
+        text.Append("unreachable symbol, work you cannot complete. Use `\"kind\": \"defective-guardrail\"` ");
+        text.Append("instead only when a guardrail is itself wrong — and then your question MUST quote the ");
+        text.Append("guardrail's exact claim and the `file:line` that refutes it. Difficulty is never ");
+        text.Append("`defective-guardrail`.\n");
     }
 
     /// <summary>
@@ -261,10 +271,17 @@ public static class PromptComposer
             text.Append("document away from its own conventions, to match a check. Guardrails constrain the ");
             text.Append("OUTCOME, never how you implement it. If a guardrail reports something ABSENT that you ");
             text.Append("can see is PRESENT, that guardrail is defective. Write ");
-            text.Append("\"{\\\"needsHuman\\\": ...}\" to the state-out path quoting (a) the guardrail\'s exact ");
-            text.Append("claim and (b) the file:line that refutes it, then stop. Escalating a defective check is ");
-            text.Append("the CORRECT move, not giving up - and it is far cheaper than a contortion no later ");
-            text.Append("reader can explain.\n");
+            // #485: the kind is what separates "help me finish this" from "this check is wrong" downstream.
+            // The one added sentence is the GATE that keeps `defective-guardrail` from becoming a universal
+            // excuse: the claim is bound to EVIDENCE (a mechanical self-test the agent can run on itself),
+            // and FAILING that test routes to `blocked-work` rather than to nothing — so an agent that wants
+            // out still has an honest door, and overclaiming buys it nothing.
+            text.Append("`{\"needsHuman\": {\"question\": \"...\", \"kind\": \"defective-guardrail\"}}` to the ");
+            text.Append("state-out path, with the question quoting (a) the guardrail\'s exact claim and (b) ");
+            text.Append("the file:line that refutes it, then stop. If you cannot produce BOTH quotes, this is ");
+            text.Append("not a defective guardrail - retry the work, or escalate with ");
+            text.Append("`\"kind\": \"blocked-work\"`. Escalating a defective check is the CORRECT move, not ");
+            text.Append("giving up - and it is far cheaper than a contortion no later reader can explain.\n");
 
         }
 

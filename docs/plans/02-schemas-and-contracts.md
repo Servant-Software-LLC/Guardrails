@@ -45,10 +45,13 @@ plan-name/
         ├── action.prompt.md     # or action.ps1 / action.sh / action.py / action.cmd / …
         ├── preflights/          # OPTIONAL task-level JIT dependency-delivery checks — run at taskBase before the action (§4)
         │   └── 01-dep-delivered.ps1  #   guardrail-shaped files (same parser as guardrails/)
-        └── guardrails/
-            ├── 01-build-passes.ps1        # deterministic guardrail (§4)
-            ├── 01-build-passes.json       # optional metadata sidecar (§4.1)
-            └── 02-review.prompt.md        # prompt guardrail with YAML frontmatter (§4.2)
+        ├── guardrails/
+        │   ├── 01-build-passes.ps1        # deterministic guardrail (§4)
+        │   ├── 01-build-passes.json       # optional metadata sidecar (§4.1)
+        │   └── 02-review.prompt.md        # prompt guardrail with YAML frontmatter (§4.2)
+        └── samples/             # OPTIONAL committed evidence for a source-shape guardrail (§1.1) — NEVER loaded
+            ├── 01-build-passes.valid.cs   #   an input the check MUST accept
+            └── 01-build-passes.invalid.cs #   an input the check MUST reject
 ```
 
 A repo that prefers one consolidated footprint MAY instead place plan folders under a
@@ -116,6 +119,27 @@ could not cover `logs/`; hence one plan-root file with leading-slash-anchored pa
 hand-authored `.gitignore` is left untouched) and idempotent, and fires for every plan including
 hand-authored ones. Relocating runtime state out of the committed folder is a separate, larger
 decision (issue #275) and is deliberately NOT done here.
+
+### 1.1 `tasks/<id>/samples/` — committed guardrail evidence, outside the loader and outside the hash
+
+A guardrail that checks the SHAPE of source (a regex over a file, a grep for a symbol) ships a committed
+**two-sided sample pair** — one input the check must ACCEPT and one it must REJECT — so a reviewer can see
+what the check actually discriminates instead of re-deriving it from the pattern (issue #468). Those samples
+live in `tasks/<id>/samples/`, **never** in `tasks/<id>/guardrails/`: the loader enumerates every non-`.json`
+file in a guardrail folder with no extension allow-list, so a `01-check.valid.cs` sitting there would load as
+a SCRIPT guardrail, satisfy **GR2003** ("task has ≥ 1 guardrail") on its own, and be EXECUTED at run time.
+
+Two invariants govern the folder, and a future change must honour both:
+
+- **`samples/` is not enumerated by the loader.** It is authored content for the review pass, not an
+  executable slot. It has no counterpart to the four-folder parser (§4) and never contributes a guardrail,
+  a preflight, or an action.
+- **`samples/` is deliberately OUTSIDE the task definition hash.** `TaskDefinitionFiles.Enumerate` (§7.3
+  step 2) covers `task.json`, the resolved action file, and `guardrails/**` + `preflights/**` — and must not
+  be broadened to "everything under `tasks/<id>/`". A sample is *evidence about a guardrail*, not part of the
+  task's behaviour, so editing one must not invalidate a settled task: were it hashed, adding or improving a
+  sample would perturb every affected `TaskDefinitionHash` and trigger spurious definition-drift halts on
+  resume (§7.2) for tasks whose behaviour did not change at all.
 
 ---
 
@@ -1896,6 +1920,11 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
             "outputTokens": 3110    //   reporting no usage, and every older journal. Written on BOTH record
           },                        //   paths (#475) — see "Per-attempt tier provenance" below
           "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1",
+          // OPTIONAL agent-asserted classification of a `needs-human` attempt (#485, §9): blocked-work |
+          // defective-guardrail. ABSENT (never null) when the agent did not classify, on every other
+          // outcome, and in every pre-#485 journal. Journaled because `guardrails status` and the static
+          // log-site export read ONLY run.json — without it the claim would not survive the run.
+          "needsHumanKind": "defective-guardrail",
           // OPTIONAL per-attempt provenance the harness knew at launch (#198). Additive — a script /
           // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
           // Also mirrored to <attempt>/attempt-provenance.json and, for humans, rendered as
@@ -3103,6 +3132,8 @@ logs/<runId>/escalations/
 │                              #   for wave-checkpoint) + a `status` (open → answered → consumed, §7.2)
 │                              #   + `options[]` (#387): the structured-needsHuman enumerated choices a pick
 │                              #   surface presents; `[]` for a free-text or non-answerable escalation
+│                              #   + `kind` (#485): the agent's OPTIONAL needsHuman classification
+│                              #   (`blocked-work` | `defective-guardrail`); ABSENT when unclassified
 └── <seq>-<gate>.answer.json   # OPTIONAL firstmate reply, co-located beside the record it answers (§7.2/§7.4);
                                #   present once a crew has written an answer for an ANSWERABLE gate — a
                                #   hand-authored reply OR a pick surface's chosen option (§9, #387)
@@ -3237,6 +3268,29 @@ quarantines all CLI specifics (flag spelling, output parsing). v1 ships `claude`
     NEVER forge a review marker / write `state/guardrails-review.json` (§7.5, #366) — the writer only ever
     produces a `needs-human` answer `text` (there is no answer kind that resolves the review gate), and an
     off-menu choice (one not among the escalation's own options) is rejected (a bounded pick).
+- **Structured `needsHuman` with a KIND (issue #485).** `needs-human` covers two situations that call for
+  OPPOSITE follow-ups: *"I cannot complete this work"* (help the agent, widen scope, re-scope the task) and
+  *"this guardrail is defective"* (fix the plan folder — the work may already be correct and complete). The
+  object form therefore accepts an optional `kind` alongside `question`/`options`, following the `options[]`
+  precedent exactly:
+  `{ "needsHuman": { "question": "<question>", "kind": "blocked-work" | "defective-guardrail" } }`.
+  - **`kind` is read from the OBJECT form only.** The bare-string form is unchanged; it never carries a kind.
+  - **Absent or unrecognised means UNCLASSIFIED, and the harness invents no default.** An unknown value
+    degrades to unclassified — not an error, not a warning, no log line — so a plan authored against a later
+    harness still runs. The single decision point is `NeedsHumanKinds.Parse`; every surface routes through it
+    rather than re-deriving the mapping.
+  - **It is the AGENT's claim, never the harness's judgement.** The harness cannot verify which kind a halt
+    is; it records what was asserted and lets a human adjudicate — the same posture as the evidence
+    requirement the retry affordance imposes (#481, which requires a `defective-guardrail` question to quote
+    the guardrail's exact claim AND the `file:line` that refutes it). Every operator-facing rendering says so
+    in words.
+  - The parsed kind rides onto the attempt record (`run.json` `needsHumanKind`, §7) and onto the escalation
+    record (§8 `kind`), and is surfaced by the live table, `--no-ui`, the run summary, `guardrails status`,
+    and the log site. UNCLASSIFIED renders **byte-identically to a pre-#485 halt** on every one of them.
+  - **Answerability is orthogonal and unchanged.** A `defective-guardrail` claim neither becomes nor stops
+    being answerable; the zero-`options[]` filter that keeps a free-text escalation off the pick surfaces is
+    not widened. An options-carrying `defective-guardrail` escalation is still offered a pick, with an
+    advisory that answering does not repair a check.
 
 **`needsHarnessWrite` — harness-mediated write escape hatch for `.claude/` (issues #191, #437, #445).**
 In worktree mode, a task action running as a Claude Code subprocess can **never** write under

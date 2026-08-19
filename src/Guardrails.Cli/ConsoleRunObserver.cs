@@ -56,10 +56,34 @@ public sealed class ConsoleRunObserver : IRunObserver
     {
         lock (_gate)
         {
+            // The leading line is grep-anchored and CI-parsed — it stays VERBATIM.
             _output.WriteLine($"[{Commands.RunCommand.StatusLabel(result.Outcome)}] {result.TaskId} — {result.Summary}");
+            if (ClaimLine(result.NeedsHumanKind) is { } claim)
+            {
+                _output.WriteLine(claim);
+            }
+
             _output.WriteLine();
         }
     }
+
+    /// <summary>
+    /// The agent's needs-human classification as one indented line in this file's own <c>  [tag]</c> idiom
+    /// (issue #485), or null when unclassified — in which case NOT ONE CHARACTER is added and the output is
+    /// byte-identical to every pre-#485 run.
+    /// <para>Not redundant with the run summary: under <c>--no-ui</c> a tailed CI log IS the record, and a
+    /// run that aborts later never reaches <c>PrintSummary</c> at all.</para>
+    /// <para>Public for the same reason <see cref="RunCommand.Hyperlink"/> is — the Cli assembly ships no
+    /// <c>InternalsVisibleTo</c>, so a pure mapping method is the test seam.</para>
+    /// </summary>
+    public static string? ClaimLine(string? needsHumanKind) => NeedsHumanKinds.Parse(needsHumanKind) switch
+    {
+        NeedsHumanKinds.DefectiveGuardrail =>
+            $"  [claim] {NeedsHumanKinds.DefectiveGuardrail} — the agent disputes the check, not the work (unverified)",
+        NeedsHumanKinds.BlockedWork =>
+            $"  [claim] {NeedsHumanKinds.BlockedWork} — the agent could not complete the work (unverified)",
+        _ => null
+    };
 
     public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount)
     {

@@ -83,6 +83,7 @@ public static class EscalationPick
                 Question = record.Question,
                 Options = record.Options,
                 Criticality = record.Criticality,
+                Kind = record.Kind,
                 Answerable = !clamped,
                 NonAnswerableReason = clamped
                     ? $"'{record.Criticality}' hard call is non-answerable under proceed-unreviewed (clamp, §7.3 Blocker 1) — resolve it with real human work, not a one-click pick."
@@ -197,7 +198,10 @@ public static class EscalationPick
                 Criticality = Str(record, "criticality"),
                 DefinitionHash = definitionHash,
                 Status = Str(record, "status") ?? "open",
-                Options = ReadOptions(record)
+                Options = ReadOptions(record),
+                // #485: canonicalized on the way in, so a hand-edited or future-version record cannot put an
+                // unrecognised token in front of an operator — it degrades to unclassified.
+                Kind = NeedsHumanKinds.Parse(Str(record, "kind"))
             };
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
@@ -250,6 +254,9 @@ public static class EscalationPick
         public required string DefinitionHash { get; init; }
         public required string Status { get; init; }
         public required IReadOnlyList<string> Options { get; init; }
+
+        /// <summary>The agent's <c>needsHuman.kind</c> claim (issue #485), canonicalized; null when unclassified.</summary>
+        public string? Kind { get; init; }
     }
 }
 
@@ -266,6 +273,14 @@ public sealed record PickableEscalation
     public required string Question { get; init; }
     public required IReadOnlyList<string> Options { get; init; }
     public string? Criticality { get; init; }
+
+    /// <summary>
+    /// The agent's <c>needsHuman.kind</c> claim (issue #485), canonicalized; null when unclassified. A
+    /// <see cref="NeedsHumanKinds.DefectiveGuardrail"/> pick is still offered — the zero-option filter in
+    /// <see cref="EscalationPick.ReadOpen"/> is deliberately NOT widened by kind — but the surface prints an
+    /// advisory first, because answering a bounded question does not fix a broken check.
+    /// </summary>
+    public string? Kind { get; init; }
 
     /// <summary>True when a pick MAY be offered; false when the non-answerable floor applies (clamped hard call) — show <see cref="NonAnswerableReason"/> instead.</summary>
     public required bool Answerable { get; init; }

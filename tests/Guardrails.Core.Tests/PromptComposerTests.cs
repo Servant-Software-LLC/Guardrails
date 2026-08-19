@@ -395,4 +395,86 @@ public sealed class PromptComposerTests : IDisposable
         Assert.DoesNotContain("that guardrail is defective", composed);
     }
 
+    // --- #485: the agent must be able to NAME which kind of needs-human it is raising ----------
+
+    /// <summary>
+    /// Issue #485. The output contract now spells the STRUCTURED escape with an explicit
+    /// <c>"kind": "blocked-work"</c>, because that value is otherwise unreachable: the
+    /// defective-guardrail affordance (#481) lives in the RETRY block, so without this edit every
+    /// classified halt would be <c>defective-guardrail</c> and "unclassified" would silently become the
+    /// de-facto blocked-work bucket — reintroducing the exact ambiguity #485 removes.
+    /// </summary>
+    [Fact]
+    public void Action_OutputContract_NamesBlockedWork_AndFencesDefectiveGuardrail()
+    {
+        string stateIn = WriteState("{}");
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), null);
+
+        int contract = composed.IndexOf("## Output contract", StringComparison.Ordinal);
+        Assert.True(contract >= 0, "the output contract section must exist for this test to mean anything");
+        string contractText = composed[contract..];
+
+        foreach (string required in new[]
+                 {
+                     // The exact structured shape the agent is told to write.
+                     "\"needsHuman\": { \"question\": \"<your question>\", \"kind\": \"blocked-work\" }",
+                     // What blocked-work MEANS, so the agent is not guessing.
+                     "`blocked-work` means YOU are blocked",
+                     // The other value exists, but is fenced behind evidence...
+                     "\"kind\": \"defective-guardrail\"",
+                     "quote the guardrail's exact claim and the `file:line` that refutes it",
+                     // ...and the one mislabelling path the retry block cannot reach is closed here.
+                     "Difficulty is never `defective-guardrail`.",
+                 })
+        {
+            Assert.True(contractText.Contains(required, StringComparison.Ordinal),
+                $"'{required}' must appear inside the output contract");
+        }
+    }
+
+    /// <summary>
+    /// Issue #485's edit to the #481 retry affordance. The net change is ONE sentence, and that sentence
+    /// is the GATE that stops <c>defective-guardrail</c> becoming a universal excuse: failing the
+    /// two-quotes self-test routes the agent to <c>blocked-work</c>, not to nothing — so an agent that
+    /// wants out still has an honest door and overclaiming buys it nothing.
+    /// </summary>
+    [Fact]
+    public void Action_RetrySection_DefectiveGuardrailEscape_IsBoundToEvidence_WithABlockedWorkFallback()
+    {
+        string stateIn = WriteState("{}");
+        string feedbackPath = Path.Combine(_dir, "feedback.md");
+        File.WriteAllText(feedbackPath, "Guardrail 01-writes-prompt-md failed: never writes a .prompt.md.");
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), feedbackPath);
+
+        int retrySection = composed.IndexOf("## Previous attempt failed", StringComparison.Ordinal);
+        Assert.True(retrySection >= 0, "the retry section must exist for this test to mean anything");
+        string retryText = composed[retrySection..];
+
+        // The escape now NAMES its kind, so the halt it produces is classifiable downstream.
+        Assert.Contains(
+            "`{\"needsHuman\": {\"question\": \"...\", \"kind\": \"defective-guardrail\"}}`",
+            retryText, StringComparison.Ordinal);
+
+        // The gate: no evidence ⇒ not a defective guardrail ⇒ blocked-work (or just retry).
+        Assert.Contains(
+            "If you cannot produce BOTH quotes, this is not a defective guardrail - retry the work, or " +
+            "escalate with `\"kind\": \"blocked-work\"`.",
+            retryText, StringComparison.Ordinal);
+
+        // The first three sentences of the #481 block are untouched (this edit replaced only the tail).
+        Assert.Contains("do NOT satisfy it by changing the SHAPE", retryText, StringComparison.Ordinal);
+        Assert.Contains("Guardrails constrain the OUTCOME, never how you implement it.", retryText, StringComparison.Ordinal);
+        Assert.Contains(
+            "If a guardrail reports something ABSENT that you can see is PRESENT, that guardrail is defective.",
+            retryText, StringComparison.Ordinal);
+
+        // The block stays ASCII (it deliberately uses hyphens, not em-dashes) — matching the surrounding
+        // #481 text. An escaping regression in the C# literals shows up here first.
+        Assert.Contains(
+            "Escalating a defective check is the CORRECT move, not giving up - and it is far cheaper than " +
+            "a contortion no later reader can explain.",
+            retryText, StringComparison.Ordinal);
+    }
 }

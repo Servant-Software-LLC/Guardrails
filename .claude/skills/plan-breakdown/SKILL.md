@@ -1363,10 +1363,13 @@ Per `references/schemas.md`, exactly:
   - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
     code — or reword a document away from its own conventions — to match a check's
     pattern.
-  - If you cannot proceed without a human decision, OR a guardrail reports something
-    ABSENT that you can see is PRESENT, write {"needsHuman": "<question>"} to the
-    state-out path and stop. For the second case quote the guardrail's exact claim and
-    the file:line that refutes it.
+  - If you cannot proceed without a human decision, write
+    {"needsHuman": {"question": "<question>", "kind": "blocked-work"}} to the
+    state-out path and stop. If instead a guardrail reports something ABSENT that you
+    can see is PRESENT, that guardrail is defective: use "kind": "defective-guardrail"
+    and quote (a) the guardrail's exact claim and (b) the file:line that refutes it.
+    If you cannot produce BOTH quotes it is not a defective guardrail — retry the work,
+    or escalate as "blocked-work". Difficulty is never "defective-guardrail".
 
   ## Task
   <the actual instruction: exact file paths, and completion criteria that MATCH this

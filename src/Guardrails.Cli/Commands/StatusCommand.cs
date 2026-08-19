@@ -1,4 +1,5 @@
 using System.CommandLine;
+using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using JournalTaskStatus = Guardrails.Core.Journal.TaskStatus;
 
@@ -78,13 +79,23 @@ public static class StatusCommand
         }
 
         AttemptRecord? last = entry.Attempts.Count == 0 ? null : entry.Attempts[^1];
-        string failure = LastFailure(last);
+        string failure = LastFailureText(last);
         string logDir = last?.LogDir ?? "-";
 
         output.WriteLine($"  {taskId,-32} {StatusText(entry.Status),-12} {entry.Attempts.Count,-9} {Truncate(failure, 40),-40} {logDir}");
     }
 
-    private static string LastFailure(AttemptRecord? attempt)
+    /// <summary>
+    /// The LAST FAILURE cell for a task's most recent attempt (<c>-</c> when there is none, or it succeeded).
+    /// Pure — public for the same reason <see cref="RunCommand.Hyperlink"/> is: the Cli assembly ships no
+    /// <c>InternalsVisibleTo</c>, so the mapping itself is the test seam.
+    /// <para>Issue #485 lands HERE rather than in the STATUS column: <c>needs-human</c> is the journal status
+    /// and the column is <c>,-12</c> with no room. This cell has a <c>,-40</c> budget, and it previously
+    /// leaked the raw enum name (<c>NeedsHuman</c>) for an agent escalation — a pre-#485 defect fixed in the
+    /// same edit. A retry-exhaustion halt records <c>GuardrailFailed</c>/<c>ActionFailed</c> on its last
+    /// attempt, not <c>NeedsHuman</c>, so it never reaches this branch and is unaffected.</para>
+    /// </summary>
+    public static string LastFailureText(AttemptRecord? attempt)
     {
         if (attempt is null || attempt.Outcome == AttemptOutcome.Succeeded)
         {
@@ -103,6 +114,9 @@ public static class StatusCommand
             AttemptOutcome.Timeout => "timed out",
             AttemptOutcome.InvalidFragment => "invalid state fragment",
             AttemptOutcome.Cancelled => "cancelled",
+            AttemptOutcome.NeedsHuman => NeedsHumanKinds.Parse(attempt.NeedsHumanKind) is { } kind
+                ? $"agent escalated [{kind}]"
+                : "agent escalated",
             _ => attempt.Outcome.ToString()
         };
     }

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Text;
+using Guardrails.Core.Execution;
 using Guardrails.Core.Journal;
 using Guardrails.Core.Model;
 using Guardrails.Core.State;
@@ -50,6 +51,7 @@ public static class LogSiteRenderer
   .status[data-status="needs-human"], .status[data-status="failed"] { color: #f85149; }
   .status[data-status="running"] { color: #d29922; }
   .status[data-status="pending"], .status[data-status="blocked"], .status[data-status="unknown"] { color: #8aa0b3; }
+  .claim { font-weight: 400; color: #8aa0b3; }
   .empty, option.empty { color: #6b7a8d; }
   pre { background: #06090d; border: 1px solid #1c2733; border-radius: 6px; padding: 1rem;
         white-space: pre-wrap; word-break: break-word; font-size: .82rem; line-height: 1.35;
@@ -157,28 +159,29 @@ public static class LogSiteRenderer
     {
         Directory.CreateDirectory(logsRoot);
 
-        foreach (TaskNode task in tasks)
-        {
-            WriteTaskPageIfHasAttempts(logsRoot, task);
-        }
-
         // Durable export: a settled-with-attempts task links to its static page, a not-yet-run task is
         // plain text. No live URLs, no meta-refresh (#103 / SSOT §12.3).
         Func<string, string> statusResolver = id => StatusWord(journal, id);
+        Func<string, string?> claimResolver = id => ClaimWord(journal, id);
         Func<string, IndexLink> linkResolver =
             id => AttemptDirs(logsRoot, id).Count > 0 ? IndexLink.Static : IndexLink.Plain;
+
+        foreach (TaskNode task in tasks)
+        {
+            WriteTaskPageIfHasAttempts(logsRoot, task, statusResolver(task.Id), claimResolver(task.Id));
+        }
 
         // Per-wave index (issue #380): one durable index per wave, all-static links, no refresh.
         foreach (WaveNode wave in waves)
         {
             WriteWaveIndex(
                 logsRoot, journal.RunId, wave, statusResolver, linkResolver, includeRefresh: false,
-                halt: HaltForWave(journal.Halt, wave.Dir));
+                halt: HaltForWave(journal.Halt, wave.Dir), claimResolver: claimResolver);
         }
 
         string index = IndexHtml(
             logsRoot, journal.RunId, tasks, waves, statusResolver, linkResolver, includeRefresh: false,
-            halt: journal.Halt);
+            halt: journal.Halt, claimResolver: claimResolver);
 
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
@@ -213,11 +216,12 @@ public static class LogSiteRenderer
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
         IReadOnlyList<WaveNode>? waves = null,
-        RunHalt? halt = null)
+        RunHalt? halt = null,
+        Func<string, string?>? claimResolver = null)
     {
         string index = IndexHtml(
             logsRoot, runId, tasks, waves ?? Array.Empty<WaveNode>(), statusResolver, linkResolver,
-            includeRefresh, halt);
+            includeRefresh, halt, claimResolver);
         string indexPath = Path.Combine(logsRoot, "index.html");
         AtomicFile.WriteAllText(indexPath, index);
         return indexPath;
@@ -229,14 +233,24 @@ public static class LogSiteRenderer
     /// No-op when the task has no attempts yet. <paramref name="logsRoot"/> is the run's
     /// <c>logs/&lt;runId&gt;/</c> tree. Atomic temp+rename so a browser viewing the page never reads a torn file.
     /// </summary>
-    public static void WriteTaskPageIfHasAttempts(string logsRoot, TaskNode task)
+    /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree.</param>
+    /// <param name="task">The task whose page is written.</param>
+    /// <param name="status">
+    /// The task's status word for the page's breadcrumb bar (issue #485), or null to omit it. The task page
+    /// rendered NO status at all before #485 — yet the live table's finished-task <c>logs</c> link points
+    /// exactly here, so an operator could click a RED row and land on a page that never said the task
+    /// halted. Both production callers now supply it.
+    /// </param>
+    /// <param name="needsHumanKind">The agent's needs-human claim (issue #485) to chip beside the status, or null.</param>
+    public static void WriteTaskPageIfHasAttempts(
+        string logsRoot, TaskNode task, string? status = null, string? needsHumanKind = null)
     {
         if (AttemptDirs(logsRoot, task.Id).Count == 0)
         {
             return; // nothing to render — task never ran / not started; it stays a non-link in the index
         }
 
-        string page = TaskPage(logsRoot, task);
+        string page = TaskPage(logsRoot, task, status, needsHumanKind);
         AtomicFile.WriteAllText(Path.Combine(logsRoot, task.Id, "index.html"), page);
     }
 
@@ -259,17 +273,20 @@ public static class LogSiteRenderer
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
-        RunHalt? halt)
+        RunHalt? halt,
+        Func<string, string?>? claimResolver)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in tasks)
         {
             string status = statusResolver(task.Id);
             string cell = IndexCell(task.Id, linkResolver(task.Id));
+            string? claim = claimResolver?.Invoke(task.Id);
 
             rows.Append("<tr><td>").Append(cell).Append("</td>")
-                .Append("<td class=\"status\" data-status=\"").Append(Enc(status)).Append("\">")
-                .Append(Enc(status)).Append("</td>")
+                .Append("<td class=\"status\" data-status=\"").Append(Enc(status)).Append('"')
+                .Append(ClaimAttribute(claim)).Append('>')
+                .Append(Enc(status)).Append(ClaimChip(claim)).Append("</td>")
                 .Append("<td>").Append(Enc(task.Description)).Append("</td></tr>");
         }
 
@@ -560,9 +577,11 @@ public static class LogSiteRenderer
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
-        RunHalt? halt = null)
+        RunHalt? halt = null,
+        Func<string, string?>? claimResolver = null)
     {
-        string html = WaveIndexHtml(logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt);
+        string html = WaveIndexHtml(
+            logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt, claimResolver);
         string waveDir = Path.Combine(logsRoot, wave.Dir);
         Directory.CreateDirectory(waveDir); // the wave folder may not exist yet (all tasks still pending)
         string indexPath = Path.Combine(waveDir, "index.html");
@@ -577,17 +596,20 @@ public static class LogSiteRenderer
         Func<string, string> statusResolver,
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
-        RunHalt? halt)
+        RunHalt? halt,
+        Func<string, string?>? claimResolver)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in wave.Tasks)
         {
             string status = statusResolver(task.Id);
             string cell = WaveIndexCell(task, linkResolver(task.Id));
+            string? claim = claimResolver?.Invoke(task.Id);
 
             rows.Append("<tr><td>").Append(cell).Append("</td>")
-                .Append("<td class=\"status\" data-status=\"").Append(Enc(status)).Append("\">")
-                .Append(Enc(status)).Append("</td>")
+                .Append("<td class=\"status\" data-status=\"").Append(Enc(status)).Append('"')
+                .Append(ClaimAttribute(claim)).Append('>')
+                .Append(Enc(status)).Append(ClaimChip(claim)).Append("</td>")
                 .Append("<td>").Append(Enc(task.Description)).Append("</td></tr>");
         }
 
@@ -709,7 +731,7 @@ public static class LogSiteRenderer
     /// page by the full size of each raw stream. Accepted for the audit/demo use — a <c>file://</c> page
     /// has no other way to show siblings — so it is deliberately uncapped.</para>
     /// </summary>
-    private static string TaskPage(string logsRoot, TaskNode task)
+    private static string TaskPage(string logsRoot, TaskNode task, string? status, string? needsHumanKind)
     {
         IReadOnlyList<int> attempts = AttemptNumbers(logsRoot, task.Id);
         var sections = new StringBuilder();
@@ -744,6 +766,15 @@ public static class LogSiteRenderer
 
         sections.Append(SourceSection(logsRoot, task));
 
+        // #485: the page finally SAYS what happened. Deliberately bounded to the existing bar line — no new
+        // banner, no new section, no inlined question text. `span.status` is already declared and its colour
+        // rules are element-agnostic, so this costs no CSS beyond `.claim`. The pointer names
+        // action-out-fragment.json because that file is one selection away in the attempt combobox above.
+        string statusBar = status is { Length: > 0 }
+            ? $" &middot; <span class=\"status\" data-status=\"{Enc(status)}\"{ClaimAttribute(needsHumanKind)}>"
+              + $"{Enc(status)}</span>{ClaimChip(needsHumanKind)}"
+            : string.Empty;
+
         return $"""
 <!doctype html>
 <html lang="en">
@@ -757,7 +788,7 @@ public static class LogSiteRenderer
 </head>
 <body>
 <h1>{Enc(task.Id)}</h1>
-<div class="bar"><a href="../index.html">&larr; all tasks</a> &middot; {Enc(task.Description)}</div>
+<div class="bar"><a href="../index.html">&larr; all tasks</a> &middot; {Enc(task.Description)}{statusBar}</div>
 {sections}
 {FileToggleScript}
 </body>
@@ -961,6 +992,35 @@ public static class LogSiteRenderer
 
     private static string StatusWord(JournalDocument journal, string taskId) =>
         journal.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry) ? StatusText(entry.Status) : "unknown";
+
+    /// <summary>
+    /// The agent's <c>needsHuman.kind</c> claim for a task, read from its LAST journaled attempt (issue
+    /// #485) — the only place the static export can find it, since it reads the journal alone. Null (⇒ no
+    /// chip, no attribute) for a task with no attempts, a non-escalating attempt, and every pre-#485 journal.
+    /// </summary>
+    private static string? ClaimWord(JournalDocument journal, string taskId) =>
+        journal.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry) && entry.Attempts.Count > 0
+            ? NeedsHumanKinds.Parse(entry.Attempts[^1].NeedsHumanKind)
+            : null;
+
+    /// <summary>
+    /// The status-cell suffix naming the agent's needs-human claim (issue #485): a leading space plus
+    /// <c>&lt;span class="claim"&gt;work|guardrail&lt;/span&gt;</c>, or the EMPTY string when unclassified —
+    /// so an unclassified cell is byte-for-byte what it has always been. Uses the width-scarce terse form
+    /// (the machine-readable full token rides on <see cref="ClaimAttribute"/>'s <c>data-claim</c>).
+    /// <para>Pure and public: the Cli assembly ships no <c>InternalsVisibleTo</c>, so the mapping itself is
+    /// the test seam.</para>
+    /// </summary>
+    public static string ClaimChip(string? kind) =>
+        NeedsHumanKinds.Terse(kind) is { } terse ? $" <span class=\"claim\">{Enc(terse)}</span>" : string.Empty;
+
+    /// <summary>
+    /// The status cell's machine-readable <c> data-claim="&lt;kind&gt;"</c> attribute (issue #485), or the
+    /// EMPTY string when unclassified. <c>data-status</c> is deliberately left alone so the existing
+    /// needs-human red rule still applies — nothing in this design is colour-only.
+    /// </summary>
+    private static string ClaimAttribute(string? kind) =>
+        NeedsHumanKinds.Parse(kind) is { } parsed ? $" data-claim=\"{Enc(parsed)}\"" : string.Empty;
 
     /// <summary>Map a journal status to the SSOT status word shown in the UI (shared with the live viewer).</summary>
     public static string StatusText(JournalTaskStatus status) => status switch

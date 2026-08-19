@@ -89,7 +89,8 @@ public sealed class FileEscalationSink : IEscalationSink
             At = request.At,
             Id = id,
             Status = OpenStatus,
-            Options = request.Options
+            Options = request.Options,
+            Kind = request.Kind
         };
         AtomicFile.WriteAllText(recordPath, JsonSerializer.Serialize(record, RecordJson));
 
@@ -154,5 +155,12 @@ public sealed class FileEscalationSink : IEscalationSink
 
         /// <summary>The structured-<c>needsHuman</c> options (issue #387), in order; empty (omitted via the omit-null policy is NOT applied to an empty list, so it serializes as <c>[]</c>) for a free-text or non-answerable escalation.</summary>
         public IReadOnlyList<string> Options { get; init; } = [];
+
+        /// <summary>
+        /// The agent's <c>needsHuman.kind</c> claim (issue #485) — <c>blocked-work</c> or
+        /// <c>defective-guardrail</c>. Null (and, via <see cref="RecordJson"/>'s omit-null policy, ABSENT
+        /// from the file) when unclassified, so a pre-#485-shaped escalation record is byte-identical.
+        /// </summary>
+        public string? Kind { get; init; }
     }
 }
