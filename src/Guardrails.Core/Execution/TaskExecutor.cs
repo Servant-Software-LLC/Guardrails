@@ -514,6 +514,8 @@ public sealed class TaskExecutor : ITaskExecutor
         // No action attempt here, so there is no ACTOR route to thread and none is invented (#201/§6.5).
         // The judge still RESOLVES — rule 1's frontmatter pin, §6.5.1's floor and the default pointer all
         // apply with no actor rung to key off — it simply resolves against nothing on the rules that need one.
+        // BOTH attempt records below therefore carry that resolution as a judge-only provenance
+        // (JudgeOnlyProvenance): a revalidate graded by a model must say WHICH model graded it.
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
             task, workspace, env, snapshotPath, logDir, route: null, cancellationToken).ConfigureAwait(false);
 
@@ -544,7 +546,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 FailedGuardrails = failed
                     .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
                     .ToList(),
-                LogDir = relativeLogDir
+                LogDir = relativeLogDir,
+                Provenance = JudgeOnlyProvenance(guardrails.Judge)
             };
             // NeedsHuman, not pending: the gate still does not pass, so the task stays a non-green
             // halt the human must keep working on — exactly as a normal failed attempt would leave it.
@@ -571,7 +574,8 @@ public sealed class TaskExecutor : ITaskExecutor
             EndedAt = DateTimeOffset.UtcNow,
             ActionExitCode = null,
             Outcome = AttemptOutcome.Succeeded,
-            LogDir = relativeLogDir
+            LogDir = relativeLogDir,
+            Provenance = JudgeOnlyProvenance(guardrails.Judge)
         };
         // §7.2 (#274 Part A): a revalidate that flips the task to succeeded also stamps its definition
         // hash, so a subsequent resume detects a later definition edit rather than skipping stale.
@@ -1045,6 +1049,40 @@ public sealed class TaskExecutor : ITaskExecutor
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
             task, workspace, guardrailEnv, snapshotPath, logDir, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
 
+        // --- §12.4 / D32: fold the VERIFIER route onto this attempt's provenance ---------
+        // A judge resolves DURING the guardrail pass, so it cannot be part of the launch-time provenance
+        // built above; it is folded onto that SAME object the moment the pass returns, before any journal
+        // call below reads it. The local is REASSIGNED because records are immutable — a `with` whose
+        // result is discarded changes nothing.
+        //
+        // Onto the PROVENANCE specifically, and that is mechanical rather than cosmetic: AttemptProvenance
+        // is the one member that already rides PendingAttempt, so a value folded here reaches BOTH record
+        // construction paths with no further edit — the serial AttemptJournaler AND
+        // Scheduler.RecordSucceededSettle (`Provenance = pending.Provenance`), the DEFAULT worktree mode.
+        // A datum hung on the attempt record itself lands in serial mode and silently vanishes in the mode
+        // almost every run actually uses.
+        //
+        // ABSENT, never null: a script attempt and a task whose guardrails are all deterministic resolve no
+        // judge at all (§6.5 Invariant 7 — no model ran, so there is no verifier to name), so the whole fold
+        // is skipped for them. A judge object built out of nulls is worse than no object — it reads as "a
+        // judge resolved and every field was empty".
+        if (guardrails.Judge is { } judge)
+        {
+            // A SCRIPT action in SERIAL mode builds NO launch-time provenance (no model to record, no
+            // segment) and can still be graded by a prompt judge. Construct the judge-only object for it —
+            // the same shape RevalidateAsync uses — rather than dropping a datum that genuinely resolved,
+            // which is precisely how #475's `usage` became a member nothing ever populated.
+            provenance = provenance is null
+                ? JudgeOnlyProvenance(judge)
+                : provenance with { Judge = judge };
+
+            // Re-mirror it (SSOT §8: ONE provenance object recorded in TWO places). Not tidiness: on the
+            // guardrail-FAILED path this artifact is the ONLY surface that records the judge at all,
+            // because AttemptJournaler.FailedAttempt takes no provenance parameter. An attempt a model
+            // graded RED must still say WHICH model graded it.
+            AttemptArtifacts.WriteProvenance(logDir, provenance);
+        }
+
         if (cancellationToken.IsCancellationRequested)
         {
             return _journaler.Cancelled(task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(), action.CostUsd);
@@ -1414,6 +1452,24 @@ public sealed class TaskExecutor : ITaskExecutor
             InjectedToolGrants = grants?.Injected
         };
     }
+
+    /// <summary>
+    /// A provenance object carrying NOTHING BUT the verifier route (§12.4 / D32) — what
+    /// <see cref="RevalidateAsync"/> records, and what a serial SCRIPT attempt graded by a prompt judge
+    /// falls back to, because neither has a launch-time provenance to fold into.
+    ///
+    /// <para>The route-derived fields are legitimately absent rather than missing: a revalidate runs NO
+    /// action, so there is no actor model, no segment and no tool grants to name — but it runs the same
+    /// prompt guardrails and resolves a judge exactly as an attempt does, and the one path a human is
+    /// actively working through must not be the one path with no record of who graded their fix.</para>
+    ///
+    /// <para>Null in, null out: a deterministic-only guardrail set resolved no judge, and an object of
+    /// nulls would assert the opposite — that a judge resolved and every field about it was empty. The
+    /// caller then records no provenance at all, which is what <c>WhenWritingNull</c> already means for
+    /// every other attempt.</para>
+    /// </summary>
+    private static Journal.AttemptProvenance? JudgeOnlyProvenance(Journal.AttemptJudge? judge) =>
+        judge is null ? null : new Journal.AttemptProvenance { Judge = judge };
 
     /// <summary>
     /// WHICH SITE supplied this attempt's rung (DoR §12.4, D31) — READ from the resolution's §6.1 branch
