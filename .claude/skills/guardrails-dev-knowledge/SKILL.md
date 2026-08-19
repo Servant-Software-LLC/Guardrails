@@ -166,8 +166,9 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1, issue #331) are TAKEN too. **GR2037**
   (BannedGuardrailPattern — a generated guardrail SCRIPT matches a known-bad regex from the data-driven
   banned-pattern registry `references/banned-guardrail-patterns.json`, embedded into Core + scanned over
-  the four-folder script guardrails' comment-stripped bodies; ERROR, one per match; seeded #73 + #187a,
-  #346/SSOT §4.6) is TAKEN too. Next free: GR1010 / GR2038.
+  the four-folder script guardrails' comment-stripped bodies; ERROR, one per match; a CURATED set of three
+  — #73 + #187a + #462 — grown only by reviewed addition, #346/SSOT §4.6) is TAKEN too.
+  Next free: GR1010 / GR2038.
 - **Sorts are ordinal** everywhere (guardrail order, task folders) — locale bugs.
 - **Atomic writes** (`AtomicFile`) for anything resume reads (state.json, run.json).
 - **Process spawning**: `ArgumentList` only; `Kill(entireProcessTree: true)`;
@@ -194,8 +195,10 @@ Smoke test of record: `run examples/hello-guardrails/hello-guardrails --fresh --
   the renderer must stay deterministic (golden-file tested).
 - **Worktree containment hook (`WorktreeContainmentHook`, issues #199/#192, SSOT §9.4)**: the OUTER
   runtime boundary, on top of the write-scope CHECK's post-hoc INNER diff. `WriteHookFiles(logDir,
-  worktreeRoot)` generates an OS-picked Claude Code PreToolUse hook script (`.ps1`/`.sh`, worktree
-  root baked in as a literal) + a `containment-settings.json` into the attempt's log dir (never
+  worktreeRoot)` generates an OS-picked Claude Code PreToolUse hook script (`.ps1`/`.sh`, the ACCEPTED
+  worktree-root spellings baked in as a LIST of single-quoted literals — the as-given form plus
+  `RealPath.Resolve`'s, so a macOS `/var` vs `/private/var` aliasing cannot block a legitimate
+  in-worktree write, #464; adding a spelling is a data change, not a control-flow one) + a `containment-settings.json` into the attempt's log dir (never
   inside the segment — must not pollute `git status`); `ActionRunner`/`GuardrailRunner` append
   `--settings <path>` to `PromptRunnerSettings.ExtraArgs` ONLY when a real segment worktree is
   present (`worktreeRoot` param non-null; null in serial mode — no `--settings` there). The hook's

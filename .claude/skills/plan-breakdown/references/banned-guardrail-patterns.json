@@ -73,6 +73,57 @@
         "if ($doc -notmatch '(?m)^=======') { exit 1 }",
         "if ($report -notmatch '=======') { exit 1 }"
       ]
+    },
+    {
+      "id": "#462",
+      // A DEAD #179 re-emit: a `dotnet test` line carrying `-v q` in a script that then greps for the
+      // failure-detail block. `-v q` SUPPRESSES that block — `Error Message:`, the assertion line,
+      // `Expected:`, `Actual:`, `Stack Trace:` — leaving only `[FAIL] <name>`. The harness feeds back only
+      // the TAIL of a failed guardrail's stdout, which is exactly why #179 requires the detail be re-emitted
+      // at the END; under `-v q` the Select-String has nothing left to find, so the next attempt sees WHAT
+      // failed and never WHY, and retries blind. The guardrail still fails correctly and still looks right
+      // on the page — only the diagnostic value is gone, and nothing in the output announces it. Measured,
+      // not inferred (#248): same project, same filter, the flag the only difference (stack file §4.3, row 3
+      // of the verbosity table).
+      //
+      // WHY THE CONJUNCTION, and what is deliberately NOT banned. The pair is self-defeating from the script
+      // text alone — no cross-file analysis, which is what makes it registry-shaped at all. A `-v q` on a
+      // `dotnet test` with NO re-emit grep is deliberately left SILENT here. Doctrine forbids that too
+      // (§4.3 point 3, so the two halves of a TDD pair stay copy-pasteable and nobody propagates the flag
+      // onto a forward check by cloning a sibling file) — but it is not text-locally self-contradictory: on
+      // an INVERSE `tests-fail-on-stubs` check a NON-zero exit is the success condition, so there is no
+      // failure detail to preserve and the flag costs nothing. GR2037 is an ERROR that blocks `validate`, so
+      // that half stays doctrine enforced by review, not by this lint.
+      //
+      // THE TRIGGER TOKENS ARE EXACTLY THE LINES `-v q` DELETES. `\[FAIL\]` is deliberately absent from the
+      // alternation: it is the one line the flag PRESERVES, so a re-emit that greps only for it is not
+      // defeated by the flag (it is a weak re-emit — a different, non-text-local finding). A PowerShell
+      // backtick line-continuation is tolerated between `dotnet test` and the flag, because the §21 baseline
+      // preflight is habitually written that way; a PLAIN newline is not, so a legitimate
+      // `dotnet build … -v q` line sitting above a correct `dotnet test` + re-emit stays silent.
+      //
+      // Two accepted residuals, both named honestly. MISS: a `dotnet test` whose verbosity flag is
+      // assembled into a variable instead of written on the command line. FALSE-FIRE: a script that runs
+      // `dotnet test … -v q` and, for an unrelated reason, contains the bare words `Expected:` / `Actual:`
+      // (e.g. in a Write-Output line). Both of the tokens that make that possible are kept because #462
+      // names them; and a script in that shape is violating §4.3 point 3 regardless, so the fire is
+      // directionally right even where the message is not the sharpest available.
+      "badPattern": "dotnet\\s+test\\b(?:[^\\r\\n]|(?<=`)\\r?\\n)*[ \\t](?:-v|--verbosity)[\\s:=]+q[\\s\\S]{0,4000}?(?:Error Message|Stack Trace|Assert\\\\\\.|Expected:|Actual:)",
+      "reason": "dead #179 re-emit: this guardrail passes '-v q' to 'dotnet test' AND then greps for the failure-detail block, but '-v q' SUPPRESSES that block (Error Message / Expected / Actual / Stack Trace), leaving only '[FAIL] <name>' — so the re-emit finds nothing, the retry-feedback tail shows WHAT failed but never WHY, and the next attempt retries blind. '-v q' is doctrine for 'dotnet build' ONLY (stack file dotnet.md §4.3).",
+      "goodPatternHint": "drop '-v q' from the TEST command (keep '--nologo'; keep '-v q' on 'dotnet build'), and pin the culture with `$env:DOTNET_CLI_UI_LANGUAGE = 'en'` as the first line so the summary the zero-match guard reads is not localized — dotnet.md §4.2 (the re-emit) + §4.3 (the canonical forward form).",
+      "mustMatch": [
+        "$log = & dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --filter \"Category=ModelTieringStage1\" --nologo -v q 2>&1\nif ($code -ne 0) {\n    $log | Select-String -Pattern '^\\s*(Failed|Error Message|Assert\\.|Expected|Actual)' | ForEach-Object { Write-Output $_.Line }\n    exit 1\n}",
+        "$out = dotnet test tests/Inventory.Tests --filter $filter --no-build --nologo -v q 2>&1\n$detail = $out | Select-String -Pattern '\\[FAIL\\]|Error Message:|Assert\\.|Exception|Stack Trace:|Expected:|Actual:'",
+        "$log = & dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj `\n    --filter \"Category!=ModelTieringStage1\" --nologo -v q 2>&1\n$log | Select-String -Pattern '^\\s*(Failed|Error Message|Assert\\.)'",
+        "$out = dotnet test tests/Inventory.Tests --filter $filter --verbosity quiet 2>&1\n$out | Select-String -Pattern 'Error Message:|Stack Trace:' | ForEach-Object { Write-Output $_.Line }"
+      ],
+      "mustNotMatch": [
+        "$env:DOTNET_CLI_UI_LANGUAGE = 'en'\n$out = dotnet test tests/Inventory.Tests --filter $filter --no-build --nologo 2>&1\n$detail = $out | Select-String -Pattern '\\[FAIL\\]|Error Message:|Assert\\.|Exception|Stack Trace:|Expected:|Actual:'",
+        "dotnet build tests/Inventory.Tests --nologo -v q\n$out = dotnet test tests/Inventory.Tests --filter $filter --nologo 2>&1\n$detail = $out | Select-String -Pattern '\\[FAIL\\]|Error Message:|Assert\\.|Stack Trace:|Expected:|Actual:'",
+        "dotnet test tests/Inventory.Tests --filter $filter --nologo -v q\nif ($LASTEXITCODE -eq 0) { Write-Output 'the tests PASS against the stubs - they are tautological'; exit 1 }",
+        "$out = dotnet test tests/Inventory.Tests --filter $filter --nologo -v q 2>&1\n$out | Select-String -Pattern '\\[FAIL\\]' | ForEach-Object { Write-Output $_.Line }",
+        "dotnet run --project src/Guardrails.Cli -v quiet -- validate $folder\n$out | Select-String -Pattern 'Error Message:|Stack Trace:'"
+      ]
     }
   ]
 }

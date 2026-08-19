@@ -363,6 +363,13 @@ Notes that make it robust:
   `tests-pass` guardrail also carries the `Total:`-keyed **zero-match guard** (§4.3), because the
   narrowed `--filter` above exits **0** when it matches nothing. §4.3's forward form is what you emit;
   this block is the re-emit half of it, shown alone.
+- **`-v q` on the test command DELETES exactly what this block re-emits (#462).** The flag suppresses the
+  whole failure block — `Error Message:`, the assertion line, `Expected:`, `Actual:`, `Stack Trace:` —
+  leaving only `[FAIL] <name>`, so the `Select-String` above matches nothing and re-emits nothing. The
+  guardrail still fails, still exits non-zero, still names the failing tests; only the WHY is gone, and
+  nothing in the output says so. **A correctly-written re-emit is voided by one flag on the line above
+  it** — which is why the block above carries no verbosity flag and why §4.3's canonical form spells the
+  omission out in a comment. `guardrails validate` rejects the pair mechanically (GR2037 entry `#462`).
 - **The re-emit is the load-bearing part**, not the verbosity flag. You MAY also pass
   `--logger "console;verbosity=detailed"` (which moves failure messages into the end-of-run summary),
   but logger ordering varies by SDK/framework; the explicit capture-and-re-emit **deterministically**
@@ -546,6 +553,27 @@ is a **build** rule; do not carry `-v q` across to `dotnet test`. (`--nologo` is
 INVERSE red checks have no failure detail to preserve — a non-zero exit is their success — but keep them
 `-v q`-free too, so the two halves of a pair stay copy-pasteable and no one propagates the flag onto a
 forward check by cloning a sibling file.
+
+**Say WHY, or the rule will not survive its first reviewer.** `-v q` is genuinely RIGHT on `dotnet build`:
+it strips the restore/banner chatter and leaves the compiler errors — precisely the one-actionable-line
+discipline §4 asks for. Carrying it onto `dotnet test` is the natural generalisation of a rule that
+worked, and the result *looks* like it is working: the guardrail still fails correctly, still exits
+non-zero, still prints `[FAIL] <name>`. Only the diagnostic value is gone, and nothing about the output
+announces that. Stated bare ("no `-v q` on tests") the rule reads as fussiness and gets undone by the next
+author who finds the test log noisy; stated with its reason, the flag is visibly a **choice between quiet
+output and a retry that can see**.
+
+**The self-defeating half is enforced mechanically (GR2037 entry `#462`).** `guardrails validate` rejects
+a guardrail script whose `dotnet test` line carries `-v q` / `--verbosity q…` **and** which then greps for
+`Error Message` / `Stack Trace` / `Assert\.` / `Expected:` / `Actual:` — the tokens the flag deletes. That
+conjunction is provably self-defeating from the script text alone, so it is registry-shaped (no cross-file
+analysis). Two deliberate exclusions, so you know what the lint does *not* buy you: a `-v q` test command
+with **no** re-emit is still against this rule but is not flagged (on an inverse red check the flag costs
+nothing, and GR2037 is an ERROR that would block `validate` on a guardrail certifying exactly what it
+claims); and `\[FAIL\]` is absent from the token list because it is the one line `-v q` preserves — a
+re-emit that greps only for it is weak, not defeated. Both remainders stay doctrine, enforced here and by
+`/guardrails-review`. The registry entry lives beside this file, in
+`references/banned-guardrail-patterns.json`.
 
 The guard expression:
 

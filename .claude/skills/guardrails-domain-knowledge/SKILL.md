@@ -970,9 +970,9 @@ total order driven by the wave folder's numeric prefix.
   folder sharing a `Name`, #332/SSOT §4.5; GR2036 = ExpectedDurationNonPositive — the optional guardrail
   `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1 / §12.1, issue #331 — the long-running-guardrail
   heartbeat; **GR2037 = BannedGuardrailPattern** — a generated guardrail SCRIPT contains a known-bad regex
-  construction from the data-driven banned-pattern registry beside the catalogue, #346/SSOT §4.6; seeded #73
-  hollow-assertion + #187a unanchored-conflict-marker, complements — does not replace — the #302 smoke-test +
-  `/guardrails-review`; **GR2038** = WorktreePathTooLong #383/#384; **GR2039/GR2040** = autonomy-dial value +
+  construction from the data-driven banned-pattern registry beside the catalogue, #346/SSOT §4.6; a curated set
+  of three — #73 hollow-assertion + #187a unanchored-conflict-marker + #462 dead-#179-re-emit (`dotnet test -v q`
+  beside a failure-detail grep) — complements, does not replace, the #302 smoke-test + `/guardrails-review`; **GR2038** = WorktreePathTooLong #383/#384; **GR2039/GR2040** = autonomy-dial value +
   forbidden-compound-config #361; **GR2041** = MissingWriteScope #389; **GR2042** = StructuralOverScope, the
   fan-in-sink / composition-root over-scope WARN, #378/SSOT §3.4; **GR2043** = InvalidTierValue #225 (all
   FOUR tier sites); **GR2044-GR2046** = InvalidPromptRunnerKind / InvalidRunnerAxis / RetiredRoutingRank,

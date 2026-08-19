@@ -358,11 +358,13 @@ public static class DiagnosticCodes
     /// four-folder script guardrail's comment-stripped body (task <c>guardrails/</c>+<c>preflights/</c>,
     /// wave <c>guardrails/</c>+<c>preflights/</c>, plan <c>guardrails/</c>+<c>preflights/</c>) against
     /// each registry entry's <c>badPattern</c> and emits ONE GR2037 per match, citing the entry
-    /// <c>id</c> + <c>reason</c> + <c>goodPatternHint</c>. Seeded with <c>#73</c> (the hollow-assertion
-    /// AVOID construction) and <c>#187a</c> (the unanchored <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c>/
-    /// <c>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c> conflict-marker construction — the exact #346 regression;
-    /// the bare <c>=======</c> was the design's deferred #187b and is NOT banned, to avoid a
-    /// setext-underline / banner false-positive). An ERROR: correct SKILL.md text does not guarantee an
+    /// <c>id</c> + <c>reason</c> + <c>goodPatternHint</c>. A CURATED set of three, grown only by reviewed
+    /// addition: <c>#73</c> (the hollow-assertion AVOID construction), <c>#187a</c> (the unanchored
+    /// <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c>/<c>&gt;&gt;&gt;&gt;&gt;&gt;&gt;</c> conflict-marker
+    /// construction — the exact #346 regression; the bare <c>=======</c> was the design's deferred #187b
+    /// and is NOT banned, to avoid a setext-underline / banner false-positive), and <c>#462</c> (a
+    /// <c>dotnet test</c> carrying <c>-v q</c> in the same script as a grep for the failure-detail block,
+    /// which the flag suppresses — a dead #179 re-emit, so the retry sees WHAT failed and never WHY). An ERROR: correct SKILL.md text does not guarantee an
     /// LLM applies it every generation, so a fixed-spelling catalogue lesson is enforced
     /// deterministically here — complementing, not replacing, the #302 smoke-test and
     /// <c>/guardrails-review</c>. The comment-strip-before-scan is itself the #97 lesson: a

@@ -1264,11 +1264,15 @@ asserts it matches ALL its `mustMatch` fixtures and NONE of its `mustNotMatch` f
 that false-halts correct work would violate invariant #1's spirit — the fixture bar is non-negotiable, and the
 fixtures live *in the registry* so a new lesson is a single self-documenting, self-testing object.
 
-**Seed set (honest cut) + honest limits.** Seeded with exactly two entries: `#73` (the hollow-assertion
+**Curated set (honest cut) + honest limits.** THREE entries, each a reviewed addition rather than whatever
+accumulated — the registry is allowed to grow, but never casually, because every entry buys rejection power
+with false-positive surface and GR2037 is an ERROR that blocks `validate`. `#73` (the hollow-assertion
 `Assert.*(Moved|Written|Count|Entities)` AVOID construction — with a trailing negative lookahead so a construct
-that ALSO requires positivity, e.g. `…(Count).*>\s*0`, is *not* flagged) and `#187a` (the unanchored
+that ALSO requires positivity, e.g. `…(Count).*>\s*0`, is *not* flagged); `#187a` (the unanchored
 `<<<<<<<`/`>>>>>>>` conflict-marker construction — the exact #346 regression: a 7-char ours/theirs run NOT
-line-anchored). `#175` (positive/required lesson — wrong polarity), `#97`/`#98` (structural
+line-anchored); and `#462` (a `dotnet test` carrying `-v q`/`--verbosity quiet` in the same script as a grep for
+the failure-detail block — the flag suppresses the very block #179's re-emit exists to carry, so the retry sees
+WHAT failed and never WHY). `#175` (positive/required lesson — wrong polarity), `#97`/`#98` (structural
 absence-of-comment-strip, not a banned substring), and `#112` (FP-prone) are deliberately **excluded**
 (design-of-record `15-guardrail-script-lint.md` §B.6). **The bare `=======` middle marker is NOT banned** — a
 `={7}` ban was the design's explicitly-DEFERRED "#187b"; it adds no coverage of the #346 incident (which had no
@@ -1276,7 +1280,12 @@ absence-of-comment-strip, not a banned substring), and `#112` (FP-prone) are del
 `#187a`'s `mustNotMatch` fixtures pin that a `=======`-based check stays clean. **Accepted residual:** the only
 false-positive left for `#187a` is the rare INLINE (trailing) comment on a non-comment line literally spelling 7+
 `<`/`>` (whole-line comments are stripped first); for `#73`, a hollow-shaped assertion whose positivity lives
-outside the matched quoted regex. Because it matches regex TEXT inside guardrail source, the registry is
+outside the matched quoted regex. **`#462` is deliberately SILENT on two shapes, and both are load-bearing:**
+a `-v q` on a `dotnet test` with NO re-emit grep (doctrine still forbids it, but on an INVERSE
+`tests-fail-on-stubs` check a non-zero exit IS the success, so no failure detail is lost and firing an ERROR
+there would reject a guardrail that certifies exactly what it claims), and a legitimate `dotnet build … -v q`
+sitting above a correct `dotnet test` + re-emit in the same script — which is why the flag search crosses a
+PowerShell backtick line-continuation but never a plain newline. Because it matches regex TEXT inside guardrail source, the registry is
 **defense-in-depth against accidental regression of a known-bad spelling**, not a proof — a determined respelling
 can evade a given `badPattern`. It
 **complements**, and does not replace, the #302 author-time smoke-test and the adversarial `/guardrails-review`
