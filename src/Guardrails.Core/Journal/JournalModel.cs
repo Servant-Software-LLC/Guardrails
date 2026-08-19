@@ -473,6 +473,114 @@ public sealed record AttemptProvenance
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? InjectedToolGrants { get; init; }
+
+    /// <summary>
+    /// OPTIONAL verifier route that graded this attempt (SSOT §7 <c>provenance.judge</c> / DoR §12.4 +
+    /// §6.5, model tiering #201) — see <see cref="AttemptJudge"/>. Absent entirely when no judge resolved
+    /// through routing (§6.5 Invariant 7): a deterministic-only guardrail set runs no model, so there is
+    /// no verifier to name.
+    ///
+    /// <para><b>Placement is D32, and it is mechanical rather than cosmetic.</b> The judge hangs HERE
+    /// rather than off <see cref="AttemptRecord"/> because <see cref="AttemptRecord.Provenance"/> is the
+    /// only member that already rides <c>PendingAttempt</c>, and therefore reaches BOTH
+    /// record-construction paths — the serial <c>AttemptJournaler</c> AND
+    /// <c>Scheduler.RecordSucceededSettle</c>, which is the DEFAULT worktree mode. A member hung directly
+    /// off the attempt record lands in serial mode and silently vanishes in worktree mode. "The facts the
+    /// harness knows at attempt launch" describes when this provenance is CONSTRUCTED, not what may be
+    /// recorded on it before the record is written: the judge is folded in with a <c>with</c> expression
+    /// at settle time, and reaches both paths for free.</para>
+    /// </summary>
+    public AttemptJudge? Judge { get; init; }
+}
+
+/// <summary>
+/// The VERIFIER route that graded one attempt (SSOT §7 <c>provenance.judge</c> / DoR §12.4, resolved per
+/// §6.5): the block, model and effort a judge guardrail resolved to at attempt launch, recorded beside
+/// the ACTOR's own route on the enclosing <see cref="AttemptProvenance"/>. It answers "who vouched for
+/// this work, and were they strong enough to" — §6.5 exists because a weak actor graded by an equally
+/// weak judge is two blind spots agreeing, and the run goes green over broken work.
+///
+/// <para>Every member is optional EXCEPT <see cref="Bumped"/>, which records a real <c>false</c> rather
+/// than an absence: "the bump did not fire" is a measurement, not a gap, and it is the datum #230-lite
+/// reads to answer whether a bumped judge is worth what it costs.</para>
+/// </summary>
+public sealed record AttemptJudge
+{
+    /// <summary>
+    /// The name of the <c>promptRunners</c> block the JUDGE resolved to — the registry KEY, exactly as
+    /// <see cref="AttemptProvenance.Runner"/> records it for the actor. Read separately from the actor's
+    /// on purpose: when §6.5 rule 3's bump fires the two names differ, and that difference is the record.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Runner { get; init; }
+
+    /// <summary>
+    /// The judge block's <c>kind</c> as its WIRE TOKEN (e.g. <c>claude</c>, <c>openai-compat</c>) — the
+    /// spelling <c>PromptRunnerKinds.Token</c> emits, never the C# enum name or its ordinal. §6.5 rule 4's
+    /// verifier-only fallback reads <c>kind != "claude"</c> ⇒ weak-unless-declared, so the kind is part of
+    /// the evidence behind <see cref="Advisory"/> rather than incidental colour.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>
+    /// The fully resolved model the judge ran on — the verifier-side counterpart of
+    /// <see cref="AttemptProvenance.Model"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Model { get; init; }
+
+    /// <summary>
+    /// The reasoning effort the judge ran at — the resolved judge block's own <c>effort</c>, with a judge
+    /// frontmatter override applied on top. Absent when neither named one (the runner CLI's own default).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Effort { get; init; }
+
+    /// <summary>
+    /// The rung the judge resolved on (<c>easy</c>|<c>medium</c>|<c>hard</c>). By §6.5 rule 2 this is the
+    /// ACTOR's effective rung unless the judge's own frontmatter <c>tier</c> pinned one (rule 1) or
+    /// §6.5.1's <c>verifier.minTier</c> floor lifted it — rule 3's bump moves STRENGTH, never the tier.
+    /// Absent when no rung resolved (a pinned judge, or the legacy-fallback route).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Tier { get; init; }
+
+    /// <summary>
+    /// The resolved judge block's declared <c>strength</c> — the axis §6.5 rule 3 actually bumps along,
+    /// and the number a reader compares against the actor's block to check "equal-or-stronger" without
+    /// re-resolving anything. Absent when the block declares no strength (rule 4 then decides weakness by
+    /// the provider-kind fallback instead).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Strength { get; init; }
+
+    /// <summary>
+    /// Whether the §6.5 rule 3 weak-actor STRENGTH bump fired for this attempt — <c>true</c> when the
+    /// judge was lifted to the weakest candidate at the actor's rung whose strength strictly exceeds the
+    /// actor's.
+    ///
+    /// <para>NOT optional, on purpose. Recording <c>false</c> is a measurement — "a judge resolved and no
+    /// bump was needed" — where an absent key would be indistinguishable from "no judge resolved at all".
+    /// #230-lite aggregates exactly this datum to answer whether a bumped judge earns what it costs, and a
+    /// denominator that silently drops its zeroes is not an answer.</para>
+    /// </summary>
+    public bool Bumped { get; init; }
+
+    /// <summary>
+    /// The §6.5 weak / equal-and-weak ADVISORY finding this attempt's JIT re-check produced, in the text a
+    /// human reads. Recorded on EVERY attempt that resolved a weak judge (the de-duplication ruling's
+    /// "provenance always" half — the quieter log line is a separate surface, and the run summary
+    /// aggregates from here), and absent when the judge is not weak.
+    ///
+    /// <para>Independent of <see cref="Bumped"/>, and in both directions. A judge can be advisory-flagged
+    /// with no bump having fired: §6.5 rule 5 degrades rather than overspends, so when the only stronger
+    /// block is <c>costly: true</c> the judge STAYS on the actor's route and this is the field that says
+    /// so. It is an advisory, never a halt and never a GR code (charter Decision 1) — a GR code is a thing
+    /// that can fail a build, and the harness does not block on a model-quality opinion.</para>
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Advisory { get; init; }
 }
 
 /// <summary>A guardrail that failed, with its one-line reason (SSOT §7 <c>failedGuardrails</c>).</summary>
