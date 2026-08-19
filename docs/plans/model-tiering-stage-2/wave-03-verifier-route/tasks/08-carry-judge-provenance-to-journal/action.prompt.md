@@ -59,8 +59,25 @@ where task 03 put it. Do not work around this with a fifth file — write
 `{"needsHuman": "<what you found>"}` instead. `Scheduler.cs` runs every task of every plan in this
 repo; a regression there fails every other plan, and this task should not be touching it at all.
 
-**Absent, never null.** A script attempt, a task whose guardrails are all deterministic, and the
-`RevalidateAsync` re-verification path have no judge — their provenance must omit the key entirely,
+### BOTH paths that journal an attempt, not just the attempt loop
+
+`TaskExecutor` writes attempt records from **two** methods, and the judge object belongs on both:
+
+1. **`RunAttemptAsync`** — the normal attempt loop, described above.
+2. **`RevalidateAsync`** — the re-verification a human's in-place fix runs through. It journals TWO
+   `AttemptRecord`s via `_journal.RecordAttempt` (one `GuardrailFailed`, one `Succeeded`), and
+   **neither sets `Provenance` at all today**. A revalidate runs the same prompt guardrails and
+   resolves a judge exactly as an attempt does — so a revalidate graded by a model must say which
+   model graded it, or the one path a human is actively working through is the one path with no
+   record of who judged their fix.
+
+For the revalidate records there is no launch-time provenance to fold into, so **construct one
+carrying the judge** (its route-derived fields are legitimately absent — there was no action, so no
+actor model, no segment, no grants). Do not skip the path because the object does not already exist;
+that is the same reasoning that left `AttemptRecord.Usage` unpopulated in #475.
+
+**Absent, never null.** A script attempt and a task whose guardrails are all deterministic have no
+judge — their provenance must omit the key entirely,
 exactly as the schema (task 04) requires. A judge object built out of nulls is worse than no object:
 it reads as "a judge resolved and every field was empty".
 

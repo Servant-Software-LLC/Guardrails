@@ -50,9 +50,15 @@ fails on it.** Two resolution sites drift — one gets a fix, the other does not
 graded against a rung the actor never ran at. This is not hypothetical tidiness: the `route` local
 exists in exactly that shape *because* wave 2 severed a duplicate derivation already.
 
-The OTHER call site (`RevalidateAsync`, the union re-verification path) has no attempt and no actor
-route; pass `null` there and let the judge fall back to today's behaviour. Do not invent a route for
-it — that path is out of scope for this wave.
+The OTHER call site is `RevalidateAsync`, the re-verification path a human's in-place fix runs
+through. It has no action attempt and therefore **no actor route — pass `null` there**, and do not
+invent one.
+
+**But `null` route does NOT mean "no judge".** With no actor rung to key off, `ResolveJudge` still
+does real work: rule 1's frontmatter pin, §6.5.1's `minTier` floor, and the default block. A
+revalidate graded by a model resolved a judge exactly as an attempt does, so your resolution must be
+exposed on that call's result too — task 08 records it. Handle a null route as a first-class input,
+not as a reason to skip resolution and return nothing.
 
 ### What to change
 

@@ -56,6 +56,35 @@ if ($execCode -cnotmatch '(?m)provenance\s*=\s*provenance') {
     $failures += 'TaskExecutor never reassigns the `provenance` local - a with-expression whose result is discarded changes nothing (records are immutable), and a judge folded onto a DIFFERENT object does not reach Scheduler.RecordSucceededSettle, where the record is built from pending.Provenance in worktree mode (the default). Assign the result back.'
 }
 
+
+# --- the REVALIDATE path: every attempt record TaskExecutor builds itself carries provenance ------
+# Measured on the integration tree at authoring: TaskExecutor.cs contains `new AttemptRecord` TWICE
+# (both inside RevalidateAsync - the GuardrailFailed one and the Succeeded one), 2 RecordAttempt
+# calls, and `Provenance =` ZERO times. So this clause starts RED and can only go green on new work.
+#
+# Why it is not optional: a revalidate runs the same prompt guardrails and resolves a judge exactly
+# as an attempt does. Skipping it because no launch-time provenance object exists there is precisely
+# the reasoning that left AttemptRecord.Usage unpopulated in #475 - the datum was real, the sink was
+# real, and the hop between them was skipped as "not this task's shape".
+$records = [regex]::Matches($execCode, 'new\s+AttemptRecord\b')
+if ($records.Count -lt 1) {
+    $failures += 'no `new AttemptRecord` in TaskExecutor - RevalidateAsync builds two of them today; if they are gone the re-verification path was restructured in a way this wave did not anticipate. Halt rather than guess.'
+} else {
+    $uncarried = 0
+    foreach ($m in $records) {
+        # The initializer through to the journal call that consumes it. A nested object initializer
+        # (FailedGuardrails = ... new FailedGuardrail { ... }) makes brace-matching unreliable, so
+        # the window runs to the RecordAttempt call instead, which is what actually persists it.
+        $tail = $execCode.Substring($m.Index)
+        $stop = $tail.IndexOf('RecordAttempt')
+        if ($stop -lt 1) { $stop = [Math]::Min(1500, $tail.Length) }
+        if ($tail.Substring(0, $stop) -cnotmatch 'Provenance\s*=') { $uncarried++ }
+    }
+    if ($uncarried -gt 0) {
+        $failures += "$uncarried of $($records.Count) AttemptRecord(s) built in TaskExecutor never set Provenance. These are the REVALIDATE records - the path a human's in-place fix runs through. A revalidate graded by a model must record WHICH model graded it, or the one path a human is actively working through is the only path with no judge provenance. There is no launch-time provenance object to fold into there: CONSTRUCT one carrying the judge (route-derived fields are legitimately absent - no action means no actor model, no segment, no grants)."
+    }
+}
+
 if ($failures.Count -gt 0) {
     Write-Output ""
     Write-Output "=== judge provenance arrival: $($failures.Count) finding(s) ==="

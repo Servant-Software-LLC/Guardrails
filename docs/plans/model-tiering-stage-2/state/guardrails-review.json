@@ -1,14 +1,9 @@
 {
   "version": 2,
-  "reviewedAt": "2026-08-18T04:33:27.8628476+00:00",
-  "planHash": "sha256:5275f70ca1d853b42aa62c2f1254428b3f6044457a855d4357afbba03bf6321b",
+  "reviewedAt": "2026-08-18T20:46:47.9889669+00:00",
+  "planHash": "sha256:dbee1e076d6d77a09057292c510c5e79a107c7dabba1abeb03cdc8958e5b653d",
   "attestation": {
-    "source": "review-artifact",
-    "tool": "guardrails 1.6.0",
-    "actor": "claude-opus-5 (lead) \u2014 post-run remediation addendum",
-    "evidence": {
-      "reportPath": "state\\reviews\\review-5275f70ca1d8-2026-08-18T043247Z.md",
-      "reportDigest": "sha256:f3c3ad8f6938219b080f09fb4ad8c9cd134ab2affdf96e03a763d1ea2011975d"
-    }
+    "source": "bare",
+    "tool": "guardrails 1.6.0"
   }
 }
