@@ -489,7 +489,15 @@ public sealed record AttemptProvenance
     /// harness knows at attempt launch" describes when this provenance is CONSTRUCTED, not what may be
     /// recorded on it before the record is written: the judge is folded in with a <c>with</c> expression
     /// at settle time, and reaches both paths for free.</para>
+    ///
+    /// <para><b>Absent, never <c>null</c></b> — the ignore condition below is load-bearing, not tidiness.
+    /// <see cref="JournalJson"/> sets <c>DefaultIgnoreCondition = Never</c>, so without it EVERY attempt
+    /// carrying a provenance would grow a <c>"judge": null</c> key, including the script attempts of runs
+    /// whose author opted into none of this. The two shapes deserialize identically, so the cost is paid
+    /// entirely by the humans and the tooling reading <c>run.json</c>. Same discipline as every optional
+    /// member beside it.</para>
     /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public AttemptJudge? Judge { get; init; }
 }
 
