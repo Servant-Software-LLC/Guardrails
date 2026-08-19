@@ -56,6 +56,7 @@ public sealed class PlanValidator
         ValidateGuardrailExpectedDurations(plan, diagnostics);
         ValidateDuplicateCheckNames(plan, diagnostics);
         ValidateBannedGuardrailPatterns(plan, diagnostics);
+        ValidateUnsatisfiableGuardrailFloor(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
@@ -1645,6 +1646,100 @@ public sealed class PlanValidator
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// A literal collection assigned to a variable: <c>$tests = @( 'a', 'b', 'c' )</c>. Captures the
+    /// variable name and the element list so the element COUNT can be compared against a floor.
+    /// Single- or double-quoted elements, any whitespace/newlines between them.
+    /// </summary>
+    private static readonly Regex LiteralNameArray = new(
+        @"\$(?<var>\w+)\s*=\s*@\(\s*(?<items>(?:'[^']*'|""[^""]*"")(?:\s*,\s*(?:'[^']*'|""[^""]*""))*)\s*,?\s*\)",
+        RegexOptions.Compiled | RegexOptions.Singleline);
+
+    /// <summary>A zero-match floor: <c>-lt 14</c>. The guard shape every generated test guardrail uses.</summary>
+    private static readonly Regex NumericFloor = new(@"-lt\s+(?<floor>\d+)\b", RegexOptions.Compiled);
+
+    /// <summary>A quoted element inside a captured <c>@( … )</c> list.</summary>
+    private static readonly Regex QuotedItem = new(@"'[^']*'|""[^""]*""", RegexOptions.Compiled);
+
+    /// <summary>
+    /// GR2055 (issue #484) — a guardrail whose zero-match floor exceeds the cardinality of the literal
+    /// collection its own <c>--filter</c> is built from, so it can never pass for any input.
+    /// <para>The check is deliberately narrow, because a validator that produces false positives gets
+    /// ignored and then the true positives are lost with it. All FOUR must hold before it fires:
+    /// (1) a variable is assigned a literal array of N quoted names; (2) that SAME variable is
+    /// referenced on a line that also mentions <c>filter</c> — the linkage that proves the array is
+    /// what selects the tests, so an unrelated array and an unrelated threshold cannot collide;
+    /// (3) the body contains a numeric floor <c>-lt M</c>; (4) M &gt; N.</para>
+    /// <para>Comment lines are stripped first (the #97 lesson, as GR2037 does): a header comment
+    /// explaining a floor must never be what trips it.</para>
+    /// </summary>
+    private static void ValidateUnsatisfiableGuardrailFloor(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (GuardrailDefinition guardrail in FourFolderScriptGuardrails(plan))
+        {
+            string? body = TryReadAllText(guardrail.Path);
+            if (body is null)
+            {
+                continue;
+            }
+
+            string stripped = StripCommentLines(body);
+
+            MatchCollection floors = NumericFloor.Matches(stripped);
+            if (floors.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (Match array in LiteralNameArray.Matches(stripped))
+            {
+                string varName = array.Groups["var"].Value;
+                int count = QuotedItem.Matches(array.Groups["items"].Value).Count;
+                if (count == 0 || !FeedsAFilter(stripped, varName))
+                {
+                    continue;
+                }
+
+                foreach (Match floor in floors)
+                {
+                    if (!int.TryParse(floor.Groups["floor"].Value, out int required) || required <= count)
+                    {
+                        continue;
+                    }
+
+                    diagnostics.Add(Error(DiagnosticCodes.UnsatisfiableGuardrailFloor, guardrail.Path,
+                        $"Guardrail '{guardrail.Name}' can never pass: its --filter is built from ${varName}, " +
+                        $"a literal list of {count} name(s), but it then requires at least {required} " +
+                        $"executed test(s) (-lt {required}). The filter can select at most {count}, so the " +
+                        $"floor is unreachable and EVERY attempt fails — the task dead-ends at needs-human " +
+                        $"with its work possibly complete. Either lower the floor to what ${varName} can " +
+                        $"produce, or widen the filter to the set the floor describes. A floor left behind " +
+                        $"by a later narrowing of the filter is the usual cause (issue #484): the two " +
+                        $"numbers are ONE invariant and must move together."));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Does <paramref name="varName"/> appear on a line that also mentions a filter? That co-occurrence
+    /// is what links the counted array to the test selection — without it the count means nothing and
+    /// the check must stay silent.
+    /// </summary>
+    private static bool FeedsAFilter(string body, string varName)
+    {
+        foreach (string line in body.Split('\n'))
+        {
+            if (line.Contains("$" + varName, StringComparison.Ordinal)
+                && line.Contains("filter", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

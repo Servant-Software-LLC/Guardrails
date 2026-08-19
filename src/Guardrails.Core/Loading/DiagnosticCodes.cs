@@ -629,9 +629,29 @@ public static class DiagnosticCodes
     /// </summary>
     public const string EffortInvalid = "GR2050";
 
-    // CURRENT next-free code: GR2051. GR2050 (EffortInvalid) is the last taken code above — but note
-    // that GR2051–GR2054 are RESERVED by name in docs/plans/17-model-tiering.md §13.2
+    /// <summary>
+    /// <b>GR2055 — a guardrail that CANNOT PASS for any input (issue #484).</b> A script guardrail
+    /// builds a test <c>--filter</c> from a literal collection of N names and then guards on a
+    /// zero-match floor demanding M, with <c>M &gt; N</c>. The filter can never select more than N
+    /// tests, so the floor is unreachable and the guardrail exits non-zero on every possible attempt —
+    /// the task dead-ends at <c>needs-human</c> with its implementation complete.
+    /// <para>Measured instance: a filter naming SIX clauses guarded by <c>if ($ran -lt 14)</c>. The
+    /// floor was correct for an earlier WHOLE-CLASS filter (nine + five); a later scoping fix narrowed
+    /// the filter and left the floor behind. Each edit was individually sound, and the two numbers sit
+    /// ~30 lines apart — which is exactly why a human review pass missed it twice.</para>
+    /// <para>Sibling of GR2037's registry and of #470 (a clause requiring a token it also forbids):
+    /// the family is "unsatisfiable by construction". It is INVISIBLE to execution probes (#479) —
+    /// such a guardrail is red before the task runs, which is correct, and red forever, which is not,
+    /// and a baseline probe cannot tell those apart.</para>
+    /// <para>Deliberately CONSERVATIVE: fires only when the counted collection is demonstrably the one
+    /// feeding the filter, so an unrelated array and an unrelated threshold in the same script cannot
+    /// collide into a false positive. A validator that cries wolf gets ignored.</para>
+    /// </summary>
+    public const string UnsatisfiableGuardrailFloor = "GR2055";
+
+    // CURRENT next-free code: GR2056. GR2055 (UnsatisfiableGuardrailFloor) is the last taken code
+    // above — GR2051–GR2054 remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
     // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
     // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
-    // GR2055 and update this line rather than colliding with that block (issue #320).
+    // GR2056 and update this line rather than colliding with that block (issue #320).
 }
