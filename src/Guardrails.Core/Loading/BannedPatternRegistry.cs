@@ -34,10 +34,19 @@ public sealed class BannedPattern
     private Regex? _compiled;
 
     /// <summary>
-    /// The compiled matcher for <see cref="BadPattern"/> — culture-invariant with a bounded match
-    /// timeout, so a pathological registry regex cannot hang the scan. Compiled once and cached; a
-    /// <see cref="BadPattern"/> that is not a valid regex throws <see cref="RegexParseException"/>
-    /// (the meta-test gates this before a bad entry can ship).
+    /// The matcher for <see cref="BadPattern"/> — culture-invariant with a bounded match timeout, so a
+    /// pathological registry regex cannot hang the scan. Cached after first use; a <see cref="BadPattern"/>
+    /// that is not a valid regex throws <see cref="RegexParseException"/> here (the meta-test gates this
+    /// before a bad entry can ship).
+    /// <para><b>The timeout converts a hang into a <see cref="RegexMatchTimeoutException"/>, which the
+    /// CALLER must handle — this property does not make the scan safe on its own</b> (issue #487).
+    /// <c>PlanValidator</c> catches it, skips that one (guardrail, entry) pair and emits
+    /// <see cref="DiagnosticCodes.BannedPatternScanTimedOut"/> (GR2058), because letting it propagate would
+    /// crash a read-only <c>validate</c> run and take down every unrelated check with it. Any new consumer
+    /// owes the same courtesy.</para>
+    /// <para>Deliberately NOT <see cref="RegexOptions.Compiled"/>: with a handful of entries scanned over a
+    /// few hundred short scripts, per-pattern JIT compilation costs more than the interpreted scans save.
+    /// An explicit decision, not an omission.</para>
     /// </summary>
     public Regex Matcher => _compiled ??= new Regex(
         BadPattern, RegexOptions.CultureInvariant, TimeSpan.FromSeconds(2));

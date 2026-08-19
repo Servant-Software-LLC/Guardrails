@@ -641,7 +641,7 @@ public static class DiagnosticCodes
     /// floor was correct for an earlier WHOLE-CLASS filter (nine + five); a later scoping fix narrowed
     /// the filter and left the floor behind. Each edit was individually sound, and the two numbers sit
     /// ~30 lines apart — which is exactly why a human review pass missed it twice.</para>
-    /// <para>Sibling of GR2037's registry and of #470 (a clause requiring a token it also forbids):
+    /// <para>Sibling of GR2037's registry and of GR2057 (a clause requiring a token it also forbids, #470):
     /// the family is "unsatisfiable by construction". It is INVISIBLE to execution probes (#479) —
     /// such a guardrail is red before the task runs, which is correct, and red forever, which is not,
     /// and a baseline probe cannot tell those apart.</para>
@@ -663,9 +663,52 @@ public static class DiagnosticCodes
     /// </summary>
     public const string GuardrailScriptDoesNotParse = "GR2056";
 
-    // CURRENT next-free code: GR2057. GR2056 (GuardrailScriptDoesNotParse) is the last taken code
+    /// <summary>
+    /// <b>GR2057 — a guardrail that REQUIRES a token it also FORBIDS (issue #470 ask 1).</b> One script
+    /// guardrail carries a required-present clause and a forbidden-present clause over the SAME subject
+    /// text, and the literal the first demands trips the pattern the second bans. No file satisfies both:
+    /// removing the text fails the required clause, keeping it fails the forbidden one. Every attempt
+    /// fails identically, the retry feedback is coherent, actionable and WRONG, and the task dead-ends at
+    /// <c>needs-human</c> having never been achievable.
+    /// <para>Measured instance: a required <c>[Trait("Category", "TierResolution")]</c> attribute whose own
+    /// STRING LITERAL carries the token a clause 40 lines later forbids (<c>TierResolver|TierResolution</c>,
+    /// a correctly-motivated #176 negative assertion). Each clause is individually correct, which is why
+    /// reading the script top-to-bottom does not find it — it was found by EXECUTING the guardrail. Blast
+    /// radius: the guardrail's task authored a wave's conformance suite that three downstream tasks
+    /// depended on.</para>
+    /// <para>Sibling of GR2055 (an arithmetic dead-end) and GR2056 (a script that does not parse): the
+    /// family is "unsatisfiable by construction", the mirror image of the WEAKNESS <c>/guardrails-review</c>
+    /// hunts. Like both siblings it is INVISIBLE to the #479 execution probes — such a guardrail is red
+    /// before the task runs, which is correct, and red forever, which is not, and a baseline probe cannot
+    /// tell those apart. Not to be confused with GR2026, which is the opposite polarity (the guardrail
+    /// REQUIRES a token the PROMPT never mentions).</para>
+    /// <para>Deliberately CONSERVATIVE: same-file, same-subject-variable clause pairs only, and only where
+    /// the required pattern de-regexes to an exact literal. The cross-file variant (one guardrail requires
+    /// what a sibling forbids) is strictly harder and out of scope by #470's own direction.</para>
+    /// </summary>
+    public const string GuardrailRequiresForbiddenToken = "GR2057";
+
+    /// <summary>
+    /// <b>GR2058 — the GR2037 banned-pattern scan could not reach a verdict for one (guardrail, entry) pair
+    /// (issue #487).</b> A registry entry's matcher hit its bounded match timeout against one guardrail's
+    /// body. The pair is SKIPPED and the rest of the scan continues.
+    /// <para>WARNING, never an error, and never a crash. <c>validate</c> is read-only, fast, and run in CI;
+    /// a timeout says the scan could not reach a verdict, not that the plan is invalid — the same class of
+    /// event as GR2056's absent interpreter, which reports nothing because punishing the plan author for
+    /// the operator's environment is wrong. It is louder than GR2056's silence for one reason: unlike a
+    /// missing interpreter, a timeout is evidence of something genuinely odd in the registry entry or the
+    /// script, it should never occur, and silence would leave a pathological entry undiagnosable.</para>
+    /// <para>Distinct from GR2037 rather than a second severity on it, so that a consumer keying on GR2037
+    /// still reads exactly one thing: a banned construction WAS FOUND. Not reachable by any realistic
+    /// guardrail: the registry's costliest entry is strictly linear and would need roughly 7,000 candidate
+    /// sites in a single script to reach the ceiling. It is a robustness fix, and must never be cited to
+    /// justify weakening a registry entry.</para>
+    /// </summary>
+    public const string BannedPatternScanTimedOut = "GR2058";
+
+    // CURRENT next-free code: GR2059. GR2058 (BannedPatternScanTimedOut) is the last taken code
     // above — GR2051–GR2054 remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
     // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
     // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
-    // GR2057 and update this line rather than colliding with that block (issue #320).
+    // GR2059 and update this line rather than colliding with that block (issue #320).
 }

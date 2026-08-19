@@ -1132,8 +1132,13 @@ unsatisfiable, which is the same BLOCKER wearing the other polarity. Do not read
 #177: GR2026 fires when a guardrail
 REQUIRES a token the prompt never mentions; this fires when it FORBIDS a token the prompt DOES use —
 opposite polarities, each silent in the other's healthy case. (Catalogue → "A forbidden token must not
-collide with what the task REQUIRES".) A mechanical `validate` lint for the same-file collision is
-tracked as #470 ask 1; until it ships, this probe is the only gate.
+collide with what the task REQUIRES".) A mechanical `validate` lint now backstops the narrowest slice of
+this — **GR2057** fires when one subject variable carries both a required-present literal and a
+forbidden-present pattern that the literal trips. **Still run this probe**: GR2057 is deliberately silent
+wherever it cannot PROVE the collision, and every one of those gaps is yours — clauses over DIFFERENT
+subjects (the two-variable `$code`/`$scan` fix, which it must not flag), compound `-and`/`-or` conditions,
+interpolated or composed patterns, anchored forbidden patterns, `.sh` guardrails, and both the cross-file
+and prompt↔guardrail axes. A green `validate` means the provable case is clear, not that the pair agrees.
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).

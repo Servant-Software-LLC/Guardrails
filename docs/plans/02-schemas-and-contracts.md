@@ -1225,7 +1225,7 @@ a colliding container base is bumped to a distinct one (the same deterministic `
 plain sanitized-id collisions). A plan with no such collision (the golden example) is unaffected — its ids stay
 byte-identical and `source-sha256` is unmoved.
 
-### 4.6 Banned guardrail-script patterns (validated, GR2037 — error)
+### 4.6 Banned guardrail-script patterns (validated, GR2037 — error; GR2058 — warning)
 
 Correct SKILL.md/catalogue text does **not** guarantee an LLM applies it every generation: a fresh
 `/plan-breakdown` (reading correct, unedited doctrine) regressed the #187 conflict-marker fix to its old
@@ -1257,6 +1257,22 @@ its body, **strips whole-line comments first** (reusing `StripCommentLines` — 
 file path. Prompt guardrails (prose, not a regex construction) and script *actions* are **out of scope** in v1.
 The registry is injected into `PlanValidator` through a default-loading ctor mirroring the `IExecutableProbe`
 injection, so the scan is unit-testable with a synthetic registry.
+
+**A matcher timeout DEGRADES — GR2058 WARNING, never a crash (issue #487).** The bounded match timeout stops a
+pathological entry hanging the scan, but a timeout is an *exception*, and left uncaught it propagated out of
+`Validate` and took down every unrelated check with it — surfacing as a stack trace instead of a diagnostic, in
+a command that is read-only, fast, and run in CI. The scan now catches it, **skips that one (guardrail, entry)
+pair**, and continues. Same class of event as §4.7's absent interpreter: it says the scan could not reach a
+verdict, not that the plan is invalid, so the guardrail is neither cleared nor condemned for that entry. It is
+LOUDER than §4.7's silence for one reason — unlike a missing interpreter this is not the operator's environment,
+it should never occur, and staying silent would leave a pathological entry undiagnosable. It carries its own
+code rather than a second severity on GR2037, so a consumer keying on GR2037 still reads exactly one thing: a
+banned construction **was found**. Measured headroom, so nobody over-reacts: `#462` — the costliest entry — is
+**strictly linear**, ~0.28 ms per `-v <sep>q` candidate, so a 453 KB script with one candidate matches in 0.34 ms
+and the real committed victim guardrail (3.2 KB) in 0.014 ms; reaching the 2 s ceiling needs roughly **7,000
+candidates in one script**. This is a robustness fix and must never be cited to justify weakening an entry.
+`Matcher` is also deliberately **not** `RegexOptions.Compiled` — with a handful of entries over a few hundred
+short scripts, per-pattern JIT costs more than the interpreted scans save. An explicit decision, not an omission.
 
 **Quality bar — the meta-test (a malformed entry cannot ship).** Every entry carries its own inline
 `mustMatch`/`mustNotMatch` fixtures; a meta-test compiles every `badPattern` (proving it is a valid regex),
@@ -1294,11 +1310,11 @@ pass. Growing coverage is a JSON entry + two fixtures, never new harness C#.
 ---
 
 
-### 4.7 Guardrails that CANNOT PASS for any input (validated, GR2055/GR2056 — errors)
+### 4.7 Guardrails that CANNOT PASS for any input (validated, GR2055/GR2056/GR2057 — errors)
 
-Two deterministic checks for a defect class the adversarial review pass is structurally poor at: a guardrail
-that is not too WEAK but **unpassable**. Both were found by dogfooding, each after it had already dead-ended a
-live task whose implementation was complete.
+Three deterministic checks for a defect class the adversarial review pass is structurally poor at: a guardrail
+that is not too WEAK but **unpassable**. All three were found by dogfooding, each after it had already
+dead-ended — or was one run away from dead-ending — a live task whose implementation was complete.
 
 **Why static, and why the review pass misses them.** `/guardrails-review` asks *"what wrong implementation
 passes this?"* — it hunts weakness. And the execution probes it gained in #479 cannot see these either: such a
@@ -1309,6 +1325,7 @@ distinguish those two. They are decidable from the script's own text, so they be
 |---|---|---|
 | **GR2055** | a zero-match floor exceeding its own filter's cardinality | a variable holds a literal array of N quoted names, that same variable is referenced on a line mentioning `filter`, the body contains `-lt M`, and `M > N` |
 | **GR2056** | a script guardrail that does not PARSE | the language's own interpreter reports a syntax error for the file |
+| **GR2057** | a guardrail that REQUIRES a token it also FORBIDS | one script's required-present clause (`-notmatch '…' →` fail) de-regexes to an exact literal that MATCHES a forbid-present clause (`-match '…' →` fail) over the SAME subject variable |
 
 **GR2055 — the two numbers are ONE invariant.** Measured instance: a `--filter` naming SIX clauses guarded by
 `if ($ran -lt 14)`. The floor had been correct for an earlier WHOLE-CLASS filter (nine + five); a later scoping
@@ -1329,6 +1346,41 @@ punish the operator for something the plan author cannot control — and a machi
 cannot run it either. The probe is injected (`IScriptSyntaxProbe`, mirroring `IExecutableProbe`) so the check
 is unit-testable without an interpreter present, and so a caller that must not spawn anything can pass
 `NullScriptSyntaxProbe`.
+
+**GR2057 — the two clauses are ONE prohibition, and they cancel.** Measured instance: line 25 required a
+`[Trait("Category", "TierResolution")]` attribute; line 66 forbade `TierResolver|TierResolution` — a correctly
+motivated #176 negative assertion. **The required attribute's own string literal carries the banned token**, so
+both clauses fire on the same character sequence: removing the trait fails clause 1, keeping it fails clause 2.
+Each clause is individually correct and they sat 40 lines apart, which is why reading the script top-to-bottom
+did not find it — it was found by EXECUTING the guardrail. The guardrail's task authored a wave's conformance
+suite that tasks 07 → 08 → 09 all depended on, so one unsatisfiable regex would have dead-ended the whole chain
+*after* paying task 06's full retry budget. **Why neither existing pass catches it, and this is the sharpest
+case of the section's premise:** `/guardrails-review` hunts weakness, and each clause here is *strong* and
+*right*; #479's execution probes see a guardrail that is red before the task runs — which is CORRECT for a
+test-authoring task — and red forever, which is not, and a baseline probe has no way to separate those two.
+Only the text decides it. **Conservatism is the design, not a nicety**, and it is spent in four places:
+polarity is read from what the branch DOES (a clause counts only when its block appends to a `$failures`
+accumulator, exits non-zero, throws, or `Write-Error`s — otherwise `if ($c -match 'x') { $ok = $true }` reads as
+a prohibition when it is a requirement wearing the other operator); the condition must be a SINGLE clause with a
+single-quoted literal operand (a compound condition is a verdict on the conjunction, and a composed or
+double-quoted operand is not statically known); the required pattern must **de-regex to one exact literal** —
+escaped punctuation, `\s*`/`\s+`, `\b`, leading inline options and the zero-width `^`/`$` anchors are resolved,
+and any alternation, group, class, quantifier or `\w`-class means no witness and silence, with the witness then
+re-tested against its own pattern so a mis-extraction drops the clause; and **both clauses must test the SAME
+subject variable**. That last one is load-bearing, because the prescribed FIX is the catalogue's **two-variable
+rule** — the required clause reads `$code` (comments stripped, so the trait's literal survives) while the
+forbidden clause reads `$scan` (comments **and** string literals stripped) and is anchored on a **USE** rather
+than a mention. Those are different texts, nothing proves them in conflict, and a lint that fired on the remedy
+its own message recommends would be worse than no lint. A forbidden pattern carrying an input/line anchor is
+skipped too (the witness is matched standalone, but in a real file the required text is embedded); lookarounds
+are deliberately honoured, since they are exactly what the anchor-on-a-USE fix is built from. **Same-file pairs
+only** — the cross-file variant (one guardrail requires what a sibling forbids) is strictly harder and by #470's
+own direction must not block this — and PowerShell only, since the `.sh` equivalent (`grep -q` / `! grep -q`) is
+a different pattern language whose collision test would not be sound under .NET regex semantics; portable
+guardrails ship as `.ps1`+`.sh` pairs, so the pair is still caught. Measured false-positive rate at the time of
+landing: **zero across all 547 committed `.ps1`/`.sh` files** (472 of them real guardrail/preflight scripts under
+`docs/plans/` and `examples/`), with the byte-exact historical artifact recovered from git firing exactly once
+and naming both colliding lines.
 
 **What deliberately stayed OUT of `validate`.** The sibling failures — a guardrail already green before its
 task runs, one that THROWS at runtime (non-fatal under `$ErrorActionPreference = 'Continue'`, silently skipping

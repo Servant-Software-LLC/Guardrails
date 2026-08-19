@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Guardrails.Core.Execution;
@@ -68,6 +69,7 @@ public sealed class PlanValidator
         ValidateDuplicateCheckNames(plan, diagnostics);
         ValidateBannedGuardrailPatterns(plan, diagnostics);
         ValidateUnsatisfiableGuardrailFloor(plan, diagnostics);
+        ValidateGuardrailRequiresForbiddenToken(plan, diagnostics);
         ValidateGuardrailScriptsParse(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
@@ -1236,6 +1238,16 @@ public sealed class PlanValidator
     private static string StripCommentLines(string body) =>
         string.Join('\n', body.Split('\n').Where(line => !IsCommentLine(line)));
 
+    /// <summary>
+    /// <see cref="StripCommentLines"/>'s line-preserving twin: a comment line is BLANKED rather than
+    /// removed, so an offset into the result still maps to the line number the reader will find in the
+    /// file. Same #97 exclusion (the shared <see cref="IsCommentLine"/>), so a header comment that merely
+    /// DESCRIBES a construction still cannot be what trips a check. Used by GR2057, which cites two clause
+    /// LINE NUMBERS — a citation off by however many comment lines sit above it is worse than none.
+    /// </summary>
+    private static string BlankCommentLines(string body) =>
+        string.Join('\n', body.Split('\n').Select(line => IsCommentLine(line) ? string.Empty : line));
+
     private static bool IsCommentLine(string line)
     {
         string trimmed = line.TrimStart();
@@ -1647,7 +1659,29 @@ public sealed class PlanValidator
 
             foreach (BannedPattern pattern in _bannedPatterns.Patterns)
             {
-                if (pattern.Matcher.IsMatch(stripped))
+                bool hit;
+                try
+                {
+                    hit = pattern.Matcher.IsMatch(stripped);
+                }
+                catch (RegexMatchTimeoutException)
+                {
+                    // Issue #487: the matcher's bounded timeout must DEGRADE, not crash. Left unhandled it
+                    // propagates out of Validate and takes down every unrelated check with it, surfacing as
+                    // a stack trace rather than a diagnostic. Skip the pair and say so.
+                    diagnostics.Add(Warning(DiagnosticCodes.BannedPatternScanTimedOut, guardrail.Path,
+                        $"The banned-guardrail-pattern scan timed out matching entry {pattern.Id} against " +
+                        $"guardrail '{guardrail.Name}'; that ONE (guardrail, entry) pair was skipped and the " +
+                        "rest of validation is unaffected. This is not a finding about the plan — it means the " +
+                        "scan could not reach a verdict, so the guardrail is neither cleared nor condemned for " +
+                        "this entry. It should never happen: the registry's costliest entry is strictly linear " +
+                        "and needs thousands of candidate sites in one script to reach the ceiling. Treat it as " +
+                        "evidence of a pathological registry entry or an extraordinary script — not as a reason " +
+                        "to weaken the entry (GR2058, SSOT §4.6, issue #487)."));
+                    continue;
+                }
+
+                if (hit)
                 {
                     diagnostics.Add(Error(DiagnosticCodes.BannedGuardrailPattern, guardrail.Path,
                         $"Guardrail '{guardrail.Name}' contains a banned regex construction ({pattern.Id}): " +
@@ -1797,6 +1831,376 @@ public sealed class PlanValidator
 
         return false;
     }
+
+    /// <summary>
+    /// A single-clause PowerShell presence test whose ENTIRE condition is ONE <c>-match</c>/<c>-notmatch</c>
+    /// of a variable against a SINGLE-QUOTED literal, opening a block:
+    /// <c>if ($content -notmatch '…') {</c>. Everything else is deliberately unmatched, because everything
+    /// else makes the clause's polarity undecidable from the text:
+    /// <list type="bullet">
+    /// <item>a COMPOUND condition (<c>-and</c>/<c>-or</c>/<c>-not</c>/nested parens) — the block is then a
+    /// verdict on the conjunction, not on this pattern, so taking the branch does not prove the pattern is
+    /// required (the <c>\s*\)</c> immediately after the closing quote enforces this);</item>
+    /// <item>a DOUBLE-QUOTED or COMPOSED operand (<c>("(?m)\b" + [regex]::Escape($m) + "\s*\(")</c>) — the
+    /// pattern is not statically known, since PowerShell interpolates <c>$</c> inside <c>"…"</c>;</item>
+    /// <item>a pattern spanning a newline — no guardrail in the field writes one, and admitting it lets a
+    /// stray quote swallow half a script.</item>
+    /// </list>
+    /// <c>-cmatch</c>/<c>-imatch</c> and their <c>not</c> forms are the same operator with an explicit
+    /// case rule and are admitted.
+    /// </summary>
+    private static readonly Regex PresenceClause = new(
+        @"\bif\s*\(\s*\$(?<subject>\w+)\s+-[ci]?(?<neg>not)?match\s+'(?<pat>(?:[^'\r\n]|'')*)'\s*\)\s*\{",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Evidence that a clause's branch FAILS the guardrail rather than recording something: an append to a
+    /// <c>$failures</c>-shaped accumulator, a non-zero <c>exit</c>, a <c>throw</c>, or a <c>Write-Error</c>.
+    /// Both clauses of the measured #470 instance append to <c>$failures</c>; the catalogue's prescribed
+    /// form writes a line and <c>exit 1</c>.
+    /// </summary>
+    private static readonly Regex ClauseFailsTheGuardrail = new(
+        @"\$\w*fail\w*\s*\+=|\bexit\s+[1-9]|\bthrow\b|\bWrite-Error\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    /// <summary>Regex metacharacters that make a pattern non-literal, so no exact witness can be derived.</summary>
+    private const string RegexMetacharacters = "()[]{}|*+?.^$";
+
+    /// <summary>
+    /// Shortest witness worth reconciling. Below this a "collision" is noise — a two-character required
+    /// literal tripping some forbidden pattern says nothing about the guardrail being unsatisfiable.
+    /// </summary>
+    private const int MinimumWitnessLength = 3;
+
+    /// <summary>Bounded match timeout for the ad-hoc regexes GR2057 compiles out of a plan's own text.</summary>
+    private static readonly TimeSpan ClauseMatchTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// GR2057 (issue #470 ask 1) — a guardrail that REQUIRES a token it also FORBIDS. One script carries a
+    /// required-present clause and a forbidden-present clause over the SAME subject text, and the literal
+    /// the first demands trips the pattern the second bans: removing the text fails clause 1, keeping it
+    /// fails clause 2, so NO file satisfies both. Every attempt fails identically, the retry feedback is
+    /// coherent, actionable and WRONG, and the task dead-ends at <c>needs-human</c> having never been
+    /// achievable. The measured instance was a required <c>[Trait("Category", "TierResolution")]</c> whose
+    /// own STRING LITERAL carried the token a clause 40 lines later forbade — each clause individually
+    /// correct, which is why it was found by EXECUTING the guardrail and not by reading it.
+    ///
+    /// <para><b>Polarity — decided by what the branch DOES, not by the operator alone.</b> A clause counts
+    /// only when its block carries a failure signal (<see cref="ClauseFailsTheGuardrail"/>). Given a
+    /// failure branch, <c>-notmatch</c> means required-present and <c>-match</c> means forbidden-present.
+    /// Without that requirement <c>if ($c -match 'x') { $ok = $true }</c> reads as a prohibition when it is
+    /// in fact a REQUIREMENT wearing <c>-match</c>, and the polarity inverts — the single richest source of
+    /// false positives available here. What this deliberately CANNOT decide, and therefore stays silent on:
+    /// a clause whose block neither fails nor is brace-balanced in plain text (a <c>{</c> inside a string
+    /// literal defeats the counter — silence, not a guess), an <c>else</c> branch, a <c>switch</c>, a
+    /// negated wrapper, and any accumulator whose eventual effect is decided elsewhere.</para>
+    ///
+    /// <para><b>The two clauses must test the SAME subject variable.</b> This is the load-bearing
+    /// conservatism, not a shortcut. The catalogue's prescribed fix for this very defect is the TWO-VARIABLE
+    /// rule: the required clause reads <c>$code</c> (comments stripped) while the forbidden clause reads
+    /// <c>$scan</c> (comments AND string literals stripped), so the trait's own literal survives for clause
+    /// 1 and is gone for clause 2. Those are different TEXTS, and a collision between them is not proven by
+    /// anything in the script. Requiring one subject makes GR2057 silent BY CONSTRUCTION on the fix it is
+    /// asking for — a lint that fires on the remedy it recommends is worse than no lint.</para>
+    ///
+    /// <para><b>Literal extraction (de-regexing) handles a bounded subset and bails otherwise.</b>
+    /// Admitted: escaped punctuation (<c>\[</c> → <c>[</c>), <c>\s*</c>/<c>\s?</c> → nothing,
+    /// <c>\s</c>/<c>\s+</c> → one space, <c>\b</c> → nothing (zero-width), leading inline options
+    /// (<c>(?i)</c>, <c>(?m)</c>), and a leading <c>^</c> / trailing <c>$</c> (zero-width anchors — the
+    /// required text must still literally appear somewhere in a satisfying file, which is all the collision
+    /// test needs). ANY other metacharacter — alternation, a group, a class, a quantifier, <c>.</c>,
+    /// <c>\w</c>, <c>\d</c>, a backreference, a lookaround — means the required pattern does not pin one
+    /// exact string, so no witness is produced and the clause is dropped. The witness is then re-tested
+    /// against its OWN pattern: if the de-regexer produced something the original regex would not accept,
+    /// the extraction was wrong and the clause is dropped. So the measured
+    /// <c>\[Trait\s*\(\s*"Category"\s*,\s*"TierResolution"\s*\)\s*\]</c> yields the testable
+    /// <c>[Trait("Category","TierResolution")]</c>, while its sibling <c>\[(Fact|Theory)\]</c> yields
+    /// nothing at all.</para>
+    ///
+    /// <para><b>Forbidden patterns carrying an INPUT anchor are skipped</b> (<c>^</c>, <c>$</c>,
+    /// <c>\A</c>, <c>\Z</c>, <c>\z</c>, <c>\G</c>). The witness is matched standalone, but in a real file
+    /// the required text is EMBEDDED, so an anchor that looks satisfied against the bare witness need not
+    /// be in the file the author would write. Lookarounds are deliberately NOT skipped: they are exactly
+    /// what the prescribed anchor-on-a-USE fix is built from, and they see the witness's real neighbouring
+    /// characters — which is why <c>TierResolver\s*\.|(?&lt;![\w.])TierResolution(?![\w"])</c> stays silent
+    /// against the same witness that <c>TierResolver|TierResolution</c> trips.</para>
+    ///
+    /// <para><b>Out of scope by design.</b> Same-file pairs only — the cross-file variant (one guardrail
+    /// requires what a sibling forbids) is strictly harder and #470 says it must not block this. And
+    /// <c>.sh</c> guardrails: the equivalent shape is <c>grep -q</c> / <c>! grep -q</c> in POSIX ERE/BRE,
+    /// a different pattern language whose collision test would not be sound under .NET regex semantics.
+    /// Portable guardrails ship as <c>.ps1</c>+<c>.sh</c> pairs, so the defect is still caught for the
+    /// pair. Comment lines are blanked first (the #97 lesson), so a header comment describing the
+    /// collision cannot be what reports it.</para>
+    /// </summary>
+    private static void ValidateGuardrailRequiresForbiddenToken(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        foreach (GuardrailDefinition guardrail in FourFolderScriptGuardrails(plan))
+        {
+            string? body = TryReadAllText(guardrail.Path);
+            if (body is null)
+            {
+                continue;
+            }
+
+            string scanned = BlankCommentLines(body);
+
+            List<(string Subject, string Witness, int Line)> required = [];
+            List<(string Subject, string Pattern, int Line)> forbidden = [];
+
+            foreach (Match clause in PresenceClause.Matches(scanned))
+            {
+                // The regex ends ON the block's opening brace; the branch must FAIL for polarity to mean anything.
+                if (!BranchFailsTheGuardrail(scanned, clause.Index + clause.Length - 1))
+                {
+                    continue;
+                }
+
+                string subject = clause.Groups["subject"].Value;
+                string pattern = clause.Groups["pat"].Value.Replace("''", "'", StringComparison.Ordinal);
+                int line = LineNumberAt(scanned, clause.Index);
+
+                if (!clause.Groups["neg"].Success)
+                {
+                    forbidden.Add((subject, pattern, line));
+                    continue;
+                }
+
+                string? witness = TryLiteralWitness(pattern);
+                if (witness is null || witness.Trim().Length < MinimumWitnessLength || !MatchesWitness(pattern, witness))
+                {
+                    continue;
+                }
+
+                required.Add((subject, witness, line));
+            }
+
+            foreach ((string subject, string witness, int requiredLine) in required)
+            {
+                foreach ((string bannedSubject, string bannedPattern, int forbiddenLine) in forbidden)
+                {
+                    if (!string.Equals(subject, bannedSubject, StringComparison.OrdinalIgnoreCase)
+                        || HasInputAnchor(bannedPattern)
+                        || !MatchesWitness(bannedPattern, witness))
+                    {
+                        continue;
+                    }
+
+                    diagnostics.Add(Error(DiagnosticCodes.GuardrailRequiresForbiddenToken, guardrail.Path,
+                        $"Guardrail '{guardrail.Name}' can never pass: line {requiredLine} REQUIRES " +
+                        $"'{ClauseExcerpt(witness)}' (-notmatch, so its absence fails) and line {forbiddenLine} " +
+                        $"FORBIDS '{ClauseExcerpt(bannedPattern)}' (-match, so its presence fails), both over " +
+                        $"${subject}. The required text MATCHES the forbidden pattern, so no file can satisfy " +
+                        $"both — removing it fails the first clause, keeping it fails the second. Every attempt " +
+                        $"fails identically with coherent, actionable and WRONG feedback, and the task dead-ends " +
+                        $"at needs-human having never been achievable. Fix per the catalogue's two-variable rule " +
+                        $"(#470): run the FORBIDDEN scan over STRIPPED source — comments AND string literals, " +
+                        $"since #97/#98 strips only comments — and anchor the ban on a USE (a dotted call, a type " +
+                        $"position) rather than a bare mention (#76), while the REQUIRED clause keeps reading the " +
+                        $"comment-stripped text. Stripping literals for BOTH clauses makes the required one " +
+                        $"unsatisfiable, which is the same dead-end wearing the other polarity."));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Does the block opened at <paramref name="openBrace"/> FAIL the guardrail? Brace-matched in plain
+    /// text, so a <c>{</c> inside a string literal can leave the block unbalanced — in which case the
+    /// answer is NO. Silence beats a guess: a mis-read block that ran to end-of-file would pick up some
+    /// other clause's failure signal and invert this clause's polarity.
+    /// </summary>
+    private static bool BranchFailsTheGuardrail(string text, int openBrace)
+    {
+        int depth = 0;
+        for (int i = openBrace; i < text.Length; i++)
+        {
+            if (text[i] == '{')
+            {
+                depth++;
+                continue;
+            }
+
+            if (text[i] != '}')
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth == 0)
+            {
+                return ClauseFailsTheGuardrail.IsMatch(text[openBrace..(i + 1)]);
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The exact text every file satisfying <paramref name="pattern"/> must contain, or <c>null</c> when the
+    /// pattern does not pin one — see the bounded subset documented on
+    /// <see cref="ValidateGuardrailRequiresForbiddenToken"/>.
+    /// </summary>
+    private static string? TryLiteralWitness(string pattern)
+    {
+        int i = 0;
+
+        // Leading inline option groups — (?i), (?m), (?is) — change matching, never the text matched.
+        while (i + 2 < pattern.Length && pattern[i] == '(' && pattern[i + 1] == '?')
+        {
+            int close = i + 2;
+            while (close < pattern.Length && "imsxn-".Contains(pattern[close], StringComparison.Ordinal))
+            {
+                close++;
+            }
+
+            if (close == i + 2 || close >= pattern.Length || pattern[close] != ')')
+            {
+                break;
+            }
+
+            i = close + 1;
+        }
+
+        if (i < pattern.Length && pattern[i] == '^')
+        {
+            i++;                                                    // zero-width start anchor
+        }
+
+        int end = pattern.Length;
+        if (end > i && pattern[end - 1] == '$' && (end - 2 < i || pattern[end - 2] != '\\'))
+        {
+            end--;                                                  // zero-width end anchor
+        }
+
+        StringBuilder witness = new();
+        while (i < end)
+        {
+            char c = pattern[i];
+            if (c != '\\')
+            {
+                if (RegexMetacharacters.Contains(c, StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                witness.Append(c);
+                i++;
+                continue;
+            }
+
+            if (i + 1 >= end)
+            {
+                return null;
+            }
+
+            char escaped = pattern[i + 1];
+            i += 2;
+
+            if (escaped == 'b')
+            {
+                continue;                                           // zero-width word boundary
+            }
+
+            if (escaped == 's')
+            {
+                char quantifier = i < end ? pattern[i] : '\0';
+                if (quantifier is '*' or '?')
+                {
+                    i++;                                            // zero whitespace is a valid witness
+                    continue;
+                }
+
+                if (quantifier == '+')
+                {
+                    i++;
+                }
+
+                witness.Append(' ');
+                continue;
+            }
+
+            if (char.IsAsciiLetterOrDigit(escaped))
+            {
+                return null;                                        // \w \d \S \n \t \1 …
+            }
+
+            witness.Append(escaped);                                // escaped punctuation is itself
+        }
+
+        return witness.ToString();
+    }
+
+    /// <summary>
+    /// Does <paramref name="pattern"/>, compiled from the PLAN's own text, match <paramref name="witness"/>?
+    /// A pattern that is not a valid regex, or that times out, answers NO — <c>validate</c> is read-only and
+    /// must degrade rather than throw over a plan author's typo (GR2056's precedent; issue #487).
+    /// </summary>
+    private static bool MatchesWitness(string pattern, string witness)
+    {
+        try
+        {
+            return new Regex(pattern, RegexOptions.CultureInvariant, ClauseMatchTimeout).IsMatch(witness);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Does the pattern anchor to the input/line boundary? Such a pattern cannot be soundly tested against a
+    /// standalone witness, because in a real file the required text is embedded in surrounding context.
+    /// A negated character class <c>[^…]</c> is caught by the same sweep and skipped too — over-caution in
+    /// the safe direction.
+    /// </summary>
+    private static bool HasInputAnchor(string pattern)
+    {
+        for (int i = 0; i < pattern.Length; i++)
+        {
+            if (pattern[i] != '\\')
+            {
+                if (pattern[i] is '^' or '$')
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (i + 1 < pattern.Length && "AZzG".Contains(pattern[i + 1], StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            i++;
+        }
+
+        return false;
+    }
+
+    /// <summary>1-based line number of <paramref name="index"/> within <paramref name="text"/>.</summary>
+    private static int LineNumberAt(string text, int index)
+    {
+        int line = 1;
+        for (int i = 0; i < index && i < text.Length; i++)
+        {
+            if (text[i] == '\n')
+            {
+                line++;
+            }
+        }
+
+        return line;
+    }
+
+    /// <summary>Keep a quoted clause excerpt short enough to read inside a diagnostic sentence.</summary>
+    private static string ClauseExcerpt(string text) =>
+        text.Length <= 120 ? text : string.Concat(text.AsSpan(0, 117), "...");
 
     /// <summary>
     /// Every SCRIPT guardrail across the four folders at all three scopes — task <c>guardrails/</c>+
