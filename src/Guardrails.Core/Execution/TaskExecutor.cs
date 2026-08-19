@@ -731,7 +731,9 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return _journaler.Cancelled(task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(), action.CostUsd);
+            return _journaler.Cancelled(
+                task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
+                action.CostUsd, action.Usage);
         }
 
         // --- needsHuman short-circuit (SSOT §9): record + escalate IMMEDIATELY -----------
@@ -875,7 +877,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     ActionExitCode = action.ExitCode,
                     Summary = summary
                 },
-                costUsd: action.CostUsd);
+                costUsd: action.CostUsd, usage: action.Usage);
         }
 
         // --- staging move (SSOT §3.5, issue #130): after action success, BEFORE the write-scope
@@ -903,7 +905,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         ActionExitCode = action.ExitCode,
                         Summary = $"staging move failed: {moveResult.FailureReason}"
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
         }
 
@@ -974,7 +976,7 @@ public sealed class TaskExecutor : ITaskExecutor
                             _ => $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
                         }
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
         }
 
@@ -1021,7 +1023,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         ActionExitCode = action.ExitCode,
                         Summary = $"write-scope violation: {offendingList}"
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
 
                 // #264: attach the reproduction signals so a DETERMINISTIC script that re-writes the same
                 // out-of-scope paths every attempt short-circuits to needs-human instead of burning the
@@ -1085,7 +1087,9 @@ public sealed class TaskExecutor : ITaskExecutor
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return _journaler.Cancelled(task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(), action.CostUsd);
+            return _journaler.Cancelled(
+                task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
+                action.CostUsd, action.Usage);
         }
 
         if (guardrails.AnyFailed)
@@ -1165,7 +1169,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     Summary = $"guardrail(s) failed: {string.Join(", ", failed.Select(g => g.Name))}"
                 },
                 failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
-                costUsd: action.CostUsd);
+                costUsd: action.CostUsd, usage: action.Usage);
 
             // #174 / #182: attach the no-op + failure-fingerprint signals so the attempt loop can detect
             // a provable deadlock — an action that changed NOTHING this attempt and a guardrail failure

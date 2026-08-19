@@ -65,7 +65,7 @@ internal sealed class AttemptJournaler
                         Guardrails = guardrails.Results,
                         Summary = reason
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             mergeSequence = reserved;
@@ -79,6 +79,8 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.Succeeded,
             CostUsd = action.CostUsd,
+            // #475: the tokens axis travels with its cost sibling, wherever the cost goes.
+            Usage = action.Usage,
             LogDir = relativeLogDir,
             Provenance = provenance
         };
@@ -148,7 +150,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             JsonNode? node;
@@ -160,7 +162,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             if (node is not JsonObject fragObj)
@@ -171,7 +173,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             List<string> foreignKeys = fragObj
@@ -186,7 +188,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForForeignKey(task, attemptNumber, foreignKeys, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = reason },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             validatedFragmentPath = fragmentOutPath;
@@ -208,6 +210,9 @@ internal sealed class AttemptJournaler
             StartedAt = startedAt,
             ActionExitCode = action.ExitCode,
             CostUsd = action.CostUsd,
+            // #475: WITHOUT this line the value the record above sets reaches serial runs only — the
+            // settle path builds its own AttemptRecord from this object, never from the journaller.
+            Usage = action.Usage,
             LogDir = relativeLogDir,
             Provenance = provenance
         };
@@ -241,7 +246,8 @@ internal sealed class AttemptJournaler
         AttemptOutcome outcome,
         TaskResult result,
         IReadOnlyList<FailedGuardrail>? failedGuardrails = null,
-        decimal? costUsd = null)
+        decimal? costUsd = null,
+        AttemptUsage? usage = null)
     {
         string feedbackPath = Path.Combine(logDir, "feedback.md");
         AtomicFile.WriteAllText(feedbackPath, feedback);
@@ -255,6 +261,9 @@ internal sealed class AttemptJournaler
             Outcome = outcome,
             FailedGuardrails = failedGuardrails ?? [],
             CostUsd = costUsd,
+            // #475: a FAILED attempt burned tokens too, and the per-tier spend line aggregates every
+            // recorded attempt — not just the ones that converged.
+            Usage = usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running);
@@ -359,6 +368,7 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.NeedsHuman,
             CostUsd = action.CostUsd,
+            Usage = action.Usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -474,6 +484,7 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.PermissionDenied,
             CostUsd = action.CostUsd,
+            Usage = action.Usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -526,6 +537,7 @@ internal sealed class AttemptJournaler
             Outcome = primaryOutcome,
             FailedGuardrails = failedGuardrails,
             CostUsd = action.CostUsd,
+            Usage = action.Usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -605,7 +617,8 @@ internal sealed class AttemptJournaler
         DateTimeOffset startedAt,
         string relativeLogDir,
         ProcessResult actionResult,
-        decimal? costUsd)
+        decimal? costUsd,
+        AttemptUsage? usage = null)
     {
         var record = new AttemptRecord
         {
@@ -615,6 +628,7 @@ internal sealed class AttemptJournaler
             ActionExitCode = actionResult.ExitCode,
             Outcome = AttemptOutcome.Cancelled,
             CostUsd = costUsd,
+            Usage = usage,
             LogDir = relativeLogDir
         };
 
