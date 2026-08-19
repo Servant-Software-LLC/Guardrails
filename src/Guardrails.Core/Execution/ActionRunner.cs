@@ -196,7 +196,20 @@ internal sealed class ActionRunner
             TranscriptLogPath = Path.Combine(logDir, "transcript.md")
         };
 
-        PromptResult result = await registry.Resolve(task.Action.Runner ?? promptFile.Frontmatter.Runner)
+        // Dispatch on the RESOLVED ROUTE's block — its `command` and its `kind`-selected runner CLASS —
+        // the same object the --model above came from. Taking the model from the route and the runner
+        // INSTANCE from frontmatter-or-default ran the resolved block's model against a DIFFERENT
+        // block's CLI: invisible with a single Claude block, and wrong the moment two blocks differ in
+        // `command` or `kind`, which is exactly the multi-provider case §6 exists for.
+        //
+        // The frontmatter-or-default expression stays as the FALLBACK, and that is load-bearing rather
+        // than defensive style: on the LEGACY path the route's own name is `config.DefaultPromptRunner`,
+        // which can be NULL while PromptRunnerRegistry.ResolveDefault still falls back to the sole
+        // declared block. Reading the route's name unconditionally would regress Invariant 7 for those
+        // plans. `route?.Runner?.Name` — the resolved BLOCK's own name, non-null whenever a block
+        // actually resolved — is preferred over `route?.RunnerName` for that same reason.
+        PromptResult result = await registry.Resolve(
+                route?.Runner?.Name ?? task.Action.Runner ?? promptFile.Frontmatter.Runner)
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
 
         // Promote the staged fragment to its documented final location THE INSTANT the sub-agent

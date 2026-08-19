@@ -511,8 +511,11 @@ public sealed class TaskExecutor : ITaskExecutor
             env[extra.Key] = extra.Value;
         }
 
+        // No action attempt here, so there is no ACTOR route to thread and none is invented (#201/§6.5).
+        // The judge still RESOLVES — rule 1's frontmatter pin, §6.5.1's floor and the default pointer all
+        // apply with no actor rung to key off — it simply resolves against nothing on the rules that need one.
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
-            task, workspace, env, snapshotPath, logDir, cancellationToken).ConfigureAwait(false);
+            task, workspace, env, snapshotPath, logDir, route: null, cancellationToken).ConfigureAwait(false);
 
         if (cancellationToken.IsCancellationRequested)
         {
@@ -1036,8 +1039,11 @@ public sealed class TaskExecutor : ITaskExecutor
 
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
+        // The SAME `route` local the action path was handed above (#201 / DoR §6.5 rule 2): a prompt
+        // JUDGE is graded at the rung the actor actually ran at, and it reads that rung off the one
+        // resolution this attempt made rather than resolving a second time.
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
-            task, workspace, guardrailEnv, snapshotPath, logDir, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
+            task, workspace, guardrailEnv, snapshotPath, logDir, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
 
         if (cancellationToken.IsCancellationRequested)
         {
