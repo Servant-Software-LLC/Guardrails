@@ -111,6 +111,18 @@ public sealed record PendingAttempt
     /// <summary>The prompt attempt's total cost in USD (null for a script or an unreported prompt cost).</summary>
     public decimal? CostUsd { get; init; }
 
+    /// <summary>
+    /// The prompt attempt's token volume (#475, SSOT §7 <c>usage</c> / DoR §12.4); null for a script or a
+    /// runner that reported none.
+    /// <para><b>This member is what makes the tokens axis reach a real run, and its absence is what kept
+    /// the field dead.</b> The worktree settle (<c>Scheduler.RecordSucceededSettle</c>) builds its OWN
+    /// <see cref="Journal.AttemptRecord"/> from this object and never consults the journaller — so a value
+    /// the journaller sets but this record does not carry reaches SERIAL runs only, and worktree is the
+    /// DEFAULT mode. <see cref="CostUsd"/> survives that path for exactly one reason: it is declared here.
+    /// Its sibling now is too.</para>
+    /// </summary>
+    public Journal.AttemptUsage? Usage { get; init; }
+
     /// <summary>This attempt's log dir, relative to the plan dir (SSOT §7/§8).</summary>
     public required string LogDir { get; init; }
 

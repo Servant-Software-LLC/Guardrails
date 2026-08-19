@@ -40,6 +40,12 @@ internal sealed class ActionRunner
     /// normalizes both into the disposition the attempt loop needs: success, exit code (for the
     /// journal), timeout, cost, a needsHuman question (if any), and failure feedback/summary.
     /// </summary>
+    /// <param name="route">
+    /// The §6 attempt-launch resolution <see cref="TaskExecutor"/> ran immediately before this attempt
+    /// (issue #201) — the SAME object its per-attempt provenance was built from, so the model RECORDED
+    /// and the model INVOKED are one resolution read twice. Null for a script action, which resolves no
+    /// route at all.
+    /// </param>
     public async Task<ActionRun> RunAsync(
         TaskNode task,
         int attemptNumber,
@@ -52,6 +58,7 @@ internal sealed class ActionRunner
         double timeoutMultiplier,
         string? stagingDir,
         double maxTurnsMultiplier,
+        TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot = null)
     {
@@ -66,7 +73,7 @@ internal sealed class ActionRunner
 
         return await RunPromptActionAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken, worktreeRoot).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRoot).ConfigureAwait(false);
     }
 
     /// <summary>Apply the timeout-extension factor (issue #119); 1× is the identity.</summary>
@@ -92,6 +99,7 @@ internal sealed class ActionRunner
         double timeoutMultiplier,
         string? stagingDir,
         double maxTurnsMultiplier,
+        TierResolution? route,
         CancellationToken cancellationToken,
         string? worktreeRoot)
     {
@@ -136,11 +144,20 @@ internal sealed class ActionRunner
             runnerConfig.EffectiveSettings(isGuardrail: false),
             task.Action.MaxTurns ?? promptFile.Frontmatter.MaxTurns);
 
-        // task.json action.model override (issue #200): task override > the runner's own configured
-        // model (already resolved into `settings.Model` above) > whatever the CLI's own default is —
-        // ApplyModelOverride leaves `settings` untouched when there is no task-level override, so a
-        // null Model still falls through to ClaudePromptRunner's "omit --model entirely" behavior.
-        settings = PromptExecutionSupport.ApplyModelOverride(settings, task.Action.Model);
+        // The model comes from the RESOLVED ROUTE (issues #200/#201, DoR §6.1/§12.5) — the one
+        // resolution the attempt launcher ran, which is also what its provenance recorded. A task-level
+        // action.model pin is honoured INSIDE that resolution's own §6.1 precedence, so a pinned task
+        // still gets its model here; a legacy (no-rung) route applies no override at all and leaves the
+        // runner config's own model exactly as before tiering existed (Invariant 7). A resolved route
+        // that names no model leaves Model null, which is still ClaudePromptRunner's "omit --model
+        // entirely" behaviour.
+        //
+        // The route's `effort` is deliberately NOT spelled into argv: the Claude runner exposes no
+        // effort/thinking flag today and PromptRunnerSettings carries no field for one, so inventing a
+        // vendor knob here would emit a flag the CLI would reject. It is RECORDED in the attempt's
+        // provenance instead (TaskExecutor.BuildProvenance), and the day a runner class gains such a
+        // flag it reads this same resolved value.
+        settings = PromptExecutionSupport.ApplyModelOverride(settings, route);
 
         // Auto-escalate the turn budget after a prior max-turns exhaustion (issue #129 / #94): raise
         // the effective maxTurns by the multiplier so the retry has headroom instead of re-hitting the
@@ -179,7 +196,20 @@ internal sealed class ActionRunner
             TranscriptLogPath = Path.Combine(logDir, "transcript.md")
         };
 
-        PromptResult result = await registry.Resolve(task.Action.Runner ?? promptFile.Frontmatter.Runner)
+        // Dispatch on the RESOLVED ROUTE's block — its `command` and its `kind`-selected runner CLASS —
+        // the same object the --model above came from. Taking the model from the route and the runner
+        // INSTANCE from frontmatter-or-default ran the resolved block's model against a DIFFERENT
+        // block's CLI: invisible with a single Claude block, and wrong the moment two blocks differ in
+        // `command` or `kind`, which is exactly the multi-provider case §6 exists for.
+        //
+        // The frontmatter-or-default expression stays as the FALLBACK, and that is load-bearing rather
+        // than defensive style: on the LEGACY path the route's own name is `config.DefaultPromptRunner`,
+        // which can be NULL while PromptRunnerRegistry.ResolveDefault still falls back to the sole
+        // declared block. Reading the route's name unconditionally would regress Invariant 7 for those
+        // plans. `route?.Runner?.Name` — the resolved BLOCK's own name, non-null whenever a block
+        // actually resolved — is preferred over `route?.RunnerName` for that same reason.
+        PromptResult result = await registry.Resolve(
+                route?.Runner?.Name ?? task.Action.Runner ?? promptFile.Frontmatter.Runner)
             .RunAsync(invocation, cancellationToken).ConfigureAwait(false);
 
         // Promote the staged fragment to its documented final location THE INSTANT the sub-agent
@@ -333,6 +363,21 @@ internal sealed record ActionRun
     public required int? ExitCode { get; init; }
     public required bool TimedOut { get; init; }
     public decimal? CostUsd { get; init; }
+
+    /// <summary>
+    /// The prompt attempt's token volume (#475, SSOT §7 / DoR §12.4), or null for a script action and
+    /// for a runner that reported none. It rides HERE, beside <see cref="CostUsd"/>, because the two are
+    /// the same datum shape — <c>JournalTierSpend.Add</c> reads them one after the other, both answering
+    /// "what did this attempt cost" — and because a costless provider (a local endpoint, a flat-rate
+    /// subscription) honestly reports <c>0</c> spend, which leaves volume as the only evidence of what
+    /// the attempt actually did.
+    /// <para>Already in the JOURNAL's shape (<see cref="Journal.AttemptUsage"/>) rather than the runner's
+    /// (<see cref="PromptUsage"/>): the restatement happens ONCE, in <see cref="FromPrompt"/>, so every
+    /// hop from here to <c>run.json</c> — the journaller's record, the <see cref="PendingAttempt"/>, the
+    /// Scheduler's settle record — is the same straight member copy <see cref="CostUsd"/> already makes.</para>
+    /// </summary>
+    public Journal.AttemptUsage? Usage { get; init; }
+
     public string? NeedsHumanQuestion { get; init; }
 
     /// <summary>
@@ -420,6 +465,15 @@ internal sealed record ActionRun
             ExitCode = succeeded ? 0 : 1,
             TimedOut = result.FailureKind == PromptFailureKind.Timeout,
             CostUsd = result.CostUsd,
+            // #475's FIRST missing hop: the counts reach PromptResult today and stop here. The
+            // runner-agnostic PromptUsage is restated in the journal's shape at this one point, exactly as
+            // ClaudePromptRunner restates ClaudeUsage as PromptUsage at the runner quarantine.
+            // ABSENT stays absent — never a zeroed record: the per-tier spend line's `anyUsage` flag reads
+            // an all-zero total as "nothing reported", so { 0, 0 } would CLAIM a measurement that was
+            // never taken.
+            Usage = result.Usage is { } usage
+                ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
+                : null,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
             HarnessWriteBatch = harnessWrite,

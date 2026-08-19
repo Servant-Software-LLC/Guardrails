@@ -260,10 +260,11 @@ public sealed class TaskExecutor : ITaskExecutor
             }
 
             // Other terminal outcomes do not retry: cancellation, plus the needs-human escalations that
-            // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9) and the
+            // skip the remaining budget — the prompt-action needsHuman short-circuit (SSOT §9), the
             // permission-wall halt (issues #86 / #104 / #325: an EAGER #86 repeated-path halt, or an
-            // outcome-aware structural .claude/ halt on a non-converged attempt), both of which surface
-            // as TaskOutcome.NeedsHuman.
+            // outcome-aware structural .claude/ halt on a non-converged attempt), and the §6.2 no-route
+            // settle (#201) that never launched an attempt at all, all of which surface as
+            // TaskOutcome.NeedsHuman.
             if (attempt.Result.Outcome is TaskOutcome.Cancelled or TaskOutcome.NeedsHuman)
             {
                 // #269 overwatcher: a PERMISSION WALL (a floor boundary that may fire on attempt 1) gets a
@@ -510,8 +511,13 @@ public sealed class TaskExecutor : ITaskExecutor
             env[extra.Key] = extra.Value;
         }
 
+        // No action attempt here, so there is no ACTOR route to thread and none is invented (#201/§6.5).
+        // The judge still RESOLVES — rule 1's frontmatter pin, §6.5.1's floor and the default pointer all
+        // apply with no actor rung to key off — it simply resolves against nothing on the rules that need one.
+        // BOTH attempt records below therefore carry that resolution as a judge-only provenance
+        // (JudgeOnlyProvenance): a revalidate graded by a model must say WHICH model graded it.
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
-            task, workspace, env, snapshotPath, logDir, cancellationToken).ConfigureAwait(false);
+            task, workspace, env, snapshotPath, logDir, route: null, cancellationToken).ConfigureAwait(false);
 
         if (cancellationToken.IsCancellationRequested)
         {
@@ -540,7 +546,8 @@ public sealed class TaskExecutor : ITaskExecutor
                 FailedGuardrails = failed
                     .Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" })
                     .ToList(),
-                LogDir = relativeLogDir
+                LogDir = relativeLogDir,
+                Provenance = JudgeOnlyProvenance(guardrails.Judge)
             };
             // NeedsHuman, not pending: the gate still does not pass, so the task stays a non-green
             // halt the human must keep working on — exactly as a normal failed attempt would leave it.
@@ -567,7 +574,8 @@ public sealed class TaskExecutor : ITaskExecutor
             EndedAt = DateTimeOffset.UtcNow,
             ActionExitCode = null,
             Outcome = AttemptOutcome.Succeeded,
-            LogDir = relativeLogDir
+            LogDir = relativeLogDir,
+            Provenance = JudgeOnlyProvenance(guardrails.Judge)
         };
         // §7.2 (#274 Part A): a revalidate that flips the task to succeeded also stamps its definition
         // hash, so a subsequent resume detects a later definition edit rather than skipping stale.
@@ -627,15 +635,50 @@ public sealed class TaskExecutor : ITaskExecutor
         Directory.CreateDirectory(logDir);
         string relativeLogDir = RelativeLogDir(task.Id, attemptNumber);
 
-        // #198: the provenance the harness knows BEFORE the attempt runs — model + segment worktree +
-        // base commit, and (#382) the declared/injected tool grants. Written to the attempt log dir as a
-        // machine-readable header artifact regardless of outcome, and carried onto the journal
-        // AttemptRecord on the success paths below.
-        Journal.AttemptProvenance? provenance = BuildProvenance(task, worktree);
+        // #201 / DoR §6: THE attempt-launch resolution — which promptRunners block, model, effort and
+        // rung this attempt runs on. Resolved HERE, once, immediately before THIS attempt launches
+        // (retries included), and the ONE result feeds BOTH the provenance built below and the model the
+        // invocation actually runs on (threaded into the ActionRunner call). One resolution, two
+        // consumers — never two derivations that agree only by construction, which is the drift #198's
+        // provenance and #200's argv override used to have.
+        //
+        // §6.2's no-route outcome (nothing serves the rung, at it or above it) is settled just below,
+        // BEFORE anything launches. Quietly turning it into a legacy launch is the silent fallback D30
+        // severed, so it gets its own branch rather than being papered over.
+        TierResolution? route = ResolveRoute(task);
+
+        // #198: the provenance the harness knows BEFORE the attempt runs — the resolved route, the
+        // segment worktree + base commit, and (#382) the declared/injected tool grants. Written to the
+        // attempt log dir as a machine-readable header artifact regardless of outcome, and carried onto
+        // the journal AttemptRecord on the success paths below.
+        Journal.AttemptProvenance? provenance = BuildProvenance(task, worktree, route);
         AttemptArtifacts.WriteProvenance(logDir, provenance);
         // #382: the same grant split, in prose, at the head of the attempt's own log dir — a human
         // reading logs sees what the harness ADDED to what the plan DECLARED without querying run.json.
         WriteToolGrantHeader(logDir, provenance);
+        // #201 / DoR §6.2: the same ROUTE, in prose, beside it — plus the two lines §6.2 requires to be
+        // LOUD (a climb, and a binding D28 costly ceiling once this task is on a re-attempt). Built from
+        // the SAME `route` and the SAME provenance object resolved above: a disclosure that resolved
+        // again would be the third derivation of a decision that must have exactly one.
+        WriteRouteDisclosure(logDir, attemptNumber, route, provenance);
+
+        // #201 / DoR §6.2: NO candidate block exists at the requested rung or at any stronger one.
+        // Settle needs-human HERE — above the state snapshot, the environment and the runner call —
+        // journalling the distinct AttemptOutcome.NoRoute (§12.4) so a human, and #9 triage, reads a
+        // routing CONFIG gap rather than a generic action failure. A no-route DISCOVERED AFTER an
+        // attempt ran on some fallback is not a no-route, it is a silent fallback wearing the name, and
+        // there is nothing to fall back TO: D30 makes legacy the no-RUNG path and this the no-CANDIDATE
+        // path, so the runner's own model is out, and a costly block a ceiling excluded is out too —
+        // that floor constrains what the HARNESS may choose, and only a human's pin crosses it (D22).
+        // No retry either: resolution is a pure function of the tag and the registry, so every further
+        // attempt resolves identically. The provenance built above rides the record — `tierSource` says
+        // WHERE the unservable rung was asked for, while `provenance.tier`, the rung SERVED, is absent
+        // because none was.
+        if (route is { NoRoute: true })
+        {
+            return _journaler.NoRoute(
+                task, attemptNumber, startedAt, relativeLogDir, logDir, provenance, NoRouteReason(route));
+        }
 
         string snapshotPath = _stateManager.CreateSnapshot(logDir);
         string fragmentOutPath = Path.Combine(logDir, "action-out-fragment.json");
@@ -678,15 +721,19 @@ public sealed class TaskExecutor : ITaskExecutor
         // containment boundary (WorktreeContainmentHook), on top of the write-scope CHECK's post-hoc
         // diff (the INNER boundary, unaffected). Null in serial mode: no isolated tree to contain to.
         string? worktreeRootForHook = IsRealGitSegment(worktree) ? worktree.WorktreePath : null;
+        // `route` is the SAME object the provenance above was built from (#201): the model recorded and
+        // the model run are one resolution, read twice.
         ActionRun action = await _actionRunner.RunAsync(
             task, attemptNumber, workspace, env, snapshotPath, fragmentOutPath, previousFeedbackPath,
-            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
+            logDir, timeoutMultiplier, stagingDir, maxTurnsMultiplier, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
 
         AttemptArtifacts.WriteActionLogs(logDir, action.AsProcessResult(), ActionKindLabel(task));
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return _journaler.Cancelled(task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(), action.CostUsd);
+            return _journaler.Cancelled(
+                task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
+                action.CostUsd, action.Usage);
         }
 
         // --- needsHuman short-circuit (SSOT §9): record + escalate IMMEDIATELY -----------
@@ -830,7 +877,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     ActionExitCode = action.ExitCode,
                     Summary = summary
                 },
-                costUsd: action.CostUsd);
+                costUsd: action.CostUsd, usage: action.Usage);
         }
 
         // --- staging move (SSOT §3.5, issue #130): after action success, BEFORE the write-scope
@@ -858,7 +905,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         ActionExitCode = action.ExitCode,
                         Summary = $"staging move failed: {moveResult.FailureReason}"
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
         }
 
@@ -929,7 +976,7 @@ public sealed class TaskExecutor : ITaskExecutor
                             _ => $"needsHarnessWrite failed: {writeOutcome.FailureReason}"
                         }
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
         }
 
@@ -976,7 +1023,7 @@ public sealed class TaskExecutor : ITaskExecutor
                         ActionExitCode = action.ExitCode,
                         Summary = $"write-scope violation: {offendingList}"
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
 
                 // #264: attach the reproduction signals so a DETERMINISTIC script that re-writes the same
                 // out-of-scope paths every attempt short-circuits to needs-human instead of burning the
@@ -998,12 +1045,51 @@ public sealed class TaskExecutor : ITaskExecutor
 
         // --- guardrails -----------------------------------------------------------------
         IReadOnlyDictionary<string, string> guardrailEnv = BuildGuardrailEnvironment(env, logDir, fragmentOutPath);
+        // The SAME `route` local the action path was handed above (#201 / DoR §6.5 rule 2): a prompt
+        // JUDGE is graded at the rung the actor actually ran at, and it reads that rung off the one
+        // resolution this attempt made rather than resolving a second time.
         GuardrailRunResult guardrails = await _guardrailRunner.RunAsync(
-            task, workspace, guardrailEnv, snapshotPath, logDir, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
+            task, workspace, guardrailEnv, snapshotPath, logDir, route, cancellationToken, worktreeRootForHook).ConfigureAwait(false);
+
+        // --- §12.4 / D32: fold the VERIFIER route onto this attempt's provenance ---------
+        // A judge resolves DURING the guardrail pass, so it cannot be part of the launch-time provenance
+        // built above; it is folded onto that SAME object the moment the pass returns, before any journal
+        // call below reads it. The local is REASSIGNED because records are immutable — a `with` whose
+        // result is discarded changes nothing.
+        //
+        // Onto the PROVENANCE specifically, and that is mechanical rather than cosmetic: AttemptProvenance
+        // is the one member that already rides PendingAttempt, so a value folded here reaches BOTH record
+        // construction paths with no further edit — the serial AttemptJournaler AND
+        // Scheduler.RecordSucceededSettle (`Provenance = pending.Provenance`), the DEFAULT worktree mode.
+        // A datum hung on the attempt record itself lands in serial mode and silently vanishes in the mode
+        // almost every run actually uses.
+        //
+        // ABSENT, never null: a script attempt and a task whose guardrails are all deterministic resolve no
+        // judge at all (§6.5 Invariant 7 — no model ran, so there is no verifier to name), so the whole fold
+        // is skipped for them. A judge object built out of nulls is worse than no object — it reads as "a
+        // judge resolved and every field was empty".
+        if (guardrails.Judge is { } judge)
+        {
+            // A SCRIPT action in SERIAL mode builds NO launch-time provenance (no model to record, no
+            // segment) and can still be graded by a prompt judge. Construct the judge-only object for it —
+            // the same shape RevalidateAsync uses — rather than dropping a datum that genuinely resolved,
+            // which is precisely how #475's `usage` became a member nothing ever populated.
+            provenance = provenance is null
+                ? JudgeOnlyProvenance(judge)
+                : provenance with { Judge = judge };
+
+            // Re-mirror it (SSOT §8: ONE provenance object recorded in TWO places). Not tidiness: on the
+            // guardrail-FAILED path this artifact is the ONLY surface that records the judge at all,
+            // because AttemptJournaler.FailedAttempt takes no provenance parameter. An attempt a model
+            // graded RED must still say WHICH model graded it.
+            AttemptArtifacts.WriteProvenance(logDir, provenance);
+        }
 
         if (cancellationToken.IsCancellationRequested)
         {
-            return _journaler.Cancelled(task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(), action.CostUsd);
+            return _journaler.Cancelled(
+                task, attemptNumber, startedAt, relativeLogDir, action.AsProcessResult(),
+                action.CostUsd, action.Usage);
         }
 
         if (guardrails.AnyFailed)
@@ -1083,7 +1169,7 @@ public sealed class TaskExecutor : ITaskExecutor
                     Summary = $"guardrail(s) failed: {string.Join(", ", failed.Select(g => g.Name))}"
                 },
                 failed.Select(g => new FailedGuardrail { Name = g.Name, Reason = g.Reason ?? "guardrail failed" }).ToList(),
-                costUsd: action.CostUsd);
+                costUsd: action.CostUsd, usage: action.Usage);
 
             // #174 / #182: attach the no-op + failure-fingerprint signals so the attempt loop can detect
             // a provable deadlock — an action that changed NOTHING this attempt and a guardrail failure
@@ -1318,16 +1404,22 @@ public sealed class TaskExecutor : ITaskExecutor
         && !worktree.TaskBase.All(c => c == '0');
 
     /// <summary>
-    /// Build the #198 per-attempt provenance the harness knows at launch: the resolved model, the
-    /// segment worktree (branch + path), the base commit, and (#382) the tool grants split into what
-    /// the plan DECLARED and what the harness INJECTED. Returns null in serial mode (no segment)
-    /// UNLESS a model is resolvable — a serial prompt task still records its model so <c>run.json</c>
-    /// discloses which model ran even without a worktree. In worktree mode the segment fields are
-    /// always populated; the model and the grants are null for a script task (no model, no grants).
+    /// Build the #198 per-attempt provenance the harness knows at launch: the RESOLVED ROUTE (block
+    /// name, kind, model, effort and the rung it served — DoR §9.3/§12.4), the segment worktree
+    /// (branch + path), the base commit, and (#382) the tool grants split into what the plan DECLARED
+    /// and what the harness INJECTED. Returns null in serial mode (no segment) UNLESS a model is
+    /// resolvable — a serial prompt task still records its model so <c>run.json</c> discloses which
+    /// model ran even without a worktree. In worktree mode the segment fields are always populated; the
+    /// route fields and the grants are absent for a script task (no model, no route, no grants).
+    ///
+    /// <para><paramref name="route"/> is READ, never recomputed: it is the one resolution this attempt
+    /// launched under, so what is RECORDED here and what the invocation RUNS on cannot disagree.</para>
     /// </summary>
-    private Journal.AttemptProvenance? BuildProvenance(TaskNode task, WorktreeHandle worktree)
+    private Journal.AttemptProvenance? BuildProvenance(TaskNode task, WorktreeHandle worktree, TierResolution? route)
     {
-        string? model = ResolveModel(task);
+        // The route's model, in its display form: the resolved string, else the sentinel that says
+        // "nothing named a model, so the runner CLI picked". Null only for a script attempt.
+        string? model = route is null ? null : PromptExecutionSupport.ResolvedModelForDisplay(route.Model);
         bool realSegment = IsRealGitSegment(worktree);
 
         if (model is null && !realSegment)
@@ -1340,6 +1432,23 @@ public sealed class TaskExecutor : ITaskExecutor
         return new Journal.AttemptProvenance
         {
             Model = model,
+            // The registry KEY the route selected, and that block's `kind` as its WIRE TOKEN (§12.4 —
+            // the journal is read by tooling that never links against this assembly, so the token is the
+            // contract, not the enum name). Kind is absent when the name resolved to no block, which is
+            // the defensive residual validation already rejects.
+            Runner = route?.RunnerName,
+            Kind = route?.Runner is { } block ? PromptRunnerKinds.Token(block.Kind) : null,
+            // The rung actually SERVED — equal to the one requested unless §6.2's climb moved it, and
+            // absent whenever no rung resolved (a pin, the legacy path, a no-route). Recording the
+            // REQUESTED rung here instead would make a climb invisible in the record.
+            Tier = route?.Tier,
+            TierSource = TierSourceFor(task.Action, route),
+            // The route's effort is RECORDED, not passed to the CLI: the Claude runner exposes no
+            // effort/thinking flag today and PromptRunnerSettings carries no field for one, so spelling
+            // an argv flag here would invent a vendor knob that does not exist. When a runner CLASS
+            // gains one it reads this same resolved value; until then the record is still honest about
+            // what was asked for.
+            Effort = route?.Effort,
             SegmentBranch = realSegment ? NullIfEmpty(worktree.SegmentBranchName) : null,
             WorktreePath = realSegment ? NullIfEmpty(worktree.WorktreePath) : null,
             BaseCommit = realSegment ? NullIfEmpty(worktree.TaskBase) : null,
@@ -1347,6 +1456,62 @@ public sealed class TaskExecutor : ITaskExecutor
             InjectedToolGrants = grants?.Injected
         };
     }
+
+    /// <summary>
+    /// A provenance object carrying NOTHING BUT the verifier route (§12.4 / D32) — what
+    /// <see cref="RevalidateAsync"/> records, and what a serial SCRIPT attempt graded by a prompt judge
+    /// falls back to, because neither has a launch-time provenance to fold into.
+    ///
+    /// <para>The route-derived fields are legitimately absent rather than missing: a revalidate runs NO
+    /// action, so there is no actor model, no segment and no tool grants to name — but it runs the same
+    /// prompt guardrails and resolves a judge exactly as an attempt does, and the one path a human is
+    /// actively working through must not be the one path with no record of who graded their fix.</para>
+    ///
+    /// <para>Null in, null out: a deterministic-only guardrail set resolved no judge, and an object of
+    /// nulls would assert the opposite — that a judge resolved and every field about it was empty. The
+    /// caller then records no provenance at all, which is what <c>WhenWritingNull</c> already means for
+    /// every other attempt.</para>
+    /// </summary>
+    private static Journal.AttemptProvenance? JudgeOnlyProvenance(Journal.AttemptJudge? judge) =>
+        judge is null ? null : new Journal.AttemptProvenance { Judge = judge };
+
+    /// <summary>
+    /// WHICH SITE supplied this attempt's rung (DoR §12.4, D31) — READ from the resolution's §6.1 branch
+    /// and from the origin <c>PlanLoader</c> recorded when it collapsed the tier at load:
+    /// <list type="bullet">
+    ///   <item>a full pin ⇒ <see cref="Journal.TierSource.Override"/>. "Bypasses tier resolution
+    ///     entirely" governs what is SELECTED, not what is LOGGED: §12.4 gives each v1 value exactly one
+    ///     producer, and a pin is override's. <c>provenance.tier</c> stays absent beside it, because no
+    ///     rung resolved.</item>
+    ///   <item><see cref="TierOrigin.Task"/> ⇒ <c>task</c>, <see cref="TierOrigin.PlanDefault"/> ⇒
+    ///     <c>plan-default</c> — with the rung that was served recorded beside it.</item>
+    ///   <item>the LEGACY path (no rung anywhere) ⇒ ABSENT. Nothing resolved and nothing was overridden,
+    ///     and §12.4 deliberately has no enum value for it — "absent" and "override" are different facts
+    ///     about how the attempt got its model, and a reader must be able to tell them apart.</item>
+    /// </list>
+    ///
+    /// <para><b>The origin is READ, never reconstructed.</b> Deriving it by comparing the action's own
+    /// tier against the plan-wide default is <c>PlanValidator</c>'s shipped workaround, and it is wrong
+    /// in the most ordinary case there is: a task that explicitly writes the same token the plan already
+    /// defaults to would be attributed to the plan. <see cref="ActionDefinition.TierOrigin"/> exists
+    /// precisely so this mapping is a lookup.</para>
+    /// </summary>
+    private static Journal.TierSource? TierSourceFor(ActionDefinition action, TierResolution? route) =>
+        route switch
+        {
+            // A script attempt: no route, no rung, nothing to source.
+            null => null,
+            { Pinned: true } => Journal.TierSource.Override,
+            { Legacy: true } => null,
+            _ => action.TierOrigin switch
+            {
+                TierOrigin.Task => Journal.TierSource.Task,
+                TierOrigin.PlanDefault => Journal.TierSource.PlanDefault,
+                // TierOrigin.None means no tier was written anywhere, which cannot co-exist with a
+                // tier-resolved route in a loaded plan. Defensive, and absent is the honest answer.
+                _ => null
+            }
+        };
 
     /// <summary>
     /// The tool grants an agent attempt of <paramref name="task"/> runs under, resolved through the
@@ -1421,32 +1586,157 @@ public sealed class TaskExecutor : ITaskExecutor
         grants.Count == 0 ? "(none)" : string.Join(", ", grants);
 
     /// <summary>
-    /// The model an agent attempt of <paramref name="task"/> runs on (issue #198, fixed for the #200
-    /// task.json <c>action.model</c> override): resolved via the SAME precedence
-    /// <see cref="ActionRunner"/> applies at invocation time —
-    /// <see cref="PromptExecutionSupport.ResolveModelForDisplay"/> — so provenance can never drift from
-    /// what actually ran: task.json <c>action.model</c> (if set) &gt; the task's prompt-runner config
-    /// <c>model</c> (if set) &gt; the sentinel <c>"(cli default)"</c> when neither is set (so the
-    /// provenance is never a silent gap for a prompt task). Null for a script task — no model runs — and
-    /// the sentinel when the task's runner cannot be resolved (a malformed plan that validation would
-    /// already reject).
+    /// Write <c>attempt-route.log</c> — the human-readable twin of <c>attempt-provenance.json</c>
+    /// (issue #201, DoR §6.2/§9.3), a sibling of <c>attempt-tool-grants.log</c> in the attempt's own
+    /// log dir. It names the resolved runner block, model and effort, the rung REQUESTED and the rung
+    /// SERVED, and the <c>tierSource</c> — then carries the two lines §6.2 requires to be LOUD:
+    /// <list type="bullet">
+    ///   <item>a <b>climb</b>, naming BOTH rungs — a route change the operator cannot see is a cost and
+    ///     latency change they will attribute to the prompt, so §6.2 says a climb is recorded
+    ///     <i>and</i> logged rather than silently absorbed.</item>
+    ///   <item>a <b>binding D28 costly ceiling on a re-attempt</b>, naming the blocks the harness was
+    ///     not permitted to pick. Without it, a failure caused by the weaker model running out of
+    ///     reasoning is indistinguishable from an ordinary failure and the operator tunes prompts
+    ///     against a constraint they cannot see. From attempt 2 only: the first attempt has not failed
+    ///     yet, so a ceiling warning there is noise on every single tiered run.</item>
+    /// </list>
+    ///
+    /// <para><b>Both data are READ off <paramref name="route"/>, never re-derived.</b>
+    /// <see cref="TierResolution.Climbed"/> and the
+    /// <see cref="TierResolution.CostlyCeilingBound"/>/<see cref="TierResolution.CostlyCeilingBlocks"/>
+    /// pair fall out of the resolver's candidacy sweep; re-testing the costly flag here would be a
+    /// second copy of the one candidacy predicate D22a forbids duplicating. This changes what is
+    /// LOGGED, never what is SELECTED — the costly floor is untouched, and a warning is not a new path
+    /// to a costly model.</para>
+    ///
+    /// <para>No-op when there is no resolution to report: a script attempt has no route at all, and an
+    /// attempt with no provenance has no model to disclose. Best-effort, exactly like the tool-grant
+    /// header — an IO hiccup must never fail an attempt over a disclosure artifact, and the
+    /// machine-readable copy is already safe in <c>attempt-provenance.json</c>.</para>
     /// </summary>
-    private string? ResolveModel(TaskNode task)
+    private static void WriteRouteDisclosure(
+        string logDir,
+        int attemptNumber,
+        TierResolution? route,
+        Journal.AttemptProvenance? provenance)
     {
-        if (task.Action.Kind != ActionKind.Prompt)
+        if (route is null || provenance is null)
         {
-            return null;
+            return;
         }
 
-        string? runnerName = task.Action.Runner ?? _plan.Config.DefaultPromptRunner;
-        string? runnerModel = runnerName is not null
-            && _plan.Config.PromptRunners.TryGetValue(runnerName, out PromptRunnerConfig? config)
-                ? config.Settings.Model
-                : null;
+        var sb = new StringBuilder();
+        sb.AppendLine("# route resolved for this attempt (issue #201, DoR §6)");
+        sb.AppendLine("# The prose twin of attempt-provenance.json: the promptRunners block, the model");
+        sb.AppendLine("# and the effort this attempt launched on, plus which rung was asked for versus");
+        sb.AppendLine("# which one was served. §6.2 requires a route change and a bound cost ceiling to");
+        sb.AppendLine("# be loud, not merely recorded in a JSON field nobody reads mid-run.");
+        sb.Append("runner block: ").AppendLine(route.RunnerName ?? "(none — no block was selected)");
+        sb.Append("model: ").AppendLine(provenance.Model ?? "(none)");
+        sb.Append("effort: ").AppendLine(route.Effort ?? "(none — the runner's own default applies)");
+        sb.Append("requested tier: ").AppendLine(RungOrNone(route.RequestedTier));
+        sb.Append("served tier: ").AppendLine(RungOrNone(route.Tier));
+        sb.Append("tierSource: ").AppendLine(
+            provenance.TierSource is { } source
+                ? Journal.JournalJson.TierSourceToken(source)
+                : "(none — nothing resolved through routing and nothing was overridden)");
 
-        // A prompt task whose runner is unresolvable (validation would reject this) still records that
-        // a model ran — the task override if set, else the sentinel — rather than a misleading absence.
-        return PromptExecutionSupport.ResolveModelForDisplay(task.Action.Model, runnerModel);
+        // §6.2's climb, on ONE line carrying BOTH rungs: "served at X" alone reads as an ordinary task
+        // at X unless the request it replaced is sitting right beside it.
+        if (route.Climbed)
+        {
+            sb.Append("WARNING: tier climb — asked for '").Append(route.RequestedTier)
+                .Append("', served at '").Append(route.Tier)
+                .AppendLine("'. No promptRunners block is a candidate at the rung asked for, so the nearest stronger rung with one served this attempt (DoR §6.2). This is a cost and latency change the plan did not ask for; widen a block's `routing.tiers` if it was not intended.");
+        }
+
+        // D28: the ceiling becomes news exactly when the cheaper route has already lost once. The pair
+        // is READ off the resolution — the sweep that computed it is the only place it can be computed.
+        if (attemptNumber >= 2 && route is { CostlyCeilingBound: true, CostlyCeilingBlocks.Count: > 0 })
+        {
+            sb.Append("WARNING: a cost ceiling bound this re-attempt — ")
+                .Append(string.Join(", ", route.CostlyCeilingBlocks.Select(name => $"promptRunners.{name}")))
+                .Append(" declare tier '").Append(route.RequestedTier)
+                .AppendLine("' or a stronger one but are marked `costly: true`, which the harness never auto-selects (D22/D28), so this re-attempt ran on the weaker route again. A failure here may be the ceiling rather than the prompt: pin one of those blocks on the task (`action.runner` + `action.model`) or clear the flag that excluded it.");
+        }
+
+        try
+        {
+            AtomicFile.WriteAllText(Path.Combine(logDir, "attempt-route.log"), sb.ToString());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Disclosure is best-effort; attempt-provenance.json still carries the machine-readable copy.
+        }
+    }
+
+    /// <summary>
+    /// A rung for the disclosure, or the reason there is none — never an empty quote. The absent form
+    /// deliberately spells no rung TOKEN, so "a run with zero tier activity names no rung anywhere"
+    /// stays literally true of this file.
+    /// </summary>
+    private static string RungOrNone(string? tier) => tier ?? "(none — no rung resolved)";
+
+    /// <summary>
+    /// The ONE §6 attempt-launch resolution for <paramref name="task"/> (issues #198/#200/#201): which
+    /// <c>promptRunners</c> block, model, effort and rung this attempt runs on, decided by
+    /// <see cref="TierResolver.Resolve"/>'s §6.1 precedence — a full <c>action.runner</c>/
+    /// <c>action.model</c> pin, else tier resolution, else the legacy two-level fallback this call
+    /// REPLACES (D30 makes that fallback the resolver's own third branch, so it is one code path now
+    /// rather than two that agree by construction).
+    ///
+    /// <para><b>Called once per ATTEMPT, retries included</b> — deliberately not hoisted to a per-task
+    /// computation "because v1 is a pure function". Neither input is frozen for the life of a run (a
+    /// resumed run whose <c>guardrails.json</c> was edited between sessions moves one mid-run), and this
+    /// is the seam the v2 dynamic inputs — probes §6.4, the ladder §7, steering §8 — slot into without
+    /// moving it.</para>
+    ///
+    /// <para>Null for a SCRIPT action: no model, no route, nothing to resolve — which is exactly what
+    /// the two-level fallback returned there.</para>
+    ///
+    /// <para>The CLI-level default model is null because the harness exposes no such setting today, so
+    /// the legacy branch's last rung means "let the runner CLI pick its own default" — the fact the
+    /// <c>"(cli default)"</c> display sentinel has always stood for.</para>
+    /// </summary>
+    private TierResolution? ResolveRoute(TaskNode task) =>
+        task.Action.Kind == ActionKind.Prompt
+            ? TierResolver.Resolve(task.Action, _plan.Config, cliDefaultModel: null)
+            : null;
+
+    /// <summary>
+    /// The operator-facing diagnosis a §6.2 no-route settle carries (DoR §12.4) — the text that becomes
+    /// the <see cref="AttemptOutcome.NoRoute"/> attempt's summary and its <c>feedback.md</c>. It NAMES
+    /// the rung that could not be served and says what to CHANGE: "no route" on its own tells an
+    /// operator nothing, and this is the one message a human gets before the run stops.
+    ///
+    /// <para><b>The two causes GR2048 already distinguishes, because their fixes differ.</b> Nothing
+    /// DECLARES the rung ⇒ the operator needs a new or widened <c>routing.tiers</c>. The only blocks
+    /// declaring it are <c>costly: true</c> ⇒ the operator needs a pin, or to clear the flag; the floor
+    /// itself does not move, so the excluded block is named as the CAUSE and never offered as a route
+    /// (D22).</para>
+    ///
+    /// <para><b>Which case it is, is READ off the resolution.</b> The D28 pair
+    /// (<c>CostlyCeilingBound</c> and the blocks behind it) fell out of the candidacy sweep and rides
+    /// here for exactly this. Re-testing <c>costly</c> would be a second copy of the candidacy
+    /// predicate — which D22a forbids, and which would disagree with the resolver the day that
+    /// predicate moves.</para>
+    /// </summary>
+    private static string NoRouteReason(TierResolution route)
+    {
+        // The rung ASKED for. A no-route always has one (it is the input to the candidacy sweep); the
+        // fallback keeps a defensive residual readable rather than printing an empty quote.
+        string rung = route.RequestedTier ?? "(unknown)";
+        string remedy = $"register a provider serving tier >= '{rung}'";
+
+        return route is { CostlyCeilingBound: true, CostlyCeilingBlocks.Count: > 0 }
+            ? $"no route for tier '{rung}': the only block(s) declaring '{rung}' or a stronger tier " +
+              $"({string.Join(", ", route.CostlyCeilingBlocks.Select(name => $"promptRunners.{name}"))}) " +
+              $"are marked `costly: true`, which the harness never auto-selects — {remedy} that is not " +
+              "costly, or pin one of those blocks on the task (`action.runner` + `action.model`), or " +
+              "clear its `costly` flag. `guardrails validate` reports this statically as GR2048."
+            : $"no route for tier '{rung}': no promptRunners block declares '{rung}' or any stronger " +
+              $"tier in its `routing.tiers` — {remedy}, or add the tier to an existing block's " +
+              "`routing.tiers`. `guardrails validate` reports this statically as GR2048.";
     }
 
     private static string? NullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;

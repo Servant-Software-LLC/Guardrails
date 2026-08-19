@@ -1100,6 +1100,8 @@ public sealed class PlanLoader
             }
         }
 
+        (string? tier, TierOrigin tierOrigin) = ResolveTier(rawAction?.Tier, defaultTier);
+
         return new ActionDefinition
         {
             Path = actionPath,
@@ -1112,12 +1114,8 @@ public sealed class PlanLoader
             // BindStagingOutputs documents for stagingOutputs — silently normalizing it to null here
             // would let a malformed override validate clean.
             Model = rawAction?.Model,
-            // Tier precedence, resolved HERE at load (SSOT §3, issue #225): task action.tier > the
-            // plan-wide tiering.defaultTier > null. Resolving at LOAD rather than at breakdown is what
-            // makes the default reach a task a human hand-added to the folder afterwards, which no
-            // breakdown ever touched. Bound VERBATIM like Model — a malformed tier is the validator's to
-            // judge (GR2043), not the loader's to normalize away.
-            Tier = rawAction?.Tier ?? defaultTier,
+            Tier = tier,
+            TierOrigin = tierOrigin,
             // Bound VERBATIM like Model, whose shape it mirrors — GR2050 judges it. Deliberately NOT
             // defaulted from anything: there is no plan-wide effort, and an effort nobody wrote must not
             // be invented (the same "never fabricate an unstated axis" rule the registry axes follow).
@@ -1127,6 +1125,28 @@ public sealed class PlanLoader
             Env = (IReadOnlyDictionary<string, string>?)rawAction?.Env ?? new Dictionary<string, string>()
         };
     }
+
+    /// <summary>
+    /// The tier precedence AND its provenance, decided in ONE place (SSOT §3, issue #225; DoR §12.4):
+    /// task <c>action.tier</c> &gt; the plan-wide <c>tiering.defaultTier</c> &gt; null. Resolving at LOAD
+    /// rather than at breakdown is what makes the default reach a task a human hand-added to the folder
+    /// afterwards, which no breakdown ever touched. Both sources are bound VERBATIM like <c>Model</c> — a
+    /// malformed tier is the validator's to judge (GR2030/GR2043), not the loader's to normalize away.
+    ///
+    /// <para>The origin comes from the BRANCH THAT WON, never from comparing the resolved value against
+    /// <paramref name="defaultTier"/> afterwards. A task whose own <c>action.tier</c> spells the SAME token
+    /// as the plan default still authored it, and a comparison calls exactly that (thoroughly ordinary —
+    /// it is the shape tiering is for) case <see cref="TierOrigin.PlanDefault"/>.</para>
+    ///
+    /// <para><paramref name="defaultTier"/> is already <see cref="PropagatableDefaultTier"/>'s output, so an
+    /// unrecognized default arrives here as null and yields (null, <see cref="TierOrigin.None"/>): the origin
+    /// never claims a source for a value that never landed. Hence the invariant the whole field rests on —
+    /// <see cref="TierOrigin.None"/> iff the resolved tier is null.</para>
+    /// </summary>
+    private static (string? Tier, TierOrigin Origin) ResolveTier(string? actionTier, string? defaultTier) =>
+        actionTier is not null ? (actionTier, TierOrigin.Task)
+        : defaultTier is not null ? (defaultTier, TierOrigin.PlanDefault)
+        : (null, TierOrigin.None);
 
     /// <summary>
     /// Convention discovery: exactly ONE <c>action.*</c> file in the task folder.

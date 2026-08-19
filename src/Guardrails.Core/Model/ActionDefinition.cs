@@ -1,6 +1,33 @@
 namespace Guardrails.Core.Model;
 
 /// <summary>
+/// Which source supplied <see cref="ActionDefinition.Tier"/> (DoR §12.4). The loader resolves the tier by
+/// precedence — <c>task.json action.tier</c> &gt; <c>tiering.defaultTier</c> &gt; null — and that collapse
+/// destroys the answer to "where did this rung come from?"; this records it instead of losing it.
+///
+/// <para>It is the INPUT the journal's <c>provenance.tierSource</c> is derived from, not that field itself.
+/// <c>tierSource</c>'s third value, <c>"override"</c>, is produced by a full <c>action.runner</c>/
+/// <c>action.model</c> pin bypassing resolution entirely (DoR §6.1 item 1, D31) — the resolver decides that
+/// one for itself from <see cref="ActionDefinition.Runner"/> / <see cref="ActionDefinition.Model"/>, which
+/// are still visible to it. Nothing about a pin is destroyed at load, so nothing about it is recorded here.</para>
+///
+/// <para>The origin ALWAYS agrees with what is actually in <c>Tier</c>: <see cref="None"/> means no tier was
+/// resolved at all and <c>Tier</c> is null — neither site declared one, or the plan-wide default was an
+/// unrecognized token the loader refuses to propagate (GR2043 reports that once, at its declaration site).</para>
+/// </summary>
+public enum TierOrigin
+{
+    /// <summary>No tier resolved — <see cref="ActionDefinition.Tier"/> is null, and no <c>tierSource</c> is journalled.</summary>
+    None = 0,
+
+    /// <summary>The task's own <c>action.tier</c> supplied the rung — journal <c>tierSource: "task"</c>.</summary>
+    Task,
+
+    /// <summary>The plan-wide <c>tiering.defaultTier</c> supplied the rung — journal <c>tierSource: "plan-default"</c>.</summary>
+    PlanDefault
+}
+
+/// <summary>
 /// A resolved action for a task — the single action file plus the settings that
 /// govern how it runs. SSOT §3 ("action" block). Discovered by convention
 /// (one <c>action.*</c> file) or pointed at explicitly via <c>task.json action.path</c>.
@@ -33,6 +60,14 @@ public sealed record ActionDefinition
     /// Stage 1; the resolver is Stage 2 (#226).
     /// </summary>
     public string? Tier { get; init; }
+
+    /// <summary>
+    /// Which of the two load-time sources supplied <see cref="Tier"/> — the provenance the
+    /// <c>?? defaultTier</c> collapse above would otherwise destroy (DoR §12.4). <see cref="TierOrigin.None"/>
+    /// (the default) whenever <see cref="Tier"/> is null. See <see cref="Model.TierOrigin"/> for why
+    /// <c>override</c> is not one of the values.
+    /// </summary>
+    public TierOrigin TierOrigin { get; init; }
 
     /// <summary>
     /// Per-task thinking-effort override for prompt actions (SSOT §3, issue #201); null = inherit the

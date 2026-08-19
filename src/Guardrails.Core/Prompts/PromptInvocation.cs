@@ -64,6 +64,14 @@ public sealed record PromptResult
     public int? NumTurns { get; init; }
 
     /// <summary>
+    /// Token volume reported by the runner; null when unknown. The tokens axis (DoR §12.4 /
+    /// #230-lite) sits beside <see cref="CostUsd"/> because a costless provider honestly reports
+    /// <c>0</c> spend — volume is then the only evidence of what the attempt did. Null, never
+    /// <c>{ 0, 0 }</c>: a zeroed record is a CLAIM that nothing was consumed.
+    /// </summary>
+    public PromptUsage? Usage { get; init; }
+
+    /// <summary>
     /// The runner-agnostic classification of a non-success outcome (SSOT §9, issues #114/#115/#119).
     /// <see cref="PromptFailureKind.None"/> on success. The CLI quarantine
     /// (<see cref="ClaudePromptRunner"/>) computes this; the harness routes on it without ever
@@ -93,6 +101,21 @@ public sealed record PromptResult
     /// <c>needs-human</c> immediately instead of burning the remaining retries.
     /// </summary>
     public IReadOnlyList<string> BlockedWritePaths { get; init; } = [];
+}
+
+/// <summary>
+/// Runner-agnostic token volume for one prompt run (DoR §12.4): the
+/// <c>{ InputTokens, OutputTokens }</c> pair the per-tier spend line (#230-lite) aggregates
+/// alongside cost, journalled as <c>AttemptRecord.Usage</c>. A straight CARRY of what the runner
+/// reported — the harness never recomputes or defaults it.
+/// </summary>
+public sealed record PromptUsage
+{
+    /// <summary>Total input (prompt) tokens the run consumed, cache reads and writes included.</summary>
+    public int InputTokens { get; init; }
+
+    /// <summary>Output (completion) tokens the run produced.</summary>
+    public int OutputTokens { get; init; }
 }
 
 /// <summary>

@@ -65,7 +65,7 @@ internal sealed class AttemptJournaler
                         Guardrails = guardrails.Results,
                         Summary = reason
                     },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             mergeSequence = reserved;
@@ -79,6 +79,8 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.Succeeded,
             CostUsd = action.CostUsd,
+            // #475: the tokens axis travels with its cost sibling, wherever the cost goes.
+            Usage = action.Usage,
             LogDir = relativeLogDir,
             Provenance = provenance
         };
@@ -148,7 +150,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             JsonNode? node;
@@ -160,7 +162,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             if (node is not JsonObject fragObj)
@@ -171,7 +173,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForInvalidFragment(task, attemptNumber, msg, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = msg },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             List<string> foreignKeys = fragObj
@@ -186,7 +188,7 @@ internal sealed class AttemptJournaler
                     RetryPolicy.ForForeignKey(task, attemptNumber, foreignKeys, fileWritesRolledBack), isFinal,
                     AttemptOutcome.InvalidFragment,
                     new TaskResult { TaskId = task.Id, Outcome = TaskOutcome.InvalidFragment, ActionExitCode = action.ExitCode, Guardrails = guardrails.Results, Summary = reason },
-                    costUsd: action.CostUsd);
+                    costUsd: action.CostUsd, usage: action.Usage);
             }
 
             validatedFragmentPath = fragmentOutPath;
@@ -208,6 +210,9 @@ internal sealed class AttemptJournaler
             StartedAt = startedAt,
             ActionExitCode = action.ExitCode,
             CostUsd = action.CostUsd,
+            // #475: WITHOUT this line the value the record above sets reaches serial runs only — the
+            // settle path builds its own AttemptRecord from this object, never from the journaller.
+            Usage = action.Usage,
             LogDir = relativeLogDir,
             Provenance = provenance
         };
@@ -241,7 +246,8 @@ internal sealed class AttemptJournaler
         AttemptOutcome outcome,
         TaskResult result,
         IReadOnlyList<FailedGuardrail>? failedGuardrails = null,
-        decimal? costUsd = null)
+        decimal? costUsd = null,
+        AttemptUsage? usage = null)
     {
         string feedbackPath = Path.Combine(logDir, "feedback.md");
         AtomicFile.WriteAllText(feedbackPath, feedback);
@@ -255,6 +261,9 @@ internal sealed class AttemptJournaler
             Outcome = outcome,
             FailedGuardrails = failedGuardrails ?? [],
             CostUsd = costUsd,
+            // #475: a FAILED attempt burned tokens too, and the per-tier spend line aggregates every
+            // recorded attempt — not just the ones that converged.
+            Usage = usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, isFinal ? JournalTaskStatus.NeedsHuman : JournalTaskStatus.Running);
@@ -359,6 +368,7 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.NeedsHuman,
             CostUsd = action.CostUsd,
+            Usage = action.Usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -371,6 +381,73 @@ internal sealed class AttemptJournaler
             Summary = $"needs human: {question}",
             NeedsHumanOptions = options
         }, FeedbackPath: null);
+    }
+
+    /// <summary>
+    /// The §6.2 <c>no-route</c> settle (DoR §6.2/§12.4, model tiering #201): tier resolution found NO
+    /// candidate block at the rung this attempt asked for, nor at any STRONGER one, so the attempt was
+    /// never launched — no model ran, no guardrail was evaluated, no retry was burned. Record ONE
+    /// attempt with the distinct <see cref="AttemptOutcome.NoRoute"/> outcome, write an actionable
+    /// <c>feedback.md</c>, and settle the task <c>needs-human</c> immediately: the same shape
+    /// <see cref="NeedsHuman"/> uses, and for the same reason it skips the rest of the budget — a
+    /// further attempt resolves IDENTICALLY, because v1 resolution is a pure function of the tier tag
+    /// and the registry, and neither changes between attempts of one run.
+    ///
+    /// <para><b>The wording is the CALLER's; the record shape is this method's.</b>
+    /// <paramref name="reason"/> arrives already composed from the resolution's own D28 data (its
+    /// costly-ceiling flag and the blocks behind it), exactly as <see cref="RateLimitExhausted"/>
+    /// receives its reason. Re-deriving that diagnosis here would need a second copy of the candidacy
+    /// predicate, which D22a forbids.</para>
+    ///
+    /// <para><paramref name="provenance"/> rides the record AS USUAL — its <c>tierSource</c> and the
+    /// REQUESTED rung are how a reader learns WHICH rung could not be served — while
+    /// <see cref="AttemptProvenance.Tier"/>, the rung actually SERVED, is absent because none was.
+    /// Nothing here names a route: a costly block the ceiling excluded is a CAUSE, never a
+    /// destination (D22).</para>
+    /// </summary>
+    public AttemptResult NoRoute(
+        TaskNode task,
+        int attemptNumber,
+        DateTimeOffset startedAt,
+        string relativeLogDir,
+        string logDir,
+        AttemptProvenance? provenance,
+        string reason)
+    {
+        Directory.CreateDirectory(logDir);
+
+        string feedback =
+            $"# Task '{task.Id}' has no route for the tier it asked for\n\n" +
+            $"Task: {task.Description}\n\n" +
+            $"{reason}\n\n" +
+            "The attempt was NOT launched: no model ran, no guardrail was evaluated and no retry was " +
+            "burned. Once an effective tier exists, resolution OWNS the outcome (DoR §6.1, D30) — the " +
+            "harness does not fall back to the runner's own model, and never routes weaker than " +
+            "asked.\n\n" +
+            "This is a routing-CONFIGURATION gap, not a task defect, so no number of retries can clear " +
+            "it. `guardrails validate` reports the same gap statically as GR2048, before a token is " +
+            "spent; run it against this plan to catch it there next time.\n";
+        AtomicFile.WriteAllText(Path.Combine(logDir, "feedback.md"), feedback);
+
+        var record = new AttemptRecord
+        {
+            Attempt = attemptNumber,
+            StartedAt = startedAt,
+            EndedAt = DateTimeOffset.UtcNow,
+            // Nothing ran: no process exited, and nothing was spent.
+            ActionExitCode = null,
+            Outcome = AttemptOutcome.NoRoute,
+            LogDir = relativeLogDir,
+            Provenance = provenance
+        };
+        _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
+
+        return new AttemptResult(new TaskResult
+        {
+            TaskId = task.Id,
+            Outcome = TaskOutcome.NeedsHuman,
+            Summary = $"needs human: {reason}"
+        }, FeedbackPath: null, Outcome: AttemptOutcome.NoRoute);
     }
 
     /// <summary>
@@ -407,6 +484,7 @@ internal sealed class AttemptJournaler
             ActionExitCode = action.ExitCode,
             Outcome = AttemptOutcome.PermissionDenied,
             CostUsd = action.CostUsd,
+            Usage = action.Usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -459,6 +537,7 @@ internal sealed class AttemptJournaler
             Outcome = primaryOutcome,
             FailedGuardrails = failedGuardrails,
             CostUsd = action.CostUsd,
+            Usage = action.Usage,
             LogDir = relativeLogDir
         };
         _journal.RecordAttempt(task.Id, record, JournalTaskStatus.NeedsHuman);
@@ -538,7 +617,8 @@ internal sealed class AttemptJournaler
         DateTimeOffset startedAt,
         string relativeLogDir,
         ProcessResult actionResult,
-        decimal? costUsd)
+        decimal? costUsd,
+        AttemptUsage? usage = null)
     {
         var record = new AttemptRecord
         {
@@ -548,6 +628,7 @@ internal sealed class AttemptJournaler
             ActionExitCode = actionResult.ExitCode,
             Outcome = AttemptOutcome.Cancelled,
             CostUsd = costUsd,
+            Usage = usage,
             LogDir = relativeLogDir
         };
 
