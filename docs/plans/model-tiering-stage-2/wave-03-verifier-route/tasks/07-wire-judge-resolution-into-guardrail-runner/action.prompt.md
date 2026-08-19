@@ -79,6 +79,17 @@ system will notice.
 cannot invent what you do not expose — add the resolved judge to **`GuardrailRunResult`** (the record
 this method already returns: `Results`, `AnyFailed`, `TimedOut`) rather than leaving it a local.
 
+**Its TYPE is pinned: expose it as the journal's `Guardrails.Core.Journal.AttemptJudge`** — the
+eight-member record task 03 declares — **built HERE, inside `GuardrailRunner`, from your
+`JudgeResolution` local.** `TaskExecutor` then assigns it verbatim and does no mapping.
+
+This is not a style preference, and it is the one decision in this task that another task cannot
+recover from. If you instead expose the raw `JudgeResolution` and leave the mapping to
+`TaskExecutor`, then task 12 — which must set `Advisory` on the judge object — has no assignment site
+inside its own single-file write scope, and dead-ends at needs-human. `TaskExecutor` already works in
+`Journal.` types (`Journal.AttemptProvenance`, `Journal.AttemptRecord`), so nothing about this crosses
+a layer that is not already crossed.
+
 Wave 2 lost a task to exactly this shape (#474), and shipped a live instance of it (#475:
 `AttemptRecord.Usage` is declared, is READ by the per-tier spend aggregation, and is assigned by
 NONE of the twelve construction sites — the feature is structurally dead and every guardrail was

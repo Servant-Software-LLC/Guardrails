@@ -38,11 +38,24 @@ second carry.**
   *finding*, not an error: the guardrail still runs, on the block that was resolved. If computing
   the advisory throws, the attempt must still proceed — an advisory that can break a run is strictly
   worse than no advisory.
-- **It must not emit the run-start line.** Task 13 owns that surface. §6.5's de-duplication ruling is
+- **It must not emit ANY log line, and it must not try to compare against the preflight.** Task 13
+  owns the run-start surface. The §6.5 "log only when the observed finding differs from what the
+  preflight predicted" behaviour is **not built in this wave**: `GuardrailRunner`'s only output
+  channel is the observer, `IRunObserver.cs` is not in your scope, and nothing carries task 13's
+  run-start prediction down to the JIT boundary — there is no left-hand side to compare against.
+  `VerifierAdvisory` exposes the decision as a unit (tasks 09/10 test it); wiring it is a later
+  wave's work. **Compute and record. That is all.** Do not chase the log line into a needs-human. §6.5's de-duplication ruling is
   precisely that the two surfaces say different things: run-start emits one line per affected task,
   the JIT boundary **records silently into provenance** and only *logs* when what it observes
   differs from what the preflight predicted. `VerifierAdvisory` already exposes that decision — call
   it; do not re-derive the rule here.
+
+### The revalidate path — a null actor route
+
+Task 07 passes a **null** actor route on the `RevalidateAsync` call site (there is no action, so
+there is no actor). With no actor there is no "weaker than" relation, so **there is no advisory
+condition to find**: record the judge with no `advisory`. Do not invent a comparison, and do not
+treat a null route as an error — a revalidate still resolves a real judge, and task 08 records it.
 
 ### Absent, never null
 

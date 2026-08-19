@@ -8,5 +8,7 @@
   "writeScope": [
     "src/Guardrails.Core/Execution/GuardrailRunner.cs"
   ],
-  "maxTurns": 40
+  "action": {
+    "maxTurns": 40
+  }
 }

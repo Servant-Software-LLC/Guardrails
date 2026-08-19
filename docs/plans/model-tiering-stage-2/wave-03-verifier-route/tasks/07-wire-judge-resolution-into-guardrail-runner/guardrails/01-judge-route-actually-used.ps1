@@ -26,6 +26,13 @@ if ($code -cnotmatch 'TierResolver\s*\.\s*ResolveJudge\s*\(') {
 }
 
 # The resolved datum must be exposed, or task 08 has nothing to carry to the journal (#474/#475).
+# The EXPOSED type is pinned to the journal's AttemptJudge (task 03's eight-member record), built
+# here from the JudgeResolution local. Exposing the raw JudgeResolution instead leaves task 12 - which
+# must set Advisory on that object - with no assignment site in its own single-file scope, and it
+# dead-ends at needs-human. Both tokens are therefore required: the local, and the exposed type.
+if ($code -cnotmatch 'AttemptJudge') {
+    $failures += 'GuardrailRunner never names AttemptJudge in real code - the resolved judge must be EXPOSED as the journal record Guardrails.Core.Journal.AttemptJudge, built here from your JudgeResolution local, so TaskExecutor assigns it verbatim and task 12 has an in-scope site to set Advisory on. Exposing the raw JudgeResolution instead strands task 12 (#474).'
+}
 if ($code -cnotmatch 'JudgeResolution') {
     $failures += 'GuardrailRunner never mentions JudgeResolution in real code - even a correct resolution is useless if it stays a local: task 08 carries it to the journal and cannot invent what this task does not expose. Wave 2 shipped a live instance of exactly this (#475: AttemptRecord.Usage is declared, is READ by the per-tier spend aggregation, and is assigned by none of its twelve construction sites - structurally dead, every guardrail green).'
 }

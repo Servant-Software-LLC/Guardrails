@@ -78,7 +78,16 @@ if ($records.Count -lt 1) {
         $tail = $execCode.Substring($m.Index)
         $stop = $tail.IndexOf('RecordAttempt')
         if ($stop -lt 1) { $stop = [Math]::Min(1500, $tail.Length) }
-        if ($tail.Substring(0, $stop) -cnotmatch 'Provenance\s*=') { $uncarried++ }
+        $window = $tail.Substring(0, $stop)
+        # The PREDICATE, not just the token. Measured: a bare `Provenance = null,` and a
+        # `Provenance = new AttemptProvenance(),` both satisfied an earlier `Provenance\s*=` form -
+        # the second being the #475 shape verbatim (an object present, the datum absent), inside the
+        # very clause whose message demands the record say WHICH model graded the fix. So the window
+        # must also mention Judge, and a null assignment does not count as carrying anything.
+        $carries = ($window -cmatch 'Provenance\s*=') -and
+                   ($window -cnotmatch 'Provenance\s*=\s*null\s*[,;}]') -and
+                   ($window -cmatch '\bJudge\b')
+        if (-not $carries) { $uncarried++ }
     }
     if ($uncarried -gt 0) {
         $failures += "$uncarried of $($records.Count) AttemptRecord(s) built in TaskExecutor never set Provenance. These are the REVALIDATE records - the path a human's in-place fix runs through. A revalidate graded by a model must record WHICH model graded it, or the one path a human is actively working through is the only path with no judge provenance. There is no launch-time provenance object to fold into there: CONSTRUCT one carrying the judge (route-derived fields are legitimately absent - no action means no actor model, no segment, no grants)."

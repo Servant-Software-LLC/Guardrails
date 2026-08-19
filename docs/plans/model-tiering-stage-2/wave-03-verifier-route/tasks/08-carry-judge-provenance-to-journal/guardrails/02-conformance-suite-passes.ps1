@@ -5,7 +5,20 @@
 #          path this task threads a field through, and they are the regression bar.
 #          Re-emits the assertion lines at the END so they reach the retry-feedback tail (#179).
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
-$filter = 'FullyQualifiedName~Stage2ConformanceTests'
+# NAMED CLAUSES, not the whole class (#455). Two reasons, and the second is a dead-end:
+#   1. a task-level gate keyed on a whole test class is the over-broad anti-pattern wearing a filter;
+#   2. the class also carries Judge_WeakVerifier_AdvisoryRecorded_EqualAndStrongNot, which only goes
+#      green once task 12 records the advisory - and task 12 runs AFTER this one. A whole-class filter
+#      would fail this task on a clause it cannot possibly satisfy, every attempt.
+$tests = @(
+    'Judge_ResolvesThroughSameResolver_AtActorsRung',
+    'Judge_WeakActor_StrengthBump_NotTierBump',
+    'Judge_OnlyStrongerBlockIsCostly_DegradesAndProceeds',
+    'Judge_PinnedCostlyActor_MayBumpIntoCostly_D29',
+    'Judge_VerifierMinTier_RaisesNeverLowers',
+    'Judge_ProvenanceReachesRunJson_BothPaths'
+)
+$filter = ($tests | ForEach-Object { "FullyQualifiedName~Stage2ConformanceTests.$_" }) -join '|'
 # NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual block (#462).
 $out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo 2>&1
 $testExit = $LASTEXITCODE

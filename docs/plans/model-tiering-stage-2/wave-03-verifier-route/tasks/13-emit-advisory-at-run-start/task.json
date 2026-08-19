@@ -8,8 +8,11 @@
     "src/Guardrails.Core/Execution/IRunObserver.cs",
     "src/Guardrails.Core/Execution/Scheduler.cs",
     "src/Guardrails.Cli/ConsoleRunObserver.cs",
+    "src/Guardrails.Cli/Ui/LiveRunObserver.cs",
     "src/Guardrails.Cli/Ui/OnTheFlyDiagramObserver.cs",
     "src/Guardrails.Cli/Ui/OnTheFlyLogSiteObserver.cs"
   ],
-  "maxTurns": 45
+  "action": {
+    "maxTurns": 55
+  }
 }

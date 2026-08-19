@@ -29,6 +29,18 @@ real-seam judge clauses. This is the suite the **plan terminal gate** reads by N
 | 3 | `Judge_OnlyStrongerBlockIsCostly_DegradesAndProceeds` | rule 5 — advisory, run proceeds, no halt |
 | 4 | `Judge_PinnedCostlyActor_MayBumpIntoCostly_D29` | D29 carve-out, and the `default` pointer does NOT trigger it |
 | 5 | `Judge_VerifierMinTier_RaisesNeverLowers` | §6.5.1 — the floor only raises |
+| 6 | `Judge_ProvenanceReachesRunJson_BothPaths` | §12.4 — the judge object is READ BACK OUT of `run.json` after a run, on the serial AND the worktree-settle path |
+| 7 | `Judge_WeakVerifier_AdvisoryRecorded_EqualAndStrongNot` | §6.5 — a weak judge records `advisory` in provenance; an equal-and-strong one records none |
+
+**Clauses 6 and 7 go RED and stay red longer than the others, and that is expected.** Clause 6 goes
+green when task 08 lands the provenance carry; clause 7 when task 12 records the advisory. Your own
+`03-tests-fail-on-current-code` guardrail only requires them to FAIL now, and each downstream task
+filters to the clauses it is responsible for — so nothing dead-ends waiting on a task that has not
+run yet.
+
+**Assert on `run.json`, not on the harness's in-memory result.** These two are the only clauses in the
+wave that prove the datum SURVIVES serialization to the journal — an assertion on a returned object
+would pass against a judge object that never gets written, which is the #475 failure exactly.
 
 Add more freely; do not rename these five.
 

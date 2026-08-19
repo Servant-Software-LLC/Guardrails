@@ -25,15 +25,36 @@ into provenance, log only on a difference); you own the run-start half (say it o
 ### The seam — all four pieces already exist
 
 1. **`IRunObserver`** (`src/Guardrails.Core/Execution/IRunObserver.cs`) is the run's event surface.
-   Add ONE event for the advisory. Follow **`ParallelismClampedNoProvider(int requested)`** exactly:
-   it is the existing precedent for a one-off run-level diagnostic, right down to the defaulted
-   empty body that keeps the addition non-breaking.
-2. **`Scheduler`** raises it. `ParallelismClampedNoProvider` is raised near the top of the run — put
-   your walk beside it. Iterate the plan's tasks, resolve each actor route and its judge, ask
-   `VerifierAdvisory` for the finding, and raise ONE event per affected task. A task with no
-   affected judge raises nothing; a run with no findings prints nothing at all.
-3. **`ConsoleRunObserver`** renders the line.
+   Add ONE event for the advisory, with a **defaulted empty body** so the addition is non-breaking.
+   `ParallelismClampedNoProvider(int requested)` shows that declaration shape — **and nothing else;
+   see the warning below.** Declare the parameters with **public or primitive types** (e.g.
+   `(string taskId, string finding)`): `IRunObserver` is public, `Guardrails.Cli` has no
+   `InternalsVisibleTo` into `Guardrails.Core`, and an `internal` finding type on this signature is a
+   CS0051 inconsistent-accessibility error you cannot fix — `VerifierAdvisory.cs` is out of scope.
+2. **`Scheduler`** raises it, **at the top of `RunAsync`, after the cycle check and before the
+   integration handle is created** — NOT in the constructor. Iterate `plan.Tasks` (already the
+   flattened union of every wave's tasks, so one walk covers a waved plan), resolve each actor route
+   and its judge, ask `VerifierAdvisory` for the finding, and raise ONE event per affected task. A
+   task with no affected judge raises nothing; a run with no findings prints nothing at all.
+   **Resolve the actor route only for a PROMPT action.** `TaskExecutor.ResolveRoute` is private, so
+   you will spell the call yourself — carry its `task.Action.Kind == ActionKind.Prompt` guard with
+   it. Drop the guard and the walk emits advisories for script tasks that never resolve a judge at
+   all, which is noise the operator cannot act on.
+3. **BOTH leaves render it.** There are two, and the chain differs by mode — see
+   `RunCommand.cs`'s composition root:
+   - **live / default:** `OnTheFlyDiagramObserver` → `OnTheFlyLogSiteObserver` → **`LiveRunObserver`**
+   - **`--no-ui`:** `OnTheFlyDiagramObserver` → `OnTheFlyLogSiteObserver` → **`ConsoleRunObserver`**
+   `ConsoleRunObserver` is **not in the live chain at all**. Render in only one and the advisory is
+   invisible in the other. In `LiveRunObserver` follow `PlanHashMismatch` / `DecisionRecorded` — a
+   run-level `AnsiConsole.MarkupLine` under the `_gate` lock (the Scheduler runs *inside* the Spectre
+   live region, so a raw `Console.Write` corrupts the table). In `ConsoleRunObserver` follow its
+   `_output.WriteLine` calls.
 4. **The two decorators must FORWARD it** — see below.
+
+> **Do NOT copy `ParallelismClampedNoProvider` beyond its declaration shape.** It is declared, raised,
+> and forwarded by both decorators — and **rendered by neither leaf**. It is a dead event: its "loud
+> demotion notice" prints nowhere, in either mode. It is a live instance of the bug this task exists
+> to prevent, so treat it as the cautionary case, not the worked example.
 
 ### The trap this task exists to walk into deliberately
 
@@ -59,10 +80,16 @@ D22a exists to forbid.
 
 ### Scope
 
-**Scope boundary (harness-enforced):** Write only to the five paths in this task's `writeScope`.
-Three of them (`IRunObserver.cs` and the two `Ui/OnTheFly*Observer.cs` decorators) take **one line
-each** — the event declaration and its two forwards. The real work is the Scheduler walk and the
-Console rendering. After this task completes, the harness runs a `git diff` check and rejects any
+**Scope boundary (harness-enforced):** Write only to the six paths in this task's `writeScope`.
+Four of them are tiny: `IRunObserver.cs` is the event declaration, the two `Ui/OnTheFly*Observer.cs`
+decorators are one forward each, and the two leaf renders are a few lines apiece. The real work is
+the Scheduler walk.
+
+*(`guardrails validate` warns GR2042 on a six-path scope. That warning has been reviewed and
+accepted rather than split: the deliverable is **one** end-to-end wire, and splitting Core from CLI
+would leave the first task's guardrail unable to see whether the event is rendered at all — which
+recreates the exact "raised into a void" hole this task exists to close. Keep the change narrow
+instead: four of the six files take only a handful of lines.)* After this task completes, the harness runs a `git diff` check and rejects any
 edit outside those paths — including `VerifierAdvisory.cs` (task 10 owns it), `GuardrailRunner.cs`
 (task 12), `TierResolver.cs`, or the `.csproj`.
 

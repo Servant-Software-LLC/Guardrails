@@ -5,8 +5,11 @@
 # TOKENS MEASURED against the integration tree at authoring: VerifierAdvisory = 0 occurrences in
 # GuardrailRunner.cs, Advisory = 0. Both clauses therefore start RED and can only go green on work.
 #
-# SOUND ABSENCE ONLY (#468): a failure is conclusive, a pass is not proof the value is right. The
-# conformance clauses task 06 authored are what prove the advisory actually reaches run.json.
+# SOUND ABSENCE ONLY (#468): a failure here is conclusive, a pass is not proof the value is right.
+# The behavioural proof is the SIBLING 02-advisory-conformance-passes guardrail, which drives the real
+# seam and reads run.json. An earlier version of this comment credited "the conformance clauses task
+# 06 authored" - task 06 pinned five clauses at the time and NONE concerned the advisory, so this
+# guardrail was accepting a weak structural check on the strength of a proof nobody had written.
 $ErrorActionPreference = 'Continue'
 $file = 'src/Guardrails.Core/Execution/GuardrailRunner.cs'
 $failures = @()
@@ -19,8 +22,18 @@ $raw  = Get-Content -Raw $file
 $code = [regex]::Replace($raw, '/\*[\s\S]*?\*/', '')
 $code = [regex]::Replace($code, '(?m)//.*$', '')
 
-if ($code -cnotmatch 'VerifierAdvisory') {
+# A DOTTED CALL, not a bare token (#76): `nameof(VerifierAdvisory)` in a dead field satisfied the
+# token form while computing nothing (measured, exit 0).
+if ($code -cnotmatch 'VerifierAdvisory\s*\.') {
     $failures += 'GuardrailRunner never names VerifierAdvisory in real code - tasks 09/10 built and tested it, and with no caller it is a green unit that ships dead. The JIT boundary is this task: compute the finding where the judge is resolved.'
+}
+# The assignment must land INSIDE the AttemptJudge that GuardrailRunner returns - task 07 pins that
+# type as the exposed one. Keyed on the two together within ONE statement, because the free-floating
+# form was satisfied by  _ = judge with { Advisory = ... }  - a with-expression whose result is
+# DISCARDED (records are immutable), i.e. the #475 shape reproduced inside the task written to
+# prevent it. Measured: that bypass exited 0 against the previous form.
+if ($code -cnotmatch '(?s)AttemptJudge[^;]{0,800}?Advisory\s*=') {
+    $failures += 'no Advisory assignment inside an AttemptJudge construction - task 07 exposes the resolved judge as Guardrails.Core.Journal.AttemptJudge, and the advisory must be set ON THAT OBJECT so it rides the carry task 08 already built. A with-expression whose result is discarded, or an Advisory set on some other object, changes nothing that reaches run.json.'
 }
 if ($code -cnotmatch '\bAdvisory\s*=') {
     $failures += 'nothing ASSIGNS an Advisory member in real code - computing the finding and then not putting it on the judge datum leaves 6.5 half-implemented, and the schema field tasks 03/04 added stays null forever (the #475 shape this wave exists to avoid repeating)'
