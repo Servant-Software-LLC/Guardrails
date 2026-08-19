@@ -1,10 +1,32 @@
 # catches: dispatch tests that pass against throwing stubs - they assert nothing real, or the agent
 #          implemented the dispatch instead of stubbing it. Build already green (01), so a non-zero test
 #          exit here means the tests RAN and FAILED = TDD red.
+#          SCOPED TO THIS PAIR'S OWN TEST CLASS (#455). The bare plan-wide `Category=ModelTieringStage1`
+#          trait selects EVERY Stage 1 test across all five classes, so this red proof was satisfied by ANY
+#          sibling pair's intended-red tests whether or not THIS pair's tests failed - a silent tautology
+#          decided by merge order, not by correctness.
 $ErrorActionPreference = 'Stop'
-& dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --filter "Category=ModelTieringStage1" --nologo -v q 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Output "The dispatch tests PASS against the NotImplementedException stubs - they assert nothing real."
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'   # the run summary the guard below reads is LOCALIZED (#455)
+$filter = 'Category=ModelTieringStage1&FullyQualifiedName~RegistryKindDispatchTests'
+$log = & dotnet test tests/Guardrails.Core.Tests/Guardrails.Core.Tests.csproj --filter $filter --nologo 2>&1
+$code = $LASTEXITCODE
+$log | ForEach-Object { Write-Output $_ }
+
+# GUARD FIRST on this INVERSE check (#455) - deliberately the opposite order from the forward
+# `tests-pass` form. Here a crashed or never-started test host also exits NON-ZERO, which is this
+# check's SUCCESS condition, so a guard placed second would certify "TDD red" over a run that executed
+# nothing. Key on the EXECUTED count, Passed+Failed: "Total:" also counts [Skip]ped tests, so a class of
+# [Fact(Skip=...)] would report a match while running zero. Never key on "No test matches the given
+# testcase filter" - that string is verbosity-dependent and was measured NOT to fire (#248).
+$ran = ([regex]::Matches(($log | Out-String), '(?:Passed|Failed):\s*(\d+)') |
+        ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
+if ($ran -lt 1) {
+    Write-Output "ZERO tests executed - the TDD-red proof certified NOTHING. The --filter '$filter' matched no tests, is malformed, every matched test is [Skip]ped, or the test host failed to start (read the log above). This is NOT a tautology finding: do NOT rewrite the tests."
+    exit 1
+}
+
+if ($code -eq 0) {
+    Write-Output "The RegistryKindDispatchTests tests PASS against the NotImplementedException stubs - they assert nothing real."
     exit 1
 }
 exit 0
