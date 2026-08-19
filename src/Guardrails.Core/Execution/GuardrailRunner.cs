@@ -262,7 +262,7 @@ internal sealed class GuardrailRunner
         return (
             result,
             !promptResult.Completed && promptResult.Summary.Contains("timed out", StringComparison.Ordinal),
-            ToAttemptJudge(judge));
+            ToAttemptJudge(judge, route));
     }
 
     /// <summary>
@@ -271,16 +271,18 @@ internal sealed class GuardrailRunner
     ///
     /// <para><b>The type is the journal record on purpose.</b> Exposing the raw
     /// <see cref="JudgeResolution"/> and leaving the mapping to <see cref="TaskExecutor"/> would strand
-    /// the advisory: the wave-3 task that must set <see cref="Journal.AttemptJudge.Advisory"/> owns THIS
-    /// file, and would have no assignment site inside its own scope. <c>Advisory</c> is therefore left
-    /// unset here — the resolution's <see cref="JudgeResolution.Weak"/> / <see cref="JudgeResolution.Degraded"/>
-    /// facts are its inputs, and the finding's TEXT is a separate concern from the route.</para>
+    /// the advisory: the §6.5 finding is a fact about the (ACTOR, JUDGE) PAIR, and this is the only site
+    /// that holds both halves — the actor's threaded-in route and the judge that was just resolved from
+    /// it. Downstream there is only the judge.</para>
     ///
     /// <para><c>Kind</c> is emitted as its WIRE TOKEN, never the C# enum name or its ordinal: the
     /// journal is read by tooling that never links against this assembly, so the token is the contract
     /// — the same discipline <c>AttemptProvenance.Kind</c> follows for the actor.</para>
     /// </summary>
-    private static Journal.AttemptJudge ToAttemptJudge(JudgeResolution judge) => new()
+    /// <param name="judge">The resolution that graded this pass.</param>
+    /// <param name="actor">The §6 actor route the judge was resolved AGAINST — null on the revalidate
+    /// path, where there is no action attempt and therefore nothing for the judge to be weaker THAN.</param>
+    private static Journal.AttemptJudge ToAttemptJudge(JudgeResolution judge, TierResolution? actor) => new()
     {
         Runner = judge.RunnerName,
         Kind = judge.Kind is { } kind ? PromptRunnerKinds.Token(kind) : null,
@@ -290,8 +292,47 @@ internal sealed class GuardrailRunner
         Strength = judge.Strength,
         // NOT optional: recording a real `false` is a measurement ("a judge resolved and no bump was
         // needed"), where an absent key would be indistinguishable from "no judge resolved at all".
-        Bumped = judge.Bumped
+        Bumped = judge.Bumped,
+        Advisory = DescribeAdvisory(actor, judge)
     };
+
+    /// <summary>
+    /// The §6.5 verifier advisory for THIS attempt's (actor, judge) pair — the de-duplication ruling's
+    /// "the JIT re-check records <c>judge.advisory</c> in provenance ALWAYS" half. <b>Computed on every
+    /// judge resolution</b>, which is what "always" means: a judge with no advisory condition records no
+    /// <c>advisory</c> key at all (§12.4), never an empty string and never a <c>null</c> — the schema's
+    /// <c>WhenWritingNull</c> discipline turns the null answer into an absence.
+    ///
+    /// <para><b>It RECORDS and it does not speak.</b> The run-start surface owns the printed line, and
+    /// §6.5's "log only when the observation differs from what the preflight predicted" needs a
+    /// prediction to differ FROM — nothing carries one down to this boundary, and inventing a second
+    /// unconditional line here is exactly the noise the de-duplication ruling exists to prevent. The
+    /// decision itself lives in <see cref="VerifierAdvisory.ShouldLog"/>, already built and tested,
+    /// waiting on the wiring that hands the preflight's answer through.</para>
+    ///
+    /// <para><b>And it cannot break the run.</b> A weaker-than-its-actor judge is a FINDING, not an
+    /// error — the guardrail still runs, on the block that resolved (§12.6, and D26's "degrade what is
+    /// advisory; halt what is load-bearing"). So a throw while computing the OPINION cannot be allowed
+    /// to take down the attempt the opinion is about: an advisory that can fail a run is strictly worse
+    /// than no advisory, and losing one line of provenance is the cheaper failure by a wide margin.
+    /// The catch is unfiltered for that reason and only that reason — this is a pure in-memory decision
+    /// with no expected exception set to enumerate.</para>
+    /// </summary>
+    private static string? DescribeAdvisory(TierResolution? actor, JudgeResolution judge)
+    {
+        try
+        {
+            // A null actor answers null here rather than being special-cased: with no actor route there
+            // is no "weaker than" relation to find, and VerifierAdvisory already states that. Duplicating
+            // the guard would be a second opinion about the revalidate path, which is how the two drift.
+            string? message = VerifierAdvisory.Evaluate(actor, judge)?.Message;
+            return string.IsNullOrWhiteSpace(message) ? null : message;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static GuardrailResult ToGuardrailResult(GuardrailDefinition guardrail, ProcessResult result)
     {
