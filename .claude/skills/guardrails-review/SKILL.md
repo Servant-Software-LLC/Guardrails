@@ -966,6 +966,74 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   full adversarial pass; a stub is reviewed when it is later filled.)
 <!-- END ADDED PROBES #254 -->
 
+### 2b. EXECUTE the guardrails — the phase that catches what reading cannot (#479)
+
+Everything above reads scripts and reasons about them. **That reasoning runs against a mental model of
+the target tree, and the mental model is exactly where the errors live** — which is why this phase
+exists and why it is not optional. Measured over one plan: every blocker that reached a live run was
+found by *running* something, and none by reading.
+
+Run both probes. They catch different failures and neither subsumes the other.
+
+**Probe A — baseline (cheap, universal, no author effort).** Execute each task's guardrails from the
+plan's starting workspace and record **exit code AND stderr**.
+
+- Expect **RED**. A guardrail that is GREEN before its task runs certifies nothing — every clause is
+  already satisfied, so the task is passable by doing nothing.
+- **Read stderr, not just the exit code.** With `$ErrorActionPreference = 'Continue'` an exception is
+  non-fatal: a broken regex in a comment/string-stripping step silently *skips the strip* and changes
+  what the guardrail means. One such defect made a guardrail unsatisfiable on every attempt while
+  still exiting 1 for a plausible-looking reason.
+- A script that fails to **parse** is a dead-end no retry can fix (#473). So is one that crashes on a
+  missing path, or whose `--filter` matches nothing.
+- **Cost:** run the pure-script guardrails first — they take seconds. The ones that invoke
+  `dotnet build`/`dotnet test` are minutes each; run them only when the plan is small or on request,
+  and **name the ones you skipped in the Step 6 report** so the gap is visible rather than assumed
+  covered.
+
+> **Probe A does NOT catch a pre-satisfied CLAUSE.** A script has many clauses and one exit code, so a
+> clause that is green on arrival hides behind its siblings' failures. Measured: a wave whose task-05
+> guardrail contained a clause satisfied on arrival reported RED for the whole script and looked clean.
+> That is what Probe B is for — do not treat a red baseline as a pass.
+
+**Probe B — the minimal-gaming mutation (the one with teeth).** For each task, apply *the cheapest edit
+that satisfies the guardrail's literal text without delivering the capability*, then re-run. **Expect
+RED.** If it goes GREEN, the task is passable by that edit and the guardrail is the finding.
+
+Measured example: appending `internal static class Marker { public const string k = "prompt"; }` — one
+unused constant, zero capability — took a task's guardrail from 1 finding to **exit 0**.
+
+The operator set is small and enumerable, which is what makes this mechanical rather than a test of how
+inventive you feel that day. Work down it:
+
+| # | operator | dies against |
+|---|---|---|
+| 1 | append an unused type/const containing the required token | a dotted **call**, not a bare name (#76) |
+| 2 | put the token in a **comment** | comment-stripping |
+| 3 | put the token in a **string literal** | string-stripping |
+| 4 | satisfy a proximity regex **across a statement boundary** | keying on the outcome, not adjacency |
+| 5 | one **omnibus method name** satisfying several substring markers | full pinned names, anchored |
+| 6 | **declare** the method instead of forwarding/calling it | requiring `_inner.<name>(` — the forward itself |
+| 7 | assign the member to **`null`** or an **empty object** | excluding `= null`, requiring the payload |
+| 8 | compute the value and **discard** it (`_ = x with { … }`) | requiring the assignment back, or the destination |
+| 9 | reference the type via **`nameof`** in a dead field | a dotted call |
+| 10 | name an **event/local** after the class the clause wants called | a dotted call, again |
+| 11 | create the required **file empty** / a method with the pinned name and an **empty body** | requiring an emit or any call inside the body |
+| 12 | satisfy a `--filter` with a **`[Skip]`ped** test, or let it match nothing | the zero-match guard (#455) |
+| 13 | write the token in a form the artifact never uses | see the PRECEDENT check in the catalogue |
+
+Two patterns generalise and are worth applying before the table: **anchor on a USE, not a mention**
+(kills 1, 6, 9, 10, 11), and **anchor on the DESTINATION, not the value** (kills 7 and 8).
+
+**What neither probe catches — state it in the report rather than implying coverage.** A guardrail that
+is red before *and* red forever is indistinguishable from a correct red to both probes:
+- **#470** — a clause requiring a token it also forbids.
+- **#474** — a clause demanding an outcome the task's `writeScope` cannot reach.
+- **#484** — an arithmetic dead-end, e.g. a zero-match floor exceeding its own filter's cardinality.
+  Check these by hand: **whenever a guardrail contains both a filter cardinality and a numeric floor,
+  write the two numbers side by side and reconcile them.** They are usually 30 lines apart and were
+  edited at different times.
+
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
 - **Missing edges**: task B reads a state key or file only task A produces, with no
@@ -1041,9 +1109,16 @@ nondeterministic-where-deterministic-possible, or unactionable) · **NIT**.
 For WEAK prompt-judges, the fix column contains the replacement deterministic
 guardrail — ideally as ready-to-paste script text.
 
-The report also states what the pass could NOT check — the model-availability probe's JIT-resolved judge
-models, deferred to #223 — as an explicit line, never a silent omission: an unchecked gap that goes
-unmentioned is indistinguishable from a verified one.
+The report also states what the pass could NOT check — as explicit lines, never silent omissions: an
+unchecked gap that goes unmentioned is indistinguishable from a verified one. At minimum:
+
+- the model-availability probe's JIT-resolved judge models, deferred to #223;
+- **which guardrails Step 2b actually EXECUTED, and which it skipped** — name the toolchain-invoking
+  ones you did not run, and say whether Probe B (the minimal-gaming mutation) was applied per task or
+  only to a sample;
+- **the classes no probe can see** (#470 require-and-forbid, #474 unreachable-outcome, #484 arithmetic
+  dead-ends). These are red before AND red forever, so a baseline cannot distinguish them from a
+  correct red. If you hand-checked them, say so; if you did not, say that.
 
 Then ask: **"Apply fixes?"** — per-finding approval, never bulk-silent. If a finding
 concerns a guardrail the human added or edited (check `git log`/`git diff` if the

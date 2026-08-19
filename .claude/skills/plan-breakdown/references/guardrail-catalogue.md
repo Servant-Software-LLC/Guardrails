@@ -2053,6 +2053,39 @@ should fail before an expensive test run or a paid judge ever starts.
 
 ## Anti-patterns (the review skill hunts for these — don't generate them)
 
+- **Constrains the SHAPE of correct code, not the OUTCOME** (#479/#481): the guardrail is satisfiable
+  only by writing the implementation a particular way, so a *correct* implementation written any other
+  way goes RED. This is the single most expensive authoring defect measured to date — **three fired in
+  one live run**, each costing retries, and one came within a single attempt of dead-ending a task
+  whose work was already right. Three measured spellings, all of which read perfectly well on the page:
+  - **Statement-bounded proximity.** `'"guardrails"[^;]{0,200}?prompt\.md'` — required two tokens in
+    ONE statement. The natural implementation hoists the directory into a local
+    (`string dir = Path.Combine(taskDir, "guardrails"); … Path.Combine(dir, name + ".prompt.md")`),
+    putting a `;` between them. The agent wrote exactly that and was told it had never written the
+    file at all. **Fix: key on a token the outcome implies** — here `'(?<!action\.)prompt\.md'`, which
+    distinguishes the new guardrail file from the pre-existing `action.prompt.md` however the path is
+    assembled.
+  - **A literal call in a body.** Requiring `MarkupLine|WriteLine` inside an observer method rejects a
+    leaf that delegates to a private render helper. **Fix: accept any call** (`\w+\s*\(`) — an empty
+    body still fails, which is the actual requirement.
+  - **Vocabulary the target artifact never uses.** Requiring the C# type name `AttemptJudge` in a
+    schema document that names **zero** journal record types — its two sibling objects are documented
+    as `"provenance": {` and `"usage": {`. A correct delta in the document's own house style could not
+    pass. **Fix: accept the artifact's form, or both** — `'(?:"judge"\s*:|AttemptJudge)'`.
+
+  **The test, before you write any token-presence probe:** *can a correct implementation be written
+  that this rejects?* If yes, you are constraining shape. Ask what the token proves, then key on that.
+
+- **Demands a token with no PRECEDENT in the target artifact** (#468/#479): the vocabulary case above,
+  generalised into a check you can run in seconds and without executing anything. **For every literal
+  token a guardrail demands of an EXISTING artifact, point at a sibling precedent in that same
+  artifact.** If the analogous prior thing is written `"usage": {`, a probe demanding `AttemptUsage`
+  contradicts the artifact's settled conventions and is wrong however reasonable it reads. This matters
+  most for **documentation deliverables** (an SSOT-landing task, a contract doc), where there is no
+  behavioural proof to demote the check into — prose cannot be executed, so a token-presence regex is
+  simultaneously the *only* available form and the most defect-prone one. Two greps of the target file
+  settle it. Where both forms are legitimate, accept both rather than dictating one.
+
 - **Tautological**: the guardrail checks something the action writes specifically to
   satisfy it ("status.txt contains DONE"). The action controls the evidence.
 - **Hollow output assertion** (#73): a terminal/e2e guardrail that asserts only the

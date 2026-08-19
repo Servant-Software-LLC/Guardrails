@@ -1541,6 +1541,31 @@ Per `references/schemas.md`, exactly:
    `tiering.defaultTier` is present, no script task or deterministic guardrail was tagged, each
    surviving prompt-judge guardrail was classified, and the report carries the Step 4c.7 lines.
    Either direction, a mismatch is a self-review finding — fix it HERE, before `guardrails validate`.
+0a. **EXECUTE the pure-script guardrails you just emitted — expect RED (#479).** A guardrail that is
+    broken, or already green, should never reach the human. This costs seconds and is not optional.
+
+    From the plan's starting workspace, run each **pure-script** guardrail (skip the ones that invoke
+    `dotnet build`/`dotnet test` — minutes each; the review's Probe A takes those) and record **exit
+    code AND stderr**:
+
+    | observation | meaning | action |
+    |---|---|---|
+    | exits **1** | correct — the task's work is genuinely not done yet | none |
+    | exits **0** | it certifies nothing; the task is passable by doing nothing | **fix before reporting** |
+    | **stderr non-empty** | it THREW. With `$ErrorActionPreference = 'Continue'` that is non-fatal, so a broken regex silently skips a comment/string strip and changes the guardrail's meaning | **fix before reporting** |
+    | fails to **parse** | a dead-end no retry can fix (#473) | **fix before reporting** |
+    | `--filter` matches nothing | a zero-match pass (#455) | **fix before reporting** |
+
+    An exception: a **positive/assert-present** check is *supposed* to be green at the start — a wave
+    ENTRY preflight, or a `<plan>/preflights/` baseline asserting existing tests already pass (#181).
+    Those are the only legitimate green-on-arrival guardrails; everything else that exits 0 here is a
+    finding.
+
+    **Do not read a red baseline as a clean bill of health.** A script has many clauses and one exit
+    code, so a clause satisfied on arrival hides behind its siblings' failures. That is the review's
+    Probe B (the minimal-gaming mutation), not yours — but say in the report that you ran the baseline
+    only, so the next pass knows what is still unchecked.
+
 1. Run `guardrails validate <folder>`. Fix and re-run until exit 0 (or report that
    validation was skipped and why). **This now FAILS a breakdown that OMITS any `writeScope`**
    (**GR2041**, #389 — required on every task): a task that writes nothing to the repo must still
