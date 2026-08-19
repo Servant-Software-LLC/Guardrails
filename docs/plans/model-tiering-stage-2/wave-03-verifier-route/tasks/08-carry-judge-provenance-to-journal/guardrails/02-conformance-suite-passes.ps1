@@ -1,25 +1,32 @@
-# catches: a carry that lands the datum but breaks something on the way. This task edits Scheduler.cs
-#          and TaskExecutor.cs - the files every task of every plan runs through - so the blast radius
-#          of a mistake here is the whole harness, not this wave. The WHOLE conformance class runs
-#          here (not just the five judge clauses): wave 2's nine facts exercise the same execution
-#          path this task threads a field through, and they are the regression bar.
+# catches: a carry that lands the datum but breaks something on the way. This task threads a field
+#          through TaskExecutor - a file every task of every plan runs through - so the blast radius
+#          of a mistake here is the whole harness, not this wave. Wave 2's nine facts exercise the
+#          same execution path and are the REGRESSION BAR; they run here for that reason.
 #          Re-emits the assertion lines at the END so they reach the retry-feedback tail (#179).
+#
+# THE FILTER AND THE FLOOR ARE ONE INVARIANT - keep them in step. An earlier revision narrowed this
+# filter to six named judge clauses (a #455 scoping fix) and left the floor at 14, which was derived
+# from the WHOLE class (wave 2's nine + wave 3's five). Six clauses can never sum to 14, so the
+# guardrail was arithmetically unsatisfiable and dead-ended the task on every possible attempt. The
+# narrowing had also quietly dropped wave 2's nine clauses - the regression bar this gate exists for.
+#
+# So: run the whole class MINUS only the clauses a LATER task is responsible for, and set the floor to
+# exactly what that leaves. 17 tests in the class today, 2 excluded, floor 15. If you add a clause to
+# Stage2ConformanceTests, this floor moves with it.
 $env:DOTNET_CLI_UI_LANGUAGE = 'en'
-# NAMED CLAUSES, not the whole class (#455). Two reasons, and the second is a dead-end:
-#   1. a task-level gate keyed on a whole test class is the over-broad anti-pattern wearing a filter;
-#   2. the class also carries Judge_WeakVerifier_AdvisoryRecorded_EqualAndStrongNot, which only goes
-#      green once task 12 records the advisory - and task 12 runs AFTER this one. A whole-class filter
-#      would fail this task on a clause it cannot possibly satisfy, every attempt.
-$tests = @(
-    'Judge_ResolvesThroughSameResolver_AtActorsRung',
-    'Judge_WeakActor_StrengthBump_NotTierBump',
-    'Judge_OnlyStrongerBlockIsCostly_DegradesAndProceeds',
-    'Judge_PinnedCostlyActor_MayBumpIntoCostly_D29',
-    'Judge_VerifierMinTier_RaisesNeverLowers',
-    'Judge_ProvenanceReachesRunJson_BothPaths'
+
+# Excluded because they are RED until a task that runs AFTER this one lands - including them would
+# fail this task on work it is forbidden to do:
+#   Judge_WeakVerifier_AdvisoryRecorded_EqualAndStrongNot -> task 12 records the advisory
+#   Attempt_UsageTokensReachRunJson_BothPaths             -> task 14 carries #475's usage
+$notYet = @(
+    'Judge_WeakVerifier_AdvisoryRecorded_EqualAndStrongNot',
+    'Attempt_UsageTokensReachRunJson_BothPaths'
 )
-$filter = ($tests | ForEach-Object { "FullyQualifiedName~Stage2ConformanceTests.$_" }) -join '|'
-# NO -v q on the TEST command: it suppresses the Error Message/Expected/Actual block (#462).
+$expected = 15
+$filter = 'FullyQualifiedName~Stage2ConformanceTests' +
+          (($notYet | ForEach-Object { "&FullyQualifiedName!~$_" }) -join '')
+
 $out = dotnet test tests/Guardrails.Integration.Tests --filter $filter --nologo 2>&1
 $testExit = $LASTEXITCODE
 $out | ForEach-Object { Write-Output $_ }
@@ -31,19 +38,19 @@ if ($testExit -ne 0) {
         ForEach-Object { $_.Line } |
         Select-Object -First 40
     Write-Output ""
-    Write-Output "=== Failure details (re-emitted so they land in the harness feedback tail) ==="
-    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
-    else { Write-Output "(no assertion/exception lines matched - inspect the full log above)" }
+    Write-Output "=== the Stage 2 conformance suite is not green (exit $testExit) ==="
+    Write-Output "If a WAVE-2 clause is failing, this task regressed a shared execution path rather than threading a field through it. If Judge_ProvenanceReachesRunJson_BothPaths is failing, the judge is not reaching run.json on one of the two record paths - check the worktree/settle path, not just the serial one."
     Write-Output ""
-    Write-Output "the conformance suite is not green after threading judge provenance through the execution path. If a WAVE-2 clause is the failing one, this task regressed the shared path rather than adding to it - add your field beside the ones already there and do not restructure a method around it."
+    if ($detail) { $detail | ForEach-Object { Write-Output $_ } }
+    else { Write-Output "(no assertion lines matched - inspect the full log above)" }
     exit 1
 }
 
-# ZERO-MATCH GUARD (#455), keyed on the clause count the class owes after this wave.
+# ZERO-MATCH GUARD (#455), keyed on the EXECUTED count (Passed+Failed); Total: counts [Skip]ped tests.
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-if ($ran -lt 14) {
-    Write-Output "exit 0 but only $ran conformance test(s) executed - wave 2 owes nine and wave 3 adds five, so 14 is the floor. A lower count means a test was renamed, dropped or [Skip]ped; the plan terminal gate matches the same names and will fail there too."
+if ($ran -lt $expected) {
+    Write-Output "exit 0 but only $ran conformance test(s) executed, expected at least $expected - this gate certified less than it should. The class has 17 tests and this filter excludes $($notYet.Count); a lower count means a clause was renamed, dropped, or [Skip]ped. If you ADDED a clause, raise `$expected to match."
     exit 1
 }
 exit 0
