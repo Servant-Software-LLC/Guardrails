@@ -10,5 +10,6 @@
   ],
   "writeScope": [
     "docs/plans/02-schemas-and-contracts.md"
-  ]
+  ],
+  "retries": 5
 }

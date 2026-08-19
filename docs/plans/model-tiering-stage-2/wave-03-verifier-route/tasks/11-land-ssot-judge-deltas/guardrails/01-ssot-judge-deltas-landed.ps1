@@ -27,8 +27,8 @@ if (-not (Test-Path $file)) {
 $content = Get-Content -Raw $file
 
 foreach ($probe in @(
-    @{ Token = 'AttemptJudge';
-       What  = 'the judge provenance record (DoR 12.4) - the schema object wave 3 adds. Without it the journal delta is undocumented, and the journal is where every downstream consumer reads the judge route' },
+    @{ Pattern = '(?:"judge"\s*:|AttemptJudge)';
+       What  = 'the judge provenance object (DoR 12.4) - the schema object wave 3 adds. Without it the journal delta is undocumented, and the journal is where every downstream consumer reads the judge route. Documented as the WIRE KEY ("judge": { ... }) the way its siblings are; the C# type name is also accepted but is NOT the house style here' },
     @{ Token = 'equal-and-weak';
        What  = 'DoR 6.5 rule 4''s distinction - equal-and-STRONG needs no bump (Opus judging Opus is a real check) while equal-and-WEAK does (one blind spot talking to itself). The SSOT documents the bump but not the case that decides when it fires' },
     @{ Token = 'D32';
@@ -37,8 +37,16 @@ foreach ($probe in @(
        What  = 'the carve-out that a PINNED costly actor licenses a costly judge bump, while the default pointer does not. It is the one place the costly floor yields, so an undocumented D29 reads as a floor violation to the next person who finds it in the code' },
     @{ Token = 'D27';
        What  = 'the decision that tiering.verifier.minTier is a FLOOR rather than a default. The knob is already documented; that it only ever RAISES and never lowers is the property a reader needs and the one this wave is the first to depend on' })) {
-    if ($content -cnotmatch [regex]::Escape($probe.Token)) {
-        $failures += "the SSOT never mentions '$($probe.Token)' - $($probe.What)"
+    # A probe may specify a literal Token (escaped) or a Pattern (regex). The judge object uses a
+    # Pattern because the SSOT documents journal objects by their WIRE KEY, never by their C# record
+    # name: AttemptProvenance and AttemptUsage appear ZERO times in this document, while the same
+    # objects are documented as "provenance": { and "usage": {. An earlier form of this probe
+    # demanded the literal 'AttemptJudge' and rejected a correct delta written in the document's own
+    # house style, twice - the guardrail was constraining VOCABULARY rather than outcome.
+    $rx = if ($probe.ContainsKey('Pattern')) { $probe.Pattern } else { [regex]::Escape($probe.Token) }
+    if ($content -cnotmatch $rx) {
+        $name = if ($probe.ContainsKey('Pattern')) { $probe.What } else { "'$($probe.Token)' - $($probe.What)" }
+        $failures += "the SSOT never documents $name"
     }
 }
 
