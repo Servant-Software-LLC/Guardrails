@@ -25,7 +25,7 @@ if ($names.Count -lt 1) {
 
 # Wave 2 owes nine facts; wave 3 adds these five. The count floor guards against a rename that
 # silently drops one of wave 2's while adding one of wave 3's.
-if ($names.Count -lt 16) {
+if ($names.Count -lt 17) {
     Write-Output "only $($names.Count) Stage2ConformanceTests discovered - wave 2 owes NINE and wave 3 adds FIVE, so 14 is the floor. A lower count means an existing fact was renamed or dropped rather than extended; wave 2's nine must keep passing."
     exit 1
 }
@@ -37,6 +37,7 @@ $behaviours = @(
     @{ Name = 'Judge_PinnedCostlyActor_MayBumpIntoCostly_D29';         Id = "D29  a pinned costly actor licenses a costly judge bump; the default pointer does NOT" }
     @{ Name = 'Judge_VerifierMinTier_RaisesNeverLowers';               Id = "6.5.1  the verifier floor only ever raises" }
     @{ Name = 'Judge_ProvenanceReachesRunJson_BothPaths';              Id = "12.4  the judge object is read back OUT of run.json after a run, on BOTH record paths - the only clause proving the datum survives serialization rather than merely existing in memory (#475)" }
+    @{ Name = 'Attempt_UsageTokensReachRunJson_BothPaths';             Id = "#475  attempt.usage carries POSITIVE token counts in run.json on BOTH record paths - the field wave 2 shipped that nothing populates. Assert strictly positive, never merely non-null: an all-zero aggregate leaves anyUsage false, so a zero-token assertion passes against the bug itself." }
     @{ Name = 'Judge_WeakVerifier_AdvisoryRecorded_EqualAndStrongNot'; Id = "6.5  a weak judge records advisory in provenance and an equal-and-strong one records none - the behavioural proof the advisory ARRIVES, which no token-grep can give" }
 )
 

@@ -1,0 +1,18 @@
+{
+  "description": "Close #475 — carry AttemptUsage from PromptResult through ActionRun to AttemptRecord.Usage, on BOTH record paths, mirroring exactly how CostUsd already makes the trip",
+  "stableId": "u5m7qz",
+  "dependsOn": [
+    "08-carry-judge-provenance-to-journal",
+    "13-emit-advisory-at-run-start"
+  ],
+  "writeScope": [
+    "src/Guardrails.Core/Execution/ActionRunner.cs",
+    "src/Guardrails.Core/Execution/AttemptJournaler.cs",
+    "src/Guardrails.Core/Execution/RunReport.cs",
+    "src/Guardrails.Core/Execution/Scheduler.cs",
+    "src/Guardrails.Core/Execution/TaskExecutor.cs"
+  ],
+  "action": {
+    "maxTurns": 50
+  }
+}

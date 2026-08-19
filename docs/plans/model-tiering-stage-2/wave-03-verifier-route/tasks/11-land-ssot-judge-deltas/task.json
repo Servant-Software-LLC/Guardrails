@@ -5,7 +5,8 @@
     "08-carry-judge-provenance-to-journal",
     "10-implement-verifier-advisory",
     "12-record-advisory-into-judge-provenance",
-    "13-emit-advisory-at-run-start"
+    "13-emit-advisory-at-run-start",
+    "14-carry-attempt-usage-to-journal"
   ],
   "writeScope": [
     "docs/plans/02-schemas-and-contracts.md"

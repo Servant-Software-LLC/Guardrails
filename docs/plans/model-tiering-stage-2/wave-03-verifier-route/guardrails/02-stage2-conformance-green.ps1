@@ -34,13 +34,13 @@ if ($testExit -ne 0) {
 }
 
 # ZERO-MATCH GUARD (#455), tightened to the CLAUSE COUNT: exit 0 alone does not mean the suite ran.
-# Wave 2 owes nine facts and wave 3 adds SEVEN; a lower executed count means one was renamed, dropped
+# Wave 2 owes nine facts and wave 3 adds EIGHT; a lower executed count means one was renamed, dropped
 # or [Skip]ped - which would also silently break the plan terminal gate, since that gate matches the
 # same names.
 $ran = ([regex]::Matches(($out | Out-String), '(?:Passed|Failed):\s*(\d+)') |
         ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-if ($ran -lt 16) {
-    Write-Output "exit 0 but only $ran conformance test(s) executed - this wave gate certified less than it should. Wave 2 owes NINE named facts and wave 3 adds SEVEN, so 16 is the floor. The plan terminal gate matches the SAME names, so it will fail there too."
+if ($ran -lt 17) {
+    Write-Output "exit 0 but only $ran conformance test(s) executed - this wave gate certified less than it should. Wave 2 owes NINE named facts and wave 3 adds EIGHT, so 17 is the floor. The plan terminal gate matches the SAME names, so it will fail there too."
     exit 1
 }
 exit 0

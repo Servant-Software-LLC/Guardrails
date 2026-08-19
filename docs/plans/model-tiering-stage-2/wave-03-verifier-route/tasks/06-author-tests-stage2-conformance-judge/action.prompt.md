@@ -31,6 +31,12 @@ real-seam judge clauses. This is the suite the **plan terminal gate** reads by N
 | 5 | `Judge_VerifierMinTier_RaisesNeverLowers` | §6.5.1 — the floor only raises |
 | 6 | `Judge_ProvenanceReachesRunJson_BothPaths` | §12.4 — the judge object is READ BACK OUT of `run.json` after a run, on the serial AND the worktree-settle path |
 | 7 | `Judge_WeakVerifier_AdvisoryRecorded_EqualAndStrongNot` | §6.5 — a weak judge records `advisory` in provenance; an equal-and-strong one records none |
+| 8 | `Attempt_UsageTokensReachRunJson_BothPaths` | #475 — `attempt.usage` carries POSITIVE input/output token counts in `run.json`, on the serial AND the worktree-settle path |
+
+**Clause 8 is the one that closes #475**, a field wave 2 shipped that nothing populates: `AttemptUsage`
+is parsed, reaches `PromptResult`, and stops. Assert **strictly positive** token counts, never merely
+non-null — `anyUsage` stays false for an all-zero aggregate, so a zero-token assertion passes against
+the very bug. It goes green when task 14 lands.
 
 **Clauses 6 and 7 go RED and stay red longer than the others, and that is expected.** Clause 6 goes
 green when task 08 lands the provenance carry; clause 7 when task 12 records the advisory. Your own
