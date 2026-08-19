@@ -148,3 +148,129 @@ public sealed record TierResolution
     /// </summary>
     public bool Legacy { get; init; }
 }
+
+/// <summary>
+/// The outcome of one VERIFIER resolution (DoR <c>docs/plans/17-model-tiering.md</c> §6.5/§6.5.1,
+/// issue #201): the route the prompt-judge that grades an attempt actually runs on, and enough
+/// provenance to answer "was this judge strong enough to vouch?".
+///
+/// <para><b>It carries §12.4's <c>judge {...}</c> object, plus what the advisory needs.</b> The
+/// journal shape is <c>{ runner, kind, model, effort, tier, strength, bumped }</c> — every one of
+/// those is a member here, so the wiring task MAPS this record rather than re-deriving any of it.
+/// <see cref="Weak"/>, <see cref="Bumped"/> and <see cref="Degraded"/> are the three facts that exist
+/// ONLY inside this resolution: the #229 advisory (and its preflight / JIT surfaces) reads them
+/// instead of re-testing <c>strength</c>, <c>kind</c> and <c>costly</c> for itself, which would be the
+/// D22a duplication one level down.</para>
+///
+/// <para><b>There is deliberately no <c>NoRoute</c> here, and the omission is the design.</b> An
+/// unsatisfiable ACTOR rung HALTS (§6.2, GR2048); an unsatisfiable VERIFIER preference DEGRADES —
+/// <see cref="Degraded"/> — and the run proceeds. §12.6 states that no verifier condition may ever
+/// fail a build, so a judge that could not be improved must arrive as a route plus a warning, never as
+/// an outcome the scheduler can halt on.</para>
+/// </summary>
+public sealed record JudgeResolution
+{
+    /// <summary>
+    /// The <c>promptRunners</c> block the judge resolved to — <b>the object rule 7 turns on</b>.
+    /// <c>guardrailOverrides</c> compose with the resolved JUDGE's block, not the actor's, and the
+    /// mechanical form of that rule is calling <see cref="PromptRunnerConfig.EffectiveSettings"/> on
+    /// THIS block. Applying the actor block's overrides to a judge running somewhere else silently
+    /// mis-profiles every bumped judge — right model, wrong permissions, wrong tools, wrong turn
+    /// budget — and nothing else in the system notices. Null only when nothing resolved at all (no
+    /// rung, no floor, and no <c>default</c> pointer).
+    /// </summary>
+    public PromptRunnerConfig? Runner { get; init; }
+
+    /// <summary>
+    /// The resolved block's name (its <c>promptRunners</c> map key) — §12.4's <c>judge.runner</c>, and
+    /// the spelling every log line and diagnostic uses.
+    /// </summary>
+    public string? RunnerName { get; init; }
+
+    /// <summary>
+    /// The resolved block's provider kind — §12.4's <c>judge.kind</c>. Recorded because it is half of
+    /// §4.1's weakness fallback: once more than one provider is registered, "which model graded this"
+    /// is not answerable from the model string alone. Null when no block resolved.
+    /// </summary>
+    public PromptRunnerKind? Kind { get; init; }
+
+    /// <summary>
+    /// The EFFECTIVE model string the judge runs on — §12.4's <c>judge.model</c>. Null = the runner
+    /// CLI's own default, the same meaning it carries on the actor side.
+    /// </summary>
+    public string? Model { get; init; }
+
+    /// <summary>
+    /// The EFFECTIVE thinking-effort for the judge — §12.4's <c>judge.effort</c>, i.e. the resolved
+    /// block's <c>effort</c>. Null = nothing stated one.
+    /// </summary>
+    public string? Effort { get; init; }
+
+    /// <summary>
+    /// The rung the judge resolved AT — §12.4's <c>judge.tier</c>. Per rule 2 this is the ACTOR's rung
+    /// (or, for a rung-less actor, the plan-wide <c>tiering.defaultTier</c>), moved only by the §6.5.1
+    /// floor. It is NOT moved by rule 3: <see cref="Bumped"/> moves STRENGTH at a FIXED rung (D24a).
+    /// Null on a <c>runner</c> pin — no rung was resolved — and when no rung exists anywhere.
+    /// </summary>
+    public string? Tier { get; init; }
+
+    /// <summary>
+    /// The resolved block's declared <c>strength</c> — §12.4's <c>judge.strength</c>. Null = the
+    /// operator ranked nothing, which is exactly why <see cref="Weak"/> is a separate datum rather
+    /// than a comparison a reader could do on this number.
+    /// </summary>
+    public int? Strength { get; init; }
+
+    /// <summary>
+    /// §12.4's <c>judge.bumped</c>: TRUE when the rule-3 weak-actor STRENGTH bump fired — the judge is
+    /// a strictly stronger block than the actor, AT the actor's own rung. FALSE (never absent) when it
+    /// did not, because #230-lite reads this datum to answer "is a bumped judge worth what it costs",
+    /// and an absent field cannot be counted.
+    ///
+    /// <para>It says the bump FIRED, not that one was wanted: when a bump was wanted and the only
+    /// stronger block was <c>costly</c>, this stays false and <see cref="Degraded"/> is set instead.
+    /// The pair is what tells "no bump was needed" apart from "a bump was refused".</para>
+    /// </summary>
+    public bool Bumped { get; init; }
+
+    /// <summary>
+    /// <b>The advisory's input datum</b>, and the reason it is recorded rather than re-derived: TRUE
+    /// when the RESOLVED JUDGE block is weak by <see cref="TierResolver.IsWeakVerifier"/>, the one
+    /// shared §6.5-rule-4 predicate. A judge weaker than its actor, or equal-and-weak, is a #229
+    /// review finding, a preflight line and a per-attempt JIT re-check; all three read this (against
+    /// the actor's own block) instead of each re-testing <c>strength</c> and <c>kind</c> for
+    /// themselves.
+    /// </summary>
+    public bool Weak { get; init; }
+
+    /// <summary>
+    /// TRUE when §6.5 rule 1 decided this resolution — an explicit frontmatter <c>tier</c> or
+    /// <c>runner</c> pin, which wins outright and stops every rule below it. A <c>runner</c> pin
+    /// additionally leaves <see cref="Tier"/> null and bypasses the §6.5.1 floor: it named a block, so
+    /// there is no rung for a floor to raise. The human who pinned it said what they wanted — and the
+    /// advisory still measures what they got, because the floor governs resolution while the advisory
+    /// governs reality.
+    /// </summary>
+    public bool Pinned { get; init; }
+
+    /// <summary>
+    /// TRUE when the §6.5.1 floor decided <see cref="Tier"/> — either by RAISING a rung that came out
+    /// below <c>tiering.verifier.minTier</c>, or by SUPPLYING one where resolution had none. It is
+    /// what §6.5.1's journal note records as <c>judge.tierSource: "floor"</c>, so the cost of the
+    /// policy stays attributable to the policy. FALSE when the floor is absent, or was satisfied
+    /// without moving anything — a result at or above the floor is UNTOUCHED, which is the whole
+    /// difference between a floor and a default.
+    /// </summary>
+    public bool FloorRaised { get; init; }
+
+    /// <summary>
+    /// TRUE when the §6.5 rule-5 DEGRADE fired: a strength bump was wanted, every block that would
+    /// have satisfied it is <c>costly: true</c>, so the judge stayed at the ACTOR's route and the
+    /// advisory fires. <b>The run PROCEEDS.</b> This is not a halt and it is not
+    /// <see cref="TierResolution.NoRoute"/>'s counterpart — the actor HALTS in the same situation
+    /// precisely because an actor route is load-bearing and a verifier opinion is not. Knowable only
+    /// inside this resolution, and the datum that lets the advisory say "your judge is no stronger
+    /// than the work BECAUSE the stronger block is reserved" instead of leaving the operator to guess.
+    /// </summary>
+    public bool Degraded { get; init; }
+}
