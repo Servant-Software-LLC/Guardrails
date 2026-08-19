@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Guardrails.Core.Execution;
@@ -33,6 +34,24 @@ namespace Guardrails.Integration.Tests.ModelTiering;
 /// resolver would let every conformance clause prove the resolver against itself instead of proving the
 /// WIRING.</para>
 ///
+/// <para><b>A task may declare a prompt-JUDGE guardrail.</b> Give a <see cref="Stage2TaskSpec"/> a
+/// <see cref="Stage2TaskSpec.JudgeGuardrail"/> and the harness writes a real
+/// <c>NN-&lt;name&gt;.prompt.md</c> into that task's <c>guardrails/</c> folder, frontmatter and all, so
+/// the shipped <see cref="PlanLoader"/> loads it as an <see cref="ActionKind.Prompt"/> guardrail and the
+/// shipped guardrail runner invokes it through the SAME faked seam as the action. A task WITHOUT one
+/// keeps the trivially-passing deterministic <c>01-ok</c> guardrail, so every clause written before
+/// judges existed runs unchanged. The judge's call is distinguishable in the ledger —
+/// <see cref="Stage2RecordedCall.IsGuardrail"/>, plus the block, model and effort it ran with — which is
+/// the only thing a routing clause needs beyond the action's own record.</para>
+///
+/// <para><b>A judge passes or fails SOLELY by its verdict file</b> (SSOT §4.2/§9 — never by the
+/// runner's exit code), so the fake WRITES one: it reads <c>GUARDRAILS_VERDICT_OUT</c> off the
+/// invocation's environment and writes <c>{"pass": …, "reason": …}</c> there, exactly as
+/// <c>FakeClaudePlanBuilder</c>'s CLI and <c>PromptOutputStagingTests</c>' in-process fake do. A fake
+/// that returned a successful <see cref="PromptResult"/> and wrote nothing would produce a judge that
+/// ALWAYS fails with "guardrail produced no valid verdict", and every clause built on it would die for
+/// a reason that has nothing to do with routing.</para>
+///
 /// <para><b>It is a host, not a set of assertions.</b> The only assertion here is the plan-load sanity
 /// check — a malformed emitted plan must surface loudly on <see cref="PlanLoadResult.HasErrors"/>
 /// rather than as a mysterious failure ten frames later. Every routing clause belongs in the
@@ -56,6 +75,26 @@ namespace Guardrails.Integration.Tests.ModelTiering;
 /// });
 ///
 /// Assert.Equal("haiku", run.AttemptFor("01-task", 1).Provenance!.Runner);
+/// </code>
+/// </example>
+///
+/// <example>
+/// A task verified by a JUDGE rather than a script — the judge states its own rung, and the ledger
+/// shows which block actually served it:
+/// <code>
+/// Tasks =
+/// [
+///     new Stage2TaskSpec
+///     {
+///         Id = "01-task",
+///         Tier = "easy",
+///         JudgeGuardrail = new Stage2GuardrailSpec { Name = "verdict", Tier = "hard" }
+///     }
+/// ]
+///
+/// Stage2RecordedCall judge = run.JudgeCallFor("01-task", 1);
+/// Assert.True(judge.IsGuardrail);
+/// Assert.Equal("01-verdict", judge.GuardrailName);
 /// </code>
 /// </example>
 /// </summary>
@@ -120,8 +159,9 @@ public sealed class Stage2PlanHarness : IDisposable
     /// scheduler/executor with the recording fake runner.
     ///
     /// <para>Deterministic by construction: one worker (<c>maxParallelism: 1</c>), a fresh temp root,
-    /// a trivially-passing deterministic guardrail per task, <c>mergeOnSuccess</c> off (no git in the
-    /// loop) and an instantly-completing transient backoff.</para>
+    /// a trivially-passing guardrail per task — the deterministic <c>01-ok</c> script, or the scripted
+    /// prompt JUDGE when the task declares a <see cref="Stage2TaskSpec.JudgeGuardrail"/> —
+    /// <c>mergeOnSuccess</c> off (no git in the loop) and an instantly-completing transient backoff.</para>
     ///
     /// <para>May be called more than once on the same harness: each call REWRITES the plan files and
     /// runs again against the same root and the same <c>run.json</c> (resume semantics), with a fresh
@@ -147,12 +187,18 @@ public sealed class Stage2PlanHarness : IDisposable
         RunJournal journal = RunJournal.LoadOrCreate(plan);
 
         var recorder = new CallRecorder(
-            spec.Tasks.ToDictionary(t => t.Id, t => t.EffectiveResults(), StringComparer.Ordinal));
+            spec.Tasks.ToDictionary(t => t.Id, t => t.EffectiveResults(), StringComparer.Ordinal),
+            spec.Tasks
+                .Where(t => t.JudgeGuardrail is not null)
+                .ToDictionary(t => t.Id, t => t.JudgeGuardrail!, StringComparer.Ordinal));
 
         // One recording runner PER registry block, all writing to the same ordered recorder — so a
         // recorded call names the block the executor actually dispatched to, not just the model string.
+        // The whole block config rides along (not merely its name) because a call's EFFORT is the
+        // dispatched block's declared axis, and there is no other honest place to read it: no runner
+        // CLASS spells an effort flag today, so it never reaches PromptRunnerSettings.
         PromptRunnerRegistry registry =
-            PromptRunnerRegistry.Build(plan.Config, block => new RecordingRunner(block.Name, recorder));
+            PromptRunnerRegistry.Build(plan.Config, block => new RecordingRunner(block, recorder));
 
         var interpreterMap = new InterpreterMap(new PathExecutableProbe(), plan.Config.Interpreters);
 
@@ -333,8 +379,26 @@ public sealed class Stage2PlanHarness : IDisposable
         File.WriteAllText(Path.Combine(taskDir, "task.json"), manifest.ToJsonString(PlanJsonOptions));
         File.WriteAllText(Path.Combine(taskDir, "action.prompt.md"), "Do the thing.\n");
 
-        // A trivially-passing deterministic guardrail: OS-appropriate and directly spawnable, so an
-        // attempt's outcome is decided by the scripted runner result and nothing else.
+        // Exactly ONE guardrail per task, and which one is the task's own choice: a prompt JUDGE when it
+        // declares one (so a clause can observe how a verifier resolves), else the deterministic script
+        // that has always been here. Never both — a judge sitting beside an always-passing script would
+        // make "the guardrail pass" say nothing about the judge.
+        if (task.JudgeGuardrail is { } judge)
+        {
+            WriteJudgeGuardrail(taskDir, judge);
+        }
+        else
+        {
+            WriteDeterministicGuardrail(taskDir);
+        }
+    }
+
+    /// <summary>
+    /// A trivially-passing deterministic guardrail: OS-appropriate and directly spawnable, so an
+    /// attempt's outcome is decided by the scripted runner result and nothing else.
+    /// </summary>
+    private static void WriteDeterministicGuardrail(string taskDir)
+    {
         string guardrailPath = Path.Combine(taskDir, "guardrails", Windows ? "01-ok.cmd" : "01-ok.sh");
         File.WriteAllText(guardrailPath, Windows ? "@echo off\r\nexit /b 0\r\n" : "#!/usr/bin/env bash\nexit 0\n");
         // The guard is spelled inline (not via the cached flag) because the platform-compatibility
@@ -348,6 +412,52 @@ public sealed class Stage2PlanHarness : IDisposable
         }
     }
 
+    /// <summary>
+    /// A real prompt-JUDGE guardrail — <c>&lt;NN&gt;-&lt;name&gt;.prompt.md</c> with YAML frontmatter,
+    /// the shape SSOT §4.2 defines and the shipped loader parses (it is the loader, not this harness,
+    /// that turns <c>runner</c>/<c>tier</c> into a <see cref="GuardrailDefinition"/>).
+    ///
+    /// <para>Every value is written UNQUOTED and colon-free on purpose. <c>tier</c> is harvested by a
+    /// line-scanning scalar reader that trims whitespace but does NOT strip quotes, so
+    /// <c>tier: 'hard'</c> would bind the token <c>'hard'</c> — quotes included — which fails the
+    /// verbatim rung-membership check and would read as a routing bug rather than the fixture defect it
+    /// is.</para>
+    /// </summary>
+    private static void WriteJudgeGuardrail(string taskDir, Stage2GuardrailSpec judge)
+    {
+        var prompt = new StringBuilder();
+        prompt.Append("---\n");
+        prompt.Append("description: stage-2 conformance judge guardrail\n");
+        // Not enforced for a task's guardrails/ folder (GR2027 covers the three newer folders), but
+        // written anyway so the emitted plan is one a human reviewer would accept.
+        prompt.Append("catches: a judge guardrail that never ran, or ran on a route nobody asked for\n");
+
+        if (judge.Runner is not null)
+        {
+            prompt.Append("runner: ").Append(judge.Runner).Append('\n');
+        }
+
+        if (judge.Tier is not null)
+        {
+            prompt.Append("tier: ").Append(judge.Tier).Append('\n');
+        }
+
+        if (judge.MaxTurns is not null)
+        {
+            prompt.Append("maxTurns: ").Append(judge.MaxTurns.Value).Append('\n');
+        }
+
+        prompt.Append("---\n\n").Append(judge.Body);
+
+        // The extension is spelled HERE, literally, rather than behind a computed FileName property: the
+        // one thing that makes this harness able to host a judge at all is a `.prompt.md` written INTO
+        // the task's `guardrails/` folder, and that pairing belongs at the write site — readable (and
+        // greppable) in one place instead of with half of it hiding in a property elsewhere.
+        File.WriteAllText(
+            Path.Combine(taskDir, "guardrails", judge.GuardrailName + ".prompt.md"),
+            prompt.ToString());
+    }
+
     private static JsonArray ToJsonArray(IReadOnlyList<string> values) =>
         [.. values.Select(v => (JsonNode?)JsonValue.Create(v))];
 
@@ -357,23 +467,33 @@ public sealed class Stage2PlanHarness : IDisposable
 
     /// <summary>
     /// One registry block's stand-in CLI. It computes nothing: it hands the invocation to the shared
-    /// <see cref="CallRecorder"/> and returns whatever that call's script says.
+    /// <see cref="CallRecorder"/> and returns whatever that call's script says. It carries the whole
+    /// <see cref="PromptRunnerConfig"/> rather than just the name so the ledger can record the block's
+    /// declared <c>effort</c> beside the model the invocation actually carried.
     /// </summary>
-    private sealed class RecordingRunner(string name, CallRecorder recorder) : IPromptRunner
+    private sealed class RecordingRunner(PromptRunnerConfig block, CallRecorder recorder) : IPromptRunner
     {
-        public string Name => name;
+        public string Name => block.Name;
 
         public Task<PromptResult> RunAsync(PromptInvocation invocation, CancellationToken cancellationToken) =>
-            Task.FromResult(recorder.Record(name, invocation));
+            Task.FromResult(recorder.Record(block, invocation));
     }
 
     /// <summary>
-    /// The ordered ledger of every prompt invocation the run made, plus the per-task scripts. Scripts
-    /// are consumed in CALL order (not attempt number) with the last entry repeating once exhausted —
-    /// the same rule the shipped reliability suite's sequencing fake uses, so a paused-and-re-run
-    /// attempt and a fresh re-attempt both advance the script exactly one step.
+    /// The ordered ledger of every prompt invocation the run made — ACTION and JUDGE alike — plus the
+    /// per-task scripts. Scripts are consumed in ACTION-call order (not attempt number) with the last
+    /// entry repeating once exhausted — the same rule the shipped reliability suite's sequencing fake
+    /// uses, so a paused-and-re-run attempt and a fresh re-attempt both advance the script exactly one
+    /// step.
+    ///
+    /// <para><b>A JUDGE call never touches that script.</b> A guardrail's outcome is its VERDICT FILE,
+    /// not the runner's result, so serving a judge from the action script would both consume an
+    /// action's scripted step and leave the verdict unwritten — which is a guaranteed
+    /// "guardrail produced no valid verdict" failure that has nothing to do with routing.</para>
     /// </summary>
-    private sealed class CallRecorder(IReadOnlyDictionary<string, IReadOnlyList<PromptResult>> scripts)
+    private sealed class CallRecorder(
+        IReadOnlyDictionary<string, IReadOnlyList<PromptResult>> scripts,
+        IReadOnlyDictionary<string, Stage2GuardrailSpec> judges)
     {
         private static readonly IReadOnlyList<PromptResult> Passing = [Success()];
 
@@ -383,33 +503,84 @@ public sealed class Stage2PlanHarness : IDisposable
 
         public IReadOnlyList<Stage2RecordedCall> Calls => _calls;
 
-        public PromptResult Record(string runnerName, PromptInvocation invocation)
+        public PromptResult Record(PromptRunnerConfig block, PromptInvocation invocation)
         {
             lock (_gate)
             {
                 string taskId = Env(invocation, "GUARDRAILS_TASK_ID") ?? string.Empty;
-                IReadOnlyList<PromptResult> script =
-                    scripts.TryGetValue(taskId, out IReadOnlyList<PromptResult>? scripted) ? scripted : Passing;
 
-                _perTask.TryGetValue(taskId, out int consumed);
-                _perTask[taskId] = consumed + 1;
-                PromptResult result = script[Math.Min(consumed, script.Count - 1)];
+                // The §5.1 contract adds the action-output pointers to a GUARDRAIL's env only, so a
+                // judge call can never silently blend into the action ledger. Derived, not passed in:
+                // the harness observes the role the executor actually handed the runner.
+                bool isGuardrail = invocation.Environment.ContainsKey("GUARDRAILS_ACTION_RESULT");
+
+                PromptResult result = isGuardrail
+                    ? ServeJudge(taskId, invocation)
+                    : NextActionResult(taskId);
 
                 _calls.Add(new Stage2RecordedCall
                 {
                     Index = _calls.Count,
-                    RunnerName = runnerName,
+                    RunnerName = block.Name,
+                    // The dispatched block's declared axis — see Stage2RecordedCall.Effort.
+                    Effort = block.Effort,
                     TaskId = taskId,
                     Attempt = int.TryParse(Env(invocation, "GUARDRAILS_ATTEMPT"), out int attempt) ? attempt : 0,
-                    // The §5.1 contract adds the action-output pointers to a GUARDRAIL's env only, so a
-                    // future judge-guardrail extension cannot silently blend into the action ledger.
-                    IsGuardrail = invocation.Environment.ContainsKey("GUARDRAILS_ACTION_RESULT"),
+                    IsGuardrail = isGuardrail,
                     Invocation = invocation,
                     Result = result
                 });
 
                 return result;
             }
+        }
+
+        /// <summary>The next scripted result for this task's ACTION, last entry repeating.</summary>
+        private PromptResult NextActionResult(string taskId)
+        {
+            IReadOnlyList<PromptResult> script =
+                scripts.TryGetValue(taskId, out IReadOnlyList<PromptResult>? scripted) ? scripted : Passing;
+
+            _perTask.TryGetValue(taskId, out int consumed);
+            _perTask[taskId] = consumed + 1;
+            return script[Math.Min(consumed, script.Count - 1)];
+        }
+
+        /// <summary>
+        /// Serve a prompt-GUARDRAIL call: write the scripted verdict to the staged path the harness put
+        /// in <c>GUARDRAILS_VERDICT_OUT</c> (which it promotes to
+        /// <c>guardrail-&lt;name&gt;.verdict.json</c> the instant this returns), then report an ordinary
+        /// clean completion. The returned <see cref="PromptResult"/> decides NOTHING about the
+        /// guardrail — the verdict file does — and the same is true of the real runner, which is why
+        /// the fake must write one.
+        /// </summary>
+        private PromptResult ServeJudge(string taskId, PromptInvocation invocation)
+        {
+            if (Env(invocation, "GUARDRAILS_VERDICT_OUT") is not { } verdictOut)
+            {
+                // Unreachable against the shipped GuardrailRunner, which always sets it. Spelled out
+                // because the silent alternative — writing nothing — is a judge that always fails with
+                // "guardrail produced no valid verdict", i.e. the single most misleading failure this
+                // harness could produce.
+                throw new InvalidOperationException(
+                    $"a guardrail invocation for '{taskId}' carried no GUARDRAILS_VERDICT_OUT, so the fake " +
+                    "judge has nowhere to write its verdict. A prompt guardrail passes or fails SOLELY by " +
+                    "that file (SSOT §4.2/§9); the env it did carry was: " +
+                    $"[{string.Join(", ", invocation.Environment.Keys.Order(StringComparer.Ordinal))}].");
+            }
+
+            Stage2GuardrailSpec? judge = judges.TryGetValue(taskId, out Stage2GuardrailSpec? spec) ? spec : null;
+            bool pass = judge?.Pass ?? true;
+
+            var verdict = new JsonObject
+            {
+                ["pass"] = pass,
+                ["reason"] = judge?.EffectiveReason() ?? "stage-2 fake judge: passed"
+            };
+
+            File.WriteAllText(verdictOut, verdict.ToJsonString());
+
+            return Success();
         }
 
         private static string? Env(PromptInvocation invocation, string key) =>
@@ -453,6 +624,76 @@ public sealed record Stage2RunnerBlock
     public string? Command { get; init; }
 }
 
+/// <summary>
+/// A prompt-JUDGE guardrail to emit into a task's <c>guardrails/</c> folder — the harness's way of
+/// saying "this task is verified by a MODEL, not by a script", which is the shape every verifier-route
+/// clause needs and the deterministic <c>01-ok</c> guardrail cannot express.
+///
+/// <para>The emitted file is a real <c>&lt;NN&gt;-&lt;name&gt;.prompt.md</c> with real YAML
+/// frontmatter, discovered and bound by the shipped <see cref="PlanLoader"/> exactly as an authored one
+/// would be. <see cref="Runner"/> and <see cref="Tier"/> are the two frontmatter keys a judge uses to
+/// state its own route — a judge resolves separately from the actor, so it needs its own site to pin
+/// one — and both are OMITTED when null, because "no runner stated" (fall back to the registry default)
+/// and "no rung stated" are load-bearing fixtures in their own right.</para>
+///
+/// <para><see cref="Pass"/> and <see cref="Reason"/> script the VERDICT the fake writes. They are the
+/// judge's whole outcome: SSOT §4.2/§9 judges a prompt guardrail solely by its verdict file and never
+/// by the runner's exit code, so there is deliberately no way to express "the judge process succeeded
+/// but wrote nothing" here — that is not a routing fixture, it is a fake that forgot the contract.</para>
+/// </summary>
+public sealed record Stage2GuardrailSpec
+{
+    /// <summary>
+    /// The guardrail's name WITHOUT its <c>NN-</c> prefix or extension, e.g. <c>verdict</c> ⇒
+    /// <c>01-verdict.prompt.md</c>, whose loaded <see cref="GuardrailDefinition.Name"/> — and whose
+    /// per-guardrail log/verdict artifacts — are then <c>01-verdict</c>.
+    /// </summary>
+    public required string Name { get; init; }
+
+    /// <summary>The filename's ordering prefix (guardrails run in filename sort order). Default 1 ⇒ <c>01-</c>.</summary>
+    public int Order { get; init; } = 1;
+
+    /// <summary>
+    /// The judge's <c>runner</c> frontmatter key — which <c>promptRunners</c> block serves it. Null
+    /// omits the key, which is what sends the judge to the registry default (today's behaviour, and the
+    /// baseline a verifier-route clause has to be able to distinguish itself from).
+    /// </summary>
+    public string? Runner { get; init; }
+
+    /// <summary>
+    /// The judge's <c>tier</c> frontmatter key (SSOT §4.2) — the rung the JUDGE asks for, which is a
+    /// different question from the rung its task's action asks for. Null omits the key.
+    /// </summary>
+    public string? Tier { get; init; }
+
+    /// <summary>The judge's <c>maxTurns</c> frontmatter override. Null omits the key.</summary>
+    public int? MaxTurns { get; init; }
+
+    /// <summary>The verdict's <c>pass</c> value. True (the default) keeps the attempt on its happy path.</summary>
+    public bool Pass { get; init; } = true;
+
+    /// <summary>The verdict's <c>reason</c>. Null = a generic one naming the outcome.</summary>
+    public string? Reason { get; init; }
+
+    /// <summary>The prompt BODY, after the frontmatter block. Nothing reads it — the runner is faked.</summary>
+    public string Body { get; init; } =
+        "You are the verifier. Judge the action's work and write your verdict to the path the harness\n" +
+        "handed you. Then stop.\n";
+
+    /// <summary>
+    /// The loaded guardrail's name — the <c>NN-&lt;name&gt;</c> the journal and log artifacts use, and
+    /// the basename of the <c>.prompt.md</c> the harness writes into the task's <c>guardrails/</c> folder.
+    /// </summary>
+    public string GuardrailName =>
+        Order.ToString("D2", System.Globalization.CultureInfo.InvariantCulture) + "-" + Name;
+
+    /// <summary>The <c>reason</c> written into the verdict file.</summary>
+    public string EffectiveReason() =>
+        Reason ?? (Pass
+            ? "stage-2 fake judge: the action satisfied the judge"
+            : "stage-2 fake judge: the action did not satisfy the judge");
+}
+
 /// <summary>One task to emit, with its per-call script for the fake runner.</summary>
 public sealed record Stage2TaskSpec
 {
@@ -476,6 +717,16 @@ public sealed record Stage2TaskSpec
 
     /// <summary>The task's <c>action.effort</c> override. Null = absent.</summary>
     public string? Effort { get; init; }
+
+    /// <summary>
+    /// The task's prompt-JUDGE guardrail. NULL (the default) keeps the trivially-passing deterministic
+    /// <c>01-ok</c> guardrail this harness has always written, so every clause authored before judges
+    /// existed runs byte-identically. A PRESENT spec REPLACES it with a real
+    /// <c>&lt;NN&gt;-&lt;name&gt;.prompt.md</c>, which the shipped guardrail runner then invokes through
+    /// the same faked process seam as the action — and which the ledger records as a call with
+    /// <see cref="Stage2RecordedCall.IsGuardrail"/> set.
+    /// </summary>
+    public Stage2GuardrailSpec? JudgeGuardrail { get; init; }
 
     /// <summary>
     /// The task's retry budget. Null resolves to 1 when <see cref="FailFirstAttempt"/> is set (so the
@@ -570,6 +821,20 @@ public sealed record Stage2RecordedCall
     /// <summary>The <c>promptRunners</c> key whose runner instance the executor resolved and called.</summary>
     public required string RunnerName { get; init; }
 
+    /// <summary>
+    /// The <c>effort</c> declared by the block named in <see cref="RunnerName"/> — the effort THIS call
+    /// ran with. Null when that block states none.
+    ///
+    /// <para><b>Why it is read off the dispatched block rather than off the invocation.</b> No runner
+    /// CLASS spells an effort flag today, so effort never reaches
+    /// <see cref="PromptRunnerSettings"/> — the invocation simply does not carry it. What the harness
+    /// DOES observe is which block the executor dispatched to, and a block's effort is one of its
+    /// declared axes; the pair is exactly what a route records. This is still an observation of what
+    /// HAPPENED (the dispatch) crossed with what the plan DECLARED (the block), never a question put to
+    /// a resolver about what it would have chosen.</para>
+    /// </summary>
+    public required string? Effort { get; init; }
+
     /// <summary>The task this call ran for (from the §5.1 <c>GUARDRAILS_TASK_ID</c>).</summary>
     public required string TaskId { get; init; }
 
@@ -577,9 +842,10 @@ public sealed record Stage2RecordedCall
     public required int Attempt { get; init; }
 
     /// <summary>
-    /// True for a guardrail (judge) prompt rather than the action. Always false for the plans this
-    /// harness emits — its per-task guardrail is deterministic — and recorded so it stays true if a
-    /// later wave adds a judge guardrail.
+    /// True for a guardrail (judge) prompt rather than the action — derived from the §5.1 action-output
+    /// pointers, which the contract adds to a GUARDRAIL's environment only. False for every call of a
+    /// task whose guardrail is the deterministic <c>01-ok</c> script (no prompt, no invocation); true
+    /// for the guardrail call of a task declaring a <see cref="Stage2TaskSpec.JudgeGuardrail"/>.
     /// </summary>
     public required bool IsGuardrail { get; init; }
 
@@ -591,6 +857,34 @@ public sealed record Stage2RecordedCall
 
     /// <summary>The effective <c>--model</c> this call carried; null = pass no model, let the CLI pick.</summary>
     public string? Model => Invocation.Settings.Model;
+
+    /// <summary>
+    /// WHICH guardrail this judge call ran — the loaded <see cref="GuardrailDefinition.Name"/>, e.g.
+    /// <c>01-verdict</c>. Null for an action call, and for a guardrail invocation whose stream-log name
+    /// does not follow the harness's own <c>guardrail-&lt;name&gt;.stream.jsonl</c> convention.
+    ///
+    /// <para>Read back off the invocation the executor composed rather than tracked alongside it: the
+    /// per-guardrail log paths are the only place the runner is told which guardrail it is serving, so
+    /// this is the ledger observing the same fact the artifacts on disk carry.</para>
+    /// </summary>
+    public string? GuardrailName
+    {
+        get
+        {
+            const string prefix = "guardrail-";
+            const string suffix = ".stream.jsonl";
+
+            if (!IsGuardrail)
+            {
+                return null;
+            }
+
+            string file = Path.GetFileName(Invocation.StreamLogPath);
+            return file.StartsWith(prefix, StringComparison.Ordinal) && file.EndsWith(suffix, StringComparison.Ordinal)
+                ? file[prefix.Length..^suffix.Length]
+                : null;
+        }
+    }
 }
 
 /// <summary>
@@ -612,9 +906,38 @@ public sealed record Stage2RunResult
     /// <summary>The plan folder the run executed in (still on disk until the harness is disposed).</summary>
     public required string PlanRoot { get; init; }
 
-    /// <summary>The calls made for <paramref name="taskId"/>, in call order.</summary>
+    /// <summary>The calls made for <paramref name="taskId"/>, in call order — actions and judges alike.</summary>
     public IReadOnlyList<Stage2RecordedCall> CallsFor(string taskId) =>
         [.. Calls.Where(c => string.Equals(c.TaskId, taskId, StringComparison.Ordinal))];
+
+    /// <summary>The ACTION calls made for <paramref name="taskId"/>, in call order.</summary>
+    public IReadOnlyList<Stage2RecordedCall> ActionCallsFor(string taskId) =>
+        [.. CallsFor(taskId).Where(c => !c.IsGuardrail)];
+
+    /// <summary>The JUDGE (prompt-guardrail) calls made for <paramref name="taskId"/>, in call order.</summary>
+    public IReadOnlyList<Stage2RecordedCall> JudgeCallsFor(string taskId) =>
+        [.. CallsFor(taskId).Where(c => c.IsGuardrail)];
+
+    /// <summary>
+    /// The ONE judge call of <paramref name="taskId"/>'s <paramref name="attempt"/> — so a per-attempt
+    /// clause cannot silently read a neighbouring attempt's judge, which is the failure mode that makes
+    /// "the judge re-resolves on every attempt" look green when it is resolved once per task.
+    /// </summary>
+    public Stage2RecordedCall JudgeCallFor(string taskId, int attempt)
+    {
+        IReadOnlyList<Stage2RecordedCall> matching =
+            [.. JudgeCallsFor(taskId).Where(c => c.Attempt == attempt)];
+
+        return matching.Count == 1
+            ? matching[0]
+            : throw new InvalidOperationException(
+                $"expected exactly 1 judge invocation for '{taskId}' attempt {attempt}, saw {matching.Count} " +
+                $"(the run made {JudgeCallsFor(taskId).Count} judge and {ActionCallsFor(taskId).Count} action " +
+                $"call(s) for this task, on attempts: " +
+                $"{Join(JudgeCallsFor(taskId).Select(c => c.Attempt.ToString(System.Globalization.CultureInfo.InvariantCulture)))}). " +
+                "A task whose guardrail is the deterministic script makes no judge call at all — declare a " +
+                $"{nameof(Stage2TaskSpec.JudgeGuardrail)} on its {nameof(Stage2TaskSpec)}.");
+    }
 
     /// <summary>The journal entry for <paramref name="taskId"/>.</summary>
     public TaskJournalEntry JournalFor(string taskId) =>
