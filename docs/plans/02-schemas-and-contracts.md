@@ -1048,15 +1048,29 @@ tier: hard          # OPTIONAL (#201): the JUDGE's difficulty tier — "easy" | 
 You are a verifier. Read the report at out/report.md and judge ONLY whether ...
 ```
 
-**`tier` — the judge-guardrail tier tag (issue #201/#225, §9.6).** A prompt guardrail is the one place
+**`tier` — the judge-guardrail tier pin (issue #201/#225, §9.6).** A prompt guardrail is the one place
 a model renders a *verdict*, so it resolves its own route and needs its own site to pin one; `tier`
 joins `runner`/`maxTurns` as an optional frontmatter key. It is the **fourth** `GR2043` site (§3): the
 value is a closed token set, matched against `easy`/`medium`/`hard` with its **case preserved** so a
 `tier: Hard` typo is reported rather than quietly repaired. (Surrounding whitespace is stripped by the
 frontmatter scalar reader for every key, as a YAML reader does.) **Absent ⇒ the judge's rung follows
 the actor's** — nothing is fabricated, and with tiering unconfigured the whole verifier half is inert
-(Invariant 7, §9.6). Deterministic guardrails run no model and never carry one. Nothing routes on it
-yet; the resolver is #226.
+(Invariant 7, §9.6). Deterministic guardrails run no model and never carry one.
+
+**This is how a judge pins its own rung, and it needed no new schema** (§9.6 rule 1). The pin travels the
+path that already existed: the plan loader reads `tier` out of a `*.prompt.md` guardrail's frontmatter and
+**folds it onto the guardrail definition** the plan already carries — the same fold that handles `scope`
+(§4.3) — and §9.6's judge resolver reads the pin from there. Two consequences worth stating, because a
+later reader will otherwise "fix" them:
+
+- **There is deliberately no second `tier` key on the parsed frontmatter object** beside
+  `runner`/`maxTurns`/`timeoutSeconds`. A judge's tier is ONE datum in ONE place; a second copy would
+  leave the resolver two sites to read a judge's rung from, and nothing would notice on the day they
+  disagreed. (`runner` is rule 1's *other* spelling and stays where it is — it names a **block**, not a
+  rung, so it bypasses selection entirely.)
+- **The token reaches GR2043 as authored.** Only the surrounding whitespace is stripped; the case is
+  never folded, so an unrecognised token is reported rather than quietly repaired into a legal one. An
+  empty `tier:` is treated as unset, not as a token.
 
 **Verdict contract**: a prompt guardrail MUST end by writing
 
@@ -1775,8 +1789,8 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
           "costUsd": null,          // prompt attempts: total_cost_usd from the runner
           "usage": {                // OPTIONAL tokens-only volume (#201): the accounting surface a COSTLESS
             "inputTokens": 18240,   //   provider still has. ABSENT (never null) for a script attempt, a runner
-            "outputTokens": 3110    //   reporting no usage, and every older journal. NOTHING WRITES IT YET —
-          },                        //   see "Per-attempt tier provenance" below (#475)
+            "outputTokens": 3110    //   reporting no usage, and every older journal. Written on BOTH record
+          },                        //   paths (#475) — see "Per-attempt tier provenance" below
           "logDir": "logs/2026-06-10T16-22-31Z-a1b2/01-write-greeting-script/attempt-1",
           // OPTIONAL per-attempt provenance the harness knew at launch (#198). Additive — a script /
           // serial attempt or an older journal OMITS fields (or the whole section); never null noise.
@@ -1799,7 +1813,34 @@ root**. A conflict row's `jsonPath` therefore always begins with the writing tas
                                      //   RECORDED, not yet emitted as a CLI flag (§9). ABSENT when unnamed
             "segmentBranch": "guardrails/2026-…-a1b2/01-write-greeting-script/attempt-1",
             "worktreePath": "/…/gr-wt/…",
-            "baseCommit": "sha…"    // the commit the segment forked from (taskBase); ABSENT in serial mode
+            "baseCommit": "sha…",   // the commit the segment forked from (taskBase); ABSENT in serial mode
+            // OPTIONAL verifier route that graded this attempt (#201/#229, DoR §12.4 + §6.5) — the
+            // `AttemptJudge` record. It hangs HERE, on `provenance`, and never on the attempt record —
+            // see "The verifier route" below (D32). ABSENT ENTIRELY when no judge resolved through routing
+            // (Invariant 7): a task whose guardrails are all deterministic runs no model, so there is no
+            // verifier to name. The example is a judge whose own frontmatter pinned `tier: easy` (§4.2)
+            // while the actor ran at `hard` — a pin bypasses the verifier floor, and the advisory catches
+            // the weakness anyway.
+            "judge": {
+              "runner": "fast",     // the block the JUDGE resolved to. Read separately from provenance.runner
+                                     //   because when a pin or §9.6's strength bump moves it, the two names
+                                     //   differ — and that difference IS the record
+              "kind": "claude",     // that block's `kind` as its WIRE TOKEN, exactly like provenance.kind
+              "model": "claude-…",  // the judge's fully resolved model
+              "effort": "medium",   // the judge route's effort, with a judge frontmatter override over it
+              "tier": "easy",       // the rung the JUDGE resolved on — the ACTOR's rung (§9.6 rule 2) unless
+                                     //   frontmatter pinned one or verifier.minTier raised it. The bump moves
+                                     //   STRENGTH, never this. ABSENT when no rung resolved (a `runner` pin)
+              "strength": 2,        // the judge block's declared strength — the axis the bump moves, so
+                                     //   "equal-or-stronger" is checkable without re-resolving anything.
+                                     //   ABSENT when the block declares none
+              "bumped": false,      // the ONE member that is never absent: `false` is a measurement ("a judge
+                                     //   resolved and no bump was needed"), where an absent key would be
+                                     //   indistinguishable from "no judge resolved at all"
+              "advisory": "judge 'fast' is weaker than the actor 'primary' it grades — a weaker verifier cannot vouch for the work. Advisory only: the run proceeds."
+                                     //   the §6.5 weak / equal-and-weak finding, in the text a human reads.
+                                     //   Recorded on EVERY attempt whose judge is weak; ABSENT when it is not
+            }
           }
         }
       ]
@@ -2073,22 +2114,64 @@ and from which precedence branch the resolver took, never from comparing the tas
 `tiering.defaultTier`. That comparison is wrong in the most ordinary case there is: a task that
 explicitly writes the same token the plan already defaults to would be attributed to the plan.
 
-**`usage` — the field exists; nothing populates it yet.** The optional
-`usage { inputTokens, outputTokens }` block above is the tokens-only accounting surface for a costless
+**`usage` — the tokens-only accounting surface, now written on both record paths.** The optional
+`usage { inputTokens, outputTokens }` block above is the accounting surface for a costless
 provider (a local endpoint, a flat-rate subscription), where `costUsd` is honestly `0` for a run that
-did enormous work. **As of this change the value reaches `PromptResult` and stops**: the runner mines
-the terminal result event's usage block, but journalling it onto the attempt record needs
-`ActionRun`/`RunReport`/`Scheduler` changes that were deferred (issue #475). So the schema is landed and
-the wire shape is fixed, and every attempt record written today simply **omits** it — which is exactly
-what an absent-not-null optional field is supposed to look like while its producer is still missing.
+did enormous work. It travels exactly as `costUsd` already did: the runner mines the terminal result
+event's usage block, `ActionRun` restates it in the journal's shape **once**, and the value is written onto
+the attempt record by the serial journaller **and** by the worktree settle. **Absent stays absent** — a
+runner that reported no usage records no key rather than a zeroed one, so a reader (and the per-tier spend
+line) can tell *"nothing to report"* from *"reported zero"*. A script attempt and every older journal omit
+it, unchanged. Until this landed the value reached `PromptResult` and **stopped** — the field existed on
+the schema with no producer anywhere, and every guardrail was green over it (#475). That failure is the
+reason the `judge` object below is placed where it is.
 
-**`judge` — the reserved verifier-route shape.** DoR §12.4 gives the attempt record an optional
-**`judge { runner, kind, model, effort, tier, strength, bumped }`** — the route the verifier that graded
-this attempt resolved to, with `bumped: true` when the weak-actor strength bump fired — **absent
-entirely when no judge resolved through routing (Invariant 7)**. The §6.5 verifier route is **not wired
-in this change**: prompt guardrails still resolve their runner by name, so nothing emits this object and
-no attempt record carries it. It is documented here so the shape is fixed in one place before its first
-producer exists, not because it is live.
+**`judge` — the verifier route that graded this attempt (§9.6, DoR §12.4 + §6.5).** `provenance` gains an
+optional **`judge { runner, kind, model, effort, tier, strength, bumped, advisory }`** — the
+**`AttemptJudge`** record, **eight** members recording the route the verifier that graded this attempt
+resolved to. The object is **absent entirely when no judge resolved through routing (Invariant 7)**: a task
+whose guardrails are all deterministic runs no model at all, so there is no verifier to name and the key is
+absent rather than `null`.
+
+| member | what it records |
+|---|---|
+| `runner` | the `promptRunners` block the JUDGE resolved to — read separately from the actor's, because a pin or §9.6's bump makes the two names differ, and that difference is the record |
+| `kind` | that block's `kind` as its **wire token** (never the C# name, never an ordinal) |
+| `model` | the judge's fully resolved model — the verifier-side counterpart of `provenance.model` |
+| `effort` | the resolved judge route's effort, with a judge frontmatter override applied over it |
+| `tier` | the rung the judge resolved on: the **actor's** rung (§9.6 rule 2) unless frontmatter pinned one (§4.2) or `verifier.minTier` raised it. **Absent** when no rung resolved (a `runner` pin, or the legacy route) |
+| `strength` | the resolved judge block's declared `strength` — the axis the bump moves, so *equal-or-stronger* is checkable from the journal without re-resolving anything. Absent when the block declares none |
+| `bumped` | whether §9.6 rule 3's weak-actor **strength** bump fired |
+| `advisory` | the §9.6 weak / equal-and-weak finding, in the text a human reads. Recorded on **every** attempt whose judge is weak; absent when it is not |
+
+**Seven of the eight are absent-when-unset; `bumped` always writes a real boolean.** That asymmetry is
+deliberate: *"a judge resolved and no bump was needed"* is a **measurement**, and an absent key would be
+indistinguishable from *"no judge resolved at all"* — a denominator that silently drops its zeroes is not
+an answer to "does a bumped judge earn what it costs". `advisory` is independent of `bumped` in both
+directions — §9.6 rule 5 degrades rather than overspends, so a judge can carry an advisory with no bump
+having fired.
+
+**Placement is D32, and it is mechanical rather than cosmetic.** `AttemptJudge` hangs off
+**`AttemptProvenance`**, not directly off the attempt record, because `provenance` is the **one member that
+already rides `PendingAttempt`** — so a value folded onto it reaches **BOTH** record-construction paths with
+no further edit: the serial journaller **and** `Scheduler.RecordSucceededSettle`, which is the **default
+worktree mode**. A member hung directly off `AttemptRecord` lands in serial mode and **silently vanishes in
+the mode almost every run actually uses**, with every guardrail still green. `usage` above is the live
+instance of that class of bug (#475) and is the reason this is written down rather than assumed. *"The facts
+the harness knew at launch"* describes when provenance is **constructed**, not what may be recorded onto it
+before the record is written: the judge is folded on with a `with` expression the instant the guardrail
+pass returns, and both paths get it for free. A **script** attempt in serial mode builds no launch-time
+provenance at all and can still be graded by a prompt judge — it records a **judge-only** provenance object
+rather than dropping the datum.
+
+**One judge object per attempt — the FIRST prompt guardrail's resolution.** A task's guardrails run in
+filename order and its prompt judges almost always resolve identically; recording one per guardrail would
+turn a fact about the **attempt** into a list. Two consequences: a task with no prompt guardrail records no
+`judge` at all, and the object is **re-mirrored** into `<attempt>/attempt-provenance.json` (§8) — which on a
+**guardrail-FAILED** attempt is the only surface that records it, since the failed-attempt journal call
+takes no provenance. An attempt a model graded RED must still say which model graded it. A prompt-judged
+**re-validation** (§7.1) has no action attempt and therefore no launch-time provenance; it records the same
+**judge-only** provenance object for the same reason.
 
 **Absent, never null, throughout.** Every field above is optional and additive: an older journal reads
 back unchanged, a script attempt simply omits the whole route half (there is no model, no rung and no
@@ -4038,6 +4121,100 @@ missing CLI escaped as an exception with no text to classify.
 failure, nothing consults provider health before selecting, and nothing biases the strength order at run
 time. A rung is chosen from the tag and the registry, once per attempt, identically every attempt.
 
+**The VERIFIER route — "a prompt may propose, only an equal-or-stronger judge may vouch" (#229, DoR
+§6.5).** A **prompt guardrail is a judge**: it is the one place a model renders a *verdict*, and a weak
+actor graded by an equally weak judge is two blind spots agreeing while the run goes green over broken
+work. A judge therefore resolves its own (block, model, effort) **at attempt launch, in the same
+`TierResolver` and against the same `Candidates(R)` predicate as the actor** — a judge chosen by a *second*
+candidacy rule is the D22a divergence one level down, and nothing downstream would notice it.
+Deterministic guardrails run no model and are untouched; the whole route is inert when tiering is
+unconfigured (Invariant 7).
+
+1. **Explicit wins.** The judge prompt's frontmatter `tier` or `runner` pin (§4.2) resolves like an
+   action's and stops every rule below it, **the floor in item 4 included**. A `runner` pin names a
+   **block** and bypasses selection entirely (so no rung resolves, and `judge.tier` is absent); a `tier`
+   pin names a **rung** and still goes through `Candidates(R)`.
+2. **Otherwise the judge's rung IS the actor's rung** — the **rung**, never the actor's *strength*, because
+   `routing.tiers` is expressed in rungs. The actor's already-computed resolution is threaded into the
+   judge's, never re-derived, so the judge is graded against the rung the actor actually ran at. A pinned
+   or legacy actor resolved no rung of its own, so `tiering.defaultTier` supplies it.
+3. **The bump is in STRENGTH, never in tier (D24a).** When the actor is weak, the judge is the **weakest
+   candidate at the actor's rung whose `strength` is strictly greater than the actor's**. Bumping the
+   *tier* would mean *"pretend the work is harder"*, dragging the judge into a rung nobody declared for
+   this work and contradicting the difficulty-≠-strength split; so the block changes and `judge.tier`
+   **stays at the actor's rung**.
+4. **Then the floor (§6.5.1, D27).** If the rung from (2)–(3) is **below** `tiering.verifier.minTier`,
+   raise it and re-select from `Candidates(minTier)`. **Never the reverse.** With no rung at all the floor
+   *supplies* one rather than raising one.
+5. **"Weak" is `strength` when declared, and the provider-kind fallback when not** — `kind != "claude"` ⇒
+   weak-unless-declared. That guess is **verifier-only**: it never touches candidacy or ordering, because
+   being wrong here costs one spare advisory on a rule that is advisory anyway, while the same guess on the
+   actor side would misroute real spend. **Equal-and-strong needs no bump** (a frontier model judging a
+   frontier model is a real check); **equal-and-weak does** (one blind spot talking to itself). A block
+   that resolved to nothing counts weak — an unknown verifier is not a vouched-for one.
+6. **Specialization breaks ties, and only ties.** Among candidates that **already** meet the required
+   strength, prefer `planning-reasoning`; otherwise the ascending-`strength` order. It can neither satisfy
+   nor violate `≥`, so a specialized-but-too-weak block is never chosen.
+7. **`guardrailOverrides` compose with the RESOLVED JUDGE's block, not the actor's.** The judge's route is
+   resolved first, and the overrides that then apply are **that** block's — overrides are a per-block
+   verdict profile (permissions/tools/turns). Applying the actor's block's overrides to a judge running on
+   a different block silently mis-profiles **every bumped judge**, which is precisely the case this route
+   exists to produce. Dispatch follows the resolved judge the same way: its `command`, its `kind`-selected
+   runner class, its model and its effort all come from the block that resolved, never from the
+   frontmatter-or-default instance the model string was computed for.
+
+**The asymmetry, stated plainly because it is the rule a later reader is most likely to "fix".** Same
+input, opposite response: when the only stronger block is `costly: true`, the **judge degrades and the run
+proceeds** (it stays on the actor's route, and the advisory below fires), while the **actor in the same
+situation HALTS** (`no-route`). This is not an inconsistency to be tidied away — it is *degrade what is
+advisory; halt what is load-bearing*, applied twice. An actor route is the work; a verifier route is a
+second opinion, and a run that stopped because it could not afford a *better* second opinion would trade a
+real halt for a preference. There is deliberately **no `no-route` on the judge side at all**: a judge that
+cannot be improved is a warning, never an outcome.
+
+**D29 — a pinned `costly` ACTOR licenses a costly judge bump; the `default` pointer does not.** When the
+actor is running on an **explicitly pinned** `costly` block, a human has already authorized costly spend
+for *this task*, so the judge **may** bump into a `costly: true` block — no halt, no prompt. That is
+consistent with the costly floor rather than an exception to it: the floor constrains **the harness
+choosing**, never **the human assigning**, and here the human has assigned. It also produces the shape the
+verifier route exists for — pin a frontier actor and you get a judge strong enough to vouch for it, instead
+of a weaker judge rubber-stamping the strongest actor in the run. The `promptRunners.default` pointer does
+**not** trigger it: a plan-wide fallback is not a decision about *this* task, and reading it as sanction
+would silently license costly judges across an entire plan. Absent such a pin, the degrade above stands
+exactly as written.
+
+**The advisory is ADVISORY, at BOTH boundaries (#229).** A judge weaker than its actor, or
+**equal-and-weak**, is surfaced — and **never** as a hard error, a load-time refusal, or a halt, in
+attended *or* unattended mode. The harness does not block on a model-quality opinion, so the condition has
+**no GR code** (below) and nothing branches on it. Both surfaces are live:
+
+- **Run start (the preflight).** Before the DAG executes, the harness walks the plan once, resolves each
+  prompt task's (actor, judge) pair, and emits **one line per affected task** —
+  `[verifier-advisory] <task-id>: <finding>` — through an `IRunObserver` event. A run whose judges are all
+  strong enough emits nothing at all. The walk is contained per task **and** overall: an unreadable prompt
+  file or a registry a resolver rejects costs that task's line and nothing else, because a diagnostic that
+  can kill the run it was added to describe is strictly worse than no diagnostic. In a waved plan it walks
+  the flattened union of every wave — the operator is about to pay for the whole run, not for wave 1. The
+  event has a default no-op body, so a transparent observer **decorator must forward it explicitly**; an
+  unforwarded call is swallowed silently in exactly the mode most operators run.
+- **Just-in-time (the resolver itself).** The JIT re-check is not a second model of the rule — the
+  preflight *predicts* the pair, the JIT check *is* the resolution that ran. Its finding is recorded into
+  that attempt's `judge.advisory` provenance (§7) **always**, and a log line is emitted **only when the
+  observed pair differs from what the preflight predicted**. Agreement is the normal case and the quiet
+  path; disagreement is by definition a resolver bug no preflight could catch, or a mid-run mutation (an
+  edited `guardrails.json` on resume, a hand-edit between waves) that did not exist when the preflight ran.
+
+**The de-duplication rule, because three surfaces reporting one condition is how people learn to ignore
+it:** the preflight emits **one line per affected task** (not per affected guardrail); the JIT boundary
+**records into provenance always**; and a **log line** appears **only on preflight/JIT disagreement**.
+"Differ" is over the observed **pair** — the condition, both block names, and whether the costly refusal
+fired — deliberately **not** over the message text, since a judge that resolved somewhere unpredicted is a
+difference even when the sentence reads identically. The run summary aggregates from provenance, so
+nothing is lost by the quieter log. *(The record-always half and the run-start line are wired; the
+disagreement log line has its decision implemented and tested but no producer yet — nothing threads the
+preflight's prediction down to the attempt boundary — so today the JIT surface is silent by construction
+rather than by rule.)*
+
 **Validation (Stage 1.5).**
 
 | Code | Sev | Rule |
@@ -4074,17 +4251,24 @@ and never alone by construction, so a degraded judge loses a second opinion whil
 still certifies, whereas an actor route is load-bearing. A GR code is a thing that can fail a build, and
 no verifier condition may ever fail one.
 
-**`tiering.verifier.minTier` is a FLOOR, not a default.** It never *selects* the judge's rung — the rule
-(the actor's rung, bumped one **strength** rank when the actor is weak) still chooses. It only refuses a
-result that came out below it, and it can only ever raise, never lower. A plan-wide `easy` *default* would
-drag every judge down; a plan-wide `easy` *floor* does nothing at all.
+**`tiering.verifier.minTier` is a FLOOR, not a default (§6.5.1, D27).** It **never selects** the judge's
+rung — the rule above (the actor's rung, bumped in **strength** when the actor is weak) still chooses. It
+only **refuses a result that came out too low**, and it **only ever raises**. Said explicitly, because this
+is the whole distinction and the half a reader drops: **a plan-wide `easy` value must never drag a `hard`
+judge down.** A plan-wide `easy` *default* would drag every judge down; a plan-wide `easy` *floor* does
+nothing at all. It applies **after** the rung rule and the strength bump (item 4 of the verifier route
+above), re-selecting from `Candidates(minTier)` when it raises; and a frontmatter **pin bypasses it**
+entirely, because a pin names what the human wanted and there is no resolved rung left to raise. The safety
+property does not depend on the floor — the advisory compares the judge's **actual** strength against the
+actor's however the route was reached. **The floor governs resolution; the advisory governs reality.**
 
-**What the harness READS at run time, and what it still only round-trips.** Stage 2's resolver consumes
-`routing.tiers`, `costly` and `strength` (the candidacy predicate and its ordering) and `effort` (carried
-onto the route and recorded in provenance, §7). **`specialization` and `tiering.verifier.minTier` are
-still parsed, validated and round-tripped only** — the §6.5 verifier route that reads them is not wired,
-which is also why no attempt record carries a `judge` object (§7). Stage 1.5 guarantees they arrive as a
-checked contract rather than a hopeful one; their first reader is still ahead of them.
+**What the harness READS at run time.** Stage 2's resolver consumes `routing.tiers`, `costly` and
+`strength` (the candidacy predicate and its ordering) and `effort` (carried onto the route and recorded in
+provenance, §7). With the verifier route above, **`specialization` and `tiering.verifier.minTier` have
+their first reader too** — `specialization` breaks judge ties (rule 6) and `minTier` is the judge floor
+(item 4) — and every attempt whose guardrail set contains a prompt judge records the `AttemptJudge` object
+(§7). No axis in the registry is round-tripped-only any more; Stage 1.5's checked contract is what let each
+reader arrive without re-validating its own input.
 
 ### 9.7 The generated registry — `guardrails providers init` (model tiering, issue #201) — the CLI contract
 
