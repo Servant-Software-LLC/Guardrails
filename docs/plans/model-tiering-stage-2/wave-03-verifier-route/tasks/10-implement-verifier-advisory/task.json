@@ -6,5 +6,6 @@
   ],
   "writeScope": [
     "src/Guardrails.Core/Prompts/VerifierAdvisory.cs"
-  ]
+  ],
+  "retries": 4
 }

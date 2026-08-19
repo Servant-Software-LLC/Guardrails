@@ -1,5 +1,5 @@
 {
-  "description": "Extend Stage2ConformanceTests with the five real-seam judge clauses the plan terminal gate's 6.5/D29 behaviour manifest matches by NAME — red until the wiring lands. The harness extension they build on is task 05's deliverable, not this task's",
+  "description": "Extend Stage2ConformanceTests with the EIGHT real-seam clauses the plan terminal gate's 6.5/D29 behaviour manifest matches by NAME - the five judge-route clauses plus provenance arrival, the verifier advisory, and #475's attempt-usage arrival. Red until the wiring lands. The harness extension they build on is task 05's deliverable, not this task's",
   "stableId": "t8k4gz",
   "dependsOn": [
     "02-implement-judge-resolution",
@@ -10,6 +10,7 @@
     "tests/Guardrails.Integration.Tests/ModelTiering/Stage2ConformanceTests.cs"
   ],
   "action": {
-    "maxTurns": 60
-  }
+    "maxTurns": 100
+  },
+  "retries": 4
 }
