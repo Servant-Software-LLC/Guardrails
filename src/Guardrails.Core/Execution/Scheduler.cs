@@ -3301,6 +3301,8 @@ public sealed class Scheduler
             ActionExitCode = pending.ActionExitCode,
             Outcome = Journal.AttemptOutcome.Succeeded,
             CostUsd = pending.CostUsd,
+            // #475: the tokens axis travels beside its cost sibling on THIS path too — the default one.
+            Usage = pending.Usage,
             LogDir = pending.LogDir,
             Provenance = pending.Provenance
         };

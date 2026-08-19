@@ -363,6 +363,21 @@ internal sealed record ActionRun
     public required int? ExitCode { get; init; }
     public required bool TimedOut { get; init; }
     public decimal? CostUsd { get; init; }
+
+    /// <summary>
+    /// The prompt attempt's token volume (#475, SSOT §7 / DoR §12.4), or null for a script action and
+    /// for a runner that reported none. It rides HERE, beside <see cref="CostUsd"/>, because the two are
+    /// the same datum shape — <c>JournalTierSpend.Add</c> reads them one after the other, both answering
+    /// "what did this attempt cost" — and because a costless provider (a local endpoint, a flat-rate
+    /// subscription) honestly reports <c>0</c> spend, which leaves volume as the only evidence of what
+    /// the attempt actually did.
+    /// <para>Already in the JOURNAL's shape (<see cref="Journal.AttemptUsage"/>) rather than the runner's
+    /// (<see cref="PromptUsage"/>): the restatement happens ONCE, in <see cref="FromPrompt"/>, so every
+    /// hop from here to <c>run.json</c> — the journaller's record, the <see cref="PendingAttempt"/>, the
+    /// Scheduler's settle record — is the same straight member copy <see cref="CostUsd"/> already makes.</para>
+    /// </summary>
+    public Journal.AttemptUsage? Usage { get; init; }
+
     public string? NeedsHumanQuestion { get; init; }
 
     /// <summary>
@@ -450,6 +465,15 @@ internal sealed record ActionRun
             ExitCode = succeeded ? 0 : 1,
             TimedOut = result.FailureKind == PromptFailureKind.Timeout,
             CostUsd = result.CostUsd,
+            // #475's FIRST missing hop: the counts reach PromptResult today and stop here. The
+            // runner-agnostic PromptUsage is restated in the journal's shape at this one point, exactly as
+            // ClaudePromptRunner restates ClaudeUsage as PromptUsage at the runner quarantine.
+            // ABSENT stays absent — never a zeroed record: the per-tier spend line's `anyUsage` flag reads
+            // an all-zero total as "nothing reported", so { 0, 0 } would CLAIM a measurement that was
+            // never taken.
+            Usage = result.Usage is { } usage
+                ? new Journal.AttemptUsage { InputTokens = usage.InputTokens, OutputTokens = usage.OutputTokens }
+                : null,
             NeedsHumanQuestion = needsHuman?.Question,
             NeedsHumanOptions = needsHuman?.Options ?? [],
             HarnessWriteBatch = harnessWrite,
