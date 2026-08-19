@@ -449,10 +449,8 @@ public sealed class Stage2PlanHarness : IDisposable
 
         prompt.Append("---\n\n").Append(judge.Body);
 
-        // The extension is spelled HERE, literally, rather than behind a computed FileName property: the
-        // one thing that makes this harness able to host a judge at all is a `.prompt.md` written INTO
-        // the task's `guardrails/` folder, and that pairing belongs at the write site — readable (and
-        // greppable) in one place instead of with half of it hiding in a property elsewhere.
+        // A prompt-JUDGE guardrail is a `.prompt.md` inside the task's `guardrails/` folder — that
+        // pairing is what lets this harness host a judge at all, so it is spelled at the write site.
         File.WriteAllText(
             Path.Combine(taskDir, "guardrails", judge.GuardrailName + ".prompt.md"),
             prompt.ToString());
