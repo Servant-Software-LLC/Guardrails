@@ -19,11 +19,17 @@ stack. When this catalogue says "the exact regex/command lives in the stack file
 follow that pointer; never bake a `.NET`-only pattern into a guardrail on a JVM/Go/
 Python project.
 
-## Archetypes (strongest/cheapest first)
+## Archetypes (the number is a stable ID, not a strength ranking)
+
+**Run the source-shape demotion gate (next section) BEFORE you pick from this table.** The numbers are
+identifiers the rest of this catalogue cites (`archetype #4`, `the #8 form`) and they order the table
+roughly by cost. They do **not** rank strength, and #1 being first is not permission to reach for it
+first: reaching for a `file-contains` regex over implementation source because it is the top row is the
+measured authoring defect of #468.
 
 | # | Archetype | Form | Use when | Catches |
 |---|-----------|------|----------|---------|
-| 1 | **file-exists / file-contains** (regex) | script | Any artifact-producing task — almost always guardrail #1 | Agent claimed success without producing the artifact, or produced the wrong shape |
+| 1 | **file-exists / file-contains** (regex) | script | Any artifact-producing task — `file-exists` is almost always guardrail #1. **`file-contains` over IMPLEMENTATION SOURCE is the LAST resort for a claim about runtime behaviour** — pass the demotion gate below first, and say in the breakdown report why no test could carry it (#468) | Agent claimed success without producing the artifact, or produced the wrong shape |
 | 2 | **command-exit-code** | script | Task output is itself runnable; CLI behavior checks | Artifact exists but is broken when actually executed |
 | 3 | **build-passes** | script (`dotnet build`) | Any code-producing task | Code that doesn't compile |
 | 4 | **specific-tests-pass** | script (`dotnet test --filter`) | Behavior implementation — the filter selects **THIS task pair's OWN test class**, never a plan-wide trait, and carries a **zero-match guard** ("Its SCOPE decides whether it proves anything", #455); whole-suite green belongs to a terminal integration task only. **Re-emit failure DETAIL at the end of stdout so it reaches the retry tail (#179 — "Failure detail must reach the retry tail" below)** | Wrong behavior, regressions in the targeted area |
@@ -47,6 +53,211 @@ Python project.
 | 9 | **verify-recorded-action-result (don't replay)** | script | The action ALREADY ran an expensive command (a build+test) and the postcondition is expressible from what it recorded — verify the recorded output/artifact instead of re-running the command | A wasteful replay of the action's own work — see the dedicated section for the GOOD-vs-BAD-target rules (this is a speed/flake trade-off, NOT a free correctness win) |
 | 10 | **prompt-judge** | `.prompt.md` (writes `{pass, reason}` verdict) | **LAST RESORT** — see the demotion gate | Genuinely subjective properties: tone, clarity, design taste |
 | 11 | **negative assertion** (`if -match … exit 1`) | script | The action prompt EXCLUDES a scenario/keyword the file must NOT contain ("do NOT include `X`", "must NOT call `Y` directly") — the mirror of `covers-key-behaviors`; pair it with the positive check | A removed/forbidden scenario the agent included anyway — undetected by a presence-only coverage check (#176) |
+
+## The source-shape demotion gate — prove BEHAVIOUR with a test, shape with a regex (#468)
+
+**A test IS the property. A source-shape regex is a PROXY for it, and proxy and property are only ever
+accidentally aligned.** That is why one guardrail class failed repeatedly while every other class held.
+Measured over three adversarial review rounds and five independent agents on one breakdown:
+
+| layer | outcome across 3 rounds / 5 agents |
+|---|---|
+| Test-based checks — scoped filters (#455), verified tool output (#248), the #179 re-emit, zero-match guards, TDD-red pairs, the DAG | **never broken by any agent in any round** |
+| Regex checks asserting a property of **implementation source** | **every blocker lived here**, including **5 regressions introduced while fixing earlier rounds** |
+
+Three patch rounds did not converge — round 3 found *more* blockers than round 2. The layer was
+ultimately deleted and what it guarded moved into behaviour.
+
+### The ordering — apply it in this order, stop at the first rung that carries the property
+
+1. **Behavioural proof.** The invariant is a claim about what the code DOES at runtime → a test,
+   an exit code, an endpoint response (archetypes #2/#4/#7/#8). The test is the property; there is
+   nothing to drift.
+2. **An AGREEMENT property test**, when the invariant is *"X must USE Y"* (next section). No regex can
+   express it; a test can.
+3. **A source-shape regex — LAST.** Only when the property is genuinely **unobservable at runtime**.
+   Then: pass the anti-pattern battery below, ship the two-sided sample pair, and **state in the
+   breakdown report why no test could carry it.** An unexplained source-shape check on a behavioural
+   claim is a self-review finding, not a style preference.
+
+**The one question that decides rung 1 vs rung 3:** *is this a claim about what the code DOES, or a
+structural fact about the build/wiring graph?* Behaviour → test. Structure → regex. And before writing
+any token probe, the #479 test still applies: *can a correct implementation be written that this
+rejects?*
+
+### Scope note — source-shape checks are NOT always wrong
+
+The rule is about reaching for a regex to prove something **a test could prove better**, not a blanket
+ban. These are genuine structural facts with **no runtime proxy**, and they held up fine across the same
+rounds: **build-descriptor registration** (a `.csproj` in a `.slnx`, `stacks/dotnet.md §1`),
+**cross-module reference chains** (§2), **entry-point wiring** (#64), the **grep fallback** in
+composition-root wiring (#120, explicitly the weakest of its three forms), **negative assertions** over
+an excluded scenario (#176), and the **`writeScope`-adjacent** facts the harness cannot see. Keep those.
+
+### Declaration is not behaviour — the measured headline
+
+Against a tree carrying the plan's **type declarations and no wiring at all**, a **14-clause grep
+manifest went 10/14 green**. A `bool NoRoute` property satisfied *"the no-route outcome exists"*. Every
+clause read as a reasonable statement about the feature; ten of them were satisfied by declarations
+alone. **A grep manifest measures vocabulary, not capability** — which is the whole of #468 in one
+sentence, and the reason rung 1 exists.
+
+### The compounding rule — RE-RUN THE WHOLE BATTERY AFTER EVERY EDIT
+
+These guardrails are maintained by the agent whose work they grade, so **a fix to one clause and a
+regression in its neighbour arrive in the same commit** — five times in the motivating rounds, including
+a raw-vs-stripped inconsistency fixed in round 1 and re-broken by the round-3 rewrite of the same file.
+Every defect below was **one execution away from discovery**; what was missing was that the execution had
+to be re-run *after every edit*, and it never was. So: **after ANY edit to a source-shape guardrail,
+re-run its entire two-sided sample pair — not just the case you just fixed.** Fixing the case in front of
+you and re-running only that case is how round 3 found more blockers than round 2.
+
+### The measured failure taxonomy — named shapes `/guardrails-review` probes by name
+
+Each was found by **executing** a guardrail, not by reading it. Every one reads plausibly on the page.
+Entries marked *(covered)* are already doctrine elsewhere — cited here so the battery is complete, not
+restated.
+
+| # | named shape | what it did | anchor on instead |
+|---|---|---|---|
+| 1 | **declaration-satisfies-call** | a bare `Name\s*\(` matched the method's OWN signature, so *"does Resolve delegate?"* passed on a `Resolve` that delegated to nothing | *(covered)* the dotted call — method-call anchoring (#76); Probe B op 6 |
+| 2 | **truncating body extraction** | a `(?ms)` body extractor ending at `^\s{0,8}\}` stopped at the **first nested** block (file-scoped namespaces put methods at 4 spaces, nested closes at 8) — **false-green** on the exact inversion it existed to catch, **false-red** on a correct implementation whose `if`s were braced. Brace style decided the verdict on correct code | never extract a body by brace-matching in a regex. Key on a token whose presence the OUTCOME implies, scoped to the one file |
+| 3 | **case-mismatch with the language** | PowerShell `-match` is case-**IN**sensitive; C#/Java/Go identifiers are case-**sensitive**. A clause keyed on `JudgeTier` was satisfied by `judgeTier`, an unrelated local in a different class — certifying an entire unbuilt wave as landed | `-cmatch` (or an inline `(?-i)`) for every **required-present** identifier clause in a case-sensitive language. **Polarity decides how bad the mistake is:** on a REQUIRED clause, case-insensitivity false-**GREENS** (an unrelated `judgeTier` satisfies it) — always `-cmatch`. On a FORBIDDEN clause it can only over-ban, so `-match` is the safe default there |
+| 4 | **inconsistent stripping across siblings** | one check stripped comments, its sibling in the same file did not; a token was satisfied by a `// checklist:` comment | *(extends #97/#98)* the **two-variable rule** below — strip ONCE at the top, and let **no** clause match raw content |
+| 5 | **raw-vs-stripped inconsistency inside one script** | the negative checks read stripped code, the positive check re-read `$content` raw — so a resolver naming the required symbol **only in a comment** passed. Fixed in round 1, **re-broken by the round-3 rewrite of the same file** | *(extends #97/#98)* the two-variable rule; no second `Get-Content`; and the compounding rule above |
+| 6 | **modifier-order / modifier-presence fragility** | a positional `record Foo(…, bool X)` failed while `sealed record Foo(…, bool X)` passed — one irrelevant keyword decided the verdict | *(generalises #112)* anchor on the part the language FIXES (the declaration keyword through the name), never on a modifier list the author may freely reorder or omit |
+| 7 | **under-inclusive negation** | a ban keyed on a **defaulted `bool` parameter** missed the non-defaulted form, the nullable form, an `async` signature, and an options-object parameter | ban the **construct** (the enum member, the type, the destination), not one spelling of it — and when you must enumerate forms, say in `# catches:` that the ban is a **lower bound** |
+| 8 | **name-locking a free choice** | a required datum's token alternation rejected a correct implementation that used **the plan's own phrasing** for the concept | *(covered)* the PRECEDENT anti-pattern — accept the artifact's form, or both. A free naming choice is not an invariant |
+| 9 | **vacuous token** | a `[Mm]odel` coverage token was satisfied by the test file's own `namespace …ModelTiering;`; a `[Rr]unner` token by the ambient type `PromptRunnerConfig` | the **ambient-vocabulary test**: before pinning a coverage token, grep the target file's namespace, usings, and surrounding type names for it. A token already present before the task runs discriminates nothing |
+| 10 | **one-line omnibus evasion** | `var unused = new { r.Costly, r.Climbed, r.NoRoute };` — ONE line of **real code** satisfies every token of a multi-token coverage check, so comment-stripping is irrelevant | *(extends Probe B ops 1/5)* require the tokens in **distinct constructs** the outcome implies (a `[Fact]` per behaviour, a dotted call per collaborator), never N tokens anywhere in one file |
+| 11 | **count floor over an executed test run** | `dotnet test` counts **theory data rows**, not methods — one `[Theory]` with six `[InlineData]` rows cleared an *"at least 6 executed"* floor while proving one behaviour | never a count. Use the behaviour manifest over discovered test NAMES (below) |
+| 12 | **declaration-is-not-behaviour** | the 14-clause manifest, 10/14 green against declarations with zero wiring (above) | rung 1 — a test |
+| 13 | **control characters from the authoring pipeline** | a clause containing literal `0x08` bytes (a `\b` collapsed by the authoring transport) could never match, and a **negative-only** smoke test could not reveal it — everything was failing anyway | never author a regex-bearing guardrail through a shell heredoc; and run the **VALID** half of the sample pair, which is the only half that exposes a clause that can never match |
+
+### The two-variable rule — one strip, two levels, no raw matching
+
+Entries 4 and 5 say *"strip consistently"*; #470 says *"strip string literals before a forbidden scan"*.
+Applied naively as ONE variable those collide, and the collision is itself a dead-end: a guardrail can
+legitimately **require** a token that lives inside a string literal — the measured case is a required
+`[Trait("Category", "…")]` attribute — so stripping literals before the **required** clause makes it
+unsatisfiable, which is exactly the failure #470 is about. Derive **two** variables, once, at the top:
+
+```powershell
+$raw  = Get-Content $f -Raw                                  # NEVER matched against
+$code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', '')        # comments gone ...
+$code = [regex]::Replace($code, '(?m)//.*$', '')             #   ... -> what POSITIVE clauses read
+$scan = <also strip string literals from $code>              #        -> what FORBIDDEN clauses read
+```
+
+- **`$raw` is never matched against.** Any clause reading it is entry 4/5.
+- **Every required-present clause reads `$code`** — comments stripped, string literals intact, so an
+  attribute value or a required message string can still satisfy it.
+- **Every forbidden-present clause reads `$scan`** — literals stripped too, so a banned token cannot
+  false-RED from a comment, a string, or a test name.
+
+Consistency means *no clause matches raw text* and *every clause of the same polarity reads the same
+variable* — **not** that both polarities read the same one. (The literal-stripping expressions are in the
+forbidden-token collision section, #470.)
+
+## The AGREEMENT property test — the answer to "X must USE Y" (#468)
+
+**The invariant that no regex can express.** When a plan says *"the resolver must consume the one shared
+candidacy predicate"* / *"the writer must go through the injected formatter"* / *"both call sites must
+share one policy"*, the property is **agreement**, not text. Three successive regexes failed on the
+motivating case (a resolver required to consume a shared predicate); the replacement was **one test**:
+
+> for every `(block, rung)` pair, the resolver's candidate set **agrees with** `ServesTier`.
+
+An **inlined copy that is equivalent today passes** — which is correct, because today it *is* equivalent
+— **and fails the moment it drifts**, which is the only moment the rule matters. That is the whole
+property, and a source regex cannot state it: a regex asks *"is the symbol mentioned?"*, which is
+satisfied by a comment, a `using`, a local stub, or a dead reference, and is silent about the thing the
+plan actually cares about.
+
+**The shape.** Enumerate the input domain (or a representative bounded sample of it), evaluate both
+sides, assert equality — and make the failure message name the disagreeing input.
+
+**Fires when** a task's prompt says *must use / must consume / must go through / must share / must not
+diverge from* a named collaborator, predicate, table, or policy. **Prefer this over rung 3 every time
+the two sides are both callable from a test.** When one side is NOT callable (a build descriptor, a
+wiring fact), you are in the scope note above — a structural fact with no runtime proxy — and a regex
+is correct.
+
+## A source-shape guardrail ships with its two-sided sample pair COMMITTED (#468 / #302)
+
+#302 already requires a two-sided smoke test **at author time**. This makes it **durable** rather than a
+per-round manual pass that nobody repeats: the samples become artifacts that live beside the script, so
+the next edit — by a later wave, a regeneration, or the agent the guardrail grades — can re-run them.
+
+**The rule.** A guardrail asserting the shape of implementation source ships with two committed sample
+files, in a `samples/` sibling of the guardrail folder:
+
+```
+tasks/<id>/guardrails/NN-check.ps1
+tasks/<id>/samples/NN-check.valid.<ext>      # a representative CORRECT artifact — the guardrail must exit 0
+tasks/<id>/samples/NN-check.invalid.<ext>    # the ONE defect the guardrail exists to catch — must exit non-zero
+```
+
+> **Never put a sample INSIDE a guardrail folder.** The loader enumerates **every** non-`.json` file in
+> `guardrails/`/`preflights/` and treats it as a guardrail — there is no extension allowlist. A
+> `NN-check.valid.cs` dropped in `tasks/<id>/guardrails/` loads as a **script guardrail** with no
+> validation error, **counts toward GR2003** ("task has ≥1 guardrail" — a fixture would satisfy the
+> task-is-verifiable check), and is **executed** at run time. In the catches-enforced folders it is a
+> GR2027 load error instead. `tasks/<id>/samples/` is not enumerated by the loader and is excluded from
+> the task definition hash, so a sample edit cannot silently invalidate a review marker.
+
+Both are re-run by `/guardrails-review` and by **any later edit to the script** (the compounding rule).
+The valid half is the one authors skip and the one that pays: it exposes a clause that can never match
+(taxonomy 13), a false-red on legitimate brace style (2), and a case mismatch (3) — none of which the
+invalid half can reveal, because under it everything is failing anyway.
+
+**Keep the samples honest.** The valid sample must be **complete** — a representative correct artifact,
+not a minimal fragment. An incomplete valid sample produces a *different* failure and masks the real
+one (measured: it nearly hid a #470 collision).
+
+### The DOCUMENTATION escape hatch — do NOT mandate an impossible artifact
+
+**For a documentation deliverable there is no meaningful invalid sample, and no behavioural rung to
+demote into.** You cannot run prose; and "a wrong version of this design doc" is not a thing you can
+synthesize with a straight face. That is the artifact class where this issue's own remedy is *least*
+applicable — and it is one of the most common terminal tasks (every plan with a contract document ends
+with an SSOT-landing task).
+
+So the rule for a **prose/document target** is:
+
+- The two-sided sample pair is **NOT required.** State in the breakdown report that the deliverable is a
+  document and the pair was skipped for that reason — an honest, named exemption, never a silent one.
+- **The PRECEDENT check is the substitute, and it is mandatory.** For every literal token the guardrail
+  demands of the document, point at a **sibling precedent in that same document**. Two greps settle it.
+  (The full rule is the *"Demands a token with no PRECEDENT in the target artifact"* anti-pattern —
+  don't restate it, run it.)
+- **Accept both forms when both are legitimate.** Where the house style and the code identifier are each
+  defensible, write the alternation — `'(?:"judge"\s*:|AttemptJudge)'` — rather than dictating one.
+
+A **code** deliverable does not get this hatch: if you cannot write an invalid sample for a code
+guardrail, you do not yet know what the guardrail catches, which is the `# catches:` rule failing.
+
+## Never use an executed-test COUNT as a suite's adequacy floor (#468)
+
+A floor like *"at least 6 tests executed"* over a `dotnet test` run is **gameable and measures the wrong
+thing**: the runner counts **theory data rows**, not behaviours, so **one** `[Theory]` with six
+`[InlineData]` rows clears a 6-test floor while proving a single behaviour. Raising the number does not
+fix it — six rows become twelve for free.
+
+**Use a behaviour MANIFEST over discovered test NAMES.** One clause per required behaviour, matched
+against the runner's **test-name listing** (`dotnet test <proj> --filter "<the filter>" --list-tests`,
+which enumerates without running anything — the same mechanism the #455 probe uses):
+
+- Each clause names **one** behaviour and matches a **pinned, discriminating** test name — a name a
+  correct suite would carry, not a substring an unrelated test satisfies (taxonomy 9).
+- It **ratchets**: a later wave lands a named test and its clause goes green with nobody editing a
+  script. That is mechanism instead of discipline, which is the point.
+- It is still a **lower bound** — a named test may assert nothing. Say so in `# catches:`; the residual
+  is `covers-key-behaviors`' residual, and it is human/judge work.
+
+The **zero-match guard** (#455) is the one legitimate use of a count, and it is not an adequacy floor:
+it asserts `>= 1` test **executed**, which proves the filter selected something rather than proving the
+suite is adequate. Keep it; the ban is on counts standing in for coverage.
 
 ### file-contains: structural vs. keyword matching (universal)
 
@@ -1704,6 +1915,111 @@ silence a GR2026 warning — post-#177 there is none to silence. The .NET realiz
 `stacks/dotnet.md §20`.
 <!-- END ADDED SECTION #176 -->
 
+<!-- BEGIN ADDED SECTION #470 — required ∧ forbidden token collision (auto-merge friendly; do not merge into prose above) -->
+## A forbidden token must not collide with what the task REQUIRES (#470)
+
+The **safety rule for every negative assertion above.** A guardrail can carry a required-present clause
+and a forbidden-present clause whose tokens **collide**, making it satisfiable by **no file at all**.
+Every attempt then fails identically, the retry feedback is coherent, actionable and **wrong**, and the
+task dead-ends at `needs-human` having never been achievable. Reading did not reveal it: the two clauses
+were 40 lines apart and **each is individually correct**.
+
+### The measured instance — the required attribute's own string literal carries the banned token
+
+```powershell
+# line 25 — REQUIRED
+if ($content -notmatch '\[Trait\s*\(\s*"Category"\s*,\s*"TierResolution"\s*\)\s*\]') { $failures += '…no trait…' }
+
+# line 66 — FORBIDDEN (a correctly-motivated #176 negative assertion)
+if ($content -match 'TierResolver|TierResolution') { $failures += '…references TierResolution - FORBIDDEN…' }
+```
+
+Both clauses fire on the **same character sequence**. Keeping the trait fails clause 2; removing it fails
+clause 1. Task 06 authored the wave's conformance suite and tasks 07 → 08 → 09 depended on it — one
+unsatisfiable regex would have dead-ended the whole chain after paying task 06's full retry budget.
+
+### The rule — two clauses, both non-optional
+
+**When a task carries BOTH a required-present and a forbidden-present clause:**
+
+1. **The forbidden scan runs over STRIPPED source — comments *and* string literals.** #97/#98 is written
+   about **comments**; this is the same fix family one step wider. The banned token hid in an **attribute's
+   string literal**, which no comment-stripper touches.
+2. **Anchor the ban on a USE, not a mention (#76).** Ban the construct the prompt actually forbids — a
+   dotted call, a type position, an enum member, a declaration — never the bare word.
+
+The applied fix, re-measured over **8 cases** (correct suite GREEN; the token in a **comment** GREEN; the
+token in a **string** GREEN; a real `TierResolver.Resolve(…)` call RED; `TierResolution` used as a **type**
+RED; eight-of-nine names RED; missing trait RED; file absent RED) — **teeth intact, false-RED gone**:
+
+```powershell
+# catches: a conformance suite that USES the forbidden resolver - while leaving the word free in prose,
+#          comments, string literals and test NAMES, so the REQUIRED [Trait("Category","TierResolution")]
+#          attribute (whose own string literal carries the token) can still satisfy its clause (#470).
+$raw  = Get-Content $f -Raw                                 # never matched against
+$code = [regex]::Replace($raw,  '/\*[\s\S]*?\*/', '')       # comments gone -> POSITIVE clauses read $code
+$code = [regex]::Replace($code, '(?m)//.*$', '')
+$scan = [regex]::Replace($code, '"""[\s\S]*?"""', '""')     # raw strings   -> FORBIDDEN clauses read $scan
+$scan = [regex]::Replace($scan, '@"(?:[^"]|"")*"', '""')    # verbatim
+$scan = [regex]::Replace($scan, '"(\\.|[^"\\])*"', '""')    # ordinary — kills the Trait's own value
+
+# REQUIRED reads $code, so the trait's string literal is still there to satisfy it
+if ($code -notmatch '\[Trait\s*\(\s*"Category"\s*,\s*"TierResolution"\s*\)\s*\]') {
+    Write-Output "$f carries no [Trait(""Category"", ""TierResolution"")] attribute on the suite class"
+    exit 1
+}
+# FORBIDDEN reads $scan, anchored on a USE — a dotted call or a type position, never the bare word
+if ($scan -match 'TierResolver\s*\.|(?<![\w.])TierResolution(?![\w"])') {
+    Write-Output "$f USES TierResolver/TierResolution - the DoR forbids the resolver in this suite"
+    exit 1
+}
+```
+
+That is the **two-variable rule** (demotion-gate section) applied: one strip, two levels, and the two
+polarities reading different levels — which is what makes the required and forbidden clauses coexist
+instead of cancelling.
+
+### The second axis — a forbidden token the task's OWN PROMPT uses
+
+The collision above is **guardrail ↔ itself**. The near-miss variant sits on the **prompt ↔ guardrail**
+axis and cost a full attempt in a live run: a guardrail banned `(?i)\bUnavailable\b` over **raw** content
+while the task's own action prompt used that exact word **three times** — twice as the concept under
+discussion, once as the thing not to invent. The agent echoed the prompt's vocabulary and attempt 1 died.
+
+It **is** satisfiable (attempt 2 wrote the suite without the word), so this is **trap-shaped, not
+unsatisfiable** — but the prohibition as written banned an ordinary English word rather than the thing
+actually forbidden, which was the **enum member**. Same fix family, narrowed to the construct over
+stripped source:
+
+```powershell
+if ($scan -match 'PromptFailureKind\s*\.\s*Unavailable|(?m)^\s*Unavailable\s*[,}]?\s*$') { … }
+```
+
+**The authoring check:** for every fail-on-present guardrail, **grep the paired `action.prompt.md` for
+the banned token.** A hit means either narrow the guardrail to the construct, or change the prompt's
+wording — the agent must never be invited to write the very thing that reds it.
+
+### Do not confuse this with GR2026 — the two are opposite polarities
+
+Stated side by side so neither is read as a revert of the other (#177):
+
+> **GR2026 (positive):** the guardrail REQUIRES a token the prompt **never mentions** → the task can never pass.
+> **This rule (negative):** the guardrail FORBIDS a token the prompt **does use** → the agent is invited to write the very thing that reds it.
+
+Both are *"prompt and guardrail disagree about a token"*; they differ only in polarity, and **each is
+silent in the other's healthy case**. #177 correctly made GR2026 silent on negative-assertion keywords —
+"the prompt doesn't mention this banned token" is the normal, healthy case. Do not weaken a legitimate
+negative assertion to satisfy either rule.
+
+**Why the existing probes miss the guardrail-internal collision.** Each is a *single-clause* judgement
+and both clauses are correct in isolation: #97/#98 is written about comments (the collision was a
+**string literal in an attribute**); #176 *asks for* the forbidden clause and says nothing about checking
+it against the file's required content; #302 finds it only if someone executes the script with a
+**complete** valid sample. The mechanical same-file lint (the GR2026 analogue — a required literal that
+trips the same file's forbidden pattern is a **proof** of unsatisfiability, not a heuristic) is tracked
+as **#470 ask 1** and is not doctrine's job; this section is.
+<!-- END ADDED SECTION #470 -->
+
 <!-- BEGIN ADDED SECTION #96 — producer<->consumer name-convention seam (auto-merge friendly; do not merge into prose above) -->
 ## Name-convention seam — producer files ⟷ consumer lookup by a derived name (#96)
 
@@ -1871,6 +2187,12 @@ report — never leave it silently unguarded.
 
 ## The decision tree (apply per task)
 
+**Gate the whole tree on the demotion order (#468).** Before reading a leaf, ask: *is this invariant a
+claim about what the code DOES at runtime, or a structural fact about the build/wiring graph?* Behaviour
+→ a test (rung 1) or an AGREEMENT property test (rung 2). Structure → a regex (rung 3), and the report
+says why no test could carry it. The tree's leaves name the archetype; the gate decides whether a
+source-shape leaf is admissible at all.
+
 ```
 What is the task's primary deliverable?
 ├── A file/artifact            → file-exists (always) + the strongest content check available:
@@ -1931,8 +2253,13 @@ What is the task's primary deliverable?
 ├── State output (a key a      → fragment-key-present (read $env:GUARDRAILS_STATE_FRAGMENT,
 │    downstream task reads)      parse JSON, assert the key non-null + non-empty; allowed-set
 │                                check if a downstream task branches on the value)
-├── Docs / prose               → file-exists + file-contains (required headings/terms);
-│                                prompt-judge ONLY for genuine subjective quality, never alone
+├── Docs / prose               → file-exists + file-contains (required headings/terms). There is NO
+│                                behavioural rung to demote into (prose cannot be run), so instead:
+│                                every demanded token must have a PRECEDENT in the target artifact
+│                                (#468 — two greps settle it), accept BOTH forms where both are
+│                                legitimate, and the two-sided sample pair is EXEMPT (no meaningful
+│                                invalid sample of a design doc exists) — NAME the exemption in the
+│                                report. prompt-judge ONLY for genuine subjective quality, never alone
 ├── Bulk / unbounded fan-out  → scripted-ETL archetype (#100), NOT an agent-per-item loop: ONE
 │    (crawl/scrape, recursive    `script` action does the N-item work in a single run (volume off
 │    glob, API listing, ETL —    the turn budget) + file-exists/command-exit-code/count on its
@@ -1962,6 +2289,15 @@ What is the task's primary deliverable?
 │    B.Method()" on a specific    TYPE (rules out a local same-named stub) AND the dotted call
 │    type in another project      (\.Method\s*\(, rules out comments + standalone definitions). NOT a
 │                                 bare Method\s*\( grep. See the method-call-anchoring section + §15
+├── "X must USE Y" — must      → AGREEMENT property test (#468), NOT a regex: enumerate the input
+│    consume / go through /      domain and assert the two sides AGREE for every input, naming the
+│    share / not diverge from    disagreeing one on failure. An inlined copy that is equivalent today
+│    a shared predicate,         PASSES (correctly) and FAILS the moment it drifts — the only moment
+│    policy, formatter, table    the rule matters. No regex can express that; three successive ones
+│                                 failed on the measured case. Distinct from #76 above: that asserts a
+│                                 CALL SITE exists, this asserts BEHAVIOURAL agreement. Falls back to a
+│                                 regex only when one side is not callable from a test (a build
+│                                 descriptor, a wiring fact). See the AGREEMENT property-test section
 ├── Producer files ⟷ consumer  → name-convention seam (#96): a CONSUMER-DRIVEN integration guardrail
 │    lookup by a DERIVED/mapped    on a both-sides-present task — parse the consumer's real map, drive
 │    name (url→resource, step     the lookup for EVERY item, assert 200 + a per-item marker (not a 404/
@@ -2085,6 +2421,61 @@ should fail before an expensive test run or a paid judge ever starts.
   behavioural proof to demote the check into — prose cannot be executed, so a token-presence regex is
   simultaneously the *only* available form and the most defect-prone one. Two greps of the target file
   settle it. Where both forms are legitimate, accept both rather than dictating one.
+
+- **Source-shape regex standing in for behavioural proof** (#468): the guardrail asserts a property of
+  **implementation source** when the invariant is a claim about what the code **DOES at runtime** — a
+  test could have carried it and did not. Measured over three review rounds and five agents on one
+  breakdown: the test layer was **never broken by any agent in any round**, and **every blocker lived in
+  the source-shape layer**, including **5 regressions introduced while fixing earlier rounds**. The
+  headline evidence: against a tree carrying the type declarations and **no wiring at all**, a 14-clause
+  grep manifest went **10/14 green** — a `bool NoRoute` property satisfied *"the no-route outcome
+  exists"*. **A grep manifest measures vocabulary, not capability.** Fix: run the source-shape demotion
+  gate above — behavioural proof, then an AGREEMENT property test for *"X must use Y"*, then a regex only
+  when the property is genuinely unobservable at runtime, with the reason stated in the breakdown report.
+  Not a blanket ban: a build-descriptor registration, an entry-point-wiring grep, or a negative assertion
+  is a structural fact with no runtime proxy and stays. BLOCKER when the check false-reds a correct
+  implementation; WEAK when it merely certifies vocabulary a test should have certified.
+- **A source-shape guardrail with no committed two-sided sample pair** (#468/#302): a `file-contains`
+  check over implementation source shipped without `tasks/<id>/samples/NN-check.valid.<ext>` /
+  `.invalid.<ext>`, so nothing re-runs when the script is next edited. (The samples live in a `samples/`
+  sibling, **never inside `guardrails/`** — the loader would treat them as guardrails and execute them.)
+  Every defect in the taxonomy was **one
+  execution away from discovery**; what was missing was that the execution had to be re-run **after every
+  edit**, and it never was — which is how a raw-vs-stripped inconsistency fixed in round 1 was re-broken
+  by the round-3 rewrite of the same file. Fix: commit the pair and re-run **the whole battery** after any
+  edit, not just the case just fixed. **Exemption — documentation deliverables**: no meaningful invalid
+  sample of a design doc exists, so the pair is NOT required; the **PRECEDENT check** above is the
+  mandatory substitute, and the report names the exemption. A CODE guardrail gets no such hatch: if you
+  cannot write its invalid sample, you do not yet know what it catches (the `# catches:` rule failing).
+- **Executed-test COUNT as an adequacy floor** (#468): a guardrail asserting *"at least N tests
+  executed"* as a proxy for coverage. The runner counts **theory data rows, not behaviours** — one
+  `[Theory]` with six `[InlineData]` rows clears a 6-test floor while proving one behaviour, and raising
+  N does not fix it. Fix: a **behaviour manifest over discovered test NAMES** (one clause per required
+  behaviour, matched against `--list-tests` output) — it is a lower bound like `covers-key-behaviors`,
+  and it **ratchets** as later waves land named tests. Not to be confused with the #455 **zero-match
+  guard**, which asserts `>= 1` test executed to prove the filter selected something; that count is
+  legitimate and stays. See the count-floor section above.
+- **The 13 measured source-shape failure shapes** (#468): a named battery — declaration-satisfies-call,
+  truncating body extraction, case-mismatch with the language, inconsistent stripping across siblings,
+  raw-vs-stripped inconsistency inside one script, modifier-order fragility, under-inclusive negation,
+  name-locking a free choice, vacuous token, one-line omnibus evasion, count floor, declaration-is-not-
+  behaviour, control characters from the authoring pipeline. Each was found by **executing** a guardrail
+  and each reads plausibly on the page. The table (what each did, what to anchor on instead, and which
+  are already covered by #76/#97/#98/#112/the PRECEDENT rule) is in the demotion-gate section above —
+  `/guardrails-review` probes them by name rather than re-deriving them.
+- **Required token that the same guardrail also FORBIDS** (#470): a required-present clause and a
+  forbidden-present clause whose tokens **collide**, so the guardrail is satisfiable by **no file at
+  all** — every attempt fails identically with coherent, actionable, wrong feedback, and the task
+  dead-ends at `needs-human` having never been achievable. Measured: a required
+  `[Trait("Category", "TierResolution")]` whose own **string literal** carries the token a later clause
+  forbids; the two clauses sat 40 lines apart and each was individually correct, so reading did not
+  reveal it. Its near-miss sibling is **trap-shaped rather than unsatisfiable**: a fail-on-present clause
+  banning a word the task's **own action prompt** uses (measured: `(?i)\bUnavailable\b` banned raw while
+  the prompt used the word three times — cost one full attempt). Fix: run the forbidden scan over
+  **STRIPPED** source (comments **and** string literals) and anchor it on a **USE, not a mention** — ban
+  the construct, never the English word; and grep the paired `action.prompt.md` for every banned token.
+  BLOCKER for the collision (unsatisfiable), WEAK for the prompt-vocabulary trap. See the forbidden-token
+  collision section above.
 
 - **Tautological**: the guardrail checks something the action writes specifically to
   satisfy it ("status.txt contains DONE"). The action controls the evidence.

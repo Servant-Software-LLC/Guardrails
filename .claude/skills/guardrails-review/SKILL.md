@@ -48,7 +48,12 @@ the task's own output** (writes a throwaway workspace / rendered fixture, runs a
 `--input-type`/`-e` block, parses `--json`) — Step 2's adversarial pass EXECUTES those
 against hand-synthesized valid + invalid samples to prove the SCRIPT'S OWN correctness
 (see "Script guardrail not smoke-tested against a valid + invalid sample" below, the
-#302 probe — distinct from the #248 tool-output probe). Noting both candidate sets here
+#302 probe — distinct from the #248 tool-output probe). **Also flag two more sets while
+you are already reading:** (a) every guardrail asserting a property of **implementation
+source** — §2's demotion probe asks whether a test could have carried it (#468); and
+(b) every guardrail carrying **BOTH** a require-present and a forbid-present clause, or a
+forbid-present clause of any kind — Probe C reconciles those pairs, and the collision they
+can form is satisfiable by no file at all (#470). Noting all four candidate sets here
 avoids re-reading every script during the pass.
 
 **Waved plan? Review wave-by-wave (#254).** A plan is *waved* when it has no root `tasks/` and ≥1
@@ -965,6 +970,61 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   confirm the breakdown report documents the JIT workflow for it. (Only an **authored** wave gets the
   full adversarial pass; a stub is reviewed when it is later filled.)
 <!-- END ADDED PROBES #254 -->
+<!-- BEGIN ADDED PROBES #468 — source-shape demotion, sample pair, count floor (auto-merge friendly) -->
+- **Source-shape regex where a TEST was available (#468)**: for every guardrail asserting a property of
+  **implementation source**, ask the demotion question — *is this a claim about what the code DOES at
+  runtime, or a structural fact about the build/wiring graph?* Behaviour → a test could have carried it
+  and did not. **Recommend the demotion and name the test**; do not merely tighten the regex. This is the
+  measured base rate, not a stylistic preference: over three review rounds and five agents on one
+  breakdown the test layer was **never broken by any agent in any round** while **every blocker lived in
+  the source-shape layer** (including 5 regressions introduced while fixing earlier rounds), and against
+  a tree with the type declarations and **no wiring at all** a 14-clause grep manifest went **10/14
+  green**. *A grep manifest measures vocabulary, not capability.*
+  - **Two named sub-shapes worth calling out by name.** *"X must USE Y"* (must consume / go through /
+    share / not diverge from a predicate, policy, formatter) → recommend an **AGREEMENT property test**:
+    assert the two sides agree over the input domain, which passes on an equivalent inlined copy today
+    and fails the moment it drifts. Three successive regexes failed on the measured case; no regex can
+    express it. And a **grep manifest** of N clauses over declarations → ask how many clauses a
+    declarations-only tree satisfies, and report that number.
+  - **Do NOT flag the legitimate ones.** Build-descriptor registration, cross-module reference chains,
+    entry-point wiring (#64), the #120 grep fallback, and #176 negative assertions are structural facts
+    with **no runtime proxy** and held up fine across the same rounds. The finding is *reaching for a
+    regex to prove something a test could prove better*, never source-shape as such.
+  - Severity: **BLOCKER** when the check can false-red a correct implementation (apply the #479 test —
+    *can a correct implementation be written that this rejects?*); **WEAK** when it merely certifies
+    vocabulary a test should have certified. Also a finding when the breakdown report carries **no line
+    saying why no test could carry it** — the report owes one per surviving source-shape check.
+    (Catalogue → "The source-shape demotion gate"; the 13-shape taxonomy table is the named battery Probe
+    B works down.)
+- **Source-shape guardrail with no committed two-sided sample pair (#468/#302)**: a `file-contains` check
+  over implementation **code** shipped without `tasks/<id>/samples/NN-check.valid.<ext>` /
+  `.invalid.<ext>`. #302 requires the two-sided execution at author time; this makes it **durable** —
+  every defect in
+  the taxonomy was one execution away from discovery, and what was missing was that the execution had to
+  be re-run **after every edit**, which is how a raw-vs-stripped fix from round 1 was re-broken by round
+  3's rewrite of the same file. **Re-run the whole pair yourself, not just the clause you are examining.**
+  The **valid** half is the one that pays: it is the only half that can expose a clause that never matches
+  (a `\b` collapsed to a literal `0x08` by the authoring pipeline), a false-red on legitimate brace style,
+  or a case mismatch — under the invalid half everything is failing anyway. Check the valid sample is
+  **complete**, not a fragment: an incomplete one produces a different failure and masks the real defect.
+  **Do NOT raise this for a DOCUMENTATION deliverable** — no meaningful invalid sample of a design doc
+  exists, the exemption is legitimate, and the substitute is the **PRECEDENT check** (does every demanded
+  token have a sibling precedent in that same document?). There, the finding is a *missing precedent*, or
+  a report that took the exemption **silently**. WEAK; BLOCKER when running the pair reveals a false-red.
+  - **And check WHERE the samples live — a misplaced one is its own BLOCKER.** A sample inside
+    `guardrails/` or `preflights/` is loaded as a **guardrail**: the loader enumerates every non-`.json`
+    file there with no extension allowlist, so a `.valid.cs` fixture in `tasks/<id>/guardrails/` loads
+    clean, **counts toward GR2003** (a fixture satisfying "this task has a guardrail"), and is
+    **executed** at run time; in the catches-enforced folders it is a GR2027 load error instead. The
+    samples belong in a `tasks/<id>/samples/` **sibling**, which the loader does not enumerate.
+- **Executed-test COUNT used as an adequacy floor (#468)**: a guardrail asserting *"at least N tests
+  executed"* as a coverage proxy. The runner counts **theory data rows, not behaviours** — one `[Theory]`
+  with N `[InlineData]` rows clears it while proving one behaviour, and raising N does not fix it. Fix: a
+  **behaviour manifest over discovered test NAMES** (one clause per required behaviour against
+  `--filter … --list-tests` output), which is a lower bound and **ratchets** as later waves land named
+  tests. **Not** the #455 zero-match guard (`>= 1` test executed), which proves the filter selected
+  something and is legitimate — do not flag that. BLOCKER (it certifies adequacy it cannot certify).
+<!-- END ADDED PROBES #468 -->
 
 ### 2b. EXECUTE the guardrails — the phase that catches what reading cannot (#479)
 
@@ -973,7 +1033,9 @@ the target tree, and the mental model is exactly where the errors live** — whi
 exists and why it is not optional. Measured over one plan: every blocker that reached a live run was
 found by *running* something, and none by reading.
 
-Run both probes. They catch different failures and neither subsumes the other.
+Run all three probes. They catch different failures and none subsumes another. **A and B execute; C
+reconciles the pairs execution reports as healthy** — it lives here because it is the residual the other
+two provably cannot see, not because it runs anything.
 
 **Probe A — baseline (cheap, universal, no author effort).** Execute each task's guardrails from the
 plan's starting workspace and record **exit code AND stderr**.
@@ -1021,18 +1083,57 @@ inventive you feel that day. Work down it:
 | 11 | create the required **file empty** / a method with the pinned name and an **empty body** | requiring an emit or any call inside the body |
 | 12 | satisfy a `--filter` with a **`[Skip]`ped** test, or let it match nothing | the zero-match guard (#455) |
 | 13 | write the token in a form the artifact never uses | see the PRECEDENT check in the catalogue |
+| 14 | **flip the case** of the required identifier (`JudgeTier` → `judgeTier`) | `-cmatch` / `(?-i)` — PowerShell `-match` is case-INsensitive, C#/Java/Go identifiers are not (#468) |
+| 15 | **brace** the `if`s in the method body, or nest a block inside it | never brace-matching a body in a regex — a `(?ms)` extractor stops at the first nested close, so brace STYLE decides the verdict (#468) |
+| 16 | add or drop a **modifier** before the declaration (`sealed record` vs `record`, `async`, `partial`) | the part the language FIXES — the declaration keyword through the name (#468, generalising #112) |
+| 17 | write the **banned** thing in a form the ban never enumerated (non-defaulted, nullable, `async`, an options object) | banning the CONSTRUCT — the enum member, the type position, the destination — not one spelling (#468) |
+| 18 | satisfy **every** token of a multi-token coverage check with ONE line of real code (`var unused = new { r.A, r.B, r.C };`) | distinct constructs the outcome implies (a `[Fact]` per behaviour, a dotted call per collaborator) — comment-stripping is irrelevant here (#468) |
+| 19 | clear a *"≥ N tests executed"* floor with **one `[Theory]` and N `[InlineData]` rows** | a behaviour manifest over discovered test NAMES; never a count (#468) |
 
-Two patterns generalise and are worth applying before the table: **anchor on a USE, not a mention**
-(kills 1, 6, 9, 10, 11), and **anchor on the DESTINATION, not the value** (kills 7 and 8).
+Three patterns generalise and are worth applying before the table: **anchor on a USE, not a mention**
+(kills 1, 6, 9, 10, 11), **anchor on the DESTINATION, not the value** (kills 7 and 8), and **anchor on
+what the LANGUAGE fixes, not on what the author may freely vary** (kills 14, 15, 16 — case-sensitivity,
+brace style, modifier order).
 
-**What neither probe catches — state it in the report rather than implying coverage.** A guardrail that
-is red before *and* red forever is indistinguishable from a correct red to both probes:
-- **#470** — a clause requiring a token it also forbids.
-- **#474** — a clause demanding an outcome the task's `writeScope` cannot reach.
-- **#484** — an arithmetic dead-end, e.g. a zero-match floor exceeding its own filter's cardinality.
-  Check these by hand: **whenever a guardrail contains both a filter cardinality and a numeric floor,
-  write the two numbers side by side and reconcile them.** They are usually 30 lines apart and were
-  edited at different times.
+**When Probe B keeps landing, the finding is the ARCHETYPE, not the clause (#468).** If a task's
+guardrail asserts a property of **implementation source** and two or more operators above go GREEN
+against it, stop patching clauses and ask whether a **test** could carry the property — that is the
+demotion gate, and it is the fix. Measured over three review rounds on one breakdown: the test layer was
+never broken by any agent in any round, every blocker lived in the source-shape layer, and three patch
+rounds did **not converge** — round 3 found more blockers than round 2 because each fix landed beside a
+fresh regression in the same file. A fourth round of clause repair is the wrong move; recommend the
+demotion.
+
+**Probe C — reconcile the clause PAIRS execution cannot separate.** A guardrail that is red before *and*
+red forever is indistinguishable from a correct red to both probes above: A expects red and gets it, B
+mutates and it stays red. Both report "healthy". So this probe is **read-and-reconcile, not execute** —
+and it is not optional, because each shape below is a **certain dead-end**, not a weakness. In every
+measured case the two colliding clauses sat **30–40 lines apart and were edited at different times**, and
+**each was individually correct** — which is exactly why reading the script top-to-bottom does not find
+them. Write the pairs down side by side.
+
+| pair to reconcile | the dead-end | verdict |
+|---|---|---|
+| every **required-present** literal × every **forbidden-present** pattern **in the same file** (#470) | the required text trips the forbidden pattern, so **no file can satisfy both** — every attempt fails identically with coherent, actionable, wrong feedback | **BLOCKER** |
+| every **forbidden-present** token × the task's own **`action.prompt.md`** (#470) | the prompt uses the banned word, inviting the agent to write the very thing that reds it. Satisfiable, but it cost a full attempt when measured | **WEAK** (BLOCKER if the prompt hands the agent the token as required vocabulary) |
+| every **numeric floor** × its own **filter's cardinality** (#484) | an arithmetic dead-end — a zero-match floor exceeding what the filter can ever select | **BLOCKER** |
+| every asserted **outcome** × the task's **`writeScope`** (#474) | the guardrail demands something the task is not permitted to write | **BLOCKER** |
+
+For the first row, do it mechanically: take each required clause's literal text **de-regexed** and match
+it against each forbidden pattern in the same file. The measured instance was a required
+`[Trait("Category", "TierResolution")]` whose own **string literal** carried the token a later clause
+forbade — its blast radius was three downstream tasks. **Fix for both #470 rows:** run the forbidden scan
+over **STRIPPED** source (comments **and** string literals — #97/#98 covers only comments) and anchor the
+ban on a **USE, not a mention** (#76). **Check the fix does not create the mirror dead-end:** strip in
+**two levels**, not one — required clauses read the comment-stripped text (so a token that legitimately
+lives in an attribute or message string can still satisfy them), forbidden clauses read the
+literal-stripped text. A "fix" that strips literals for *every* clause makes the required one
+unsatisfiable, which is the same BLOCKER wearing the other polarity. Do not read this as a revert of
+#177: GR2026 fires when a guardrail
+REQUIRES a token the prompt never mentions; this fires when it FORBIDS a token the prompt DOES use —
+opposite polarities, each silent in the other's healthy case. (Catalogue → "A forbidden token must not
+collide with what the task REQUIRES".) A mechanical `validate` lint for the same-file collision is
+tracked as #470 ask 1; until it ships, this probe is the only gate.
 
 ### 3. DAG soundness
 - Every edge justified (artifact, guardrail, or explicit ordering — not prose order).
@@ -1284,5 +1385,10 @@ finding remains unaddressed.
 - [ ] Every `.sh`/`.ps1`/`.py` guardrail that is runnable-at-author-time (idempotent, input in-repo or hand-synthesizable, no live dependency) was smoke-tested by EXECUTING the guardrail SCRIPT itself against a hand-written VALID sample (exit 0) AND a deliberately INVALID one (non-zero) — `bash -n`/`sh -n` treated as a cheap first pass only; the highest-value target (a guardrail that renders/executes the task's own not-yet-authored output) was run against a synthesized sample. FAILS the valid sample or PASSES the invalid sample = BLOCKER; runnable-but-unrun = WEAK; not-runnable-at-author-time (live service / built binary / merged HEAD) = syntax pass + honest report deferral, never a block. Distinct from #248 (which runs the underlying TOOL, not the guardrail script) (#302).
 - [ ] (#254) A waved plan was reviewed WAVE-BY-WAVE (each wave a mini-plan): the §2 adversarial probes ran per task within each wave, and each wave's entry/exit gates got the four-folder treatment. No cross-wave `dependsOn` edge (GR2034 — a wave-2 dependency on a wave-1 artifact is the wave-2 ENTRY gate, not an edge; BLOCKER if present). Every waved-plan prompt's state fragment is keyed by the WAVE-QUALIFIED id `<waveDir>/<taskFolder>` (header + example + state-output guardrail index agree; a bare/wrong-wave key is a BLOCKER, the #164 loop one level up).
 - [ ] (#254) Each wave ≥ 2 has a POSITIVE, positive-monotone-safe ENTRY gate ("prior wave's outputs materialized"; missing = WEAK, negative-polarity = BLOCKER). Each multi-leaf/fan-in wave's EXIT gate satisfies GR2028 (≥1 real integration re-run); every INTERMEDIATE wave's exit gate keeps whole-build/whole-suite LOCAL and any `scope:"integration"` guardrail union-safe/conditional (a whole-suite marked `scope:"integration"` in an intermediate wave = BLOCKER, #125); only the LAST wave's exit gate carries a whole-suite LOCAL `tests-pass`. A declared-but-empty JIT stub wave is NOT flagged as missing tasks; the JIT workflow for it is documented in the breakdown report.
+<!-- BEGIN ADDED CHECKS #468/#470 -->
+- [ ] (#468) Every guardrail asserting a property of IMPLEMENTATION SOURCE was run through the demotion question — behaviour → a test (or an AGREEMENT property test for "X must USE Y"), source-shape only for a structural fact with no runtime proxy. A behavioural claim carried by a regex is a finding NAMING the test that should replace it (BLOCKER when a correct implementation can be written that it rejects, WEAK when it merely certifies vocabulary), and a surviving source-shape check with no report line saying WHY no test could carry it is itself a finding. Legitimate structural facts — build-descriptor registration, cross-module reference chains, entry-point wiring, the #120 grep fallback, #176 negative assertions — are NOT flagged. When ≥2 Probe B operators go green against one source-shape guardrail, the finding is the ARCHETYPE, not the clause: recommend the demotion rather than a fourth round of clause repair (three rounds did not converge).
+- [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest over discovered test NAMES); the #455 zero-match guard is not that and is not flagged.
+- [ ] (#470) Probe C ran: every required-present literal was reconciled against every forbid-present pattern IN THE SAME FILE (a hit is unsatisfiable-by-construction → BLOCKER), and every banned token against the task's own `action.prompt.md` (a hit invites the agent to write what reds it → WEAK). Every forbidden scan runs over STRIPPED source — comments AND string literals — and is anchored on a USE, not a mention. Not confused with GR2026/#177, which is the opposite polarity (REQUIRES a token the prompt never mentions).
+<!-- END ADDED CHECKS #468/#470 -->
 - [ ] No fix applied without explicit approval; human-authored guardrails called out.
 - [ ] The review left durable evidence (#366): the plan hash was obtained via `guardrails plan-hash <folder>` (the skill can't compute it), a review report — the Step 6 findings table + verdict + an embedded `Plan-Definition-Hash: sha256:…` line (F2a) — was written under the hash-EXCLUDED `<plan>/state/reviews/`, and the marker was stamped with `guardrails mark-reviewed <folder> --evidence <report>` (recording `attestation.source: review-artifact`, or a downgrade to `bare` on an F2 failure) — clearing the GR2025 nudge (#79/#131), NOT run while a BLOCKER remained open. The recorded evidence class (`review-artifact` / `bare` / `machine`, read-time `legacy`) is for AUDIT, not a gate — the marker is only as strong as write-access to the plan folder, and the harness never writes it on a human's behalf. For a waved plan, run the flow per-wave against `<folder>/wave-NN-<slug>` (its own `state/reviews/` + hash) after a single-wave JIT review, or whole-plan after a wave-by-wave pass (#254).

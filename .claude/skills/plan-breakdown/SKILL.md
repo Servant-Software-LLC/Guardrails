@@ -400,6 +400,52 @@ Apply the decision tree per task, using BOTH layers loaded in Step 0: the univer
 catalogue for the archetype, and the **stack file** (`references/stacks/<stack>.md`, plus
 any `guardrails-patterns.md` topology) for the exact regex/command. Rules that are never
 optional:
+- **The source-shape demotion order comes FIRST — it decides what you reach for (#468).** The
+  catalogue's archetype numbers are stable IDs, not a strength ranking; `file-contains` being row 1 is
+  not permission to start there. Before selecting any guardrail, ask of each invariant: **is this a
+  claim about what the code DOES at runtime, or a structural fact about the build/wiring graph?**
+  1. **Behaviour → a test** (archetypes #2/#4/#7/#8). A test IS the property; a source regex is a proxy
+     for it, and the two are only accidentally aligned.
+  2. **"X must USE Y" → an AGREEMENT property test** — enumerate the input domain, assert the two sides
+     agree for every input. An inlined copy that is equivalent today passes and fails the moment it
+     drifts, which is the only moment the rule matters. No regex can express that.
+  3. **A source-shape regex LAST** — only when the property is genuinely unobservable at runtime, and
+     **Step 7.4 must state why no test could carry it.** Then it also ships its two-sided sample pair
+     (below) and passes the taxonomy battery.
+
+  Measured over three review rounds and five agents on one breakdown: the test layer was **never broken
+  by any agent in any round**; **every blocker lived in the source-shape layer**, including 5 regressions
+  introduced while fixing earlier rounds. Against a tree with the type declarations and no wiring at all,
+  a 14-clause grep manifest went **10/14 green** — a grep manifest measures **vocabulary, not
+  capability**. This is NOT a blanket ban: build-descriptor registration, cross-module reference chains,
+  entry-point wiring, the #120 grep fallback and #176 negative assertions are structural facts with no
+  runtime proxy and stay. (Catalogue → "The source-shape demotion gate"; the AGREEMENT property-test
+  section; the 13-shape taxonomy table.)
+- **Every source-shape guardrail over CODE ships its two-sided sample pair, committed beside it
+  (#468/#302).** `tasks/<id>/guardrails/NN-check.ps1` ships with `tasks/<id>/samples/NN-check.valid.<ext>`
+  (a **complete**, representative correct artifact → exit 0) and `NN-check.invalid.<ext>` (the one defect
+  it exists to catch → non-zero), so a later edit can re-run them. **Put the samples in a `samples/`
+  sibling, NEVER inside `guardrails/`/`preflights/`** — the loader enumerates every non-`.json` file in
+  those folders as a guardrail with no extension allowlist, so a sample would load as a script guardrail,
+  count toward GR2003, and be executed at run time (or fail GR2027 in the catches-enforced folders).
+  `tasks/<id>/samples/` is not enumerated and is excluded from the task definition hash.
+  **Re-run the WHOLE pair after ANY edit to the script**, not just the case
+  you just fixed — a fix to one clause and a regression in its neighbour arrive in the same commit
+  (measured five times; round 3 found more blockers than round 2). The VALID half is the one authors skip
+  and the one that pays: it is the only half that exposes a clause that can **never** match, since under
+  the invalid half everything is failing anyway. **DOCUMENTATION deliverables are EXEMPT** — you cannot
+  synthesize a meaningful invalid sample of a design doc — but the exemption is **named in the report**
+  and the **PRECEDENT check is the mandatory substitute** (point at a sibling precedent in that same
+  document for every literal token you demand; accept both forms where both are legitimate). A CODE
+  guardrail gets no such hatch: if you cannot write its invalid sample you do not yet know what it
+  catches. (Catalogue → the two-sided sample pair + its documentation escape hatch.)
+- **Never assert an executed-test COUNT as an adequacy floor (#468).** `dotnet test` counts **theory data
+  rows, not behaviours** — one `[Theory]` with six `[InlineData]` rows clears an "at least 6 executed"
+  floor while proving one behaviour, and raising the number does not fix it. Use a **behaviour manifest
+  over discovered test NAMES** instead (one clause per required behaviour, matched against
+  `--filter … --list-tests` output, which enumerates without running anything); it is a lower bound like
+  `covers-key-behaviors` and it **ratchets** as later waves land named tests. The #455 **zero-match
+  guard** (`>= 1` test executed) is NOT an adequacy floor and stays. (Catalogue → count-floor section.)
 - 1–4 guardrails per task, **cheapest-first** filename order (`01-exists`,
   `02-builds`, `03-tests`, `04-review`).
 - Every guardrail file opens with `# catches: <the wrong implementation it catches>`.
@@ -765,6 +811,31 @@ optional:
   guardrail's keyword — correctly, post-#177: GR2026 flags only POSITIVE require-present coverage tokens
   (SSOT §4.4), so a fail-on-present keyword intentionally absent from the prompt is NOT a stale-coverage
   warning. Do not omit or weaken the negative assertion to silence a (now non-existent) GR2026 warning.
+- **A forbidden token must not collide with what the task REQUIRES (#470)** — the safety rule for the
+  negative assertion you just emitted. Run it on **every** fail-on-present clause, in two directions:
+  - **Guardrail ↔ itself — UNSATISFIABLE, a BLOCKER.** Take each **required-present** clause's literal
+    text (de-regexed) and match it against **every forbidden pattern in the same file**. A hit means no
+    file can satisfy both: every attempt fails identically with coherent, actionable, **wrong** feedback
+    and the task dead-ends at `needs-human` having never been achievable. Measured: a required
+    `[Trait("Category", "TierResolution")]` whose own **string literal** carries the token a clause 40
+    lines later forbids — each clause individually correct, so **reading did not reveal it**. Its blast
+    radius was three downstream tasks. (A mechanical `validate` lint for this is tracked as #470 ask 1;
+    it is not authored here and does not replace this check.)
+  - **Prompt ↔ guardrail — TRAP-SHAPED, fix it anyway.** Grep the task's **own `action.prompt.md`** for
+    every banned token. A hit means the prompt invites the agent to write the very thing that reds it —
+    measured: a guardrail banning `(?i)\bUnavailable\b` over raw content while the prompt used that word
+    three times; the agent echoed it and lost a full attempt. Satisfiable, but the ban was on an ordinary
+    English word rather than on the **enum member** actually forbidden.
+
+  **The fix for both is one shape:** run the forbidden scan over **STRIPPED** source — comments **and**
+  string literals, since #97/#98 covers only comments and the measured collision hid in an attribute's
+  string literal — and **anchor the ban on a USE, not a mention (#76)**: the dotted call, the type
+  position, the enum member, the declaration. Never the bare word. Re-measured over 8 cases, that keeps
+  every tooth (a real call RED, the type position RED, a missing trait RED) and removes every false RED
+  (the token in a comment, in a string, in a test name). Do **not** read this as a revert of #177: GR2026
+  fires when the guardrail REQUIRES a token the prompt never mentions; this fires when the guardrail
+  FORBIDS a token the prompt DOES use — opposite polarities, each silent in the other's healthy case.
+  (Catalogue → "A forbidden token must not collide with what the task REQUIRES".)
 - **A cross-cutting-output task OWNS the re-baseline of every golden it feeds (#193)** — the runtime
   mirror of the transitive-compilation edge (Step 3d, #176). When a task changes a **cross-cutting
   output shape** — a renderer, a hash, a serializer, a formatter, a message/wire schema, any code
@@ -1523,7 +1594,13 @@ Per `references/schemas.md`, exactly:
      sample (gotcha 2) — this is precisely the guardrail whose first real execution is otherwise deferred
      to runtime. A guardrail that PASSES the invalid sample has no teeth (fix it); one that FAILS the valid
      sample is a false-red that would dead-end every attempt at `needsHuman` and block downstream (fix it
-     before it ever runs). Do this in a scratch temp dir; never leave fixtures in the plan folder.
+     before it ever runs). Do this in a scratch temp dir; never leave fixtures in the plan folder —
+     **with one narrow, deliberate exception (#468): a SOURCE-SHAPE guardrail over CODE COMMITS its
+     pair** to `tasks/<id>/samples/`, so the next edit to the script can re-run it instead of trusting
+     that someone repeats this pass by hand. That folder is a `samples/` **sibling** of `guardrails/`,
+     never inside it: the loader enumerates every non-`.json` file in a guardrail folder as a guardrail
+     (no extension allowlist), so a sample placed there would load as a script guardrail, count toward
+     GR2003, and be executed at run time. Everything else stays in the temp dir.
    - **Not runnable → syntax-pass + explicit deferral.** If it needs a live service / the built binary /
      the full merged HEAD, run the syntax pass only, reason explicitly about correctness, and **STATE in
      the report (step 4) that the guardrail could not be author-time-executed and why** — an honest
@@ -1589,7 +1666,14 @@ Per `references/schemas.md`, exactly:
    archetype numbers, dependsOn), the inserted-task list with justifications, edge
    justifications, any flagged non-executable plan content, and the **Step 7.0d author-time
    smoke-test outcome** (which script guardrails were EXECUTED against valid + invalid samples,
-   and which were deferred as not-runnable-at-author-time with the reason, #302). **Surface every
+   and which were deferred as not-runnable-at-author-time with the reason, #302). **Then the
+   source-shape ledger (#468) — one line per source-shape guardrail that survived the demotion gate:**
+   the guardrail, the property it asserts, and **why no test could carry it** (why the property is
+   unobservable at runtime). A source-shape check over implementation source with no such line is a
+   self-review finding — loop back to Step 4 and demote it or justify it. Name the committed
+   `.valid`/`.invalid` sample pair for each, and for any **documentation** deliverable state the
+   exemption explicitly (*"prose target — no meaningful invalid sample exists; PRECEDENT check applied
+   instead, sibling precedent: `<the form the document already uses>`"*), never silently. **Surface every
    decision the human should confirm** — chief among them any test-framework or E2E-driver choice:
    state which was used and why (detected in repo / named in the plan / asked via
    `AskUserQuestion` / left as a needs-human halt). A wrong framework poisons every
@@ -2697,6 +2781,8 @@ authority for every path/signature the new wave references.
 - [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
 - [ ] Every emitted task passed the Step 2 over-size split-trigger (no task bundles multiple deliverables, has a wide blast radius, maps 1:1 to a design milestone, or has an expensive retry); any feasibility/self-critique "over-packed"/"~N test refs" signal was carried into sizing and split, not sized 1:1 (#111). Re-checked in the Step 7.0a task-size self-review; any unsplittable over-scoped task is flagged in the report.
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
+- [ ] **Every guardrail passed the SOURCE-SHAPE demotion order (#468)**: a claim about runtime behaviour is carried by a test (or an AGREEMENT property test for "X must USE Y"), and a source-shape regex survives ONLY for a structural fact with no runtime proxy — with a Step 7.4 report line saying why no test could carry it. No executed-test COUNT is used as an adequacy floor (the #455 zero-match guard is not one). Every surviving source-shape check over CODE ships its committed `.valid`/`.invalid` sample pair in `tasks/<id>/samples/` (a sibling — NEVER inside `guardrails/`, where the loader would load the fixture as a guardrail and execute it), and the WHOLE pair was re-run after every edit to the script; a DOCUMENTATION target is exempt from the pair but not from the PRECEDENT check, and the exemption is named in the report.
+- [ ] **No forbidden token collides with what the task REQUIRES (#470)**: for every fail-on-present clause, its literal was reconciled against the same file's required-present clauses (a collision is unsatisfiable-by-construction and dead-ends every attempt) and against the task's own `action.prompt.md`; every forbidden scan runs over STRIPPED source (comments AND string literals) and is anchored on a USE, not a mention.
 - [ ] Every guardrail file opens with its `catches:` line.
 - [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys).
 - [ ] Any task that writes a downstream-read state key carries the fragment-key-present guardrail.
