@@ -67,15 +67,22 @@ if ($raw -cnotmatch 'GUARDRAILS_VERDICT_OUT') {
     $failures += 'the harness never mentions GUARDRAILS_VERDICT_OUT - a prompt guardrail passes or fails SOLELY by its verdict file (a missing verdict is a contractual FAIL), so the fake runner must read that env var and write the verdict. FakeClaudePlanBuilder.cs in this same project already does exactly this; follow it.'
 }
 
-# The harness must actually WRITE a prompt guardrail into a task's guardrails/ folder. This is the
-# clause declarations alone cannot satisfy: the two pinned names above can be declared as empty types
-# that do nothing, but a write pairing the guardrails DIRECTORY with a .prompt.md FILE is the
-# capability itself. Measured 0 in this file today (it writes "action.prompt.md" at the task root -
-# no guardrails dir - and 01-ok.cmd/.sh INTO guardrails - no prompt). Raw text, since the whole point
-# is the string literals. Constrained to ONE STATEMENT ([^;]) after measuring that a dotall window
-# matched ACROSS a boundary: CreateDirectory(..."guardrails")); then "action.prompt.md" two lines
-# later - pre-satisfied. That was the THIRD instance of this trap found while reviewing this wave.
-if ($raw -cnotmatch '"guardrails"[^;]{0,200}?prompt\.md') {
+# The harness must actually WRITE a prompt guardrail, keyed on the FILENAME and nothing else.
+#
+# THIS CLAUSE FALSE-RED'D A CORRECT IMPLEMENTATION and cost this task two attempts. Its first form
+# demanded the literal "guardrails" and prompt.md inside ONE STATEMENT, to stop a dotall window
+# matching CreateDirectory(..."guardrails")) against the pre-existing "action.prompt.md" two lines
+# later. But the natural implementation hoists the directory into a local -
+#     string guardrailsDir = Path.Combine(taskDir, "guardrails");
+#     File.WriteAllText(Path.Combine(guardrailsDir, basename + ".prompt.md"), body);
+# - which puts a semicolon between them. The agent wrote exactly that, correctly, and was told it
+# had never written a .prompt.md at all. A guardrail must never constrain the SHAPE of correct code.
+#
+# The filename is the honest discriminator: the ONLY pre-existing prompt.md in this file is
+# action.prompt.md (twice - the manifest path and the write), so a negative lookbehind for the
+# `action.` prefix distinguishes the new guardrail file from the existing action file no matter how
+# the path is assembled. Measured on the untouched harness: 0 matches.
+if ($raw -cnotmatch '(?<!action\.)prompt\.md') {
     $failures += 'the harness never writes a .prompt.md INTO a task guardrails/ folder - it still emits only the deterministic 01-ok.cmd/.sh stub, so a plan spec cannot declare a prompt-JUDGE guardrail and every wave-3 conformance clause is unwritable. (The "action.prompt.md" it already writes is the ACTION, at the task root - not a guardrail.)'
 }
 

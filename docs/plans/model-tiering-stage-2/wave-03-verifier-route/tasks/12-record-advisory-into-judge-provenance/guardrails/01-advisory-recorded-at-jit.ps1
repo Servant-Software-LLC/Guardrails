@@ -28,11 +28,14 @@ if ($code -cnotmatch 'VerifierAdvisory\s*\.') {
     $failures += 'GuardrailRunner never names VerifierAdvisory in real code - tasks 09/10 built and tested it, and with no caller it is a green unit that ships dead. The JIT boundary is this task: compute the finding where the judge is resolved.'
 }
 # The assignment must land INSIDE the AttemptJudge that GuardrailRunner returns - task 07 pins that
-# type as the exposed one. Keyed on the two together within ONE statement, because the free-floating
+# type as the exposed one. Keyed on the two together within a REGION - deliberately NOT one statement:
+# `var j = new AttemptJudge {...}; j = j with { Advisory = f };` is a correct hoisted form, and a
+# statement-bounded window would false-RED it (that exact mistake cost task 05 two attempts). The
+# proximity requirement still holds, because the free-floating
 # form was satisfied by  _ = judge with { Advisory = ... }  - a with-expression whose result is
 # DISCARDED (records are immutable), i.e. the #475 shape reproduced inside the task written to
 # prevent it. Measured: that bypass exited 0 against the previous form.
-if ($code -cnotmatch '(?s)AttemptJudge[^;]{0,800}?Advisory\s*=') {
+if ($code -cnotmatch '(?s)AttemptJudge[\s\S]{0,1200}?Advisory\s*=') {
     $failures += 'no Advisory assignment inside an AttemptJudge construction - task 07 exposes the resolved judge as Guardrails.Core.Journal.AttemptJudge, and the advisory must be set ON THAT OBJECT so it rides the carry task 08 already built. A with-expression whose result is discarded, or an Advisory set on some other object, changes nothing that reaches run.json.'
 }
 if ($code -cnotmatch '\bAdvisory\s*=') {

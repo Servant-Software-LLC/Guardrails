@@ -72,7 +72,13 @@ if ($advisoryEvents.Count -lt 1) {
             $lCode = Get-Code $leaf
             if ($lCode -cnotmatch ('\b' + $esc + '\s*\(')) {
                 $failures += "$lName does not implement $evt. It is a LEAF of the observer chain, and the two leaves serve DIFFERENT MODES: LiveRunObserver is the default live UI, ConsoleRunObserver is --no-ui. Implementing only one means the advisory prints in one mode and vanishes in the other."
-            } elseif ($lCode -cnotmatch ('(?s)' + $esc + '\s*\([^)]*\)[^{;]*[{=][^}]{0,600}?(MarkupLine|WriteLine|Write\s*\(|_output|AnsiConsole)')) {
+            # The body must DO something - but "something" includes delegating to a private render
+            # helper, which is a perfectly good implementation. So the alternation ends with a bare
+            # method call: an empty body { } still fails (there is no call before the closing brace),
+            # while  => RenderAdvisory(taskId, finding);  passes. Constraining this to a literal
+            # MarkupLine/WriteLine would false-RED correct code - the mistake that cost task 05 two
+            # attempts in a live run.
+            } elseif ($lCode -cnotmatch ('(?s)' + $esc + '\s*\([^)]*\)[^{;]*[{=][^}]{0,600}?(MarkupLine|WriteLine|Write\s*\(|_output|AnsiConsole|\w+\s*\()')) {
                 $failures += "$lName declares $evt but EMITS NOTHING in it - a body with no write is the same silence as no method at all. In LiveRunObserver follow PlanHashMismatch/DecisionRecorded (AnsiConsole.MarkupLine under the _gate lock); in ConsoleRunObserver follow its _output.WriteLine calls."
             }
         }
