@@ -1284,6 +1284,49 @@ pass. Growing coverage is a JSON entry + two fixtures, never new harness C#.
 
 ---
 
+
+### 4.7 Guardrails that CANNOT PASS for any input (validated, GR2055/GR2056 — errors)
+
+Two deterministic checks for a defect class the adversarial review pass is structurally poor at: a guardrail
+that is not too WEAK but **unpassable**. Both were found by dogfooding, each after it had already dead-ended a
+live task whose implementation was complete.
+
+**Why static, and why the review pass misses them.** `/guardrails-review` asks *"what wrong implementation
+passes this?"* — it hunts weakness. And the execution probes it gained in #479 cannot see these either: such a
+guardrail is **red before the task runs** (correct) and **red forever** (not), and a baseline probe cannot
+distinguish those two. They are decidable from the script's own text, so they belong in `validate`.
+
+| code | defect | fires when |
+|---|---|---|
+| **GR2055** | a zero-match floor exceeding its own filter's cardinality | a variable holds a literal array of N quoted names, that same variable is referenced on a line mentioning `filter`, the body contains `-lt M`, and `M > N` |
+| **GR2056** | a script guardrail that does not PARSE | the language's own interpreter reports a syntax error for the file |
+
+**GR2055 — the two numbers are ONE invariant.** Measured instance: a `--filter` naming SIX clauses guarded by
+`if ($ran -lt 14)`. The floor had been correct for an earlier WHOLE-CLASS filter (nine + five); a later scoping
+fix narrowed the filter and left the floor behind. Each edit was individually sound and the two numbers sat ~30
+lines apart — which is why two human passes missed it. The check is deliberately **conservative**: all four
+conditions above must hold, so an unrelated array and an unrelated threshold in one script cannot collide into
+a false positive. A validator that cries wolf gets ignored, and its true positives are lost with it.
+
+**GR2056 — parsing is NOT executing, and that distinction is the design.** `validate` is read-only, fast, and
+run in CI; it must never execute a plan's scripts, which build, test, and write files. The probe asks the
+interpreter only whether the text is well-formed (`Parser::ParseFile` for `.ps1`, `bash -n` for `.sh`) in **one
+invocation per language, not per script** — a plan can carry hundreds of guardrails, and a per-file spawn would
+add tens of seconds until someone turned the check off.
+
+**Silence is not proof of validity.** An absent interpreter, an unsupported language (`.cmd`/`.bat` have no
+parse-only mode), or a probe timeout all report nothing. Failing validation because `pwsh` is missing would
+punish the operator for something the plan author cannot control — and a machine that cannot parse the script
+cannot run it either. The probe is injected (`IScriptSyntaxProbe`, mirroring `IExecutableProbe`) so the check
+is unit-testable without an interpreter present, and so a caller that must not spawn anything can pass
+`NullScriptSyntaxProbe`.
+
+**What deliberately stayed OUT of `validate`.** The sibling failures — a guardrail already green before its
+task runs, one that THROWS at runtime (non-fatal under `$ErrorActionPreference = 'Continue'`, silently skipping
+a comment/string strip and changing the guardrail's meaning), and a `--filter` matching nothing — genuinely
+require execution. They live in the `/guardrails-review` and `/plan-breakdown` skill phases instead, where a
+human or agent is driving and can accept the cost and the side effects.
+
 ## 5. Child-process contract
 
 ### 5.1 Environment variables (all paths absolute)

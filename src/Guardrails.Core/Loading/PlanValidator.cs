@@ -16,6 +16,7 @@ public sealed class PlanValidator
 {
     private readonly IExecutableProbe _probe;
     private readonly BannedPatternRegistry _bannedPatterns;
+    private readonly IScriptSyntaxProbe _syntaxProbe;
 
     /// <summary>Validate with the given PATH probe and the embedded default banned-pattern registry.</summary>
     public PlanValidator(IExecutableProbe probe) : this(probe, BannedPatternRegistry.Load()) { }
@@ -29,9 +30,19 @@ public sealed class PlanValidator
     /// unit-testable with a synthetic registry, without touching the shipped one.
     /// </summary>
     public PlanValidator(IExecutableProbe probe, BannedPatternRegistry bannedPatterns)
+        : this(probe, bannedPatterns, new InterpreterScriptSyntaxProbe(probe)) { }
+
+    /// <summary>
+    /// Validate with an injected script-syntax probe as well (issue #473). Separate from the PATH
+    /// probe because parse-checking spawns an interpreter: tests inject a fake so the GR2056 check is
+    /// exercised without pwsh/bash present, and a caller that must not spawn anything can pass
+    /// <see cref="NullScriptSyntaxProbe"/>.
+    /// </summary>
+    public PlanValidator(IExecutableProbe probe, BannedPatternRegistry bannedPatterns, IScriptSyntaxProbe syntaxProbe)
     {
         _probe = probe;
         _bannedPatterns = bannedPatterns;
+        _syntaxProbe = syntaxProbe;
     }
 
     /// <summary>Run every semantic check and return all diagnostics (errors and warnings).</summary>
@@ -57,6 +68,7 @@ public sealed class PlanValidator
         ValidateDuplicateCheckNames(plan, diagnostics);
         ValidateBannedGuardrailPatterns(plan, diagnostics);
         ValidateUnsatisfiableGuardrailFloor(plan, diagnostics);
+        ValidateGuardrailScriptsParse(plan, diagnostics);
         ValidateWriteScopes(plan, diagnostics);
         ValidateStructuralOverScope(plan, diagnostics);
         ValidateStagingOutputs(plan, diagnostics);
@@ -1645,6 +1657,50 @@ public sealed class PlanValidator
                         "SSOT §4.6)."));
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// GR2056 (issue #473) — a guardrail SCRIPT that does not PARSE. Such a guardrail fails
+    /// unconditionally: every attempt runs the action, then trips over a syntax error the agent cannot
+    /// fix (the script is not in its write scope), so the task burns its whole retry budget and settles
+    /// <c>needs-human</c>. Measured cost of one instance: two attempts plus a halt, on a script whose
+    /// only defect was a stray backtick inside a double-quoted string.
+    /// <para>Parsing is NOT executing — the probe asks the interpreter whether the text is
+    /// well-formed and never runs it, so <c>validate</c> stays a read-only check safe for CI. The
+    /// sibling failures #478 also wanted (already-green, throws-at-runtime, filter-matches-nothing)
+    /// genuinely require execution and live in the skill phases instead (#479).</para>
+    /// <para>Silence from the probe is NOT a clean bill of health: an absent interpreter, an
+    /// unsupported language, or a probe timeout all report nothing. That asymmetry is deliberate —
+    /// see <see cref="IScriptSyntaxProbe"/>.</para>
+    /// </summary>
+    private void ValidateGuardrailScriptsParse(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        List<GuardrailDefinition> scripts = [.. FourFolderScriptGuardrails(plan)];
+        if (scripts.Count == 0)
+        {
+            return;
+        }
+
+        IReadOnlyDictionary<string, string> failures =
+            _syntaxProbe.FindSyntaxErrors([.. scripts.Select(g => g.Path)]);
+        if (failures.Count == 0)
+        {
+            return;
+        }
+
+        foreach (GuardrailDefinition guardrail in scripts)
+        {
+            if (!failures.TryGetValue(guardrail.Path, out string? message))
+            {
+                continue;
+            }
+
+            diagnostics.Add(Error(DiagnosticCodes.GuardrailScriptDoesNotParse, guardrail.Path,
+                $"Guardrail '{guardrail.Name}' does not PARSE: {message} A guardrail that cannot be " +
+                "parsed fails on every attempt, and the agent cannot fix it — the script is not in its " +
+                "write scope — so the task burns its whole retry budget and dead-ends at needs-human. " +
+                "Fix the syntax before running the plan (issue #473)."));
         }
     }
 

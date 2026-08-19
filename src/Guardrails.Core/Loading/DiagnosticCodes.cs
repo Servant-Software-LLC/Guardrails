@@ -649,9 +649,21 @@ public static class DiagnosticCodes
     /// </summary>
     public const string UnsatisfiableGuardrailFloor = "GR2055";
 
-    // CURRENT next-free code: GR2056. GR2055 (UnsatisfiableGuardrailFloor) is the last taken code
+    /// <summary>
+    /// <b>GR2056 — a guardrail SCRIPT that does not PARSE (issue #473).</b> It fails unconditionally:
+    /// every attempt runs the action and then trips over a syntax error the agent cannot fix, because
+    /// the guardrail script is not in its write scope. The task burns its whole retry budget and
+    /// settles <c>needs-human</c>. Measured cost of one instance: two attempts plus a halt, for a
+    /// stray backtick inside a double-quoted string.
+    /// <para>Detected by asking the language's own interpreter to PARSE the file — never to run it —
+    /// so <c>validate</c> remains read-only and safe for CI. Silence is not proof of validity: an
+    /// absent interpreter or an unsupported language reports nothing.</para>
+    /// </summary>
+    public const string GuardrailScriptDoesNotParse = "GR2056";
+
+    // CURRENT next-free code: GR2057. GR2056 (GuardrailScriptDoesNotParse) is the last taken code
     // above — GR2051–GR2054 remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
     // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
     // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
-    // GR2056 and update this line rather than colliding with that block (issue #320).
+    // GR2057 and update this line rather than colliding with that block (issue #320).
 }
