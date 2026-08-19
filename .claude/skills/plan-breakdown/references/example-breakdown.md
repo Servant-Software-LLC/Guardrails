@@ -200,7 +200,11 @@ of fixing the code. No `captureHashes`, no `restoreOnRetry`, no downstream `test
   `{ "01-author-stats-tests": { "someKey": "someValue" } }`.
 - If a previous-attempt feedback section is appended, this is a RETRY: fix those
   specific failures; do not start over.
-- If you cannot proceed without a human decision, write {"needsHuman": "<question>"}
+- Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
+  code — or reword a document away from its own conventions — to match a check's pattern.
+- If you cannot proceed without a human decision, OR a guardrail reports something ABSENT
+  that you can see is PRESENT (quote its claim and the file:line that refutes it), write
+  {"needsHuman": "<question>"}
   to the state-out path and stop.
 
 ## Task

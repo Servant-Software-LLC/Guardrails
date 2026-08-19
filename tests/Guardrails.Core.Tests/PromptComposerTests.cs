@@ -338,4 +338,61 @@ public sealed class PromptComposerTests : IDisposable
             // best-effort
         }
     }
+    /// <summary>
+    /// #481: the retry feedback must carry the escape for a DEFECTIVE guardrail, not only the
+    /// "fix those specific failures" instruction. Without it the sanctioned reading of a failure is
+    /// always "try harder", and an agent whose correct work is rejected reverse-engineers the check
+    /// and reshapes its implementation to satisfy it — a path that succeeds SILENTLY, so no run
+    /// artifact ever records that a checker chose the shape.
+    ///
+    /// Pinned because this text is load-bearing and invisible: nothing else fails if it is dropped.
+    /// It must sit in the RETRY section specifically — an agent on attempt 2 does not scroll back to
+    /// the initial prompt.
+    /// </summary>
+    [Fact]
+    public void Action_WithFeedback_OffersTheDefectiveGuardrailEscape()
+    {
+        string stateIn = WriteState("{}");
+        string feedbackPath = Path.Combine(_dir, "feedback.md");
+        File.WriteAllText(feedbackPath, "Guardrail 01-writes-prompt-md failed: never writes a .prompt.md.");
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), feedbackPath);
+
+        int retrySection = composed.IndexOf("## Previous attempt failed", StringComparison.Ordinal);
+        Assert.True(retrySection >= 0, "the retry section must exist for this test to mean anything");
+
+        // Searched WITHIN the retry section, not across the whole prompt: `needsHuman` legitimately
+        // appears earlier too, in the harness-contract header, and a whole-prompt IndexOf would find
+        // that one and assert nothing about the retry text.
+        string retryText = composed[retrySection..];
+
+        // The prohibition, the diagnosis, and the escape - all three.
+        foreach (string required in new[]
+                 {
+                     "do NOT satisfy it by changing the SHAPE",
+                     "Guardrails constrain the",
+                     "that guardrail is defective",
+                     "needsHuman",
+                     "file:line that refutes it",
+                 })
+        {
+            Assert.True(retryText.Contains(required, StringComparison.Ordinal),
+                $"'{required}' must appear inside the retry section");
+        }
+    }
+
+    /// <summary>
+    /// The escape is for a RETRY. A first attempt has no failing guardrail to contradict, so offering
+    /// "the guardrail may be defective" up front would invite it as a route around work not yet done.
+    /// </summary>
+    [Fact]
+    public void Action_WithoutFeedback_DoesNotOfferTheDefectiveGuardrailEscape()
+    {
+        string stateIn = WriteState("{}");
+
+        string composed = PromptComposer.ComposeAction("body", stateIn, Path.Combine(_dir, "o.json"), null);
+
+        Assert.DoesNotContain("that guardrail is defective", composed);
+    }
+
 }

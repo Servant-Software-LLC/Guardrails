@@ -248,6 +248,24 @@ public static class PromptComposer
             text.Append(feedback);
             text.Append("\n\nThis is a RETRY. Fix these specific problems; do not start over — keep what already ");
             text.Append("works and address only what failed above.\n");
+            // #481: the retry instruction above is the ONLY sanctioned reading of a failure, and it
+            // is wrong when the GUARDRAIL is wrong. Observed live: an agent whose correct work was
+            // rejected reverse-engineered the guardrail regex out of this feedback and reshaped its
+            // implementation to satisfy it. That path SUCCEEDS SILENTLY - nothing downstream records
+            // that a checker chose the shape - and in one case would have written a C# type name into
+            // a wire-format contract document. It belongs HERE, beside the retry instruction, not
+            // only in the initial prompt: this is the moment it is needed and the moment an agent is
+            // least likely to scroll back for it.
+            text.Append("\n**If the feedback above contradicts what you can observe**, do NOT satisfy it by ");
+            text.Append("changing the SHAPE of correct work - do not reshape working code, and do not reword a ");
+            text.Append("document away from its own conventions, to match a check. Guardrails constrain the ");
+            text.Append("OUTCOME, never how you implement it. If a guardrail reports something ABSENT that you ");
+            text.Append("can see is PRESENT, that guardrail is defective. Write ");
+            text.Append("\"{\\\"needsHuman\\\": ...}\" to the state-out path quoting (a) the guardrail\'s exact ");
+            text.Append("claim and (b) the file:line that refutes it, then stop. Escalating a defective check is ");
+            text.Append("the CORRECT move, not giving up - and it is far cheaper than a contortion no later ");
+            text.Append("reader can explain.\n");
+
         }
 
         if (hasPriors)

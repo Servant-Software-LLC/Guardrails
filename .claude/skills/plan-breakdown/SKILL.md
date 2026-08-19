@@ -1289,8 +1289,13 @@ Per `references/schemas.md`, exactly:
     `{ "04-author-tests-tcapi-local": { "someKey": "someValue" } }`.
   - If a previous-attempt feedback section is appended, this is a RETRY: fix those
     specific failures; do not start over.
-  - If you cannot proceed without a human decision, write
-    {"needsHuman": "<question>"} to the state-out path and stop.
+  - Guardrails constrain the OUTCOME, never HOW you implement it. Never reshape working
+    code — or reword a document away from its own conventions — to match a check's
+    pattern.
+  - If you cannot proceed without a human decision, OR a guardrail reports something
+    ABSENT that you can see is PRESENT, write {"needsHuman": "<question>"} to the
+    state-out path and stop. For the second case quote the guardrail's exact claim and
+    the file:line that refutes it.
 
   ## Task
   <the actual instruction: exact file paths, and completion criteria that MATCH this
