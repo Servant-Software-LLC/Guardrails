@@ -1,14 +1,16 @@
 {
-  "description": "Wire TierResolver.ResolveJudge into GuardrailRunner's prompt-guardrail path so a judge's block is the RESOLVED route rather than frontmatter-or-default, and its guardrailOverrides therefore compose with that resolved block (rule 7)",
+  "description": "Wire TierResolver.ResolveJudge into GuardrailRunner's prompt-guardrail path, and close the matching ACTOR-side half-wire in ActionRunner: today the actor takes its MODEL from the resolved route but still dispatches to the frontmatter-or-default runner INSTANCE",
   "stableId": "z5c9nf",
   "dependsOn": [
     "06-author-tests-stage2-conformance-judge"
   ],
   "writeScope": [
     "src/Guardrails.Core/Execution/GuardrailRunner.cs",
-    "src/Guardrails.Core/Execution/TaskExecutor.cs"
+    "src/Guardrails.Core/Execution/TaskExecutor.cs",
+    "src/Guardrails.Core/Execution/ActionRunner.cs"
   ],
   "action": {
     "maxTurns": 75
-  }
+  },
+  "retries": 4
 }

@@ -79,6 +79,31 @@ if (-not (Test-Path $exec)) {
     }
 }
 
+# --- the ACTOR-side half-wire this task also closes ------------------------------------------
+# ActionRunner takes the actor's MODEL from the resolved route but dispatched to the runner INSTANCE
+# from frontmatter-or-default, so the actor ran the resolved block's --model on another block's
+# command and runner class. Invisible with one Claude block; wrong the moment two blocks differ in
+# command or kind. Measured before this clause was written: ActionRunner.cs mentions `route` for the
+# model override but its registry.Resolve( call did not consult it at all.
+#
+# Keyed on WHICH DATA the dispatch consults, not on how the expression is laid out - the route may
+# be read as route?.Runner?.Name or route?.RunnerName, on one line or several. The behavioural proof
+# is the sibling 02 guardrail's Judge_ResolvesThroughSameResolver_AtActorsRung clause.
+$ar = 'src/Guardrails.Core/Execution/ActionRunner.cs'
+if (-not (Test-Path $ar)) {
+    $failures += "$ar does not exist"
+} else {
+    $arRaw  = Get-Content -Raw $ar
+    $arCode = [regex]::Replace($arRaw, '/\*[\s\S]*?\*/', '')
+    $arCode = [regex]::Replace($arCode, '(?m)//.*$', '')
+    $dispatch = [regex]::Matches($arCode, 'registry\s*.\s*Resolve\s*\((?:[^()]|\([^()]*\))*\)')
+    if ($dispatch.Count -eq 0) {
+        $failures += 'no registry.Resolve( dispatch found in ActionRunner - the prompt-action path was restructured in a way this wave did not anticipate; halt rather than guess'
+    } elseif (-not (@($dispatch | Where-Object { $_.Value -cmatch '\broute\b' }).Count -ge 1)) {
+        $failures += "ActionRunner dispatches the ACTOR without consulting the resolved route (found $($dispatch.Count) registry.Resolve( call(s), none naming route). It applies the route's MODEL and then runs it on the frontmatter-or-default block's runner INSTANCE - that block's command and kind-selected runner class. Prefer the resolved block and KEEP the existing expression as the fallback: on the legacy path the route's runner name can be null while Resolve(null) still falls back to the sole declared block, and reading it unconditionally would regress Invariant 7."
+    }
+}
+
 if ($failures.Count -gt 0) {
     Write-Output ""
     Write-Output "=== judge wiring: $($failures.Count) finding(s) ==="

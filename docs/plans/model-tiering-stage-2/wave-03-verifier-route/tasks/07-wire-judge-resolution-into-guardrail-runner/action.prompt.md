@@ -95,11 +95,49 @@ Wave 2 lost a task to exactly this shape (#474), and shipped a live instance of 
 NONE of the twelve construction sites — the feature is structurally dead and every guardrail was
 green). Exposing the datum here is what keeps wave 3 off that list.
 
+### The ACTOR side is half-wired too, and it is in your scope now
+
+Attempt 1 of this task completed the judge wire and then found that
+`Judge_ResolvesThroughSameResolver_AtActorsRung` still fails — **not because the judge is wrong, but
+because the ACTOR is.** This was verified against the tree and is a pre-existing wave-2 defect:
+
+- `ActionRunner` takes the actor's **model** from the resolved route
+  (`PromptExecutionSupport.ApplyModelOverride(settings, route)`), but
+- it still dispatches to the **runner instance** from frontmatter-or-default:
+  `registry.Resolve(task.Action.Runner ?? promptFile.Frontmatter.Runner)`.
+
+So the actor runs the resolved block's `--model` on a **different block's runner instance** — that
+block's `command`, and its `kind`-selected runner class. It is invisible with a single Claude block
+and wrong the moment two blocks differ in `command` or `kind`, which is exactly the multi-provider
+case §6 exists for. It is the same computed-then-not-used shape as #474/#475, on the actor path.
+
+**Fix it:** make that dispatch prefer the resolved block, mirroring what you do in `GuardrailRunner`:
+
+```csharp
+registry.Resolve(route?.Runner?.Name ?? task.Action.Runner ?? promptFile.Frontmatter.Runner)
+```
+
+**Keep the existing expression as the FALLBACK — this is load-bearing, not defensive style.** On the
+LEGACY path `route.RunnerName` is `config.DefaultPromptRunner`, which can be **null** while
+`registry.Resolve(null)` still falls back to the sole declared block. Reading the route's name
+unconditionally would regress Invariant 7. Prefer `route?.Runner?.Name` (the resolved block's own
+name, non-null whenever a block actually resolved) over `route?.RunnerName` for the same reason.
+
+**Do NOT "fix" this by dispatching the JUDGE to the actor's instance.** That greens the clause and is
+definitionally wrong: a rule-3 bumped judge would then run its bumped model string against the
+actor block's command and runner class — precisely the mis-profiling rule 7 exists to prevent, and a
+direct contradiction of this task's own requirement to execute on the resolved judge's block.
+
+**The clause is correct as authored.** It compares the block each side DISPATCHED to, and with no bump
+owed, one rung must resolve to one block. Do not weaken it; `Stage2ConformanceTests.cs` is task 06's
+file and out of your scope anyway.
+
 ### Scope
 
 **Scope boundary (harness-enforced):** Write only to
-`src/Guardrails.Core/Execution/GuardrailRunner.cs` and
-`src/Guardrails.Core/Execution/TaskExecutor.cs`. Your `TaskExecutor` edit is NARROW — the route
+`src/Guardrails.Core/Execution/GuardrailRunner.cs`,
+`src/Guardrails.Core/Execution/TaskExecutor.cs` and
+`src/Guardrails.Core/Execution/ActionRunner.cs`. Your `TaskExecutor` edit is NARROW — the route
 parameter at the `_guardrailRunner.RunAsync(` call sites and nothing else; task 08 makes the
 provenance change in that same file and must not find its work already done. After this task
 completes, the harness runs a `git diff` check and rejects any edit outside those two paths —
