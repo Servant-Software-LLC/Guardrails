@@ -56,6 +56,14 @@ forbid-present clause of any kind — Probe C reconciles those pairs, and the co
 can form is satisfiable by no file at all (#470). Noting all four candidate sets here
 avoids re-reading every script during the pass.
 
+**Get the breakdown report's `Seam ledger (#382)` in front of you NOW, before the pass** — §2's
+passing-but-blind probe audits it row by row and then re-derives it from the folder, and there is no
+`validate` check behind it. It lives in the Step 7.4 breakdown report, not in the plan folder, so in a
+fresh session you have to ask for it; asking after you have already read every action prompt spends the
+pass twice. If it cannot be produced, the probe still runs from the folder alone (its check 7) and the
+Step 6 report says the ledger was unavailable — which is not the same finding as a ledger whose heading
+is missing.
+
 **Waved plan? Review wave-by-wave (#254).** A plan is *waved* when it has no root `tasks/` and ≥1
 `wave-NN-<slug>/` subdir (SSOT §14; plan-breakdown Step 9). Each wave is a **mini-plan** — its own
 `preflights/`/`guardrails/`/`tasks/` and its own `PlanDefinitionHash`-keyed review marker. `guardrails
@@ -406,21 +414,162 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   output, or reflect on the constructed object for the non-null collaborator with a contrast case —
   the `Factory_Wires*` shape). Missing wiring task OR a seam-injecting guardrail OR reliance on
   whole-suite green to cover wiring = BLOCKER. (Catalogue → composition-root section, `stacks/dotnet.md §10`.)
-- **Passing-but-blind faked seam (#382)**: the review question is *what real path does this fake stand in
-  for, and who proves that path?* For every `author-tests-*` task that **injects a fake of an in-process
-  seam the real run drives** (an `IPromptRunner`, the executor, the scheduler, a factory / DI-resolved
-  collaborator), find the **paired task proving the component through the REAL seam** — a contract test
-  that constructs the component with the production seam and fakes only the process/CLI boundary
-  underneath (never the in-process seam itself). A component certified green solely against a fake of the
-  seam the run exercises is a *green light over a broken wire* (the `CriticalityJudge` escalated 100% of
-  the time through the real `ClaudePromptRunner`; the executor's real `TransientBackoff` never recorded
-  `blocker-retried` — both green on fakes). **BLOCKER** when the un-proven seam is a **composition-root /
-  production path**; **WEAK** when a **thin terminal join-check exists** but per-component real-seam proof
-  is missing (the proof is deferred to one sink, not absent). Name the **concrete seam** and the **task
-  that should carry the proof** (the component's own implement task, distributed — not the terminal sink,
-  which would re-create the #378 over-scope). Shares a root with the Over-scoped-task probe (§3): the sink
-  is over-scoped *because* it concentrates this deferred proof. (Catalogue → "drive-the-real-seam";
-  `stacks/dotnet.md §10e`.)
+  **The inverse flag has one carve-out, and it is the one you will meet (D12): a #382 real-seam test is NOT
+  this finding.** Same verb, different SLOT — #120 forbids hand-injecting into the **assembler's** slot;
+  #382 requires hand-injecting the real seam into the **component-under-test's own constructor**. The tell
+  is what the test calls: a composition-root guardrail drives `SchedulerFactory.Create`, a real-seam test
+  never does. See the D12 note in the passing-but-blind probe below before flagging.
+- **Passing-but-blind faked seam (#382) — audit the SEAM LEDGER, then re-derive it**: the review question
+  is *what real path does this fake stand in for, and who proves that path?* The breakdown's answer is the
+  **seam ledger** — the six-column table the Step 7.4 report prints under a bolded `Seam ledger (#382)`
+  line, one row per in-process seam the tests **substitute** (plan-breakdown Step 4 rule 6 is its format
+  contract; the catalogue's "drive-the-real-seam" section is the guardrail's shape). A component certified
+  green solely against a fake of the seam the run exercises is a *green light over a broken wire* — the
+  `CriticalityJudge` escalated 100% of the time through the real `ClaudePromptRunner`; the executor's real
+  `TransientBackoff` never recorded `blocker-retried`; both green on fakes, in the same wave. **This probe
+  is the only gate on any of it.** #382 ships no `validate` lint by design — the substitution lives in a
+  test file the run has not written yet, so there is nothing for a lint to read — which means a row that is
+  missing, mis-bucketed or mis-placed is caught here or not at all. Work the checks in order; every one of
+  them is decidable from the folder, on paper, without running the plan.
+
+  **0. Obtain the ledger — and key the absence finding on the missing HEADING, never a missing table.**
+  The heading is emitted UNCONDITIONALLY: a plan that fakes nothing prints the bolded line plus
+  `_No in-process seam is substituted by this breakdown's tests._` and no table. That zero-row form is a
+  **claim**, not an absence — checks 6 and 7 still apply to it (1–5 are simply vacuous with no rows), and
+  check 7 is the one that falsifies a false claim. An **absent
+  heading** is a different animal: evidence the Step 4 analysis never ran, so no seam in this plan has been
+  placed at all → **BLOCKER**, whose fix is to re-run the analysis, never to hand-write a table after the
+  fact. If the report is not in this session, ask for it before concluding anything — *"not produced to
+  this pass"* is an **unchecked gap for the Step 6 report**, NOT an absent heading, and reporting one as
+  the other manufactures a BLOCKER out of a missing attachment. With no report at all, skip checks **1–5**
+  — those read ledger cells — and still run **6 and 7**, which read the folder and are where most of the
+  value is anyway.
+
+  **1. Every `bucket` cell is exactly one of `N1` `N2` `N3` `N4` `E` `C` `U`.** Blank, a bare `N`, prose,
+  or anything off that list is a finding in its own right — the cell is parseable precisely so this check
+  has a target, and an unparseable bucket makes checks 2–5 unrunnable. Same pass, same row: the `proof`
+  cell is a path **relative to the PLAN folder** (`tasks/<T*>/guardrails/NN-….ps1`), so a path whose task
+  segment disagrees with the `T*` cell is a self-inconsistent row — one of the two is wrong; say which you
+  believe and why. `production type` is `—` on any `N*` row, and `T*` on an `N*` row reads `exempt`.
+
+  **2. REJECT an `N` classification for anything off the four-item enumeration.** N is a **closed list** —
+  **N1** a clock / time source, **N2** a randomness source (an RNG, a GUID factory), **N3** an ambient
+  environment reader (env vars, machine name, current directory, an OS probe), **N4** a wait primitive
+  (a sleep / delay / timer). It is not a category and *"it felt like non-determinism"* is not an argument.
+  A seam classified N that is not literally one of those four is **E**, **C** or **U**, it owes proof, and
+  it takes the severity rubric below — an accepted N row is a permanently exempted seam, and nothing
+  downstream will ever ask about it again.
+  > **The N4 trap is the highest-yield row on the table: fake the WAIT, never the WAITER. If the
+  > substitute contains a DECISION, it is not N4.** Substituting the *sleep* so a backoff test finishes in
+  > milliseconds is N4 and exempt. Substituting the **policy object** that decides *whether* to retry — and
+  > that owes a recorded `blocker-retried` decision — is **C**, and it owes proof. Concretely:
+  > `RetryLoop → IDelay` is **N4**; `RetryLoop → ITransientBackoff` is **C**. Read the substitute's own
+  > surface, not its name: any branch, threshold, budget, classification or recorded decision inside the
+  > thing being faked disqualifies N4. This exact conflation shipped a silently-swallowed transient on a
+  > fully green wave — the class-(b) resolution that never recorded the decision its design required,
+  > because no test drove the executor's real backoff.
+
+  **3. Recompute T\* for every E and C row from the DAG — do not accept the cell.** T\* is the **earliest
+  task at which BOTH the component's production type and the seam's production type exist**, and a type
+  exists at a task when that task's `writeScope` (or an ancestor's) contains the file declaring it. So T\*
+  is computable by you, without running anything — that computability is the whole reason the rule could
+  replace *"where feasible"*, and skipping the recomputation gives the column back to the author who wrote
+  it. A proof placed **later** than T\* is a finding **even when the proof exists and passes**: it surfaces
+  the bug in a task whose `writeScope` cannot fix it, which is the `needsHuman` this doctrine exists to
+  remove. The report owes a line naming T\* and why the proof could not live there — an **unnamed** late
+  placement is the finding; a named one is a decision you can argue with on its merits.
+
+  **4. An E row may NEVER invoke the construction bound (D11).** The #120(b) reflection-plus-contrast
+  degradation is available to bucket **C** only. What sits beneath an **E** seam *is* a process / network /
+  disk boundary, and faking that is the one substitution this rule has always permitted — so constructing a
+  real E adapter cannot force a second real level. *"I could not construct it"* on an E row is therefore a
+  **review finding, not a legitimate degradation**: the answer is the real adapter over a stub binary, a
+  fake `HttpMessageHandler`, or a temp directory. This is the escape hatch an author reaches for first, so
+  check it explicitly rather than reading past it. A **C** row that does degrade owes the **constructor
+  chain that forced it**, named in the report; an unnamed degradation is a finding as well.
+
+  **5. U rows name a receiving TASK that exists, and the terminal sink is rarely it.** A U row's proof is
+  RELOCATED, not waived. `T*` is a task folder name — under Step 9 waves, a receiving **wave** folder is
+  legal when that wave is not broken down yet, and that is the only non-task name the column permits — and
+  `proof` reads `deferred to T*, named`. A U row pointing at the terminal sink is legitimate **only** when
+  the production type genuinely first exists there; otherwise the row is mis-placed and the finding is the
+  **placement**, not the bucket. Check the named task actually exists in the DAG: a U row naming a folder
+  nothing matches defers the proof to nowhere, which reads on the page like compliance.
+
+  **6. The terminal proof is a JOIN-CHECK — make it name a defect that SURVIVES the upstream proofs.**
+  For the #120 wiring task and for every `<plan>/guardrails/` guardrail, read the `# catches:` and ask
+  whether the defect it names could still occur **with every upstream real-seam proof passing**. *"The
+  factory never hands the judge to the scheduler"* survives — that is assembly, and assembly is what the
+  join-check owns. *"This seam is exercised for the first time here"* does not survive: it means a ledger
+  row is mis-placed, and the fix is **upstream**, never a wider `writeScope` here. A join-check that can
+  name no surviving defect is **redundant** — say so and propose deleting it, rather than leaving a gate
+  that certifies nothing. Flag too the same row's proof emitted **twice**, once at T\* and again in the
+  sink: the duplicate is the concentration this rule exists to remove.
+
+  **7. Re-derive the ledger from the folder — it cannot report a fake nobody declared.** This is the check
+  that makes the others worth running, because a declaration-only audit has its floor at the honesty of
+  the author it grades. Walk every `author-tests-*` task's `action.prompt.md` and its paired implement
+  task: wherever the prompt directs a fake / stub / mock / test double of an **in-process** collaborator the
+  production run resolves (an `IPromptRunner`, the executor, the scheduler, a factory, a policy object),
+  there must be a **row**. A substitution the tests make with no row is the shipped bug's own shape, and the
+  ledger is silent on it by construction. Conversely, **process seams are NOT rows** — a child process, a
+  CLI, a socket, an HTTP endpoint, a database, the filesystem — and flagging one is a false positive that
+  teaches the next reader to skim the table, which costs more than the row was worth.
+
+  **Then audit the archetype's SHAPE wherever a proof does exist** (the catalogue's FORBIDDEN list for
+  "drive-the-real-seam" is what this mirrors): the proof is a **test** — rung 1, with **no rung-3 source-grep
+  form** available, since a regex proving the test file mentions `new ClaudePromptRunner(` certifies
+  vocabulary and is satisfied by a commented-out line; it asserts an **effect only the production
+  implementation emits** (the stream-log FILE appears on disk, the journal holds a `blocker-retried`
+  DECISION, the verdict's `Source` is not the catch-and-safe-default) — ***"the collaborator was called" is
+  not an assertion***, and a recording double / call count / `Verify` **is** the passing-but-blind shape
+  wearing a real-seam name; it is `scope: "local"` with the key omitted, because *"this component works
+  through the real seam"* cannot be true before its own task's action has run — tagging it
+  `scope: "integration"` because "it drives the real thing" is the #250 mistake, measured live at two
+  unrelated parallel siblings rolled back; and its RED half is real (#155 — the red must **COMPILE** and
+  fail, so the test-author task also writes whatever stub the real-seam test needs to compile).
+  **Probe B operator 20 (§2b) is the mechanical half of this audit** and reading is the weak half: a test
+  that satisfies a `…RealSeam…` filter while constructing the fake is textually indistinguishable from the
+  real thing at this altitude.
+
+  > **Do NOT flag a correct real-seam test as a #120 violation (D12).** The #120 probe above forbids a
+  > guardrail that *constructs `FooImpl` itself and injects it*; this probe **requires** exactly that verb —
+  > in a **different slot**. #120 forbids injecting the collaborator into the **assembler's** slot, which
+  > bypasses the production assembler so the *wiring* is never proven. #382 requires injecting the real seam
+  > into the **component-under-test's own constructor**, which proves the component through its collaborator
+  > and claims nothing about the assembler. Operationally: a real-seam test never calls
+  > `SchedulerFactory.Create`; a composition-root test never hand-injects; **if one test does both, it is
+  > two tests**, and *that* is the finding. Flagging the mandated shape as the forbidden one is a false
+  > BLOCKER against the doctrine's own output — the most expensive mistake this probe can make, because it
+  > tells an author to delete the proof.
+
+  **Severity — one rubric for every finding that leaves a SEAM UNPROVEN (checks 2–5 and 7):** **BLOCKER**
+  when the un-proven seam is a **composition-root / production path**; **WEAK** when a **thin terminal
+  join-check exists** but the per-component real-seam proof is missing (the proof is deferred to one sink,
+  not absent). Name the **concrete seam** and the **task that should carry the proof** — T\*, computed, not
+  the terminal sink, which re-creates the #378 over-scope. Two findings sit OUTSIDE that rubric and must
+  not be inflated to fit it: a **check-1 malformed or self-inconsistent row** takes the severity of what it
+  conceals — WEAK while the intended row is still readable, BLOCKER when the bucket cannot be determined at
+  all (an undeterminable bucket is an unaudited seam); and a **check-6 redundant join-check** is WEAK (it
+  certifies nothing, but it also blocks nothing) *unless* the only defect it can name is "first exercise
+  here", which is a mis-placed row and takes the rubric above. Shares a root with the Over-scoped-task
+  probe (§3): that sink is over-scoped *because* it concentrates this deferred proof.
+  (Catalogue → "drive-the-real-seam"; `stacks/dotnet.md §10e`.)
+
+  **The #378 boundary — inherit this rule, do not renegotiate it.** #378 owns the **size and shape of a
+  task**: it reads `writeScope` cardinality, `action.maxTurns` and `dependsOn` fan-in, its mechanism is
+  **GR2042**, and its verdict is *"this task is too big."* #382 owns the **placement of proof**: it reads
+  which seam a test substitutes and where the real-seam proof lives, its mechanism is the ledger plus the
+  archetype audited here, and its verdict is *"this proof is in the wrong task."* Therefore — **#382 NEVER
+  adds a rule keyed on `writeScope`, `action.maxTurns` or `dependsOn`** (those three fields are GR2042's,
+  exclusively) — and **#378 NEVER adds a rule about what a guardrail PROVES.** (Check 3 READS `writeScope`
+  to locate where a type is declared; that is a lookup, not a rule keyed on the field. What #382 may never
+  do is rule on how BIG a task is.) When both fire on one task, report both, each from its own evidence;
+  never let one stand in for the other, and never grow a third
+  half-overlapping check in the gap between them. Where they meet: told *"this task is over-scoped"*, the
+  reflex is to chop the `writeScope`, which for a fan-in sink yields N small tasks that still contain the
+  first exercise of every real path — the concentration survives the split. **Relocating the proof to T\*
+  is the fix; narrowing `writeScope` alone is not.**
 - **Wrong-implementation swap (#158)**: the next failure past #120 — given the dispatch IS wired,
   is the **right concrete type paired with the right mode**? For a dispatch / wiring task that routes
   **≥2 enum (or discriminated) values to ≥2 concrete types** AND whose dispatch tests use
@@ -1089,11 +1238,31 @@ inventive you feel that day. Work down it:
 | 17 | write the **banned** thing in a form the ban never enumerated (non-defaulted, nullable, `async`, an options object) | banning the CONSTRUCT — the enum member, the type position, the destination — not one spelling (#468) |
 | 18 | satisfy **every** token of a multi-token coverage check with ONE line of real code (`var unused = new { r.A, r.B, r.C };`) | distinct constructs the outcome implies (a `[Fact]` per behaviour, a dotted call per collaborator) — comment-stripping is irrelevant here (#468) |
 | 19 | clear a *"≥ N tests executed"* floor with **one `[Theory]` and N `[InlineData]` rows** | a behaviour manifest over discovered test NAMES; never a count (#468) |
+| 20 | satisfy a **real-seam / composition-root `--filter`** with a test that **constructs the FAKE** — same class, same `…RealSeam…` name, a substituted seam | the test asserting an effect **only the production implementation emits** (a stream-log FILE on disk, a journal `blocker-retried` DECISION), never merely that the collaborator was called (#382) |
 
 Three patterns generalise and are worth applying before the table: **anchor on a USE, not a mention**
 (kills 1, 6, 9, 10, 11), **anchor on the DESTINATION, not the value** (kills 7 and 8), and **anchor on
 what the LANGUAGE fixes, not on what the author may freely vary** (kills 14, 15, 16 — case-sensitivity,
 brace style, modifier order).
+
+**Operator 20 is outside all three patterns, and it is the only operator that can be INAPPLICABLE
+(#382).** Outside, because 1–19 all ask *what TEXT satisfies the clause* while 20 asks *which OBJECT the
+test constructs* — anchoring on a use, a destination, or what the language fixes does nothing against it,
+which is why nothing already in the table can game a real-seam guardrail. The mutation is literal: in the
+test the guardrail's `--filter` selects, swap the real seam out of the component's constructor for the fake
+its sibling unit test already uses, keep the class and method names, re-run the filter. **GREEN means the
+filter is selecting a NAME, not a behaviour** — the guardrail is the finding (BLOCKER on a
+composition-root / production path), and the fix is the archetype's **assertion requirement** (an effect
+only the production implementation emits), never a narrower filter, which only renames the same hole.
+
+**Inapplicable, and reported that way.** Probe B mutates the target tree at review time, so operator 20
+needs the test to already exist. It applies to a plan being **re-reviewed against an existing
+implementation** — a resumed or regenerated plan, an amendment to a landed wave. **On a greenfield first
+review the test has not been written yet, so record the operator as NOT RUN, with that reason — never as
+passed.** A probe that reports "passed" when it could not execute is the exact false green #382 exists to
+remove, and it is worse than no probe because it consumes the doubt that would otherwise drive a read. The
+reporting rule above (name the probes you skipped) already covers it; Step 6 carries the line, and
+"Probe B applied" must not silently absorb an operator that never ran.
 
 **When Probe B keeps landing, the finding is the ARCHETYPE, not the clause (#468).** If a task's
 guardrail asserts a property of **implementation source** and two or more operators above go GREEN
@@ -1225,6 +1394,13 @@ unchecked gap that goes unmentioned is indistinguishable from a verified one. At
 - **the classes no probe can see** (#470 require-and-forbid, #474 unreachable-outcome, #484 arithmetic
   dead-ends). These are red before AND red forever, so a baseline cannot distinguish them from a
   correct red. If you hand-checked them, say so; if you did not, say that.
+- **whether Probe B operator 20 ran, or was INAPPLICABLE** (#382) — on a greenfield first review the
+  real-seam test does not exist yet, so the operator is reported **not run**, with that reason, and is
+  never folded into a blanket "Probe B applied". Reporting it as passed would be the false green the
+  operator exists to catch.
+- **whether the seam ledger was available to this pass at all** (#382). A ledger **not produced** to the
+  review is an unchecked gap and says so; a ledger whose bolded `Seam ledger (#382)` **heading is absent**
+  is a finding in the table. Do not report either as the other.
 
 Then ask: **"Apply fixes?"** — per-finding approval, never bulk-silent. If a finding
 concerns a guardrail the human added or edited (check `git log`/`git diff` if the
@@ -1364,8 +1540,10 @@ finding remains unaddressed.
 - [ ] A **brownfield** plan (modifies project(s) with existing tests in the touched area, worth-it gate passing) carries the #181 positive baseline as a **`<plan>/preflights/` POSITIVE check** (the general positive-baseline archetype — e.g. `01-baseline-<area>-tests-green`), NOT a no-op ROOT task: a plan-level Full Flight Check evaluated ONCE before the DAG against the starting repo, running the EXISTING area tests **via `--filter`** and asserting they pass (area-scoped, deduped one-per-area, #179-re-emit form); it targets the PRE-EXISTING tests via `--filter`, NOT the about-to-be-authored red tests and NOT the whole suite (whole-suite scope hits the #165/#176 compile-coupling trap → BLOCKER); it is DISTINCT from the terminal `<plan>/guardrails/` gate (green START before the DAG vs green END on the merged HEAD). A **greenfield** plan (or one failing the worth-it gate) has NO baseline preflight (a vacuous `dotnet test` over a zero-test project is itself a finding). Missing baseline preflight on brownfield is WEAK (BLOCKER when the area's existing tests are in fact red at start). A RED baseline preflight halts the run before the DAG (the general Full-Flight-Check semantics) (#181).
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has NO `integrationGate: true` sink task — a lingering `integrationGate: true` in any `task.json` is the BLOCKER (a **GR2029** hard error), not its absence — and instead carries a non-empty **`<plan>/guardrails/`** folder (the Terminal Gate) with **≥1 real integration-set re-run** (a whole-repo build / full suite / union invariant, `validate` enforces this as **GR2028**; a folder that merely exists or holds only a tautological `exit 0` certifies nothing → BLOCKER). Its `scope: "integration"` union-guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if X present, verify it"), NOT the full build or whole suite: a full-build or whole-suite guardrail marked `scope: "integration"` in the terminal folder is the #125 terminal-postcondition anti-pattern → **BLOCKER** (it red-halts correct intermediate unions where downstream TDD tasks have not run yet); the full build/suite must be **LOCAL** (#165). (`scope: "integration"` itself is unchanged — the per-union re-verify tag, SSOT §4.3.)
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
-- [ ] Every `author-tests-*` task that fakes an **in-process seam the real run drives** (`IPromptRunner`/executor/scheduler/factory) has a paired **real-seam contract test** proving the component through the ACTUAL seam (faking only the process/CLI boundary, never the in-process seam) — BLOCKER when the un-proven seam is a composition-root/production path, WEAK when only a thin terminal join-check covers it; real-path proof is DISTRIBUTED to each component's implement task, not concentrated in one end-of-wave sink (that re-creates the #378 over-scope) (#382).
-- [ ] No task carries the **structural over-scope fingerprint** (GR2042): a `maxTurns`-near-ceiling + `writeScope` ≥ ~4 co-occurrence, `writeScope` ≥ ~6, or a `dependsOn` fan-in ≥ ~5 with a multi-file `writeScope` — the fan-in-sink / composition-root-wiring archetype. BLOCKER with the proposed split (one task per collaborator wiring; composition-root proof isolated to a thin sink); resolve the `guardrails validate` GR2042 WARN, don't merely re-report it (#378).
+- [ ] (#382) The **seam ledger** was audited. The Step 7.4 report carries the bolded `Seam ledger (#382)` **HEADING** — an ABSENT heading is a BLOCKER (the Step 4 analysis never ran), the zero-row form (`_No in-process seam is substituted by this breakdown's tests._`) is a CLAIM that gets checked rather than an absence, and a ledger **not produced to this pass** is an unchecked-gap line in the report, never a finding. Every `bucket` cell is one of `N1` `N2` `N3` `N4` `E` `C` `U`, and an **N classification off the four-item enumeration is REJECTED** (clock / randomness / ambient env reader / wait primitive) — including the **N4 trap**: if the substitute contains a DECISION it is **C**, not N4 (`RetryLoop → IDelay` is N4; `RetryLoop → ITransientBackoff` is C). Every **E**/**C** row's proof sits at a **recomputed T\*** (a later placement is a finding even when the proof exists and passes, and must name T\*); every `proof` path is plan-folder-relative with its task segment agreeing with the `T*` cell; **no E row invokes the construction bound** (D11 — the #120(b) degradation is bucket **C** only, and a degraded C row names the constructor chain that forced it); every **U** row names a receiving task (or, under waves, a receiving wave) that actually exists. The ledger was **re-derived from the folder** — every `author-tests-*` task faking an in-process seam the run drives has a ROW, and process seams (child process, CLI, socket, HTTP, DB, filesystem) have none. Severity: BLOCKER when the un-proven seam is a composition-root/production path, WEAK when only a thin terminal join-check covers it.
+- [ ] (#382) Where a real-seam proof EXISTS, its shape holds: a **test** (rung 1 — no rung-3 source-grep form), asserting an **effect only the production implementation emits** (a recording double / call count / `Verify`, or "the collaborator was called", IS the passing-but-blind shape), at `scope: "local"` with the key omitted (`scope: "integration"` here is the #250 mistake), with a #155-real RED that COMPILES. Every terminal composition proof (the #120 wiring task and each `<plan>/guardrails/` guardrail) names in its `# catches:` a defect that **survives every upstream real-seam proof passing** — one that can name none is redundant (propose deleting it), and one whose only defect is *"this seam is exercised for the first time here"* means a ledger row is MIS-PLACED, fixed upstream and never by a wider `writeScope` here; no row's proof is emitted twice (at T\* and again in the sink). A correct real-seam test is **NOT** a #120 violation (D12 — same verb, different slot: #120 forbids injecting into the ASSEMBLER's slot, #382 requires injecting into the COMPONENT's own constructor; one test doing both is two tests). The #378 boundary held both ways: #382 added no rule keyed on `writeScope` / `action.maxTurns` / `dependsOn` (GR2042's fields, exclusively), and #378 added no rule about what a guardrail PROVES.
+- [ ] (#382) Probe B **operator 20** was applied, or explicitly recorded as NOT RUN with its reason: satisfy a real-seam / composition-root `--filter` with a test that CONSTRUCTS THE FAKE under the same real-sounding name — GREEN means the filter selects a name, not a behaviour (BLOCKER; the fix is the assertion requirement, not a narrower filter). It is INAPPLICABLE on a greenfield first review (the test does not exist yet) and is then reported **not run** — never as passed, and never absorbed into a blanket "Probe B applied".
+- [ ] No task carries the **structural over-scope fingerprint** (GR2042): a `maxTurns`-near-ceiling + `writeScope` ≥ ~4 co-occurrence, `writeScope` ≥ ~6, or a `dependsOn` fan-in ≥ ~5 with a multi-file `writeScope` — the fan-in-sink / composition-root-wiring archetype. BLOCKER with the proposed split (one task per collaborator wiring; composition-root proof isolated to a thin sink); resolve the `guardrails validate` GR2042 WARN, don't merely re-report it (#378). On a fan-in sink, test the relocation remedy FIRST (#382): narrowing `writeScope` yields N small tasks that still hold the first exercise of every real path, so the concentration survives the split — but report the two findings separately, from their own evidence, since neither issue's mechanism may read the other's fields.
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
 - [ ] Every derived-corpus task asserts input→output coverage + per-output substance floor + index completeness (`produced ⊆ indexed`) + ingestion lower bound, named as lower bounds (no judge alone for faithfulness) (#99).

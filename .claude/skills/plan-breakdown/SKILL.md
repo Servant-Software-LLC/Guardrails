@@ -838,7 +838,8 @@ optional:
     breakdown resolves it to a task.
   - **proof** — the guardrail file path **relative to the PLAN folder** (`tasks/<T*>/guardrails/NN-….ps1`),
     which makes the row self-checking: a proof path whose task segment differs from the `T*` cell is an
-    inconsistent row and a finding in its own right. `—` on `N*` rows; `deferred to T*, named` on a U row.
+    inconsistent row and a finding in its own right. On an `N*` row it is an em dash, **optionally
+    annotated** (`—` or `— (the wait, not the waiter)`); on a `U` row, `deferred to T*, named`.
   - **Rows the ledger does NOT carry:** process seams (rule 1), and any declared dependency the tests do
     not substitute.
   - **The heading is emitted EVEN WHEN THERE ARE NO ROWS** — print the bolded `Seam ledger (#382)` line

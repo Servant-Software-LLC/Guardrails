@@ -737,6 +737,22 @@ decision and are ruled here:
   both, it is two tests.** The two sections sit adjacent in the catalogue and §5.2 disambiguates a
   different pair, so without this ruling a reader meets flatly opposite instructions.
 
+- **D13 — the ledger has NO HOME ON DISK in v1, and that is now the strongest live evidence for
+  GR2061's gate.** M2 found it while implementing: M1 prints the ledger in the **Step 7.4 breakdown
+  report**, which is conversation output, while `/guardrails-review` routinely runs in a *fresh session
+  against a folder path*. So "absent ledger ⇒ the analysis never ran" has a **third** state this design
+  never named — *not produced to this pass* — which is neither a clean plan nor a skipped analysis.
+  M2 handled it correctly (ask for it → record an unchecked-gap line → fall back to re-deriving from the
+  folder), and **reporting one state as the other would manufacture a BLOCKER out of a missing
+  attachment**.
+  This is NOT closed by inventing a file. A plan folder has no persisted-report convention today
+  (`diagram.*`, `guardrails.json`, `state/`, task and wave folders — nothing else), and adding one is
+  exactly the declared-field change §3.4 defers. **The consequence for M3 is explicit: its golden-folder
+  round-trip asserts the FOLDER-OBSERVABLE half — a real-seam guardrail lands on T\*, not on the terminal
+  task — and does NOT assert a ledger row, because a round-trip cannot read conversation output.** If that
+  proves too weak in practice, that is precisely the evidence §3.4 asks for, and the answer is GR2061 plus
+  a declared field, not a bespoke file invented here.
+
 **One v1 item has no milestone owner: V10** (`guardrails-domain-knowledge` self-update). Its two-disciplines
 note still teaches the retired rule of thumb — *"faking only the process/CLI boundary underneath, NEVER the
 in-process seam itself"* — and knows nothing of the ledger, the buckets, or T\*. Superseded phrasing in a

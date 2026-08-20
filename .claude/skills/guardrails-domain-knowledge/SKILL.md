@@ -654,13 +654,46 @@ guardrails-review):**
 - **Drive-the-real-seam / passing-but-blind (#382).** A per-task TDD guardrail that injects a FAKE of an
   in-process seam the real run drives (an `IPromptRunner`, the executor, the scheduler, a factory) can go
   GREEN over a component that is broken through the real composition root -- a green light over a broken
-  wire. The discipline: the implement task carries a **real-seam contract test** that drives the ACTUAL
-  seam (faking only the process/CLI boundary underneath, NEVER the in-process seam itself), and real-path
-  proof is DISTRIBUTED to each component's task rather than concentrated in one terminal wiring sink.
-  `plan-breakdown` inserts it; `guardrails-review` flags its absence (BLOCKER on a composition-root /
-  production path, WEAK when only a thin terminal join-check covers it). Extends the #120 lesson
-  ("reachable from a unit test != wired into the run path") from a per-wave convention to a per-component
-  structural concern. (Catalogue -> "drive-the-real-seam"; `stacks/dotnet.md 10e`.)
+  wire. Design of record: `docs/plans/18-integration-proof-proximity.md`. Five things to know:
+  1. **The seam ledger** is the authoring artifact -- a six-column table (`seam | bucket | production type
+     | faked underneath | T* | proof`) built in `plan-breakdown` Step 4 and printed in the Step 7.4 report,
+     one row per in-process seam the tests SUBSTITUTE (never a dependency inventory; process seams -- child
+     process, CLI, socket, HTTP, DB, filesystem -- are out of scope and carry no row). Its heading is
+     emitted even with zero rows, so a clean plan and a skipped analysis stay distinguishable.
+  2. **Four closed buckets replace the old unfalsifiable "where feasible".** `N` is EXEMPT and is a CLOSED
+     FOUR-ITEM ENUMERATION, not a category: N1 clock, N2 randomness, N3 ambient env reader, N4 wait
+     primitive. `E` (external-resource adapter) and `C` (in-repo collaborator) OWE proof; `U` (unbuilt
+     collaborator) RELOCATES it to the receiving task. **The N4 trap: fake the WAIT, never the WAITER --
+     if the substitute contains a DECISION it is C, not N4** (`RetryLoop -> IDelay` is N4;
+     `RetryLoop -> ITransientBackoff`, which decides whether to retry and records `blocker-retried`, is C).
+  3. **The boundary rule is ONE REAL LEVEL, AND NO FURTHER** -- this SUPERSEDES the retired rule of thumb
+     *"fake the process, never the in-process seam"*, same rule made precise about how far down real goes:
+     the component under test is constructed with the REAL implementation of the seam under test, and that
+     implementation's OWN declared dependencies may be substituted, because each is its own ledger row owed
+     at its own task. One level buys the whole composition by INDUCTION, leaving only assembly unproven.
+     Where constructing the real seam would force a SECOND real level, the proof degrades to #120(b)
+     (reflection plus a contrast case) and the report names the constructor chain -- and that bound is
+     bucket **C** only, never **E**, since what sits under an E seam is a process boundary you may fake.
+  4. **Placement is T\*** -- the earliest task at which BOTH production types exist, computable from the
+     emitted DAG (a type exists at a task whose `writeScope`, or an ancestor's, declares it). Proof later
+     than T\* is a finding. The terminal composition proof is then a **JOIN-CHECK**: it may assert only
+     ASSEMBLY, and its `# catches:` must name a defect that survives every upstream real-seam proof passing.
+  5. **No `validate` lint, deliberately** -- the substitution lives in a test file the run has not written
+     at validate time, and the only pre-run signal is prose whose correct and incorrect forms are identical.
+     The deterministic gate is the emitted real-seam test itself, at task time. So `plan-breakdown` emits
+     the ledger and places the proofs, and `/guardrails-review` is the ONLY gate on placement: it rejects an
+     N classification off the four-item list, keys its "analysis never ran" finding on a MISSING HEADING
+     (not a missing table), recomputes T\*, and runs Probe B operator 20 (satisfy a real-seam filter with a
+     test that constructs the FAKE). BLOCKER on a composition-root / production path, WEAK when only a thin
+     terminal join-check covers it. A deferred lint plus a declared ledger field is designed but NOT built
+     (reserved as `GR2061`, taking whatever code is next-free the day it ships -- a number held for
+     deferred work never blocks a code that is shipping now); its evidence gate is three consecutive
+     breakdowns emitting no ledger, since absence is a declaration failure a lint fixes while
+     mis-classification is a judgement failure a lint cannot. Extends the #120
+     lesson ("reachable from a unit test != wired into the run path") from a per-wave convention to a
+     per-component structural concern -- and note #120 and #382 are the same verb in DIFFERENT SLOTS: #120
+     forbids hand-injecting into the ASSEMBLER's slot, #382 requires hand-injecting into the
+     COMPONENT-under-test's own constructor. (Catalogue -> "drive-the-real-seam"; `stacks/dotnet.md 10e`.)
 - **Structural over-scope lint (`GR2042`, WARN, #378).** `guardrails validate` emits a WARN on the
   fan-in-sink / composition-root-wiring fingerprint in the emitted `task.json`: (i) `action.maxTurns >=
   OverScopeTurnThreshold` (a NAMED constant ~60, NOT the literal 75 max, so it survives a max-budget bump)
@@ -668,7 +701,11 @@ guardrails-review):**
   `writeScope.Count >= 3`. `guardrails-review` must RESOLVE the WARN with a split (one task per collaborator
   wiring; composition-root proof isolated to a thin sink), not merely re-report it. **The two share one
   root:** the over-scoped sink is over-scoped *because* it concentrates the deferred real-seam proof #382
-  would distribute -- #378 detects the over-scope, #382 prevents the concentration.
+  would distribute -- #378 detects the over-scope, #382 prevents the concentration. **Non-overlap rule,
+  inherited by both skills, not renegotiable:** #382 NEVER adds a rule keyed on `writeScope`,
+  `action.maxTurns` or `dependsOn` (GR2042's fields, exclusively), and #378 NEVER adds a rule about what a
+  guardrail PROVES. On a fan-in sink the relocation remedy is tried FIRST: narrowing `writeScope` alone
+  yields N small tasks that still hold the first exercise of every real path.
 
 ## Model tiering -- the SCHEMA half only (#201, SSOT section 9.6)
 
