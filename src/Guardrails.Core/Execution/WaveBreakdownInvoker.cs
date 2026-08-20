@@ -54,8 +54,12 @@ public sealed class WaveBreakdownInvoker
     /// <summary>A hard turn ceiling so a pathological brief can never request an unbounded session (the timeout also bounds it).</summary>
     private const int BreakdownMaxTurnsCeiling = 1000;
 
-    /// <summary>A generous timeout — a whole-wave breakdown + self-validate is a long session.</summary>
-    private static readonly TimeSpan BreakdownTimeout = TimeSpan.FromMinutes(30);
+    /// <summary>
+    /// A generous timeout — a whole-wave breakdown + self-validate is a long session. PUBLIC because the
+    /// ceiling is now OPERATOR-FACING (design 23 §4): it is the only honest denominator the phase has, and
+    /// every surface renders elapsed against it. It denominates the BUDGET, never the work.
+    /// </summary>
+    public static readonly TimeSpan BreakdownTimeout = TimeSpan.FromMinutes(30);
 
     /// <summary>
     /// A markdown "work-item" line in a brief: a list item (<c>- </c>/<c>* </c>), a numbered step
@@ -86,23 +90,20 @@ public sealed class WaveBreakdownInvoker
         string breakdownLogDir,
         ISchedulerJournal journal,
         CancellationToken ct,
-        BreakdownResumeContext? resume = null)
+        BreakdownResumeContext? resume = null,
+        BreakdownInvocationPlan? prepared = null)
     {
         try
         {
-            Directory.CreateDirectory(breakdownLogDir);
-            string suffix = resume is null ? "" : $"-segment-{resume.Segment}";
-            string composedPromptPath = Path.Combine(breakdownLogDir, $"composed-prompt{suffix}.md");
-            string streamLogPath = Path.Combine(breakdownLogDir, $"claude-stream{suffix}.jsonl");
-            string transcriptLogPath = Path.Combine(breakdownLogDir, $"transcript{suffix}.md");
-
-            string prompt = ComposePrompt(wave, plan, integrationWorktreePath, resume);
-            try { File.WriteAllText(composedPromptPath, prompt); } catch { /* best-effort log tee */ }
-
-            // Scale the turn budget to the wave's size (issue #385): a generous base that covers a large wave
-            // on its own, plus per-brief-signal headroom. --max-turns is a CEILING, so this only ever helps a
-            // wave large enough to truncate; a small wave finishes well below the cap at no extra cost/time.
-            int maxTurns = ComputeMaxTurns(ReadBriefSignalCount(wave));
+            // Composing + teeing the prompt is SEPARATE from running it (design 23 §10.1) so the caller can
+            // raise WaveBreakdownStarting with the real stream path and composed-prompt size BEFORE the
+            // 30-minute session begins. A caller that does not care passes null and nothing changes.
+            BreakdownInvocationPlan p =
+                prepared ?? PrepareInvocation(wave, plan, integrationWorktreePath, breakdownLogDir, resume);
+            string prompt = p.Prompt;
+            string streamLogPath = p.StreamLogPath;
+            string transcriptLogPath = p.TranscriptLogPath;
+            int maxTurns = p.MaxTurns;
 
             var invocation = new PromptInvocation
             {
@@ -157,6 +158,43 @@ public sealed class WaveBreakdownInvoker
                 Error = ex.Message
             };
         }
+    }
+
+    /// <summary>
+    /// Compose the prompt, tee it to <c>composed-prompt[-segment-N].md</c>, and resolve every path + budget
+    /// this segment will use — WITHOUT running anything (design 23 §10.1). Split out of
+    /// <see cref="InvokeAsync"/> so the caller can raise <see cref="IRunObserver.WaveBreakdownStarting"/>
+    /// with the real <c>StreamLogPath</c> and composed-prompt size before a session that may run for half an
+    /// hour, instead of guessing them or reporting zero.
+    /// <para>Never throws: every IO step here is already best-effort (the tee was, and the log directory is
+    /// re-created by the invoker), because a caller raising a UI event must not be able to abort a run.</para>
+    /// </summary>
+    internal static BreakdownInvocationPlan PrepareInvocation(
+        WaveNode wave,
+        PlanDefinition plan,
+        string integrationWorktreePath,
+        string breakdownLogDir,
+        BreakdownResumeContext? resume)
+    {
+        try { Directory.CreateDirectory(breakdownLogDir); } catch { /* the invoker retries */ }
+
+        string suffix = resume is null ? "" : $"-segment-{resume.Segment}";
+        string composedPromptPath = Path.Combine(breakdownLogDir, $"composed-prompt{suffix}.md");
+        string prompt = ComposePrompt(wave, plan, integrationWorktreePath, resume);
+        try { File.WriteAllText(composedPromptPath, prompt); } catch { /* best-effort log tee */ }
+
+        // Scale the turn budget to the wave's size (issue #385): a generous base that covers a large wave
+        // on its own, plus per-brief-signal headroom. --max-turns is a CEILING, so this only ever helps a
+        // wave large enough to truncate; a small wave finishes well below the cap at no extra cost/time.
+        return new BreakdownInvocationPlan
+        {
+            Prompt = prompt,
+            ComposedPromptPath = composedPromptPath,
+            ComposedPromptBytes = Encoding.UTF8.GetByteCount(prompt),
+            StreamLogPath = Path.Combine(breakdownLogDir, $"claude-stream{suffix}.jsonl"),
+            TranscriptLogPath = Path.Combine(breakdownLogDir, $"transcript{suffix}.md"),
+            MaxTurns = ComputeMaxTurns(ReadBriefSignalCount(wave))
+        };
     }
 
     /// <summary>
@@ -291,6 +329,34 @@ public sealed class WaveBreakdownInvoker
     }
 }
 
+/// <summary>
+/// One breakdown segment's composed prompt plus every path and budget it will use — the product of
+/// <see cref="WaveBreakdownInvoker.PrepareInvocation"/>, handed straight back to
+/// <see cref="WaveBreakdownInvoker.InvokeAsync"/>. It exists so the caller can announce the phase (design 23
+/// §5.1) with the REAL stream path before the session starts, rather than reconstructing it from a naming
+/// convention the invoker owns.
+/// </summary>
+internal sealed record BreakdownInvocationPlan
+{
+    /// <summary>The composed invocation prompt (already teed to <see cref="ComposedPromptPath"/>).</summary>
+    public required string Prompt { get; init; }
+
+    /// <summary>Where the composed prompt was teed (SSOT §8).</summary>
+    public required string ComposedPromptPath { get; init; }
+
+    /// <summary>The composed prompt's UTF-8 size. Log-site evidence only — never a live surface (design 23 §4).</summary>
+    public required long ComposedPromptBytes { get; init; }
+
+    /// <summary>Where the runner will tee its JSONL stream — the liveness stat target.</summary>
+    public required string StreamLogPath { get; init; }
+
+    /// <summary>Where the runner will tee the groomed transcript.</summary>
+    public required string TranscriptLogPath { get; init; }
+
+    /// <summary>This segment's <c>--max-turns</c> ceiling.</summary>
+    public required int MaxTurns { get; init; }
+}
+
 /// <summary>The outcome of one <see cref="WaveBreakdownInvoker.InvokeAsync"/> — advisory only; the deterministic
 /// <c>guardrails validate</c> gate (run by the caller) is the actual verdict on the authored wave.</summary>
 public sealed record WaveBreakdownOutcome
@@ -327,6 +393,21 @@ public sealed record WaveBreakdownOutcome
     /// </summary>
     public bool TerminatedCleanly =>
         ProcessCompleted && Error is null && FailureKind == PromptFailureKind.None;
+
+    /// <summary>
+    /// The runner's own stop classification as the SSOT §9 kebab token, or null when the session ended
+    /// cleanly. Carried to <see cref="IRunObserver.WaveBreakdownFinished"/> so a UI can name the bound
+    /// without re-deriving it from prose (design 23 §10.1).
+    /// </summary>
+    public string? FailureKindToken => FailureKind switch
+    {
+        PromptFailureKind.None => Error is { Length: > 0 } ? BreakdownFailureTokens.Error : null,
+        PromptFailureKind.Timeout => BreakdownFailureTokens.Timeout,
+        PromptFailureKind.MaxTurns => BreakdownFailureTokens.MaxTurns,
+        PromptFailureKind.OutputCap => BreakdownFailureTokens.OutputCap,
+        PromptFailureKind.Transient => BreakdownFailureTokens.Transient,
+        _ => BreakdownFailureTokens.Error
+    };
 
     /// <summary>The bound the session hit, in the operator's words — the halt-detail sentence for milestone 1.</summary>
     public string CutOffCause => FailureKind switch

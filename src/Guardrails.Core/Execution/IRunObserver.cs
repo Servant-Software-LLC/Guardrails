@@ -139,6 +139,38 @@ public interface IRunObserver
     /// </summary>
     void WaveFinished(Model.WaveNode wave, Journal.WaveStatus status, bool skipped) { }
 
+    /// <summary>
+    /// The between-wave JIT breakdown (SSOT §14.4, doc 11 §9) is STARTING for an unauthored wave. Raised
+    /// from INSIDE the Spectre live region, so an implementation must not write plain lines (#145/#372) —
+    /// the shipped renderer drives a synthetic table row and at most one gated <c>MarkupLine</c>.
+    ///
+    /// <para>Until this event existed the phase raised NOTHING AT ALL: <see cref="WaveStarting"/> fires only
+    /// AFTER the checkpoint, so a wave could be authored for 30 minutes with no observer call of any kind,
+    /// while the live table — which emits rows per <c>wave.Tasks</c>, and a JIT stub has none — rendered the
+    /// run as FINISHED (issue #469). Default no-op so non-CLI observers and FLAT plans (never emitted) need
+    /// not handle it, but a transparent DECORATOR must forward it EXPLICITLY or the phase goes silent again
+    /// in every mode (the <see cref="VerifierAdvisoryFound"/> lesson).</para>
+    /// </summary>
+    void WaveBreakdownStarting(WaveBreakdownContext context) { }
+
+    /// <summary>
+    /// The JIT breakdown finished. <paramref name="elapsed"/> is the session's wall clock;
+    /// <paramref name="authoredTaskCount"/> is the count the deterministic <c>guardrails validate</c> gate
+    /// found on disk (authoritative — never the session's own claim);
+    /// <paramref name="failureKind"/> is null on a clean session, else the
+    /// <c>PromptResult.FailureKind</c> token (<c>timeout</c> / <c>max-turns</c> / <c>output-cap</c> /
+    /// <c>transient</c> / <c>error</c>) that design 20 §4.1 stopped discarding.
+    /// <paramref name="authoredWave"/> is the freshly-authored <see cref="Model.WaveNode"/> when the run will
+    /// PROCEED with it (review-gate Option P) — the seam #404 needs to add its task rows — and null on every
+    /// halting path. Default no-op; a decorator must still forward it explicitly.
+    /// </summary>
+    void WaveBreakdownFinished(
+        WaveBreakdownContext context,
+        TimeSpan elapsed,
+        int authoredTaskCount,
+        string? failureKind,
+        Model.WaveNode? authoredWave) { }
+
     /// <summary>An observer that does nothing.</summary>
     static IRunObserver Null { get; } = new NullObserver();
 

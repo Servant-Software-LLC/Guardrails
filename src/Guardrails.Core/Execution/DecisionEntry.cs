@@ -129,6 +129,32 @@ public static class DecisionTokens
     public const string NoVerdict = "no-verdict";
 }
 
+/// <summary>
+/// The <c>gate</c> tokens a between-wave JIT-breakdown <see cref="DecisionEntry"/> carries (SSOT §7,
+/// issue #469). They exist because <c>decisions[]</c> is the CANONICAL DURABLE store for this phase and
+/// nothing else is: <c>RunHaltKind</c>'s four members are all deterministic-gate kinds, so a breakdown halt
+/// is never journaled as a <c>RunHalt</c> and the log site's halt banner renders nothing for it. Without a
+/// stable discriminator here, a post-mortem reader opening the wave page finds the wave name,
+/// <c>0/0 tasks</c>, and an empty table — permanently, which is worse than the live silence because the
+/// live silence at least ends.
+/// <para>Tokens, not prose matching: the log site keys the wave page's phase panel off these, so the
+/// panel cannot break when a headline is reworded.</para>
+/// </summary>
+public static class BreakdownGates
+{
+    /// <summary>The wave was authored and passed <c>guardrails validate</c>.</summary>
+    public const string Complete = "wave-breakdown-complete";
+
+    /// <summary>The attempt was REVERTED — quarantined and the wave folder restored (SSOT §14.11).</summary>
+    public const string Failed = "wave-breakdown-failed";
+
+    /// <summary>The session was cut off and its VALID PREFIX was preserved for resume (SSOT §14.11).</summary>
+    public const string Incomplete = "wave-breakdown-incomplete";
+
+    /// <summary>True when <paramref name="gate"/> is one of the three breakdown settlements.</summary>
+    public static bool IsBreakdown(string? gate) => gate is Complete or Failed or Incomplete;
+}
+
 /// <summary>One task rebuilt by a Part C drift resolution: its id and its old→new definition hash. A helper
 /// carried into <see cref="DriftDecisions"/> to render a <c>drift</c>-boundary <see cref="DecisionEntry"/>;
 /// not itself serialized into <c>run.json</c> (the flat <see cref="DecisionEntry"/> is).</summary>
@@ -251,6 +277,7 @@ public static class DriftDecisions
             Policy = AutonomyPolicies.Token(policy),
             Decision = invocationDecision,
             Subject = waveDir,
+            Gate = BreakdownGates.Complete,
             Headline = $"Wave '{waveDir}' broken down ({taskCount} task(s)) — halting for /guardrails-review",
             Detail = "The breakdown output is a DRAFT: inspect the wave, run /guardrails-review, then re-run "
                      + "'guardrails run'. The harness never marks a wave reviewed on a human's behalf."
@@ -270,6 +297,7 @@ public static class DriftDecisions
             Policy = AutonomyPolicies.Token(policy),
             Decision = invocationDecision,
             Subject = waveDir,
+            Gate = BreakdownGates.Failed,
             Headline = $"Wave '{waveDir}' breakdown FAILED validation — partial output quarantined",
             Detail = errorSummary
         };
@@ -289,6 +317,7 @@ public static class DriftDecisions
             Policy = AutonomyPolicies.Token(policy),
             Decision = invocationDecision,
             Subject = waveDir,
+            Gate = BreakdownGates.Incomplete,
             Headline = $"Wave '{waveDir}' breakdown INCOMPLETE ({completeCount} of {declaredCount} declared "
                        + "task(s)) — valid prefix preserved for resume",
             Detail = detail

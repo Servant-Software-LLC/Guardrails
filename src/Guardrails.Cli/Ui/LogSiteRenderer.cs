@@ -87,6 +87,45 @@ public static class LogSiteRenderer
   .halt-logdir { margin-top: .7rem; font-size: .9rem; color: #8aa0b3; }
 """;
 
+    /// <summary>
+    /// The WAVE-PHASE panel's CSS (issue #469). Appended to the page's one <c>&lt;style&gt;</c> element ONLY
+    /// when that page renders a panel — the same discipline #436 used for <see cref="HaltStyle"/> — so every
+    /// page without a breakdown keeps its exact current bytes.
+    /// <para>The palette extends the shipped dark theme rather than inventing a scheme: running is the amber
+    /// the <c>running</c> status word already uses, a settled-good panel is the shipped green, and every
+    /// failure state reuses the halt red. State is carried by <c>data-state</c> so no colour is the only
+    /// carrier of meaning.</para>
+    /// </summary>
+    private const string PhaseStyle = """
+
+  section.phase { border: 1px solid #8aa0b3; border-left: 8px solid #8aa0b3; background: #121a24;
+                  border-radius: 6px; padding: .9rem 1.1rem; margin: 1rem 0 1.5rem; }
+  section.phase h2.phase-title { color: #d6deeb; font-size: 1.05rem; margin: 0 0 .45rem;
+                                 text-transform: uppercase; letter-spacing: .05em; }
+  section.phase h3.phase-sub { color: #8aa0b3; font-size: .82rem; margin: .9rem 0 .25rem;
+                               text-transform: uppercase; letter-spacing: .04em; }
+  section.phase p { margin: .25rem 0; color: #d6deeb; }
+  section.phase p.phase-headline { font-weight: 600; }
+  section.phase p.phase-note { color: #8aa0b3; font-size: .9rem; }
+  section.phase pre.phase-detail { margin: .5rem 0 0; font-size: .8rem; max-height: 24rem; }
+  .phase-evidence { margin-top: .7rem; font-size: .9rem; color: #8aa0b3; }
+  section.phase[data-state="running"] { border-color: #d29922; border-left-color: #d29922; background: #1d1a10; }
+  section.phase[data-state="running"] h2.phase-title { color: #e3b341; }
+  section.phase[data-state="authored"] { border-color: #3fb950; border-left-color: #3fb950; background: #101d12; }
+  section.phase[data-state="authored"] h2.phase-title { color: #56d364; }
+  section.phase[data-state="cut-off"], section.phase[data-state="incomplete"] {
+                  border-color: #f85149; border-left-color: #f85149; background: #1d1012; }
+  section.phase[data-state="cut-off"] h2.phase-title,
+  section.phase[data-state="incomplete"] h2.phase-title { color: #ff7b72; }
+""";
+
+    // The breakdown evidence files the phase panel links, in the order a post-mortem reader wants them.
+    // Only files that really exist are linked, and each carries its size — the composed-prompt size is
+    // deliberately HERE and on no live surface (design 23 §4): a reader correlating truncations across runs
+    // is not making a Ctrl+C decision.
+    private static readonly string[] BreakdownEvidencePrefixes =
+        ["composed-prompt", "claude-stream", "transcript"];
+
     // Per-attempt file the static page inlines FIRST (mirrors LogServer's PreferenceOrder): the groomed
     // transcript leads, then the raw stream, then script stdout.
     private static readonly string[] PreferenceOrder =
@@ -174,9 +213,14 @@ public static class LogSiteRenderer
         // Per-wave index (issue #380): one durable index per wave, all-static links, no refresh.
         foreach (WaveNode wave in waves)
         {
+            // The DURABLE post-mortem for the JIT breakdown (issue #469). It is read from decisions[] —
+            // the canonical durable store for the phase — because a breakdown halt is not a RunHalt, so
+            // without this the wave page is permanently a dead end: the wave name, 0/0 tasks, and an empty
+            // table. Null for an ordinary authored wave, which therefore renders unchanged.
             WriteWaveIndex(
                 logsRoot, journal.RunId, wave, statusResolver, linkResolver, includeRefresh: false,
-                halt: HaltForWave(journal.Halt, wave.Dir), claimResolver: claimResolver);
+                halt: HaltForWave(journal.Halt, wave.Dir), claimResolver: claimResolver,
+                phase: BreakdownPanel(logsRoot, wave, journal.Decisions));
         }
 
         string index = IndexHtml(
@@ -554,6 +598,259 @@ public static class LogSiteRenderer
             : null;
     }
 
+    // --- wave-phase panel (issue #469) ------------------------------------------------------
+
+    /// <summary>
+    /// One wave-scoped PHASE, rendered as a block above that wave's (possibly empty) task table. It closes
+    /// the gap that a JIT breakdown leaves on this surface: no task event fires during it, and a breakdown
+    /// halt is not a <c>RunHalt</c>, so before #469 a reader opened <c>&lt;wave&gt;/index.html</c> and found
+    /// the wave name, <c>0/0 tasks</c>, and an empty table — with no banner, no explanation, and no pointer
+    /// to the evidence.
+    /// <para>Named for the general case (design 23 §9) so #476's wave gates reuse the same panel as a
+    /// CONTENT change, not a second mechanism.</para>
+    /// </summary>
+    /// <param name="Phase">The phase discriminator, rendered as <c>data-phase</c>. Only <c>breakdown</c> exists today.</param>
+    /// <param name="State">
+    /// <c>pending</c> · <c>running</c> · <c>authored</c> · <c>incomplete</c> · <c>cut-off</c>. Rendered as
+    /// <c>data-state</c> AND used to pick the palette, so state is never carried by colour alone.
+    /// </param>
+    /// <param name="Title">The panel heading.</param>
+    /// <param name="Headline">The one-line summary, or null.</param>
+    /// <param name="Body">Plain-text paragraphs, each rendered as its own <c>&lt;p&gt;</c>.</param>
+    /// <param name="Detail">
+    /// The verbatim halt detail (the §6.1/§6.2 accounting), rendered pre-formatted so the reverted/kept
+    /// lists survive. Null while the phase is running.
+    /// </param>
+    /// <param name="Note">A muted trailing note (the "no percentage is shown, and why" paragraph).</param>
+    /// <param name="EvidenceDirectory">
+    /// The breakdown log directory ON DISK, used to size and existence-check the evidence links. Null ⇒ no
+    /// evidence list (a link is only ever rendered for a file that is really there).
+    /// </param>
+    /// <param name="EvidenceHref">The page-relative href of that same directory (e.g. <c>breakdown</c>).</param>
+    public sealed record PhasePanel(
+        string Phase,
+        string State,
+        string Title,
+        string? Headline = null,
+        IReadOnlyList<string>? Body = null,
+        string? Detail = null,
+        string? Note = null,
+        string? EvidenceDirectory = null,
+        string? EvidenceHref = null);
+
+    /// <summary>
+    /// The panel a WAVE page should carry for the JIT breakdown, derived from what is DURABLY recorded —
+    /// the journal's <c>decisions[]</c> (the canonical store for this phase, SSOT §7) plus the wave's own
+    /// task count. Returns null for an ordinary authored wave, so its page keeps its exact current bytes.
+    /// </summary>
+    /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree.</param>
+    /// <param name="wave">The wave whose page is being rendered.</param>
+    /// <param name="decisions">The journal's <c>decisions[]</c>, or null.</param>
+    public static PhasePanel? BreakdownPanel(
+        string logsRoot, WaveNode wave, IReadOnlyList<DecisionEntry>? decisions)
+    {
+        DecisionEntry? settled = decisions?
+            .LastOrDefault(d => BreakdownGates.IsBreakdown(d.Gate)
+                                && string.Equals(d.Subject, wave.Dir, StringComparison.Ordinal));
+
+        if (settled is null)
+        {
+            // No breakdown was recorded for this wave. A wave that still has NO tasks is a JIT stub whose
+            // barrier was never reached; every other wave gets no panel at all.
+            return wave.Tasks.Count > 0 ? null : PendingBreakdownPanel(logsRoot, wave);
+        }
+
+        (string state, string title) = settled.Gate switch
+        {
+            BreakdownGates.Complete => ("authored", "Tasks authored &mdash; JIT breakdown"),
+            BreakdownGates.Incomplete => ("incomplete", "Breakdown INCOMPLETE &mdash; valid prefix kept"),
+            _ => ("cut-off", "Breakdown FAILED &mdash; the attempt was reverted")
+        };
+
+        return new PhasePanel(
+            BreakdownPhaseToken,
+            state,
+            title,
+            Headline: settled.Headline,
+            Detail: settled.Detail,
+            EvidenceDirectory: BreakdownDirectory(logsRoot, wave.Dir),
+            EvidenceHref: BreakdownHref);
+    }
+
+    /// <summary>The PENDING panel: a JIT stub whose barrier has not been reached. Nothing here has run.</summary>
+    private static PhasePanel PendingBreakdownPanel(string logsRoot, WaveNode wave) =>
+        new(BreakdownPhaseToken,
+            "pending",
+            "Not yet authored &mdash; JIT breakdown pending",
+            Body:
+            [
+                "This wave is a JIT stub. Its tasks are authored at the wave barrier, after the previous "
+                + "wave completes and its exit gate passes. Nothing here has run."
+            ],
+            EvidenceDirectory: BreakdownDirectory(logsRoot, wave.Dir),
+            EvidenceHref: BreakdownHref);
+
+    /// <summary>
+    /// The RUNNING panel for an in-flight breakdown (design 23 §5.3) — the during-run page already carries a
+    /// 2s <c>meta refresh</c>, so this animates for free. The note is load-bearing: it says in words why
+    /// there is no percentage, which is the question the count invites.
+    /// </summary>
+    /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree.</param>
+    /// <param name="waveDir">The wave being authored.</param>
+    /// <param name="elapsed">How long the session has run.</param>
+    /// <param name="ceiling">The hard wall-clock ceiling.</param>
+    /// <param name="progress">The observed count/liveness fragments (already rendered by <c>BreakdownProgress</c>).</param>
+    public static PhasePanel RunningBreakdownPanel(
+        string logsRoot, string waveDir, TimeSpan elapsed, TimeSpan ceiling, string progress) =>
+        new(BreakdownPhaseToken,
+            "running",
+            "Authoring tasks &mdash; JIT breakdown",
+            Headline: $"{BreakdownProgress.FormatClock(elapsed)} elapsed of a "
+                      + $"{BreakdownProgress.FormatClock(ceiling)} ceiling.",
+            Body: progress.Length == 0 ? [] : [progress],
+            Note: "This wave had no tasks when the run started; the harness is authoring them now. The "
+                  + "folder count is what is on disk and only goes up — the final task count is not known "
+                  + "in advance, so no percentage is shown.",
+            EvidenceDirectory: BreakdownDirectory(logsRoot, waveDir),
+            EvidenceHref: BreakdownHref);
+
+    /// <summary>
+    /// The panel for a breakdown that has JUST settled, from what the observer knows at the event — so the
+    /// page is correct the instant the phase ends rather than the instant the journal is exported. The
+    /// durable export then supersedes it with the full halt accounting from <c>decisions[]</c>.
+    /// </summary>
+    /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree.</param>
+    /// <param name="waveDir">The wave that was being authored.</param>
+    /// <param name="failureKind">Null when the session ended cleanly and the wave validated; else the reason token.</param>
+    /// <param name="elapsed">The session's wall clock.</param>
+    /// <param name="detail">The already-composed outcome fragment (<c>BreakdownProgress.TerminalDetail</c>).</param>
+    public static PhasePanel SettledBreakdownPanel(
+        string logsRoot, string waveDir, string? failureKind, TimeSpan elapsed, string detail)
+    {
+        (string state, string title) = failureKind switch
+        {
+            null => ("authored", "Tasks authored &mdash; JIT breakdown"),
+            BreakdownFailureTokens.Incomplete => ("incomplete", "Breakdown INCOMPLETE &mdash; valid prefix kept"),
+            _ => ("cut-off", "Breakdown did not complete &mdash; JIT breakdown")
+        };
+
+        return new PhasePanel(
+            BreakdownPhaseToken,
+            state,
+            title,
+            Headline: $"{BreakdownProgress.TerminalWord(failureKind)} after "
+                      + $"{BreakdownProgress.FormatClock(elapsed)} — {detail}",
+            EvidenceDirectory: BreakdownDirectory(logsRoot, waveDir),
+            EvidenceHref: BreakdownHref);
+    }
+
+    /// <summary>The phase token every breakdown panel carries as <c>data-phase</c>.</summary>
+    private const string BreakdownPhaseToken = "breakdown";
+
+    /// <summary>The breakdown log directory's href, relative to the wave page it is rendered on.</summary>
+    private const string BreakdownHref = "breakdown";
+
+    private static string BreakdownDirectory(string logsRoot, string waveDir) =>
+        Path.Combine(logsRoot, waveDir, BreakdownHref);
+
+    /// <summary>
+    /// Render one <see cref="PhasePanel"/>, or the empty string when there is none — which is what keeps a
+    /// no-breakdown page byte-identical.
+    /// </summary>
+    private static string PhaseSection(PhasePanel? panel)
+    {
+        if (panel is null)
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder();
+        sb.Append("\n<section class=\"phase\" data-phase=\"").Append(Enc(panel.Phase))
+            .Append("\" data-state=\"").Append(Enc(panel.State)).Append("\">");
+        sb.Append("<h2 class=\"phase-title\">").Append(panel.Title).Append("</h2>");
+
+        if (!string.IsNullOrEmpty(panel.Headline))
+        {
+            sb.Append("<p class=\"phase-headline\">").Append(Enc(panel.Headline)).Append("</p>");
+        }
+
+        foreach (string paragraph in panel.Body ?? [])
+        {
+            sb.Append("<p>").Append(Enc(paragraph)).Append("</p>");
+        }
+
+        if (!string.IsNullOrWhiteSpace(panel.Detail))
+        {
+            // Pre-formatted: the §14.11 revert accounting is a list of aligned lines, and re-flowing it
+            // into a paragraph would lose exactly the "what moved / what was kept" structure #471 added.
+            sb.Append("<h3 class=\"phase-sub\">What the harness recorded</h3>");
+            sb.Append("<pre class=\"phase-detail\">").Append(Enc(panel.Detail)).Append("</pre>");
+        }
+
+        if (!string.IsNullOrEmpty(panel.Note))
+        {
+            sb.Append("<p class=\"phase-note\">").Append(Enc(panel.Note)).Append("</p>");
+        }
+
+        AppendPhaseEvidence(sb, panel);
+        sb.Append("</section>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The evidence list: every file the breakdown teed, with its size, plus the quarantine folder when one
+    /// exists. Only files really on disk are linked (capture is best-effort by contract, SSOT §8), so a
+    /// rendered anchor is never a dead end — the same rule the halt banner follows.
+    /// </summary>
+    private static void AppendPhaseEvidence(StringBuilder sb, PhasePanel panel)
+    {
+        if (panel.EvidenceDirectory is not { } dir || panel.EvidenceHref is not { } href)
+        {
+            return;
+        }
+
+        var links = new List<string>();
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                foreach (string file in Directory.EnumerateFiles(dir)
+                             .Where(f => BreakdownEvidencePrefixes.Any(p =>
+                                 Path.GetFileName(f).StartsWith(p, StringComparison.Ordinal)))
+                             .OrderBy(f => Path.GetFileName(f), StringComparer.Ordinal))
+                {
+                    string name = Path.GetFileName(file);
+                    long bytes = new FileInfo(file).Length;
+                    links.Add($"<a href=\"{Href($"{href}/{name}")}\">{Enc(name)}</a> ({Enc(FormatBytes(bytes))})");
+                }
+
+                if (Directory.Exists(Path.Combine(dir, "rejected")))
+                {
+                    links.Insert(0, $"quarantined to <a href=\"{Href($"{href}/rejected/")}\">{href}/rejected/</a>");
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return; // best-effort, exactly like every other site probe
+        }
+
+        if (links.Count == 0)
+        {
+            return;
+        }
+
+        sb.Append("<div class=\"phase-evidence\">Evidence: ").Append(string.Join(" &middot; ", links)).Append("</div>");
+    }
+
+    /// <summary>A file size in the units a reader thinks in, culture-invariantly so the page bytes never depend on the host locale.</summary>
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => string.Create(CultureInfo.InvariantCulture, $"{bytes / 1024.0:F0} KB"),
+        _ => string.Create(CultureInfo.InvariantCulture, $"{bytes / (1024.0 * 1024.0):F1} MB")
+    };
+
     // --- per-wave index (issue #380) --------------------------------------------------------
 
     /// <summary>
@@ -578,10 +875,11 @@ public static class LogSiteRenderer
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
         RunHalt? halt = null,
-        Func<string, string?>? claimResolver = null)
+        Func<string, string?>? claimResolver = null,
+        PhasePanel? phase = null)
     {
         string html = WaveIndexHtml(
-            logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt, claimResolver);
+            logsRoot, runId, wave, statusResolver, linkResolver, includeRefresh, halt, claimResolver, phase);
         string waveDir = Path.Combine(logsRoot, wave.Dir);
         Directory.CreateDirectory(waveDir); // the wave folder may not exist yet (all tasks still pending)
         string indexPath = Path.Combine(waveDir, "index.html");
@@ -597,7 +895,8 @@ public static class LogSiteRenderer
         Func<string, IndexLink> linkResolver,
         bool includeRefresh,
         RunHalt? halt,
-        Func<string, string?>? claimResolver)
+        Func<string, string?>? claimResolver,
+        PhasePanel? phase)
     {
         var rows = new StringBuilder();
         foreach (TaskNode task in wave.Tasks)
@@ -626,6 +925,11 @@ public static class LogSiteRenderer
         string banner = HaltBanner(logsRoot, halt, runId, pageWaveDir: wave.Dir);
         string haltStyle = banner.Length == 0 ? string.Empty : HaltStyle;
 
+        // The wave-phase panel (issue #469) and its CSS — both empty strings for a wave with no breakdown,
+        // so those pages keep their exact pre-#469 bytes.
+        string phasePanel = PhaseSection(phase);
+        string phaseStyle = phasePanel.Length == 0 ? string.Empty : PhaseStyle;
+
         return $"""
 <!doctype html>
 <html lang="en">
@@ -634,11 +938,11 @@ public static class LogSiteRenderer
 <meta name="viewport" content="width=device-width, initial-scale=1">{refresh}
 <title>{Enc(wave.Dir)} — Guardrails wave log ({Enc(runId)})</title>
 <style>
-{SharedStyle}{haltStyle}
+{SharedStyle}{haltStyle}{phaseStyle}
 </style>
 </head>
 <body>
-<h1>{Enc(wave.Dir)} — wave log</h1>{banner}
+<h1>{Enc(wave.Dir)} — wave log</h1>{banner}{phasePanel}
 <div class="bar"><a href="../index.html">&larr; all waves</a> &middot; {Enc(WaveProgress(wave, statusResolver))}</div>
 <p>{Enc(note)}</p>
 <table>

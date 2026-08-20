@@ -2165,7 +2165,7 @@ review-gate gate (no new boundary is added) — and **adds these OPTIONAL fields
 
 | Field (optional) | Type | Meaning |
 |---|---|---|
-| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` |
+| `gate` | string | the specific gate — `needs-human` \| `wave-checkpoint` \| `review-gate` \| `blocker` \| the three JIT-breakdown settlements `wave-breakdown-complete` \| `wave-breakdown-failed` \| `wave-breakdown-incomplete` (§9, issue #469) |
 | `classification` | string | `judgment-call` \| `hard-blocker-retryable` \| `hard-blocker-permanent` |
 | `criticality` | string | the assessed level (`low`\|`moderate`\|`high`\|`critical`); null for a hard blocker |
 | `confidence` | string | the judge's confidence (`low`\|`moderate`\|`high`); null for a hard blocker |
@@ -3842,6 +3842,47 @@ not a wire contract), **not a fix**: durability comes from §14.11 (declared int
 bounded resume), and the runner's `FailureKind` is carried into the halt so the operator is told which bound
 was hit.
 
+**Phase visibility — the two `IRunObserver` members (issue #469, design of record `docs/plans/23-jit-breakdown-visibility.md`).**
+`WaveStarting` fires only *after* the JIT checkpoint, so until #469 **not one observer event fired during a
+breakdown** — a wave could be authored for 30 minutes with no signal of any kind, while the live table (which
+emits rows per `wave.Tasks`, and a JIT stub has none) rendered the run as *finished*. Two members close it,
+both with **default no-op bodies** (a non-CLI observer, and every FLAT plan, is unaffected) — and a
+**transparent decorator must forward them EXPLICITLY**, or the phase is swallowed in every mode exactly as an
+unforwarded `VerifierAdvisoryFound` would be:
+
+```csharp
+void WaveBreakdownStarting(WaveBreakdownContext context) { }
+void WaveBreakdownFinished(WaveBreakdownContext context, TimeSpan elapsed, int authoredTaskCount,
+                           string? failureKind, WaveNode? authoredWave) { }
+```
+
+Both are raised from **inside** the Spectre live region, so an implementation must not write plain lines
+(§12, #145/#372): the shipped renderer drives a synthetic table row and at most one *gated* one-shot line.
+`authoredTaskCount` is the count the deterministic `guardrails validate` gate found on disk — never the
+session's own claim (invariant 1) — because `Finished` is raised *after* that gate. `failureKind` is `null`
+only when the wave was authored AND accepted; otherwise it is the runner's own stop token (`timeout` /
+`max-turns` / `output-cap` / `transient` / `error`) when the SESSION was cut off, or the harness's own gate
+token (`invalid` when the deterministic gate rejected the wave, `incomplete` when a valid prefix was
+preserved short of the §14.11 manifest). `authoredWave` is non-null **only** where the run will PROCEED with
+the wave (review-gate Option P) — the seam #404 needs — and null on every halting path.
+
+`WaveBreakdownContext` is a **public** record in `Guardrails.Core.Execution` (`Guardrails.Cli` has no
+`InternalsVisibleTo`, so a non-public type on a public interface is CS0051 — the `DecisionEntry` precedent):
+`waveDir`, `index`/`total` (1-based, for "Wave 2/2"), `breakdownLogDir` (the §8 evidence pointer),
+`streamLogPath` (the liveness stat target), `tasksDirectory` (the folder-count target), `composedPromptBytes`,
+`ceiling` (`WaveBreakdownInvoker.BreakdownTimeout`), and `intentManifestPath` (§14.11, null when absent).
+
+**No surface may invent progress.** The eventual task count is not knowable at invocation time (§14.11 /
+design 20 §3.2), so **no progress bar, no percentage, and no inferred denominator** may be rendered for this
+phase on any surface. The only denominator permitted is the **ceiling**, which denominates the *budget*, not
+the work; the only *declared* total is the one the session itself wrote to `state/breakdown-intent.json`, and
+a missing manifest is rendered as silence, never as a synthesised total. `composedPromptBytes` is kept off
+every live surface for the same reason — it is uncalibratable in the moment and belongs in the §12 log-site
+evidence list. The three settlements are additionally journaled as `decisions[]` entries carrying the
+`gate` tokens `wave-breakdown-complete` / `-failed` / `-incomplete` (§7): a breakdown halt is **not** a
+`RunHalt` (all four `halt.kind`s are deterministic-gate kinds), so `decisions[]` is the only durable record
+the §12 log site can key its wave-page phase panel off.
+
 **Triggers — deterministic, EAGER, at most once per attempt (#305 Decision C).** The harness (never the
 judge) decides WHEN the overwatcher engages, from typed outcomes plus an **eager `attempt ≥ 2`** trigger:
 
@@ -5382,6 +5423,16 @@ which holds mutable run state):
   server) and durably by `--export` / at run end (no refresh, all-static) — through the **same
   `LogSiteRenderer` shared shell** (CSS + status colours + table layout), no forked template. A **flat**
   plan writes no wave index (there are no waves) — its site is unchanged.
+  <br>**The wave-phase panel (issue #469).** A wave index whose wave carries a JIT breakdown (§14.4) leads
+  with a `<section class="phase" data-phase="breakdown" data-state="…">` block above the task table, in
+  states `pending` · `running` · `authored` · `incomplete` · `cut-off`. It exists because no task event
+  fires during a breakdown *and* a breakdown halt is not a `RunHalt` — so before it, a reader opened an
+  unauthored wave's page and found the wave name, `0/0 tasks`, and an empty table, permanently. The
+  during-run states are written by the on-the-fly observer on a **5-second clock, for the affected wave's
+  page only** (the plan index is rewritten once at phase start and once at finish); the durable state is
+  derived at export time from the `decisions[]` `gate` tokens (§7/§9). Its CSS is appended **only when the
+  panel is present**, so every page without a breakdown keeps its exact bytes — the same discipline #436's
+  halt banner uses. The panel is the one surface that carries `composedPromptBytes`; no live surface does.
 
 Pages are produced by the **same renderer** the live/post-mortem server uses (`LogSiteRenderer`,
 which owns the shared page shell — CSS, layout, status colours — that the live `LogServer` templates

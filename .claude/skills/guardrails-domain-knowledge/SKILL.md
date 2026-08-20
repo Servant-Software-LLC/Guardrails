@@ -832,7 +832,8 @@ total order driven by the wave folder's numeric prefix.
   entry/exit gate invocation, the `Guardrails-Wave:` marker commit, cross-wave resume, runtime wave-drift
   resolution, and wave-scoped reset. **`guardrails run` on a waved plan now ACTUALLY RUNS** wave by wave
   behind hard barriers (the M2a honest-halt exit-1 stub is GONE); `plan` output is wave-aware (per-wave
-  tiers); the live/plain UI segments the task table per wave (`IRunObserver.WaveStarting`/`WaveFinished`).
+  tiers); the live/plain UI segments the task table per wave (`IRunObserver.WaveStarting`/`WaveFinished`,
+  plus `BreakdownPhaseStarted`/`BreakdownPhaseFinished` for a JIT wave — see the JIT-visibility note below).
 
 **Authoring waved plans (the BREAK/REVIEW side -- procedures in `plan-breakdown` Step 9 +
 `guardrails-review`; #254).** The execution contract above is the RUN side; authoring adds:
@@ -1078,7 +1079,13 @@ total order driven by the wave folder's numeric prefix.
   / `ReconcileWavesFromPlanBranch`); cross-wave resume (`EvaluateWaveCompletion` +
   `RunJournal.WaveEntryOf`/`RecordWaveCompleted`/`ResetWaveToPending`); runtime wave-drift (`boundary:"wave"`
   `DecisionEntry`, `autonomyPolicy` halt/prompt/auto); wave-scoped reset (`RunReset.WaveReset`, `guardrails
-  reset <plan> <wave>`); `IRunObserver.WaveStarting`/`WaveFinished`; `RunReport.WaveHalt`. The M2a honest-halt
+  reset <plan> <wave>`); `IRunObserver.WaveStarting`/`WaveFinished` **plus
+  `BreakdownPhaseStarted`/`BreakdownPhaseFinished`** (#469 — a JIT breakdown fires NO observer event
+  before them, because `WaveStarting` is raised AFTER the checkpoint, and a zero-task wave contributes no
+  table rows: the harness therefore rendered a 30-minute authoring window as a FINISHED run. The phase row
+  is emitted for any zero-task wave from RUN START, shows elapsed against the KNOWN 30-minute budget —
+  never an inferred denominator, since the task count is a RESULT of the breakdown — and both members are
+  forwarded by every decorator); `RunReport.WaveHalt`. The M2a honest-halt
   exit-1 stub is GONE. **#311 remediation:** both the wave rewind AND the wave reset route through the
   marker-aware `SafeSuffixEvaluator` (`TrailerCommit.IsWaveMarker`) so a rewind never discards a trailer-less
   human hand-fix, derives an always-ancestor target, CAS-guards a concurrent run, and (via

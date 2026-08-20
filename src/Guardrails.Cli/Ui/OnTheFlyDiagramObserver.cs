@@ -221,6 +221,17 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
 
     public void WaveStarting(WaveNode wave, int index, int total) => _inner.WaveStarting(wave, index, total);
 
+    // #469: forwarded EXPLICITLY. The interface default is an empty body, so a decorator that omits these
+    // swallows the whole JIT-breakdown phase — in every mode, since this decorator is in both chains. This
+    // observer does not ACT on them: a diagram of the DAG has nothing to badge for the phase that AUTHORS
+    // the DAG (design 23 §8), so it forwards and nothing else.
+    public void WaveBreakdownStarting(WaveBreakdownContext context) => _inner.WaveBreakdownStarting(context);
+
+    public void WaveBreakdownFinished(
+        WaveBreakdownContext context, TimeSpan elapsed, int authoredTaskCount, string? failureKind,
+        WaveNode? authoredWave) =>
+        _inner.WaveBreakdownFinished(context, elapsed, authoredTaskCount, failureKind, authoredWave);
+
     public void WaveFinished(WaveNode wave, WaveStatus status, bool skipped) =>
         _inner.WaveFinished(wave, status, skipped);
 

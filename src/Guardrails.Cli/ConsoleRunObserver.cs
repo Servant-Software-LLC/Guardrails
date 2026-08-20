@@ -1,4 +1,5 @@
 using Guardrails.Cli.Commands;
+using Guardrails.Cli.Ui;
 using Guardrails.Core.Execution;
 using Guardrails.Core.Model;
 
@@ -15,6 +16,14 @@ public sealed class ConsoleRunObserver : IRunObserver
 {
     private readonly object _gate = new();
     private readonly TextWriter _output;
+
+    // The JIT breakdown's liveness heartbeat (issue #469). Under --no-ui the tailed log IS the record, and a
+    // tail with no line for 30 minutes is the bug. One timer, created on Starting and disposed on Finished,
+    // so the observer stays self-contained: no call-site change and no IDisposable on this type.
+    private Timer? _breakdownTimer;
+    private WaveBreakdownContext? _breakdownContext;
+    private DateTimeOffset _breakdownSince;
+    private bool _ceilingNoticed;
 
     public ConsoleRunObserver(TextWriter output)
     {
@@ -154,6 +163,119 @@ public sealed class ConsoleRunObserver : IRunObserver
                 : status == Core.Journal.WaveStatus.Completed ? "completed" : $"halted ({status.ToString().ToLowerInvariant()})";
             _output.WriteLine($"===== Wave {wave.Dir}: {verb} =====");
             _output.WriteLine();
+        }
+    }
+
+    public void WaveBreakdownStarting(WaveBreakdownContext context)
+    {
+        lock (_gate)
+        {
+            _breakdownContext = context;
+            _breakdownSince = DateTimeOffset.UtcNow;
+            _ceilingNoticed = false;
+
+            // The wave banner WaveStarting cannot print here: it fires only AFTER the checkpoint, so on a
+            // JIT plan this phase used to produce no line of any kind for up to half an hour (#469).
+            _output.WriteLine(
+                $"===== Wave {context.Index}/{context.Total}: {context.WaveDir} — JIT breakdown "
+                + "(no tasks authored yet) =====");
+            _output.WriteLine(
+                $"[{BreakdownProgress.PlainTag}] {context.WaveDir}: authoring tasks; ceiling "
+                + BreakdownProgress.FormatClock(context.Ceiling));
+            _output.WriteLine($"[{BreakdownProgress.PlainTag}]   log dir: {context.BreakdownLogDir}");
+
+            _breakdownTimer?.Dispose();
+            var interval = TimeSpan.FromSeconds(BreakdownProgress.HeartbeatIntervalSeconds);
+            _breakdownTimer = new Timer(_ => BreakdownHeartbeat(), null, interval, interval);
+        }
+    }
+
+    public void WaveBreakdownFinished(
+        WaveBreakdownContext context, TimeSpan elapsed, int authoredTaskCount, string? failureKind,
+        WaveNode? authoredWave)
+    {
+        // Probe outside the gate — the settlement line reports what is on disk, not the last sample.
+        BreakdownProgress.Snapshot snapshot = BreakdownProgress.Probe(
+            context.TasksDirectory, context.StreamLogPath, context.IntentManifestPath, DateTimeOffset.UtcNow);
+
+        Timer? stopped;
+        lock (_gate)
+        {
+            stopped = _breakdownTimer;
+            _breakdownTimer = null;
+            _breakdownContext = null;
+            _output.WriteLine(BreakdownProgress.PlainFinishLine(context.WaveDir, failureKind, elapsed, snapshot));
+        }
+
+        stopped?.Dispose(); // outside the gate — Dispose waits for an in-flight callback that wants the gate
+    }
+
+    /// <summary>
+    /// One <see cref="BreakdownProgress.HeartbeatIntervalSeconds"/> heartbeat: the clock against the ceiling
+    /// plus the same observed fragments the live table's phase row renders, so the two surfaces cannot report
+    /// different counts. The 25-minute pre-announcement rides the first line past the threshold and fires
+    /// ONCE — a countdown here would just be noise in a CI log.
+    /// </summary>
+    private void BreakdownHeartbeat()
+    {
+        WaveBreakdownContext? context;
+        DateTimeOffset since;
+        lock (_gate)
+        {
+            context = _breakdownContext;
+            since = _breakdownSince;
+        }
+
+        if (context is null)
+        {
+            return;
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        TimeSpan elapsed = now - since;
+
+        // Self-bound. A Ctrl+C propagates out of the invoker without ever reaching the Finished event, and
+        // this observer is deliberately not IDisposable, so the heartbeat retires itself: no session can
+        // outlive its own ceiling, and a stray [breakdown] line must not interleave with the exit summary.
+        if (elapsed > context.Ceiling + TimeSpan.FromMinutes(1))
+        {
+            Timer? expired;
+            lock (_gate)
+            {
+                expired = ReferenceEquals(_breakdownContext, context) ? _breakdownTimer : null;
+                if (expired is not null)
+                {
+                    _breakdownTimer = null;
+                    _breakdownContext = null;
+                }
+            }
+
+            expired?.Dispose();
+            return;
+        }
+
+        // Probing OUTSIDE the gate keeps filesystem latency off the event path, exactly as the live
+        // observer's ticker does.
+        BreakdownProgress.Snapshot snapshot = BreakdownProgress.Probe(
+            context.TasksDirectory, context.StreamLogPath, context.IntentManifestPath, now);
+
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_breakdownContext, context))
+            {
+                return; // the phase settled while we were probing
+            }
+
+            string line = BreakdownProgress.PlainLine(context.WaveDir, elapsed, context.Ceiling, snapshot);
+            if (!_ceilingNoticed
+                && elapsed >= TimeSpan.FromMinutes(BreakdownProgress.CeilingNoticeMinutes)
+                && elapsed < context.Ceiling)
+            {
+                _ceilingNoticed = true;
+                line += $" (cut off at {BreakdownProgress.FormatClock(context.Ceiling)})";
+            }
+
+            _output.WriteLine(line);
         }
     }
 

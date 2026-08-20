@@ -48,6 +48,24 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     // this map, and nothing is written during the Spectre Live region (#145/#372).
     private readonly Dictionary<string, string?> _claimByTask = new(StringComparer.Ordinal);
 
+    // The in-flight JIT breakdown (issue #469). No task event fires during it, so the site must render on a
+    // CLOCK or the wave page sits frozen for up to 30 minutes. One timer for the phase's duration, disposed
+    // the moment it settles; guarded by the same _gate as everything else, and nothing is written to the
+    // console at all (this decorator never touches the Spectre live region).
+    private readonly Dictionary<string, WaveNode> _wavesByDir;
+    private readonly HashSet<string> _phaseWaves = new(StringComparer.Ordinal);
+    private Timer? _phaseTimer;
+    private WaveBreakdownContext? _phaseContext;
+    private DateTimeOffset _phaseSince;
+
+    /// <summary>
+    /// During-run re-render cadence for the breakdown's wave page. Deliberately slower than the 2s probe:
+    /// <c>RenderIndex()</c> rewrites the plan index AND every wave index on each call, which over a
+    /// 30-minute breakdown would be ~720 writes for information that has not changed. Only the AFFECTED
+    /// wave's page is rewritten on this clock; the plan index is rewritten once at start and once at finish.
+    /// </summary>
+    public const int PhaseRenderIntervalSeconds = 5;
+
     /// <param name="inner">The real observer every event is forwarded to (live or console).</param>
     /// <param name="logsRoot">The run's <c>logs/&lt;runId&gt;/</c> tree the site is written into.</param>
     /// <param name="runId">The run id (titles the rendered index).</param>
@@ -74,6 +92,7 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
         _runId = runId;
         _tasks = tasks;
         _waves = waves ?? Array.Empty<WaveNode>();
+        _wavesByDir = _waves.ToDictionary(w => w.Dir, StringComparer.Ordinal);
         _tasksById = tasks.ToDictionary(t => t.Id, StringComparer.Ordinal);
         _liveUrlForTask = liveUrlForTask;
         _statusByTask = tasks.ToDictionary(
@@ -121,7 +140,9 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
             includeRefresh: true,
             waves: waveList));
 
-        // Seed each wave's own all-pending index (issue #380) so a wave page exists from run start.
+        // Seed each wave's own all-pending index (issue #380) so a wave page exists from run start. A wave
+        // with no tasks leads with the PENDING phase panel (issue #469) — before it, an unauthored wave's
+        // page was an unexplained empty table from the first frame.
         foreach (WaveNode wave in waveList)
         {
             WaveNode w = wave;
@@ -131,7 +152,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 w,
                 statusResolver: _ => pending,
                 linkResolver: _ => LogSiteRenderer.IndexLink.Plain,
-                includeRefresh: true));
+                includeRefresh: true,
+                phase: LogSiteRenderer.BreakdownPanel(logsRoot, w, decisions: null)));
         }
     }
 
@@ -192,6 +214,124 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
     public void WaveFinished(WaveNode wave, Core.Journal.WaveStatus status, bool skipped) =>
         _inner.WaveFinished(wave, status, skipped);
 
+    // --- the JIT breakdown phase (issue #469) -----------------------------------------------
+
+    // Forwarded EXPLICITLY, and then ACTED on. The interface default is an empty body, so omitting these
+    // would swallow the phase in every mode — this decorator is in both chains (the VerifierAdvisoryFound
+    // lesson). Acting on it is what turns the wave page from a permanent dead end into the post-mortem.
+    public void WaveBreakdownStarting(WaveBreakdownContext context)
+    {
+        _inner.WaveBreakdownStarting(context);
+
+        lock (_gate)
+        {
+            _phaseContext = context;
+            _phaseSince = DateTimeOffset.UtcNow;
+            _phaseWaves.Add(context.WaveDir);
+            _phaseTimer?.Dispose();
+            var interval = TimeSpan.FromSeconds(PhaseRenderIntervalSeconds);
+            _phaseTimer = new Timer(_ => RenderPhasePage(), null, interval, interval);
+        }
+
+        RenderIndex(); // once at start, so the plan index's wave nav is not stale for half an hour
+        RenderPhasePage();
+    }
+
+    public void WaveBreakdownFinished(
+        WaveBreakdownContext context, TimeSpan elapsed, int authoredTaskCount, string? failureKind,
+        WaveNode? authoredWave)
+    {
+        Timer? stopped;
+        lock (_gate)
+        {
+            stopped = _phaseTimer;
+            _phaseTimer = null;
+            _phaseContext = null;
+        }
+
+        stopped?.Dispose();
+
+        // Forward AFTER stopping the clock, so no re-render races the settled page.
+        _inner.WaveBreakdownFinished(context, elapsed, authoredTaskCount, failureKind, authoredWave);
+
+        BreakdownProgress.Snapshot snapshot = BreakdownProgress.Probe(
+            context.TasksDirectory, context.StreamLogPath, context.IntentManifestPath, DateTimeOffset.UtcNow);
+        WritePhasePage(context.WaveDir, LogSiteRenderer.SettledBreakdownPanel(
+            _logsRoot, context.WaveDir, failureKind, elapsed,
+            BreakdownProgress.TerminalDetail(failureKind, snapshot)));
+
+        RenderIndex();
+    }
+
+    /// <summary>
+    /// Rewrite ONLY the breaking-down wave's page, with the running phase panel. The during-run page already
+    /// carries a 2s <c>meta refresh</c>, so an open browser animates for free.
+    /// </summary>
+    private void RenderPhasePage()
+    {
+        WaveBreakdownContext? context;
+        DateTimeOffset since;
+        lock (_gate)
+        {
+            context = _phaseContext;
+            since = _phaseSince;
+        }
+
+        if (context is null)
+        {
+            return;
+        }
+
+        // Probe outside the lock — filesystem latency must not block the event path.
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        BreakdownProgress.Snapshot snapshot = BreakdownProgress.Probe(
+            context.TasksDirectory, context.StreamLogPath, context.IntentManifestPath, now);
+        LogSiteRenderer.PhasePanel panel = LogSiteRenderer.RunningBreakdownPanel(
+            _logsRoot, context.WaveDir, now - since, context.Ceiling, BreakdownProgress.DetailMarkup(snapshot));
+
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_phaseContext, context))
+            {
+                return; // settled while we were probing
+            }
+        }
+
+        WritePhasePage(context.WaveDir, panel);
+    }
+
+    /// <summary>
+    /// Write ONE wave's page carrying <paramref name="panel"/>, from the current status snapshot. The plan
+    /// index and every other wave page are deliberately untouched: nothing about them changes while a
+    /// breakdown runs, and rewriting them on this clock would cost ~720 writes over a full ceiling.
+    /// </summary>
+    private void WritePhasePage(string waveDir, LogSiteRenderer.PhasePanel panel)
+    {
+        if (!_wavesByDir.TryGetValue(waveDir, out WaveNode? wave))
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            var statuses = new Dictionary<string, string>(_statusByTask, StringComparer.Ordinal);
+            var claims = new Dictionary<string, string?>(_claimByTask, StringComparer.Ordinal);
+            string StatusOf(string id) => statuses.TryGetValue(id, out string? s) ? s : "unknown";
+            string? ClaimOf(string id) => claims.TryGetValue(id, out string? c) ? c : null;
+
+            TryRender(() => LogSiteRenderer.WriteWaveIndex(
+                _logsRoot,
+                _runId,
+                wave,
+                statusResolver: StatusOf,
+                linkResolver: id => ResolveLink(id, statuses),
+                includeRefresh: true,
+                halt: null,
+                claimResolver: ClaimOf,
+                phase: panel));
+        }
+    }
+
     // --- site projection --------------------------------------------------------------------
 
     private void SetStatus(string taskId, string status, string? claim = null)
@@ -231,10 +371,18 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                 claimResolver: ClaimOf));
 
             // Rewrite each wave's own index too (issue #380), from the same status snapshot, so a
-            // waved run's per-wave drill-down refreshes as the wave progresses.
+            // waved run's per-wave drill-down refreshes as the wave progresses. A wave whose breakdown
+            // phase has begun is OWNED by WritePhasePage — this render has no idea how the session is
+            // going, so re-asserting "not yet authored" over it would be the wrong answer stated
+            // confidently.
             foreach (WaveNode wave in _waves)
             {
                 WaveNode w = wave;
+                if (_phaseWaves.Contains(w.Dir))
+                {
+                    continue;
+                }
+
                 TryRender(() => LogSiteRenderer.WriteWaveIndex(
                     _logsRoot,
                     _runId,
@@ -243,7 +391,8 @@ public sealed class OnTheFlyLogSiteObserver : IRunObserver
                     linkResolver: LinkOf,
                     includeRefresh: true,
                     halt: null,
-                    claimResolver: ClaimOf));
+                    claimResolver: ClaimOf,
+                    phase: LogSiteRenderer.BreakdownPanel(_logsRoot, w, decisions: null)));
             }
         }
     }

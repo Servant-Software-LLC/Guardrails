@@ -15,8 +15,16 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
 {
     private readonly object _gate = new();
     private readonly Table _table;
-    private readonly Dictionary<string, int> _rowByTask = new(StringComparer.Ordinal);
+
+    // Row index keyed by EITHER a task id or a wave-phase key "<waveDir>/(<phase>)" (issue #469). One map,
+    // because a phase row is updated through exactly the same UpdateCell path as a task row — the parenthesised
+    // segment cannot collide with an SSOT §14.2 wave-qualified task id.
+    private readonly Dictionary<string, int> _rowByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RunningState> _running = new(StringComparer.Ordinal);
+
+    // In-flight wave phases (issue #469): the JIT breakdown, and — per design 23 §9 — the shape #476's wave
+    // gates will reuse. Driven by the SAME 1 Hz ticker as _running; no new timer and no new lock.
+    private readonly Dictionary<string, PhaseState> _phases = new(StringComparer.Ordinal);
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _liveLoop;
     private readonly Timer _ticker;
@@ -32,8 +40,29 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     private readonly HashSet<string> _completedWaves = new(StringComparer.Ordinal);
     private LiveDisplayContext? _context;
 
+    // Tick re-entrancy guard (issue #469). The phase probe runs OUTSIDE _gate, so two ticks could otherwise
+    // overlap in it; this keeps the per-phase probe/notice fields single-writer and makes the 25-minute
+    // pre-announcement fire exactly once. Not a lock — a skipped repaint costs nothing.
+    private int _ticking;
+
     /// <summary>A task currently running: when it started and the status word to prefix the clock.</summary>
     private readonly record struct RunningState(DateTimeOffset Since, string Prefix);
+
+    /// <summary>
+    /// One in-flight wave phase. <see cref="Snapshot"/> and <see cref="LastProbe"/> are written by the
+    /// ticker thread only, OUTSIDE <see cref="_gate"/>, so filesystem latency never blocks the table; the
+    /// re-entrancy guard on <see cref="Tick"/> keeps that single-writer property true even if a probe
+    /// overruns a tick.
+    /// </summary>
+    private sealed class PhaseState
+    {
+        public required string Key { get; init; }
+        public required WaveBreakdownContext Context { get; init; }
+        public required DateTimeOffset Since { get; init; }
+        public BreakdownProgress.Snapshot Snapshot { get; set; }
+        public DateTimeOffset LastProbe { get; set; }
+        public bool CeilingNoticeFired { get; set; }
+    }
 
     /// <param name="tasks">The tasks to render, one row each.</param>
     /// <param name="logUrlForTask">
@@ -107,7 +136,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             // #379: never start a clock for a task whose wave has collapsed (it has no row). A task in a
             // completed wave is only ever replayed as finished on resume, never started — but guard anyway
             // so a phantom entry can't accumulate in _running and spin the ticker forever.
-            if (!_rowByTask.ContainsKey(task.Id))
+            if (!_rowByKey.ContainsKey(task.Id))
             {
                 return;
             }
@@ -143,46 +172,150 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     }
 
     /// <summary>
-    /// Repaint the Status cell of every running task with its live elapsed clock. Runs under the
-    /// same gate as event updates, so the table mutates from one place at a time.
+    /// Repaint the Status cell of every running task with its live elapsed clock, and — issue #469 — of
+    /// every in-flight wave phase with its clock plus the two observed liveness fragments. Cell writes run
+    /// under the same gate as event updates, so the table mutates from one place at a time.
+    ///
+    /// <para><b>The disk probe runs OUTSIDE the gate.</b> A phase probe stats a directory and a file; doing
+    /// that while holding <see cref="_gate"/> would let filesystem latency block every worker's event. So
+    /// the tick snapshots the phase list under the lock, probes without it, then re-takes it to write. A
+    /// re-entrancy guard keeps that single-writer discipline true if a probe ever overruns a tick — and it
+    /// is what makes the 25-minute notice fire exactly once.</para>
     /// </summary>
     private void Tick()
     {
-        lock (_gate)
+        if (Interlocked.CompareExchange(ref _ticking, 1, 0) != 0)
         {
-            if (_context is null || _running.Count == 0)
+            return; // a previous tick is still probing; skipping one repaint is free
+        }
+
+        try
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+
+            PhaseState[] phases;
+            lock (_gate)
             {
-                return;
+                if (_context is null || (_running.Count == 0 && _phases.Count == 0))
+                {
+                    return;
+                }
+
+                phases = _phases.Count == 0 ? [] : [.. _phases.Values];
             }
 
-            foreach (KeyValuePair<string, RunningState> entry in _running)
+            foreach (PhaseState phase in phases)
             {
-                // #379: skip a running task whose wave collapsed out from under it (defensive — a wave
-                // only collapses once all its tasks are settled and removed from _running).
-                if (!_rowByTask.TryGetValue(entry.Key, out int row))
+                if (now - phase.LastProbe < TimeSpan.FromSeconds(BreakdownProgress.ProbeIntervalSeconds))
                 {
                     continue;
                 }
 
-                string elapsed = FormatElapsed(DateTimeOffset.UtcNow - entry.Value.Since);
-                _table.UpdateCell(row, 1, new Markup($"[yellow]{entry.Value.Prefix} {elapsed}[/]"));
+                phase.Snapshot = BreakdownProgress.Probe(
+                    phase.Context.TasksDirectory, phase.Context.StreamLogPath,
+                    phase.Context.IntentManifestPath, now);
+                phase.LastProbe = now;
             }
 
-            _context.Refresh();
+            lock (_gate)
+            {
+                if (_context is null)
+                {
+                    return;
+                }
+
+                foreach (KeyValuePair<string, RunningState> entry in _running)
+                {
+                    // #379: skip a running task whose wave collapsed out from under it (defensive — a wave
+                    // only collapses once all its tasks are settled and removed from _running).
+                    if (!_rowByKey.TryGetValue(entry.Key, out int row))
+                    {
+                        continue;
+                    }
+
+                    string elapsed = BreakdownProgress.FormatElapsed(now - entry.Value.Since);
+                    _table.UpdateCell(row, 1, new Markup($"[yellow]{entry.Value.Prefix} {elapsed}[/]"));
+                }
+
+                foreach (PhaseState phase in phases)
+                {
+                    TimeSpan elapsed = now - phase.Since;
+                    if (_rowByKey.TryGetValue(phase.Key, out int row))
+                    {
+                        // Yellow, exactly like running/retry: the colour never claims a cause, because the
+                        // harness cannot distinguish "waiting" from "dead" and this row does not pretend to.
+                        _table.UpdateCell(row, 1, new Markup(
+                            $"[yellow]{Markup.Escape(BreakdownProgress.StatusMarkup(elapsed, phase.Context.Ceiling, BreakdownProgress.AuthoringPhase))}[/]"));
+                        _table.UpdateCell(row, 2, new Markup(RunningPhaseDetail(phase)));
+                    }
+
+                    MaybeAnnounceCeiling(phase, elapsed);
+                }
+
+                _context.Refresh();
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _ticking, 0);
         }
     }
 
-    /// <summary>Stopwatch-style elapsed: <c>0:42</c>, <c>12:05</c>, <c>1:03:20</c>.</summary>
-    private static string FormatElapsed(TimeSpan e)
+    /// <summary>
+    /// The one-shot pre-announcement, five minutes before the kill — the moment it becomes actionable, and
+    /// never repeated (design 23 §5.1). Written above the live region under <see cref="_gate"/>, the shipped
+    /// <see cref="WaveStarting"/> / <see cref="OverwatchNoVerdict"/> idiom for a ONE-SHOT line (#145/#372);
+    /// nothing repeats above the region. Caller holds the gate.
+    /// </summary>
+    private static void MaybeAnnounceCeiling(PhaseState phase, TimeSpan elapsed)
     {
-        if (e < TimeSpan.Zero)
+        if (phase.CeilingNoticeFired
+            || elapsed < TimeSpan.FromMinutes(BreakdownProgress.CeilingNoticeMinutes)
+            || elapsed >= phase.Context.Ceiling)
         {
-            e = TimeSpan.Zero;
+            return;
         }
 
-        return e.TotalHours >= 1
-            ? $"{(int)e.TotalHours}:{e.Minutes:D2}:{e.Seconds:D2}"
-            : $"{e.Minutes}:{e.Seconds:D2}";
+        phase.CeilingNoticeFired = true;
+        string wave = Markup.Escape(phase.Context.WaveDir);
+        string spent = BreakdownProgress.FormatClock(elapsed);
+        string ceiling = BreakdownProgress.FormatClock(phase.Context.Ceiling);
+        AnsiConsole.MarkupLine(
+            $"[yellow]{wave}: {spent} of a {ceiling} ceiling — the breakdown will be CUT OFF at {ceiling}.[/]");
+        AnsiConsole.MarkupLine(
+            "  [grey]Let it run. Ctrl+C here ends the authoring session: the harness leaves the wave "
+            + "loadable, so the work in flight is lost.[/]");
+    }
+
+    /// <summary>
+    /// The RUNNING phase row's Detail cell: the shared fragments plus this observer's live-log link, in the
+    /// order count · stream · link — so an 80-column wrap costs the link, never a decision-critical fact.
+    /// </summary>
+    private string RunningPhaseDetail(PhaseState phase)
+    {
+        string detail = Markup.Escape(BreakdownProgress.DetailMarkup(phase.Snapshot));
+        if (WavePageLinkMarkup(phase.Context.WaveDir, "view log") is { } link)
+        {
+            detail = detail.Length == 0 ? link : $"{detail} · {link}";
+        }
+
+        return detail;
+    }
+
+    /// <summary>
+    /// A <c>file://</c> OSC 8 link to the WAVE's static log page (<c>logs/&lt;runId&gt;/&lt;waveDir&gt;/index.html</c>)
+    /// — the page the phase panel (design 23 §5.3) writes, so a click lands on the evidence list rather than
+    /// an OS file listing. Null when no plan dir / run id, exactly like the per-task post-mortem link.
+    /// </summary>
+    private string? WavePageLinkMarkup(string waveDir, string text)
+    {
+        if (_planDirectory is null || _runId is null)
+        {
+            return null;
+        }
+
+        string page = Path.GetFullPath(Path.Combine(_planDirectory, "logs", _runId, waveDir, "index.html"));
+        return $"[link={new Uri(page).AbsoluteUri}]{text}[/]";
     }
 
     /// <summary>
@@ -306,6 +439,70 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void WaveBreakdownStarting(WaveBreakdownContext context)
+    {
+        var phase = new PhaseState
+        {
+            Key = WavePhaseLiveRow.KeyFor(context.WaveDir, WavePhaseLiveRow.BreakdownPhase),
+            Context = context,
+            Since = DateTimeOffset.UtcNow
+        };
+
+        lock (_gate)
+        {
+            _phases[phase.Key] = phase;
+
+            // The first of the TWO one-shot lines, above the live region under the gate — the shipped
+            // WaveStarting / DecisionRecorded / OverwatchNoVerdict idiom (#145/#372). Everything that then
+            // repeats per second goes through UpdateCell, never here.
+            AnsiConsole.MarkupLine(
+                $"[bold]Wave {context.Index}/{context.Total}:[/] {Markup.Escape(context.WaveDir)} — "
+                + $"authoring tasks (JIT breakdown). Ceiling {BreakdownProgress.FormatClock(context.Ceiling)}.");
+            AnsiConsole.MarkupLine($"  [grey]Breakdown log: {Markup.Escape(context.BreakdownLogDir)}[/]");
+
+            if (_rowByKey.TryGetValue(phase.Key, out int row))
+            {
+                _table.UpdateCell(row, 1, new Markup(
+                    $"[yellow]{Markup.Escape(BreakdownProgress.StatusMarkup(TimeSpan.Zero, context.Ceiling, BreakdownProgress.AuthoringPhase))}[/]"));
+                _table.UpdateCell(row, 2, new Markup(RunningPhaseDetail(phase)));
+                _context?.Refresh();
+            }
+        }
+    }
+
+    public void WaveBreakdownFinished(
+        WaveBreakdownContext context, TimeSpan elapsed, int authoredTaskCount, string? failureKind,
+        WaveNode? authoredWave)
+    {
+        string key = WavePhaseLiveRow.KeyFor(context.WaveDir, WavePhaseLiveRow.BreakdownPhase);
+
+        // Probe once more OUTSIDE the gate, so the settled row reports what is really on disk rather than
+        // the last 2-second sample.
+        BreakdownProgress.Snapshot snapshot = BreakdownProgress.Probe(
+            context.TasksDirectory, context.StreamLogPath, context.IntentManifestPath, DateTimeOffset.UtcNow);
+
+        lock (_gate)
+        {
+            _phases.Remove(key); // stop the clock — the outcome is terminal
+            if (!_rowByKey.TryGetValue(key, out int row))
+            {
+                return;
+            }
+
+            string colour = failureKind is null ? "green" : "red";
+            string status = BreakdownProgress.TerminalStatus(BreakdownProgress.TerminalWord(failureKind), elapsed);
+            string detail = Markup.Escape(BreakdownProgress.TerminalDetail(failureKind, snapshot));
+            if (WavePageLinkMarkup(context.WaveDir, "logs") is { } link)
+            {
+                detail = $"{detail} · {link}";
+            }
+
+            _table.UpdateCell(row, 1, new Markup($"[{colour}]{Markup.Escape(status)}[/]"));
+            _table.UpdateCell(row, 2, new Markup(detail));
+            _context?.Refresh();
+        }
+    }
+
     public void PlanHashMismatch(string previousPlanHash)
     {
         lock (_gate)
@@ -378,7 +575,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
     /// </summary>
     private void RebuildRows()
     {
-        _rowByTask.Clear();
+        _rowByKey.Clear();
         _table.Rows.Clear();
 
         IReadOnlyList<LiveTableRow> rows = LiveTableRows.Plan(_tasks, _waves, _completedWaves, _showAllTasks);
@@ -387,7 +584,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
             switch (rows[i])
             {
                 case TaskLiveRow task:
-                    _rowByTask[task.TaskId] = i;
+                    _rowByKey[task.TaskId] = i;
                     _table.AddRow(
                         new Markup(Markup.Escape(task.TaskId)),
                         new Markup("[grey]pending[/]"),
@@ -399,6 +596,17 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
                         new Markup(string.Empty),
                         new Markup(string.Empty));
                     break;
+                case WavePhaseLiveRow phase:
+                    // Issue #469: the row exists from RUN START, so a two-wave JIT plan is legible as a
+                    // two-wave plan before anything happens, and the breakdown has a row to update when it
+                    // begins — no mid-run rebuild, no new race. No new glyph: only the `—` every other row
+                    // already prints.
+                    _rowByKey[phase.BreakdownKey] = i;
+                    _table.AddRow(
+                        new Markup($"{Markup.Escape(phase.WaveDir)} — JIT breakdown"),
+                        new Markup("[grey]pending[/]"),
+                        new Markup("[grey]no tasks yet — authored at the barrier[/]"));
+                    break;
             }
         }
     }
@@ -409,7 +617,7 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         {
             // #379: a task whose wave has collapsed has no row — tolerate the missing id as a no-op
             // (a resume replays completed-wave `skipped`/finish events; its logs stay on the static site).
-            if (!_rowByTask.TryGetValue(taskId, out int row))
+            if (!_rowByKey.TryGetValue(taskId, out int row))
             {
                 return;
             }
