@@ -29,7 +29,8 @@ plan-name/
 ```
 
 Never generate `state/state.json`, `state/run.json`, or `state/logs/` — those are
-harness-owned runtime artifacts (and gitignored).
+harness-owned runtime artifacts (and gitignored). The ONE `state/` file a breakdown does
+write is a WAVE's `state/breakdown-intent.json` (waved plans only — see below).
 
 **Two scopes, four folders (SSOT §1/§3.3).** `preflights/` and `guardrails/` are first-class
 folders at TWO scopes. **Plan-level** `<plan>/preflights/` (the "Full Flight Checks") runs ONCE
@@ -85,6 +86,16 @@ plan-name/
   runs on the fully-merged HEAD** and is the whole-plan terminal soundness boundary, so a plan-root
   `<plan>/guardrails/` is optional-additive. All folders share the ONE guardrail-file parser (a
   malformed file with no `catches:` is GR2027).
+- **Wave breakdown intent (SSOT §14.11, #385/#402):** `<plan>/<wave>/state/breakdown-intent.json` —
+  `{ version, declaredAt, tasks: [{ folder, purpose }] }` — the ordered decomposition `plan-breakdown`
+  declares **before** authoring that wave's task folders (SKILL.md §9.2a; reader
+  `Guardrails.Core/Loading/BreakdownIntent.cs`). `folder` is a **bare** folder name under that wave's
+  `tasks/`; entries carrying a path separator, blanks, and duplicates are dropped **silently**, and a
+  manifest left with no usable entry reads as ABSENT. **TRANSIENT** — gitignored
+  (`/wave-*/state/breakdown-intent.json`), outside every definition hash and `guardrails.baseline`,
+  cleared by `--fresh`, removed once the wave settles complete: **never commit it**. A declared folder
+  with no complete task folder (`task.json` + a resolved action) is **GR2063 `WaveBreakdownIncomplete`**
+  — a WARNING at `validate`, but the harness routes on the code and will not call the wave complete.
 
 ## `guardrails.json` — minimum to emit
 

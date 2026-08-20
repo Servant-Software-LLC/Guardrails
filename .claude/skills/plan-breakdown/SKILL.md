@@ -2917,6 +2917,53 @@ applies **inside each wave, unchanged**. What's *new* is the two wave-boundary f
     place a whole-suite `tests-pass` LOCAL check belongs (it runs on the fully-merged HEAD) — the exact
     role the flat plan's terminal `<plan>/guardrails/` folder plays.
 
+### 9.2a Declare the decomposition BEFORE authoring — `state/breakdown-intent.json` (#385/#402)
+
+**Waved plans only** — the harness reads this per WAVE, so a flat plan never gets one, and neither does a
+one-ahead **stub** wave (§9.5): a stub has no decomposition yet, and its manifest is written by the
+breakdown that later authors it. Inside each wave's Steps 1–8 pass, once that wave's task set is settled
+(end of Step 5) and **before you author its first task folder** (Step 6), write the wave's intent manifest:
+
+```jsonc
+// <plan>/<wave>/state/breakdown-intent.json  — TRANSIENT: gitignored, in no definition hash
+{
+  "version": 1,
+  "declaredAt": "2026-08-20T05:00:00Z",         // ISO-8601 UTC — NOW, not this literal
+  "tasks": [
+    { "folder": "01-author-tests-tiering-schema", "purpose": "failing tests for the tiering schema" },
+    { "folder": "02-implement-tiering-schema",    "purpose": "make them pass" }
+    // … EVERY task folder this wave intends to author, in order
+  ]
+}
+```
+
+**Why FIRST, not last.** Written before authoring, it is a statement of INTENT and the harness can
+compare it against what exists on disk. Written afterwards it is a summary — and a summary can never
+detect truncation, because a session that was cut off never reaches the line that writes it.
+
+**What it buys.** An interrupted breakdown that HAS a manifest keeps its valid prefix and **resumes**:
+11 of 14 authored folders survive and the next segment authors the other 3. With **no** manifest the
+cut-off wave is quarantined wholesale — all 14 gone, re-authored from scratch. This file is the whole
+difference between those two outcomes; it is not bookkeeping.
+
+Getting it right (the reader is `Guardrails.Core/Loading/BreakdownIntent.cs`; schema SSOT §14.11):
+
+- `folder` is a **bare folder name** under this wave's own `tasks/` — no `tasks/` prefix, no `/` or `\`.
+  Entries with a separator, blank entries, and duplicates are **silently dropped**, and a manifest left
+  with zero usable entries reads as ABSENT. A typo here costs the salvage without raising anything.
+- Declare the names you will actually author. A declared folder counts as authored only once its
+  `task.json` **and** its action file both exist, so it stays "owed" until Step 6 finishes it.
+- If the decomposition changes while you author (a Step 2 split you only see once you're writing),
+  update the manifest in the same step. Over-declaring raises **GR2063 `WaveBreakdownIncomplete`** — a
+  WARNING at `validate`, but the harness routes on the code and will not call the wave complete;
+  under-declaring silently drops the tail from the salvage.
+- **On a RESUME invocation** (the prompt names the folders already complete and the folders still owed)
+  the manifest is already this wave's declaration — do **not** rewrite it with just the remainder.
+  Author the owed folders; touch the manifest only if the true task set changed.
+- Do **not** commit it and never reference it from a guardrail: the harness gitignores
+  `/wave-*/state/breakdown-intent.json`, keeps it out of every definition hash, and removes it when the
+  wave settles complete. `--fresh` clears it, so a reset wave re-declares from scratch.
+
 ### 9.3 Wave-qualified identity, intra-wave `dependsOn`, and the state key
 
 - **`dependsOn` is INTRA-WAVE ONLY.** A task references siblings **within its own wave** by plain
@@ -3036,7 +3083,10 @@ is stubbed after it, and the run then completes at its terminal gate.
    re-invocation on the opt-out path — breaks down stage `K+1` **reading the integration worktree**: inspect the
    real files/signatures wave K produced there, so the wave's tasks and guardrails reference bytes that
    ACTUALLY exist. This removes the guesswork (no stale markers, no hedged claims) that the whole-plan-up-front
-   path can't avoid. Write the result into `wave-K+1-<slug>/tasks/` (+ its entry/exit gates). **Then restore
+   path can't avoid. **Declare the decomposition first (§9.2a):** write
+   `wave-K+1-<slug>/state/breakdown-intent.json` before the first task folder — this is the invocation where
+   truncation actually bites, and that manifest is what makes a cut-off breakdown resumable instead of a lost
+   wave. Write the result into `wave-K+1-<slug>/tasks/` (+ its entry/exit gates). **Then restore
    the one-ahead invariant:** if any planned stage beyond `K+1` remains in the plan of record, **create the
    next stub `wave-(K+2)-<slug>/`** (declared dir, empty `tasks/`, contiguous NN) so exactly one wave stays
    visible ahead — and **auto-seed its `brief.md`** exactly as step 1 does: populate it from **`wave-(K+2)`'s

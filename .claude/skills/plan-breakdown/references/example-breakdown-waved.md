@@ -52,6 +52,12 @@ waved-hello/
 Wave dirs match `^wave-([0-9]+)-[a-z0-9-]+$`, numbered contiguously (`01`, `02`); the numeric prefix
 drives the strict order. There is **no root `tasks/`** (a waved plan replaces it with wave subfolders).
 
+**Not in the tree above, because it is transient:** each wave's `state/breakdown-intent.json`, written
+**before** that wave's first task folder and gitignored, so it never lands in the committed example
+(SKILL.md §9.2a). Here `wave-01-scaffold`'s declares exactly `01-write-greet-script` +
+`02-write-config`, and `wave-02-greet`'s declares `01-generate-greeting` + `02-write-report`. It is what
+lets a breakdown that dies mid-wave keep the folders it already finished instead of losing the wave.
+
 ## Wave 1 (`wave-01-scaffold`) — two independent leaves + its two gates
 
 Run Steps 1–8 scoped to Stage 1. Two deliverables with no dependency on each other → **two parallel
@@ -141,7 +147,10 @@ numbering staying contiguous (GR2033), the diagram always showing **one** stub n
    *(Had the brief been removed, the run would instead honest-halt (exit 2, `NextWaveUnauthored`) at the same
    integration-worktree path, for a manual `/plan-breakdown` re-invocation.)*
 3. **What the fired breakdown does — author wave 2, then re-stub + re-seed wave 3.** Auto-fired by default (or
-   your manual `/plan-breakdown` on the opt-out path), it authors
+   your manual `/plan-breakdown` on the opt-out path), its **first act is
+   `wave-02-greet/state/breakdown-intent.json`** declaring `01-generate-greeting` + `02-write-report` (§9.2a) —
+   written before either folder exists, so a truncated auto-breakdown keeps what it finished and resumes
+   instead of losing the wave. It then authors
    `wave-02-greet/tasks/` **reading that integration worktree** — inspect the REAL `out/greet.ps1` signature
    and `out/config.json` shape wave 1 produced, so wave 2's tasks/guardrails reference bytes that actually
    exist (no stale line-numbers, no hedged architecture claims — #203). **Then, because Stage 3 remains,
