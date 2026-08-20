@@ -502,11 +502,29 @@ optional:
   baseline count".)
 - **Never assert an executed-test COUNT as an adequacy floor (#468).** `dotnet test` counts **theory data
   rows, not behaviours** — one `[Theory]` with six `[InlineData]` rows clears an "at least 6 executed"
-  floor while proving one behaviour, and raising the number does not fix it. Use a **behaviour manifest
-  over discovered test NAMES** instead (one clause per required behaviour, matched against
-  `--filter … --list-tests` output, which enumerates without running anything); it is a lower bound like
-  `covers-key-behaviors` and it **ratchets** as later waves land named tests. The #455 **zero-match
-  guard** (`>= 1` test executed) is NOT an adequacy floor and stays. (Catalogue → count-floor section.)
+  floor while proving one behaviour, and raising the number does not fix it. Use a **behaviour manifest**
+  instead: one clause per required behaviour, which **ratchets** as later waves land the behaviour. **The
+  predicate over the manifest is `observed FAILED on the stub tree, then observed PASSED after` — not
+  `discovered by name` (#375).** A `--list-tests` listing asks only *"does a test with this name exist?"*,
+  which a hollow body satisfies exactly as a comment satisfies a token floor; name-discovery is the
+  fallback only where there is no stub tree to be red against, and must be worded as a lower bound. The
+  #455 **zero-match guard** (`>= 1` test executed) is NOT an adequacy floor and stays. (Catalogue →
+  count-floor section and the per-test-red-census section.)
+- **A test-author task whose prompt ENUMERATES behaviours emits the red as a PER-TEST CENSUS, not a suite
+  exit code (#375).** `dotnet test --filter … exits non-zero` fires if **any** selected test fails, so a
+  hollow `Assert.True(true)` **passes** on the stub tree and hides behind its genuinely-failing siblings —
+  measured: a `covers-*` floor exited 0 over a security test file whose five invariants were pinned by
+  `Assert.NotNull` / `Assert.True(true)`. Same file (`02-tests-fail-on-stubs.ps1`), same `$filter`,
+  stronger predicate: **every enumerated behaviour bound to a PINNED test name and observed `Failed` in
+  the runner's own result file** (TRX for .NET — never stdout, #248), one accumulated message per unbound
+  behaviour (#179). This makes the `covers-key-behaviors` naming floor worth having; it does **not**
+  replace it. Two consequences you must honour while authoring: the `action.prompt.md` has to **pin the
+  test METHOD name for each behaviour** (the same prompt↔guardrail agreement #455 already demands for the
+  class name), and the report must state the census's boundary — an *invoking*-then-hollow test
+  (`var r = sut.Consume(x); Assert.NotNull(r);`) is red on stubs, green after, and **passes** it. **Never**
+  reach for a rejection-shaped source regex (`Assert\.Throws` / `Assert\.False`) instead: it false-**reds**
+  a correct `Assert.Equal(RejectedStale, r.Outcome)` and is satisfied by one tautological
+  `Assert.Throws<NotImplementedException>` line. (Catalogue → per-test red census; `stacks/dotnet.md §4.4`.)
 - 1–4 guardrails per task, **cheapest-first** filename order (`01-exists`,
   `02-builds`, `03-tests`, `04-review`).
 - Every guardrail file opens with `# catches: <the wrong implementation it catches>`.
@@ -1196,6 +1214,12 @@ upstream task that creates it:
     being green means a non-zero `dotnet test` now unambiguously means the tests **ran and
     FAILED** against the throwing stubs = TDD red). The implementation task fills real logic over
     the stubs (its scope TARGETS them; see below).
+    **If the prompt ENUMERATES behaviours, that second guardrail is the PER-TEST CENSUS (#375)** —
+    every enumerated behaviour bound to a pinned test method name and observed `Failed` in the
+    runner's own result file, because a suite-level non-zero exit lets a hollow `Assert.True(true)`
+    pass on the stub tree behind its genuinely-failing siblings. Same file, same `$filter`, stronger
+    predicate (catalogue → per-test red census; `stacks/dotnet.md §4.4`). Pin those method names in
+    the `action.prompt.md`, or no census can be written.
   - **Data model (enum/record/value type — no behavioral stub possible) → COLLAPSE by default.**
     The type declaration IS the implementation, so there is no stub-vs-real distinction. Default
     to a single task (define the type + assert `tests-pass`) and **state the reason explicitly**:
@@ -1913,7 +1937,15 @@ Per `references/schemas.md`, exactly:
    substituted by this breakdown's tests._`) when no in-process seam is faked. Add one line for each row
    whose proof landed **later than T\*** (name T\* and why it could not live there) and for each proof that
    **degraded to the #120(b) reflection-plus-contrast form** (name the constructor chain that forced it).
-   An **absent** ledger is a self-review finding — loop back to Step 4 and run the analysis. **Surface every
+   An **absent** ledger is a self-review finding — loop back to Step 4 and run the analysis. **Then, for
+   every task carrying a per-test red census (#375), the census line:** the enumerated behaviours, the
+   pinned test method name each is bound to, and — stated, never implied — **what the census does not
+   prove**: it proves each test is *coupled to the code path* (it fails when the implementation is
+   absent), not that its assertion is *correct*. An **invoking**-then-hollow test
+   (`var r = sut.Consume(x); Assert.NotNull(r);`) is red on stubs, green after, and **passes**. Closing
+   that needs mutation testing; until then the wrong-assertion residual is a human read, and on a
+   security-load-bearing task say so plainly rather than letting a green census read as "the tests are
+   right". **Surface every
    decision the human should confirm** — chief among them any test-framework or E2E-driver choice:
    state which was used and why (detected in repo / named in the plan / asked via
    `AskUserQuestion` / left as a needs-human halt). A wrong framework poisons every
@@ -3037,6 +3069,7 @@ authority for every path/signature the new wave references.
 - [ ] Every file-content guardrail is scoped to the one file the task owns (no project-tree greps).
 - [ ] Inserted test-author tasks carry the right TDD "red" for the type under test (#155): a BEHAVIORAL type → the task also writes minimal `NotImplementedException` stubs, its `writeScope` covers test + stub file(s), and its guardrails are `build-passes` + `tests-fail-on-stubs`; a DATA MODEL → collapsed to one task (reason stated) or, if split, `tests-fail-on-current-code` + a STRUCTURAL `[Fact]`/`[Theory]` covers-key-behaviors check. Implementation tasks declare a `writeScope` that EXCLUDES the test file but TARGETS the stub file(s) (TDD test-exclusion — replaces the captureHashes/restoreOnRetry/tests-untouched triad).
 - [ ] (#455) Every TASK-LEVEL test filter (`tests-pass` AND `tests-fail-on-stubs`, both halves of every TDD pair) names **that pair's OWN test class** — `--filter "Category=<PlanTrait>&FullyQualifiedName~<ThisTaskPairsTestClass>"` — and NO task-level guardrail carries a bare plan-wide trait. The plan-wide trait appears in exactly ONE place: the baseline preflight's `!=` exclusion. The class substring is DISCRIMINATING (checked against every other test class the plan authors — `~Dispatch` also selects `DispatchRouterTests`; namespace-qualify when not), and every narrowed filter carries a **zero-match guard that can actually fire**: keyed on the EXECUTED count (`Passed:` + `Failed:`, NOT `Total:` — which counts `[Skip]`ped tests), with `$env:DOTNET_CLI_UI_LANGUAGE = 'en'` pinned first (the summary line is LOCALIZED — `gesamt:` on a German box), never on the "no tests matched" string (verbosity-dependent, so it never fires — #248), and ORDERED by polarity (forward: exit-code check first, so a never-ran test host is not misreported as a bad filter; inverse: guard first, so a crash is not certified as TDD red). The test-author task's `action.prompt.md` **PINS the exact test file + class name** the filter uses — a prompt that leaves the class name to the agent makes a correct filter unwritable and pushes the author back onto the plan-wide trait. `stacks/dotnet.md §4.3` (two classes → parenthesised `|` alternation; no trait → the FQN term alone; a collapsed data-model task still names its class).
+- [ ] (#375) Every test-author task whose action prompt **enumerates behaviours** and has a **stub tree** emits its red as the **per-test census**, not a suite exit code: every enumerated behaviour bound to a **pinned test METHOD name** (pinned in the prompt, not left to the agent — **`validate` does NOT check this**: measured, GR2026 is blind to the census's name table, so read the prompt and the manifest side by side yourself) and observed **`Failed`** in the **runner's own result file** (TRX; never stdout, never `--list-tests` name discovery — a hollow body satisfies both), with **one accumulated message per unbound behaviour** and a **precondition early exit** that diagnoses a missing result file as *"the run did not happen"* rather than as unbound behaviours. `covers-key-behaviors` is emitted **as well** (naming floor), never instead. No rejection-shaped source regex (`Assert\.Throws` / `Assert\.False`) anywhere — it false-reds a correct `Assert.Equal(RejectedStale, r.Outcome)` and one tautological line satisfies it. The report states the boundary: an **invoking**-then-hollow test passes the census. `stacks/dotnet.md §4.4`.
 - [ ] (#154) Every generated test-author `action.prompt.md` carries a **Scope boundary (harness-enforced)** paragraph after the target-file-path statement: it names the exact allowed path(s) (test + stub), states the harness's post-action `git diff` membership check rejects out-of-scope edits, states an out-of-scope edit fails the task and consumes a retry, and redirects an upstream missing-symbol compile error to `{"needsHuman": …}` rather than editing that file.
 - [ ] A test-author behavior that needs a production injection seam (a fake/double injected into a type with no injection point) → an upstream `add-<component>-<seam>-seam` task (pure structural production change, build + a structural seam-exists check, TDD-exempt) the test-author task `dependsOn`; the seam was NOT left to the test task to invent or to its `needsHuman` escape (#84).
 - [ ] A task that fans out over an external/unknown-size set (crawl, recursive glob, API listing) → modeled as a scripted-ETL `script` action (volume off the turn budget), NOT an agent-per-item loop; discover-size-first probe added where the count is unknown; bulk-capture split from bounded per-item curation (#100).

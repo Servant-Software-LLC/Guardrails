@@ -36,7 +36,7 @@ measured authoring defect of #468.
 | 5 | **lint/format clean** | script | The repo already has a configured linter (never introduce one ad hoc) | Style/usage violations the repo's standards forbid |
 | 6 | **schema-validates** | script | Task emits structured data and a schema exists (or you inserted a schema-author task) | Structurally invalid output |
 | 7 | **port/endpoint-answers** | script (probe + curl, owns process start/stop, with timeout) | Task delivers a running service behavior | Service that builds but doesn't actually serve |
-| 8 | **build-passes + tests-fail-on-stubs** (behavioral) · **tests-fail-on-current-code** (data-model) | script | THE distinctive one — the TDD "red" signal for inserted test-author tasks. The **form depends on the type under test** — see the stub-based TDD section below (it is the SSOT for choosing); its **filter must select this pair's OWN tests + guard the zero match**, or the red proof degrades into merge-order luck (#455) | Tautological tests that pass against a stub and verify nothing |
+| 8 | **build-passes + tests-fail-on-stubs** (behavioral) · **tests-fail-on-current-code** (data-model) | script | THE distinctive one — the TDD "red" signal for inserted test-author tasks. The **form depends on the type under test** — see the stub-based TDD section below (it is the SSOT for choosing); its **filter must select this pair's OWN tests + guard the zero match**, or the red proof degrades into merge-order luck (#455). Where the prompt **enumerates behaviours**, emit the red as the **per-test census** (every manifested behaviour observed `Failed`), not a suite exit — a suite red hides a hollow test behind its failing siblings (#375) | Tautological tests that pass against a stub and verify nothing |
 
 > **The TDD "red" must COMPILE and FAIL, never merely exit non-zero.** A non-compiling
 > test file exits `dotnet test` non-zero *identically* to a compiling-but-failing one, so a
@@ -136,9 +136,10 @@ restated.
 | 8 | **name-locking a free choice** | a required datum's token alternation rejected a correct implementation that used **the plan's own phrasing** for the concept | *(covered)* the PRECEDENT anti-pattern — accept the artifact's form, or both. A free naming choice is not an invariant |
 | 9 | **vacuous token** | a `[Mm]odel` coverage token was satisfied by the test file's own `namespace …ModelTiering;`; a `[Rr]unner` token by the ambient type `PromptRunnerConfig` | the **ambient-vocabulary test**: before pinning a coverage token, grep the target file's namespace, usings, and surrounding type names for it. A token already present before the task runs discriminates nothing |
 | 10 | **one-line omnibus evasion** | `var unused = new { r.Costly, r.Climbed, r.NoRoute };` — ONE line of **real code** satisfies every token of a multi-token coverage check, so comment-stripping is irrelevant | *(extends Probe B ops 1/5)* require the tokens in **distinct constructs** the outcome implies (a `[Fact]` per behaviour, a dotted call per collaborator), never N tokens anywhere in one file |
-| 11 | **count floor over an executed test run** | `dotnet test` counts **theory data rows**, not methods — one `[Theory]` with six `[InlineData]` rows cleared an *"at least 6 executed"* floor while proving one behaviour | never a count. Use the behaviour manifest over discovered test NAMES (below) |
+| 11 | **count floor over an executed test run** | `dotnet test` counts **theory data rows**, not methods — one `[Theory]` with six `[InlineData]` rows cleared an *"at least 6 executed"* floor while proving one behaviour | never a count. Use the behaviour manifest (below) — read with the **per-test red census** predicate (observed `Failed`, then `Passed`), not with name discovery, which entry 14 defeats |
 | 12 | **declaration-is-not-behaviour** | the 14-clause manifest, 10/14 green against declarations with zero wiring (above) | rung 1 — a test |
 | 13 | **control characters from the authoring pipeline** | a clause containing literal `0x08` bytes (a `\b` collapsed by the authoring transport) could never match, and a **negative-only** smoke test could not reveal it — everything was failing anyway | never author a regex-bearing guardrail through a shell heredoc; and run the **VALID** half of the sample pair, which is the only half that exposes a clause that can never match |
+| 14 | **vacuous test body** | a test NAMED for the behaviour whose body asserts a **tautology** (`Assert.True(true)`, `Assert.NotNull` on a value the test itself constructed, an assertion that never invokes the subject). It cleared the `covers-*` token floor **and** sat green on the stub tree behind its genuinely-failing siblings, so the suite-level red certified the file honest — five security invariants pinned by nothing (#375) | the **per-test red census** — every manifested behaviour's test observed **`Failed`** in the runner's own result file, never merely discovered by name. **Never** a rejection-shaped source regex (`Assert\.Throws`/`Assert\.False`): it false-**reds** a correct `Assert.Equal(RejectedStale, r.Outcome)` and is satisfied in one tautological line — taxonomy 1/9/10 all apply to it. Probe B op 21 |
 
 ### The two-variable rule — one strip, two levels, no raw matching
 
@@ -394,16 +395,37 @@ thing**: the runner counts **theory data rows**, not behaviours, so **one** `[Th
 `[InlineData]` rows clears a 6-test floor while proving a single behaviour. Raising the number does not
 fix it — six rows become twelve for free.
 
-**Use a behaviour MANIFEST over discovered test NAMES.** One clause per required behaviour, matched
-against the runner's **test-name listing** (`dotnet test <proj> --filter "<the filter>" --list-tests`,
-which enumerates without running anything — the same mechanism the #455 probe uses):
+**Use a behaviour MANIFEST — one clause per required behaviour, never a number.** The manifest is the
+right data structure: it names *behaviours*, so no amount of data-row multiplication clears it, and it
+**ratchets** — a later wave lands the behaviour and its clause goes green with nobody editing a script,
+which is mechanism instead of discipline.
 
-- Each clause names **one** behaviour and matches a **pinned, discriminating** test name — a name a
-  correct suite would carry, not a substring an unrelated test satisfies (taxonomy 9).
-- It **ratchets**: a later wave lands a named test and its clause goes green with nobody editing a
-  script. That is mechanism instead of discipline, which is the point.
-- It is still a **lower bound** — a named test may assert nothing. Say so in `# catches:`; the residual
-  is `covers-key-behaviors`' residual, and it is human/judge work.
+**The PREDICATE over the manifest is what decides whether it proves anything, and the obvious one is too
+weak (#375).** Matching each clause against the runner's **test-name listing**
+(`dotnet test <proj> --filter "<the filter>" --list-tests`, which enumerates without running anything)
+asks *"does a test with this name exist?"* — and a **hollow body satisfies that exactly as a comment
+satisfies a token floor**. Name-discovery relocates the naming problem one abstraction up; it does not
+close it. Measured: a test file naming every wire token of a security matrix, with `Assert.NotNull` /
+`Assert.True(true)` bodies, cleared its floor. **#468 proposal 4 chose the right data structure and the
+wrong predicate over it.**
+
+> **The predicate is `observed FAILED on the stub tree, then observed PASSED after implementation`** —
+> read from the **runner's own per-test result file**, never from a name listing and never from stdout
+> (#248). That is the **per-test red census**; its rule, its two-sided pair, and its honest boundary are
+> §"The per-test red census — every manifested behaviour's test observed FAILED, not merely discovered".
+> The manifest is the shared artifact; the census is what reads it. Adopting the census is not a
+> competing proposal — it is proposal 4 finished.
+
+The clause-authoring rules are the same under either predicate:
+
+- Each clause names **one** behaviour and pins a **discriminating** test name — a name a correct suite
+  would carry, not a substring an unrelated test satisfies (taxonomy 9).
+- **One message per unbound behaviour** (#179 / the accumulator rule), so one attempt learns every gap
+  rather than the first one.
+- **Name-discovery ALONE stays a lower bound.** Where there is genuinely no stub tree to be red against
+  (see the census's "where it does not apply"), the `--list-tests` form is what you have — then say so in
+  `# catches:` and do **not** word it as proof the behaviour is tested. A discovered test may assert
+  nothing.
 
 The **zero-match guard** (#455) is the one legitimate use of a count, and it is not an adequacy floor:
 it asserts `>= 1` test **executed**, which proves the filter selected something rather than proving the
@@ -747,6 +769,11 @@ Replace the single compile-coupled guardrail with **TWO** guardrails (cheapest-f
    build now **succeeds** (guardrail 1 proved it), a non-zero exit unambiguously means **the tests
    ran and FAILED** — the stubs throw `NotImplementedException`, so the behavior is genuinely absent.
    That is TDD red.
+   **When the action prompt ENUMERATES behaviours, the suite exit is not enough — emit the per-test
+   red census instead** (§"The per-test red census"): non-zero fires if *any* test fails, so a hollow
+   `Assert.True(true)` passes on the stub tree and hides behind its genuinely-failing siblings (#375).
+   Same guardrail, same filter, stronger predicate: every manifested behaviour observed `Failed` in the
+   runner's own result file.
 
 The **implementation task's `writeScope` still EXCLUDES the test file** (the deterministic
 test-protection, SSOT §3.4 — unchanged) but now **TARGETS the stub file(s)**: it fills real logic
@@ -855,6 +882,138 @@ can pass purely because it branched before a sibling's red tests reached its bas
 
 The exact filter syntax, the measured runner-output table, the count-based guard expression, and the two
 canonical emitted scripts are the stack file's job: `stacks/dotnet.md §4.3`.
+
+## The per-test red census — every manifested behaviour's test observed FAILED, not merely discovered (#375)
+
+**This is the form of `tests-fail-on-stubs` you emit when the test-author task's prompt enumerates
+behaviours.** It is not a new guardrail beside the stub-based TDD pair (above) and not new vocabulary: it
+is that pair's second guardrail with its **predicate strengthened from suite-exit to per-test outcome**.
+
+**The defect it closes, measured.** A suite-level red is `dotnet test --filter … exits non-zero`, and
+non-zero fires if **ANY** test in the filter fails. So a hollow test — `Assert.True(true)`,
+`Assert.NotNull` on a value the test itself constructed — **passes on the stub tree** and hides behind its
+genuinely-failing siblings, while the red gate reports the file honest. On a security wave a
+`covers-*` floor exited **0** against a file that named every wire token with exactly those bodies; the
+five load-bearing invariants were pinned by nothing. This is #479's pathology one level down — *a
+pre-satisfied item hides behind its siblings' failures* — and #479's fix was **per-item, not aggregate**.
+The mechanism needed is therefore **not new machinery**: it is the existing red gate evaluated at the
+granularity the claim was always made at.
+
+### The rule
+
+> **Suite form (weaker — for a task with no enumerated behaviours):** `dotnet test --filter <Class>`
+> exits non-zero.
+>
+> **Per-test red census (this section):** for **every** behaviour in the task's manifest, the test bound
+> to it is observed with outcome **`Failed`** in the **runner's own per-test result file**. A manifested
+> behaviour whose test is passing, skipped, or **absent** is a finding, **named individually**. A test
+> outside the manifest is not the census's business.
+
+**Assert the outcome IS `Failed`; never assert it is not-passing.** Result files spell the non-red
+outcomes in ways you will not guess — TRX writes a skipped test as **`NotExecuted`**, not `Skipped`, and
+also carries `Timeout`, `Aborted`, `Error`, `Inconclusive`. A clause enumerating the bad outcomes lets
+every spelling it forgot through, and the one it forgets first is the one an agent reaches for
+(`[Fact(Skip="…")]`). The positive form has no such list to get wrong.
+
+The **second side is already shipped**: the implementation task's `specific-tests-pass` (#4) requires the
+same names observed **`Passed`** after implementation. Two trees, per test, both sides — the same
+`$filter` and the same name list copied verbatim between the pair's halves, exactly as #455 requires.
+
+**Read the runner's own result file, never stdout** (#248) and never a name listing. Per-test outcomes
+are a structured artifact the runner writes (TRX for .NET); scraping `[FAIL]` lines out of console output
+re-introduces every verbosity and localization trap #455 measured. The .NET realization —
+which result file, how to select it, and the emitted script — is `stacks/dotnet.md §4.4`.
+
+### What it kills, exactly
+
+| shape on the stub tree | runner records | census |
+|---|---|---|
+| `Assert.True(true)` | `Passed` | **RED — caught** |
+| `Assert.NotNull(sut)` where `sut` is merely constructed | `Passed` | **RED — caught** |
+| a comment / string literal naming the behaviour, no test | absent | **RED — caught** |
+| `[Fact(Skip="…")]` named for the behaviour | skipped (**`NotExecuted`** in TRX) | **RED — caught** |
+| one `[Theory]` with N rows standing in for N behaviours | one name for N entries | **RED — caught** (N−1 unbound) |
+| a genuine test that drives the stub | throws → `Failed` | green — correct |
+
+The measured dogfood file sits **entirely inside the caught column, and not by luck**: those bodies are
+hollow *because they never invoke the subject*, and never invoking the subject is precisely what makes
+them pass against a throwing stub. The census's power comes from that coincidence being structural.
+
+### The honest boundary — say it here, or the next author will believe it proves more than it does
+
+A test that **invokes** the subject and then asserts something hollow:
+
+```csharp
+var result = sut.Consume(staleAnswer);   // the stub throws -> the test FAILS on the stub tree
+Assert.NotNull(result);                   // ...and asserts nothing after implementation
+```
+
+is red on stubs, green after, and **PASSES the census**. State this loudly rather than footnoting it:
+**the census proves the test is coupled to the code path; it does not prove the assertion is correct.**
+That is strictly weaker than *"the assertions are right"* and strictly stronger than *"the test exists
+and is named right"* — and the second gap is the one that was measured. Closing the invoking-hollow gap
+needs a second mutant beyond the null implementation, i.e. **real mutation testing**, which is a deferred
+v2 bet, not something to approximate with a regex over test source.
+
+What makes this floor different from the ones it replaces is the **polarity of the residual gaming**: to
+defeat a token floor an agent writes a comment (zero coupling, zero cost); to defeat the census it must
+write a test that actually invokes the subject, compiles against the real API, fails against the null
+implementation and passes against the real one. Still a bad test — but a bad test *wired to the thing*,
+and visible to a reader.
+
+### Its aiming surface, and why mis-aiming is safe
+
+The census pins **test names**, so the same #455 prerequisite is non-optional and one step sharper: **the
+action prompt must PIN the test method name for each enumerated behaviour**, and the census's manifest
+uses those exact names. A prompt that says "author tests for these five behaviours" and leaves the method
+names to the agent makes a correct census unwritable.
+
+Mis-aiming is nonetheless in a different safety class from a mis-aimed source regex: **a census entry
+that matches no test goes RED**, costs one attempt, and its message names the missing binding. A
+mis-aimed source regex goes GREEN on a comment *and* red on correct code. A gate whose mis-aiming can
+only cost time is not the same as a gate whose mis-aiming can certify a lie.
+
+### Shape rules the census inherits (all non-optional)
+
+- **Accumulate, do not early-exit** — one message per unbound behaviour, each distinguishable, so a
+  single attempt learns every gap (#179 priced per attempt; the accumulator rule).
+- **One legitimate precondition early-exit: no result file.** If the runner wrote no result file the run
+  did not happen — fail with *that* diagnosis. Do **not** let it fall through into "every behaviour is
+  unbound", which is a confident wrong message pointing at the test file, the one artifact the retry
+  agent is allowed to edit (the #455 misdiagnosis rule, applied here).
+- **Zero-match is subsumed but not free** (#455): a manifest entry with no matching test is already a
+  named finding, which is the guard — but keep a "did anything run at all" precondition, keyed on the
+  **count of result records in the file**, never on a verbosity-dependent error string (#248).
+  **Reading the result file makes both summary-line traps inapplicable**, which is a reason to prefer it
+  beyond per-test granularity: the file's outcome values are schema tokens, so there is no localized
+  `gesamt:` to invert the guard and no verbosity flag that can suppress them. Do not port the
+  summary-line `Passed:` + `Failed:` regex into a census that already reads the file.
+- **No `-v q`, no re-emit.** The census's failure output *is* the per-behaviour list; there is no
+  assertion detail to surface, because on the stub tree the expected exception is the point (#179's
+  re-emit applies to checks where exit 0 is the pass — `stacks/dotnet.md §4.2`).
+- **The census script's own exit code is FORWARD** — 0 when every manifested behaviour is bound to an
+  observed `Failed` test. Do **not** key it on the test run's exit code: a suite that exits non-zero is
+  exactly the condition that hid the defect.
+
+### Where it does NOT apply, and what to use instead
+
+- **Data-model waves.** A pure data model has no behavioural stub (stub-based TDD, above), so there is no
+  red side and the census is inert. The right tool for a data-model invariant is the **negative
+  assertion** (archetype #11) — *"the answer-kind enum contains no `review-attested` member"* is a source
+  fact with no runtime proxy, which is the legitimate carve-out for a source-shape check (#468).
+- **Tests authored BEFORE the run** and reviewed with the plan. The defect is *run-authored* tests; a
+  pre-existing, human-read test file is out of scope, and its suite-form red is fine.
+- **No enumerated behaviours.** Nothing to manifest — emit the suite form and say so.
+
+### Relationship to the drive-the-real-seam assertion requirement (#382) — reuse, not a parallel vocabulary
+
+The real-seam archetype already carries the **assertion requirement**: *the test must assert an effect
+only the production implementation emits; a recording double / call count / `Verify` IS the
+passing-but-blind shape.* The census is **the same claim made mechanically** — that requirement's
+weakest mechanically-decidable half, *the test can fail when the implementation is absent*, carried by an
+exit code instead of by prose plus review. A reader who knows the real-seam rule learns this in one
+sentence: **the assertion requirement, checked per test against the null implementation.** `/guardrails-review`
+Probe B operator 21 is the reading half, exactly as operator 20 is for the real-seam half.
 
 ## Baseline-green / start-from-green (preflight) — verify a CURRENTLY-GREEN positive precondition holds BEFORE any work runs (#181)
 
@@ -2147,8 +2306,30 @@ exit 0
 same class as the corpus substance floors (#99): a distinctive term *present in the file* proves a
 test *names* the behavior, not that it *asserts* it correctly — a term in a comment or an unused
 variable still matches. It is a cheap guard against the "one stub for five behaviors" failure, not a
-faithfulness check; the residual (does the test actually exercise the behavior?) is the
-`tests-fail-on-current-code` red plus human review. The breakdown report (Step 7) should **list which
+faithfulness check.
+
+**The residual, CORRECTED — the old mitigation sentence was false (#375).** This section used to name
+the mitigation for that residual as *"the `tests-fail-on-current-code` red plus human review."*
+**That sentence was false as written, and #375 is the measurement of its falsity.** The red gate is
+`dotnet test --filter … exits non-zero`, and non-zero fires if **ANY** test in the filter fails — so a
+hollow `Assert.True(true)` **passes** on the pre-implementation tree and hides behind its
+genuinely-failing siblings. A suite-level red proves *the suite as a whole is not yet satisfied*; it
+proves **nothing about any individual test in it**. Measured on a security wave: `covers-security-matrix.ps1`
+exited **0** against a test file that merely *named* every wire token (`stale`, `replayed`, `runId`,
+`review-attested`, `proceed-unreviewed`) with `Assert.NotNull` / `Assert.True(true)` bodies, sitting
+green beside a suite red. That is #479's own headline pathology one level down — *a pre-satisfied item
+hides behind its siblings' failures* — and #479's fix was **per-item, not aggregate**. So is this one.
+
+**What replaces it: the per-test red census** (§"The per-test red census — every manifested behaviour's
+test observed FAILED, not merely discovered"). Every behaviour in the task's manifest must be observed
+with outcome **`Failed`** in the **runner's own per-test result file** on the stub tree; the shipped
+`specific-tests-pass` is the second side. Emit the census on the same test-author task whenever this
+archetype's behaviour list is the thing being trusted downstream — it is not a replacement for
+`covers-key-behaviors` but the gate that makes its lower bound worth having. **Human review remains the
+residual only for the WRONG-assertion case** — a test that invokes the subject and asserts the *wrong*
+invariant — never for the vacuous case, which is now deterministic.
+
+The breakdown report (Step 7) should **list which
 enumerated behaviors were NOT covered** by the key-behaviors guardrail, so the human reviewer can
 decide whether to add checks. The .NET realization is `stacks/dotnet.md §17`.
 <!-- END ADDED SECTION #75 -->
@@ -2497,6 +2678,9 @@ What is the task's primary deliverable?
 │                                     guardrails are build-passes (3) + tests-fail-on-stubs (8). The
 │                                     IMPLEMENTATION task's writeScope EXCLUDES the test file but
 │                                     TARGETS the stub file(s) (fills logic over the skeletons).
+│                                     If the prompt ENUMERATES behaviours, emit the red as the
+│                                     PER-TEST CENSUS (#375) — every manifested behaviour observed
+│                                     Failed in the runner's result file, not a suite exit code.
 │                                   • DATA MODEL (enum/record/value type — no behavioral stub) →
 │                                     COLLAPSE the split into one define-type-and-assert-tests-pass
 │                                     task; state "data model — no behavioral stub possible". If you
@@ -2568,6 +2752,12 @@ What is the task's primary deliverable?
 │    encode                        generic words), scoped to the one test file. LOWER BOUND, not a
 │                                 faithfulness check; report which behaviors went unchecked. See the
 │                                 covers-key-behaviors section + stacks/dotnet.md §17
+│                               AND (behavioral type, stub tree present) emit the red as the PER-TEST
+│                                 CENSUS (#375): every enumerated behaviour bound to a PINNED test
+│                                 name and observed Failed in the runner's own result file. The
+│                                 covers-* floor alone is naming-only — a hollow Assert.True(true)
+│                                 clears it and hides behind its failing siblings in a suite red.
+│                                 See the per-test-red-census section + stacks/dotnet.md §4.4
 ├── "Task A must call          → method-call anchoring (#76): TWO sequential checks — reference the
 │    B.Method()" on a specific    TYPE (rules out a local same-named stub) AND the dotted call
 │    type in another project      (\.Method\s*\(, rules out comments + standalone definitions). NOT a
@@ -2751,11 +2941,21 @@ should fail before an expensive test run or a paid judge ever starts.
 - **Executed-test COUNT as an adequacy floor** (#468): a guardrail asserting *"at least N tests
   executed"* as a proxy for coverage. The runner counts **theory data rows, not behaviours** — one
   `[Theory]` with six `[InlineData]` rows clears a 6-test floor while proving one behaviour, and raising
-  N does not fix it. Fix: a **behaviour manifest over discovered test NAMES** (one clause per required
-  behaviour, matched against `--list-tests` output) — it is a lower bound like `covers-key-behaviors`,
-  and it **ratchets** as later waves land named tests. Not to be confused with the #455 **zero-match
+  N does not fix it. Fix: a **behaviour manifest**, one clause per required behaviour — and read the
+  manifest with the **per-test red census** predicate (*observed `Failed` on the stub tree, then observed
+  `Passed` after*), not with name discovery: `--list-tests` asks only *"does a test with this name
+  exist?"*, which a hollow body satisfies exactly as a comment satisfies a token floor (#375). The
+  manifest **ratchets** either way. Not to be confused with the #455 **zero-match
   guard**, which asserts `>= 1` test executed to prove the filter selected something; that count is
   legitimate and stays. See the count-floor section above.
+- **Vacuous test body — a suite-level red certifying a hollow test** (#375): a test named for the
+  behaviour whose body asserts a tautology **passes** on the stub tree and hides behind its
+  genuinely-failing siblings, so `tests-fail-on-stubs` (a *suite* exit code) reports the file honest and
+  the `covers-*` token floor reports it covered. Measured on a security wave: five load-bearing
+  invariants pinned by `Assert.NotNull` / `Assert.True(true)`. Fix: the **per-test red census** — every
+  manifested behaviour observed `Failed` in the runner's own result file. **Not** a rejection-shaped
+  source regex, which false-reds a correct `Assert.Equal(RejectedStale, r.Outcome)` and is satisfied by
+  one tautological `Assert.Throws<NotImplementedException>` line. See the per-test-red-census section.
 - **The 13 measured source-shape failure shapes** (#468): a named battery — declaration-satisfies-call,
   truncating body extraction, case-mismatch with the language, inconsistent stripping across siblings,
   raw-vs-stripped inconsistency inside one script, modifier-order fragility, under-inclusive negation,

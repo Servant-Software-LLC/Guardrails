@@ -771,6 +771,20 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   present ≠ the behavior asserted) and report which enumerated behaviors went unchecked. (Catalogue →
   covers-key-behaviors; `stacks/dotnet.md §17`.) WEAK→BLOCKER depending on how load-bearing the
   unverified behaviors are (it is the coverage-gap probe, sharpened for enumerated lists).
+- **Enumerated behaviors pinned only by NAMES — no per-test red census (#375)**: the task above, one
+  level down. It now *has* a `covers-key-behaviors` floor (or a manifest over `--list-tests`), and both
+  are **naming** lower bounds: a test named for the behaviour with an `Assert.True(true)` body satisfies
+  them. Its red guardrail does not catch that either, because `tests-fail-on-stubs` is a **suite** exit
+  code — non-zero fires if *any* selected test fails, so the hollow test **passes on the stub tree and
+  hides behind its genuinely-failing siblings**. Measured on a security wave: `covers-security-matrix.ps1`
+  exited 0 over a file naming every wire token with hollow bodies, and five load-bearing invariants were
+  pinned by nothing. This matters most where the review **cannot see the tests at all** — the JIT flow
+  authors them at run time. Fix: the **per-test red census** — every enumerated behaviour bound to a
+  pinned test method name and observed **`Failed`** in the runner's own result file (catalogue → the
+  per-test red census; `stacks/dotnet.md §4.4`). Probe B **operator 21** (§2b) is the mechanical half:
+  write the hollow sample and run the guardrail against it. **BLOCKER** when the tests are run-authored
+  and the invariants are security- or safety-load-bearing; WEAK otherwise. Never propose a
+  rejection-shaped source regex as the fix — §2b says why in three lines.
 - **Name-convention seam unverified (#96)**: task A produces artifacts a consumer (task B / a runtime
   component) resolves by a **derived or mapped name** (url→embedded resource, step id→filename, key→file,
   route→handler, message-type→schema) — and `file-exists`/`file-contains` on A plus content checks on B
@@ -1256,10 +1270,14 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
 - **Executed-test COUNT used as an adequacy floor (#468)**: a guardrail asserting *"at least N tests
   executed"* as a coverage proxy. The runner counts **theory data rows, not behaviours** — one `[Theory]`
   with N `[InlineData]` rows clears it while proving one behaviour, and raising N does not fix it. Fix: a
-  **behaviour manifest over discovered test NAMES** (one clause per required behaviour against
-  `--filter … --list-tests` output), which is a lower bound and **ratchets** as later waves land named
-  tests. **Not** the #455 zero-match guard (`>= 1` test executed), which proves the filter selected
-  something and is legitimate — do not flag that. BLOCKER (it certifies adequacy it cannot certify).
+  **behaviour manifest** — one clause per required behaviour, which **ratchets** as later waves land the
+  behaviour. **Recommend the census predicate, not name discovery (#375):** each manifested behaviour
+  *observed `Failed`* on the stub tree, then *observed `Passed`* after, read from the runner's own result
+  file. A manifest over `--filter … --list-tests` output asks only *"does a test with this name exist?"*,
+  which a hollow body satisfies exactly as a comment satisfies a token floor — recommend it only where
+  there is no stub tree, and then name it a lower bound. **Not** the #455 zero-match guard (`>= 1` test
+  executed), which proves the filter selected something and is legitimate — do not flag that. BLOCKER (it
+  certifies adequacy it cannot certify).
 <!-- END ADDED PROBES #468 -->
 
 ### 2b. EXECUTE the guardrails — the phase that catches what reading cannot (#479)
@@ -1395,18 +1413,20 @@ inventive you feel that day. Work down it:
 | 16 | add or drop a **modifier** before the declaration (`sealed record` vs `record`, `async`, `partial`) | the part the language FIXES — the declaration keyword through the name (#468, generalising #112) |
 | 17 | write the **banned** thing in a form the ban never enumerated (non-defaulted, nullable, `async`, an options object) | banning the CONSTRUCT — the enum member, the type position, the destination — not one spelling (#468) |
 | 18 | satisfy **every** token of a multi-token coverage check with ONE line of real code (`var unused = new { r.A, r.B, r.C };`) | distinct constructs the outcome implies (a `[Fact]` per behaviour, a dotted call per collaborator) — comment-stripping is irrelevant here (#468) |
-| 19 | clear a *"≥ N tests executed"* floor with **one `[Theory]` and N `[InlineData]` rows** | a behaviour manifest over discovered test NAMES; never a count (#468) |
+| 19 | clear a *"≥ N tests executed"* floor with **one `[Theory]` and N `[InlineData]` rows** | a behaviour manifest, never a count (#468) — read with the **census** predicate (observed `Failed`, then `Passed`), since name discovery falls to operator 21 (#375) |
 | 20 | satisfy a **real-seam / composition-root `--filter`** with a test that **constructs the FAKE** — same class, same `…RealSeam…` name, a substituted seam | the test asserting an effect **only the production implementation emits** (a stream-log FILE on disk, a journal `blocker-retried` DECISION), never merely that the collaborator was called (#382) |
+| 21 | satisfy a **`covers-*` token floor or a name manifest** with a test **NAMED** for the behaviour whose body is a **tautology** — `Assert.True(true)`, `Assert.NotNull` on a value the test itself constructed, any assertion that **never invokes the subject** | the **per-test red census** — each manifested behaviour's test observed **`Failed`** in the runner's own result file on the stub tree, never merely discovered by name (#375). **Never** a rejection-shaped source regex: a correct `Assert.Equal(RejectedStale, r.Outcome)` has none of those tokens |
 
 Three patterns generalise and are worth applying before the table: **anchor on a USE, not a mention**
 (kills 1, 6, 9, 10, 11), **anchor on the DESTINATION, not the value** (kills 7 and 8), and **anchor on
 what the LANGUAGE fixes, not on what the author may freely vary** (kills 14, 15, 16 — case-sensitivity,
 brace style, modifier order).
 
-**Operator 20 is outside all three patterns, and it is the only operator that can be INAPPLICABLE
-(#382).** Outside, because 1–19 all ask *what TEXT satisfies the clause* while 20 asks *which OBJECT the
-test constructs* — anchoring on a use, a destination, or what the language fixes does nothing against it,
-which is why nothing already in the table can game a real-seam guardrail. The mutation is literal: in the
+**Operators 20 and 21 are outside all three patterns, and 20 is the only operator that can be
+INAPPLICABLE (#382).** Outside, because 1–19 all ask *what TEXT satisfies the clause*, while 20 asks
+*which OBJECT the test constructs* and 21 asks *whether the test BODY can fail at all* — anchoring on a
+use, a destination, or what the language fixes does nothing against either, which is why nothing already
+in the table can game a real-seam guardrail or a hollow-bodied test. The mutation is literal: in the
 test the guardrail's `--filter` selects, swap the real seam out of the component's constructor for the fake
 its sibling unit test already uses, keep the class and method names, re-run the filter. **GREEN means the
 filter is selecting a NAME, not a behaviour** — the guardrail is the finding (BLOCKER on a
@@ -1421,6 +1441,45 @@ passed.** A probe that reports "passed" when it could not execute is the exact f
 remove, and it is worse than no probe because it consumes the doubt that would otherwise drive a read. The
 reporting rule above (name the probes you skipped) already covers it; Step 6 carries the line, and
 "Probe B applied" must not silently absorb an operator that never ran.
+
+**Operator 21 is the one you MANUFACTURE, and that is why it works on a greenfield review (#375).**
+Where 20 asks *which OBJECT the test constructs*, 21 asks *whether the test body can FAIL at all*. It is
+aimed at the artifact this review cannot see: in the JIT flow the **tests are authored at run time**, so
+the assertions whose correctness matters most do not exist when you read the folder. Operator 20 needs
+the test to already exist and is therefore INAPPLICABLE on a first review; **21 has the opposite
+posture — you write the mutant yourself.** Take the task's enumerated behaviours, author a sample test
+file that *names* every one of them with `Assert.True(true)` / `Assert.NotNull` bodies that never touch
+the subject, and **run the task's `covers-*` guardrail against it**. That is exactly the execution that
+produced #375's evidence: on a security wave, `covers-security-matrix.ps1` exited **0** against a file
+naming every wire token with hollow bodies, and the five load-bearing invariants were pinned by nothing.
+
+**GREEN means the floor is a naming lower bound, and the fix is the per-test red census** — every
+manifested behaviour observed `Failed` in the runner's own result file on the stub tree (catalogue →
+"The per-test red census"; `stacks/dotnet.md §4.4`). **BLOCKER** when the task's tests are authored at
+run time *and* pin a security- or safety-load-bearing invariant; otherwise a finding naming the census.
+
+**Do NOT recommend a rejection-shaped source regex** (`Assert\.Throws` / `Assert\.False` /
+`NotEqual("consumed")`) — it is the obvious fix, it was tried as an interim mitigation, and it is worse
+than absent. Three reasons, and carry them into the finding so the next reviewer does not re-propose it:
+a correct implementation it rejects is trivial (`Assert.Equal(AnswerOutcome.RejectedStale, result.Outcome)`
+is a specific, discriminating security test with none of those tokens); **the guardrail is the grader**,
+so its retry feedback teaches the agent to rewrite a typed-outcome API as a throwing one — a style
+mandate that degrades the design it grades; and its false-green side is one line anyway
+(`Assert.Throws<NotImplementedException>(() => sut.Consume(x))` is perfectly rejection-shaped and
+perfectly tautological, plus taxonomy 1/9/18 all apply). The error is **promoting a FINDER into a
+CERTIFIER**: as a review operator the question is exactly right; as a guardrail it certifies a lie.
+
+**Operator 21 and Probe A₂ are close relatives — do not conflate them, and run both.** Both are per-item
+censuses that exist because an **aggregate exit code hides a pre-satisfied item behind its siblings'
+failures** (#478/#479 for a clause; #375 for a test). They differ in subject and in tree:
+
+| | asks about | against | when |
+|---|---|---|---|
+| **Probe A₂** | a guardrail **CLAUSE** — is it already satisfied before its task runs? | the plan's **baseline** tree, which exists | now, by reading or grepping |
+| **Operator 21** | a **TEST BODY** the run has not authored yet — can it fail at all? | a **hollow sample you write**, run through the task's own `covers-*` guardrail | now, by manufacturing the mutant |
+
+Neither implies the other: a clause can be honestly red on the baseline and still be cleared by a hollow
+test, and a hollow-satisfiable floor can be perfectly red on arrival. Report them separately.
 
 **When Probe B keeps landing, the finding is the ARCHETYPE, not the clause (#468).** If a task's
 guardrail asserts a property of **implementation source** and two or more operators above go GREEN
@@ -1644,6 +1703,13 @@ unchecked gap that goes unmentioned is indistinguishable from a verified one. At
   real-seam test does not exist yet, so the operator is reported **not run**, with that reason, and is
   never folded into a blanket "Probe B applied". Reporting it as passed would be the false green the
   operator exists to catch.
+- **whether Probe B operator 21 ran, and against which tasks** (#375) — name the tasks whose tests are
+  authored at **run time** and pinned only by a `covers-*` floor or a name manifest, and for each state
+  that you **wrote the hollow sample** and what the task's guardrail did with it (exit code, verbatim).
+  Unlike operator 20 this one is never "inapplicable": the mutant is manufactured, so a task with a
+  run-authored test file and no census either has a recorded execution here or has an unchecked gap named
+  as one. Where the guardrail exited 0, the finding names the **per-test red census** as the fix and says
+  in one line why a rejection-shaped regex is not it.
 - **whether the seam ledger was available to this pass at all** (#382). A ledger **not produced** to the
   review is an unchecked gap and says so; a ledger whose bolded `Seam ledger (#382)` **heading is absent**
   is a finding in the table. Do not report either as the other.
@@ -1789,6 +1855,7 @@ finding remains unaddressed.
 - [ ] (#382) The **seam ledger** was audited. The Step 7.4 report carries the bolded `Seam ledger (#382)` **HEADING** — an ABSENT heading is a BLOCKER (the Step 4 analysis never ran), the zero-row form (`_No in-process seam is substituted by this breakdown's tests._`) is a CLAIM that gets checked rather than an absence, and a ledger **not produced to this pass** is an unchecked-gap line in the report, never a finding. Every `bucket` cell is one of `N1` `N2` `N3` `N4` `E` `C` `U`, and an **N classification off the four-item enumeration is REJECTED** (clock / randomness / ambient env reader / wait primitive) — including the **N4 trap**: if the substitute contains a DECISION it is **C**, not N4 (`RetryLoop → IDelay` is N4; `RetryLoop → ITransientBackoff` is C). Every **E**/**C** row's proof sits at a **recomputed T\*** (a later placement is a finding even when the proof exists and passes, and must name T\*); every `proof` path is plan-folder-relative with its task segment agreeing with the `T*` cell; **no E row invokes the construction bound** (D11 — the #120(b) degradation is bucket **C** only, and a degraded C row names the constructor chain that forced it); every **U** row names a receiving task (or, under waves, a receiving wave) that actually exists. The ledger was **re-derived from the folder** — every `author-tests-*` task faking an in-process seam the run drives has a ROW, and process seams (child process, CLI, socket, HTTP, DB, filesystem) have none. Severity: BLOCKER when the un-proven seam is a composition-root/production path, WEAK when only a thin terminal join-check covers it.
 - [ ] (#382) Where a real-seam proof EXISTS, its shape holds: a **test** (rung 1 — no rung-3 source-grep form), asserting an **effect only the production implementation emits** (a recording double / call count / `Verify`, or "the collaborator was called", IS the passing-but-blind shape), at `scope: "local"` with the key omitted (`scope: "integration"` here is the #250 mistake), with a #155-real RED that COMPILES. Every terminal composition proof (the #120 wiring task and each `<plan>/guardrails/` guardrail) names in its `# catches:` a defect that **survives every upstream real-seam proof passing** — one that can name none is redundant (propose deleting it), and one whose only defect is *"this seam is exercised for the first time here"* means a ledger row is MIS-PLACED, fixed upstream and never by a wider `writeScope` here; no row's proof is emitted twice (at T\* and again in the sink). A correct real-seam test is **NOT** a #120 violation (D12 — same verb, different slot: #120 forbids injecting into the ASSEMBLER's slot, #382 requires injecting into the COMPONENT's own constructor; one test doing both is two tests). The #378 boundary held both ways, in its corrected (verdict-based, not field-based) form: #382 derived no SIZE verdict from `writeScope` / `action.maxTurns` / `dependsOn`, and #378 added no rule about what a guardrail PROVES — reading `writeScope` as a lookup or a coverage set is not a boundary crossing (doc 18 §6, corrected).
 - [ ] (#382) Probe B **operator 20** was applied, or explicitly recorded as NOT RUN with its reason: satisfy a real-seam / composition-root `--filter` with a test that CONSTRUCTS THE FAKE under the same real-sounding name — GREEN means the filter selects a name, not a behaviour (BLOCKER; the fix is the assertion requirement, not a narrower filter). It is INAPPLICABLE on a greenfield first review (the test does not exist yet) and is then reported **not run** — never as passed, and never absorbed into a blanket "Probe B applied".
+- [ ] (#375) Probe B **operator 21** was applied to every task whose tests are authored at RUN TIME and pinned only by a `covers-*` token floor or a name manifest: **write** the hollow sample (every enumerated behaviour NAMED, bodies `Assert.True(true)` / `Assert.NotNull` that never invoke the subject) and run the task's own guardrail against it. GREEN means the floor is a naming lower bound and the invariants are pinned by nothing — **BLOCKER** where the invariant is security- or safety-load-bearing. The fix is the **per-test red census** (every manifested behaviour observed `Failed` in the runner's own result file), **never** a rejection-shaped source regex, which false-reds a correct `Assert.Equal(RejectedStale, r.Outcome)`, teaches the agent to rewrite a typed-outcome API as a throwing one, and is satisfied by one tautological `Assert.Throws<NotImplementedException>` line. Unlike operator 20 it is never inapplicable — the mutant is manufactured. Reported separately from Probe A₂: A₂ censuses a **clause** against the baseline tree, 21 censuses a **test body** that does not exist yet.
 - [ ] No task carries the **structural over-scope fingerprint** (GR2042): a `maxTurns`-near-ceiling + `writeScope` ≥ ~4 co-occurrence, `writeScope` ≥ ~6, or a `dependsOn` fan-in ≥ ~5 with a multi-file `writeScope` — the fan-in-sink / composition-root-wiring archetype. BLOCKER with the proposed split (one task per collaborator wiring; composition-root proof isolated to a thin sink); resolve the `guardrails validate` GR2042 WARN, don't merely re-report it (#378). On a fan-in sink, test the relocation remedy FIRST (#382): narrowing `writeScope` yields N small tasks that still hold the first exercise of every real path, so the concentration survives the split — but report the two findings separately, from their own evidence, since neither issue's mechanism may read the other's fields.
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
 - [ ] Every forbidden-keyword scan over a source file strips comments before matching; no task both documents banned constructs in a header comment AND greps for them comment-blind (#97, #98).
@@ -1808,7 +1875,7 @@ finding remains unaddressed.
 <!-- BEGIN ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every "task A calls `B.Method()`" guardrail anchors on BOTH the type reference and the dotted call (`\.Method\s*\(`), never a bare method-name grep (#76).
 - [ ] Every "extract a library that must write through `IInterface`" task has a forbidden-direct-call scan of the library folder — comment-stripped and dot-anchored, never a bare-name grep that false-REDs on a comment (#74).
-- [ ] Every test-author task whose prompt enumerates ≥3 behaviors has a covers-key-behaviors check (2–3 distinctive terms, scoped to the one test file), named as a lower bound, with the unchecked behaviors reported (#75).
+- [ ] Every test-author task whose prompt enumerates ≥3 behaviors has a covers-key-behaviors check (2–3 distinctive terms, scoped to the one test file), named as a lower bound, with the unchecked behaviors reported (#75) — **and, where the task has a stub tree, a per-test red census** (#375): the enumerated behaviours bound to pinned test method names and observed `Failed` in the runner's own result file. A suite-exit `tests-fail-on-stubs` beside a naming floor leaves a hollow test unproven in BOTH directions and is a finding, not a pass.
 - [ ] Every producer↔consumer derived-name seam has a consumer-driven integration guardrail on a both-sides-present task that drives the real lookup for EVERY item and asserts 200 + a per-item marker — union-safe, no hard-coded name copy, no sampling (#96).
 <!-- END ADDED CHECKS #74/#75/#76/#96 -->
 - [ ] Every guardrail that pattern-matches/regexes a tool's PRINTED console output (not just its exit code or a file it wrote) was verified by actually RUNNING that tool once against the real repo/workspace and checking the pattern against the real output — not just reasoning about whether the regex looks plausible; a pattern shown to never match the real output is a BLOCKER (the guardrail fails unconditionally, dead-ending every attempt at `needsHuman`), a fragile-but-currently-matching format assumption is WEAK. Does not apply to exit-code-only / file-existence / diff checks — there is no output-format assumption to verify there (#248).
@@ -1818,7 +1885,7 @@ finding remains unaddressed.
 - [ ] (#254) Each wave ≥ 2 has a POSITIVE, positive-monotone-safe ENTRY gate ("prior wave's outputs materialized"; missing = WEAK, negative-polarity = BLOCKER). Each multi-leaf/fan-in wave's EXIT gate satisfies GR2028 (≥1 real integration re-run); every INTERMEDIATE wave's exit gate keeps whole-build/whole-suite LOCAL and any `scope:"integration"` guardrail union-safe/conditional (a whole-suite marked `scope:"integration"` in an intermediate wave = BLOCKER, #125); only the LAST wave's exit gate carries a whole-suite LOCAL `tests-pass`. A declared-but-empty JIT stub wave is NOT flagged as missing tasks; the JIT workflow for it is documented in the breakdown report.
 <!-- BEGIN ADDED CHECKS #468/#470 -->
 - [ ] (#468) Every guardrail asserting a property of IMPLEMENTATION SOURCE was run through the demotion question — behaviour → a test (or an AGREEMENT property test for "X must USE Y"), source-shape only for a structural fact with no runtime proxy. A behavioural claim carried by a regex is a finding NAMING the test that should replace it (BLOCKER when a correct implementation can be written that it rejects, WEAK when it merely certifies vocabulary), and a surviving source-shape check with no report line saying WHY no test could carry it is itself a finding. Legitimate structural facts — build-descriptor registration, cross-module reference chains, entry-point wiring, the #120 grep fallback, #176 negative assertions — are NOT flagged. When ≥2 Probe B operators go green against one source-shape guardrail, the finding is the ARCHETYPE, not the clause: recommend the demotion rather than a fourth round of clause repair (three rounds did not converge).
-- [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest over discovered test NAMES); the #455 zero-match guard is not that and is not flagged.
+- [ ] (#468) Every source-shape guardrail over CODE ships a committed `.valid`/`.invalid` sample pair in a `tasks/<id>/samples/` sibling — NEVER inside `guardrails/`/`preflights/`, where the loader would treat the fixture as a guardrail (counts toward GR2003, executed at run time, or GR2027) — and BOTH halves were re-run in this pass — the valid half especially, being the only half that can expose a clause that never matches, a false-red on legitimate brace style, or a case mismatch. The valid sample is COMPLETE, not a fragment. DOCUMENTATION deliverables are exempt from the pair (no meaningful invalid sample exists) but NOT from the PRECEDENT check, and the exemption is named in the report rather than taken silently. No guardrail asserts an executed-test COUNT as an adequacy floor (theory rows, not behaviours — use a behaviour manifest, read with the #375 census predicate rather than by name discovery); the #455 zero-match guard is not that and is not flagged.
 - [ ] (#470) Probe C ran: every required-present literal was reconciled against every forbid-present pattern IN THE SAME FILE (a hit is unsatisfiable-by-construction → BLOCKER), and every banned token against the task's own `action.prompt.md` (a hit invites the agent to write what reds it → WEAK). Every forbidden scan runs over STRIPPED source — comments AND string literals — and is anchored on a USE, not a mention. Not confused with GR2026/#177, which is the opposite polarity (REQUIRES a token the prompt never mentions).
 <!-- END ADDED CHECKS #468/#470 -->
 - [ ] (#478) Probe **A₂** ran: every **required-present** clause and every **numeric floor** of every guardrail has a BASELINE verdict — resolved by the fast path (an accumulator failure list Probe A actually printed) or by a hand census (`Select-String` of the clause's own pattern against the clause's own subject, case-sensitive iff the operator was `-cmatch`/`-cnotmatch`). A clause already satisfied on the baseline is a **BLOCKER** (the task is passable without delivering it, and it certifies nothing for the life of the plan) unless the script DECLARES its exception — positive-baseline/wave-entry preflight, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, or a ratcheting behaviour manifest. **Forbidden-present clauses are NOT censused** — a ban green on arrival is a correct ban, and a ban RED on arrival is Probe C's #470 collision. Every count a script DECLARES was re-measured, never read (a `# … appears nowhere else` comment sat over a token appearing twice in that exact file); a declared count disagreeing with the census is a BLOCKER. Clauses left unmeasured (runtime-composed pattern, subject absent from the baseline, non-pattern clause, ungated cost stage) are NAMED in the report as NOT RUN, never absorbed into a red Probe A. A₂ does not subsume Probe B and B does not subsume A₂ — the motivating clause was both pre-satisfied AND gameable by a one-const append.

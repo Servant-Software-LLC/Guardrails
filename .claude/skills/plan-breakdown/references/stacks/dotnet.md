@@ -8,7 +8,7 @@ JVM/Go/Python project these patterns are wrong or irrelevant — use that stack'
 instead (none ship yet; see "Future stacks" at the foot of SKILL.md Step 0).
 
 Every stack file answers the same six standard questions first (§1–§6, including §4.1 stub-based
-TDD `build-passes` + `tests-fail-on-stubs` and §4.3 task-level filter scoping + the zero-match guard), in this order, so
+TDD `build-passes` + `tests-fail-on-stubs`, §4.3 task-level filter scoping + the zero-match guard, and §4.4 the per-test red census over the TRX), in this order, so
 the files are mirror-able; stack-specific extensions for particular project kinds follow
 (§7–§8 server/executable wiring + smoke-test, §9 UI-presence, §10 composition-root wiring,
 §11 strip-comments-before-forbidden-keyword-scan, §12 Windows-safe git test fixture, §13 production testability seam, §14 scripted ETL / bulk fan-out, §15 method-call anchoring, §16 no-direct-bypass, §17 covers-key-behaviors (§17.1 structural [Fact]/[Theory]), §18 name-convention seam, §19 duplicate-definition union sub-check, §20 negative assertion, §21 baseline-green (preflight) root, then WPF).
@@ -296,6 +296,10 @@ exit 0
 build succeeds, a non-zero `dotnet test` now unambiguously means **the tests ran and FAILED** (the
 stubs throw `NotImplementedException`), not that something failed to compile. A zero exit means the
 behavior is already present (or the test asserts nothing) — either way the tests are tautological.
+
+**Which form of this file you emit depends on the prompt.** If the action prompt **enumerates
+behaviours** to encode, emit **§4.4's per-test red census** — the suite exit code lets a hollow
+`Assert.True(true)` pass on the stub tree behind its genuinely-failing siblings (#375). Otherwise:
 
 **Emit §4.3's canonical inverse form verbatim — it is the SSOT for this file** (`--filter` scoped to
 this pair's OWN test class, plus the `Total:`-keyed zero-match guard). Do NOT hand-write a shorter
@@ -700,6 +704,143 @@ exit 0
 
 The implementation task's forward check runs the **SAME `$filter` string** as its pair's inverse check —
 copy it verbatim, so the two halves of the TDD pair can never drift apart.
+
+### 4.4 The per-test red census — read the TRX, not the exit code (#375)
+
+The .NET realization of the catalogue's **per-test red census** (catalogue → "The per-test red census").
+**Emit this INSTEAD of §4.3's inverse form whenever the test-author task's action prompt enumerates
+behaviours to encode** — same file (`02-tests-fail-on-stubs.ps1`), same `$filter`, stronger predicate.
+§4.3's inverse form stays correct for a task with no enumerated behaviours.
+
+**Why the exit code is not enough.** `dotnet test` exits non-zero if **any** selected test fails, so a
+hollow `Assert.True(true)` **passes** on the stub tree and hides behind its genuinely-failing siblings
+while the guardrail goes green (#375). Per-test outcomes are not in the exit code and must not be scraped
+out of stdout (`[FAIL]` lines are verbosity- and culture-dependent — #248/#455). The runner writes them
+to a **TRX**; read that.
+
+**The four TRX facts the script depends on** (each one bites if you get it wrong):
+
+| fact | consequence |
+|---|---|
+| The document has a **default `xmlns`** (`…/TeamTest/2010`) | `SelectNodes('//UnitTestResult')` returns **nothing** without a namespace manager — a silent zero-result census. Use **dotted navigation** (`$xml.TestRun.Results.UnitTestResult`), which ignores the default namespace |
+| `testName` is the **fully-qualified** method name; a `[Theory]` row **appends its data** (`Ns.Cls.M(kind: "stale")`) | anchor on `\.<Name>(\(|$)`, never a bare substring — a sibling `RejectsStaleAnswerV2` contains `RejectsStaleAnswer` |
+| A skipped test is spelled **`NotExecuted`**, not `Skipped` | `-ne 'Failed'` catches it; an `-eq 'Passed'` test would let `[Fact(Skip="…")]` through |
+| `--results-directory` is **not cleared** between runs | a stale TRX from the previous attempt gets read as this attempt's evidence. Delete the directory first |
+
+**Measured, not recalled (#248).** Against a TRX carrying six results: dotted navigation returned **6**
+nodes and `SelectNodes('//UnitTestResult')` returned **0**; `-match` on a wrong-cased method name
+returned **True** while `-cmatch` returned **False** (taxonomy 3 — a differently-cased sibling would
+otherwise satisfy the entry); the `(\(|$)` tail admitted the `[Theory]` row
+`ClampsUnderProceedUnreviewed(level: "critical")` while rejecting the longer sibling
+`RejectsReviewAttestedKindV2` for the `RejectsReviewAttestedKind` entry. The script below was then run
+against a **two-sided pair** (#302): a hollow TRX (`Passed` / `NotExecuted` / absent) → exit **1** with
+one named line per behaviour, and a genuine all-`Failed` TRX → exit **0**.
+
+```powershell
+# catches: a HOLLOW test - named for the behaviour, body a tautology (Assert.True(true), Assert.NotNull
+#          on a value the test itself constructed, any assertion that never invokes the subject). It
+#          PASSES against the NotImplementedException stubs and hides behind its genuinely-failing
+#          siblings, so a suite-level non-zero exit certifies the file honest and the covers-* token
+#          floor certifies it covered (#375). One entry per enumerated behaviour, each observed Failed
+#          in the runner's OWN TRX - never merely discovered by name, which a hollow body satisfies.
+# Culture pin: this census reads the TRX (schema tokens, NOT localized), so unlike §4.3 the guard does
+# not depend on it - keep it anyway so the logged summary is readable and the pair stays copy-pasteable.
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'
+$filter = 'Category=Answers&FullyQualifiedName~AnswerConsumerTests'   # SAME string as the pair's forward half
+
+# THE MANIFEST: each enumerated behaviour -> the test method name the ACTION PROMPT PINNED for it.
+# The prompt must name these methods; a prompt that leaves naming to the agent makes no census writable.
+$manifest = [ordered]@{
+    'rejects a STALE answer (definitionHash mismatch)'        = 'RejectsStaleAnswer'
+    'rejects a REPLAYED answer (already consumed)'            = 'RejectsReplayedAnswer'
+    'rejects a WRONG-BOUND answer ({runId,seq,gate,subject})' = 'RejectsWrongBoundAnswer'
+    'rejects a FORGED review attestation'                     = 'RejectsReviewAttestedKind'
+    'CLAMPS high/critical under proceed-unreviewed'           = 'ClampsUnderProceedUnreviewed'
+}
+
+$resultsDir = Join-Path ([System.IO.Path]::GetTempPath()) "guardrails-census-$PID"
+Remove-Item $resultsDir -Recurse -Force -ErrorAction SilentlyContinue   # never read a PREVIOUS attempt's TRX
+# No -v q: it is pointless here (nothing is re-emitted) and propagates onto forward checks by cloning (#462).
+$out = dotnet test tests/Answers.Tests --filter $filter --nologo `
+       --logger 'trx;LogFileName=census.trx' --results-directory $resultsDir 2>&1
+$out | ForEach-Object { Write-Output $_ }
+
+# PRECONDITION - the ONE legitimate early exit. No TRX means the run never happened (host failed to
+# start, wrong project path, malformed --filter which exits 0 SILENTLY). Diagnose THAT. Falling through
+# would print "every behaviour unbound", a confident wrong message aimed at the one artifact the retry
+# agent is allowed to edit - the #455 misdiagnosis trap, one level down.
+$trx = Get-ChildItem $resultsDir -Filter *.trx -Recurse -ErrorAction SilentlyContinue |
+       Sort-Object LastWriteTime | Select-Object -Last 1
+if (-not $trx) {
+    Write-Output "no .trx under $resultsDir - the test run did not happen (test host failed to start, wrong project path, or a malformed --filter, which exits 0 with no results). This is NOT a finding about the tests: do NOT rewrite them."
+    exit 1
+}
+
+# DOTTED navigation - the TRX has a default xmlns, so SelectNodes('//UnitTestResult') finds nothing.
+$xml      = [xml](Get-Content $trx.FullName -Raw)
+$recorded = @($xml.TestRun.Results.UnitTestResult)
+if ($recorded.Count -lt 1) {
+    Write-Output "the TRX records ZERO executed tests - the --filter '$filter' matched nothing, or every match is [Skip]ped out of execution. This is NOT a finding about the tests: do NOT rewrite them."
+    exit 1
+}
+
+# ACCUMULATE (#179): one distinguishable message per unbound behaviour, so ONE attempt learns every gap.
+$failures = @()
+foreach ($behaviour in $manifest.Keys) {
+    $name    = $manifest[$behaviour]
+    # -cmatch: C# method names are case-SENSITIVE and PowerShell -match is not (taxonomy 3).
+    # The (\(|$) tail admits a [Theory] row's appended data without admitting a longer sibling name.
+    $pattern = '\.' + [regex]::Escape($name) + '(\(|$)'
+    $hits    = @($recorded | Where-Object { $_.testName -cmatch $pattern })
+    if ($hits.Count -lt 1) {
+        $failures += "$behaviour -> no test named '$name' ran (absent from the file, or not selected by the filter)"
+        continue
+    }
+    $notRed = @($hits | Where-Object { $_.outcome -ne 'Failed' })
+    if ($notRed.Count -gt 0) {
+        $seen = (($notRed | ForEach-Object { $_.outcome } | Sort-Object -Unique) -join '/')
+        $failures += "$behaviour -> '$name' is $seen on the STUB tree, not Failed. A test that does not fail against a NotImplementedException stub never invokes the subject, so it asserts a tautology and certifies nothing. Drive the real API and assert the outcome. ('NotExecuted' = [Fact(Skip=...)].)"
+    }
+}
+
+if ($failures.Count -gt 0) {
+    Write-Output ""
+    Write-Output "=== per-test red census: $($failures.Count) of $($manifest.Count) enumerated behaviours are not proven RED on the stubs ==="
+    $failures | ForEach-Object { Write-Output "  - $_" }
+    exit 1
+}
+exit 0
+```
+
+**Notes that decide whether it proves anything:**
+
+- **This script's own exit code is FORWARD** — 0 when every manifested behaviour is bound to an observed
+  `Failed` test. Do **not** add `if ($testExit -eq 0) { … }` from §4.3's inverse form: the suite exit is
+  the very signal that hid the defect, and the census subsumes it (a suite that exited 0 leaves every
+  entry non-`Failed`). It is also why the §4.3 **ordering** rule does not transfer — there is no polarity
+  race here, only a precondition.
+- **The zero-match guard is subsumed, not dropped.** A manifest entry matching no test is already a named
+  finding; the two early exits above cover the cases where the *runner* produced nothing, which is a
+  different diagnosis and must read as one.
+- **The second side is the implementation task's forward `tests-pass`** (§4.3's forward form) with the
+  **same `$filter` copied verbatim** — those same names must then be observed `Passed`. Two trees, per
+  test, both sides. If you want the forward half per-test as well, the same TRX loop with
+  `-ne 'Passed'` is the mirror; the plain filtered `tests-pass` is usually sufficient there, because a
+  hollow test's failure mode is on the *red* side.
+- **The manifest lists the enumerated behaviours only.** A test outside it is not the census's business —
+  do not turn this into a whole-suite outcome audit, which would red the guardrail on any unrelated
+  failing test in the filter.
+- **The prompt↔manifest agreement is NOT mechanically enforced — check it by hand (measured).** `guardrails
+  validate` was run over this exact script beside an action prompt that pinned **none** of the five method
+  names: **exit 0, no GR2026**. The stale-coverage lint classifies `-notmatch … exit` / `-match … $hits++`
+  clause shapes, and the census's names live in a hashtable read through `Where-Object`, so they are
+  invisible to it. Nothing will tell you the prompt and the manifest disagree; the run will, five
+  attempts later, with every behaviour reported unbound. **Read the two side by side before you ship the
+  task.** (The whole script does validate clean — the gap is the agreement check, not the script.)
+- **The honest boundary belongs in the report, not only here.** A test that *invokes* the subject and
+  then asserts something hollow (`var r = sut.Consume(x); Assert.NotNull(r);`) is red on stubs, green
+  after, and **passes this census**. It proves the test is coupled to the code path, not that the
+  assertion is correct (catalogue → the census's honest boundary).
 
 ## 5. Grep-scope contamination risks specific to .NET layout
 
@@ -1624,9 +1765,17 @@ exit 0
 Choose the 2–3 **headline** behaviors most likely to be accidentally omitted (the plan's risk-section
 ones), not the whole list. Scope to the one test file (grep-scope rule, §5). This is a **lower bound**
 (the #99 substance-floor class): a term in a comment or an unused variable still matches, so it proves a
-test *names* the behavior, not that it *asserts* it — the residual is the `tests-fail-on-current-code`
-red plus human review. The breakdown report must **list which enumerated behaviors went unchecked** so
-the reviewer can decide whether to add more terms.
+test *names* the behavior, not that it *asserts* it.
+
+**The residual is NOT "the red plus human review" — that sentence was false and #375 measured it.** A
+suite-level red exits non-zero if *any* selected test fails, so a hollow `Assert.True(true)` passes on
+the pre-implementation tree and hides behind its genuinely-failing siblings. **The mitigation that holds
+is the per-test red census, §4.4** — every enumerated behaviour observed `Failed` in the runner's own
+TRX. Emit both on a behavioural test-author task: this grep is the cheap naming floor, §4.4 is the gate
+that makes it worth having. Human review stays the residual only for the *wrong-assertion* case (the
+test invokes the subject and asserts the wrong invariant), never for the vacuous case. The breakdown
+report must still **list which enumerated behaviors went unchecked** so the reviewer can decide whether
+to add more terms.
 
 ### 17.1 Structural [Fact]/[Theory] check — strengthen the data-model TDD-split coverage (#155)
 
