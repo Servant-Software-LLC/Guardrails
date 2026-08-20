@@ -77,6 +77,15 @@ public sealed class PromptDenialFailFastTests : IDisposable
     {
         // The fake CLI emits 3 denials and then sleeps far longer than this assertion allows. A runner
         // that did NOT abort would block on the sleep and blow the elapsed-time budget.
+        //
+        // The two numbers must stay FAR apart, and an earlier pairing proved why. With a 60s sleep and a
+        // 25s budget, one loaded run measured 56.9s: still red, but within THREE SECONDS of the sleep
+        // expiring on its own — at which point the test would have gone green for the wrong reason (the
+        // child finished, nobody killed it) and this assertion would have been decoration. The budget is
+        // now 60s against a 600s sleep, and it stays below the 2-minute invocation timeout so a broken
+        // kill is caught by THIS assertion rather than by the timeout backstop. A working kill measures
+        // ~1-3s, so there is ~20x headroom for a loaded CI agent before a false red, and ~10x before the
+        // sleep could ever be the reason the process ended.
         var runner = new ClaudePromptRunner("overwatch", WriteDenyingCli(), new ProcessRunner());
         var stopwatch = Stopwatch.StartNew();
 
@@ -89,7 +98,7 @@ public sealed class PromptDenialFailFastTests : IDisposable
         Assert.True(result.IsError);
         Assert.Contains("aborted after 3 consecutive permission-denied tool calls", result.Summary);
         Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(25),
+            stopwatch.Elapsed < TimeSpan.FromSeconds(60),
             $"the runner must kill the child, not wait it out (elapsed {stopwatch.Elapsed})");
     }
 
@@ -136,7 +145,7 @@ public sealed class PromptDenialFailFastTests : IDisposable
     };
 
     /// <summary>A fake CLI that refuses three calls and then hangs — the shape the abort must cut short.</summary>
-    private string WriteDenyingCli() => WriteFakeCli("deny-hang", [DenialLine, DenialLine, DenialLine], sleepSeconds: 60, tail: null);
+    private string WriteDenyingCli() => WriteFakeCli("deny-hang", [DenialLine, DenialLine, DenialLine], sleepSeconds: 600, tail: null);
 
     /// <summary>A fake CLI that refuses three calls and then finishes normally (the opt-out control).</summary>
     private string WriteDenyingThenResultCli() =>
