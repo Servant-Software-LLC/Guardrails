@@ -344,6 +344,21 @@ public sealed class LiveRunObserver : IRunObserver, IAsyncDisposable
         }
     }
 
+    public void OverwatchNoVerdict(string taskId, string reason)
+    {
+        lock (_gate)
+        {
+            // Issue #452. Written ABOVE the live region under _gate, exactly like VerifierAdvisoryFound
+            // and DecisionRecorded: the executor raises this from INSIDE the Spectre live region, and a
+            // raw write there corrupts the task table (#145/#372). Same advisory idiom as the verifier
+            // advisory — yellow, not red — because the overwatcher gates nothing: a no-verdict changes no
+            // task outcome and no exit code. But it must PRINT: before #452 a billed supervisor that
+            // produced nothing was byte-identical, on this surface, to one that had nothing to say.
+            AnsiConsole.MarkupLine(
+                $"[yellow]overwatch: no verdict[/] [grey]{Markup.Escape(taskId)}[/] — {Markup.Escape(reason)}");
+        }
+    }
+
     /// <summary>Stop the live region (the final summary prints after disposal).</summary>
     public async ValueTask DisposeAsync()
     {

@@ -480,7 +480,9 @@ table** (via `IRunObserver.DecisionRecorded`) and in the static log site (§12).
 `{ boundary, policy, decision, at, subject, headline, detail }`, where `boundary` distinguishes the
 decision-class: `drift` (#274, task or wave granularity), `wave` (#254 inter-wave / wave completion / wave
 drift), `task` (#269 overwatcher per-task attempts-vs-fix-vs-halt); `decision` is one of `halted` /
-`prompted-approved` / `prompted-declined` / `auto-applied`. **In M1 only the `drift` boundary is emitted**
+`prompted-approved` / `prompted-declined` / `auto-applied` / `no-verdict` (the last one is `task`-boundary
+only — the #452 record of an overwatcher that was consulted, **spent**, and produced no verdict; §9.2).
+**In M1 only the `drift` boundary is emitted**
 (the on-resume definition-drift gate, §7.2); the schema + discriminator already accommodate all three so
 the `wave` (M2) and `task` (M3) boundaries just append. #269's design of record reuses this policy + log
 verbatim.
@@ -3056,8 +3058,9 @@ Also at the **task** level, the **overwatcher** (§9.2, #269) writes:
   record carries `{ at, trigger, attempt, policy, decision, classification?, diagnosis?, fixes[], applied?,
   headline }` where each entry in `fixes[]` is a proposed fix op + the **authority class** the mechanical
   classifier assigned it (`{ kind, authority, target? }`). This is the multi-fire *detail*; the durable
-  *audit* is the shared top-level `decisions[]` (`boundary:"task"`, §2.1/§7). An advisory no-action (no
-  runner, cost cap hit, malformed/errored proposal) writes nothing.
+  *audit* is the shared top-level `decisions[]` (`boundary:"task"`, §2.1/§7). Writes nothing when the
+  overwatcher was **not consulted** (no runner, cost cap already reached) — but a diagnose that RAN and
+  produced no verdict appends a `decision:"no-verdict"` record (§9.2, issue #452), never silence.
 - `feedback.md` / `triage.json` — the terminal-exhaustion case (§9.2.1), unchanged.
 - `overwatch-guidance.md` — written only when a granted guidance injection could not be appended to the
   failed attempt's `feedback.md`; the fallback carrier of the sanctioned ephemeral guidance.
@@ -3716,6 +3719,29 @@ them (design doc §10).
 `IPromptRunner` seam under a **reserved `overwatch` profile** in `promptRunners` (alongside `ai-merge` /
 `ai-triage`), resolved with fallback to the default/sole runner. The terminal case still uses `ai-triage`.
 
+**Tool profile — read broadly, write nothing (issue #452).** The overwatcher is a **different class of
+actor** from a task runner and *neither* shipped confinement model fits it: `writeScope` is not applied to
+it (correctly — it authors no segment), and it does **not** inherit the plan's `promptRunners` allowlist
+either. So its tool grant is **stated explicitly, not inherited**: the diagnose and the §9.2.1 terminal
+triage both run with **`Read`, `Glob`, `Grep` and nothing else** — no `Bash`, no write tool. Reading the
+run's logs, the attempt streams and the plan folder is its entire input, and it is *asymmetric by design*:
+it reads evidence a task runner would never be allowed to see, and can write nothing at all. Granting no
+write tool makes the "diagnose and propose, never edit" guarantee **structural** rather than merely
+enforced after the fact by the `OverwatchFixClassifier` on what it may *propose*. Excluding `Bash` is
+deliberate: a widened shell allowlist leaves the actor one unusual command spelling away from the same
+failure, whereas the three read tools return file contents directly. **Leaving these fields to their record
+defaults is a defect, not a default** — `PromptRunnerSettings.AllowedTools` defaults to an EMPTY list, and a
+supervisory prompt that inherits it has *every* tool call refused in a non-interactive subprocess with
+nobody to approve one (the #452 incident: 11 turns and \$0.66 spent entirely re-trying blocked reads,
+terminating with no verdict and no visible trace).
+
+**Fail-fast on refusal (issue #452).** Both supervisory prompts declare a runner-agnostic bound —
+**abort after N consecutive permission-denied tool calls** (N = 3; the streak resets on any tool call that
+runs, so an agent that hits one wall and reaches for a granted tool keeps its full budget). DETECTION of a
+denial stays inside the runner's vendor quarantine (§9); the harness only declares the policy. This bounds
+the pathological case at a few turns instead of the whole turn budget at full price, and it is strictly a
+LOWERING of the worst case — an all-refused supervisory prompt previously ground to its turn cap.
+
 **Reserved `breakdown` profile (#360 Phase 1, doc 11 §9).** The between-wave breakdown actor
 (`WaveBreakdownInvoker`, invoked at the JIT wave checkpoint — §14.4) drives `plan-breakdown` through the SAME
 `IPromptRunner` seam under a **reserved `breakdown` profile** in `promptRunners` (alongside `overwatch` /
@@ -3815,9 +3841,21 @@ re-run at every tier, dial or no dial. (Design of record: `docs/plans/12-autonom
 `decisions[]` entry with **`boundary: "task"`** (reusing the M1 `DecisionEntry` / `IRunObserver.DecisionRecorded`,
 §2.1/§7) — the durable audit — and appends a record to the append-only per-task
 `logs/<runId>/<task-id>/overwatch.jsonl` (§8) — the multi-fire detail (trigger, classification, each
-proposed fix op + the authority class the classifier assigned it, and what was applied). An **advisory
-no-action** (no runner, cost cap hit, or a malformed/errored/absent proposal) records **nothing** —
-silently skipped, deterministic policy stands.
+proposed fix op + the authority class the classifier assigned it, and what was applied).
+
+**Silence is only allowed when nothing was SPENT (issue #452).** The line is drawn at whether the
+overwatcher was actually invoked:
+
+- **Not consulted** — no runner resolved, or the `maxCostUsd` cap already reached — records **nothing**.
+  Nothing ran, nothing was billed, and the deterministic policy stands: there is no event to report.
+- **Consulted but no verdict** — the diagnose ran and came back with an error, a turn exhaustion, a
+  denial abort, or a body that does not parse as a verdict — records a **`decision: "no-verdict"`**
+  `decisions[]` entry (`boundary: "task"`) **and** an `overwatch.jsonl` record, **and** emits a visible
+  operator line (`IRunObserver.OverwatchNoVerdict`, rendered in the §12 advisory idiom above the live
+  region, never inside it). It stays **advisory** — no task verdict changes, no exit code changes — but it
+  is no longer *invisible*. A supervisor whose own failure is reported by saying nothing is
+  indistinguishable from one with nothing to report, which is exactly how a paid no-op went unnoticed
+  across every plan run since it shipped.
 
 **Advisory — gates nothing (verdict from files).** A malformed/absent/errored diagnose = no action; the
 deterministic policy stands, exactly as §9.2.1. `PromptResult.IsError` and the runner exit code are never

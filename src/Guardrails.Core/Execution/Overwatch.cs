@@ -30,6 +30,53 @@ public sealed class Overwatch
     /// <summary>The hard ceiling on extra attempts a single grant may add (bounded-grant invariant, doc 11 §5).</summary>
     private const int MaxExtraRetriesPerGrant = 2;
 
+    /// <summary>
+    /// The diagnose tool profile (SSOT §9.2, issue #452): READ BROADLY, WRITE NOTHING.
+    ///
+    /// <para>The overwatcher is a different class of actor from a task runner and neither of the two
+    /// shipped confinement models fits it. <c>writeScope</c> is not applied to it (correctly — it authors
+    /// no segment), and it does not inherit the plan's <c>promptRunners</c> allowlist either. Before this
+    /// constant existed it fell through the gap between them and inherited
+    /// <see cref="PromptRunnerSettings.AllowedTools"/>'s record default — an EMPTY list — so in a
+    /// non-interactive subprocess with nobody to approve a prompt, every tool call it made was refused.
+    /// It was asked to read attempt logs with permission to read nothing, and burned its whole turn
+    /// budget re-trying blocked calls.</para>
+    ///
+    /// <para><b>Read/Glob/Grep and nothing else — deliberately not Bash.</b> Widening a Bash allowlist
+    /// would leave it one unusual shell form away from the same silent death (the two refused calls in the
+    /// #452 evidence were a <c>python</c> heredoc and a <c>for</c> loop, both reaching for file contents
+    /// these three tools return directly). Granting no write tool at all also makes the "diagnose and
+    /// propose, never edit" guarantee STRUCTURAL rather than merely advisory: today it is enforced after
+    /// the fact by <see cref="OverwatchFixClassifier"/> on what the judge may PROPOSE; with this profile
+    /// the judge has no mechanism to write in the first place. (The runner still appends its own read-only
+    /// <c>Bash(git show*)</c> salvage grant to every invocation — read-only, so the write-none property
+    /// holds.)</para>
+    /// </summary>
+    private static readonly IReadOnlyList<string> DiagnoseTools = ["Read", "Glob", "Grep"];
+
+    /// <summary>
+    /// The diagnose turn ceiling. Raised from 10 (issue #452): reading two or three attempt folders —
+    /// a <c>feedback.md</c> and the tail of an action log each — is already 6–8 tool calls before a word
+    /// of reasoning, and the observed failure terminated at exactly the old ceiling. <c>--max-turns</c> is
+    /// a CEILING, not a target: a diagnose stops the moment it returns its JSON verdict, so the headroom
+    /// costs a converging run nothing. The PATHOLOGICAL run is no longer bounded by this number at all —
+    /// <see cref="DenialAbortThreshold"/> now cuts it off far earlier than the turn cap ever did.
+    /// </summary>
+    private const int DiagnoseMaxTurns = 20;
+
+    /// <summary>
+    /// Abort the diagnose after this many CONSECUTIVE permission-denied tool calls (issue #452).
+    ///
+    /// <para><b>Why 3.</b> One denial is recoverable and must not be punished — the intended reaction to a
+    /// refused call is to reach for a granted tool instead, and cutting the run at the first refusal would
+    /// forbid exactly that self-correction. Two shows the agent is not adapting. Three is conclusive: with
+    /// a three-tool read-only profile there is no fourth route to try. The streak RESETS on any tool call
+    /// that runs (<see cref="Prompts.ClaudePermissionScanner"/>), so a diagnose making real progress is
+    /// never cut short. It bounds the pathological case at roughly 3 turns instead of the 11 turns / $0.66
+    /// the shipped overwatcher spent producing nothing.</para>
+    /// </summary>
+    private const int DenialAbortThreshold = 3;
+
     private readonly IPromptRunner? _diagnoseRunner;
     private readonly NeedsHumanTriage? _terminalTriage;
     private readonly AutonomyPolicy _policy;
@@ -97,12 +144,18 @@ public sealed class Overwatch
             return OverwatchDecision.NoAction;
         }
 
-        OverwatchProposal? proposal = await RunDiagnoseAsync(trigger, task, plan, attempt, taskLogDir, journal, ct)
+        DiagnoseOutcome diagnose = await RunDiagnoseAsync(trigger, task, plan, attempt, taskLogDir, journal, ct)
             .ConfigureAwait(false);
 
         // Advisory-never-gates: a malformed/absent/errored proposal = no action; verdict from files.
-        if (proposal is null)
+        if (diagnose.Proposal is not { } proposal)
         {
+            // #452: BUT it is no longer SILENT. A diagnose that ran and came back with nothing spent real
+            // money and left the operator unsupervised, and a supervisor that reports its own failure by
+            // saying nothing is indistinguishable from one with nothing to report. Record it — a visible
+            // line plus a durable decisions[] entry — then stand down. Still advisory: no verdict changes,
+            // no exit code changes, the deterministic policy stands exactly as before.
+            RecordNoVerdict(trigger, task, attempt, diagnose.NoVerdictReason, taskLogDir, journal, observer);
             return OverwatchDecision.NoAction;
         }
 
@@ -370,11 +423,23 @@ public sealed class Overwatch
     // --- diagnose prompt -------------------------------------------------------------------
 
     /// <summary>
-    /// Run the diagnose prompt and parse it. Best-effort: a thrown runner, an error/incomplete result, or an
-    /// unparseable body all return null (advisory no-action). The stream is teed per attempt so a re-fire
-    /// does not clobber a prior one.
+    /// The result of one diagnose: a parsed <see cref="OverwatchProposal"/>, or a NO-VERDICT with the
+    /// one-line reason (issue #452). The reason is what makes the failure reportable — before it, every
+    /// non-proposal collapsed to a bare null and the caller had nothing to say.
     /// </summary>
-    private async Task<OverwatchProposal?> RunDiagnoseAsync(
+    private readonly record struct DiagnoseOutcome(OverwatchProposal? Proposal, string NoVerdictReason)
+    {
+        internal static DiagnoseOutcome Verdict(OverwatchProposal proposal) => new(proposal, "");
+
+        internal static DiagnoseOutcome NoVerdict(string reason) => new(null, reason);
+    }
+
+    /// <summary>
+    /// Run the diagnose prompt and parse it. Best-effort: a thrown runner, an error/incomplete result, or an
+    /// unparseable body all yield a NO-VERDICT outcome (advisory no-action — but a REPORTED one, #452). The
+    /// stream is teed per attempt so a re-fire does not clobber a prior one.
+    /// </summary>
+    private async Task<DiagnoseOutcome> RunDiagnoseAsync(
         OverwatchTrigger trigger,
         TaskNode task,
         PlanDefinition plan,
@@ -386,7 +451,7 @@ public sealed class Overwatch
         try
         {
             Directory.CreateDirectory(taskLogDir);
-            string prompt = BuildDiagnosePrompt(trigger, task, attempt);
+            string prompt = BuildDiagnosePrompt(trigger, task, attempt, taskLogDir, journal);
             string streamLogPath = Path.Combine(taskLogDir, $"overwatch-stream-attempt-{attempt}.jsonl");
 
             var invocation = new PromptInvocation
@@ -395,9 +460,17 @@ public sealed class Overwatch
                 WorkingDirectory = plan.Workspace,
                 PlanDirectory = plan.PlanDirectory,
                 Environment = new Dictionary<string, string>(StringComparer.Ordinal),
-                Settings = new PromptRunnerSettings { MaxTurns = 10 },
+
+                // #452: the diagnose profile is set EXPLICITLY. Every field left to its record default is
+                // a field nobody chose — and AllowedTools defaulting to empty is the whole defect.
+                Settings = new PromptRunnerSettings
+                {
+                    AllowedTools = DiagnoseTools,
+                    MaxTurns = DiagnoseMaxTurns
+                },
                 Timeout = TimeSpan.FromMinutes(5),
-                StreamLogPath = streamLogPath
+                StreamLogPath = streamLogPath,
+                AbortAfterConsecutiveToolDenials = DenialAbortThreshold
             };
 
             PromptResult result = await _diagnoseRunner!.RunAsync(invocation, ct).ConfigureAwait(false);
@@ -410,23 +483,59 @@ public sealed class Overwatch
 
             if (!result.Completed || result.IsError || result.ResultText is null)
             {
-                return null;
+                // The runner's own summary IS the reason (the runner owns the vendor wording — a
+                // max-turns exhaustion, a denial abort, a timeout — and the harness never re-derives it).
+                return DiagnoseOutcome.NoVerdict(
+                    result.Summary is { Length: > 0 } s ? s : "the diagnose runner produced no result");
             }
 
-            return OverwatchProposal.TryParse(result.ResultText);
+            OverwatchProposal? parsed = OverwatchProposal.TryParse(result.ResultText);
+            return parsed is null
+                ? DiagnoseOutcome.NoVerdict("the diagnose returned a body that is not a parseable verdict")
+                : DiagnoseOutcome.Verdict(parsed);
         }
-        catch
+        catch (Exception ex)
         {
-            // Advisory: a diagnose failure never aborts the run or changes the verdict.
-            return null;
+            // Advisory: a diagnose failure never aborts the run or changes the verdict — but it is
+            // REPORTED now rather than swallowed. The type, not the message: a message can carry a path
+            // or a prompt fragment, and this string is rendered to the console and journaled.
+            return DiagnoseOutcome.NoVerdict($"the diagnose threw {ex.GetType().Name}");
         }
     }
 
-    private static string BuildDiagnosePrompt(OverwatchTrigger trigger, TaskNode task, int attempt) =>
+    /// <summary>
+    /// Compose the diagnose brief. Two things it deliberately does NOT do: send the judge hunting for its
+    /// own evidence, and ask it for work its tools cannot do (issue #452).
+    ///
+    /// <para>The old brief named the log directory as the literal template <c>logs/&lt;runId&gt;/&lt;taskId&gt;/</c>
+    /// — the run id was never substituted — relative to a workspace that is not even where the plan folder
+    /// lives. So the judge's first job was to GUESS where its input was, which is what the refused shell
+    /// calls were for. It is handed the resolved absolute path instead.</para>
+    ///
+    /// <para>And the per-attempt outcomes are DETERMINISTIC FACTS the harness already holds in the journal,
+    /// so they are stated rather than left to be reconstructed by reading logs. This is what makes the #94
+    /// "a bigger budget would finish" shape visible: the discriminator between "the work was wrong" and
+    /// "the work was cut off" is <c>failedGuardrails</c> being empty on a <c>max-turns</c>/<c>timeout</c>
+    /// attempt, and that is a fact, not a judgement.</para>
+    /// </summary>
+    private static string BuildDiagnosePrompt(
+        OverwatchTrigger trigger, TaskNode task, int attempt, string taskLogDir, RunJournal journal) =>
         $"# Overwatch diagnose: task '{task.Id}' (attempt {attempt}, trigger: {OverwatchTriggers.Token(trigger)})\n\n" +
         $"Task: {task.Description}\n\n" +
-        "This task is struggling. Read its attempt logs and feedback under the plan's " +
-        "`logs/<runId>/" + task.Id + "/` directory to see what was tried and why it failed.\n\n" +
+        "You are a read-only supervisor. Your ONLY tools are Read, Glob and Grep — you have no Bash and no " +
+        "write tools, so do not attempt shell commands, and do not try to fix anything yourself.\n\n" +
+        "## Attempt history (recorded by the harness — authoritative)\n\n" +
+        RenderAttemptHistory(task, journal) + "\n" +
+        "Discriminator: an attempt with NO failed guardrails did not fail a check — it was CUT OFF " +
+        "(turns, clock, or an error). An attempt with named failed guardrails failed a check. Attempts " +
+        "that are repeatedly cut off mid-progress point at a BUDGET lever; failed checks point at " +
+        "guidance, or at a structurally doomed task.\n\n" +
+        "## Evidence\n\n" +
+        $"The attempt logs, feedback and transcripts for this task are under:\n\n    {taskLogDir}\n\n" +
+        "Each `attempt-N/` subfolder holds that attempt's action output, guardrail output, `feedback.md` " +
+        "and `transcript.md`. Read the most recent attempts first; Grep is cheaper than Read on a large " +
+        "transcript. Do not read more than you need — a verdict grounded in two attempts beats no verdict.\n\n" +
+        "## Your verdict\n\n" +
         "Decide whether more attempts can plausibly converge (retryable) or the task is structurally " +
         "doomed, and propose ONLY action-layer fixes: ephemeral guidance for the next attempt, or a runtime " +
         "budget bump (maxTurns / retries / timeoutSeconds). Do NOT propose editing any guardrail/preflight " +
@@ -436,6 +545,32 @@ public sealed class Overwatch
         """{"classification":"retryable|doomed","diagnosis":"<precise one-paragraph diagnosis>","fixes":[{"kind":"guidance","guidance":"<failure-specific guidance>"}]}""" + "\n\n" +
         "Fix op shapes: " +
         """{"kind":"guidance","guidance":"..."} | {"kind":"budget","field":"maxTurns|retries|timeoutSeconds","value":<int>} | {"kind":"file-edit","path":"..."} | {"kind":"task-field","field":"..."}""";
+
+    /// <summary>
+    /// The journal's per-attempt outcome table for the brief — outcome token plus the failed-guardrail
+    /// names (or an explicit "none", which is the load-bearing half of the #94 discriminator). Renders a
+    /// plain sentence when the journal has no attempts yet (a permission wall may fire on attempt 1).
+    /// </summary>
+    private static string RenderAttemptHistory(TaskNode task, RunJournal journal)
+    {
+        IReadOnlyList<AttemptRecord> attempts = journal.AttemptsFor(task.Id);
+        if (attempts.Count == 0)
+        {
+            return "No attempts recorded yet for this task.\n";
+        }
+
+        var sb = new StringBuilder();
+        sb.Append("| attempt | outcome | failed guardrails |\n|---|---|---|\n");
+        foreach (AttemptRecord record in attempts)
+        {
+            string failed = record.FailedGuardrails.Count == 0
+                ? "(none)"
+                : string.Join(", ", record.FailedGuardrails.Select(g => g.Name));
+            sb.Append($"| {record.Attempt} | {JournalJson.OutcomeToken(record.Outcome)} | {failed} |\n");
+        }
+
+        return sb.ToString();
+    }
 
     // --- reporting -------------------------------------------------------------------------
 
@@ -493,6 +628,52 @@ public sealed class Overwatch
         };
         journal.RecordDecision(entry);
         observer.DecisionRecorded(entry);
+    }
+
+    /// <summary>
+    /// Record a consulted-but-no-verdict fire (issue #452) across all three surfaces the overwatcher
+    /// already owns — the <c>overwatch.jsonl</c> detail stream, the durable <c>decisions[]</c> audit, and
+    /// the live operator surface — so the one outcome that used to be invisible now reports like every
+    /// other. The visible line is raised through <see cref="IRunObserver.OverwatchNoVerdict"/> rather than
+    /// <see cref="IRunObserver.DecisionRecorded"/>: the decision channel renders as a settled green
+    /// decision, and "your supervisor failed" is an advisory warning, not a decision that went well. One
+    /// event, one line.
+    /// </summary>
+    private void RecordNoVerdict(
+        OverwatchTrigger trigger,
+        TaskNode task,
+        int attempt,
+        string reason,
+        string taskLogDir,
+        RunJournal journal,
+        IRunObserver observer)
+    {
+        string why = string.IsNullOrWhiteSpace(reason) ? "the diagnose produced no verdict" : reason.Trim();
+        string triggerToken = OverwatchTriggers.Token(trigger);
+        string headline = $"overwatch: no verdict — {why} (task '{task.Id}', attempt {attempt}, {triggerToken})";
+
+        OverwatchDetailWriter.Append(taskLogDir, new OverwatchDetailRecord
+        {
+            At = DateTimeOffset.UtcNow.ToString("O"),
+            Trigger = triggerToken,
+            Attempt = attempt,
+            Policy = AutonomyPolicies.Token(_policy),
+            Decision = DecisionTokens.NoVerdict,
+            Diagnosis = why,
+            Headline = headline
+        });
+
+        journal.RecordDecision(new DecisionEntry
+        {
+            Boundary = "task",
+            Policy = AutonomyPolicies.Token(_policy),
+            Decision = DecisionTokens.NoVerdict,
+            Subject = task.Id,
+            Headline = headline,
+            Detail = why
+        });
+
+        observer.OverwatchNoVerdict(task.Id, why);
     }
 
     private static string FixKindToken(OverwatchFixKind kind) => kind switch

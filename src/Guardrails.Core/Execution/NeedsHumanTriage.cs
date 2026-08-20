@@ -16,6 +16,23 @@ namespace Guardrails.Core.Execution;
 /// </summary>
 public sealed class NeedsHumanTriage
 {
+    /// <summary>
+    /// The read-only triage tool profile (issue #452). This class carried the SAME defect as the
+    /// overwatcher's diagnose: it set only <c>MaxTurns</c> and inherited
+    /// <see cref="PromptRunnerSettings.AllowedTools"/>'s record default — an EMPTY list — so a triage
+    /// that reached for the failure evidence had every call refused, silently, in a subprocess with
+    /// nobody to approve it. It is the SAME actor (SSOT §9.2: the terminal-exhaustion trigger of the
+    /// overwatcher), so it gets the SAME profile: read broadly, write nothing.
+    /// </summary>
+    private static readonly IReadOnlyList<string> TriageTools = ["Read", "Glob", "Grep"];
+
+    /// <summary>
+    /// Abort the triage after this many consecutive permission-denied tool calls (#452) — the same bound,
+    /// for the same reason, as the diagnose. It only ever LOWERS this actor's worst case: today an
+    /// all-refused triage grinds to the 10-turn cap at full price.
+    /// </summary>
+    private const int DenialAbortThreshold = 3;
+
     private readonly IPromptRunner _runner;
     private readonly bool _autoFile;
 
@@ -68,7 +85,7 @@ public sealed class NeedsHumanTriage
         bool effectiveAutoFile = autoFile ?? _autoFile;
         Directory.CreateDirectory(taskLogDir);
 
-        string prompt = BuildTriagePrompt(task);
+        string prompt = BuildTriagePrompt(task, taskLogDir);
         string streamLogPath = Path.Combine(taskLogDir, "triage-stream.jsonl");
 
         var invocation = new PromptInvocation
@@ -77,9 +94,17 @@ public sealed class NeedsHumanTriage
             WorkingDirectory = workspace,
             PlanDirectory = planDirectory,
             Environment = new Dictionary<string, string>(StringComparer.Ordinal),
-            Settings = new PromptRunnerSettings { MaxTurns = 10 },
+
+            // #452: state the profile EXPLICITLY. The turn cap is unchanged at 10 — the fix here is that
+            // the tool calls are GRANTED rather than refused, not that the actor gets a bigger budget.
+            Settings = new PromptRunnerSettings
+            {
+                AllowedTools = TriageTools,
+                MaxTurns = 10
+            },
             Timeout = TimeSpan.FromMinutes(5),
-            StreamLogPath = streamLogPath
+            StreamLogPath = streamLogPath,
+            AbortAfterConsecutiveToolDenials = DenialAbortThreshold
         };
 
         PromptResult result = await _runner.RunAsync(invocation, ct).ConfigureAwait(false);
@@ -184,10 +209,14 @@ public sealed class NeedsHumanTriage
         return null;
     }
 
-    private static string BuildTriagePrompt(TaskNode task) =>
+    private static string BuildTriagePrompt(TaskNode task, string taskLogDir) =>
         $"# AI Triage: Task '{task.Id}' Needs Human\n\n" +
         $"Task: {task.Description}\n\n" +
         "Analyze why this task failed and classify the root cause.\n\n" +
+        // #452: name the evidence directory. Granting Read/Glob/Grep without saying WHERE to point them
+        // just moves the flailing from "denied calls" to "guessing paths".
+        $"The attempt logs, feedback and transcripts are under:\n\n    {taskLogDir}\n\n" +
+        "You are read-only: your ONLY tools are Read, Glob and Grep. No Bash, no writes.\n\n" +
         "Return JSON with one of these shapes:\n" +
         """{"diagnosis":"guardrails-tool","ghIssueTitle":"...","ghIssueBody":"..."}""" + "\n" +
         """{"diagnosis":"local-repo","analysis":"..."}""";

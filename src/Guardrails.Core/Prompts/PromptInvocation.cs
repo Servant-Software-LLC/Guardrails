@@ -38,6 +38,21 @@ public sealed record PromptInvocation
     /// Null disables transcript rendering (e.g. a runner whose output is not a Claude stream).
     /// </summary>
     public string? TranscriptLogPath { get; init; }
+
+    /// <summary>
+    /// Fail-fast bound for a prompt whose every tool call is being REFUSED (issue #452): abort the run
+    /// once this many permission denials arrive with no successful tool call in between. Null (the
+    /// default, and every task action / guardrail) keeps the shipped behavior — grind to the turn cap.
+    ///
+    /// <para>A runner-agnostic POLICY the harness declares; DETECTION of a denial is the runner's own
+    /// vendor-quarantined business (SSOT §9 — <see cref="ClaudePermissionScanner"/> for Claude), so no
+    /// caller ever matches a denial string. Set for the harness's own supervisory prompts (the #269
+    /// overwatcher's diagnose and the §9.2.1 terminal triage), which have a narrow read-only tool profile
+    /// and nobody to approve an interactive prompt: for them a run of consecutive denials means the
+    /// remaining turns are provably wasted, and the evidence in #452 is exactly that — 11 turns and
+    /// $0.66 spent entirely re-trying blocked reads, terminating with no verdict.</para>
+    /// </summary>
+    public int? AbortAfterConsecutiveToolDenials { get; init; }
 }
 
 /// <summary>

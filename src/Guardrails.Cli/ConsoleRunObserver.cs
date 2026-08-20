@@ -182,4 +182,16 @@ public sealed class ConsoleRunObserver : IRunObserver
             _output.WriteLine($"[verifier-advisory] {taskId}: {finding}");
         }
     }
+
+    public void OverwatchNoVerdict(string taskId, string reason)
+    {
+        lock (_gate)
+        {
+            // Issue #452 — the plain-output twin of the live line. Tagged like the other advisories
+            // rather than banner-wrapped: the overwatcher gates nothing, so this is not a failure the
+            // operator must triage. It exists so a supervisor that SPENT and produced nothing is
+            // distinguishable from one that had nothing to report — previously it printed nothing at all.
+            _output.WriteLine($"[overwatch] no verdict — {taskId}: {reason}");
+        }
+    }
 }

@@ -103,6 +103,27 @@ public interface IRunObserver
     void VerifierAdvisoryFound(string taskId, string finding) { }
 
     /// <summary>
+    /// The #269 overwatcher was CONSULTED, SPENT, and came back with nothing (issue #452): the diagnose
+    /// runner errored, exhausted its turns, was aborted on a run of permission denials, or returned a body
+    /// that does not parse as a verdict. <paramref name="taskId"/> is the task it was supervising;
+    /// <paramref name="reason"/> is the already-composed one-line cause (the runner's own summary).
+    ///
+    /// <para><b>Why this exists at all.</b> Before #452 this outcome was indistinguishable from "the
+    /// supervisor had nothing to report" — it recorded no <c>decisions[]</c> entry and printed no line, so
+    /// a billed no-op looked exactly like a healthy quiet run. The only trace was <c>is_error: true</c>
+    /// inside a per-attempt JSONL nobody opens unless they already suspect a problem. Silence must not be
+    /// how a paid supervisor reports its own failure.</para>
+    ///
+    /// <para>Rendered in the ADVISORY idiom (a yellow tag + task id, above the Spectre live region under
+    /// the observer's gate — #145/#372), NOT as a failure: the overwatcher is advisory and a no-verdict
+    /// changes no task verdict and no exit code. Raised INSTEAD of
+    /// <see cref="DecisionRecorded"/> for the same event so one failure prints one line, while the durable
+    /// <c>decisions[]</c> entry (<c>decision: "no-verdict"</c>) is still journaled. Default no-op — but a
+    /// transparent DECORATOR must forward it explicitly or the surface is swallowed again.</para>
+    /// </summary>
+    void OverwatchNoVerdict(string taskId, string reason) { }
+
+    /// <summary>
     /// A WAVED plan's wave <paramref name="wave"/> (the <paramref name="index"/>-th of
     /// <paramref name="total"/>, 1-based) is about to run its DAG drain (SSOT §14.4). The harness runs
     /// waves in strict order behind a hard barrier; this lets the UI retitle/segment the task table per

@@ -88,6 +88,17 @@ public sealed class ClaudePromptRunner : IPromptRunner
         ClaudeTranscriptRenderer.StreamingWriter? transcript =
             transcriptFile is null ? null : new ClaudeTranscriptRenderer.StreamingWriter(transcriptFile);
 
+        // The #452 fail-fast: a linked source so a run whose every tool call is refused can be killed
+        // mid-stream WITHOUT disturbing the caller's token. ProcessRunner treats cancellation as
+        // "kill the tree and return" (not a throw), so the abort lands as an ordinary ProcessResult.
+        using var abortCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        int? denialAbortThreshold = invocation.AbortAfterConsecutiveToolDenials;
+
+        // Spawn guard only — it stops the sink from queueing a redundant Cancel on every subsequent
+        // line. The AUTHORITATIVE "did we abort" is re-derived from the scanner AFTER the process
+        // returns (its state is final by then), so no cross-thread read of this flag is load-bearing.
+        bool denialAbortFired = false;
+
         try
         {
             void Tee(string line)
@@ -96,6 +107,30 @@ public sealed class ClaudePromptRunner : IPromptRunner
                 permissionScanner.Feed(line);
                 streamWriter?.WriteLine(line);
                 transcript?.Feed(line);
+
+                if (denialAbortThreshold is not { } threshold
+                    || denialAbortFired
+                    || permissionScanner.ConsecutiveDenials < threshold)
+                {
+                    return;
+                }
+
+                denialAbortFired = true;
+
+                // OFF this thread on purpose. Tee runs on the stdout reader callback; cancelling inline
+                // can resume WaitForExitAsync's continuation here, which then awaits the very reader
+                // drain this thread owes — a self-deadlock. Task.Run hands the cancel to the pool.
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        abortCts.Cancel();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // The run already finished and the source was disposed — nothing left to abort.
+                    }
+                });
             }
 
             ProcessResult process;
@@ -108,7 +143,7 @@ public sealed class ClaudePromptRunner : IPromptRunner
                     invocation.Timeout,
                     standardInput: invocation.ComposedPrompt,
                     stdoutLineSink: Tee,
-                    cancellationToken).ConfigureAwait(false);
+                    abortCts.Token).ConfigureAwait(false);
             }
             catch (System.ComponentModel.Win32Exception launchFailure)
             {
@@ -134,6 +169,39 @@ public sealed class ClaudePromptRunner : IPromptRunner
             transcript?.Complete();
 
             ClaudeResult result = parser.Build();
+
+            // #452 fail-fast outcome. Re-derived from the scanner (final now the reader has drained)
+            // rather than from the sink's flag, and reported as a DISTINCT summary: "no verdict" is
+            // useless to an operator without the reason, and the reason here — every granted-tool route
+            // was refused — is a CONFIGURATION fault the caller must surface, not a model failure.
+            // Deliberately NOT PromptFailureKind.Transient: re-running changes nothing.
+            // `!result.HasResult` keeps this from ever DISCARDING a verdict: if the child raced the kill
+            // and produced a terminal result anyway, that result is the answer. The bound exists to stop
+            // waste, not to punish a run that got there despite the refusals.
+            if (denialAbortThreshold is { } abortThreshold
+                && !result.HasResult
+                && permissionScanner.ConsecutiveDenials >= abortThreshold)
+            {
+                string refused = permissionScanner.BlockedWritePaths.Count > 0
+                    ? $" (refused: {string.Join(", ", permissionScanner.BlockedWritePaths.Take(3))})"
+                    : string.Empty;
+                return new PromptResult
+                {
+                    Completed = false,
+                    IsError = true,
+                    ResultText = result.ResultText,
+                    CostUsd = result.CostUsd,
+                    NumTurns = result.NumTurns,
+                    Usage = result.Usage is { } abortedUsage
+                        ? new PromptUsage { InputTokens = abortedUsage.InputTokens, OutputTokens = abortedUsage.OutputTokens }
+                        : null,
+                    FailureKind = PromptFailureKind.Error,
+                    BlockedWritePaths = permissionScanner.BlockedWritePaths,
+                    Summary =
+                        $"aborted after {abortThreshold} consecutive permission-denied tool calls — " +
+                        $"the prompt has no granted tool for what it was asked to do{refused}"
+                };
+            }
 
             bool completed = process.Succeeded && result.HasResult;
             string summary = BuildSummary(process, result);

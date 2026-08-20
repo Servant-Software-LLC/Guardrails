@@ -179,6 +179,23 @@ public sealed class RunJournal : Execution.ISchedulerJournal
         }
     }
 
+    /// <summary>
+    /// The attempts recorded for a task so far, in journal order (empty when the task has none yet).
+    /// A read-only projection for the harness's own supervisory prompts (issue #452): the #269
+    /// overwatcher composes its diagnose brief from the outcomes the harness ALREADY knows —
+    /// per-attempt outcome + failed-guardrail names — so the judge is handed the deterministic
+    /// evidence rather than made to reconstruct it by reading logs it may not be able to find.
+    /// </summary>
+    internal IReadOnlyList<AttemptRecord> AttemptsFor(string taskId)
+    {
+        lock (_gate)
+        {
+            return _document.Tasks.TryGetValue(taskId, out TaskJournalEntry? entry)
+                ? [.. entry.Attempts]
+                : [];
+        }
+    }
+
     /// <summary>The next merge sequence the journal will issue (without consuming it).</summary>
     public long NextMergeSequence
     {

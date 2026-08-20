@@ -120,6 +120,13 @@ public static class DecisionTokens
 
     /// <summary>A resume consumed a firstmate answer file for this escalation (§7.4–§7.6, doc 12 §6.2).</summary>
     public const string AnswerInjected = "answer-injected";
+
+    /// <summary>
+    /// The #269 overwatcher was consulted and SPENT, but produced no verdict (issue #452) — an errored /
+    /// turn-exhausted / denial-aborted / unparseable diagnose. Recorded so a billed supervisor failure is
+    /// auditable instead of silent; it changes no task verdict (the deterministic policy stands).
+    /// </summary>
+    public const string NoVerdict = "no-verdict";
 }
 
 /// <summary>One task rebuilt by a Part C drift resolution: its id and its old→new definition hash. A helper

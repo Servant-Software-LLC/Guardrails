@@ -209,6 +209,8 @@ public sealed class OnTheFlyDiagramObserver : IRunObserver
     // in BOTH chains, so the omission would hide it in every mode.
     public void VerifierAdvisoryFound(string taskId, string finding) => _inner.VerifierAdvisoryFound(taskId, finding);
 
+    public void OverwatchNoVerdict(string taskId, string reason) => _inner.OverwatchNoVerdict(taskId, reason);
+
     public void CleanupFailed(string owner, Exception error) => _inner.CleanupFailed(owner, error);
 
     public void PromptPaused(TaskNode task, string reason, TimeSpan backoff, int pauseCount) =>

@@ -151,6 +151,17 @@ internal static class ClaudePermissionScanner
         /// </summary>
         public IReadOnlyList<string> BlockedWritePaths => _blocked;
 
+        /// <summary>
+        /// How many permission denials have arrived with NO successful tool call in between (issue #452).
+        /// Distinct from <see cref="BlockedWritePaths"/>, which is DEDUPED by target and therefore cannot
+        /// distinguish "one refusal the agent worked around" from "every call this run was refused" — the
+        /// exact shape that let an overwatcher burn 11 turns re-trying blocked reads. Any tool_result that
+        /// is NOT a denial resets it to 0, so an agent making real progress between refusals is never cut
+        /// short. Read by <see cref="ClaudePromptRunner"/> to honour
+        /// <see cref="PromptInvocation.AbortAfterConsecutiveToolDenials"/>.
+        /// </summary>
+        public int ConsecutiveDenials { get; private set; }
+
         private void TrackToolUse(JsonElement root)
         {
             foreach (JsonElement block in Content(root))
@@ -195,10 +206,16 @@ internal static class ClaudePermissionScanner
                 // an explicit denial phrase so a benign mention can't trip it.
                 if (!IsPermissionDenial(text))
                 {
+                    // A tool call that actually RAN breaks the streak (#452): the fail-fast bound is on
+                    // CONSECUTIVE denials, never on the total, so an agent that hits one wall and then
+                    // reaches for a granted tool keeps its full budget.
+                    ConsecutiveDenials = 0;
                     continue;
                 }
 
                 _ = isError; // is_error is advisory here; the phrase is the gate.
+
+                ConsecutiveDenials++;
 
                 // Prefer what the message NAMES (the refused path, or the refused part of a compound
                 // Bash command), and only then the tool_use it must have come from.

@@ -26,6 +26,9 @@ public sealed class OverwatchTests
 {
     // ── Fakes ───────────────────────────────────────────────────────────────────────────────────
 
+    /// <summary>The #452 incident's terminal shape, in the runner's own wording.</summary>
+    private const string MaxTurnsSummary = "claude hit the max-turns ceiling (11 turn(s))";
+
     private sealed class RecordingRunner : IPromptRunner
     {
         private readonly List<PromptInvocation> _calls = new();
@@ -48,7 +51,12 @@ public sealed class OverwatchTests
                 IsError = ShouldReturnError,
                 ResultText = ShouldReturnError ? null : CannedResultText,
                 CostUsd = Cost,
-                Summary = "fake"
+
+                // #452: an ERROR result carries the runner's real-shaped reason — the literal incident was
+                // an error_max_turns termination — because that summary is now the text the harness
+                // SURFACES as "overwatch: no verdict — <reason>". A blank one would make the surfacing
+                // assertion vacuous.
+                Summary = ShouldReturnError ? MaxTurnsSummary : "fake"
             });
         }
     }
@@ -75,6 +83,20 @@ public sealed class OverwatchTests
         public void TaskFinished(TaskResult result) { }
         public void GuardrailFinished(TaskNode task, GuardrailResult result) { }
         public void DecisionRecorded(DecisionEntry entry) { lock (_decisions) { _decisions.Add(entry); } }
+
+        // Issue #452: the consulted-but-no-verdict surface. Distinct from Decisions because a supervisor
+        // failure is an advisory warning, not a decision that resolved.
+        private readonly List<(string TaskId, string Reason)> _noVerdicts = new();
+
+        public IReadOnlyList<(string TaskId, string Reason)> NoVerdicts
+        {
+            get { lock (_noVerdicts) { return _noVerdicts.ToList(); } }
+        }
+
+        public void OverwatchNoVerdict(string taskId, string reason)
+        {
+            lock (_noVerdicts) { _noVerdicts.Add((taskId, reason)); }
+        }
     }
 
     // ── Diagnose result builders ─────────────────────────────────────────────────────────────────
@@ -140,11 +162,15 @@ public sealed class OverwatchTests
 
         Assert.Equal(OverwatchDecisionKind.NoAction, d.Kind);
         Assert.Empty(observer.Decisions);
+
+        // #452: NOT consulted ⇒ still silent. Nothing ran and nothing was billed, so there is no event
+        // to report; only a diagnose that SPENT and produced nothing must speak up.
+        Assert.Empty(observer.NoVerdicts);
         Assert.False(File.Exists(OverwatchJsonl(taskLogDir)));
     }
 
     [Fact]
-    public async Task Advisory_MalformedProposal_ReturnsNoAction_NoRecords()
+    public async Task Advisory_MalformedProposal_ReturnsNoAction_ButRecordsANoVerdict()
     {
         using var plan = new StatePlanBuilder().AddTask("01-x", guardrailBody: StatePlanBuilder.Fail("f"));
         (PlanDefinition planDef, RunJournal journal, TaskNode task, string taskLogDir) = LoadFirstTask(plan);
@@ -156,9 +182,21 @@ public sealed class OverwatchTests
             OverwatchTrigger.NoOpDeadlock, task, planDef, 2, taskLogDir, journal, observer, TestContext.Current.CancellationToken);
 
         Assert.Equal(OverwatchDecisionKind.NoAction, d.Kind);
-        Assert.Single(runner.Calls);                 // it DID try (advisory), but the malformed body is ignored
-        Assert.Empty(observer.Decisions);            // no decision recorded — deterministic policy stands
-        Assert.False(File.Exists(OverwatchJsonl(taskLogDir)));
+        Assert.Single(runner.Calls);                 // it DID try (advisory), and the malformed body grants nothing
+        Assert.Empty(observer.Decisions);            // it is not a DECISION — the deterministic policy stands
+
+        // #452 — the contract MOVED here. It was consulted and it SPENT, so the failure is reported
+        // rather than swallowed: a visible line, a durable decisions[] entry, and a jsonl record.
+        // The old assertion (no records at all) is exactly the silence that let a billed no-op run
+        // unnoticed across every plan since preview.38.
+        Assert.Single(observer.NoVerdicts);
+        Assert.True(File.Exists(OverwatchJsonl(taskLogDir)));
+        Assert.Contains(
+            "\"decision\":\"no-verdict\"",
+            await File.ReadAllTextAsync(OverwatchJsonl(taskLogDir), TestContext.Current.CancellationToken));
+        Assert.Equal(
+            DecisionTokens.NoVerdict,
+            Assert.Single(journal.Document.Decisions ?? []).Decision);
     }
 
     [Fact]
@@ -175,6 +213,9 @@ public sealed class OverwatchTests
 
         Assert.Equal(OverwatchDecisionKind.NoAction, d.Kind);
         Assert.Empty(observer.Decisions);
+
+        // #452: still never throws and still never gates — but it no longer vanishes.
+        Assert.Contains("InvalidOperationException", Assert.Single(observer.NoVerdicts).Reason);
     }
 
     [Fact]
@@ -191,6 +232,10 @@ public sealed class OverwatchTests
 
         Assert.Equal(OverwatchDecisionKind.NoAction, d.Kind);
         Assert.Empty(observer.Decisions);
+
+        // #452: this is the LITERAL shape of the reported incident — an is_error terminal result. It used
+        // to leave no trace anywhere outside a per-attempt JSONL; now the runner's own summary is surfaced.
+        Assert.Equal(MaxTurnsSummary, Assert.Single(observer.NoVerdicts).Reason);
     }
 
     // ── TIER MAPPING onto autonomyPolicy ─────────────────────────────────────────────────────────
@@ -603,6 +648,33 @@ public sealed class OverwatchTests
         Assert.Equal(3, AttemptCount(plan.PlanDir, "01-multi"));   // ran the full budget — eager never gated early
         Assert.Single(diagnose.Calls);                            // eager fired exactly once (attempt 2)
         Assert.Single(triage.Calls);                              // terminal case fired once (attempt 3 exhaustion)
+    }
+
+    [Fact]
+    public async Task Eager_FiresOnEveryNonFinalAttemptFromTwo_NotOncePerTask()
+    {
+        // Issue #452 ask 4, pinned DELIBERATELY. The report observed a single fire across four struggling
+        // attempts and asked whether once-per-attempt is the designed policy. It IS — and this is what the
+        // policy actually produces once the budget is big enough to show it: with 5 attempts the diagnose
+        // fires at 2, 3 and 4 (every NON-final attempt from 2), never at 1 and never at the final attempt,
+        // where there is no next attempt left to enrich. The sibling test above sees ONE fire only because
+        // its budget is 3, so attempt 3 is final.
+        //
+        // The pin is a COST guard in both directions: this is a billed prompt per fire, so neither a
+        // "fire more often" nor a "fire once per task" change may land silently.
+        using var plan = new StatePlanBuilder(defaultRetries: 4)
+            .AddTask("01-multi", actionBody: ChangingOutputAction(), guardrailBody: StatePlanBuilder.Fail("never passes"));
+
+        var diagnose = new RecordingRunner("overwatch") { CannedResultText = GuidanceProposal() };
+        var triage = new RecordingRunner("ai-triage") { CannedResultText = "prose" };
+        var overwatch = new Overwatch(diagnose, new NeedsHumanTriage(triage), AutonomyPolicy.Prompt,
+            new FakeInteraction(OverwatchInteractionResult.NonInteractive));
+
+        await RunWithOverwatchAsync(plan.PlanDir, overwatch, TestContext.Current.CancellationToken);
+
+        Assert.Equal(5, AttemptCount(plan.PlanDir, "01-multi"));
+        Assert.Equal(3, diagnose.Calls.Count);                    // attempts 2, 3, 4 — one per non-final retry
+        Assert.Single(triage.Calls);                              // the terminal case, once
     }
 
     [Fact]
