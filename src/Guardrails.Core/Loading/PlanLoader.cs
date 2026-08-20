@@ -170,6 +170,9 @@ public sealed class PlanLoader
             Version = raw.Version.Value,
             MaxParallelism = raw.MaxParallelism ?? 3,
             DefaultRetries = raw.DefaultRetries ?? 2,
+            // #477: stays NULLABLE — an omitted key must remain distinguishable from any recorded count,
+            // because "intent not recorded" is what makes GR2062 skip rather than fire on every legacy plan.
+            IntendedWaves = raw.IntendedWaves,
             MaxCostUsd = raw.MaxCostUsd,
             DefaultTimeoutSeconds = raw.DefaultTimeoutSeconds ?? 1800,
             TransientPauseBudgetSeconds = raw.TransientPauseBudgetSeconds ?? 14400,

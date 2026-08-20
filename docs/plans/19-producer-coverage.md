@@ -1,8 +1,24 @@
 # Architecture: producer coverage — a gate must not require what nothing in the plan can produce
 
-> **Status: DRAFT design-of-record. Not implemented.** Per #106 this document goes out as a **draft PR**
-> for inline review before any implementation milestone starts. Issues: **#474** (task altitude),
-> **#477** (plan altitude). Neither issue is closed by this document.
+> **Status: PARTIALLY IMPLEMENTED as of 2026-08-20.** Issues: **#474** (task altitude), **#477** (plan
+> altitude).
+>
+> | piece | state |
+> |---|---|
+> | Milestone A — skill half (missing-insertion extended to gate folders; the reachability probe; the sibling-datum trace) | **SHIPPED** `e118b9d` |
+> | Milestone B — `intendedWaves` + **GR2062** + the "intends N, declares M" line | **SHIPPED** |
+> | Milestone A — harness half (**GR2060**) | **NOT BUILT** |
+>
+> The maintainer waived #106's draft-PR gate for this document and directed straight-to-implementation.
+> **#474 is NOT closed** — its headline (reachability) is permanently review-only by §2.2, and GR2060,
+> which covers the narrower coverage shape, is still unbuilt. **#477's mechanism is shipped.**
+>
+> One correction the implementation forced, recorded because the reasoning generalises: Milestone B's
+> false-positive zero is **STRUCTURAL, not empirical.** No committed plan folder carries `intendedWaves`
+> yet, so the corpus sweep proves only that the check is silent where the field is absent — which is the
+> skip condition, not the check. GR2062's real conservatism evidence is the `planIsClosed` matrix in its
+> tests, not the sweep. GR2055/2056/2057 earned an empirical zero against 500+ real scripts; this has not,
+> and the distinction should not be blurred when the next lint cites the precedent.
 
 ---
 
@@ -634,6 +650,28 @@ Nothing starts until the #106 draft-PR review of this document is addressed.
    `src/Guardrails.Core/Loading/PlanLoader.cs`, `src/Guardrails.Core/Loading/PlanValidator.cs`,
    `src/Guardrails.Core/Loading/DiagnosticCodes.cs`, the `plan`/`validate` CLI output,
    `docs/plans/02-schemas-and-contracts.md`, `.claude/skills/plan-breakdown/**`.
+
+> **LANDED 2026-08-20 — Milestone B, harness half.** `intendedWaves` (`int?`) rides
+> `RawRunConfig` → `PlanLoader` → `RunConfig` (nullable end to end, so "not recorded" stays distinguishable
+> from any count); `PlanValidator.PlanIsClosed` is the §3.3 predicate, written once and documented as
+> GR2060's suppressor too; `PlanValidator.ValidateIntendedWaves` emits GR2062; and
+> `Core.Model.WaveIntentSummary.Describe` renders the §3.2 line for BOTH `validate` and `plan` from one
+> implementation — two spellings of the same answer would reintroduce, in miniature, the disagreement the
+> field exists to make impossible.
+>
+> Three notes for whoever picks up the rest:
+> - **There is no `PlanJson.cs`.** The raw deserialization target is `Loading/RawManifests.cs`
+>   (`RawRunConfig`); the handoff above names a file that does not exist.
+> - **A FLAT plan carrying the key does warn.** `planIsClosed` is trivially true with no waves, so
+>   `intendedWaves: 3` against zero wave folders satisfies both conjuncts. It fires with flat-specific
+>   wording rather than an arithmetic "declares 0", and it can only fire where an author explicitly wrote a
+>   waved-plans-only key into a plan that has no waves — which is worth saying, not swallowing.
+> - **No non-positive-value check, deliberately.** `intendedWaves: 0` on a waved plan already lands as the
+>   other-polarity GR2062 ("the plan grew past its stated intent"), which is honest and actionable; a
+>   GR2012-style error would spend a code to say something the existing warning already says.
+>
+> **NOT done here:** `plan-breakdown` emitting the field at plan-folder creation (a skill change), and
+> GR2060 itself, which remains reserved-by-name and unbuilt.
 
 **Sequencing constraint.** Steps 1–3 all edit `PlanValidator.cs`; they are one agent, in order, not
 parallel. Step 5 touches no C#. Milestone B must not start before A merges — both touch

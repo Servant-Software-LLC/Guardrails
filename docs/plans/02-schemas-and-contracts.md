@@ -155,6 +155,7 @@ Two invariants govern the folder, and a future change must honour both:
   "defaultTimeoutSeconds": 1800,      // per-attempt ceiling when nothing narrower applies
   "transientPauseBudgetSeconds": 14400,// cumulative wall-clock a task may spend PAUSED on transient infra limits (#115); default 14400 (4h); 0 disables pausing
   "maxCostUsd": 5.00,                 // OPTIONAL per-run cost ceiling, decimal USD; absent = no cap
+  "intendedWaves": 3,                 // OPTIONAL, waved plans only (§14.1), issue #477. How many waves this plan INTENDS, recorded at plan-folder creation from the reviewed source. Compared against the wave folders on disk by GR2062 (WARN, gated on planIsClosed). ABSENT = intent not recorded ⇒ GR2062 skipped entirely; no plan is forced to migrate. AUTHOR-TIME ONLY — no run-path code reads it
   "guardrailMode": "failFast",        // "failFast" (default) | "runAll"
   "workspace": "..",                  // cwd for all child processes, relative to the plan dir
   "worktreeRoot": null,               // OPTIONAL; override the git-worktree root. null = <temp>/gr-wt/<hash>/<runId>/ (#383). A MACHINE concern is better set via the GUARDRAILS_WORKTREE_ROOT env var (§2) than this per-plan key
@@ -5591,6 +5592,18 @@ total order (there is no `dependsOnWave` edge). Validation:
   `<plan>/wave-NN-<slug>`). A wave has no `guardrails.json` by design, so this replaces the dead-end
   `GR1001` with the parent plan root and the wave-aware invocation. `plan-hash` / `mark-reviewed` **do**
   accept a wave folder (§13) and resolve it through the parent plan.
+- **GR2062** (warning) — **wave shortfall**: `intendedWaves` (§2) disagrees with the number of declared
+  `wave-*` folders **and every declared wave is authored**, so the #365 one-ahead invariant is not pending
+  but gone. The second conjunct — **`planIsClosed`**, i.e. no declared wave folder has zero tasks (trivially
+  true for a flat plan) — is load-bearing: during normal JIT authoring a plan legitimately declares fewer
+  waves than it intends, and a warning that fired then would be ignored. `intendedWaves` **absent ⇒ skipped
+  entirely**. The other polarity (more declared than intended) warns with the same code. Design of record
+  `19-producer-coverage.md` §3.2/§3.3; the same `planIsClosed` predicate is GR2060's suppressor.
+
+**Reported, not only validated.** On a waved plan `guardrails validate` and `guardrails plan` each print one
+line — `Waves: 3 intended, 2 declared (1 not yet created)`, or `2 declared (intent not recorded)` when
+`intendedWaves` is absent. It is printed unconditionally, including through the healthy one-ahead state
+where GR2062 is correctly silent, so that state stays visible rather than reading as agreement.
 
 ### 14.2 Wave-qualified identity (the load-bearing delta)
 
@@ -5882,11 +5895,19 @@ in Phase 0; it will take a fresh GR code when implemented (`GR2038` was since ta
 #225's `InvalidTierValue` (§3), **`GR2044`–`GR2046` by #224's provider registry**
 (`InvalidPromptRunnerKind` / `InvalidRunnerAxis` / `RetiredRoutingRank`, §9), and **`GR2047`–`GR2050` by
 #201's model-tiering Stage 1.5** (`MalformedRoutingGuidance` / `UnservableTier` / `TieringInert` /
-`EffortInvalid`, §9.6), so the next free is `GR2051` — but note that `GR2051`–`GR2054` are RESERVED BY NAME
-for the rest of the model-tiering epic (`NonRoutableBlockIsDefault` / `CostlyBlockRoutingInert` /
-`PinAndTierCoexist` / `RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), so an unrelated
-new code should take **`GR2055`**. `DiagnosticCodes.cs` carries the same note and, per that document's
-standing instruction, **the file wins**: re-verify against it immediately before allocating.)
+`EffortInvalid`, §9.6), `GR2055`–`GR2059` by the unsatisfiable-guardrail family and #459
+(`UnsatisfiableGuardrailFloor` / `GuardrailScriptDoesNotParse` / `GuardrailRequiresForbiddenToken` /
+`BannedPatternScanTimedOut` / `WaveIntegrationScopeInert`, §4.6/§4.7), **`GR2062` by #477's
+`IntendedWaveNotDeclared`** (§14.1), and **`GR2063`–`GR2064` by #402's breakdown-durability pair**
+(`WaveBreakdownIncomplete` / `BreakdownIntentDeclaresNothing`, §14.11), so an unrelated new code should take
+**`GR2065`**. Still RESERVED BY NAME and not to be re-used: `GR2051`–`GR2054` for the rest of the
+model-tiering epic (`NonRoutableBlockIsDefault` / `CostlyBlockRoutingInert` / `PinAndTierCoexist` /
+`RoutingNumericNonPositive`, `docs/plans/17-model-tiering.md` §13.2), `GR2060`
+(`docs/plans/19-producer-coverage.md` §3.1) and `GR2061` (`docs/plans/18-integration-proof-proximity.md`
+§3.4). The `GR10xx` ladder advances INDEPENDENTLY — its next free is `GR1011`, `GR1010` having been taken by
+#472 — and a note stating only one of the two ladders is half a fact. `DiagnosticCodes.cs` carries the same
+note and, per that document's standing instruction, **the file wins**: re-verify against it immediately
+before allocating.)
 
 **Hash treatment.**
 - **EXCLUDED from `PlanDefinitionHash`** (§7.3): `brief.md` is breakdown *input*, not the reviewed *output* a
@@ -5926,6 +5947,14 @@ and is **removed when the wave settles complete**: its lifetime is one attempt. 
 forward references in the already-authored gates instead is **rejected** — that is the fuzzy-text inference
 GR2055/GR2057 spent their whole conservatism budget avoiding. A declared list is decidable; prose is not.
 
+**Exactly one field is load-bearing: `tasks[].folder`.** `version` and `declaredAt` are **OPTIONAL** and read
+by nothing — an absent `version` resolves `1` (the reader understands one shape, so there is nothing to
+switch on) and `declaredAt` is informational. The reader also accepts `//` comments and trailing commas, like
+every other manifest here. The tolerance is deliberate and the strictness is spent on the one field that
+matters: a refused manifest silently costs the wave its salvage, so refusing one over a missing timestamp or
+a stray comma buys nothing and loses the thing. A `folder` entry is DROPPED when it is blank, carries a path
+separator (the manifest names folders directly under the wave's `tasks/`), or repeats an earlier entry.
+
 **Sweep.** After the invocation the harness moves to `rejected/` any task folder that the inventory shows the
 attempt **created** *and* that fails the loader's completeness predicate (`task.json` present and an action
 resolved). All conditions must hold; nothing is deleted. This is what turns "11 complete + 1 half-written"
@@ -5937,11 +5966,33 @@ skipped entirely** (the `GR2062` rule). Severity is a warning so a human hand-fi
 blocked; the **harness routes on the code**, so the automated path is fully gated. Remedy: correct or delete
 the manifest.
 
+**`GR2064` `BreakdownIntentDeclaresNothing` (WARNING) — the fourth case, and it is NOT silent.** A manifest
+that **exists and parses** can still yield **no usable folder**: every entry blank, path-bearing or a
+duplicate, no `tasks` entries at all, or content that is the JSON literal `null`. Read as a
+usable-or-nothing question that is byte-for-byte indistinguishable from ABSENT, so one typo bought **no
+GR2063, no prefix preservation, and no diagnostic naming either loss** — a mechanism whose entire purpose is
+salvage, disabled silently, in the direction that looks fine. The manifest read therefore reports **four**
+states, not two: *absent* (silent), *unreadable/unparseable* (silent — `validate` is read-only and must not
+punish a plan for an unreadable runtime file), *present-but-declaring-nothing* (**GR2064**), *usable*. The
+message names the manifest **path** and lists each rejected entry with its reason; the remedy is named both
+ways — fix the `folder` values, or DELETE the manifest if the wave declares no intent. Warning, not error, on
+GR2063's reasoning exactly: nothing here makes the plan invalid, but the operator must be told. False-positive
+rate is structurally zero (the manifest's lifetime is one breakdown attempt, so no committed plan folder can
+carry one) — the weaker by-construction claim, not GR2055/GR2056/GR2057's measured zero. Widening GR2064 to
+cover the *unparseable* case was considered and **declined**: it costs the same salvage, but that silence is
+a recorded deliberate call and reversing it belongs to its own decision.
+
+Correspondingly, the **quarantine halt below never says "the wave carries no manifest" when a file is sitting
+there** — it names which of the three no-usable-manifest states holds (absent / unreadable / declares
+nothing, with the rejected entries). #471's lesson is that a halt asserting a false thing costs more than a
+halt asserting nothing.
+
 **Classification and resume.** A cut-off session is never `BreakdownComplete` (§14.4). A valid prefix is
 preserved as `WaveHaltKind.BreakdownIncomplete` **only when the manifest is present and unsatisfied** — that
 manifest is the sole durable signal that re-opens the JIT checkpoint on the next run, so without it a
 preserved prefix would read as an authored wave one run boundary later, which is strictly worse than a loud
-quarantine. A cut-off session with **no** manifest is therefore quarantined, and the halt says so. On
+quarantine. A cut-off session with **no USABLE** manifest is therefore quarantined, and the halt says so —
+naming which of absent / unreadable / declares-nothing (GR2064) applies. On
 `BreakdownIncomplete` the invoker composes a **resume** prompt naming the manifest, the complete folders, and
 the folders still owed. Bounded: at most **3** segments per wave per run; a segment adding **zero** complete
 task folders halts rather than retries; a reached `maxCostUsd` stops further segments. Spend accrues to

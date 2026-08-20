@@ -1462,7 +1462,10 @@ public sealed class Scheduler
             (bool valid, string report, int authoredTaskCount, WaveNode? authoredWave) =
                 ValidatePlanAfterBreakdown(plan.PlanDirectory, wave.Dir);
 
-            BreakdownIntent? intent = BreakdownIntent.TryRead(wave.Directory);
+            // Read at FULL fidelity: the quarantine reason below has to say which of "no manifest" and "a
+            // manifest that declares nothing" actually happened, and TryRead collapses them into one null.
+            BreakdownIntentRead intentRead = BreakdownIntent.Read(wave.Directory);
+            BreakdownIntent? intent = intentRead.Usable;
             IReadOnlyList<string> missing = intent?.MissingFolders(wave.Directory) ?? [];
             int declared = intent?.DeclaredFolders().Count ?? 0;
 
@@ -1482,15 +1485,33 @@ public sealed class Scheduler
             // can NEVER be reported BreakdownComplete (§4.2), whatever validate says.
             if (intent is null)
             {
-                // No manifest, so nothing durable distinguishes this prefix from a finished wave on the NEXT
-                // run — and a valid prefix that reads as finished is strictly worse than a loud quarantine.
-                // Salvage is exactly what the manifest buys; without it we keep today's behaviour.
+                // No USABLE manifest, so nothing durable distinguishes this prefix from a finished wave on
+                // the NEXT run — and a valid prefix that reads as finished is strictly worse than a loud
+                // quarantine. Salvage is exactly what the manifest buys; without it we keep today's
+                // behaviour. Which of the three no-manifest states holds is named, never generalised into
+                // "carries no manifest" — that sentence is FALSE when the file is sitting right there, and
+                // #471's lesson is that a halt saying a false thing costs more than a halt saying nothing.
+                string manifestClause = intentRead.Presence switch
+                {
+                    BreakdownIntentPresence.Absent =>
+                        $"the wave carries no 'state/{BreakdownIntent.FileName}' declaring what it intended "
+                        + "to author",
+                    BreakdownIntentPresence.Unreadable =>
+                        $"the wave's 'state/{BreakdownIntent.FileName}' exists but could not be read or "
+                        + "parsed, so it declares nothing",
+                    _ => $"the wave's 'state/{BreakdownIntent.FileName}' exists but {intentRead.Explanation} "
+                         + "(GR2064), so it declares nothing"
+                };
+
+                string rejected = intentRead.RejectedEntries.Count == 0
+                    ? ""
+                    : "\nRejected manifest entries: " + string.Join("; ", intentRead.RejectedEntries) + ".";
+
                 return FailBreakdown(plan, wave, settled, policy, invocationToken, inventory, rejectedRoot,
                     outcome, report, authoredTaskCount,
-                    reason: $"The session {outcome.CutOffCause}, and the wave carries no "
-                            + $"'state/{BreakdownIntent.FileName}' declaring what it intended to author, so "
+                    reason: $"The session {outcome.CutOffCause}, and {manifestClause}, so "
                             + "the harness cannot tell a finished wave from a truncated prefix. The partial "
-                            + "output is quarantined rather than silently read as complete.");
+                            + "output is quarantined rather than silently read as complete." + rejected);
             }
 
             int completeAfter = declared - missing.Count;

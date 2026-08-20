@@ -18,6 +18,23 @@ public sealed record RunConfig
     public int DefaultRetries { get; init; } = 2;
 
     /// <summary>
+    /// How many waves this plan INTENDS (SSOT §2/§14.1, issue #477, doc 19 §3.2). OPTIONAL, waved plans
+    /// only, written once at plan-folder creation from the reviewed source. Null (the default) means the
+    /// intent was never recorded, and <see cref="Loading.DiagnosticCodes.IntendedWaveNotDeclared"/> is
+    /// skipped entirely — no existing plan is forced to migrate.
+    /// <para>It exists because wave intent was previously recorded NOWHERE machine-readable: this config
+    /// carried no wave information, the SSOT recorded no count, <c>diagram.md</c> is regenerated FROM the
+    /// wave folders so it can never disagree with them, and the charter that settles the wave count is a
+    /// sibling of the plan folder with no reference from inside it. Nothing in a plan could be ASKED how
+    /// many waves it was supposed to have, which is how a lost wave-3 stub survived a clean <c>validate</c>,
+    /// a clean <c>graph --check</c> and two review passes, and was found only by the terminal gate after
+    /// 20 tasks and $115.32.</para>
+    /// <para>It is READ ONLY at author time. Nothing in the run path consults it: it can never halt a run,
+    /// change scheduling, or gate delivery.</para>
+    /// </summary>
+    public int? IntendedWaves { get; init; }
+
+    /// <summary>
     /// Optional per-run cost ceiling in USD (SSOT §2). When set, the scheduler stops launching
     /// new attempts once the journal's cumulative cost reaches or exceeds it, settling the
     /// remaining work <c>needs-human</c> ("cost cap reached"). Null (the default) means no cap —

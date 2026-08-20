@@ -48,6 +48,14 @@ public static class PlanCommand
             output.WriteLine($"Execution plan (WAVED) — {probe.Plan.Waves.Count} wave(s) in strict order, " +
                              $"{probe.Plan.Tasks.Count} task(s) total, maxParallelism {probe.Plan.Config.MaxParallelism}");
             output.WriteLine("Waves run one at a time behind a hard barrier (SSOT §14.4).");
+
+            // The #477 floor (doc 19 §3.2): intended-vs-declared, the question a plan folder could not be
+            // asked before `intendedWaves` existed. Always non-null here — this branch is waved by test.
+            if (Core.Model.WaveIntentSummary.Describe(probe.Plan) is { } waveLine)
+            {
+                output.WriteLine(waveLine);
+            }
+
             output.WriteLine();
 
             for (int w = 0; w < probe.Plan.Waves.Count; w++)

@@ -35,6 +35,15 @@ public static class ValidateCommand
         var diagnostics = new List<Core.Loading.Diagnostic>(result.Diagnostics);
         if (result.Plan is not null)
         {
+            // The #477 floor (doc 19 §3.2): on a WAVED plan, say how many waves the plan intends versus how
+            // many it declares. Printed unconditionally — GR2062 is correctly silent through the healthy
+            // one-ahead state, and this line is what keeps that state visible instead of looking like
+            // agreement. Null (and so unprinted) on a flat plan.
+            if (Core.Model.WaveIntentSummary.Describe(result.Plan) is { } waveLine)
+            {
+                io.Out.WriteLine(waveLine);
+            }
+
             // One nudge per attestation target: a flat plan yields at most one (unchanged); a WAVED plan
             // yields one per authored, unattested wave and no plan-level line (issues #472/#488).
             diagnostics.AddRange(Core.Loading.PlanValidator.ReviewMarkerDiagnostics(

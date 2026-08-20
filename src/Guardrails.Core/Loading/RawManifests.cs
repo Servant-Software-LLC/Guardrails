@@ -9,6 +9,11 @@ internal sealed class RawRunConfig
     public int? Version { get; set; }
     public int? MaxParallelism { get; set; }
     public int? DefaultRetries { get; set; }
+
+    // How many waves this plan INTENDS (SSOT §2/§14.1, issue #477). OPTIONAL, waved plans only; null ⇒ the
+    // intent was never recorded ⇒ GR2062 is skipped entirely (no plan is forced to migrate).
+    public int? IntendedWaves { get; set; }
+
     public decimal? MaxCostUsd { get; set; }
     public int? DefaultTimeoutSeconds { get; set; }
     public int? TransientPauseBudgetSeconds { get; set; }

@@ -866,6 +866,69 @@ total order driven by the wave folder's numeric prefix.
   `/guardrails-review` **that single wave** (each wave has its own `PlanDefinitionHash`-keyed review marker);
   resume. The whole-plan "break down everything up front" path still works when the downstream waves ARE
   designable up front.
+- **Breakdown durability -- declared intent, prefix preservation, resume segments (#385/#402/#471/#489,
+  SSOT §14.11, design of record `docs/plans/20-jit-breakdown-durability.md`).** Neither session bound can be
+  sized from the invocation, so ANY bound is eventually hit by a big enough wave; the answer is not a bigger
+  budget but making the work **restartable at a boundary**, so hitting a bound costs one task instead of the
+  wave. Four moving parts:
+  - **Pre-invocation inventory.** Before invoking, the harness records the wave's `path -> (size, sha256)` +
+    the bytes, to `logs/<runId>/<wave>/breakdown/`, over the three subtrees a wave contributes to
+    `PlanDefinitionHash` (`tasks/`, `guardrails/`, `preflights/`). That scope is what makes the property
+    *"`PlanDefinitionHash` after a quarantine equals its value before the invocation"* provable rather than
+    hopeful -- **a quarantine never spends a review attestation**.
+  - **Intent manifest.** `plan-breakdown`'s FIRST act on a waved invocation is
+    `<wave>/state/breakdown-intent.json` -- `{ version, declaredAt, tasks: [{ folder, purpose }] }`, the
+    ordered decomposition it INTENDS to author. It exists because **a truncated prefix's DEBT is not
+    computable from the prefix**: the measured manual recovery read the same artifacts and concluded 13 tasks
+    when the real number was 14, and the missed one was the SSOT schema-delta task that would have failed the
+    terminal gate after every other task ran green. Reconstructing the debt from forward references in the
+    already-authored gates is REJECTED -- that is the fuzzy-text inference GR2055/GR2057 spent their whole
+    conservatism budget avoiding. Hash-excluded `state/` placement, cleared by `--fresh`, **removed when the
+    wave settles complete**: its lifetime is ONE attempt. **Only `tasks[].folder` is load-bearing** --
+    `version`/`declaredAt` are optional and read by nothing, and `//` comments + trailing commas are
+    accepted; a refused manifest silently costs the wave its salvage, so strictness is spent on the one
+    field that matters.
+  - **Sweep, then classify.** After the invocation the harness moves to `rejected/` any task folder the
+    inventory shows the attempt CREATED that fails the completeness predicate (`task.json` present + an
+    action resolved) -- turning "11 complete + 1 half-written" into an 11-task valid PREFIX instead of a
+    discarded wave. **A cut-off session is NEVER `BreakdownComplete`**, whatever `validate` says. A valid
+    prefix is preserved as **`WaveHaltKind.BreakdownIncomplete` only when the manifest is present and
+    unsatisfied** -- that manifest is the sole durable signal that re-opens the JIT checkpoint next run, so
+    without it a preserved prefix would read as an AUTHORED wave one run boundary later, which is strictly
+    worse than a loud quarantine. **Cancellation is not a special case (#489):** the guarantee is a PROPERTY
+    -- the plan folder is never left in a state the loader rejects -- so ANY exit other than a settled
+    classification (Ctrl+C, an unexpected fault) runs the same sweep-then-decide, token-unbound.
+  - **Resume segments.** On `BreakdownIncomplete` the invoker composes a RESUME prompt naming the manifest,
+    the complete folders and the folders still owed, so the (232 KB, measured) brief is not re-paid for work
+    already done. Bounded: **at most 3 segments** per wave per run; a segment adding **zero** complete task
+    folders halts rather than retries; a reached `maxCostUsd` stops further segments. Spend accrues to
+    `overheadCostUsd`.
+  - **The two codes.** **GR2063** `WaveBreakdownIncomplete` (WARNING) -- a declared `folder` has no complete
+    task folder; the harness ROUTES on the code, so the automated path is fully gated while a human
+    hand-finishing a wave is only nudged. **GR2064** `BreakdownIntentDeclaresNothing` (WARNING) -- a manifest
+    that EXISTS and PARSES but yields no usable folder (every entry blank / path-bearing / duplicate, no
+    `tasks` entries, or JSON `null`). GR2064 exists because that state was byte-for-byte indistinguishable
+    from ABSENT, so **one typo cost the whole salvage with no diagnostic at all**. The read now reports FOUR
+    states -- absent (silent), unreadable/unparseable (silent, deliberately), declares-nothing (GR2064),
+    usable -- and the quarantine halt NAMES which one holds instead of asserting "the wave carries no
+    manifest" with the file on disk (#471's lesson: a halt saying a false thing costs more than one saying
+    nothing).
+- **`intendedWaves` -- the one machine-readable record of wave intent (#477, GR2062, SSOT §2/§14.1, doc 19
+  §3.2).** One optional integer in the plan's `guardrails.json`, written at plan-folder creation. Before it,
+  wave intent lived NOWHERE machine-readable: the run config carried no wave information, `diagram.md` is
+  regenerated FROM the folders so it can never disagree with them, and the charter that settles the count is
+  a sibling of the plan folder with no reference from inside it -- so a lost wave-3 stub survived a clean
+  `validate`, a clean `graph --check` and two review passes, and was found only by the terminal gate after
+  20 tasks and $115.32. **GR2062 is a WARNING gated on `planIsClosed`** (no declared wave folder has zero
+  tasks; trivially true for a flat plan), which keeps it silent through every healthy one-ahead JIT state --
+  a warning that fired there would be ignored inside a week. **Absent `intendedWaves` => skipped entirely**;
+  no plan is forced to migrate. The YAGNI objection ("the author can just lower it") does not carry, and the
+  reason is TEMPORAL: `intendedWaves` is written at wave-1 authoring and grades a LATER, SEPARATE JIT
+  invocation -- **the declaration survives the event it guards** -- unlike doc 18's declined lint, where the
+  declaring agent is the agent the declaration grades. `validate` and `plan` also each print one line on a
+  waved plan (`Waves: 3 intended, 2 declared (1 not yet created)`), unconditionally, so the healthy state
+  GR2062 stays silent on is still VISIBLE rather than reading as agreement. Author-time only -- no run-path
+  code reads the field.
 - **`dependsOn` is intra-wave only (GR2034); the state key is wave-qualified.** A cross-wave dependency is
   expressed as the downstream wave's entry gate, never a task edge. A prompt action's state fragment must
   be keyed by the wave-qualified id `<waveDir>/<taskFolder>` (a bare folder-name key is rejected foreign
@@ -901,6 +964,8 @@ total order driven by the wave folder's numeric prefix.
 | Founding plan (history) | `docs/plans/00-initial-plan.md` |
 | Multi-wave plans (nested layout, design of record) | `docs/plans/10-multi-wave-plans.md` (contract in SSOT section 14) |
 | The overwatcher (active AI supervisor, design of record) | `docs/plans/11-overwatcher.md` (contract in SSOT §9.2/§9.2.1) |
+| JIT breakdown durability (intent manifest, prefix, resume) | `docs/plans/20-jit-breakdown-durability.md` (contract in SSOT §14.11; GR2063/GR2064) |
+| Producer coverage + wave intent (`intendedWaves`) | `docs/plans/19-producer-coverage.md` (contract in SSOT §2/§14.1; GR2062 shipped, GR2060 reserved) |
 | Golden example (runnable + skill reference) | `examples/hello-guardrails/` |
 | Waved worked example (2 waves, validate-clean) | `examples/waved-hello/` + `plan-breakdown/references/example-breakdown-waved.md` |
 
@@ -1021,17 +1086,20 @@ total order driven by the wave folder's numeric prefix.
   (continuity/barrier/resume/drift/reset/crash-replay) + `SafeSuffixEvaluatorTests` (marker exempt /
   trailer-less-non-marker refuse) + Integration `WaveExecutionRunTests` (real git: continuity + markers +
   materialization gate + resume + real wave rewind + hand-fix refuse + dangling-markerSha-ignored +
-  HEAD-independence). Next-free GR code: **GR1011 / GR2063** (GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
-  FOUR blocks are RESERVED BY NAME and must not be re-used: GR2051-GR2054 for the rest of the model-tiering
+  HEAD-independence). Next-free GR code: **GR1011 / GR2065** (GR1010 is TAKEN — `WaveFolderIsNotALoadablePlan`.
+  GR2062, GR2063 and GR2064 are all SHIPPED now, so only TWO reserved-by-name blocks remain and must not be
+  re-used: GR2051-GR2054 for the rest of the model-tiering
   epic (`docs/plans/17-model-tiering.md` §13.2 — NonRoutableBlockIsDefault / CostlyBlockRoutingInert /
-  PinAndTierCoexist / RoutingNumericNonPositive); GR2060 + GR2062 for `docs/plans/19-producer-coverage.md` §1;
-  GR2061 for `docs/plans/18-integration-proof-proximity.md` §3.4 (the deferred seam-ledger lint); and
-  GR2063 itself for `docs/plans/20-jit-breakdown-durability.md` (`WaveBreakdownIncomplete`) — so an
+  PinAndTierCoexist / RoutingNumericNonPositive); and GR2060 (`docs/plans/19-producer-coverage.md` §3.1,
+  `UnproducibleGateRequirement`, designed but NOT built) + GR2061
+  (`docs/plans/18-integration-proof-proximity.md` §3.4, the deferred seam-ledger lint) — so an
   UNRELATED new code takes the next code `DiagnosticCodes.cs` records as free, which is why
   **`DiagnosticCodes.cs` WINS — re-verify against its next-free comment before allocating.**
   GR2055 = UnsatisfiableGuardrailFloor #484; GR2056 = GuardrailScriptDoesNotParse #473; GR2057 =
   GuardrailRequiresForbiddenToken #470 ask 1; GR2058 = BannedPatternScanTimeout #487; **GR2059** =
-  WaveIntegrationScopeInert #459 (see the wave-root INERT note under Guardrail scope, above).
+  WaveIntegrationScopeInert #459 (see the wave-root INERT note under Guardrail scope, above);
+  **GR2062** = IntendedWaveNotDeclared #477 (doc 19 Milestone B); **GR2063** = WaveBreakdownIncomplete and
+  **GR2064** = BreakdownIntentDeclaresNothing, both #402/doc 20 (see **Breakdown durability**, above).
   GR2035 = DuplicateCheckName — two checks in one
   folder sharing a `Name`, #332/SSOT §4.5; GR2036 = ExpectedDurationNonPositive — the optional guardrail
   `expectedDurationSeconds` progress hint ≤ 0, SSOT §4.1.1 / §12.1, issue #331 — the long-running-guardrail
@@ -1064,18 +1132,20 @@ total order driven by the wave folder's numeric prefix.
   (mid-run TTY confirm is a v2 UX bet). Tested: Core `OverwatchClassifierTests` (asymmetry matrix) +
   Integration `OverwatchTests` (advisory-never-gates, no-sanctioned-change/grant, tier mapping, cost bound,
   reporting, eager once-per-attempt, un-halt-the-short-circuit, drift-disjoint). v2 bets: silent `auto`-tier
-  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2063**
+  auto-heal + persistent authoring-defect fixes + the inter-wave role. Next-free GR code: **GR1011 / GR2065**
   — **`DiagnosticCodes.cs`'s own next-free comment WINS; re-verify against it before allocating** (GR1010 is
   TAKEN: `WaveFolderIsNotALoadablePlan`). Reserved-by-name blocks that must not be re-used: **GR2051-GR2054**
-  model tiering (`docs/plans/17-model-tiering.md` §13.2), **GR2060 + GR2062** (`docs/plans/19-producer-coverage.md`
-  §1), **GR2061** (`docs/plans/18-integration-proof-proximity.md` §3.4), **GR2063**
-  (`docs/plans/20-jit-breakdown-durability.md`). Taken: GR2035 =
+  model tiering (`docs/plans/17-model-tiering.md` §13.2), **GR2060** (`docs/plans/19-producer-coverage.md`
+  §3.1 — `UnproducibleGateRequirement`, designed but NOT built), **GR2061**
+  (`docs/plans/18-integration-proof-proximity.md` §3.4). Taken: GR2035 =
   DuplicateCheckName #332; GR2036 = ExpectedDurationNonPositive #331; GR2037 = BannedGuardrailPattern #346;
   GR2038 = WorktreePathTooLong #384; GR2039/GR2040 = autonomy-dial value + compound-config #361; GR2041 =
   MissingWriteScope #389; GR2042 = StructuralOverScope over-scope WARN #378; GR2043-GR2050 = the
   model-tiering schema codes, SSOT §9.6; GR2055 = UnsatisfiableGuardrailFloor #484; GR2056 =
   GuardrailScriptDoesNotParse #473; GR2057 = GuardrailRequiresForbiddenToken #470 ask 1; GR2058 =
-  BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459.
+  BannedPatternScanTimeout #487; GR2059 = WaveIntegrationScopeInert #459; **GR2062** =
+  IntendedWaveNotDeclared #477; **GR2063** = WaveBreakdownIncomplete and **GR2064** =
+  BreakdownIntentDeclaresNothing, both #402/doc 20.
 - **Overhead-cost sink now covers THREE prompt sources (#314) -- LANDED.** M3's overhead sink was
   generalized: `JournalDocument.OverwatchCostUsd` -> `OverheadCostUsd`, `RunJournal.AddOverwatchCost` ->
   `AddOverheadCost` (also added to `ISchedulerJournal` as a default no-op so scheduler fakes are

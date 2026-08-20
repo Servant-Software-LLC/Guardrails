@@ -345,6 +345,36 @@ public sealed class SchedulerBreakdownDurabilityTests
         Assert.Empty(Directory.GetFileSystemEntries(Path.Combine(b.PlanDir, Wave2, "tasks")));
     }
 
+    [Fact]
+    public async Task AManifestThatDeclaresNothing_IsQuarantinedToo_ButTheHaltNeverClaimsThereIsNoManifest()
+    {
+        (WavePlanBuilder b, PlanDefinition plan) = WavedPlan();
+        using WavePlanBuilder _ = b;
+
+        // A session that wrote a manifest whose every entry is unusable. Salvage is genuinely impossible —
+        // there is nothing declared to resume — so the quarantine is right. What must NOT happen is the halt
+        // asserting "the wave carries no manifest" while the file sits on disk (#471's lesson about text).
+        var invoker = new WaveBreakdownInvoker(new StubBreakdownRunner(
+            (inv, _) =>
+            {
+                string stateDir = Path.Combine(inv.WorkingDirectory, Wave2, "state");
+                Directory.CreateDirectory(stateDir);
+                File.WriteAllText(Path.Combine(stateDir, BreakdownIntent.FileName),
+                    """{ "version": 1, "tasks": [ { "folder": "tasks/01-compile" } ] }""");
+                AuthorTask(inv.WorkingDirectory, "01-compile");
+            },
+            PromptFailureKind.Timeout));
+
+        RunReport report = await NewScheduler(plan, RunJournal.LoadOrCreate(plan),
+            new RecordingWorktreeProvider(), invoker).RunAsync(plan, Ct);
+
+        Assert.Equal(WaveHaltKind.BreakdownFailed, report.WaveHalt!.Kind);
+        Assert.DoesNotContain("carries no", report.WaveHalt.Detail);
+        Assert.Contains("GR2064", report.WaveHalt.Detail);
+        Assert.Contains("tasks/01-compile", report.WaveHalt.Detail);
+        Assert.Empty(Directory.GetFileSystemEntries(Path.Combine(b.PlanDir, Wave2, "tasks")));
+    }
+
     // --- 4. bounded resume ------------------------------------------------------------------------
 
     [Fact]

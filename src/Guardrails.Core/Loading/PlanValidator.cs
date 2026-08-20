@@ -87,6 +87,7 @@ public sealed class PlanValidator
         ValidateTierServability(plan, diagnostics);
         ValidateAutonomy(plan, diagnostics);
         ValidateInterpreters(plan, diagnostics);
+        ValidateIntendedWaves(plan, diagnostics);
         ValidateWaveBreakdownIntent(plan, diagnostics);
 
         return diagnostics;
@@ -2844,6 +2845,65 @@ public sealed class PlanValidator
         guardrails.Where(g => g.Kind == ActionKind.Script).Select(g => g.Path);
 
     /// <summary>
+    /// <b>`planIsClosed`</b> (doc 19 §3.3) — the plan has no declared wave folder with zero tasks, so its
+    /// declaration set is COMPLETE and nothing further is expected to be authored. Trivially true for a flat
+    /// plan: there is no JIT breakdown, so nothing is pending by construction.
+    /// <para>It is the shared suppressor for the producer-coverage family. GR2062 uses it here; GR2060 (doc
+    /// 19 §3.1, reserved, not built) uses the same predicate for the same reason — while an un-authored wave
+    /// stub exists a shortfall is EXPECTED (that IS the #365 one-ahead invariant working) and a warning that
+    /// fired then would be ignored within a week.</para>
+    /// </summary>
+    private static bool PlanIsClosed(PlanDefinition plan) => plan.Waves.All(w => w.Tasks.Count > 0);
+
+    /// <summary>
+    /// GR2062 (issue #477, doc 19 §3.2, SSOT §2/§14.1) — the plan INTENDS more waves than it DECLARES while
+    /// every declared wave is authored, so the #365 one-ahead invariant is not pending but GONE. The other
+    /// polarity (fewer intended than declared — the plan grew past its stated intent) warns with the same
+    /// code.
+    /// <para><b>Two conjuncts, both load-bearing.</b> <c>intendedWaves</c> ABSENT ⇒ skipped entirely (the
+    /// field is optional; no plan is forced to migrate). <see cref="PlanIsClosed"/> FALSE ⇒ silent, which is
+    /// what keeps it quiet through every healthy JIT mid-plan state.</para>
+    /// <para><b>A WARNING, never an error.</b> A genuinely final wave has no successor and an author may
+    /// legitimately collapse waves. The value is not enforcement — it is that a missing wave becomes
+    /// NAMEABLE, which it was not: the count lived in a charter that is a sibling of the plan folder with no
+    /// reference from inside it, and <c>diagram.md</c> is regenerated FROM the folders so it can never
+    /// disagree with them.</para>
+    /// </summary>
+    private static void ValidateIntendedWaves(PlanDefinition plan, List<Diagnostic> diagnostics)
+    {
+        if (plan.Config.IntendedWaves is not { } intended || !PlanIsClosed(plan))
+        {
+            return;
+        }
+
+        int declared = plan.Waves.Count;
+        if (intended == declared)
+        {
+            return;
+        }
+
+        // A FLAT plan reaches here only when the author explicitly wrote a waved-plans-only key into a plan
+        // that has no waves; saying "declares 0" would be arithmetically true and useless, so name the shape.
+        string shortfall = plan.IsWaved
+            ? $"declares {declared} wave folder(s)"
+            : "declares NO wave folders at all — it is a FLAT plan (SSOT §14.1), where 'intendedWaves' has "
+              + "no waves to describe";
+
+        string diagnosis = intended > declared
+            ? "Every declared wave is authored, so this is not the one-ahead invariant pending (#365) — the "
+              + "wave that should be next is GONE. A lost wave stub leaves no forward reference to trip over "
+              + "the way a lost task does: validate, 'graph --check' and review all stay clean, and the run "
+              + "drains the whole DAG before the terminal gate fails on a wave that was never authored."
+            : "The plan grew past its stated intent. If the extra wave(s) are deliberate, raise "
+              + "'intendedWaves'; if not, they were added without the decision that should precede a wave.";
+
+        diagnostics.Add(Warning(DiagnosticCodes.IntendedWaveNotDeclared, plan.PlanDirectory,
+            $"'guardrails.json' sets \"intendedWaves\": {intended}, but the plan {shortfall}. "
+            + diagnosis
+            + " Correct the wave folders, or update 'intendedWaves' to the count that actually holds."));
+    }
+
+    /// <summary>
     /// GR2063 (issue #402, SSOT §14.11) — a wave whose breakdown DECLARED more tasks than it AUTHORED. A
     /// truncated breakdown leaves a valid PREFIX whose debt is not computable from the prefix, so the
     /// breakdown declares its decomposition first, in <c>&lt;wave&gt;/state/breakdown-intent.json</c>, and
@@ -2851,12 +2911,33 @@ public sealed class PlanValidator
     /// <para>Absent / unparseable / satisfied manifest ⇒ SILENT (the GR2062 rule). A WARNING, because the
     /// enforcement that matters is the harness routing on the CODE — a human hand-finishing a wave with
     /// fewer tasks than declared is nudged, not blocked.</para>
+    /// <para>GR2064 is the fourth case, and it is NOT silent: a manifest that exists and PARSES but yields
+    /// no usable folder disables the very salvage it was written to enable, and read through
+    /// <c>TryRead</c> alone it is indistinguishable from an absent one — so one typo cost the whole
+    /// mechanism with no diagnostic at all. Hence the single <see cref="BreakdownIntent.Read"/> here: one
+    /// file read, four distinguishable outcomes.</para>
     /// </summary>
     private static void ValidateWaveBreakdownIntent(PlanDefinition plan, List<Diagnostic> diagnostics)
     {
         foreach (WaveNode wave in plan.Waves)
         {
-            if (BreakdownIntent.TryRead(wave.Directory) is not { } intent)
+            BreakdownIntentRead read = BreakdownIntent.Read(wave.Directory);
+            if (read.Presence == BreakdownIntentPresence.NoUsableEntries)
+            {
+                diagnostics.Add(Warning(DiagnosticCodes.BreakdownIntentDeclaresNothing, read.Path,
+                    $"Wave '{wave.Dir}' carries a '{BreakdownIntent.FileName}' manifest that "
+                    + $"{read.Explanation}, so the truncation salvage the manifest exists to enable is "
+                    + "DISABLED for this wave: a cut-off breakdown here is quarantined rather than resumed, "
+                    + "and GR2063 can never report the shortfall."
+                    + (read.RejectedEntries.Count == 0
+                        ? ""
+                        : " Rejected: " + string.Join("; ", read.RejectedEntries) + ".")
+                    + $" Correct the 'folder' values so each names a folder directly under '{wave.Dir}/tasks/', "
+                    + $"or delete '{wave.Dir}/state/{BreakdownIntent.FileName}' if this wave declares no intent."));
+                continue;
+            }
+
+            if (read.Usable is not { } intent)
             {
                 continue;
             }

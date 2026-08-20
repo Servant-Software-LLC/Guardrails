@@ -63,6 +63,110 @@ public sealed class BreakdownIntentTests : IDisposable
     }
 
     [Fact]
+    public void Read_TellsAbsentFromUnreadableFromDeclaresNothingFromUsable_TheFourStates()
+    {
+        _b.WaveStub(Wave);
+        Assert.Equal(BreakdownIntentPresence.Absent, BreakdownIntent.Read(WaveDir).Presence);
+
+        WriteManifest("{ this is not json");
+        Assert.Equal(BreakdownIntentPresence.Unreadable, BreakdownIntent.Read(WaveDir).Presence);
+
+        WriteManifest("""{ "version": 1, "tasks": [ { "folder": "nested/01-compile" } ] }""");
+        Assert.Equal(BreakdownIntentPresence.NoUsableEntries, BreakdownIntent.Read(WaveDir).Presence);
+
+        Declare("01-compile");
+        Assert.Equal(BreakdownIntentPresence.Usable, BreakdownIntent.Read(WaveDir).Presence);
+    }
+
+    [Fact]
+    public void APresentButUnusableManifest_IsStillNullFromTryRead_ButNoLongerIndistinguishableFromAbsent()
+    {
+        // The bug: BOTH read as null, so a typo cost the salvage with no way to say so. TryRead stays lossy
+        // ON PURPOSE (its callers want a declaration or nothing); Read is what makes the two tellable apart.
+        _b.WaveStub(Wave);
+        WriteManifest("""{ "version": 1, "tasks": [ { "folder": "  " } ] }""");
+
+        Assert.Null(BreakdownIntent.TryRead(WaveDir));
+        BreakdownIntentRead read = BreakdownIntent.Read(WaveDir);
+        Assert.Equal(BreakdownIntentPresence.NoUsableEntries, read.Presence);
+        Assert.True(read.IsPresent);
+        Assert.Null(read.Usable);
+        Assert.Equal(BreakdownIntent.PathFor(WaveDir), read.Path);
+    }
+
+    [Fact]
+    public void AManifestWithNoTasksEntries_ReadsAsDeclaresNothing_WithNoRejectedEntriesToList()
+    {
+        _b.WaveStub(Wave);
+        WriteManifest("""{ "version": 1, "tasks": [] }""");
+
+        BreakdownIntentRead read = BreakdownIntent.Read(WaveDir);
+        Assert.Equal(BreakdownIntentPresence.NoUsableEntries, read.Presence);
+        Assert.Empty(read.RejectedEntries);
+        Assert.Contains("no 'tasks' entries", read.Explanation);
+    }
+
+    [Fact]
+    public void AManifestWhoseContentIsJsonNull_ReadsAsDeclaresNothing_NotAsAbsent()
+    {
+        _b.WaveStub(Wave);
+        WriteManifest("null");
+
+        BreakdownIntentRead read = BreakdownIntent.Read(WaveDir);
+        Assert.Equal(BreakdownIntentPresence.NoUsableEntries, read.Presence);
+        Assert.Contains("'null'", read.Explanation);
+    }
+
+    [Fact]
+    public void RejectedEntries_NameThePositionTheValueAndTheReason_ForEachOfTheThreeDropRules()
+    {
+        _b.WaveStub(Wave);
+        WriteManifest("""
+            {
+              "tasks": [
+                { "folder": "" },
+                { "folder": "nested/02-package" },
+                { "folder": "03-publish" },
+                { "folder": "03-publish" }
+              ]
+            }
+            """);
+
+        BreakdownIntent intent = Assert.IsType<BreakdownIntent>(BreakdownIntent.TryRead(WaveDir));
+        Assert.Equal(new[] { "03-publish" }, intent.DeclaredFolders());
+
+        IReadOnlyList<string> rejected = intent.RejectedEntries();
+        Assert.Equal(3, rejected.Count);
+        Assert.Contains("entry 1", rejected[0]);
+        Assert.Contains("missing or blank", rejected[0]);
+        Assert.Contains("nested/02-package", rejected[1]);
+        Assert.Contains("path separator", rejected[1]);
+        Assert.Contains("entry 4", rejected[2]);
+        Assert.Contains("repeats an earlier entry", rejected[2]);
+    }
+
+    [Fact]
+    public void VersionAndDeclaredAt_AreOptional_AndCommentsAndTrailingCommasAreAccepted()
+    {
+        // The documented shape is `{ version, declaredAt, tasks }`, but only tasks[].folder is load-bearing:
+        // refusing a manifest over a missing timestamp would cost the wave the salvage the manifest exists for.
+        _b.WaveStub(Wave);
+        WriteManifest("""
+            {
+              // no version, no declaredAt, and a trailing comma
+              "tasks": [
+                { "folder": "01-compile" },
+              ],
+            }
+            """);
+
+        BreakdownIntent intent = Assert.IsType<BreakdownIntent>(BreakdownIntent.TryRead(WaveDir));
+        Assert.Equal(BreakdownIntent.CurrentVersion, intent.Version);
+        Assert.Null(intent.DeclaredAt);
+        Assert.Equal(new[] { "01-compile" }, intent.DeclaredFolders());
+    }
+
+    [Fact]
     public void DeclaredFolders_AreTrimmed_Deduplicated_AndPathBearingEntriesDropped()
     {
         _b.WaveStub(Wave);
@@ -165,6 +269,76 @@ public sealed class BreakdownIntentTests : IDisposable
 
         Diagnostic d = Assert.Single(Validate(), x => x.Code == DiagnosticCodes.WaveBreakdownIncomplete);
         Assert.Contains("02-package", d.Message);
+    }
+
+    // --- GR2064: present-but-unusable is DISTINGUISHABLE from absent, and says so -----------------
+
+    [Fact]
+    public void Gr2064_FiresOnAManifestThatParsesButDeclaresNothingUsable_NamingThePathAndEveryRejection()
+    {
+        _b.Task("wave-01-scaffold", "01-config");
+        _b.WaveStub(Wave);
+        AuthorComplete("01-compile");
+        WriteManifest("""
+            {
+              "version": 1,
+              "tasks": [
+                { "folder": "tasks/01-compile" },
+                { "folder": "" }
+              ]
+            }
+            """);
+
+        Diagnostic d = Assert.Single(Validate(), x => x.Code == DiagnosticCodes.BreakdownIntentDeclaresNothing);
+        Assert.Equal(DiagnosticSeverity.Warning, d.Severity);
+        Assert.Equal(BreakdownIntent.PathFor(WaveDir), d.Path);
+        Assert.Contains("tasks/01-compile", d.Message);
+        Assert.Contains("path separator", d.Message);
+        Assert.Contains("missing or blank", d.Message);
+        // The whole point: it names WHAT was silently lost, and the remedy is both-ways.
+        Assert.Contains("salvage", d.Message);
+        Assert.Contains("delete", d.Message);
+    }
+
+    [Fact]
+    public void Gr2064_AndGr2063_AreMutuallyExclusive_TheFourthCaseIsNotASecondShortfall()
+    {
+        _b.Task("wave-01-scaffold", "01-config");
+        _b.WaveStub(Wave);
+        WriteManifest("""{ "tasks": [ { "folder": "nested/01-compile" } ] }""");
+
+        IReadOnlyList<Diagnostic> diagnostics = Validate();
+        Assert.Contains(diagnostics, d => d.Code == DiagnosticCodes.BreakdownIntentDeclaresNothing);
+        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.WaveBreakdownIncomplete);
+    }
+
+    [Theory]
+    [InlineData(null)]                                    // absent
+    [InlineData("{ this is not json")]                    // unparseable — a DELIBERATE, documented silence
+    public void Gr2064_IsSilentForTheTwoStatesTheSsotKeepsSilent(string? manifest)
+    {
+        _b.Task("wave-01-scaffold", "01-config");
+        _b.WaveStub(Wave);
+        AuthorComplete("01-compile");
+        if (manifest is not null)
+        {
+            WriteManifest(manifest);
+        }
+
+        Assert.DoesNotContain(Validate(), d => d.Code == DiagnosticCodes.BreakdownIntentDeclaresNothing);
+    }
+
+    [Fact]
+    public void Gr2064_IsSilentOnAUsableManifest_EvenAnUnsatisfiedOne()
+    {
+        _b.Task("wave-01-scaffold", "01-config");
+        _b.WaveStub(Wave);
+        AuthorComplete("01-compile");
+        Declare("01-compile", "02-package");
+
+        IReadOnlyList<Diagnostic> diagnostics = Validate();
+        Assert.DoesNotContain(diagnostics, d => d.Code == DiagnosticCodes.BreakdownIntentDeclaresNothing);
+        Assert.Contains(diagnostics, d => d.Code == DiagnosticCodes.WaveBreakdownIncomplete);
     }
 
     [Fact]

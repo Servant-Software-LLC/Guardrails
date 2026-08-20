@@ -216,6 +216,36 @@ complete task folder under that wave's `tasks/`. Names the missing folders.
 rule `GR2062` uses for `intendedWaves`, and the same "silence is not proof of validity" discipline
 `GR2056` set.
 
+**The fourth case, and it is NOT silent — `GR2064` `BreakdownIntentDeclaresNothing` (WARNING).** The three
+silent cases above are each defensible. A fourth was silent only by accident: a manifest that **exists and
+parses** but yields **no usable folder** — every `folder` blank, path-bearing or an ordinal duplicate, no
+`tasks` entries at all, or content that is the JSON literal `null`. The reader collapsed it to "no
+declaration", byte-for-byte indistinguishable from ABSENT, so a single typo cost **the whole truncation
+salvage this design exists to provide** with **no diagnostic at all**: no `GR2063`, no prefix preservation,
+and a cut-off breakdown quarantined rather than resumed — while the halt said *"the wave carries no
+manifest"* with the file sitting on disk. That is a failure in the direction that looks fine.
+
+The manifest read therefore reports **four** states, not two — *absent* (silent), *unreadable/unparseable*
+(silent), *present-but-declaring-nothing* (`GR2064`), *usable* — and the quarantine halt names which one
+applies instead of generalising to "no manifest" (#471's lesson: a halt asserting a false thing costs more
+than a halt asserting nothing). `GR2064`'s message names the manifest **path** and lists each rejected entry
+with its reason; the remedy is named both ways — correct the `folder` values, or DELETE the manifest if the
+wave declares no intent. Warning, not error, on this section's own reasoning: nothing here makes the plan
+invalid. False-positive rate is structurally zero for the same reason `GR2063`'s is, and is stated as the
+same weaker claim.
+
+Widening `GR2064` to the **unparseable** case was considered and **declined**. It costs the same salvage and
+is arguably the same defect, but its silence is a recorded deliberate call in this section and in SSOT
+§14.11, and reversing a documented silence is a contract decision that deserves its own pass rather than
+riding along with this fix.
+
+**One field is load-bearing: `tasks[].folder`.** `version` and `declaredAt` are OPTIONAL and read by nothing
+(an absent `version` resolves `1`; the reader understands one shape, so there is nothing to switch on), and
+the reader accepts `//` comments and trailing commas as the `jsonc` example in §4.4 already implies. That is
+the code, and the documents now say so rather than implying a required `declaredAt`. The tolerance is the
+point: strictness is spent on the one field that matters, because a refused manifest silently costs the wave
+its salvage — refusing one over a missing timestamp or a stray comma buys nothing and loses the thing.
+
 **Severity is WARNING, and the split is the point.** The harness routes on the **code** (`GR2063` present
 ⇒ incomplete ⇒ never `BreakdownComplete`), so the automated path — where the risk actually lives — gets
 full enforcement. The human path gets a nudge, because a human who deliberately finishes a wave with 11 of

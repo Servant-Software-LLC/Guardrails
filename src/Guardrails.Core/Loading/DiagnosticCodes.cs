@@ -754,12 +754,47 @@ public static class DiagnosticCodes
     public const string WaveIntegrationScopeInert = "GR2059";
 
     /// <summary>
+    /// <b>GR2062 — a waved plan INTENDS more waves than it DECLARES, and no wave is left to author
+    /// (issue #477, doc 19 §3.2, SSOT §2/§14.1).</b> The plan's <c>intendedWaves</c> disagrees with the
+    /// number of <c>wave-*</c> folders on disk while <c>planIsClosed</c> holds — every declared wave has
+    /// tasks — so the #365 one-ahead invariant is not merely PENDING, it is GONE.
+    /// <para><b>The measured incident.</b> A charter settled THREE waves; the wave-2 brief carried the
+    /// one-ahead step verbatim, warning and all; the JIT breakdown that owed the wave-3 stub TRUNCATED
+    /// before reaching it. The hand-recovery restored the tasks and missed the stub, "because a stub leaves
+    /// no forward reference to trip over the way a task does". <c>validate</c> was clean, <c>graph
+    /// --check</c> was clean, two full review passes were clean — and the run drained 20 tasks and $115.32,
+    /// whole suite passing, conformance 9/9, before failing at the terminal gate on a wave that was never
+    /// authored. Wave intent was recorded NOWHERE machine-readable: <c>guardrails.json</c> carried no wave
+    /// information, the SSOT recorded no count, <c>diagram.md</c> is regenerated FROM the folders so it can
+    /// never disagree with them, and the charter is a sibling of the plan folder with no reference from
+    /// inside it.</para>
+    /// <para><b>WARNING, gated on <c>planIsClosed</c>.</b> The gate is what stops this becoming the warning
+    /// that fires on every healthy JIT mid-plan state and is therefore ignored: while an un-authored wave
+    /// stub is present a shortfall is EXPECTED — that is the one-ahead invariant working. A genuinely final
+    /// wave has no successor and an author may legitimately collapse waves, so the value here is not
+    /// enforcement; it is that a missing wave becomes NAMEABLE. Today nothing in the plan can be asked the
+    /// question. The other polarity (<c>intendedWaves</c> BELOW the declared count — the plan grew past its
+    /// stated intent) warns with the same code.</para>
+    /// <para><b>Skipped entirely when <c>intendedWaves</c> is absent.</b> The field is optional and no
+    /// existing plan is forced to migrate — the same rule GR2063 uses for its own manifest.</para>
+    /// <para><b>Why the YAGNI objection does not carry, and the asymmetry worth preserving.</b> The obvious
+    /// counter is that <c>intendedWaves</c> is a number the author can lower, and the author is the one who
+    /// lost the wave. Doc 18 declined its own deferred lint partly because "the declaring agent is the agent
+    /// the declaration grades". That does NOT transfer here, and the reason is TEMPORAL:
+    /// <c>intendedWaves</c> is written at plan-folder creation (wave-1 authoring) and it grades a LATER,
+    /// SEPARATE JIT-breakdown invocation — the one that truncated. <b>The declaration survives the event it
+    /// guards.</b> And lowering it is a one-line diff in a reviewed config file, not a silent absence.</para>
+    /// </summary>
+    public const string IntendedWaveNotDeclared = "GR2062";
+
+    /// <summary>
     /// <b>GR2063 — a wave's breakdown DECLARED more tasks than it AUTHORED (issue #402, SSOT §14.11).</b>
     /// The wave carries a <c>state/breakdown-intent.json</c> manifest and a declared <c>folder</c> has no
     /// complete task folder under that wave's <c>tasks/</c>. The message names the missing folders.
-    /// <para><b>Silent when</b> the manifest is absent, unparseable, or satisfied. Absent ⇒ skipped
-    /// entirely — the same rule GR2062 uses for <c>intendedWaves</c>, and the same "silence is not proof of
-    /// validity" discipline GR2056 set.</para>
+    /// <para><b>Silent when</b> the manifest is absent, unparseable, satisfied, or present-but-declaring
+    /// nothing usable — that last case is GR2064's, not a second silence. Absent ⇒ skipped entirely — the
+    /// same rule GR2062 uses for <c>intendedWaves</c>, and the same "silence is not proof of validity"
+    /// discipline GR2056 set.</para>
     /// <para><b>WARNING, and the split is the point.</b> The HARNESS routes on the code (GR2063 present ⇒
     /// the wave is incomplete ⇒ it can never be reported <c>BreakdownComplete</c>, and the JIT checkpoint
     /// re-fires to resume it), so the automated path — where the risk actually lives — is fully gated. The
@@ -774,16 +809,46 @@ public static class DiagnosticCodes
     /// </summary>
     public const string WaveBreakdownIncomplete = "GR2063";
 
-    // CURRENT next-free code: GR2064. GR2063 (WaveBreakdownIncomplete) is the last taken code above —
-    // GR2059 is the last CONTIGUOUS one; GR2060/GR2061/GR2062 remain reserved-by-name gaps.
-    // THREE later codes are RESERVED BY NAME in design documents and must not be re-used:
+    /// <summary>
+    /// <b>GR2064 — a wave's breakdown-intent manifest EXISTS and PARSES but declares nothing usable
+    /// (issue #402 follow-up, SSOT §14.11, doc 20 §4.6).</b> Every <c>tasks[].folder</c> was rejected —
+    /// blank, carrying a path separator, or an ordinal duplicate — or there were no <c>tasks</c> entries at
+    /// all, or the file's content is the JSON literal <c>null</c>. The message names the manifest path and
+    /// lists each rejected entry with its reason.
+    /// <para><b>Why this is not a fourth silence.</b> §14.11's three silent cases (absent, unparseable,
+    /// satisfied) are each defensible; this fourth one was not, and it was silent only by accident. A
+    /// manifest yielding zero folders read as <c>null</c> — byte-for-byte indistinguishable from ABSENT —
+    /// so ONE typo bought the operator no GR2063, no prefix preservation, and no diagnostic naming either
+    /// loss. A cut-off breakdown was then QUARANTINED rather than resumed, and the halt said "the wave
+    /// carries no manifest" while the file sat on disk. That is a failure that fails in the direction that
+    /// looks fine, over a mechanism whose entire purpose is salvage.</para>
+    /// <para><b>WARNING, on GR2063's reasoning exactly.</b> Nothing here makes the plan invalid — the wave
+    /// may be perfectly authored and the manifest merely stale junk — and <c>validate</c> must not fail for
+    /// it. What the operator needs is to be TOLD, because the remedy is a one-line edit and the cost of not
+    /// knowing is a quarantined wave. The remedy is named both ways: fix the <c>folder</c> values, or DELETE
+    /// the manifest if the wave needs no declaration.</para>
+    /// <para><b>False-positive rate: structurally zero, like GR2063.</b> The manifest's lifetime is one
+    /// breakdown attempt (the harness removes it when the wave settles), so no committed plan folder can
+    /// carry one. Measured across every committed plan folder in the corpus: zero. That is the weaker,
+    /// by-construction claim, stated as weaker — not GR2055/GR2056/GR2057's measured-over-a-real-corpus
+    /// zero.</para>
+    /// <para><b>Deliberately NOT extended to the unparseable case.</b> Malformed JSON costs the same
+    /// salvage and is arguably the same defect, but SSOT §14.11 and doc 20 §4.6 both record its silence as a
+    /// deliberate call, and widening a documented silence is a contract move that belongs to its own
+    /// decision, not to this fix.</para>
+    /// </summary>
+    public const string BreakdownIntentDeclaresNothing = "GR2064";
+
+    // CURRENT next-free code: GR2065. GR2064 (BreakdownIntentDeclaresNothing) is the last taken code above —
+    // GR2059 is the last CONTIGUOUS one; GR2060/GR2061 remain reserved-by-name gaps (GR2062 was TAKEN by
+    // doc 19 Milestone B, #477; GR2063 by #402).
+    // TWO codes remain RESERVED BY NAME in design documents and must not be re-used:
     //   GR2060 — docs/plans/19-producer-coverage.md §1 (a gate requires content nothing in the plan can produce)
     //   GR2061 — docs/plans/18-integration-proof-proximity.md §3.4 (the deferred seam-ledger lint, behind an evidence gate)
-    //   GR2062 — docs/plans/19-producer-coverage.md §1 (the one-ahead `intendedWaves` shortfall)
     // GR2051–GR2054 also remain RESERVED by name in docs/plans/17-model-tiering.md §13.2
     // (NonRoutableBlockIsDefault / CostlyBlockRoutingInert / PinAndTierCoexist / RoutingNumericNonPositive)
     // and are the next codes the model-tiering epic will take. When allocating for anything ELSE, take
-    // GR2064 and update this line rather than colliding with either block (issue #320).
+    // GR2065 and update this line rather than colliding with either block (issue #320).
     //
     // GR10xx: next-free is GR1011 — GR1010 (WaveFolderIsNotALoadablePlan) was taken by the per-wave
     // review-marker change (#472). The GR10xx and GR20xx ladders advance independently; a doc that
