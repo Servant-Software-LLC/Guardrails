@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.Text.RegularExpressions;
 using Guardrails.Core.Graph;
+using Guardrails.Core.Loading;
 using Guardrails.Core.Model;
 using Guardrails.Core.State;
 using Spectre.Console;
@@ -187,19 +188,13 @@ public static partial class GraphCommand
     }
 
     /// <summary>
-    /// Returns <c>true</c> when <paramref name="folder"/> names a wave folder: its leaf name
-    /// matches the wave-dir pattern (<c>^wave-([0-9]+)-[a-z0-9-]+$</c>) AND its parent directory
-    /// contains a <c>guardrails.json</c> (so we know it is genuinely a wave of a waved plan, not
-    /// a coincidentally-named standalone folder).
+    /// Returns <c>true</c> when <paramref name="folder"/> names a wave folder of a waved plan (rather than
+    /// a coincidentally-named standalone folder). Delegates to <see cref="WaveFolder"/>, which owns the ONE
+    /// spelling of the wave-dir pattern and of wave-target resolution — this used to carry a third private
+    /// copy of the regex, kept in step with the loader's by convention alone.
     /// </summary>
-    private static bool IsWaveFolder(string folder)
-    {
-        string absFolder = Path.GetFullPath(folder);
-        string name = Path.GetFileName(Path.TrimEndingDirectorySeparator(absFolder));
-        if (!WaveDirRegex().IsMatch(name)) return false;
-        string? parent = Path.GetDirectoryName(absFolder);
-        return parent is not null && File.Exists(Path.Combine(parent, "guardrails.json"));
-    }
+    private static bool IsWaveFolder(string folder) =>
+        WaveFolder.TryResolveWaveTarget(folder, out _, out _);
 
     /// <summary>
     /// Load the parent plan and project it down to a wave-scoped <see cref="PlanDefinition"/>
@@ -210,28 +205,17 @@ public static partial class GraphCommand
     /// </summary>
     private static PlanDefinition? LoadWaveScoped(string folder, TextWriter output)
     {
-        string absFolder = Path.GetFullPath(folder);
-        string parentDir = Path.GetDirectoryName(absFolder)!;
-
-        PlanProbe.Result probe = PlanProbe.LoadAndValidate(parentDir);
-        if (probe.HasErrors || probe.Plan is null)
+        // The same resolution `plan-hash` / `mark-reviewed` use (issue #472): up to the parent plan, then
+        // select the wave. A wave that resolves by path but is absent from the loaded plan comes back as an
+        // error diagnostic from the probe, so there is one message for that case, not two.
+        PlanProbe.Result probe = PlanProbe.LoadAndValidateTarget(folder);
+        if (probe.HasErrors || probe.Plan is null || probe.Wave is null)
         {
             PlanProbe.PrintDiagnostics(probe.Diagnostics, output);
             return null;
         }
 
-        WaveNode? wave = probe.Plan.Waves.FirstOrDefault(w =>
-            string.Equals(Path.GetFullPath(w.Directory), absFolder, StringComparison.OrdinalIgnoreCase));
-
-        if (wave is null)
-        {
-            string waveName = Path.GetFileName(absFolder);
-            output.WriteLine(
-                $"error: '{waveName}' matches the wave-dir pattern but was not found in the parent plan's waves.");
-            return null;
-        }
-
-        return ProjectWave(probe.Plan, wave);
+        return ProjectWave(probe.Plan, probe.Wave);
     }
 
     /// <summary>
@@ -515,11 +499,4 @@ public static partial class GraphCommand
     [GeneratedRegex(@"\A\s*<!--\s*guardrails:graph\s+v1\s+source-sha256=(?<hash>[0-9a-f]+)\b")]
     private static partial Regex ProvenanceHashRegex();
 
-    /// <summary>
-    /// Matches a wave folder name (e.g. <c>wave-01-foundation</c>, <c>wave-02-provision</c>).
-    /// The numeric group drives the strict total order (SSOT §14.1). Mirrors the pattern used
-    /// by <c>PlanLoader</c> — kept in sync by the loader/validator tests.
-    /// </summary>
-    [GeneratedRegex(@"^wave-([0-9]+)-[a-z0-9-]+$", RegexOptions.CultureInvariant)]
-    private static partial Regex WaveDirRegex();
 }

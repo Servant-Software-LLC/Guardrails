@@ -35,6 +35,18 @@ public static class DiagnosticCodes
     /// <summary>The <c>tasks</c> directory exists but contains no task folders (an empty plan).</summary>
     public const string NoTasks = "GR1009";
 
+    /// <summary>
+    /// The target is a WAVE folder of a nested (waved) plan, not a loadable plan (issue #472). A wave holds
+    /// <c>preflights/</c> + <c>guardrails/</c> + <c>tasks/</c> but no <c>guardrails.json</c> BY DESIGN
+    /// (SSOT §14.1 — ONE shared run config), so loading it as a plan can only ever produce
+    /// <see cref="MissingFile"/>. Still an ERROR — a wave is not independently loadable, and silently
+    /// validating the parent plan instead of what was asked would be worse — but the message names the
+    /// parent plan root, the wave-aware `validate <plan>` invocation, and the two verbs
+    /// (<c>plan-hash</c> / <c>mark-reviewed</c>) that DO accept a wave folder and resolve it through its
+    /// parent plan (SSOT §13).
+    /// </summary>
+    public const string WaveFolderIsNotALoadablePlan = "GR1010";
+
     // --- Validation (semantic) --------------------------------------------------------
     /// <summary>A <c>dependsOn</c> entry references a task id that does not exist.</summary>
     public const string UnknownDependency = "GR2001";
@@ -190,6 +202,13 @@ public static class DiagnosticCodes
     /// <para>The remediation is SURFACE-SPECIFIC (<see cref="Review.ReviewNudgeSurface"/>, issue #410):
     /// <c>--skip-review-check</c> exists only on <c>run</c>, so the <c>validate</c> wording points at
     /// <c>guardrails mark-reviewed</c> instead of a flag that command would reject.</para>
+    ///
+    /// <para>On a WAVED plan (§14) this is emitted <b>per wave</b> and NOT at plan level (issues
+    /// #471/#472/#488): each wave carries its own marker keyed on its <c>WaveDefinitionHash</c>, so
+    /// authoring a downstream wave — which every JIT breakdown does — no longer de-attests an already
+    /// reviewed, stamped, run, green upstream wave. Un-authored JIT stubs are silent (nothing to attest).
+    /// A warning that fires on every healthy run is noise, and noise is how a real post-review guardrail
+    /// weakening gets waved through later.</para>
     /// </summary>
     public const string ReviewMarkerMissingOrStale = "GR2025";
 

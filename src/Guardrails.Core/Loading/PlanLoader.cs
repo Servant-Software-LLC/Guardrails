@@ -24,9 +24,10 @@ public sealed class PlanLoader
     /// <summary>
     /// The wave-directory convention (SSOT §14.1, Open Decision F): <c>wave-</c>, a numeric prefix (group 1,
     /// load-bearing — drives the strict total order), a hyphen, then a kebab slug (group 2). Anchored.
+    /// Owned by <see cref="WaveFolder"/> so detection here and wave-TARGET resolution (issue #472) can
+    /// never disagree about what a wave folder is.
     /// </summary>
-    private static readonly Regex WaveDirPattern =
-        new("^wave-([0-9]+)-([a-z0-9-]+)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex WaveDirPattern = WaveFolder.DirectoryPattern;
 
     /// <summary>
     /// Plan-root subdirectories that are NOT waves and must not be mistaken for a non-conforming wave dir
@@ -48,7 +49,7 @@ public sealed class PlanLoader
         }
 
         string configPath = Path.Combine(planDir, ConfigFileName);
-        RunConfig? config = LoadConfig(configPath, diagnostics);
+        RunConfig? config = LoadConfig(planDir, configPath, diagnostics);
         if (config is null)
         {
             return new PlanLoadResult { Diagnostics = diagnostics };
@@ -83,11 +84,24 @@ public sealed class PlanLoader
 
     // --- guardrails.json --------------------------------------------------------------
 
-    private static RunConfig? LoadConfig(string configPath, List<Diagnostic> diagnostics)
+    private static RunConfig? LoadConfig(string planDir, string configPath, List<Diagnostic> diagnostics)
     {
         if (!File.Exists(configPath))
         {
-            diagnostics.Add(Error(DiagnosticCodes.MissingFile, configPath, $"{ConfigFileName} is required but was not found."));
+            // Issue #472: pointing a verb at a WAVE folder is a common, reasonable mistake — the
+            // /guardrails-review flow reviews one wave at a time — and a bare GR1001 ("guardrails.json is
+            // required") is a dead end, because a wave has no config BY DESIGN (§14.1, one shared run
+            // config). Still an ERROR: a wave is not independently loadable and silently validating
+            // something other than what was asked would be worse. But it names the parent plan root and
+            // the invocation that does work.
+            diagnostics.Add(WaveFolder.TryResolveWaveTarget(planDir, out string planRoot, out string waveDir)
+                ? Error(DiagnosticCodes.WaveFolderIsNotALoadablePlan, planDir,
+                    $"'{waveDir}' is a WAVE of the plan at '{planRoot}', not a plan in its own right — a wave " +
+                    $"carries no {ConfigFileName} by design (SSOT §14.1: ONE shared run config). Validate the " +
+                    $"whole plan instead: `guardrails validate {planRoot}` (validate/plan/graph are wave-aware). " +
+                    $"To stamp or hash just this wave, `guardrails plan-hash {Path.Combine(planRoot, waveDir)}` " +
+                    "and `guardrails mark-reviewed <that same path>` DO accept a wave folder (SSOT §13).")
+                : Error(DiagnosticCodes.MissingFile, configPath, $"{ConfigFileName} is required but was not found."));
             return null;
         }
 

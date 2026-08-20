@@ -45,6 +45,42 @@ internal sealed class WavePlanBuilder : IDisposable
     }
 
     /// <summary>
+    /// Create a not-yet-authored JIT wave STUB: the wave folder with an empty <c>tasks/</c> and nothing else
+    /// (SSOT §14.4 — it loads as zero tasks with no error, and the between-wave checkpoint breaks it down).
+    /// </summary>
+    public WavePlanBuilder WaveStub(string waveDir)
+    {
+        Directory.CreateDirectory(Path.Combine(PlanDir, waveDir, "tasks"));
+        return this;
+    }
+
+    /// <summary>
+    /// Write the wave's OPTIONAL human-authored <c>brief.md</c> (SSOT §14.10) — breakdown INPUT, excluded
+    /// from <see cref="Journal.PlanDefinitionHash"/> but FOLDED into <see cref="Journal.WaveDefinitionHash"/>.
+    /// </summary>
+    public WavePlanBuilder WaveBrief(string waveDir, string text)
+    {
+        string dir = Path.Combine(PlanDir, waveDir);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, Model.WaveNode.BriefFileName), text);
+        return this;
+    }
+
+    /// <summary>Overwrite an existing wave EXIT-gate guardrail body (a post-review edit to reviewed content).</summary>
+    public WavePlanBuilder EditWaveGuardrail(string waveDir, string name, string body)
+    {
+        File.WriteAllText(Path.Combine(PlanDir, waveDir, "guardrails", name), "# catches: a wrong implementation\n" + body);
+        return this;
+    }
+
+    /// <summary>Overwrite the shared plan-root <c>guardrails.json</c> (Open Decision C's config edit).</summary>
+    public WavePlanBuilder EditConfig(string json)
+    {
+        File.WriteAllText(Path.Combine(PlanDir, "guardrails.json"), json);
+        return this;
+    }
+
+    /// <summary>
     /// Add a wave EXIT-gate guardrail file at <c>&lt;waveDir&gt;/guardrails/&lt;name&gt;</c> (auto-prefixed
     /// with a <c>catches:</c> comment), optionally with its §4.1 metadata sidecar (<c>&lt;name&gt;.json</c>).
     /// </summary>

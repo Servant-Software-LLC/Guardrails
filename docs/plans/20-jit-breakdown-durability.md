@@ -460,9 +460,11 @@ and it costs far less than the drift risk of a fourth hash differing from a ship
 
 ## 10. Schema changes — exact `02-schemas-and-contracts.md` edits
 
-> **NOT APPLIED.** Another agent is mid-edit in the SSOT. These are the verbatim deltas to land in the
-> same change as the code that motivates them (invariant 4). **Coordination note:** `19-producer-coverage.md`
-> claims a new **§4.8**; this design claims a new **§14.11** and does not contend for §4.8.
+> **Status: E2 + the E5 review-marker line are APPLIED** (milestones 6+7, the attestation fix — #471(2),
+> #472, #488). E1, E3, E4 and E5's `breakdown-intent.json` line belong to the durability milestones (1–5)
+> and are **NOT APPLIED**. These are the verbatim deltas to land in the same change as the code that
+> motivates them (invariant 4). **Coordination note:** `19-producer-coverage.md` claims a new **§4.8**;
+> this design claims a new **§14.11** and does not contend for §4.8.
 
 **E1 — §9.2, replace the "Turn budget (issue #385)" sentence** (currently at ~line 3807):
 
@@ -476,7 +478,10 @@ and it costs far less than the drift risk of a fourth hash differing from a ship
 > **not a fix**: durability comes from §14.11 (declared intent, prefix preservation, and bounded resume),
 > and the runner's `FailureKind` is carried into the halt so the operator is told which bound was hit.
 
-**E2 — §13, replace the *Multi-wave plans* paragraph:**
+**E2 — §13, replace the *Multi-wave plans* paragraph** — **APPLIED** (as landed it also states the two
+things the code made true and this draft did not name: a waved plan emits **no plan-level GR2025** and an
+**un-authored** wave emits none either; and the plan-**shell** residual — the plan-root config/gates are
+folded by no wave hash, so once a wave carries its own marker a root-gate edit re-stales nothing):
 
 > **Multi-wave plans (§14).** The review marker is **per wave**: `<plan>/<wave>/state/guardrails-review.json`,
 > keyed on that wave's **`WaveDefinitionHash`** (§14.5) — *not* `PlanDefinitionHash`, and not a fourth hash.
@@ -540,7 +545,9 @@ and it costs far less than the drift risk of a fourth hash differing from a ship
 > **3** segments per wave per run, and a segment adding **zero** complete task folders halts rather than
 > retries. Spend accrues to `overheadCostUsd` unchanged.
 
-**E5 — §14.1 layout diagram**, annotate the existing wave `state/` line:
+**E5 — §14.1 layout diagram**, annotate the existing wave `state/` line (the review-marker line is
+**APPLIED**; the `breakdown-intent.json` line belongs to milestone 5. §14.1's *Detection* list also gained
+the **GR1010** bullet — the new wave-folder-loaded-as-a-plan diagnostic #472's dead end needed):
 
 > `├── state/guardrails-review.json  #  per-wave review marker (§13), keyed on WaveDefinitionHash`
 > `├── state/breakdown-intent.json   #  TRANSIENT, one breakdown attempt (§14.11) — hash-excluded`
@@ -608,6 +615,12 @@ stopping after them leaves a strictly better system than today.
 | 7 | Wave-target resolution for `plan-hash`/`mark-reviewed`; targeted `validate`-on-a-wave diagnostic (**#472**) | `guardrails-harness-developer` | `Cli/Commands/PlanHashCommand.cs`, `MarkReviewedCommand.cs`, `Cli/PlanProbe.cs` |
 | 8 | `guardrails-review` §7 waved-plan paragraph matches what shipped | `guardrails-skill-author` | `.claude/skills/guardrails-review/SKILL.md` |
 | 9 | Halt/diagnostic rendering for `BreakdownIncomplete` + the quarantine message (with **#469**) | `guardrails-ux` → `guardrails-harness-developer` | console + log-viewer surfaces |
+
+**Landed:** milestones **6 + 7** — per-wave `ReviewMarker` keyed on `WaveDefinitionHash`, per-wave GR2025
+with the fresh-plan-marker fallback, wave-target resolution for `plan-hash` / `mark-reviewed`, and the
+`GR1010` validate-on-a-wave diagnostic (closing #471(2), #472, #488). Milestone **8** is now the only thing
+keeping the documented reviewer flow out of step with what ships: the skill's §7 still describes the wave
+marker as `PlanDefinitionHash`-keyed, and it is `WaveDefinitionHash`-keyed.
 
 **Sequencing.** 1 → 2 → 3 are strictly ordered (3 needs 2's classification, 2 needs 1's signal). 4 → 5
 follow. **6 → 7 → 8 are independent of 1–5** and can run in parallel; 8 must land with 6+7 or the skill

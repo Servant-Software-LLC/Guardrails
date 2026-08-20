@@ -814,6 +814,12 @@ public static class RunCommand
     /// Print the review-marker nudge (GR2025, WARNING — SSOT §13, issue #79) when the plan is
     /// missing/stale a <c>/guardrails-review</c> marker, unless <paramref name="skipReviewCheck"/>.
     /// Warn, never block — the run proceeds regardless. Shared by <c>run</c> and <c>--dry-run</c>.
+    ///
+    /// <para>On a WAVED plan this is one line PER AUTHORED WAVE (issues #472/#488) — un-authored JIT stubs
+    /// are silent here and are picked up at their own checkpoint, where <c>Scheduler.EscalateReviewGate</c>
+    /// already raises the review gate on the same <c>WaveDefinitionHash</c> the marker keys on. So the
+    /// promise in §13 — the nudge is evaluated for a wave before that wave runs — is kept by the two
+    /// surfaces together, without a plan-level line that fires on every healthy JIT run.</para>
     /// </summary>
     public static void WarnIfUnreviewed(Core.Model.PlanDefinition plan, bool skipReviewCheck, IConsoleIo io)
     {
@@ -822,12 +828,19 @@ public static class RunCommand
             return;
         }
 
-        if (Core.Loading.PlanValidator.ReviewMarkerDiagnostic(
-                plan, Core.Review.ReviewNudgeSurface.Run) is { } nudge)
+        IReadOnlyList<Core.Loading.Diagnostic> nudges =
+            Core.Loading.PlanValidator.ReviewMarkerDiagnostics(plan, Core.Review.ReviewNudgeSurface.Run);
+        if (nudges.Count == 0)
+        {
+            return;
+        }
+
+        foreach (Core.Loading.Diagnostic nudge in nudges)
         {
             io.Out.WriteLine(nudge.ToString());
-            io.Out.WriteLine();
         }
+
+        io.Out.WriteLine();
     }
 
     /// <summary>Print the summary and map the report to the process exit code (SSOT §7).</summary>

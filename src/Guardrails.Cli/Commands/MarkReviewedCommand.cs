@@ -16,6 +16,15 @@ namespace Guardrails.Cli.Commands;
 /// <b>committed as part of the reviewed plan</b>: it is an attestation about the committed plan content,
 /// self-invalidating on any edit the hash covers (the nudge returns), and is NOT wiped by <c>--fresh</c>.
 ///
+/// <para><b>Per-wave stamping (issues #472/#488).</b> The folder argument may name a WAVE of a nested waved
+/// plan (<c>&lt;plan&gt;/wave-NN-&lt;slug&gt;</c>). The wave is resolved through its parent plan — a wave has
+/// no <c>guardrails.json</c> of its own by design (§14.1), which is why this used to fail <c>GR1001</c> and
+/// the skill's documented per-wave flow could not execute — and the marker is written to
+/// <c>&lt;plan&gt;/&lt;wave&gt;/state/guardrails-review.json</c>, keyed on that wave's
+/// <c>WaveDefinitionHash</c>, with its report tree at <c>&lt;plan&gt;/&lt;wave&gt;/state/reviews/</c>.
+/// Stamping one wave attests THAT wave only: it neither vouches for a wave that does not exist yet
+/// (over-attestation) nor is spent when a later wave is authored (#488).</para>
+///
 /// <para>Evidence hygiene (issue #366, design <c>docs/plans/16-review-attestation-provenance.md</c>
 /// §4/§5): the stamp records a deterministic <c>attestation.source</c> evidence class —
 /// <c>review-artifact</c> when <c>--evidence</c> points at a <c>/guardrails-review</c> report for
@@ -43,7 +52,7 @@ public static class MarkReviewedCommand
 
     public static Command Create(IConsoleIo io)
     {
-        var folderArgument = FolderArgument.Create();
+        var folderArgument = FolderArgument.Create(PlanHashCommand.WaveAwareFolderHelp);
 
         // ── issue #366 evidence-hygiene options (design 16-review-attestation-provenance §4/§5) ──────────
         var evidenceOption = new Option<string?>("--evidence")
@@ -63,7 +72,7 @@ public static class MarkReviewedCommand
 
         var command = new Command(
             "mark-reviewed",
-            "Record that /guardrails-review ran over the current plan (writes the committed review marker).");
+            "Record that /guardrails-review ran over a plan — or one wave of it — (writes the committed review marker).");
         command.Add(folderArgument);
         command.Add(evidenceOption);
         command.Add(sourceOption);
@@ -87,7 +96,9 @@ public static class MarkReviewedCommand
         // parse/schema errors cannot be honestly marked reviewed (you'd be vouching for something that
         // won't run). Print the diagnostics and refuse. A missing/stale review marker is a WARNING, not
         // an error, so it never makes HasErrors true — an otherwise-valid plan marks cleanly.
-        PlanProbe.Result probe = PlanProbe.LoadAndValidate(folder);
+        // A WAVE folder is accepted and resolved through its parent plan (issue #472) — the per-wave stamp
+        // the /guardrails-review skill documents used to fail GR1001 because a wave has no guardrails.json.
+        PlanProbe.Result probe = PlanProbe.LoadAndValidateTarget(folder);
         if (probe.HasErrors || probe.Plan is null)
         {
             PlanProbe.PrintDiagnostics(probe.Diagnostics, io.Out);
@@ -96,12 +107,20 @@ public static class MarkReviewedCommand
         }
 
         PlanDefinition plan = probe.Plan;
-        string currentHash = PlanDefinitionHash.Compute(plan);
+        WaveNode? wave = probe.Wave;
+
+        // The hash the marker keys on, and the folder whose state/ holds it: PlanDefinitionHash at the plan
+        // root, or that wave's WaveDefinitionHash in the wave folder (§13, issues #471/#488). Stamping a
+        // wave must never move — or be moved by — another wave's attestation.
+        string currentHash = ReviewMarker.KeyHash(plan, wave);
+        string targetDirectory = ReviewMarker.TargetDirectory(plan, wave);
 
         // Resolve the deterministic evidence class (issue #366, §4/§5). mark-reviewed NEVER refuses a
-        // stamp (invariant 5): an F2 failure DOWNGRADES to `bare`, it does not error out.
+        // stamp (invariant 5): an F2 failure DOWNGRADES to `bare`, it does not error out. The F2b
+        // containment check resolves against the TARGET's state/reviews/ — a wave's report lives under
+        // <plan>/<wave>/state/reviews/ (§13), not the plan root's.
         ReviewAttestation attestation = BuildAttestation(
-            plan.PlanDirectory, currentHash, evidencePath, source, reviewer, io, out bool evidenceDowngraded);
+            targetDirectory, currentHash, evidencePath, source, reviewer, io, out bool evidenceDowngraded);
 
         // Always write the marker ourselves so the attestation block is stamped (ReviewMarker.Write does
         // not carry it). The planHash + WhenWritingNull serialization keep byte-exact back-compat (§4).
@@ -112,12 +131,15 @@ public static class MarkReviewedCommand
             PlanHash = currentHash,
             Attestation = attestation
         };
-        WriteMarker(plan.PlanDirectory, marker);
+        WriteMarker(targetDirectory, marker);
 
-        ReviewEvaluation eval = ReviewMarker.Evaluate(plan);
+        string hashLabel = wave is null ? "planDefinitionHash" : "waveDefinitionHash";
+        string scope = wave is null
+            ? "the plan's full behavioral definition, incl. guardrail/preflight/action bodies"
+            : $"wave '{wave.Dir}' only — its tasks and its own entry/exit gates; other waves are untouched";
         io.Out.WriteLine(
-            $"OK: marked reviewed (source: {attestation.Source}, planDefinitionHash {ShortHash(eval.CurrentHash)} — " +
-            "the plan's full behavioral definition, incl. guardrail/preflight/action bodies). " +
+            $"OK: marked reviewed (source: {attestation.Source}, {hashLabel} {ShortHash(currentHash)} — " +
+            $"{scope}). " +
             "The /guardrails-review nudge stays clear until that content changes." +
             // Issue #430: a downgrade is the silent-degradation shape #366 exists to prevent — the stamp
             // still succeeds, so the ONLY signal that the review report was not recorded is this echo of
@@ -140,7 +162,7 @@ public static class MarkReviewedCommand
     /// instead of letting a downgrade read as an ordinary bare stamp (issue #430).</para>
     /// </summary>
     private static ReviewAttestation BuildAttestation(
-        string planDirectory,
+        string targetDirectory,
         string currentHash,
         string? evidencePath,
         string? source,
@@ -161,7 +183,7 @@ public static class MarkReviewedCommand
         // evidence; on EITHER check failing, fall through and downgrade to bare — never fabricate a class.
         if (evidencePath is not null)
         {
-            ReviewEvidence? evidence = TryBuildEvidence(planDirectory, currentHash, evidencePath, io);
+            ReviewEvidence? evidence = TryBuildEvidence(targetDirectory, currentHash, evidencePath, io);
             if (evidence is not null)
             {
                 return new ReviewAttestation
@@ -194,11 +216,11 @@ public static class MarkReviewedCommand
     /// same-named file elsewhere (issue #430).</para>
     /// </summary>
     private static ReviewEvidence? TryBuildEvidence(
-        string planDirectory, string currentHash, string evidencePath, IConsoleIo io)
+        string targetDirectory, string currentHash, string evidencePath, IConsoleIo io)
     {
-        string reviewsRoot = Path.GetFullPath(Path.Combine(planDirectory, "state", "reviews"));
+        string reviewsRoot = Path.GetFullPath(Path.Combine(targetDirectory, "state", "reviews"));
 
-        string? reportFull = ResolveEvidenceFile(planDirectory, Directory.GetCurrentDirectory(), evidencePath);
+        string? reportFull = ResolveEvidenceFile(targetDirectory, Directory.GetCurrentDirectory(), evidencePath);
         if (reportFull is null)
         {
             AnnounceDowngrade(io, "F2", $"\"{evidencePath}\" is not a usable filesystem path.");
@@ -243,7 +265,7 @@ public static class MarkReviewedCommand
         // tree) and the symmetric, newline-normalized digest of the report bytes (F7).
         return new ReviewEvidence
         {
-            ReportPath = Path.GetRelativePath(planDirectory, reportFull),
+            ReportPath = Path.GetRelativePath(targetDirectory, reportFull),
             ReportDigest = ReviewAttestation.ComputeReportDigest(reportText)
         };
     }
@@ -274,21 +296,24 @@ public static class MarkReviewedCommand
     /// <para>Public as a test seam — the Cli assembly ships no <c>InternalsVisibleTo</c> (same rationale as
     /// <c>RunCommand.Hyperlink</c>).</para>
     /// </summary>
-    /// <param name="planDirectory">The plan's full path — the fallback resolution base.</param>
+    /// <param name="targetDirectory">
+    /// The attestation TARGET's full path — the plan root, or the wave folder on a per-wave stamp (#472) —
+    /// which is the fallback resolution base and the root of the <c>state/reviews/</c> tree F2b checks.
+    /// </param>
     /// <param name="workingDirectory">
     /// The directory a relative argument is interpreted against (the process working directory in
     /// production). A parameter rather than a direct <see cref="Directory.GetCurrentDirectory"/> read so
     /// tests can exercise every path form without mutating process-global state.
     /// </param>
     /// <param name="evidencePath">The raw <c>--evidence</c> argument, exactly as the user typed it.</param>
-    public static string? ResolveEvidenceFile(string planDirectory, string workingDirectory, string evidencePath)
+    public static string? ResolveEvidenceFile(string targetDirectory, string workingDirectory, string evidencePath)
     {
         string shellRelative;
         string planRelative;
         try
         {
             shellRelative = Path.GetFullPath(Path.Combine(workingDirectory, evidencePath));
-            planRelative = Path.GetFullPath(Path.Combine(planDirectory, evidencePath));
+            planRelative = Path.GetFullPath(Path.Combine(targetDirectory, evidencePath));
         }
         catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
         {
@@ -355,10 +380,13 @@ public static class MarkReviewedCommand
             && !Path.IsPathRooted(relative);
     }
 
-    /// <summary>Persist <paramref name="marker"/> to <c>state/guardrails-review.json</c>, creating <c>state/</c> if needed.</summary>
-    private static void WriteMarker(string planDirectory, ReviewMarker marker)
+    /// <summary>
+    /// Persist <paramref name="marker"/> to the TARGET's <c>state/guardrails-review.json</c> (the plan root,
+    /// or the wave folder on a per-wave stamp), creating <c>state/</c> if needed.
+    /// </summary>
+    private static void WriteMarker(string targetDirectory, ReviewMarker marker)
     {
-        string path = ReviewMarker.PathFor(planDirectory);
+        string path = ReviewMarker.PathFor(targetDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, marker.ToJson());
     }

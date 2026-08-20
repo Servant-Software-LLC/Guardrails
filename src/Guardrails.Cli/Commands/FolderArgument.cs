@@ -13,9 +13,15 @@ public static class FolderArgument
     /// Create the <c>folder</c> argument: optional (<see cref="ArgumentArity.ZeroOrOne"/>),
     /// defaulting to the current directory when omitted.
     /// </summary>
-    public static Argument<string?> Create() => new("folder")
+    /// <param name="description">
+    /// OPTIONAL replacement help text, for the verbs that accept MORE than a plan folder — <c>plan-hash</c>
+    /// and <c>mark-reviewed</c> also take a wave folder (issue #472). Omitted ⇒ the plan-folder wording every
+    /// other command wants.
+    /// </param>
+    public static Argument<string?> Create(string? description = null) => new("folder")
     {
-        Description = "Path to the plan folder (contains guardrails.json). Defaults to the current directory when omitted.",
+        Description = description
+            ?? "Path to the plan folder (contains guardrails.json). Defaults to the current directory when omitted.",
         Arity = ArgumentArity.ZeroOrOne
     };
 

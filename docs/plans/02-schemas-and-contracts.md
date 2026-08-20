@@ -5499,13 +5499,33 @@ file (see `docs/plans/16-review-attestation-provenance.md` §6). **GR2025 stays 
 *Surfacing* above); the recorded `source` exists for humans and tooling to inspect after the fact — the
 Scheduler never reads it.
 
-**Multi-wave plans (§14):** the review marker + its `PlanDefinitionHash` are **per-wave** — each wave
-subfolder carries its own `<plan>/<wave>/state/guardrails-review.json`, keyed on that wave's own
-`PlanDefinitionHash` (computed over the wave's own authored files; the shared `guardrails.json` is
-**excluded** so an upstream wave's marker stays stable, Open Decision C). GR2025 is surfaced **JIT per wave**
-— checked before that wave runs — so an already-reviewed + run upstream wave never re-stales when a
-downstream wave is authored later. The **`attestation` block (issue #366) is per-wave** exactly as the
-marker is, and a wave's review report lives under **`<plan>/<wave>/state/reviews/`**. No new wave semantics.
+**Multi-wave plans (§14).** The review marker is **per wave**: `<plan>/<wave>/state/guardrails-review.json`,
+keyed on that wave's **`WaveDefinitionHash`** (§14.5) — *not* `PlanDefinitionHash`, and not a fourth hash.
+`WaveDefinitionHash` already excludes the shared `guardrails.json` (Open Decision C) so a config edit does
+not re-stale every upstream wave, and it folds the wave's `brief.md`; a brief edit after review therefore
+re-stales that wave's marker, an accepted residual (it is a human edit inside the wave, and it errs toward
+under-attestation). GR2025 is surfaced **per wave** at `validate` and **JIT** at `run` — evaluated before
+that wave runs — so an already-reviewed and run upstream wave never re-stales when a downstream wave is
+authored later (#488: `PlanDefinitionHash` folds every wave's `guardrails/**` and `preflights/**`, which is
+exactly what a JIT breakdown authors, so a single plan-level marker was de-attested by **every successful
+breakdown**). A waved plan therefore emits **no plan-level GR2025** — an **un-authored** wave (no tasks and
+no wave gates) emits none either, since there is nothing yet for a review to attest. **Back-compat:** a wave
+with no wave marker reads *reviewed* iff a plan-level marker exists **and is fresh** (its hash equals the
+current `PlanDefinitionHash`); a stale plan-level marker vouches for nothing and every wave falls through to
+its own marker (missing ⇒ nudge). **Known residual:** the plan-root `guardrails.json` / `guardrails/**` /
+`preflights/**` of a waved plan are folded by no wave hash — while the plan is attested only at plan level a
+shell edit still surfaces (the plan marker goes stale and every wave falls through to *missing*), but once a
+wave carries its own marker a root-gate edit re-stales nothing. Flip condition: a `PlanShellDefinitionHash`
+(config + plan-root gates only) keyed plan-level marker for waved plans, if root-gate edits ever prove a real
+post-review weakening vector. The **`attestation` block (issue #366) is per wave** exactly
+as the marker is, its report lives under **`<plan>/<wave>/state/reviews/`**, and the F2b containment check
+resolves against that wave's `state/reviews/`.
+**CLI:** `guardrails plan-hash <plan>/wave-NN-<slug>` and `guardrails mark-reviewed <plan>/wave-NN-<slug>`
+resolve the wave **through its parent plan** — the nearest ancestor holding `guardrails.json`, selecting the
+wave by the §14.1 folder regex — and emit/stamp the wave hash. There is deliberately **one spelling** (the
+folder path; no `--wave` flag). `guardrails validate` on a wave folder remains an **error** (a wave is not
+independently loadable) but emits **GR1010** naming the parent plan root and the correct invocation instead
+of a bare `GR1001` (#472).
 
 ---
 
@@ -5541,7 +5561,7 @@ plan-name/
     ├── guardrails/                  #   wave EXIT/terminal gate ("this wave's postconditions; releases next")
     ├── guardrails.baseline          #   OPTIONAL, per-wave (§11)
     ├── diagram.md / diagram.html
-    ├── state/guardrails-review.json  #  OPTIONAL, per-wave review marker (§13)
+    ├── state/guardrails-review.json  #  OPTIONAL, per-wave review marker (§13), keyed on WaveDefinitionHash
     └── tasks/<NN-verb-object>/…      #  the wave's task DAG
     wave-02-<slug>/ …
 ```
@@ -5554,6 +5574,10 @@ total order (there is no `dependsOnWave` edge). Validation:
   alongside wave dirs. A numbering **gap** is a warning, not an error (Open Decision F).
 - **GR2034** (error) — a **cross-wave `dependsOn`** edge (a task edge naming a task in another wave);
   cross-wave ordering is the barrier's job, so each wave's DAG is self-contained.
+- **GR1010** (error) — a **wave folder was loaded as a plan** (`validate`/`plan`/`graph`/`run` pointed at
+  `<plan>/wave-NN-<slug>`). A wave has no `guardrails.json` by design, so this replaces the dead-end
+  `GR1001` with the parent plan root and the wave-aware invocation. `plan-hash` / `mark-reviewed` **do**
+  accept a wave folder (§13) and resolve it through the parent plan.
 
 ### 14.2 Wave-qualified identity (the load-bearing delta)
 

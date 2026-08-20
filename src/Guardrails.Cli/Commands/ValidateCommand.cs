@@ -33,11 +33,12 @@ public static class ValidateCommand
         // an honest nudge, never a gate. Append it to the printed diagnostics; a warning never fails
         // validate's exit code (HasErrors counts errors only).
         var diagnostics = new List<Core.Loading.Diagnostic>(result.Diagnostics);
-        if (result.Plan is not null &&
-            Core.Loading.PlanValidator.ReviewMarkerDiagnostic(
-                result.Plan, Core.Review.ReviewNudgeSurface.Validate) is { } reviewNudge)
+        if (result.Plan is not null)
         {
-            diagnostics.Add(reviewNudge);
+            // One nudge per attestation target: a flat plan yields at most one (unchanged); a WAVED plan
+            // yields one per authored, unattested wave and no plan-level line (issues #472/#488).
+            diagnostics.AddRange(Core.Loading.PlanValidator.ReviewMarkerDiagnostics(
+                result.Plan, Core.Review.ReviewNudgeSurface.Validate));
         }
 
         PlanProbe.PrintDiagnostics(diagnostics, io.Out);
