@@ -48,13 +48,18 @@ the task's own output** (writes a throwaway workspace / rendered fixture, runs a
 `--input-type`/`-e` block, parses `--json`) — Step 2's adversarial pass EXECUTES those
 against hand-synthesized valid + invalid samples to prove the SCRIPT'S OWN correctness
 (see "Script guardrail not smoke-tested against a valid + invalid sample" below, the
-#302 probe — distinct from the #248 tool-output probe). **Also flag two more sets while
+#302 probe — distinct from the #248 tool-output probe). **Also flag three more sets while
 you are already reading:** (a) every guardrail asserting a property of **implementation
 source** — §2's demotion probe asks whether a test could have carried it (#468); and
 (b) every guardrail carrying **BOTH** a require-present and a forbid-present clause, or a
 forbid-present clause of any kind — Probe C reconciles those pairs, and the collision they
-can form is satisfiable by no file at all (#470). Noting all four candidate sets here
-avoids re-reading every script during the pass.
+can form is satisfiable by no file at all (#470); and (c) every clause requiring a **datum** — a value
+that must ARRIVE from somewhere — in a named file, which §2's Unreachable-outcome probe traces to its
+carrier (#474). Noting all five candidate sets here avoids re-reading every script during the pass.
+**Read the PLAN-level and WAVE-level gate scripts in this same sweep** (`<plan>/guardrails/`,
+`<plan>/preflights/`, and each `<plan>/<wave>/` pair) — they are checks with dependencies, not
+infrastructure, and treating them as scenery is precisely what let a BLOCKER through `validate`,
+`graph --check` and a full review pass (#474; §4 has the mechanics).
 
 **Get the breakdown report's `Seam ledger (#382)` in front of you NOW, before the pass** — §2's
 passing-but-blind probe audits it row by row and then re-derives it from the folder, and there is no
@@ -561,10 +566,14 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   **GR2042**, and its verdict is *"this task is too big."* #382 owns the **placement of proof**: it reads
   which seam a test substitutes and where the real-seam proof lives, its mechanism is the ledger plus the
   archetype audited here, and its verdict is *"this proof is in the wrong task."* Therefore — **#382 NEVER
-  adds a rule keyed on `writeScope`, `action.maxTurns` or `dependsOn`** (those three fields are GR2042's,
-  exclusively) — and **#378 NEVER adds a rule about what a guardrail PROVES.** (Check 3 READS `writeScope`
-  to locate where a type is declared; that is a lookup, not a rule keyed on the field. What #382 may never
-  do is rule on how BIG a task is.) When both fire on one task, report both, each from its own evidence;
+  derives a SIZE verdict from `writeScope`, `action.maxTurns` or `dependsOn`** — and **#378 NEVER adds a
+  rule about what a guardrail PROVES.** **The boundary is about which VERDICT a check derives, not which
+  FIELD it reads** (doc 18 §6, corrected 2026-08-20: the field-exclusivity form was already false — GR2041
+  `MissingWriteScope` reads `writeScope` and is not GR2042). So reading `writeScope` as a **lookup** (check
+  3: where is this type declared?) or as a **coverage set** (*does any task claim this path?*, §4's
+  missing-insertion check and the Unreachable-outcome probe) is allowed and always was; what neither may do
+  is rule on how BIG a task is, suggest narrowing a scope for size, or read `action.maxTurns` /
+  `dependsOn` fan-in as size evidence. When both fire on one task, report both, each from its own evidence;
   never let one stand in for the other, and never grow a third
   half-overlapping check in the gap between them. Where they meet: told *"this task is over-scoped"*, the
   reflex is to chop the `writeScope`, which for a fan-in sink yields N small tasks that still contain the
@@ -817,6 +826,84 @@ anti-pattern list — `.claude/skills/plan-breakdown/references/guardrail-catalo
   coverage tokens, SSOT §4.4) — a GR2026 warning on a negative assertion would be the #177 false positive,
   not a signal to remove the guardrail. (plan-breakdown Step 4 adds the matching authoring rule.)
 <!-- END ADDED PROBES #176 -->
+- **Unreachable outcome — the target file IS in scope but the VALUE has no in-scope route to it (#474)**:
+  the **data-path** sibling of the transitive-compilation probe above. #176 is the **compile** axis (B
+  compiles a file that references a non-ancestor's type). This is the **data** axis: the target file sits in
+  the task's `writeScope`, and the value it must carry has nowhere in-scope to come from. A shallow *"is the
+  file in the `writeScope`?"* check **passes** — which is exactly why the measured instance survived
+  `validate`, `graph --check` and a full review pass, and dead-ended at `needsHuman`.
+
+  **Trigger set.** Every guardrail clause asserting *"file X contains / references / does Y"* where Y is a
+  **datum** — a value that has to ARRIVE from somewhere — rather than a shape X can declare on its own. The
+  test that separates the two, and it is the one that generalises: **to satisfy this clause HONESTLY, must
+  X read something it does not itself declare?** *"X declares `sealed record Foo`"* is a shape — X owns it
+  outright, so the clause is reachable by construction. *"`AttemptJournaler.cs` references `Usage`"* is a
+  datum — the token is free to type, but the **value** has to arrive on an object the file receives, and
+  the gap between those two is the whole defect.
+
+  **Ask the question in the target FILE, not in the guardrail. It is phrased so the guardrail cannot answer
+  it:**
+
+  > **If the agent edits only the files it is allowed to, is there anything for the target file to read?**
+
+  Four steps, in order. The habit they replace is a single `writeScope` membership check on the **target**
+  file — which passes on the measured instance, because the target file was never the problem:
+  1. **Open X on the tree this task actually runs against** (the plan baseline plus every ancestor's merged
+     output). Find the statement that would carry Y — the assignment or initializer where Y gets written —
+     and name the expression it must read **from**: the parameter, field, or local. That is the **carrier**.
+     **X does not exist yet?** The probe still runs: read the task's `action.prompt.md` for what X will be
+     **handed** (the type it receives, the call site that constructs it). A file yet to be written still has
+     a carrier, and a prompt that names none is itself the finding — nobody has decided where the value
+     comes from.
+  2. **Resolve the carrier's declaring type and the file that declares it.** Reuse the seam-ledger audit's
+     check-3 lookup (*a type exists at a task when that task's `writeScope`, or an ancestor's, contains the
+     file declaring it*) — do not re-derive it.
+  3. **Does the carrier already expose what Y needs, on that tree?** If yes → reachable; stop.
+  4. **If not, the member must be ADDED to the carrier.** Is the file declaring the carrier in **this task's
+     `writeScope`**? → reachable. In an **ancestor's** `writeScope` **and** that ancestor's action prompt
+     actually requires adding the member? → reachable, but confirm the ancestor carries its own guardrail
+     for it: a merged FILE is not a present VALUE. Owned by a **non-ancestor**, by a **later** task, or by
+     **no task at all** → **BLOCKER**.
+
+  **The one-grep shortcut, and the fastest way to run steps 1–3: follow the sibling datum.** Find the
+  nearest existing datum that already makes the whole trip and grep it; every file it passes through must be
+  in the scope. (plan-breakdown Step 2 carries the matching authoring rule — the sibling-datum trace.)
+
+  **The measured instance, worked.** `model-tiering-stage-2`, task 13, `writeScope` =
+  `[ClaudeStreamParser.cs, ClaudePromptRunner.cs, AttemptJournaler.cs]`; guardrail: `AttemptJournaler.cs`
+  must reference `Usage`. **The membership check passes** — `AttemptJournaler.cs` is right there in the
+  scope, and that is the wrong file to be looking at. Step 1 says why: `AttemptJournaler` does **not** build
+  `AttemptRecord` from a `PromptResult`, it builds it from an
+  **`ActionRun`** (`AttemptJournaler.cs:36` takes `ActionRun action`; `:74` builds the record; `:81` reads
+  `CostUsd = action.CostUsd`). Step 2: `ActionRun` is declared in `ActionRunner.cs:347` — in **task 07's**
+  `writeScope`, an already-merged sibling. Step 3: it carries `CostUsd` and **no `Usage` sibling**. Step 4:
+  `ActionRunner.cs` is in no ancestor that was ever asked to add one → **BLOCKER**. The sibling shortcut
+  lands in the same place in one grep: `CostUsd` makes the whole trip, it passes through `ActionRunner.cs`,
+  and the scope does not contain that file.
+
+  **Name the severed link — and name the false green it invites.** The finding is a three-part sentence:
+  *"X can only read Y from `<carrier type>`; `<carrier type>` is declared in `<file>`, which this task may
+  not write (owned by `<task | nobody>`); the agent's only in-scope moves are an honest halt or a token that
+  satisfies the pattern and carries nothing."* State that second half explicitly — it is what makes this a
+  BLOCKER and not a scoping nit. The measured agent chose the halt and said so; the same clause with a laxer
+  regex buys a **false green** instead, and nothing downstream would ever have asked again.
+
+  **Fixes, in preference order:** (1) add the producer file to this task's `writeScope`, and its work to the
+  prompt; (2) move the unreachable hop to the task that already owns the producer file, moving the clause
+  with it and adding the edge; (3) split the hop out as its own task downstream of both (what the measured
+  plan did). All three are **reachability** moves. This probe never says *"this task is too big"*, never
+  counts `writeScope` entries, and never reads `action.maxTurns` — if a widened scope then trips the
+  over-size split-trigger, that is §2's Over-scoped-task probe firing on **its own** evidence, reported
+  separately (the "#378 boundary" paragraph above governs: the rule is about which **verdict** a check
+  derives, not which **field** it reads).
+
+  **Its relatives, so you don't run one and think you ran another.** #176 = compile axis; this = data axis.
+  §3's missing-edge check asks whether B reads C's **file**; this asks whether a value has a route into a
+  file B **already owns**. §4's missing-insertion check asks the coverage question one level up — *does
+  **any** task claim this path?* — while this one assumes coverage holds and asks whether the datum can
+  travel. GR2026 (#157) is the same shape keyed on **prompt vocabulary**, not on reachability. **No
+  `validate` check sees this one**, and none is planned: deciding it needs semantic analysis over a tree the
+  run has not finished writing. This probe is the gate.
 <!-- BEGIN ADDED PROBE #221 — prose-only prohibition with no structural backing -->
 - **Prose-only prohibition, no structural backing (#221)**: for every explicit **"do NOT …"** statement
   in a task's action prompt ("do NOT wrap this in a retry loop," "do NOT weaken this assertion to
@@ -1357,7 +1444,7 @@ them. Write the pairs down side by side.
 | every **required-present** literal × every **forbidden-present** pattern **in the same file** (#470) | the required text trips the forbidden pattern, so **no file can satisfy both** — every attempt fails identically with coherent, actionable, wrong feedback | **BLOCKER** |
 | every **forbidden-present** token × the task's own **`action.prompt.md`** (#470) | the prompt uses the banned word, inviting the agent to write the very thing that reds it. Satisfiable, but it cost a full attempt when measured | **WEAK** (BLOCKER if the prompt hands the agent the token as required vocabulary) |
 | every **numeric floor** × its own **filter's cardinality** (#484) | an arithmetic dead-end — a zero-match floor exceeding what the filter can ever select | **BLOCKER** |
-| every asserted **outcome** × the task's **`writeScope`** (#474) | the guardrail demands something the task is not permitted to write | **BLOCKER** |
+| every asserted **outcome** × the task's **`writeScope`** (#474) | the guardrail demands something the task is not permitted to write. **The membership reading is only half of it** — in the measured instance the target file WAS in scope and the *value* had no route to it; run §2's **Unreachable-outcome** probe for that half rather than re-deriving it here | **BLOCKER** |
 
 For the first row, do it mechanically: take each required clause's literal text **de-regexed** and match
 it against each forbidden pattern in the same file. The measured instance was a required
@@ -1404,6 +1491,78 @@ and prompt↔guardrail axes. A green `validate` means the provable case is clear
 ### 4. Missing-insertion check
 Re-apply plan-breakdown Step 5: any guardrail referencing an artifact no ancestor
 produces and the repo doesn't already contain → a missing guardrail-enabling task.
+
+**Point it at the GATE folders too, not just `tasks/*/guardrails/` (#474).** The subject of this check
+is every guardrail in **all six folder instances** (SSOT §14.3): `tasks/*/preflights/`,
+`tasks/*/guardrails/`, **`<plan>/preflights/`**, **`<plan>/guardrails/`**, and on a waved plan
+**`<plan>/<wave>/preflights/`** and **`<plan>/<wave>/guardrails/`**. Say why out loud, because the
+reason is the whole lesson: **a gate is a check with dependencies, and it reads as infrastructure.**
+Measured, on `model-tiering-stage-2` — the probe that would have caught the terminal gate's
+`tierSource` clause **already existed, right here, and was simply never pointed at the gate**. The
+clause required a literal in `docs/plans/02-schemas-and-contracts.md`; no task in any wave declared
+that path in any `writeScope`; it passed `validate`, `graph --check` **and a full review pass** as a
+BLOCKER nobody had a reason to open, and the run spent its whole DAG before finding out. Read every
+gate script the way you read a task guardrail — as a check whose inputs somebody has to produce.
+
+Mechanically, the producer set widens with the folder, and nothing else about the check changes:
+
+| the guardrail lives in | when it runs | its producer set is |
+|---|---|---|
+| `tasks/<T>/preflights/` | before T's action | T's ancestors — **not T** |
+| `tasks/<T>/guardrails/` | after T's action | T's ancestors **+ T** — the current reading |
+| `<plan>/<wave-NN>/preflights/` (entry gate) | before the wave's tasks | every task in **earlier** waves — **not this wave's** |
+| `<plan>/<wave-NN>/guardrails/` (exit gate) | after the wave's tasks | every task in wave NN **and** every earlier wave |
+| `<plan>/preflights/` (Full Flight Check) | **ONCE before the DAG**, against the run's STARTING bytes | **nobody — the empty set** |
+| `<plan>/guardrails/` (terminal gate) | once at run end, on the merged HEAD | **every task in the plan, all waves** |
+
+A task is a producer of path P when its `writeScope` covers P (glob and directory-prefix entries
+count — the same membership the harness enforces at write time), or when it stages P as a
+`stagingOutputs` target. If no task in the producer set claims P **and the repo does not already
+contain the required content today**, the gate can never go green: **BLOCKER**. The fix is *give some
+task that file in its `writeScope`, and the work of writing it* — or move the clause to the wave whose
+tasks own it — or the requirement does not belong in this plan. Never propose deleting the clause
+first; a gate that demands the right thing from a plan that cannot deliver it is a **planning** defect,
+and the clause is the only surviving statement of what was wanted.
+
+The `preflights/` rows are where this check earns its second finding, and it is the sharper one: a
+preflight requiring something **the plan itself will build** is red at t=0 no matter who declares it —
+`<plan>/preflights/` halts the run before a single task is scheduled (`plan-preflight-failed`, SSOT §7),
+and a wave entry gate requiring its *own* wave's output halts that wave at the barrier. A producer
+existing later does not help a check that already ran. Verdict **BLOCKER**, and the fix is a **phase**
+move — the requirement belongs in the matching `guardrails/` folder, not a wider scope anywhere.
+
+Two path classes are **not** findings here, and firing on them is how this check earns a reputation
+for noise. (a) **Anything under the plan folder** — `state/`, `logs/`, the journal, `diagram.md` are
+harness-written and appear in no `writeScope` by design (SSOT: the harness is the single writer of
+merged state). (b) **Generated, untracked build output** — a gate grepping `TestResults/*.trx`,
+`artifacts/`, `bin/`, `obj/` names something no author would ever put in a `writeScope`; the producer
+there is the toolchain, not a task.
+
+**Closure — on a waved plan, check whether you are even allowed to conclude "nobody can write this."**
+The verdict above is sound only over a **closed** declaration set: one where every task that will ever
+exist in this plan has already declared its `writeScope`. A plan carrying a declared-but-empty
+`wave-NN-<slug>/` stub (the JIT one-ahead shape, §2's "JIT stub wave" probe) is **open** — wave N+1 may
+own the file, and "no task can write it" is unprovable. In that case do **not** file a BLOCKER: record
+the requirement as an **inherited obligation on the un-authored wave**, name the clause and the path in
+the Step 6 report, and say that the JIT breakdown of that wave owes it. Conversely, when every declared
+wave is authored, the set is closed and the BLOCKER stands. And note the residual honestly: nothing in
+a plan folder records **how many waves the plan intended**, so a plan that lost a wave stub is
+byte-indistinguishable from a finished plan (#477) — if your verdict depended on the plan being
+finished, say in the report that you assumed it. **This caveat does not reach the `preflights/` rows**: a
+future wave's producer cannot help a check that has already run, so a preflight finding stands on an open
+plan exactly as it does on a closed one.
+
+**The boundary — this is a COVERAGE question, never a size verdict (#378/GR2042).** Reading
+`writeScope` as a *coverage set* — *"does any task claim this path?"* — is allowed and is what GR2041
+already does one level down. What this check must never do is derive *"this task is too big"* from
+`writeScope` cardinality, or read `action.maxTurns` or `dependsOn` fan-in as evidence. That verdict
+belongs to §2's Over-scoped-task probe, from its own evidence; when both fire, report both separately
+(the §2 "#378 boundary" paragraph governs, and its rule is about which **verdict** a check derives, not
+which **field** it touches).
+
+**No lint backstops this today.** GR2041 proves every task *declared* a scope; nothing in `validate`
+compares a gate's requirements against the union of those scopes. Do not skip a gate because `validate`
+was green — on the measured instance it was.
 
 ### 5. State-contract lint
 - Every prompt action carries the harness-contract header block.
@@ -1462,9 +1621,17 @@ unchecked gap that goes unmentioned is indistinguishable from a verified one. At
 - **which guardrails Step 2b actually EXECUTED, and which it skipped** — name the toolchain-invoking
   ones you did not run, and say whether Probe B (the minimal-gaming mutation) was applied per task or
   only to a sample;
-- **the classes no probe can see** (#470 require-and-forbid, #474 unreachable-outcome, #484 arithmetic
+- **the classes EXECUTION cannot see** (#470 require-and-forbid, #474 unreachable-outcome, #484 arithmetic
   dead-ends). These are red before AND red forever, so a baseline cannot distinguish them from a
-  correct red. If you hand-checked them, say so; if you did not, say that.
+  correct red. If you hand-checked them, say so; if you did not, say that. For #474 specifically, name
+  the **datum clauses** you ran §2's Unreachable-outcome probe against and the carrier type you resolved
+  for each — *"no datum clauses in this plan"* is a fine answer, *"Probe C row 4 covered it"* is not.
+- **whether the §4 missing-insertion check was pointed at the GATE folders** (#474) — `<plan>/guardrails/`,
+  `<plan>/preflights/`, and each `<plan>/<wave>/…` pair — as a separate line from the `tasks/*/` sweep.
+  Not pointing it there is the exact omission that shipped the measured BLOCKER, so *"ran over tasks"* on
+  its own is an unchecked gap, not a clean gate. On an **open** plan (a declared-but-empty wave stub), list
+  the gate requirements you recorded as **inherited obligations** on the un-authored wave, and say that the
+  coverage verdict was withheld rather than passed.
 - **how far the A₂ clause census got, per task** (#478) — for each guardrail, whether its required-present
   clauses were resolved by the **fast path** (an accumulator list Probe A actually printed) or by a **hand
   census**, and **name every clause left unmeasured** with its reason: a runtime-composed pattern, a subject
@@ -1620,7 +1787,7 @@ finding remains unaddressed.
 - [ ] A parallel plan (≥2 leaf tasks or any fan-in) has NO `integrationGate: true` sink task — a lingering `integrationGate: true` in any `task.json` is the BLOCKER (a **GR2029** hard error), not its absence — and instead carries a non-empty **`<plan>/guardrails/`** folder (the Terminal Gate) with **≥1 real integration-set re-run** (a whole-repo build / full suite / union invariant, `validate` enforces this as **GR2028**; a folder that merely exists or holds only a tautological `exit 0` certifies nothing → BLOCKER). Its `scope: "integration"` union-guardrail is a **union-safe CONDITIONAL invariant** (conflict-marker-free / "if X present, verify it"), NOT the full build or whole suite: a full-build or whole-suite guardrail marked `scope: "integration"` in the terminal folder is the #125 terminal-postcondition anti-pattern → **BLOCKER** (it red-halts correct intermediate unions where downstream TDD tasks have not run yet); the full build/suite must be **LOCAL** (#165). (`scope: "integration"` itself is unchanged — the per-union re-verify tag, SSOT §4.3.)
 - [ ] Every `IFoo`/`FooImpl` pair has a wiring task + a composition-root guardrail that drives the REAL assembler (no seam-injecting guardrail; whole-suite green does not stand in for wiring) (#120).
 - [ ] (#382) The **seam ledger** was audited. The Step 7.4 report carries the bolded `Seam ledger (#382)` **HEADING** — an ABSENT heading is a BLOCKER (the Step 4 analysis never ran), the zero-row form (`_No in-process seam is substituted by this breakdown's tests._`) is a CLAIM that gets checked rather than an absence, and a ledger **not produced to this pass** is an unchecked-gap line in the report, never a finding. Every `bucket` cell is one of `N1` `N2` `N3` `N4` `E` `C` `U`, and an **N classification off the four-item enumeration is REJECTED** (clock / randomness / ambient env reader / wait primitive) — including the **N4 trap**: if the substitute contains a DECISION it is **C**, not N4 (`RetryLoop → IDelay` is N4; `RetryLoop → ITransientBackoff` is C). Every **E**/**C** row's proof sits at a **recomputed T\*** (a later placement is a finding even when the proof exists and passes, and must name T\*); every `proof` path is plan-folder-relative with its task segment agreeing with the `T*` cell; **no E row invokes the construction bound** (D11 — the #120(b) degradation is bucket **C** only, and a degraded C row names the constructor chain that forced it); every **U** row names a receiving task (or, under waves, a receiving wave) that actually exists. The ledger was **re-derived from the folder** — every `author-tests-*` task faking an in-process seam the run drives has a ROW, and process seams (child process, CLI, socket, HTTP, DB, filesystem) have none. Severity: BLOCKER when the un-proven seam is a composition-root/production path, WEAK when only a thin terminal join-check covers it.
-- [ ] (#382) Where a real-seam proof EXISTS, its shape holds: a **test** (rung 1 — no rung-3 source-grep form), asserting an **effect only the production implementation emits** (a recording double / call count / `Verify`, or "the collaborator was called", IS the passing-but-blind shape), at `scope: "local"` with the key omitted (`scope: "integration"` here is the #250 mistake), with a #155-real RED that COMPILES. Every terminal composition proof (the #120 wiring task and each `<plan>/guardrails/` guardrail) names in its `# catches:` a defect that **survives every upstream real-seam proof passing** — one that can name none is redundant (propose deleting it), and one whose only defect is *"this seam is exercised for the first time here"* means a ledger row is MIS-PLACED, fixed upstream and never by a wider `writeScope` here; no row's proof is emitted twice (at T\* and again in the sink). A correct real-seam test is **NOT** a #120 violation (D12 — same verb, different slot: #120 forbids injecting into the ASSEMBLER's slot, #382 requires injecting into the COMPONENT's own constructor; one test doing both is two tests). The #378 boundary held both ways: #382 added no rule keyed on `writeScope` / `action.maxTurns` / `dependsOn` (GR2042's fields, exclusively), and #378 added no rule about what a guardrail PROVES.
+- [ ] (#382) Where a real-seam proof EXISTS, its shape holds: a **test** (rung 1 — no rung-3 source-grep form), asserting an **effect only the production implementation emits** (a recording double / call count / `Verify`, or "the collaborator was called", IS the passing-but-blind shape), at `scope: "local"` with the key omitted (`scope: "integration"` here is the #250 mistake), with a #155-real RED that COMPILES. Every terminal composition proof (the #120 wiring task and each `<plan>/guardrails/` guardrail) names in its `# catches:` a defect that **survives every upstream real-seam proof passing** — one that can name none is redundant (propose deleting it), and one whose only defect is *"this seam is exercised for the first time here"* means a ledger row is MIS-PLACED, fixed upstream and never by a wider `writeScope` here; no row's proof is emitted twice (at T\* and again in the sink). A correct real-seam test is **NOT** a #120 violation (D12 — same verb, different slot: #120 forbids injecting into the ASSEMBLER's slot, #382 requires injecting into the COMPONENT's own constructor; one test doing both is two tests). The #378 boundary held both ways, in its corrected (verdict-based, not field-based) form: #382 derived no SIZE verdict from `writeScope` / `action.maxTurns` / `dependsOn`, and #378 added no rule about what a guardrail PROVES — reading `writeScope` as a lookup or a coverage set is not a boundary crossing (doc 18 §6, corrected).
 - [ ] (#382) Probe B **operator 20** was applied, or explicitly recorded as NOT RUN with its reason: satisfy a real-seam / composition-root `--filter` with a test that CONSTRUCTS THE FAKE under the same real-sounding name — GREEN means the filter selects a name, not a behaviour (BLOCKER; the fix is the assertion requirement, not a narrower filter). It is INAPPLICABLE on a greenfield first review (the test does not exist yet) and is then reported **not run** — never as passed, and never absorbed into a blanket "Probe B applied".
 - [ ] No task carries the **structural over-scope fingerprint** (GR2042): a `maxTurns`-near-ceiling + `writeScope` ≥ ~4 co-occurrence, `writeScope` ≥ ~6, or a `dependsOn` fan-in ≥ ~5 with a multi-file `writeScope` — the fan-in-sink / composition-root-wiring archetype. BLOCKER with the proposed split (one task per collaborator wiring; composition-root proof isolated to a thin sink); resolve the `guardrails validate` GR2042 WARN, don't merely re-report it (#378). On a fan-in sink, test the relocation remedy FIRST (#382): narrowing `writeScope` yields N small tasks that still hold the first exercise of every real path, so the concentration survives the split — but report the two findings separately, from their own evidence, since neither issue's mechanism may read the other's fields.
 - [ ] Every dispatch task routing ≥2 enum values to ≥2 concrete types whose dispatch tests use seam-injection has a per-pairing proximity check binding `<EnumValue>` to `<ConcreteType>` (WEAK if missing; BLOCKER if the only concrete check is `tests-pass`); omitted only when the tests assert the concrete TYPE NAME (#158).
@@ -1629,6 +1796,8 @@ finding remains unaddressed.
 - [ ] Every `scope:"integration"` guardrail is union-safe (passes the "would this pass on a partial merge with a downstream task unsettled?" test, checked against EVERY union point plan-wide — including a merge by a completely unrelated parallel sibling, not just unions structurally upstream of the guardrail's own task in the DAG, #250); terminal postconditions live in a `local` guardrail on the sink (#125).
 - [ ] Every set of ≥2 tasks with OVERLAPPING `writeScope`s on a shared file has ≥1 `scope:"integration"` guardrail asserting the shared-file UNION invariant — the union re-verify is integration-set-only (#132), so a sibling's `local`-only coverage is NOT re-run at the union; flag WEAK if missing. When the shared file is a CODE file and both siblings could ADD a type/member definition, that union guardrail also carries a **duplicate-definition count check** (`[regex]::Matches($content,'class\s+<Name>').Count -gt 1`, union-safe/conditional) — a 3-way merge keeps both copies with no conflict marker (CS0101), the #175 residual; WEAK if absent.
 - [ ] Every task whose verification runs `dotnet build`/`dotnet test` was checked for a **transitive compilation dependency** (#176): an ancestor test-author task's `.cs` file referencing a type produced by a task NOT in the verifying task's ancestor set is a missing edge — add the producing task to `dependsOn` (WEAK, or BLOCKER when the compile failure is certain).
+- [ ] (#474) Every guardrail clause requiring a **datum** in a file the task owns went through the **Unreachable-outcome** probe: the carrier expression was resolved **in the target file**, its declaring type located, and that declaring file confirmed to be in this task's `writeScope` — or in an ancestor's, where that ancestor's prompt actually requires adding the member. *"The target file is in the `writeScope`"* is **not** the check; the measured instance passed it and still dead-ended at `needsHuman`. A carrier owned by a non-ancestor, a later task, or nobody is a **BLOCKER** that names the severed link **and** the false green the clause invites (a token that satisfies the pattern and carries nothing). Fixes are reachability moves (widen scope / relocate the hop / split it out), never a size verdict.
+- [ ] (#474) The §4 missing-insertion check was pointed at **all six** folder instances — `tasks/*/preflights/`, `tasks/*/guardrails/`, **`<plan>/preflights/`, `<plan>/guardrails/`**, and each **`<plan>/<wave>/`** pair — with the producer set widening to the wave's (earlier waves included) and the plan's whole task set. A gate requirement that no task's `writeScope` covers and the repo does not already satisfy is a **BLOCKER** (fix: give a task the file **and the work**, or relocate the clause, or drop the requirement — never delete the clause first). Exempt: paths under the plan folder (harness-written) and untracked build output. On a plan with a declared-but-empty wave stub the coverage verdict is **WITHHELD** and recorded as an inherited obligation on that wave, never reported as passed.
 - [ ] Every code-change task whose `tests-pass` guardrail uses a **broad name-substring `--filter`** was checked for an **orphaned pre-existing golden** (#193 — the runtime analogue of #176): the filter sweeps in a PRE-EXISTING test (not authored by an ancestor) whose pinned literal/golden/snapshot the task's change plausibly alters, AND that test+golden is outside the task's `writeScope` AND no other task owns re-baselining it → **BLOCKER** (the task must pass a test it can't edit → `needsHuman` loop). Fix: narrow the `--filter` to the task's own tests, widen the `writeScope` to own the golden+test, or add a dedicated re-baseline ancestor task. WEAK when the collision is plausible but not certain.
 - [ ] Every guardrail that asserts a test suite PASSES (`tests-pass`/`all-tests-pass`/`specific-tests-pass`, or a production-seam driver) re-emits the failure DETAIL (assertion/exception lines) at the END of stdout so it reaches the harness retry tail — not just the `[FAIL] <name>` summary default `dotnet test` leaves (#179); absence is WEAK (degrades retry feedback, costs attempts). No such guardrail carries a QUIET flag on its TEST command (`-v q`/`-v quiet` on `dotnet test`): measured, it suppresses the entire `Error Message:`/`Expected:`/`Actual:`/`Stack Trace:` block, so even a correct re-emit tails out test names only — WEAK, and quiet belongs on `dotnet build`. The INVERSE `tests-fail-on-stubs` / `tests-fail-on-current-code` checks (non-zero exit = success) do NOT re-emit and must not be flagged.
 - [ ] Every action prompt that **excludes** a scenario/keyword ("do NOT include `CommanderRest`") has a matching **negative-assertion** guardrail (`if ($content -match "<keyword>") { … exit 1 }`, fail-on-present) verifying the keyword is ABSENT (#176); absence is WEAK (BLOCKER when the excluded scenario traps a downstream compile). GR2026 correctly stays silent on the negative assertion's keyword (post-#177, §4.4) — a GR2026 warning there is the false positive, not a reason to delete the guardrail.

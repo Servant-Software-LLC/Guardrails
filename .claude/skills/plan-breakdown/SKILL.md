@@ -306,7 +306,8 @@ task sizing.
 `writeScope` — real paths for a writing task, or **`[]` when it writes nothing to the repo** (a
 configure-a-database task, a verification/read-only check, a state-only task whose only output is a
 `GUARDRAILS_STATE_OUT` fragment). Omitting it is a validation ERROR (**GR2041**) that Step 7's
-`guardrails validate` will catch — see the `writeScope` schema quick-ref in Step 6.
+`guardrails validate` will catch — see the `writeScope` schema quick-ref in Step 6. **And before you
+write the paths down, trace the datum** — the sibling-datum rule later in this step (#474).
 
 **Corrective action when a trigger fires:** decompose the task into the smallest pieces that each
 (i) carry one verifiable outcome, (ii) land in one session, and (iii) retry cheaply — scoping each
@@ -322,6 +323,47 @@ tasks (each code item becomes two tasks); this does not count against the thresh
 Under 3 or over 25 tasks after applying TDD → re-examine, and tell the user why if
 it stands. **A count under the floor after splitting over-sized milestones is itself a signal**
 that a milestone was sized 1:1 — re-run the split-trigger before settling on a small task count.
+
+### Before you write a `writeScope`, TRACE THE DATUM — follow the sibling that already works (#474)
+
+A `writeScope` written from the plan's **type names** is a guess. For any task whose deliverable is
+*"datum D reaches sink S"* — a value parsed here, carried there, recorded at the end — the scope is
+correct only if it contains **every file on D's actual path**. Finding that path is mechanical, needs no
+cleverness, and costs one grep:
+
+1. **Find the nearest existing sibling datum that already makes the whole trip.** Something already
+   travels this route: a cost, a duration, an id, a status, an error.
+2. **Grep it end to end** and list **every** file it passes through — including the ones the plan never
+   names.
+3. **The new datum's `writeScope` must cover the same set.** If it does not, the scope is wrong. Widen
+   it, or split the unreachable hop into its own task that owns the missing file and wire the edge.
+
+**Trace on what the SINK actually READS, not on the type names** — that is the whole trap. In the
+measured instance the names lined up perfectly. A hand-authored task had to carry a runner-reported
+token count through three hops — parse (`ClaudeStreamParser`) → carry (`ClaudePromptRunner` →
+`PromptResult`) → journal (`AttemptRecord.Usage`) — and its `writeScope` listed exactly those three
+files, one per hop. It reads right, and it is impossible: `AttemptJournaler` does not build
+`AttemptRecord` from a `PromptResult`, it builds it from an **`ActionRun`**, declared in
+`ActionRunner.cs` — a **different, already-merged task's** file. Hop 3 was unreachable; the agent's only
+in-scope moves were an honest halt or a token that journals nothing; it halted at `needsHuman` **after
+`validate`, `graph --check` and a full `/guardrails-review` had all passed.** The author's own account:
+*"I traced `PromptResult → AttemptRecord.Usage` on the type names without checking what the journaler
+actually reads."* The sibling datum — **`CostUsd`** — was sitting in the same two files, and one grep
+would have put `ActionRunner.cs` on the path.
+
+**Enumerate every CONSTRUCTION SITE of the sink type, not just the one the plan mentions.** The same
+measured plan had two more (`RunReport.PendingAttempt`, and a second `AttemptRecord` built in the
+scheduler's worktree path) that no task's scope contemplated — a scope that covers one of three
+construction sites delivers the datum on one path and silently drops it on the others.
+
+**This is a REACHABILITY rule, not a size rule.** It can only ADD files to a scope, or MOVE a hop to the
+task that owns the missing file; it never grades how big a task is and never reads `action.maxTurns`. If
+the traced scope then trips the over-size split-trigger above, that is the **split-trigger's** verdict
+from its own evidence ((a)–(e)), reported as its own finding. The boundary is about which **verdict** a
+rule derives, not which field it reads (`docs/plans/18-integration-proof-proximity.md` §6 as corrected;
+GR2042 owns *"this task is too big"*). No `validate` check sees an unreachable datum — deciding it needs
+semantic analysis over a tree the run has not written yet — so this trace and `/guardrails-review` §2's
+matching **Unreachable-outcome** probe are the only gates it has.
 
 ### Large/unbounded fan-out → scripted ETL, NOT an agent-per-item loop (#100)
 
@@ -1453,6 +1495,18 @@ upstream task that creates it:
 **The artifact-ancestry rule:** a guardrail may only reference artifacts (files **and
 state keys**) produced by an ancestor task or pre-existing in the repo. Sweep all
 guardrails against this rule before Step 6; every violation is a missing inserted task.
+
+**A GATE has no "ancestor task" — sweep it anyway, with the right producer set (#474).** The sweep
+above is task-shaped, and that is why gates fall out of it: `<plan>/guardrails/`, `<plan>/preflights/`
+and each wave's pair are checks with dependencies, not infrastructure. Substitute the producer set for
+the ancestor set — plan **terminal gate** → every task in the plan; **wave exit gate** → that wave's
+tasks plus all earlier waves; **wave entry gate** → earlier waves only; **`<plan>/preflights/`** →
+*nobody*, since it runs before the DAG against the starting bytes, so everything it requires must
+already exist. A gate clause nothing on that list produces (and the repo does not already satisfy) is a
+missing inserted task, exactly as at task level — and if the plan genuinely cannot produce it, the
+requirement does not belong in this plan. Measured: a terminal gate required a literal in a doc no
+task's `writeScope` covered; the run drained its whole DAG before finding out.
+(`/guardrails-review` §4 holds the full producer-set table and is the authority — do not re-derive it.)
 
 ## Step 6 — Write the folder
 
@@ -2966,12 +3020,13 @@ authority for every path/signature the new wave references.
 
 - [ ] Stack detected in Step 0; its `stacks/<stack>.md` loaded (or fallback warned if none ships / mixed). `guardrails-patterns.md` read if present.
 - [ ] Every emitted task passed the Step 2 over-size split-trigger (no task bundles multiple deliverables, has a wide blast radius, maps 1:1 to a design milestone, or has an expensive retry); any feasibility/self-critique "over-packed"/"~N test refs" signal was carried into sizing and split, not sized 1:1 (#111). Re-checked in the Step 7.0a task-size self-review; any unsplittable over-scoped task is flagged in the report.
+- [ ] **(#474) Every task whose deliverable is *"datum D reaches sink S"* had D's path traced BEFORE its `writeScope` was written**: the nearest sibling datum that already makes the whole trip was grepped end to end, every file on that path is in the scope (or the unreachable hop is its own task with the edge wired), and **every construction site of the sink type** was enumerated — not just the one the plan names. Tracing on TYPE NAMES instead of on what the sink actually READS is the measured defect: it passes `validate`, `graph --check` and a full review, then dead-ends the agent at `needsHuman` with a choice between an honest halt and a false green. Reachability only — the rule widens or relocates a scope, and never grades a task's size.
 - [ ] Every task has ≥ 1 deterministic guardrail; judges passed the demotion gate and are never alone.
 - [ ] **Every guardrail passed the SOURCE-SHAPE demotion order (#468)**: a claim about runtime behaviour is carried by a test (or an AGREEMENT property test for "X must USE Y"), and a source-shape regex survives ONLY for a structural fact with no runtime proxy — with a Step 7.4 report line saying why no test could carry it. No executed-test COUNT is used as an adequacy floor (the #455 zero-match guard is not one). Every surviving source-shape check over CODE ships its committed `.valid`/`.invalid` sample pair in `tasks/<id>/samples/` (a sibling — NEVER inside `guardrails/`, where the loader would load the fixture as a guardrail and execute it), and the WHOLE pair was re-run after every edit to the script; a DOCUMENTATION target is exempt from the pair but not from the PRECEDENT check, and the exemption is named in the report.
 - [ ] **Every required-present clause records its MEASURED baseline count (#478)**: the token was run against the exact subject that clause scans, with the clause's own case sensitivity, and the number is written beside it — **0**, or a nonzero with a named reason (preflight / positive baseline, `tests-untouched` regression, the "if X is present" half of a union-safe conditional, a ratcheting behaviour manifest). No unmeasured "appears nowhere else" claim survives; a nonzero count fixes the CLAUSE, not the comment. Forbidden-present clauses are exempt (a ban green on arrival is a correct ban). Every **multi-clause** guardrail ACCUMULATES — one distinguishable message per clause, dumped once — with early exits only for a PRECONDITION (subject missing or unparseable, so every clause below would crash) or a post-dump behavioural cost stage, both named in the header comment.
 - [ ] **No forbidden token collides with what the task REQUIRES (#470)**: for every fail-on-present clause, its literal was reconciled against the same file's required-present clauses (a collision is unsatisfiable-by-construction and dead-ends every attempt) and against the task's own `action.prompt.md`; every forbidden scan runs over STRIPPED source (comments AND string literals) and is anchored on a USE, not a mention.
 - [ ] Every guardrail file opens with its `catches:` line.
-- [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys).
+- [ ] Every guardrail respects the artifact-ancestry rule (files AND state keys) — **including every GATE** (#474): `<plan>/guardrails/` swept against the whole plan's producers, each wave exit gate against its own + earlier waves, each wave entry gate against earlier waves only, and `<plan>/preflights/` against **nobody** (it runs before the DAG, so everything it requires must already exist in the starting bytes).
 - [ ] Any task that writes a downstream-read state key carries the fragment-key-present guardrail.
 - [ ] New module/project added to a build descriptor → registration guardrail on the descriptor itself.
 - [ ] Abstraction consumed by a later task → cross-module reference guardrail on the consumer.

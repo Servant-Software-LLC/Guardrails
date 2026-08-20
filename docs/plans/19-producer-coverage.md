@@ -595,8 +595,36 @@ Nothing starts until the #106 draft-PR review of this document is addressed.
 5. `guardrails-review`: extend the §4 missing-insertion check to plan- and wave-level gate folders; add
    the reachability probe and its question.
    `plan-breakdown`: the sibling-datum rule.
-   *filesTouched:* `.claude/skills/guardrails-review/**`, `.claude/skills/plan-breakdown/**`. Bump both
-   `SKILL.md` frontmatter versions (#152/#156/#169).
+   *filesTouched:* `.claude/skills/guardrails-review/**`, `.claude/skills/plan-breakdown/**`. ~~Bump both
+   `SKILL.md` frontmatter versions (#152/#156/#169).~~
+
+> **CORRECTED 2026-08-20, during Milestone A.** There is no frontmatter version to bump. **#169** moved
+> skill-version stamping to **INSTALL time** — the #156 build-time stamp targeted `$(OutDir)` while
+> `PackAsTool` packs the *publish* output, so every published nupkg shipped unstamped skills. Neither
+> tracked `SKILL.md` carries a `version:` field, and adding one by hand would diverge from
+> `SkillsInstaller`, which is the thing that writes it.
+>
+> **Also derived during Milestone A, and NOT in §8: the producer set is per FOLDER, not per plan.**
+> Extending the missing-insertion check to gate folders needed an answer to "produced by whom?", and
+> "every task in the plan" is wrong for four of the six:
+>
+> | folder | when it runs | producer set |
+> |---|---|---|
+> | `tasks/<T>/preflights/` | before T's action | T's ancestors — **not T** |
+> | `tasks/<T>/guardrails/` | after T's action | T's ancestors **+ T** |
+> | `<plan>/<wave>/preflights/` | before that wave's tasks | **earlier waves only** |
+> | `<plan>/<wave>/guardrails/` | after that wave's tasks | that wave + earlier waves |
+> | `<plan>/preflights/` | ONCE before the DAG, on starting bytes | **nobody — the EMPTY SET** |
+> | `<plan>/guardrails/` | run end, merged HEAD | every task, all waves |
+>
+> The empty-set row is the sharp one: a `<plan>/preflights/` clause requiring anything **the plan itself
+> will build** is red at t=0 and halts before scheduling, so its remedy is a **PHASE move, not a wider
+> scope** — a distinction the flat "does any task claim this path?" question cannot express.
+>
+> Closure interacts with this and is carved out: an un-authored wave stub makes the plan OPEN, so a gate
+> verdict is **WITHHELD** and recorded as an inherited obligation on that wave rather than raised as a
+> BLOCKER — but closure does **not** reach the two `preflights/` rows, because a later producer cannot
+> help a check that has already run.
 
 **Milestone B — `guardrails-harness-developer` then `guardrails-test-author`**, only after A merges:
 
