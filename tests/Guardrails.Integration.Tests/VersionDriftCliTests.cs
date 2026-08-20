@@ -175,6 +175,40 @@ public sealed class VersionDriftCliTests : IDisposable
     }
 
     [Fact]
+    public async Task Version_TrackedRootWithAnUntrackedSkillFolder_StillWarnsAboutThatSkill()
+    {
+        // Issue #461, the granularity that keeps the exclusion from over-reaching. The discriminator has
+        // to be the SKILL FOLDER, not the scan root: `~/.claude/skills` very commonly sits inside a
+        // dotfiles/skills repository that tracks OTHER skills while the Guardrails ones under it are
+        // ordinary installs. Measured on the maintainer's own machine — that root tracks 5414 files, and
+        // `plan-breakdown` / `guardrails-review` / `guardrails-domain-knowledge` under it track ZERO.
+        // A root-level probe calls the whole root "source" and silently suppresses the stale-install
+        // warning those three exist for, which trades #461's false POSITIVE for a false NEGATIVE.
+        //
+        // Here: `guardrails-review` is committed (authored source) and `plan-breakdown` is not (an
+        // install) — under ONE root. The report must split them, not lump them.
+        using var repo = new TempSkillsRepo();
+        repo.CommitSkillsRoot("guardrails-review");
+        string mixedRoot = repo.SkillsRootWithoutCommitting("plan-breakdown");
+
+        var io = new StringConsoleIo();
+        var root = new RootCommand("test root");
+        VersionOption versionOption = root.Options.OfType<VersionOption>().Single();
+        versionOption.Action = new VersionWithDriftAction(
+            io, HarnessVersion, _bundledSkills, new[] { mixedRoot });
+
+        await root.Parse("--version").InvokeAsync(configuration: null, TestContext.Current.CancellationToken);
+
+        // The untracked install is reported …
+        Assert.Contains("WARNING", io.ErrorText);
+        Assert.Contains("plan-breakdown", io.ErrorText);
+        // … and the tracked source beside it is not, despite sharing the root.
+        Assert.DoesNotContain("guardrails-review", io.ErrorText);
+        // One drifted skill, so the count must say one — the tracked sibling is excluded, not merely unlisted.
+        Assert.Contains("1 installed Guardrails skill(s)", io.ErrorText);
+    }
+
+    [Fact]
     public async Task Version_StableButOlderInstall_WarnsOnStderr_ExitZero()
     {
         // Stable-vs-stable drift: both sides are X.Y.0 with no prerelease segment. Pinned

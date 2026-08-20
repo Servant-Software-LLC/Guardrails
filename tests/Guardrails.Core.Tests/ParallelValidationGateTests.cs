@@ -255,6 +255,153 @@ public sealed class ParallelValidationGateTests : IDisposable
     }
 
     [Fact]
+    public void MultiLeafPlan_WorktreeMode_Issue179CaptureAndReEmitForm_ProducesNoGr2028()
+    {
+        // Issue #429 — the doctrine conflict. #179 REQUIRES every tests-pass guardrail to CAPTURE the run
+        // and re-emit the failure detail at the END of stdout, so the WHY reaches the harness's ~60-line
+        // retry-feedback tail; `stacks/dotnet.md` §4.2 spells the form out. GR2028 then rejected exactly
+        // that form: `$` is a statement boundary (so `$(…)` substitution splits correctly), which left the
+        // segment reading `log = dotnet test …` — leading word `log`, no invocation found. So a terminal
+        // gate whose entire purpose is `dotnet test <sln>` failed for "carries no integration re-run".
+        // A terminal gate is the one place a full suite belongs AND the one place failure detail most
+        // needs to reach a human, so both rules bite hardest at the same spot; an author had to drop one.
+        // This is the verbatim shape from docs/plans/salvage-advice-provisioning/wave-04's exit gate.
+        string planDir = Path.Combine(_tempRoot, "gr2028-captured-invocation");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-all-tests-pass.ps1",
+                    "# catches: the fully-merged plan HEAD regressing the suite\n" +
+                    "$log = dotnet test Guardrails.sln -c Release 2>&1 | Out-String\n" +
+                    "$code = $LASTEXITCODE\n" +
+                    "Write-Output $log\n" +
+                    "if ($code -ne 0) {\n" +
+                    "    Write-Output \"---- failure detail (why) ----\"\n" +
+                    "    Write-Output \"the full suite fails on the merged plan HEAD\"\n" +
+                    "    exit 1\n" +
+                    "}\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
+    }
+
+    [Fact]
+    public void MultiLeafPlan_WorktreeMode_PosixCommandSubstitutionCapture_ProducesNoGr2028()
+    {
+        // Issue #429, the POSIX twin of the same doctrine: capture via `$(…)` command substitution. This
+        // shape already passed before the widening (`$` and `(` are both statement boundaries, so the
+        // command lands at a segment start on its own) — pinned here so the .sh half of a cross-platform
+        // guardrail pair cannot silently regress while the .ps1 half is the one under test.
+        string planDir = Path.Combine(_tempRoot, "gr2028-posix-capture");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-all-tests-pass.sh",
+                    "# catches: the fully-merged plan HEAD regressing the suite\n" +
+                    "log=$(dotnet test Guardrails.sln -c Release 2>&1)\n" +
+                    "code=$?\n" +
+                    "printf '%s\\n' \"$log\"\n" +
+                    "if [ \"$code\" -ne 0 ]; then\n" +
+                    "  printf '%s\\n' \"the full suite fails on the merged plan HEAD\"\n" +
+                    "  exit 1\n" +
+                    "fi\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.DoesNotContain(diagnostics, d => d.Code == Gr2028);
+    }
+
+    [Fact]
+    public void MultiLeafPlan_WorktreeMode_AssignmentOfAQuotedMention_ProducesGr2028_Error()
+    {
+        // Issue #429's containment condition: widening to accept `$log = dotnet test …` must NOT accept a
+        // MENTION of the command in a string. `$msg = "dotnet test Guardrails.sln"` assigns TEXT — nothing
+        // runs — and the quoted literal is stripped before the assignment prefix is, so the right-hand side
+        // is empty and credits nothing. This is the #207 bypass wearing the #429 form, and it must stay
+        // rejected or GR2028 loses the teeth it exists for.
+        string planDir = Path.Combine(_tempRoot, "gr2028-assigned-quoted-mention");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-fake.ps1",
+                    "# catches: nothing real — it only NAMES a build command in a variable\n" +
+                    "$msg = \"dotnet test Guardrails.sln should pass on the merged HEAD\"\n" +
+                    "$note = 'dotnet build Guardrails.sln'\n" +
+                    "Write-Output $msg\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.Contains(diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void MultiLeafPlan_WorktreeMode_AssignmentOfAnOutputBuiltin_ProducesGr2028_Error()
+    {
+        // Issue #429's second containment condition. Quote-stripping alone does not cover this one: an
+        // UNQUOTED argument survives it, so `$out = echo dotnet test Guardrails.sln` reaches the matcher
+        // with the keywords intact. It must still be rejected — the captured thing is the output of an
+        // echo, not of a build. That holds because the assignment prefix is stripped BEFORE the
+        // output-builtin test, so the segment is discarded on exactly the grounds a bare `echo` is.
+        string planDir = Path.Combine(_tempRoot, "gr2028-assigned-echo");
+        WriteDiskPlan(
+            planDir,
+            guardrailsJson: "{ \"version\": 1, \"maxParallelism\": 3 }",
+            tasks:
+            [
+                ("01-root", "{ \"description\": \"root\", \"dependsOn\": [] }"),
+                ("02-leaf-a", "{ \"description\": \"leaf a\", \"dependsOn\": [\"01-root\"] }"),
+                ("03-leaf-b", "{ \"description\": \"leaf b\", \"dependsOn\": [\"01-root\"] }")
+            ],
+            planGuardrailFiles:
+            [
+                ("01-fake.ps1",
+                    "# catches: nothing real — it captures the OUTPUT of an echo, not of a build\n" +
+                    "$out = echo dotnet test Guardrails.sln\n" +
+                    "$more = Write-Output dotnet build Guardrails.sln\n" +
+                    "exit 0\n")
+            ]);
+
+        PlanDefinition plan = LoadPlan(planDir);
+        IReadOnlyList<Diagnostic> diagnostics = Validate(plan);
+
+        Assert.Contains(diagnostics, d => d.Code == Gr2028 && d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
     public void MultiLeafPlan_SerialMode_NoGuardrailsFolder_ProducesNoGr2028()
     {
         // PO decision: a SERIAL run (maxParallelism == 1) merges no parallel branches, so the

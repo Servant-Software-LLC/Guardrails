@@ -382,6 +382,17 @@ Notes that make it robust:
 - **Keep ONE final actionable reason line** after the re-emitted block (the §4 / catalogue
   one-actionable-line rule still holds) — it is the human-readable summary at the very bottom of the
   tail; the re-emitted detail sits just above it.
+- **This capture form now CREDITS GR2028 — use it in a terminal/exit gate too (#429).** `validate` used to
+  reject `$out = dotnet test <sln> …` as "carries no integration re-run", because `$` is a statement
+  boundary and the segment therefore read `out = dotnet test …` (leading word `out`, no invocation).
+  A `<plan>/guardrails/` or `<plan>/<wave>/guardrails/` file that correctly followed this section
+  therefore FAILED **GR2028** — the two rules bit hardest at the same file, since a terminal gate is both
+  the one place a full suite belongs and the one place failure detail most needs to reach a human. The
+  recognizer was widened rather than the doctrine weakened: **a captured invocation is an invocation.**
+  Write the exit gate in this form and do NOT add a second file just to satisfy the recognizer. (A
+  conflict-marker scan alongside is still welcome on its own merits — it proves union soundness where a
+  suite proves behaviour — but it is no longer needed to get the file credited.) What is still rejected is
+  a *mention*: `$msg = "dotnet test …"` and `$out = echo dotnet test …` credit nothing.
 
 **Which archetypes re-emit, precisely:** every realization that asserts tests **PASS** — the §4
 filtered `specific-tests-pass`, the §4.1 implementation `02-…-tests-pass` (the SAME `--filter`, exit 0

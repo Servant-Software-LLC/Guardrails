@@ -1818,6 +1818,16 @@ union guardrail with GR2028 even though it is a textbook union-SAFE conditional:
 GR2028-satisfaction are two different bars — a GR2028-satisfying guardrail must be BOTH union-safe AND
 carry one of the two ungameable forms.)
 
+**A CAPTURED build/test invocation counts as form 2 (#429).** The failure-detail-in-tail doctrine
+(`stacks/dotnet.md` §4.2, #179) *requires* a tests-pass guardrail to capture the run — `$log = dotnet test
+<sln> … 2>&1` — so the assertion/exception lines can be re-emitted LAST and reach the retry-feedback tail.
+`validate` used to reject that exact shape as "no integration re-run", which left a terminal/exit gate
+unable to satisfy both rules at once: an author had to drop the re-emit at the very gate where failure
+detail matters most, or add a second file purely to be recognized. **The recognizer should not reject the
+form another rule requires**, so a captured invocation is now credited. What is still rejected is a
+*mention* rather than a run: `$msg = "dotnet test …"` (a quoted string) and `$out = echo dotnet test …`
+(the output of an echo) credit nothing, as does a comment that merely names a build command.
+
 **The rule: assert a union-safe INVARIANT, never a terminal POSTCONDITION.** A `scope:"integration"`
 guardrail must assert something true of **any valid intermediate union** — an invariant like "every
 produced file present is non-empty and conflict-marker-free", "the solution still builds", "the

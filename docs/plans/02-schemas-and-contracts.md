@@ -820,6 +820,22 @@ Beyond that:
   (`echo`/`printf`/`print`/`Write-Output`/…). Quoted-string literals are stripped per line first, so a keyword
   inside a quote never counts. A piped/chained real invocation (`dotnet build && dotnet test 2>&1 | tee log`)
   still counts — the command sits at a statement position within the pipeline.
+- **A CAPTURED invocation counts (issue #429).** `$log = dotnet test <sln> -c Release 2>&1 | Out-String` is
+  an invocation, and it is the form the failure-detail-in-tail doctrine (#179, `stacks/dotnet.md` §4.2)
+  **requires** of every tests-pass guardrail: capture the run, print the log, then re-emit the
+  assertion/exception lines LAST so the WHY reaches the harness's ~60-line retry-feedback tail. GR2028 used
+  to reject exactly that form, because `$` is a statement boundary and the segment therefore read
+  `log = dotnet test …` — leading word `log`. A terminal/exit gate is the one place a full suite genuinely
+  belongs *and* the one place failure detail most needs to reach a human, so both rules applied hardest at
+  the same file and could not both be satisfied; the author had to drop the re-emit or add a second file
+  purely to satisfy the recognizer. So one leading `<identifier> =` assignment prefix is stripped from each
+  statement segment before the command word is read. This cannot revive the mention bypass: the strip runs
+  on a body whose comments and whose per-line quoted literals are already gone, so an assignment's
+  right-hand side is only ever a bare, unquoted command word — `$msg = "run dotnet test"` strips to
+  `msg =` and credits nothing, and `$out = echo dotnet test` is discarded by the output-builtin rule (the
+  strip is applied BEFORE that rule) exactly as a bare `echo` is. Comparisons (`==`, the bash `=~`) are
+  excluded by lookahead. The POSIX twin `log=$(dotnet test …)` always counted — `$` and `(` already split
+  the command onto a segment of its own.
 - **Form (2) stays a literal token match on the comment-stripped (not quote-stripped) body** — a genuine
   conflict-marker check often carries the 7-char token in a quoted string (`grep -q '<<<<<<<'`), and no
   legitimate reason exists to write that exact sequence other than detecting it, so it remains ungameable.

@@ -1125,6 +1125,17 @@ public sealed class PlanValidator
     /// segment whose leading command word is an OUTPUT builtin (<see cref="OutputBuiltin"/>) is discarded —
     /// its arguments are just text, not a build invocation. Only then is the segment tested against
     /// <see cref="IntegrationReRunCommand"/> anchored at the segment's start.
+    /// <para>
+    /// <b>Captured invocations count (issue #429).</b> A leading assignment prefix is stripped from each
+    /// segment first (<see cref="StripCaptureAssignment"/>), so <c>$log = dotnet test &lt;sln&gt; 2>&amp;1</c>
+    /// — the capture-then-re-emit form the .NET stack reference MANDATES for every tests-pass guardrail
+    /// (#179), so the failure detail lands in the harness's ~60-line retry-feedback tail — is recognized as
+    /// the invocation it is. It previously was not: the <c>$</c> statement boundary left the segment reading
+    /// <c>log = dotnet test …</c>, whose leading word is <c>log</c>. A terminal gate that correctly followed
+    /// #179 therefore FAILED GR2028 for having "no integration re-run" while running the whole solution's
+    /// build and suite — two shipped rules that could not both be satisfied in one file. The recognizer must
+    /// not reject the exact form another rule requires.
+    /// </para>
     /// </summary>
     private static bool InvokesIntegrationCommand(string strippedBody)
     {
@@ -1133,14 +1144,18 @@ public sealed class PlanValidator
             string cleaned = StripQuotedLiterals(line);
             foreach (string segment in SplitIntoStatementSegments(cleaned))
             {
-                string trimmed = segment.TrimStart();
+                // Issue #429 — a CAPTURED invocation is still an invocation. `$log = dotnet test …` puts the
+                // command one token to the right of the statement start, so drop a leading assignment
+                // prefix before asking whether the segment's leading word is a build/test command.
+                string trimmed = StripCaptureAssignment(segment.TrimStart());
                 if (trimmed.Length == 0)
                 {
                     continue;
                 }
 
                 // Discard a segment led by an output builtin — echo/printf/Write-Output "…dotnet test…"
-                // MENTIONS a command, it does not invoke one.
+                // MENTIONS a command, it does not invoke one. Applied AFTER the assignment strip, so
+                // `$x = echo "… dotnet test …"` is discarded on the same grounds as a bare `echo`.
                 if (OutputBuiltin.IsMatch(trimmed))
                 {
                     continue;
@@ -1183,6 +1198,40 @@ public sealed class PlanValidator
         line.Split(StatementBoundaries, StringSplitOptions.RemoveEmptyEntries);
 
     private static readonly char[] StatementBoundaries = ['|', ';', '&', '(', ')', '{', '}', '`', '$'];
+
+    /// <summary>
+    /// Issue #429 — remove ONE leading <c>&lt;name&gt; =</c> capture-assignment prefix from a statement
+    /// segment, so the command being assigned is tested as the leading command word it actually is.
+    /// <para>
+    /// The PowerShell capture form <c>$log = dotnet test &lt;sln&gt; -c Release 2>&amp;1 | Out-String</c> is
+    /// what #179 mandates for every tests-pass guardrail. <c>$</c> is already a statement boundary (so
+    /// <c>$(…)</c> command substitution splits correctly), which leaves the segment as
+    /// <c>log = dotnet test …</c> — a real invocation hidden behind an identifier. The POSIX twin
+    /// <c>log=$(dotnet test …)</c> needed no help: <c>$</c> and <c>(</c> already split it.
+    /// </para>
+    /// <para>
+    /// <b>Why this cannot re-open the #207 mention bypass.</b> Stripping happens on a body that has already
+    /// had whole-line comments removed (<see cref="StripCommentLines"/>) and the line's quoted literals
+    /// removed (<see cref="StripQuotedLiterals"/>). So the only thing an assignment's right-hand side can be
+    /// here is a bare, unquoted command word — <c>$msg = "run dotnet test"</c> strips to <c>msg =</c> and
+    /// credits nothing, and <c>$x = echo "… dotnet test …"</c> strips to <c>echo</c> and is discarded by
+    /// <see cref="OutputBuiltin"/> exactly as a bare <c>echo</c> is. A comparison is not stripped either:
+    /// the <c>(?![=~])</c> lookahead keeps <c>==</c> and the bash <c>=~</c> out, and an unstripped
+    /// comparison could not match the anchored command regex anyway.
+    /// </para>
+    /// </summary>
+    private static string StripCaptureAssignment(string segment) =>
+        CaptureAssignmentPrefix.Replace(segment, string.Empty, 1).TrimStart();
+
+    /// <summary>
+    /// A single <c>&lt;identifier&gt; =</c> assignment prefix at a segment's start. The identifier allows
+    /// <c>:</c> and <c>.</c> so PowerShell scope/drive qualifiers (<c>$script:out</c>, <c>$env:CI</c>) are
+    /// covered; the leading <c>$</c> is already gone, consumed as a statement boundary. Comparison operators
+    /// (<c>==</c>, <c>=~</c>) are excluded by lookahead.
+    /// </summary>
+    private static readonly Regex CaptureAssignmentPrefix = new(
+        @"^[A-Za-z_][A-Za-z0-9_:.]*\s*=(?![=~])\s*",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
     /// An output builtin that PRINTS its arguments (they are text, never an invocation): <c>echo</c>,

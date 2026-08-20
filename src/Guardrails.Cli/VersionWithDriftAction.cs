@@ -20,7 +20,7 @@ namespace Guardrails.Cli;
 /// roots and the bundled-skills directory default to the real locations but are injectable.
 ///
 /// <para>Issue #461 — the warning must be ACTIONABLE, and its action must be safe. Two rules follow:
-/// a scan root the repository TRACKS is authored source, not an install, and is left out of the report
+/// a skill folder the repository TRACKS is authored source, not an install, and is left out of the report
 /// entirely; and every root that IS reported gets the remedy command that writes to THAT root, rather
 /// than one fixed suggestion that only ever updated <c>~/.claude/skills</c>.</para>
 /// </summary>
@@ -31,8 +31,11 @@ public sealed class VersionWithDriftAction : SynchronousCommandLineAction
     private readonly string _bundledSkillsDir;
     private readonly IReadOnlyList<string> _scanRoots;
 
-    /// <summary>Per-root memo for the issue #461 tracked-source probe — at most one git call per root.</summary>
-    private readonly Dictionary<string, bool> _trackedSourceRoots = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Per-skill-folder memo for the issue #461 tracked-source probe — at most one git call per drifted
+    /// skill folder, and only for folders that would otherwise be reported.
+    /// </summary>
+    private readonly Dictionary<string, bool> _trackedSourceSkills = new(StringComparer.Ordinal);
 
     /// <summary>Production wiring: real harness version, bundled-skills dir, and scan roots.</summary>
     public VersionWithDriftAction(IConsoleIo io)
@@ -93,9 +96,9 @@ public sealed class VersionWithDriftAction : SynchronousCommandLineAction
             return;
         }
 
-        // Issue #461 — drop roots that are git-tracked SOURCE before warning about them. Probed only
-        // here, on the roots that would otherwise be reported, so a clean `--version` spawns no git.
-        drifted = drifted.Where(s => !IsTrackedSourceRoot(s.Root)).ToList();
+        // Issue #461 — drop skill folders that are git-tracked SOURCE before warning about them. Probed
+        // only here, on the folders that would otherwise be reported, so a clean `--version` spawns no git.
+        drifted = drifted.Where(s => !IsTrackedSourceSkill(s)).ToList();
         if (drifted.Count == 0)
         {
             return;
@@ -105,20 +108,36 @@ public sealed class VersionWithDriftAction : SynchronousCommandLineAction
     }
 
     /// <summary>
-    /// Issue #461 — is <paramref name="root"/> a skills directory the repository TRACKS, i.e. authored
-    /// SOURCE rather than an install? In this very repo <c>./.claude/skills</c> is where the shipped skills
-    /// are written; reporting it as a stale INSTALL was wrong at the category level, and no install command
+    /// Issue #461 — is this drifted skill a folder the repository TRACKS, i.e. authored SOURCE rather than
+    /// an install? In this very repo <c>./.claude/skills/plan-breakdown</c> is where the shipped skill is
+    /// written; reporting it as a stale INSTALL was wrong at the category level, and no install command
     /// could clear the warning because none of them writes an author's source. Worse, the only command that
     /// targets that root — <c>skills install --project --force</c> — would have replaced the author's work
-    /// with the bundle from whatever tool version happened to be installed. A tracked root is therefore
-    /// excluded from the drift report entirely: its stamp is intentionally absent (the repo source stays
-    /// unstamped by design — only installs are stamped), so any "remedy" would be noise on every single
-    /// <c>--version</c>. Memoised per root — the two default scan roots cost at most two git probes.
+    /// with the bundle from whatever tool version happened to be installed. A tracked skill folder is
+    /// therefore excluded from the drift report entirely: its stamp is intentionally absent (repo source
+    /// stays unstamped by design — only installs are stamped), so any "remedy" would be noise on every
+    /// single <c>--version</c>.
+    /// <para>
+    /// <b>The probe is the SKILL FOLDER, not the scan root.</b> Rooting it at
+    /// <c>&lt;root&gt;/&lt;name&gt;</c> is what keeps the exclusion narrow enough to stay honest. A root
+    /// says nothing reliable: <c>~/.claude/skills</c> very commonly sits inside a dotfiles/skills
+    /// repository that tracks OTHER skills while the Guardrails ones under it are ordinary, untracked
+    /// installs — measured on the maintainer's own machine, where that root tracks 5414 files yet
+    /// <c>plan-breakdown</c>, <c>guardrails-review</c> and <c>guardrails-domain-knowledge</c> track zero.
+    /// Asking the root there classifies three genuinely stale INSTALLS as source and silently suppresses
+    /// the warning they exist for — trading #461's false positive for a false negative. Asking the folder
+    /// answers the question actually being decided ("is THIS skill authored here?") and gets both cases
+    /// right: the repo's own tracked skills stay silent, the untracked installs beside them still warn.
+    /// </para>
+    /// <para>Memoised per skill folder, so a root holding N drifted skills costs N probes at most, once.</para>
     /// </summary>
-    private bool IsTrackedSourceRoot(string root) =>
-        _trackedSourceRoots.TryGetValue(root, out bool tracked)
+    private bool IsTrackedSourceSkill(SkillVersionStatus status)
+    {
+        string skillDir = Path.Combine(status.Root, status.Name);
+        return _trackedSourceSkills.TryGetValue(skillDir, out bool tracked)
             ? tracked
-            : _trackedSourceRoots[root] = GitWorkingTree.TracksAnyFileUnder(root);
+            : _trackedSourceSkills[skillDir] = GitWorkingTree.TracksAnyFileUnder(skillDir);
+    }
 
     private void WriteWarningBlock(IReadOnlyList<SkillVersionStatus> drifted)
     {
