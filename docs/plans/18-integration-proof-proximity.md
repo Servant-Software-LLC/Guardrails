@@ -367,6 +367,29 @@ mis-classification is a judgement failure and a lint cannot. If three consecutiv
 ledger at all, build GR2061. `GR2061` is reserved for it (next-free at time of writing;
 `DiagnosticCodes.cs` line ~709 must be advanced by whoever takes it).
 
+> **EVIDENCE TOWARD THAT GATE, from M3 (2026-08-20).** Building the round-trip surfaced a second,
+> independent argument for the declared field — and it is stronger than the absence argument above,
+> because it does not depend on authors being lazy.
+>
+> **The folder carries no mandated marker identifying a guardrail as a real-seam proof.** A round-trip
+> has to *find* the proof before it can judge its placement, and the skills give it only two tells,
+> **neither of which is a declared contract**: the filename `03-real-seam-tests-pass.ps1` appears only
+> as an *example* inside two ledger rows, and `(passing-but-blind)` appears only inside a `# catches:`
+> *template*. An LLM honouring the doctrine in any of a hundred reasonable spellings emits a correct
+> proof the audit cannot see.
+>
+> Worse, **the folder never declares WHICH SEAM a guardrail proves**, so T\* cannot be computed without
+> recovering the component and dependency types from prose. M3 does it with a closed-vocabulary
+> intersection against the DAG's own `writeScope` type universe, which works but is only as good as the
+> `catches:` sentence. **`/guardrails-review`'s "re-derive the ledger from the folder" fallback (§3.3)
+> faces exactly this wall** — which means the review-only gate is weaker than §3.3 assumed.
+>
+> M3 did not paper over it: the two marker constants are pinned to their skill sources so losing a tell
+> fails loudly rather than emptying the audit into a vacuous green, and an unresolvable seam is
+> REPORTED, never silently passed. But the honest conclusion is that **the folder-observable half is
+> weaker than §13 imagined**, and the fix is the one D13 already names — a declared ledger field plus
+> GR2061 — not a marker invented in `tests/`.
+
 ---
 
 ## 4. The archetype — keep it, restructured

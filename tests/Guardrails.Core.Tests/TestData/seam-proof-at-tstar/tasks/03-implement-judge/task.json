@@ -1,0 +1,5 @@
+{
+  "description": "Implement CriticalityJudge. This is T* for the `CriticalityJudge -> IPromptRunner` seam: the earliest task at which BOTH production types exist.",
+  "dependsOn": ["02-author-judge-tests"],
+  "writeScope": ["src/Guardrails.Core/Execution/CriticalityJudge.cs"]
+}

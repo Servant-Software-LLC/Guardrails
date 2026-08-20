@@ -1,0 +1,5 @@
+{
+  "description": "Wire the judge into the production SchedulerFactory. Terminal join-check: it owes ASSEMBLY only, never the first exercise of a collaborator's real path.",
+  "dependsOn": ["03-implement-judge"],
+  "writeScope": ["src/Guardrails.Core/Execution/SchedulerFactory.cs"]
+}

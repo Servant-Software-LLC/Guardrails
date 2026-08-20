@@ -1,0 +1,5 @@
+{
+  "description": "Author the CriticalityJudge tests - the fake-based unit tests AND the red real-seam test, per the TDD pair.",
+  "dependsOn": ["01-add-prompt-runner"],
+  "writeScope": ["tests/Guardrails.Core.Tests/CriticalityJudgeTests.cs"]
+}

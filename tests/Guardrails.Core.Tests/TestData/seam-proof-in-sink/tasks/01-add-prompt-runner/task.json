@@ -1,0 +1,5 @@
+{
+  "description": "Add the production ClaudePromptRunner - the E-bucket adapter whose real implementation crosses the process boundary to the `claude` CLI.",
+  "dependsOn": [],
+  "writeScope": ["src/Guardrails.Core/Execution/ClaudePromptRunner.cs"]
+}
