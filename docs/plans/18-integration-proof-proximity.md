@@ -264,7 +264,7 @@ ledger and then leaving all the proof in the sink anyway.
 ## 2. The seam ledger — the authoring artifact
 
 The ledger is a **table in the breakdown report**, produced during plan-breakdown Step 4 analysis and
-carried into the Step 6 report. It is markdown, not schema (§3.4 records why, and what would change that).
+carried into the Step 7.4 report. It is markdown, not schema (§3.4 records why, and what would change that).
 
 | seam (component → declared dependency) | bucket | production type | faked underneath | T\* | proof |
 |---|---|---|---|---|---|
@@ -338,14 +338,19 @@ be *sharpened by execution*: Probe B operator 20 (§5.3) gives the audit teeth t
 
 Not acceptable forever, which is what §3.4 is for.
 
-### 3.4 The deferred lint (GR2059) and its evidence gate
+### 3.4 The deferred lint (GR2061) and its evidence gate
+
+> **Reservation moved, 2026-08-20.** This lint was first reserved as `GR2059`. That code went to shipping
+> work instead (#459's wave-root `scope:"integration"` inertness warning), and `GR2060` to the #474/#477
+> family. A number reserved for DEFERRED work must never block a code that is shipping now, so this lint
+> reserves the next free code and will take whatever is next free on the day its evidence gate opens.
 
 **Deferred, designed, not built.** If the ledger were a machine-readable artifact rather than a report
 table, one genuinely deterministic check becomes available — and it is a *referential-integrity* check,
 the only shape that is false-positive-free by construction because it relates declarations to
 declarations and infers nothing:
 
-> **GR2059 (deferred)** — every seam a task declares faked with bucket **E**, **C** or **U** is named by
+> **GR2061 (deferred)** — every seam a task declares faked with bucket **E**, **C** or **U** is named by
 > some task's declared real-seam proof, at or before T\*, within the same wave.
 
 The precedent is exact: this is the `stateOut`/`stateIn` key-matching check, applied to seams. It needs a
@@ -356,10 +361,10 @@ measured lesson); an undeclared fake is invisible, so the lint's floor is the ho
 polices; and any waiver value becomes the escape hatch every author takes. Contract surface in exchange
 for a check whose hole is in the same place as the problem is a bad trade **on current evidence**.
 
-**The evidence gate that flips it.** Ship GR2059 when review reports show the dominant failure is the
+**The evidence gate that flips it.** Ship GR2061 when review reports show the dominant failure is the
 ledger being **absent** rather than **wrong**. Absence is a declaration failure and a lint fixes it;
 mis-classification is a judgement failure and a lint cannot. If three consecutive breakdowns emit no
-ledger at all, build GR2059. `GR2059` is reserved for it (next-free at time of writing;
+ledger at all, build GR2061. `GR2061` is reserved for it (next-free at time of writing;
 `DiagnosticCodes.cs` line ~709 must be advanced by whoever takes it).
 
 ---
@@ -537,7 +542,7 @@ tuned. Both issues resolve from one change, which is the evidence that they shar
 | # | change | file |
 |---|---|---|
 | V1 | Replace the "where feasible" sentence with §1: buckets, N4 trap, one-level clause, T\* placement, join-check | `plan-breakdown/SKILL.md` (Step 4) |
-| V2 | Emit the ledger in Step 4; place proofs by T\* in Step 5; print the ledger in the Step 6 report | `plan-breakdown/SKILL.md` |
+| V2 | Emit the ledger in Step 4; place proofs by T\* in Step 5; print the ledger in the Step 7.4 report | `plan-breakdown/SKILL.md` |
 | V3 | Restructure the archetype: rung-1 statement, no-rung-3 floor, `scope:"local"` ruling, assertion requirement, final boundary rule, induction paragraph | `references/guardrail-catalogue.md` |
 | V4 | The AGREEMENT ⟷ real-seam disambiguation, cross-linked both ways | `references/guardrail-catalogue.md` |
 | V5 | Bucket-worked .NET examples (E: real runner over stub CLI; C: real backoff, journal assertion) + the assertion requirement | `references/stacks/dotnet.md §10e` |
@@ -549,7 +554,7 @@ tuned. Both issues resolve from one change, which is the evidence that they shar
 
 **Deferred, each with its trigger:**
 
-- **GR2059 + a declared ledger field** — trigger: three consecutive breakdowns emit no ledger (§3.4).
+- **GR2061 + a declared ledger field** — trigger: three consecutive breakdowns emit no ledger (§3.4).
 - **The #350 vetted-library entry** — the archetype is a strong parameterization candidate
   (`component`, `seam interface`, `production type`, `boundary stub`, `observable effect`), but it belongs
   to #350's mechanism. Building a one-off parameterization here would be the second half-overlapping
@@ -574,7 +579,7 @@ Stated before implementation, so the verdict is not written after the fact:
 2. **Rows classified N that were really E or C.** The closed list is being read as a category. *Response:*
    the list needs narrowing, or N needs to stop being self-service and become a reviewer-granted
    exemption.
-3. **Ledgers absent rather than wrong.** → GR2059's gate has opened (§3.4).
+3. **Ledgers absent rather than wrong.** → GR2061's gate has opened (§3.4).
 4. **Real-seam tests that pass while the real path is broken.** The assertion requirement is not landing —
    authors are asserting "the collaborator was called". *Response:* Probe B operator 20 must become
    mandatory rather than best-effort, and the archetype needs a worked *negative* example.
@@ -600,8 +605,8 @@ appended to the paragraph describing the warning:
 > place and moves the halt rather than removing it.
 
 **No other SSOT change.** Specifically: **no new `§4.x` validate-check subsection** (there is no new
-check), **no `task.json` field**, **no guardrail-sidecar key**, **no GR code allocated** (`GR2059` stays
-next-free and reserved). Should the review direct GR2059 into v1, the delta becomes a new §4.8 plus a
+check), **no `task.json` field**, **no guardrail-sidecar key**, **no GR code allocated** (`GR2061` stays
+next-free and reserved). Should the review direct GR2061 into v1, the delta becomes a new §4.8 plus a
 `task.json` field, and that is a materially different design that should be re-reviewed, not amended in.
 
 ---
@@ -619,7 +624,7 @@ lint rejects. §4.7 already draws this line explicitly, listing what "deliberate
 because it requires execution. And the design does ship a deterministic gate; it ships it at the layer
 where the evidence exists. **But the concession is real and I will not soften it:** v1 has **no
 author-time deterministic backstop**, so a plan-breakdown that simply ignores this rule sails past
-`validate` in silence. That is a genuine hole, its remedy is named (GR2059), and its gate is stated in
+`validate` in silence. That is a genuine hole, its remedy is named (GR2061), and its gate is stated in
 advance rather than left to be argued later.
 
 **"One real level down multiplies test cost across every task."** Partly true and worth stating plainly.
@@ -653,7 +658,7 @@ environment reader") is the loosest of the four and could be stretched to cover 
 
 **"The ledger is a document, and documents rot."** True, and it is why the ledger is deliberately a
 *report* artifact rather than a plan-folder one in v1: a stale report is visibly a report, whereas a stale
-declaration in `task.json` would be read as contract. When GR2059's gate opens, the rot problem arrives
+declaration in `task.json` would be read as contract. When GR2061's gate opens, the rot problem arrives
 with it and must be answered then.
 
 **"This is a methodology change touching how every wave is decomposed — that is a lot of blast radius for
@@ -669,7 +674,7 @@ of why it does not have one.
 
 - **D1.** #382's v1 adds **no `guardrails validate` code and no GR code.** The defect's carrier does not
   exist at validate time; the only pre-run signal is prose whose correct and incorrect forms are
-  identical. `GR2059` stays next-free and reserved.
+  identical. `GR2061` stays next-free and reserved.
 - **D2.** "Where feasible" is replaced by a **closed four-bucket classification** (N exempt, E/C owed,
   U relocated), with N as a **four-item enumeration** and the **N4 trap** (fake the wait, never the
   waiter) written out.
@@ -690,8 +695,39 @@ of why it does not have one.
 - **D9.** **The #378 boundary is a rule, not an intention:** #382 never lints `writeScope` / `maxTurns` /
   `dependsOn`; #378 never rules on what a guardrail proves. GR2042's message gains a **relocation-first**
   remedy pointer, which is this design's only production-code touch and belongs to #378's workstream.
-- **D10.** The ledger is a **report table**, not schema. Deferred to a declared field + GR2059 on a stated
+- **D10.** The ledger is a **report table**, not schema. Deferred to a declared field + GR2061 on a stated
   evidence gate.
+
+### Rulings added during M1 (2026-08-20)
+
+M1 applied this design and hit five under-specified points. Three it resolved as strict supersets of what
+was written (the ledger's `proof` path is **plan-folder-relative**, so a row whose task segment disagrees
+with its `T*` cell is self-evidently inconsistent; the ledger **heading is always emitted**, with a
+no-rows sentence, so a clean plan and a skipped analysis are distinguishable — **M2 keys its finding on
+the missing HEADING, not the missing table**; and the report clause lands at **Step 7.4**, beside #468's
+source-shape ledger, because "Step 6" was a stale number — Step 6 writes the folder). Two needed a
+decision and are ruled here:
+
+- **D11 — the construction bound is bucket **C** only; an **E** row can never invoke it.** §1.2 says E is
+  *always* feasible while §1.3 states the bound generally, and an author would use the gap to degrade an E
+  row by claiming a second real level. Closed **by definition rather than by judgement**: what sits
+  beneath an E seam *is* a process / network / disk boundary, and faking that is the one substitution the
+  rule has always permitted — so constructing a real E adapter never forces a second real level. An E row
+  claiming the bound is a review finding, not a degradation.
+
+- **D12 — #120's forbidden "constructs `FooImpl` itself and injects it" and #382's requirement to do
+  exactly that are the same verb in DIFFERENT SLOTS.** #120 forbids injecting the collaborator into the
+  **assembler's** slot, which bypasses the production assembler so the *wiring* is never proven. #382
+  requires injecting into the **component-under-test's own constructor**, which proves the component
+  through its collaborator and claims nothing about the assembler. Operationally: a real-seam test never
+  calls `SchedulerFactory.Create`, and a composition-root test never hand-injects. **If one test does
+  both, it is two tests.** The two sections sit adjacent in the catalogue and §5.2 disambiguates a
+  different pair, so without this ruling a reader meets flatly opposite instructions.
+
+**One v1 item has no milestone owner: V10** (`guardrails-domain-knowledge` self-update). Its two-disciplines
+note still teaches the retired rule of thumb — *"faking only the process/CLI boundary underneath, NEVER the
+in-process seam itself"* — and knows nothing of the ledger, the buckets, or T\*. Superseded phrasing in a
+knowledge skill every agent loads is how a retired rule outlives its replacement. **Assigned to M2.**
 
 ---
 
@@ -725,7 +761,7 @@ unverifiable, which invariant 5 does not permit.
 in `tests/**`. String and SSOT sentence land **together** (invariant 4). If #378's current workstream is
 already editing this validator, M4 folds into it rather than racing it.
 
-**Not handed off:** GR2059, the declared ledger field, the #350 library entry, cross-wave U enforcement.
+**Not handed off:** GR2061, the declared ledger field, the #350 library entry, cross-wave U enforcement.
 
 ---
 
@@ -736,7 +772,7 @@ Proposed, not applied — for approval before this doc is committed.
 1. **`docs/plans/README.md`** — index entry:
    `18-integration-proof-proximity.md — Integration-proof proximity: the seam ledger and the one-real-level rule (#382). Where a component's real-seam proof lives, why it is not a validate lint, and the #378 boundary.`
 2. **`docs/plans/03-roadmap.md`** — under the deferred/v2 material, one line:
-   `GR2059 + a declared seam ledger (deferred from #382 — see 18-integration-proof-proximity.md §3.4 for the evidence gate that opens it).`
+   `GR2061 + a declared seam ledger (deferred from #382 — see 18-integration-proof-proximity.md §3.4 for the evidence gate that opens it).`
 3. **`docs/plans/09-preflight-first-class.md` §"Plan-level guardrails"** — one cross-reference sentence:
    `The terminal folder is a JOIN-CHECK over already-proven parts, never the first place a real path is exercised (#382 — 18-integration-proof-proximity.md §1.5).`
 4. **`docs/plans/02-schemas-and-contracts.md` §3.4** — the single sentence in §10 above, sequenced by the

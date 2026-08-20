@@ -72,9 +72,15 @@ ultimately deleted and what it guarded moved into behaviour.
 
 1. **Behavioural proof.** The invariant is a claim about what the code DOES at runtime → a test,
    an exit code, an endpoint response (archetypes #2/#4/#7/#8). The test is the property; there is
-   nothing to drift.
+   nothing to drift. **The drive-the-real-seam contract test (#382) is a named rung-1 instance with NO
+   rung-3 form** — *"the component works through the production seam"* is behaviour, and a regex over a
+   test file grepping `new ClaudePromptRunner(` certifies **vocabulary**, which is this section's headline
+   failure verbatim. See the drive-the-real-seam section for its one permitted degradation (which is a
+   *different assertion*, not a weaker spelling of the same one).
 2. **An AGREEMENT property test**, when the invariant is *"X must USE Y"* (next section). No regex can
-   express it; a test can.
+   express it; a test can. **Do not reach for it when the question is "does X work THROUGH the real Y?"** —
+   that is rung 1's real-seam case, and the two are not interchangeable (drive-the-real-seam → "AGREEMENT
+   vs real-seam").
 3. **A source-shape regex — LAST.** Only when the property is genuinely **unobservable at runtime**.
    Then: pass the anti-pattern battery below, ship the two-sided sample pair, and **state in the
    breakdown report why no test could carry it.** An unexplained source-shape check on a behavioural
@@ -182,6 +188,14 @@ diverge from* a named collaborator, predicate, table, or policy. **Prefer this o
 the two sides are both callable from a test.** When one side is NOT callable (a build descriptor, a
 wiring fact), you are in the scope note above — a structural fact with no runtime proxy — and a regex
 is correct.
+
+> **Not the same thing as a drive-the-real-seam contract test (#382), and NOT a substitute for one.**
+> AGREEMENT asks *does X **agree with** Y* — it evaluates **both** sides and asserts equality, catching
+> **drift** between two implementations of one policy. Real-seam asks *does X **work through** the real Y*
+> — it constructs **one** side for real and asserts an effect only that side emits, catching **a contract
+> the fake silently satisfies**. The full comparison, and the reason **an AGREEMENT test between a fake and
+> a real implementation is worse than nothing**, is in the drive-the-real-seam section → "AGREEMENT vs
+> real-seam".
 
 ## A source-shape guardrail ships with its two-sided sample pair COMMITTED (#468 / #302)
 
@@ -1028,13 +1042,37 @@ the anti-pattern TDD/CI methodology warns against; the wave decomposition must n
 
 **Decision rule — when does this fire?** When an `author-tests-*` task **injects a fake of an in-process
 seam the production run drives** (a prompt runner, the executor, the scheduler, a factory / DI-resolved
-collaborator) AND no task provides a **paired real-seam / contract test** for that component.
+collaborator) AND no task provides a **paired real-seam / contract test** for that component. **WHICH**
+faked seams owe a proof is not a judgement call: it is decided by the **closed four-bucket classification**
+in SKILL.md Step 4 — **N** exempt (a four-item enumeration of non-determinism primitives, carrying the
+**N4 trap**: *fake the wait, never the waiter*), **E** and **C** owe proof, **U** relocates it. That
+classification, the **T\*** placement test and the **seam ledger** are the authoring procedure; this
+section is the guardrail's **shape**.
 
-**The archetype: a real-seam contract test on the IMPLEMENT task.** The component's implement task carries
-a test (author it RED via the TDD pair) that drives the **ACTUAL** seam the run uses — the real
-`IPromptRunner` / executor / scheduler / factory — and asserts the behaviour the real seam exposes (the
-`StreamLogPath` is honoured; the transient path records `blocker-retried`). Its `# catches:` sentence
-follows this template:
+**Rung 1 under the demotion ordering, and there is NO rung-3 form (#468).** The real-seam proof is a
+**behavioural** claim — *the component works through the production seam* — so it is always a **test**. A
+regex over a test file grepping `new ClaudePromptRunner(` certifies **vocabulary, not capability**: it is
+satisfied by a commented-out line, a `using`, or a construction whose object is then discarded — the
+demotion gate's headline failure verbatim. **The source-grep fallback that #120 permits as its weakest
+form is NOT available here.** The only permitted degradation is the **#120(b) reflection-plus-contrast**
+form, and that is a *different assertion* ("the assembler holds this collaborator"), not a weaker spelling
+of this one.
+
+**The archetype: a real-seam contract test, authored as a TDD PAIR across the component's OWN two tasks.**
+
+- **On the `author-tests-*` task** — the real-seam test is written **alongside** the fake-based unit tests,
+  listed in the task's `covers-key-behaviors` manifest (#75), and **included in the
+  `tests-fail-on-current-code` / `tests-fail-on-stubs` filter**, so it is proven **RED** and cannot be a
+  tautology. #155 applies unchanged — the red must **COMPILE** and fail, so this task also writes whatever
+  stub the real-seam test needs to compile. (A real-seam test that is red because it does not compile is
+  not a proof of anything.)
+- **On the implement task — usually T\*** — a `specific-tests-pass` (#4) guardrail whose `--filter` selects
+  **that pair's own test class** (#455 scoping, with the zero-match guard and the #179 failure-detail
+  re-emit). The test drives the **ACTUAL** seam the run uses — the real `IPromptRunner` / executor /
+  scheduler / factory — and asserts the behaviour the real seam exposes (the `StreamLogPath` is honoured;
+  the transient path records `blocker-retried`).
+
+Its `# catches:` sentence follows this template:
 
 ```
 # catches: a component that passes its unit tests against a faked <seam> but is broken
@@ -1042,22 +1080,121 @@ follows this template:
 #          fake IPromptRunner but throwing on the real ClaudePromptRunner's StreamLogPath.
 ```
 
-**The boundary rule — fake the process, NEVER the in-process seam.** Faking the **CLI / process /
-subprocess** boundary is legitimate and expected: the #120 wiring test itself runs the real factory while
-the underlying agent CLI is stubbed, and a real-seam test may still shell out to a fake external binary.
-What is FORBIDDEN is faking **the in-process seam the component under test collaborates with** — that is
-the exact substitution that blinds the guardrail. Rule of thumb: *fake what crosses a process boundary;
-drive the real thing for everything that stays in-process.*
+**The assertion requirement — an effect ONLY the production implementation emits.** The test must assert
+something the fake could not produce without reimplementing the real behaviour: the stream log **file**
+appears on disk; the journal contains a `blocker-retried` **decision**; the verdict's `Source` is **not**
+the catch-and-safe-default. ***"The seam was called" is NOT an assertion*** — the fake satisfies it, which
+is exactly how the motivating bugs shipped green. This clause is #120(a)'s "observable output only the
+wired feature produces" imported wholesale, and it is what makes the archetype survive the review skill's
+Probe B (an author can otherwise satisfy a `…RealSeam…` filter with a test that constructs the fake under
+a real-sounding name).
 
-**Distribute, don't concentrate.** Prefer proving each component through the real factory **at the task
-that builds it** (so a bug surfaces in-scope and early) over deferring all real-path proof to a terminal
-sink. Keep a final full-path wiring test, but as a **thin join-check over already-integration-proven
-parts** — not the first place the real path is ever exercised. Concentrating it is the #378 over-scope
-fingerprint; the two share a root.
+**`scope`: `"local"` — omit the key.** A real-seam proof asserts *"this component works through the real
+seam"*, which **cannot pass before its implement task's action has run** — so it **fails the #125
+union-safe decision test** and must NOT be tagged `scope: "integration"`. This section sits beside the
+composition-root section above, which discusses `scope` at length; a reader carrying that discussion
+across without carrying its **conclusion** is the live failure mode. The conclusion, restated here so it
+cannot be lost in transit: getting this backwards on a composition-root guardrail cost two completely
+unrelated parallel siblings a rollback-and-retry on a plan whose guardrails had already passed review
+(#250).
+
+**The boundary rule, in its final form — ONE REAL LEVEL, AND NO FURTHER.** (This REPLACES the older rule
+of thumb *"fake the process, never the in-process seam"*: same rule, made precise about how far down
+"real" goes.)
+
+> The component under test is constructed with the **REAL implementation of its declared dependency**.
+> That implementation's **own** declared dependencies MAY be substituted — because each of those
+> substitutions is its own ledger row, owed at its own task.
+
+Faking the **CLI / process / subprocess** boundary *beneath* the real seam stays legitimate and expected:
+the #120 wiring test runs the real factory while the underlying agent CLI is stubbed, and a real-seam test
+may still shell out to a fake external binary. What is FORBIDDEN is faking **the in-process seam the
+component under test collaborates with** — that is the exact substitution that blinds the guardrail.
+
+> **This does NOT contradict #120's forbidden shape "a guardrail that constructs `FooImpl` itself and
+> injects it".** Same verb, **different slot**, different question. #120 forbids a test injecting the
+> collaborator **into the ASSEMBLER's slot** — doing so bypasses the production assembler, so the
+> *wiring* is never proven. #382 **requires** the test to construct the real seam and pass it into the
+> **COMPONENT-under-test's own constructor** — which proves the *component through its collaborator* and
+> claims nothing about the assembler. Concretely: a real-seam test never calls `SchedulerFactory.Create`,
+> and a composition-root test never hand-injects. If one test is doing both, it is two tests.
+
+**Why one level is enough — the induction, which is the point of the whole rule.** If every task proves its
+component one real level down, then **by induction over the dependency graph** every level of the
+composition has been exercised for real *somewhere*, in a scope that could fix it. What remains unproven is
+only the **assembly** — that the production assembler constructs these particular objects, in this order,
+and hands them on. That residue is small, genuinely composition-level, and is exactly what the terminal
+**join-check** should assert. Big-bang integration stops being structurally necessary — which is the whole
+return on the extra `[Fact]` per component.
+
+**The construction bound — the honest limit.** If constructing the production seam forces you to build a
+**second** real level (the real `Scheduler` needs a real journal needs a real repository needs…), you have
+**left the rule**, and the proof degrades along #120's existing ladder rather than a new one:
+
+1. drive the real seam and assert an observable effect — **the default**;
+2. **#120(b)** — construct the real collaborator, assert by reflection that the component holds it, **with
+   a contrast case** proving the wiring is conditional and real;
+3. a source grep — **NOT available here** (see the no-rung-3 floor above).
+
+**A degradation to (2) is NAMED in the breakdown report with the constructor chain that forced it; an
+unnamed degradation is a review finding.** A high construction cost is a signal in its own right: a
+production type you cannot build without three more of them is badly factored, and surfacing that beats
+hiding it behind a fake.
+
+> **The bound applies to bucket C ONLY. An E row can never invoke it.** This is the escape hatch an
+> author reaches for first, so it is closed by definition rather than by judgement: what sits beneath an
+> **E** seam is a process / network / disk boundary, and faking *that* is already permitted — it is the
+> one substitution the rule has always allowed. So constructing a real E adapter never forces a second
+> real level; you construct the real adapter and stub the boundary underneath it. "I could not construct
+> it" is therefore not available for an E row, and an E row claiming the bound is a review finding, not a
+> degradation. Only **C** — an in-repo collaborator whose own dependencies are themselves in-repo — can
+> genuinely hit the bound.
+
+**Distribute, don't concentrate.** Prove each component through the real seam **at T\*, the task that
+builds it** (so a bug surfaces in-scope and early, where the retry budget can spend itself on a fix)
+rather than deferring all real-path proof to a terminal sink. Keep the final full-path check, but as a
+**thin JOIN-CHECK over already-proven parts** — never the first place the real path is exercised. Its
+`# catches:` must name a defect that **survives every upstream real-seam proof passing** ("the factory
+never hands the judge to the scheduler"); if it cannot name one it is redundant, and if the only defect it
+can name is *"this seam is exercised for the first time here"* then a ledger row is mis-placed and the fix
+is upstream, **not** a wider `writeScope` here. Concentrating proof in that sink is the #378 over-scope
+fingerprint; the two issues share one root.
+
+**FORBIDDEN shapes** (the review skill hunts these):
+- A test named `…_RealSeam` / `…_Integration` that **constructs the FAKE** — same class, same
+  real-sounding name, a substituted seam. This is the cheapest way to satisfy the guardrail's filter
+  without delivering anything, and the assertion requirement above is the only thing that kills it.
+- An assertion that **the collaborator was called** (a recording double, a call count, a `Verify`). The
+  fake satisfies it by construction — that IS the passing-but-blind shape.
+- A **source grep** that the test file mentions the production type (the no-rung-3 floor).
+- Tagging the guardrail `scope: "integration"` because "it drives the real thing" (#250).
+- Substituting a **policy object** and calling it bucket N4 because it happens to sleep — N4 is the wait,
+  never the waiter.
 
 This archetype is a candidate for the **#350 vetted-guardrail-library** — the "drive-the-real-seam"
-contract-test shape is reusable across plans rather than hand-authored once per wave. The .NET realization
-is `stacks/dotnet.md §10e`.
+contract-test shape is reusable across plans rather than hand-authored once per wave; parameterizing it
+here instead would be the second half-overlapping mechanism this doctrine exists to avoid. The .NET
+realization is `stacks/dotnet.md §10e`.
+
+### AGREEMENT vs real-seam — two different questions, and NEITHER substitutes for the other
+
+The AGREEMENT property test (#468) and this archetype (#382) landed independently and are both *"the
+answer when a regex won't do"*, which makes them easy to confuse — and a reviewer can substitute one for
+the other and believe they have complied. They answer different questions:
+
+| | AGREEMENT (#468) | Drive-the-real-seam (#382) |
+|---|---|---|
+| the question | *does X **agree with** Y?* | *does X **work through** the real Y?* |
+| the defect | **drift** between two implementations of one policy | a **contract the fake silently satisfies** and the real one does not |
+| the shape | enumerate the domain, evaluate **both** sides, assert equality | construct **one** side for real, assert an effect only it emits |
+| passes when | an inlined copy is equivalent **today** | never, if the real seam rejects the input the fake accepted |
+| the motivating case | a resolver required to consume a shared predicate | `CriticalityJudge` over the real `ClaudePromptRunner` |
+
+**An AGREEMENT test between a FAKE and a REAL implementation is worse than nothing** — it certifies that a
+fake you wrote matches a real thing you never ran, and it reads on the page like an integration proof.
+When the two sides are two implementations of one policy, you want AGREEMENT; when one side is the
+production collaborator the run resolves, you want a real-seam test. Neither is a cheaper spelling of the
+other, and neither discharges the other's row.
 
 ## Dispatch / factory wiring — the CORRECT concrete type is paired with the CORRECT mode (#158)
 

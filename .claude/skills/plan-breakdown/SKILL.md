@@ -717,18 +717,147 @@ optional:
   factory) via DI? A unit test that injects a fake of the very seam the production path exercises can go
   **GREEN over a component that is broken through the real composition root** — a *green light over a
   broken wire*. Where #120 asks "is the component wired at all?", this asks "is the component **proven
-  through the seam the run actually drives**, or only against a fake of it?". Two authoring moves close it:
-  1. **The implement task carries a real-seam contract test that drives the ACTUAL seam.** A fake
-     **CLI / process / subprocess** is fine (the #120 wiring test already fakes the *process* boundary),
-     but a **fake of the in-process seam itself is NOT** — the test must exercise the real
-     `IPromptRunner` / executor / scheduler / factory the run will use.
-  2. **Distribute the composition-root proof.** Prove each component **through the real factory AT the
-     task that builds it**, where feasible, so an integration bug surfaces in-scope and early. Keep only
-     a **thin join-check** in the terminal `<plan>/guardrails/` gate over already-integration-proven
-     parts. **Do NOT concentrate all real-path proof in one over-scoped end-of-wave sink** — that sink IS
-     the **#378 fingerprint** (over-scoped *because* it concentrates deferred integration risk, and it
-     cannot fix a cross-file bug it finds), and the two issues share one root. (Catalogue →
-     "drive-the-real-seam"; `stacks/dotnet.md §10e`.)
+  through the seam the run actually drives**, or only against a fake of it?". This check is an
+  **analysis**, and its artifact is the **seam ledger**: build it here (rules 1–6), emit proofs from its
+  `T*` column in Step 5, print it in the Step 7.4 report. Rule 7 draws the boundary against #378.
+  (Catalogue → "drive-the-real-seam"; `stacks/dotnet.md §10e`.)
+
+  **1. A seam is a `(component, declared dependency)` PAIR** — the component under test and **one**
+  dependency it declares (a constructor parameter, a DI-resolved interface, an injected delegate, an
+  overridable member). One row per pair — not one per component, not one per interface in the repo. A
+  **process seam** — a child process, a CLI, a socket, an HTTP endpoint, a database, the filesystem — is
+  **out of scope for this check**, and faking it stays expected, correct, and unchanged. The ledger records
+  **substitutions the tests MAKE**, never a dependency inventory: a declared dependency the tests do not
+  fake has no row. (An inventory becomes a wall of noise and stops being read — the same failure mode as a
+  false-positive lint.)
+
+  **2. Classify every faked in-process seam into EXACTLY ONE of four buckets. Only N is exempt.** This
+  closed classification is what replaces the unfalsifiable phrase *"where feasible"*: an author can declare
+  anything infeasible, but a bucket can be checked and a wrong one contradicted.
+
+  - **N — a non-determinism primitive. EXEMPT.** N is a **CLOSED ENUMERATION OF FOUR ITEMS, NOT A
+    CATEGORY** — a category is a hiding place, a closed list is checkable. A seam is N only if it is
+    literally one of: **N1** a clock / time source; **N2** a randomness source (an RNG, a GUID factory);
+    **N3** an ambient environment reader (env vars, machine name, current directory, an OS probe); **N4** a
+    **wait primitive** — a sleep / delay / timer substituted so the test does not spend real time.
+    **Anything not on that list is NOT N**, and `/guardrails-review` REJECTS an N classification for
+    anything off it. Do not generalise the list: a seam that merely *feels* like N is E, C or U.
+
+    > **The N4 trap — fake the WAIT, never the WAITER. If the substitute contains a DECISION, it is not
+    > N4.** This is the likeliest place the taxonomy gets abused and it is written from a shipped bug.
+    > Substituting the **sleep** so a backoff test finishes in milliseconds is N4 and exempt. Substituting
+    > the **backoff policy component** — the thing that decides *whether* to retry and records the
+    > `blocker-retried` decision — is **C**, and it owes proof. The exemption covers the primitive that
+    > CONSUMES time, never the policy that DECIDES to consume it. In the motivating dogfood this exact
+    > conflation shipped a silently-swallowed transient: `RetryLoop → IDelay` is **N4**;
+    > `RetryLoop → ITransientBackoff` is **C**.
+
+  - **E — an external-resource adapter. PROOF OWED, and ALWAYS FEASIBLE.** The production implementation
+    crosses a process / network / disk boundary (`IPromptRunner` → `ClaudePromptRunner` → the `claude`
+    child process). **Drive the real adapter and fake the boundary UNDERNEATH it** — a stub binary, a fake
+    `HttpMessageHandler`, a temp directory. That lower boundary is a process seam, which rule 1 already
+    permits you to fake. "Always feasible" is exactly what separates E from a seam you cannot construct.
+  - **C — an in-repo collaborator with a contract the run depends on. PROOF OWED, and feasible.** The
+    production implementation lives in this repo and does real work the component depends on — a
+    scheduler, a factory, an executor's backoff, a policy object. **Construct the real implementation.**
+    Its own dependencies are covered by their own rows at their own tasks (rule 3), so you never build the
+    universe.
+  - **U — an unbuilt collaborator. PROOF OWED, but RELOCATED.** The production implementation does not
+    exist yet at this point in the DAG; a later task — or, under Step 9 waves, a later wave — builds it.
+    The row is **NOT exempt**: it names the **receiving task** and the proof is owed there. A U row whose
+    receiving task is the terminal sink is legitimate **only** when the production type genuinely first
+    exists there; otherwise the row is mis-placed and the finding is the placement, not the bucket.
+
+  **3. One real level down, and NO FURTHER.** This REPLACES the older rule of thumb *"fake the process,
+  never the in-process seam"* — same rule, made precise about **how far** real goes:
+
+  > The component under test is constructed with the **REAL implementation of the seam under test**. That
+  > implementation's **own** declared dependencies MAY be substituted — because each of those
+  > substitutions is its own ledger row, owed at its own task.
+
+  One level buys composition **by induction**, which is why the rule is worth its cost; the argument, and
+  the #120 degradation ladder for when constructing the real seam forces a **second** real level, are in
+  the catalogue's drive-the-real-seam section. Two things are non-negotiable here: the only permitted
+  degradation is the **#120(b) reflection-plus-contrast** form (there is **no source-grep rung** for this
+  archetype), and **a degradation is NAMED in the Step 7.4 report with the constructor chain that forced
+  it** — an unnamed degradation is a review finding.
+
+  **4. Placement — T\*, the earliest-proving task, computed from the DAG.**
+
+  > For each **E** and **C** row, the proof is owed at **T\*** — the **earliest task in the DAG at which
+  > BOTH (i) the component's production type and (ii) the seam's production type exist**. For a **U** row,
+  > T\* is the earliest task satisfying (ii), and the row names it.
+  >
+  > **A proof placed LATER than T\* is a finding.** The report must NAME T\* and state why the proof could
+  > not live there.
+
+  Both existence facts are readable off the graph you are emitting — a type exists at a task when that
+  task's `writeScope` contains the file declaring it, or an ancestor's does — so **T\* is computable by a
+  reviewer without running anything.** That is the whole point: *"where feasible"* asked for a judgement
+  nobody could contradict; *"which task is T\*, and is the proof there?"* has an answer. In the common case
+  the component's own implement task **is** T\*, and the rule reads as plain English: *prove each component
+  through the real seam at the task that builds it.*
+
+  **5. The terminal composition proof is a JOIN-CHECK, never the first exercise.** The terminal proof is
+  whichever object carries the composition assertion — a #120 wiring **task**, and/or the plan-level
+  `<plan>/guardrails/` **folder** (SSOT §3.3). One rule for both:
+
+  > It may assert only what the union of the upstream real-seam proofs does **NOT**: that the collaborators
+  > are **assembled** — constructed, injected, ordered — by the production assembler. Its `# catches:` must
+  > name a defect that **SURVIVES every upstream real-seam proof passing**. If it cannot name one, it is
+  > redundant. If the only defect it can name is *"this seam is exercised for the first time here"*, then a
+  > ledger row is MIS-PLACED and the fix is upstream — **not** a wider `writeScope` here.
+
+  That last clause is the anti-regression clause: without it an author satisfies this rule by writing a
+  ledger and then leaving all the proof in the sink anyway. Such a sink IS the **#378 fingerprint**
+  (over-scoped *because* it concentrates deferred integration risk, and unable to fix the cross-file bug it
+  finds) — the two issues share one root.
+
+  **6. The ledger — the artifact this analysis produces. Its FORMAT IS A CONTRACT: `/guardrails-review`
+  reads it.** One markdown table, six columns, exactly these headers, printed in the Step 7.4 report under
+  a bolded line reading `Seam ledger (#382)`:
+
+  | seam (component → declared dependency) | bucket | production type | faked underneath | T* | proof |
+  |---|---|---|---|---|---|
+  | `CriticalityJudge` → `IPromptRunner` | E | `ClaudePromptRunner` | the `claude` CLI child process (stub binary) | `09-implement-criticality-judge` | `tasks/09-implement-criticality-judge/guardrails/03-real-seam-tests-pass.ps1` |
+  | `RetryLoop` → `ITransientBackoff` | C | `TransientBackoff` | — | `11-implement-transient-recording` | `tasks/11-implement-transient-recording/guardrails/03-real-seam-tests-pass.ps1` |
+  | `RetryLoop` → `IDelay` | N4 | — | — | exempt | — (the wait, not the waiter) |
+  | `Scheduler` → `IOverwatcher` | U | `Overwatcher` (built in task 13) | — | `13-implement-overwatcher` | deferred to T*, named |
+
+  The header row is fixed text, in that order, with `T*` written literally (no escaping):
+  `| seam (component → declared dependency) | bucket | production type | faked underneath | T* | proof |`.
+  Cell rules, so the table is machine-readable and self-checking:
+  - **bucket** — exactly one of `N1` `N2` `N3` `N4` `E` `C` `U`. Never blank, never a bare `N`, never a
+    value off that list.
+  - **production type** — the concrete type the production run resolves; `—` on any `N*` row.
+  - **faked underneath** — the PROCESS boundary stubbed below the real seam (a stub binary, a fake
+    `HttpMessageHandler`, a temp directory), or `—` when nothing is faked below it.
+  - **T\*** — the task **FOLDER NAME** (the same identity `dependsOn` and the state key use), never a
+    `stableId` and never a prose description; `exempt` on any `N*` row. Under Step 9 waves, a U row whose
+    receiving task is not yet broken down names the receiving **WAVE** folder instead, and that wave's own
+    breakdown resolves it to a task.
+  - **proof** — the guardrail file path **relative to the PLAN folder** (`tasks/<T*>/guardrails/NN-….ps1`),
+    which makes the row self-checking: a proof path whose task segment differs from the `T*` cell is an
+    inconsistent row and a finding in its own right. `—` on `N*` rows; `deferred to T*, named` on a U row.
+  - **Rows the ledger does NOT carry:** process seams (rule 1), and any declared dependency the tests do
+    not substitute.
+  - **The heading is emitted EVEN WHEN THERE ARE NO ROWS** — print the bolded `Seam ledger (#382)` line
+    followed by the single line `_No in-process seam is substituted by this breakdown's tests._`, and omit
+    the table. `/guardrails-review` treats an **absent** ledger as evidence the analysis was never run; a
+    ledger with **zero rows** is a claim, and a claim can be checked.
+
+  **7. The #378 boundary — one root, two mechanisms, NO OVERLAP. Inherit this rule; do not renegotiate
+  it.** #378 owns the **size and shape of a task**: it reads `writeScope` cardinality, `action.maxTurns`
+  and `dependsOn` fan-in, its mechanism is **GR2042** (deterministic WARN) plus the Step 2 split-trigger
+  (e), and its verdict is *"this task is too big."* #382 owns the **placement of proof**: it reads which
+  seam a test substitutes and where the real-seam proof lives, its mechanism is this ledger plus the
+  archetype (audited by `/guardrails-review`), and its verdict is *"this proof is in the wrong task."*
+  Therefore — **#382 NEVER adds a rule keyed on `writeScope`, `action.maxTurns` or `dependsOn`** (those
+  three fields are GR2042's, exclusively), and **#378 NEVER adds a rule about what a guardrail PROVES.**
+  Where they meet: told *"this task is over-scoped"*, the reflex is to chop the `writeScope` — which for a
+  fan-in sink yields N small tasks that still contain the first exercise of every real path, so the
+  concentration survives the split. **Relocating the proof to T\* is the fix; narrowing `writeScope` alone
+  is not.**
 - **Dispatch / factory pairing (#158 — is the RIGHT impl wired to the RIGHT mode?)** — does this task
   **dispatch from an enum / discriminated value to one of ≥2 concrete implementations**
   (`ImportMode.TcApiLocal → new TcApiLocalImporter()`, a `switch`/`if` selecting a handler per mode)?
@@ -1202,6 +1331,34 @@ upstream task that creates it:
      human must confirm — do not invent one.
      (Compose with the server/executable bullet below when the plan is BOTH: wire the entry point to
      the launcher AND wire a collaborator into the factory — two distinct wiring deliverables.)
+- **Seam ledger carries E / C / U rows (Step 4 analysis) → emit ONE real-seam proof per owed row AT T\*,
+  and thin the terminal sink (#382).** The ledger's `T*` column is an **emission instruction**, not a note.
+  For each **E** and **C** row:
+  1. **On T\*'s paired `author-tests-*` task** — the real-seam contract test is authored alongside the
+     fake-based unit tests, listed in that task's `covers-key-behaviors` manifest (#75), and **INCLUDED in
+     the `tests-fail-on-current-code` / `tests-fail-on-stubs` filter**, so it is proven **RED** and cannot
+     be a tautology. #155 applies unchanged: the red must **COMPILE** and fail, so the test-author task
+     also writes whatever stub the real-seam test needs to compile.
+  2. **On T\* itself** — a `specific-tests-pass` (#4) guardrail whose `--filter` names **that pair's own
+     test class** (#455, with the zero-match guard and the #179 failure-detail re-emit). **`scope`:
+     LOCAL — omit the key.** A real-seam proof asserts *"this component works through the real seam"*,
+     which cannot be true before T\*'s own action has run, so it **fails the #125 union-safe test** and
+     must not be tagged `scope: "integration"` — that is the #250 mistake, and the #120 discussion above is
+     where a reader most easily picks up the question without picking up its answer.
+  3. **The test must assert an effect ONLY the production implementation emits** — the stream-log FILE
+     appears on disk; the journal contains a `blocker-retried` DECISION; the verdict's `Source` is not the
+     catch-and-safe-default. ***"The seam was called" is NOT an assertion*** — the fake satisfies it, which
+     is precisely how the motivating bugs shipped green.
+
+  For each **U** row emit **no guardrail here**: the row already names the receiving task (or wave) and the
+  proof is owed there — carry the row forward so the report and the review pass both see the deferral.
+
+  Then **re-scope the terminal proof**. With the real-seam proofs upstream, the #120 wiring task and the
+  `<plan>/guardrails/` folder assert only **assembly**, and each such guardrail's `# catches:` must name a
+  defect that survives every upstream real-seam proof passing (Step 4 rule 5). If you cannot name one,
+  **delete the guardrail** rather than keep a redundant gate. And **never emit the same row's real-seam
+  proof twice** — once at T\* and again in the sink is the concentration this rule exists to remove.
+  (Catalogue → "drive-the-real-seam"; `stacks/dotnet.md §10e`.)
 - **Server/executable plan (Step 4 entry-point-wiring signal fired) → insert a wiring task
   AND a live smoke-test task.** A plan that decomposes into component tasks (scaffold the
   exe project, implement the handler/launcher, implement the routes) verifies each component
@@ -1676,7 +1833,13 @@ Per `references/schemas.md`, exactly:
    self-review finding — loop back to Step 4 and demote it or justify it. Name the committed
    `.valid`/`.invalid` sample pair for each, and for any **documentation** deliverable state the
    exemption explicitly (*"prose target — no meaningful invalid sample exists; PRECEDENT check applied
-   instead, sibling precedent: `<the form the document already uses>`"*), never silently. **Surface every
+   instead, sibling precedent: `<the form the document already uses>`"*), never silently. **Then the seam
+   ledger (#382) — the Step 4 table, verbatim**, under a bolded `Seam ledger (#382)` line, in the exact
+   six-column form Step 4 rule 6 specifies, **including the zero-row form** (`_No in-process seam is
+   substituted by this breakdown's tests._`) when no in-process seam is faked. Add one line for each row
+   whose proof landed **later than T\*** (name T\* and why it could not live there) and for each proof that
+   **degraded to the #120(b) reflection-plus-contrast form** (name the constructor chain that forced it).
+   An **absent** ledger is a self-review finding — loop back to Step 4 and run the analysis. **Surface every
    decision the human should confirm** — chief among them any test-framework or E2E-driver choice:
    state which was used and why (detected in repo / named in the plan / asked via
    `AskUserQuestion` / left as a needs-human halt). A wrong framework poisons every

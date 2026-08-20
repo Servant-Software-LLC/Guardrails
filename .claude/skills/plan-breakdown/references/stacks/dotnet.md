@@ -1104,10 +1104,16 @@ The .NET realization of the catalogue's "drive-the-real-seam" archetype. Where �
 **factory wires the collaborator**, this proves the **collaborator is not broken through the real
 in-process seam** — the passing-but-blind gap. A component whose unit tests inject a **fake
 `IPromptRunner`** (or fake executor / scheduler / factory) goes green while it throws through the real
-`ClaudePromptRunner` (the motivating `CriticalityJudge.BuildInvocation` empty-`StreamLogPath` bug). The
-implement task carries a **contract test that drives the REAL seam** — construct the component with the
-**production seam implementation**, faking only the **process/CLI boundary underneath it** (a fake
-`claude` executable via the runner's process-launch config, NEVER a fake `IPromptRunner`):
+`ClaudePromptRunner` (the motivating `CriticalityJudge.BuildInvocation` empty-`StreamLogPath` bug).
+
+**One test per owed ledger row, at T\*.** SKILL.md Step 4 classifies each faked in-process seam into a
+bucket; **E** and **C** owe a test here, **N** is exempt, **U** relocates. The two owed buckets look
+different in C#, so both are worked below. Each is a `[Fact]` on the component's own test class, authored
+RED via the TDD pair, and gated by a `dotnet test --filter` guardrail in the §4.2 capture-then-re-emit
+form with the §4.3 zero-match guard.
+
+**Bucket E — an external-resource adapter: construct the REAL adapter, stub the PROCESS beneath it.**
+Never a fake `IPromptRunner`; a fake `claude` executable handed to the real runner's process-launch config:
 
 ```csharp
 // catches: CriticalityJudge passes against a fake IPromptRunner but is broken through the real
@@ -1121,14 +1127,47 @@ public async Task Judge_BuildsAValidInvocation_ForTheRealPromptRunner()
     var judge = new CriticalityJudge(realRunner, ...);
     CriticalityVerdict v = await judge.AssessAsync(sampleGate, ct);
     Assert.NotEqual(CriticalityDefault.EscalateOnError, v.Source);  // did NOT hit the catch-and-safe-default
+    Assert.True(File.Exists(streamLogPath));                        // an artifact ONLY the real runner writes
 }
 ```
 
-The guardrail is the same `dotnet test --filter "…RealSeam…"` shape as §10a, in the §4.2 capture-then-
-re-emit form. Author it via the TDD pair: the test-author task's `tests-fail-on-current-code` proves it
-goes RED against the broken component, so it cannot be a tautology. **Distribute** these across the
-component tasks (one real-seam test at each component's implement task) rather than deferring all real-path
-proof to one terminal factory-driving sink — that concentration is the §10 (#378) over-scope fingerprint.
+**Bucket C — an in-repo collaborator: construct the REAL implementation, and assert the ARTIFACT it
+writes.** There is often no boundary to stub beneath it at all. The motivating bug: a class-(b) transient
+resolving inside the executor's pause budget was handled **silently** and never recorded the
+`blocker-retried` decision the design requires, because the tests never drove the real `TransientBackoff`:
+
+```csharp
+// catches: RetryLoop passes against a fake ITransientBackoff but swallows a class-(b) transient
+//          silently through the real TransientBackoff - the run records no blocker-retried decision,
+//          so an operator reading the journal cannot tell a retried blocker from one that never
+//          happened. Drives the REAL backoff; only IDelay (the WAIT, bucket N4) is substituted.
+[Fact]
+public async Task RetryLoop_RecordsBlockerRetried_ThroughTheRealTransientBackoff()
+{
+    var backoff = new TransientBackoff(new InstantDelay());   // real WAITER, faked WAIT (N4)
+    var loop = new RetryLoop(backoff, journal, ...);
+    await loop.RunAsync(TransientlyFailingOnce(), ct);
+    Assert.Contains(journal.Decisions, d => d.Kind == DecisionKind.BlockerRetried);  // real path's artifact
+}
+```
+
+> **`new InstantDelay()` is the N4 line drawn in code.** Substituting `IDelay` keeps the test fast and is
+> exempt. Substituting `ITransientBackoff` — the thing that *decides* to retry — is the bug this test
+> exists to catch. If the substitute contains a decision, it is not N4.
+
+**The assertion requirement, in .NET terms.** Assert an effect **only the production implementation
+emits** — `File.Exists` on the artifact it writes, a record in the journal it appends to, a `Source` that
+is not the catch-and-safe-default. The shapes that do NOT qualify, all of which a fake satisfies:
+`mock.Verify(x => x.RunAsync(...))`, a recording double's `Assert.Single(recorder.Calls)`, an
+`Assert.NotNull` on the collaborator, or `Assert.True(wasCalled)`. *"The seam was called"* is how the
+motivating bugs shipped green.
+
+**Guardrail placement.** `scope`: **local** — omit the key. The test cannot pass before its implement
+task's action has run, so it fails the #125 union-safe test (#250). And there is **no source-grep
+fallback** for this archetype: a regex asserting the test file contains `new ClaudePromptRunner(` matches
+a commented-out line and certifies vocabulary (#468). **Distribute** these across the component tasks (one
+real-seam test at each component's T\*) rather than deferring all real-path proof to one terminal
+factory-driving sink — that concentration is the §10 (#378) over-scope fingerprint.
 
 ## 11. Strip comments before a forbidden-keyword scan — SQL and C# syntax (#97, #98)
 
